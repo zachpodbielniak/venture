@@ -642,7 +642,7 @@ test_batch_cli(Fixture *f, gconstpointer unused)
 	url = g_strdup_printf("http://127.0.0.1:%u", port);
 	state.done = FALSE; state.out = NULL; state.err = NULL; state.error = NULL;
 	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
-		&error, "build/debug/venturectl", "--server", url, "-f", "json", "batch", "expense",
+		&error, VENTURE_TEST_BIN_DIR "/venturectl", "--server", url, "-f", "json", "batch", "expense",
 		"format=csv", "post=false",
 		"payload=description,amount,occurred_at,vendor,external_id\nCoffee,4.50 USD,2026-01-01,Cafe,cli-exp-1\n", NULL);
 	g_assert_no_error(error);

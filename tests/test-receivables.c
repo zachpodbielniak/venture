@@ -1278,7 +1278,7 @@ test_surfaces(Fixture *unused, gconstpointer data)
 	g_autofree gchar *cli_path = NULL;
 	guint surface;
 
-	cli_path = g_canonicalize_filename("build/debug/venturectl", NULL);
+	cli_path = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	for (surface = 0; surface < 5; surface++)
 	{
 		Fixture f;
@@ -1447,7 +1447,7 @@ test_statement_options(Fixture *f, gconstpointer data)
 	g_autofree gchar *state_dir = NULL;
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *body = NULL;
-	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *cli = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	g_autofree gchar *customer = g_strdup_printf("customer_id=%" G_GINT64_FORMAT, f->customer_id);
 	g_autofree gchar *response = NULL;
 	g_autoptr(JsonNode) expected = NULL;

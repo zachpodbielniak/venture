@@ -466,7 +466,7 @@ check_cli(const gchar *base, const gchar *verb, const gchar *arg, const gchar *v
 	g_autoptr(GSubprocess) child = NULL;
 	g_autoptr(GError) error = NULL;
 	CliResult result = { FALSE, NULL, NULL, NULL };
-	const gchar *args[] = { "build/debug/venturectl", "--server", base, "sequence", verb, arg, value, NULL };
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", base, "sequence", verb, arg, value, NULL };
 	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
 	child = g_subprocess_launcher_spawnv(launcher, args, &error);
 	g_assert_no_error(error);

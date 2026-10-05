@@ -660,7 +660,7 @@ cli(Fixture *f, const gchar *noun, const gchar *verb, const gchar *id, gboolean 
 	g_autoptr(GError) error = NULL;
 	CliReply reply = { FALSE, NULL, NULL, NULL };
 	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
-		"build/debug/venturectl", "--server", venture_web_server_get_base_url(f->server), "--quiet", noun, verb, id, NULL);
+		VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(f->server), "--quiet", noun, verb, id, NULL);
 	g_assert_no_error(error);
 	g_subprocess_communicate_utf8_async(process, NULL, NULL, cli_received, &reply);
 	while (!reply.done) g_main_context_iteration(NULL, TRUE);

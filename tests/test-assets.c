@@ -664,7 +664,7 @@ run_cli(VentureWebServer *server, const gchar *noun, const gchar *verb, const gc
 	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
 	g_autoptr(GSubprocess) process = NULL;
 	g_autoptr(GError) error = NULL;
-	const gchar *argv[] = { "build/debug/venturectl", "--server", venture_web_server_get_base_url(server), "-f", "json", noun, verb, id, NULL };
+	const gchar *argv[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(server), "-f", "json", noun, verb, id, NULL };
 	SurfaceResult response;
 	guint timeout;
 	memset(&response, 0, sizeof(response));

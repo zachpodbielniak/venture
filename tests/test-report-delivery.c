@@ -705,7 +705,7 @@ cli(WebFixture *w, const gchar *token, const gchar *const *args)
 	g_autoptr(GError) error = NULL;
 	Outcome o = { FALSE, NULL, NULL, NULL, NULL };
 	guint i, timeout;
-	g_ptr_array_add(argv, g_canonicalize_filename("build/debug/venturectl", NULL));
+	g_ptr_array_add(argv, g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL));
 	g_ptr_array_add(argv, g_strdup("--server"));
 	g_ptr_array_add(argv, g_strdup(venture_web_server_get_base_url(w->server)));
 	g_ptr_array_add(argv, g_strdup("-f"));

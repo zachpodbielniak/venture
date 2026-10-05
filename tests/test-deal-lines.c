@@ -419,7 +419,7 @@ test_surfaces(Fixture *f, gconstpointer unused)
 	g_autofree gchar *form = NULL;
 	g_autofree gchar *text = NULL;
 	g_autofree gchar *location = NULL;
-	const gchar *args[] = { "build/debug/venturectl", "--server", NULL, "deal", "quote", NULL, NULL };
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", NULL, "deal", "quote", NULL, NULL };
 	(void)unused;
 	save(f, first);
 	id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(d));

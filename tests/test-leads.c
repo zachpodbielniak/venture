@@ -374,7 +374,7 @@ test_cli_convert(Fixture *f, gconstpointer data)
 	start_http(f);
 	id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(lead));
 	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
-		&error, "build/debug/venturectl", "--server", venture_web_server_get_base_url(f->server),
+		&error, VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(f->server),
 		staged ? "--stage" : "--quiet", "lead", "convert", id, "deal=no", NULL);
 	g_assert_no_error(error);
 	g_subprocess_communicate_utf8_async(process, NULL, NULL, cli_received, &reply);

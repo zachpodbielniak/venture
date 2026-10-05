@@ -518,11 +518,11 @@ test_surfaces(Fixture *f, gconstpointer data)
 		g_autofree gchar *file = g_build_filename(dir, "bank.csv", NULL);
 		g_autofree gchar *argument = g_strdup_printf("bank_balances=@%s", file);
 		g_autofree gchar *out = NULL;
-		const gchar *templ[] = { "build/debug/venturectl", "--server", venture_web_server_get_base_url(server),
+		const gchar *templ[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(server),
 			"cutover", "template", "bank_balances", NULL };
-		const gchar *csv[] = { "build/debug/venturectl", "--server", venture_web_server_get_base_url(server),
+		const gchar *csv[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(server),
 			"cutover", "csv", "source=generic", "cutoff=2026-01-01", "currency=USD", argument, "build_only=true", NULL };
-		const gchar *bad[] = { "build/debug/venturectl", "--server", venture_web_server_get_base_url(server),
+		const gchar *bad[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(server),
 			"cutover", "csv", "source=generic", "cutoff=2026-01-01", "ledger=@/dev/null", "dangling", NULL };
 		g_assert_true(g_file_set_contents(file, "source_id,name,account_code,amount\nb1,Checking,1000,250\n", -1, NULL));
 		out = run_cli(templ, TRUE);

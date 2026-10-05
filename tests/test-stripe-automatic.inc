@@ -84,7 +84,7 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 		g_assert_nonnull(strstr(body, "Copy authorization link"));
 		g_assert_nonnull(strstr(body, "checkout.stripe.com")); g_assert_null(strstr(body, "payment_method_id"));
 		{
-			g_autofree gchar *binary = g_build_filename("build", "debug", "venturectl", NULL);
+			g_autofree gchar *binary = g_strdup(VENTURE_TEST_BIN_DIR "/venturectl");
 			const gchar *argv[] = { binary, "--server", venture_web_server_get_base_url(server), "describe", "stripe_authorization", NULL };
 			g_autofree gchar *description = run_cli(argv, NULL, TRUE);
 			g_assert_nonnull(strstr(description, "next_check_at")); g_assert_nonnull(strstr(description, "limit"));

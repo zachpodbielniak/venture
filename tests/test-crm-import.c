@@ -1036,7 +1036,7 @@ run_cli(VentureWebServer *server, const gchar *a, const gchar *b, const gchar *c
 	CliReply reply = { FALSE, NULL, NULL, NULL };
 	gboolean ok;
 	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
-		"build/debug/venturectl", "--server", venture_web_server_get_base_url(server), "-f", "json", a, b, c, NULL);
+		VENTURE_TEST_BIN_DIR "/venturectl", "--server", venture_web_server_get_base_url(server), "-f", "json", a, b, c, NULL);
 	g_assert_no_error(error);
 	g_subprocess_communicate_utf8_async(process, NULL, NULL, cli_received, &reply);
 	while (!reply.done) g_main_context_iteration(NULL, TRUE);

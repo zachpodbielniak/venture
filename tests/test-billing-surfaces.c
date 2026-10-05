@@ -658,7 +658,7 @@ test_cli(Fixture *f, gconstpointer data)
 		g_autoptr(GError) error = NULL;
 		g_autoptr(GSubprocess) child = NULL;
 		CliResult result = { FALSE, NULL, NULL, NULL };
-		const gchar *args[] = { "build/debug/venturectl", "--server", f->url,
+		const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", f->url,
 			"billing", "renew", "--as-of", "2026-02-01", i == 0 ? "--dry-run" : NULL, NULL };
 		child = g_subprocess_launcher_spawnv(launcher, args, &error);
 		g_assert_no_error(error);
@@ -685,7 +685,7 @@ run_cli(Fixture *f, const gchar *const *extra, gboolean *ok)
 	CliResult result = { FALSE, NULL, NULL, NULL };
 	guint i;
 	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
-	g_ptr_array_add(argv, (gpointer)"build/debug/venturectl");
+	g_ptr_array_add(argv, (gpointer)VENTURE_TEST_BIN_DIR "/venturectl");
 	g_ptr_array_add(argv, (gpointer)"--server");
 	g_ptr_array_add(argv, f->url);
 	for (i = 0; extra[i] != NULL; i++)

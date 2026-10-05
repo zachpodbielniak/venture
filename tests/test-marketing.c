@@ -594,7 +594,7 @@ static gchar *marketing_cli(const gchar *base, const gchar *secret, const gchar 
 	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
 	g_autoptr(GSubprocess) process = NULL;
 	g_autoptr(GError) error = NULL;
-	const gchar *args[] = { "build/debug/venturectl", "--server", base, "--format", "json", command, type, id, action, NULL };
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", base, "--format", "json", command, type, id, action, NULL };
 	MarketingCli reply = { FALSE, NULL, NULL, NULL };
 	guint timeout;
 	g_subprocess_launcher_setenv(launcher, "VENTURE_TOKEN", secret, TRUE);

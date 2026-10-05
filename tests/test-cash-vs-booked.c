@@ -795,7 +795,7 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_autofree gchar *page = NULL;
 	g_autofree gchar *refused = NULL;
 	g_autofree gchar *response = NULL;
-	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *cli = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	const gchar *argv[] = { NULL, "--server", NULL, "-f", "json", "report", "cash_vs_booked",
 		"2026-07-01..2026-07-14", "bucket=week", NULL };
 	const gchar *bad[] = { NULL, "--server", NULL, "report", "cash_vs_booked",

@@ -445,7 +445,7 @@ test_surfaces(BankFixture *f, gconstpointer data)
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(VentureEntity) statement = NULL;
 	g_autofree gchar *directory = NULL, *body = NULL;
-	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *cli = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	const gchar *unmatch_argv[] = { cli, "--server", NULL, "-f", "json", "bank", "unmatch", "1", NULL };
 	const gchar *auto_argv[] = { cli, "--server", NULL, "-f", "json", "bank", "match", "AUTO", "1", NULL };
 	(void)data;

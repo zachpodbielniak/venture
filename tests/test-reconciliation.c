@@ -385,7 +385,7 @@ check_cli(guint port, VentureEntity *transaction)
 	g_autoptr(GSubprocess) child = NULL;
 	g_autoptr(GError) error = NULL;
 	ReconcileCliResult result = { FALSE, NULL, NULL, NULL };
-	const gchar *args[] = { "build/debug/venturectl", "--server", base, "reconcile", "suggest",
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", base, "reconcile", "suggest",
 		venture_entity_get_entity_name(transaction), id, "--matcher", "exact", "--threshold", "80", NULL };
 	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
 	child = g_subprocess_launcher_spawnv(launcher, args, &error);

@@ -489,14 +489,19 @@ VENDOR_SHARED_LIBS := $(ORM_GLIB_SHARED) $(AI_GLIB_SHARED) $(HTMX_GLIB_SHARED)
 
 # Fixtures are found through a define, never by guessing at the working
 # directory: `make test` runs each binary from the tree root and `make
-# test-one` may not.
+# test-one` may not. VENTURE_TEST_BIN_DIR is the build being tested --
+# build/debug or build/release -- so a test that drives venturectl or the
+# server runs the binaries this build made, not a debug build that may not
+# exist (a release container build has none).
 TEST_CFLAGS = $(CFLAGS) -I$(CURDIR)/tests \
                -DVENTURE_TEST_FIXTURES=\"$(CURDIR)/tests/fixtures\" \
                -DVENTURE_TEST_EXAMPLES=\"$(CURDIR)/data/examples\" \
                -DVENTURE_TEST_VENTURE_TYPES=\"$(CURDIR)/data/venture-types\" \
                -DVENTURE_TEST_PLUGIN_SOURCES=\"$(CURDIR)/plugins\" \
                -DVENTURE_TEST_TOOLS=\"$(CURDIR)/tools\" \
-               -DVENTURE_TEST_OPTIONAL_PLUGINS=\"$(CURDIR)/$(OUTDIR)/plugins-optional\"
+               -DVENTURE_TEST_OPTIONAL_PLUGINS=\"$(CURDIR)/$(OUTDIR)/plugins-optional\" \
+               -DVENTURE_TEST_BIN_DIR=\"$(CURDIR)/$(OUTDIR)\" \
+               -DVENTURE_TEST_BUILD_TYPE=\"$(BUILD_TYPE)\"
 TEST_LDFLAGS = $(LDFLAGS)
 
 # ---------------------------------------------------------------------------

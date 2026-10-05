@@ -903,7 +903,7 @@ test_write_surface(Fixture *fixture, gconstpointer data)
 			{
 				g_autofree gchar *organization = g_strdup_printf("organization_id=%" G_GINT64_FORMAT, fixture->organization_id);
 				g_autofree gchar *venture = g_strdup_printf("venture_id=%" G_GINT64_FORMAT, fixture->venture_id);
-				const gchar *argv[] = { "build/debug/venturectl", "--server", http.url,
+				const gchar *argv[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", http.url,
 					"create", types[i], organization, "occurred_at=2024-01-15", NULL, NULL, NULL, NULL };
 				gint status;
 				if (0 == i) argv[7] = venture;
@@ -965,7 +965,7 @@ test_report_surface(Fixture *fixture, gconstpointer data)
 	test_http_start(fixture, &http);
 	if (GPOINTER_TO_INT(data))
 	{
-		const gchar *argv[] = { "build/debug/venturectl", "--server", http.url,
+		const gchar *argv[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", http.url,
 			"report", "pnl", "2024-01", "as_of=2024-01-31", NULL };
 		gint status;
 		response = test_cli(argv, &status);

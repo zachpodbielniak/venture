@@ -175,7 +175,7 @@ test_cli(Fixture *fixture, gconstpointer data)
 	g_autoptr(VentureEntity) stage = NULL;
 	g_autofree gchar *deal_id = NULL;
 	g_autofree gchar *stage_id = NULL;
-	const gchar *args[] = { "build/debug/venturectl", "--server", fixture->url,
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", fixture->url,
 		"deal", "move", NULL, NULL, "CLI qualification", NULL };
 	(void)data;
 	g_object_set(deal, "name", "CLI move", "organization-id", (gint64)1, NULL);

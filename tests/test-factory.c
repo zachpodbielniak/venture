@@ -1851,7 +1851,7 @@ cli_stderr(const gchar *const *arguments)
 	gsize i;
 
 	argv = g_ptr_array_new();
-	g_ptr_array_add(argv, (gpointer)"build/debug/venturectl");
+	g_ptr_array_add(argv, (gpointer)VENTURE_TEST_BIN_DIR "/venturectl");
 	g_ptr_array_add(argv, (gpointer)"--server");
 	g_ptr_array_add(argv, (gpointer)"http://127.0.0.1:1");
 

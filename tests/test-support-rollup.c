@@ -990,7 +990,7 @@ cli(ServerFixture *f, const gchar *format, const gchar *const *args, gboolean ex
 	CliResult result;
 	guint i, timeout;
 	memset(&result, 0, sizeof(result));
-	g_ptr_array_add(argv, g_canonicalize_filename("build/debug/venturectl", NULL));
+	g_ptr_array_add(argv, g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL));
 	g_ptr_array_add(argv, g_strdup("--server"));
 	g_ptr_array_add(argv, g_strdup(venture_web_server_get_base_url(f->server)));
 	g_ptr_array_add(argv, g_strdup("-f"));

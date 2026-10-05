@@ -246,7 +246,7 @@ test_cli(Fixture *fixture, gconstpointer data)
 	g_autoptr(GSubprocessLauncher) launcher = NULL;
 	g_autoptr(GError) error = NULL;
 	CliResult result = { FALSE, NULL, NULL, NULL };
-	const gchar *args[] = { "build/debug/venturectl", "--server", fixture->url,
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", fixture->url,
 		"act", "organization", "1", "review", NULL };
 
 	install(fixture);

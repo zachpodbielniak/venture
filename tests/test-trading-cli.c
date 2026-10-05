@@ -192,7 +192,7 @@ cli_run(
 	memset(run, 0, sizeof(*run));
 	launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
 	g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
-	g_ptr_array_add(argv, g_canonicalize_filename("build/debug/venturectl", NULL));
+	g_ptr_array_add(argv, g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL));
 	g_ptr_array_add(argv, g_strdup("--server"));
 	g_ptr_array_add(argv, g_strdup(venture_web_server_get_base_url(fixture->server)));
 

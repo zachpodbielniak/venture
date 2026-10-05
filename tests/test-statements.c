@@ -583,7 +583,7 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_clear_pointer(&body, g_free);
 	body = http_get(session, base, "/api/v1/reports/general_ledger?period=2026-08&compare_to=2026-07&account_id=1&currency=USD&organization_id=1", 200);
 	g_assert_nonnull(strstr(body, "prior"));
-	args[0] = "build/debug/venturectl";
+	args[0] = VENTURE_TEST_BIN_DIR "/venturectl";
 	args[1] = "--server";
 	args[2] = base;
 	args[3] = "-f";

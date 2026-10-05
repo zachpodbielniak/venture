@@ -543,7 +543,7 @@ test_cli_build(
 	TreeFixture	*fixture,
 	gconstpointer	 user_data
 ){
-	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *cli = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	g_autofree gchar *source = g_strconcat("source=", fixture->root, NULL);
 	g_autofree gchar *output = g_strconcat("output=", fixture->out, NULL);
 	g_autofree gchar *out = NULL;
@@ -552,7 +552,7 @@ test_cli_build(
 
 	if (!g_file_test(cli, G_FILE_TEST_IS_EXECUTABLE))
 	{
-		g_test_skip("build/debug/venturectl is not built");
+		g_test_skip(VENTURE_TEST_BIN_DIR "/venturectl is not built");
 		return;
 	}
 
@@ -574,7 +574,7 @@ test_cli_refuses(
 	TreeFixture	*fixture,
 	gconstpointer	 user_data
 ){
-	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *cli = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	g_autofree gchar *source = g_strconcat("source=", fixture->root, NULL);
 	g_autofree gchar *output = g_strconcat("output=", fixture->out, NULL);
 	g_autofree gchar *out = NULL;
@@ -585,7 +585,7 @@ test_cli_refuses(
 
 	if (!g_file_test(cli, G_FILE_TEST_IS_EXECUTABLE))
 	{
-		g_test_skip("build/debug/venturectl is not built");
+		g_test_skip(VENTURE_TEST_BIN_DIR "/venturectl is not built");
 		return;
 	}
 
@@ -875,8 +875,8 @@ static void
 test_quickstart(void)
 {
 	g_autofree gchar *script = g_canonicalize_filename("tests/docs-quickstart.sh", NULL);
-	g_autofree gchar *cli = g_canonicalize_filename("build/debug/venturectl", NULL);
-	g_autofree gchar *server = g_canonicalize_filename("build/debug/venture", NULL);
+	g_autofree gchar *cli = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
+	g_autofree gchar *server = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venture", NULL);
 	g_autofree gchar *out = NULL;
 	g_autofree gchar *err = NULL;
 	g_autofree gchar *state = g_dir_make_tmp("venture-quickstart-XXXXXX", NULL);
@@ -888,7 +888,7 @@ test_quickstart(void)
 	if (!g_file_test(cli, G_FILE_TEST_IS_EXECUTABLE) ||
 	    !g_file_test(server, G_FILE_TEST_IS_EXECUTABLE))
 	{
-		g_test_skip("build/debug binaries are not built");
+		g_test_skip(VENTURE_TEST_BIN_DIR " binaries are not built");
 		venture_test_remove_tree(state);
 		return;
 	}
@@ -914,7 +914,7 @@ test_quickstart(void)
 		envp = g_get_environ();
 		envp = g_environ_setenv(envp, "PORT", port, TRUE);
 		envp = g_environ_setenv(envp, "VENTURE_DEMO_STATE", state, TRUE);
-		envp = g_environ_setenv(envp, "BUILD_TYPE", "debug", TRUE);
+		envp = g_environ_setenv(envp, "BUILD_TYPE", VENTURE_TEST_BUILD_TYPE, TRUE);
 
 		g_assert_true(g_spawn_sync(NULL, (gchar **)argv, envp, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, &err, &status, &error));

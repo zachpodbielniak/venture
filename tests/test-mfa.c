@@ -1227,7 +1227,7 @@ test_cli_reset(Fixture *fixture, gconstpointer user_data)
 	g_assert_true(venture_mfa_service_is_enabled(fixture->service, alice));
 
 	/* The CLI, as an owner, by username. */
-	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE, NULL, "build/debug/venturectl",
+	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_SILENCE, NULL, VENTURE_TEST_BIN_DIR "/venturectl",
 		"--server", url, "--token", owner_secret, "user", "mfa", "reset", "alice", NULL);
 	g_assert_nonnull(process);
 	g_subprocess_wait_async(process, NULL, cli_wait, &done);
@@ -1251,7 +1251,7 @@ test_cli_reset(Fixture *fixture, gconstpointer user_data)
 	/* A bad usage line is refused before any request is made. */
 	g_clear_object(&process);
 	done = FALSE;
-	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL, "build/debug/venturectl",
+	process = g_subprocess_new(G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL, VENTURE_TEST_BIN_DIR "/venturectl",
 		"--server", url, "--token", owner_secret, "user", "mfa", "off", "alice", NULL);
 	g_subprocess_wait_async(process, NULL, cli_wait, &done);
 	while (!done)

@@ -535,7 +535,7 @@ test_flow(Fixture *f, gconstpointer data)
 		g_autofree gchar *path = NULL;
 		g_autofree gchar *out = NULL;
 		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(invoice));
-		g_autofree gchar *binary = g_build_filename("build", "debug", "venturectl", NULL);
+		g_autofree gchar *binary = g_strdup(VENTURE_TEST_BIN_DIR "/venturectl");
 		const gchar *argv[] = { binary, "--server", NULL, "invoice", "checkout", id, NULL };
 		venture_context_set_stripe_service(f->context, service);
 		server = start_server(f, &state_dir);

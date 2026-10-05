@@ -5010,7 +5010,7 @@ test_orgaccess_journal_proposal(ServerFixture *fixture, gconstpointer user_data)
 		g_object_set(token, "name", "cli", "user-id", user, "role", VENTURE_USER_ROLE_EDITOR, NULL);
 		secret = venture_api_token_generate(token);
 		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(token), NULL, NULL));
-		process = g_subprocess_new(G_SUBPROCESS_FLAGS_NONE, NULL, "build/debug/venturectl",
+		process = g_subprocess_new(G_SUBPROCESS_FLAGS_NONE, NULL, VENTURE_TEST_BIN_DIR "/venturectl",
 			"--server", url, "--token", secret, "journal", "post", id, NULL);
 		g_assert_nonnull(process);
 		g_subprocess_wait_async(process, NULL, orgaccess_cli_wait, &done);

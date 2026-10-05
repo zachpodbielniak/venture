@@ -336,7 +336,7 @@ test_cli(Fixture *fixture, gconstpointer data)
 	gint64 id = mode == 2 ? 0 : draft(fixture, TRUE);
 	g_autofree gchar *journal_arg = NULL;
 	g_autofree gchar *id_text = g_strdup_printf("%" G_GINT64_FORMAT, id);
-	const gchar *args[] = { "build/debug/venturectl", "--server", fixture->url,
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", fixture->url,
 		mode == 3 ? "--stage" : "--format=json", "act", "journal", id_text,
 		mode == 1 ? "reverse" : mode == 2 ? "create_and_post" : "post", NULL, NULL };
 	if (mode == 1)
@@ -393,7 +393,7 @@ test_mcp_stages(Fixture *fixture, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GPtrArray) pending = NULL;
 	CliResult result = { FALSE, NULL, NULL, NULL };
-	const gchar *args[] = { "build/debug/venturectl", "--server", fixture->url,
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", fixture->url,
 		"--apply-writes", "mcp", NULL };
 	g_subprocess_launcher_setenv(launcher, "VENTURE_TOKEN", "test-local-auth-disabled", TRUE);
 	child = g_subprocess_launcher_spawnv(launcher, args, &error);

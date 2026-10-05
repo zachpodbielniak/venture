@@ -623,7 +623,7 @@ static void test_report_surfaces(Fixture *f, gconstpointer data)
 	g_autoptr(VentureAttributionTouch) touch = NULL;
 	g_autoptr(VentureAttributionSubmission) captured = NULL;
 	AttributionCli reply = { FALSE, NULL, NULL, NULL };
-	const gchar *argv[] = { "build/debug/venturectl", "--server", NULL, "--format", "json", "report", "attribution", "all", "model=last", "details=true", "organization_id=1", NULL };
+	const gchar *argv[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", NULL, "--format", "json", "report", "attribution", "all", "model=last", "details=true", "organization_id=1", NULL };
 	guint timeout;
 	touch = venture_attribution_service_observe(f->service, venture_entity_get_uuid(f->site), "https://site.example.test", token, "surface-first", fields, f->now, &error); g_assert_no_error(error);
 	g_clear_object(&touch); json_object_set_string_member(fields, "utm_source", "partner");

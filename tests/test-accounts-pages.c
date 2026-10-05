@@ -591,11 +591,11 @@ cli(
 	CliRun run;
 	guint i;
 
-	if (!g_file_test("build/debug/venturectl", G_FILE_TEST_IS_EXECUTABLE))
+	if (!g_file_test(VENTURE_TEST_BIN_DIR "/venturectl", G_FILE_TEST_IS_EXECUTABLE))
 		return NULL;
 
 	argv = g_ptr_array_new();
-	g_ptr_array_add(argv, (gpointer)"build/debug/venturectl");
+	g_ptr_array_add(argv, (gpointer)VENTURE_TEST_BIN_DIR "/venturectl");
 	g_ptr_array_add(argv, (gpointer)"--server");
 	g_ptr_array_add(argv, (gpointer)venture_web_server_get_base_url(fixture->server));
 	g_ptr_array_add(argv, (gpointer)"--format");

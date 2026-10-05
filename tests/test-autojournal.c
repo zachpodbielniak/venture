@@ -483,7 +483,7 @@ cli_surface(Fixture *f, gconstpointer data)
 	url = g_strdup_printf("http://127.0.0.1:%u", port);
 	result.done = FALSE; result.out = NULL; result.err = NULL; result.error = NULL;
 	cli = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
-		"build/debug/venturectl", "--server", url, "-f", "json", "post", "backfill", "--dry-run", NULL);
+		VENTURE_TEST_BIN_DIR "/venturectl", "--server", url, "-f", "json", "post", "backfill", "--dry-run", NULL);
 	g_assert_no_error(error);
 	g_subprocess_communicate_utf8_async(cli, NULL, NULL, cli_finished, &result);
 	while (!result.done) g_main_context_iteration(NULL, TRUE);

@@ -1863,9 +1863,9 @@ test_doors_and_looks(
 			g_error("the MCP venture_report tool does not offer %s", options[i]);
 
 	/* The CLI: the options pass its allow-list and reach the report. */
-	if (g_file_test("build/debug/venturectl", G_FILE_TEST_IS_EXECUTABLE))
+	if (g_file_test(VENTURE_TEST_BIN_DIR "/venturectl", G_FILE_TEST_IS_EXECUTABLE))
 	{
-		const gchar *argv[] = { "build/debug/venturectl", "--server",
+		const gchar *argv[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server",
 			venture_web_server_get_base_url(fixture->server), "--format", "json", "report",
 			"market_deals", "all", "group_key=us", "max_pct=100", "top=5", "min_value=0.01 EUR", NULL };
 

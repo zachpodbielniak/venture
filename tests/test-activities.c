@@ -383,7 +383,7 @@ test_cli(Fixture *f, gconstpointer data)
 	g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(row));
 	CliResult result = { FALSE, NULL, NULL, NULL };
 	child = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
-		"build/debug/venturectl", "--server", f->url, "activity", "complete", id, "outcome=CLI outcome", NULL);
+		VENTURE_TEST_BIN_DIR "/venturectl", "--server", f->url, "activity", "complete", id, "outcome=CLI outcome", NULL);
 	g_assert_no_error(error);
 	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
 	while (!result.done)
@@ -767,7 +767,7 @@ test_cli_queues(Fixture *f, gconstpointer data)
 		g_autoptr(GError) error = NULL;
 		CliResult result = { FALSE, NULL, NULL, NULL };
 		child = g_subprocess_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE, &error,
-			"build/debug/venturectl", "--server", f->url, "activity", "list", queues[i], NULL);
+			VENTURE_TEST_BIN_DIR "/venturectl", "--server", f->url, "activity", "list", queues[i], NULL);
 		g_assert_no_error(error);
 		g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
 		while (!result.done)

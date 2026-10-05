@@ -559,7 +559,7 @@ test_surfaces(Fixture *f, gconstpointer unused)
 	g_autofree gchar *state_dir = NULL;
 	g_autofree gchar *out = NULL;
 	g_autofree gchar *path = NULL;
-	g_autofree gchar *cli_path = g_canonicalize_filename("build/debug/venturectl", NULL);
+	g_autofree gchar *cli_path = g_canonicalize_filename(VENTURE_TEST_BIN_DIR "/venturectl", NULL);
 	const gchar *argv[] = { cli_path, "--server", NULL, "bill", "pay", "1", "amount=60 USD", "date=2026-02-15", NULL };
 	server = start_server(f, &state_dir);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/vendor_bill/1/approve", "application/json", "{\"date\":\"2026-01-01\"}", &out), ==, 201);

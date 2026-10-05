@@ -821,7 +821,7 @@ test_http(Fixture *f, gconstpointer data)
 		g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
 		g_autoptr(GSubprocess) child = NULL;
 		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(q2));
-		const gchar *args[] = { "build/debug/venturectl", "--server", base, "quote", "send", id, NULL };
+		const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", base, "quote", "send", id, NULL };
 		CliResult r = { FALSE, NULL, NULL, NULL };
 		g_subprocess_launcher_unsetenv(launcher, "VENTURE_TOKEN");
 		child = g_subprocess_launcher_spawnv(launcher, args, &error);
