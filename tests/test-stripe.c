@@ -1052,6 +1052,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
 #include "test-stripe-automatic.inc"
+#include "test-hosted-stripe.inc"
 
 int
 main(int argc, char **argv)
@@ -1164,6 +1165,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);
 	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
 	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/hosted-saved-card", Fixture, NULL, set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-day-fourteen", Fixture, "timer", set_up, test_hosted_saved_card, tear_down);
 
 	return g_test_run();
 }

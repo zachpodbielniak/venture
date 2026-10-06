@@ -303,7 +303,7 @@ VENTURE_DEFINE_ENTITY(VentureBillingNotice, venture_billing_notice, billing_noti
 /* A durable instruction, so approval stages intent without granting CRUD the
  * authority to write subscription state. The service fills the result fields. */
 static const VentureFieldDecl billing_request_fields[] = {
-	VENTURE_FIELD_NAME("action", "Action", "start, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, collect, renew-sweep, dunning-sweep"),
+	VENTURE_FIELD_NAME("action", "Action", "start, activate, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, collect, renew-sweep, dunning-sweep"),
 	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),
@@ -318,6 +318,8 @@ static const VentureFieldDecl billing_request_fields[] = {
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("skip-trial", "Skip the free trial", "Start: bill the first period now even when the price has a trial",
 		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("defer-days", "Deferred start", "Start: override the catalogue trial with this many days; zero uses catalogue terms",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("quote-id", "Quote", "Start: the accepted quote the subscription comes from", "quote", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("expected-version", "Expected version", "Required by staged actions on an existing subscription", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", "Service result", "invoice", VENTURE_COLUMN_FLAG_NONE),

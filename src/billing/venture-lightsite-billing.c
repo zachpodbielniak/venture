@@ -600,6 +600,10 @@ subscribe_impl(VentureDatabase *database, gint64 billing_organization_id, gint64
 	gint64 actor_id = 0, billing = billing_organization_id, price_id;
 	gboolean committed = FALSE;
 		if (created) *created = FALSE;
+	if (idempotency_key && g_str_has_prefix(idempotency_key, "hosted:")) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "hosted: keys are reserved for enrollment operations");
+		return NULL;
+	}
 	if (!key_valid(idempotency_key)) {
 		refuse(error, VENTURE_ERROR_VALIDATION, "idempotency_key must be 1-128 of A-Z a-z 0-9 . _ : -");
 		return NULL;
@@ -754,3 +758,6 @@ venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_or
 	}
 	return result;
 }
+
+#include "venture-lightsite-enrollment.inc"
+#include "venture-lightsite-made-back.inc"

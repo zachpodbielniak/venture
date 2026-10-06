@@ -5,6 +5,17 @@
 #error "Only <venture.h> can be included directly."
 #endif
 G_BEGIN_DECLS
+JsonNode *venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing,
+	gint64 business, gint64 price_id, gboolean *created, GError **error);
+JsonNode *venture_lightsite_billing_setup(VentureContext *context, gint64 billing,
+	gint64 business, GError **error);
+JsonNode *venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing,
+	gint64 business, gboolean published, GError **error);
+JsonNode *venture_lightsite_billing_made_back(VentureDatabase *database, gint64 billing,
+	gint64 business, GDateTime *until, GError **error);
+JsonNode *venture_lightsite_billing_guarantee(VentureDatabase *database, gint64 billing,
+	gint64 business, const VentureMoney *shortfall, gboolean eligible,
+	const gchar *measurement, GError **error);
 /**
  * venture_lightsite_billing_subscribe:
  * @database: the hosted workspace's database

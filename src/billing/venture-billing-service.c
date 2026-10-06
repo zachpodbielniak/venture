@@ -1523,6 +1523,10 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		if (seats == 0)
 			seats = 1;
 		trial = number(price, "trial-days");
+		if (number(request, "defer-days") < 0 || number(request, "defer-days") > 366 ||
+			(number(request, "defer-days") && flag(request, "skip-trial")))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "deferred start must be between zero and 366 days and cannot skip trial");
+		if (number(request, "defer-days")) trial = number(request, "defer-days");
 		if (trial < 0 || trial > 366)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "trial days must be between zero and 366");
 		/* Billing from the first day, when the customer wants to pay now. */
@@ -1567,7 +1571,15 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		before = mrr(self, sub, price, seats, state, 0, error);
 		if (before == NULL)
 			return FALSE;
-		if (g_strcmp0(verb, "renew") == 0)
+		if (g_strcmp0(verb, "activate") == 0 && (state != 0 || flag(sub, "cancel-at-period-end")))
+			return refuse(error, VENTURE_ERROR_CONFLICT, "only an uncancelled trial may activate early");
+		if (g_strcmp0(verb, "activate") == 0)
+		{
+			g_clear_pointer(&end, g_date_time_unref);
+			end = g_date_time_ref(at);
+			g_object_set(sub, "trial-end", at, "billing-anchor", at, NULL);
+		}
+		if (g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "activate") == 0)
 		{
 			GDateTime *next;
 			if (state != 0 && state != 1 && !(state < 4 && flag(sub, "cancel-at-period-end")))
@@ -1979,7 +1991,7 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 	if (flag(copy, "dry-run") && g_strcmp0(verb, "renew-sweep") != 0 && g_strcmp0(verb, "dunning-sweep") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "dry-run is available for sweeps only");
 	/* Changes to future terms and dunning state do not themselves post money. */
-	can_post = g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "renew-sweep") == 0 ||
+	can_post = g_strcmp0(verb, "activate") == 0 || g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "renew-sweep") == 0 ||
 		g_strcmp0(verb, "collect") == 0 ||
 		/* Cancelling now credits the unused days of the period. */
 		(g_strcmp0(verb, "cancel") == 0 && !flag(copy, "at-period-end"));
@@ -1988,7 +2000,8 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 		g_autoptr(VentureEntity) price = load(self, VENTURE_TYPE_PLAN_PRICE,
 			number(copy, "plan-price-id"), venture_entity_get_organization_id(copy), error);
 		if (price == NULL) return FALSE;
-		can_post = number(price, "trial-days") == 0;
+		can_post = flag(copy, "skip-trial") ||
+			(number(copy, "defer-days") == 0 && number(price, "trial-days") == 0);
 	}
 	if (!flag(copy, "dry-run") && can_post)
 	{

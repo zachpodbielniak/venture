@@ -97,6 +97,62 @@ static gboolean lightsite_form_check(gpointer data, GError **error)
 	return TRUE;
 }
 
+/* Forms owns response persistence. A retry repairs this independent evidence
+ * transaction using the immutable response identity, without another lead. */
+static gboolean lightsite_form_evidence(LightsiteFormGuard *guard,
+	VentureEntity *response, JsonObject *payload, GError **error)
+{
+	VentureAttributionService *self = guard->service;
+	gint64 org = venture_entity_get_organization_id(guard->site);
+	g_autoptr(VentureEntity) submission = NULL, lead = NULL, binding = NULL;
+	g_autoptr(GDateTime) at = NULL, converted = NULL, bound = NULL;
+	g_autofree gchar *key = NULL, *hash = NULL;
+	gint state;
+	if (!response || number(response, "lead-id") <= 0) return TRUE;
+	key = g_strdup_printf("hosted-form:%s", venture_entity_get_uuid(response));
+	if (!venture_database_begin_serializable(self->database, error)) return FALSE;
+	if (!lightsite_form_check(guard, error)) goto fail;
+	submission = find_string(self, VENTURE_TYPE_ATTRIBUTION_SUBMISSION, org, "submission-key", key, error);
+	if (error && *error) goto fail;
+	if (submission) goto commit;
+	lead = get_row(self, VENTURE_TYPE_LEAD, org, number(response, "lead-id"), error);
+	if (!lead) goto fail;
+	g_object_get(response, "submitted-at", &at, NULL);
+	if (!at) { refuse(error, "Accepted response has no capture timestamp"); goto fail; }
+	hash = digest(payload);
+	submission = g_object_new(VENTURE_TYPE_ATTRIBUTION_SUBMISSION,
+		"organization-id", org, "site-id", venture_entity_get_id(guard->site),
+		"lead-id", venture_entity_get_id(lead), "submitted-at", at,
+		"submission-key", key, "payload-hash", hash,
+		"connection-id", venture_entity_get_id(guard->connection),
+		"connection-version", venture_entity_get_version(guard->connection),
+		"first-source", "lightsite", "last-source", "lightsite",
+		"first-evidence", "Verified hosted form relay",
+		"last-evidence", "Verified hosted form relay", NULL);
+	if (!save(self, submission, NULL, error)) goto fail;
+	g_object_get(lead, "status", &state, "last-activity-at", &converted, NULL);
+	/* Do not acquire an already converted customer from a later enquiry. */
+	if (state == VENTURE_LEAD_CONVERTED && (!converted || g_date_time_compare(converted, at) < 0)) goto commit;
+	if (!update_binding(self, submission, lead, at, error)) goto fail;
+	if (state == VENTURE_LEAD_CONVERTED) {
+		binding = find_string(self, VENTURE_TYPE_ATTRIBUTION_BINDING, org,
+			"binding-key", venture_entity_get_uuid(lead), error);
+		if (!binding) goto fail;
+		g_object_get(binding, "bound-at", &bound, NULL);
+		if (!bound) {
+			g_object_set(binding, "company-id", number(lead, "converted-company-id"),
+				"contact-id", number(lead, "converted-contact-id"),
+				"deal-id", number(lead, "converted-deal-id"), "bound-at", converted, NULL);
+			if (!save(self, binding, NULL, error)) goto fail;
+		}
+	}
+commit:
+	if (venture_database_commit(self->database, error)) return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
 static VentureEntity *lightsite_receive(VentureAttributionService *self,
 	const gchar *site_uuid, gint64 connection_id, const gchar *timestamp, const gchar *signature,
 	GBytes *body, GDateTime *now, gboolean form_relay, JsonNode **relay_result, GError **error)
@@ -140,6 +196,7 @@ static VentureEntity *lightsite_receive(VentureAttributionService *self,
 		g_autofree gchar *external = string(site, "external-site-id");
 		g_autofree gchar *scope = g_strdup_printf("%s:%s", venture_entity_get_uuid(site), venture_entity_get_uuid(connection));
 		LightsiteFormGuard guard;
+		g_autoptr(VentureEntity) response = NULL;
 		const gchar *sent_tenant = optional_string(payload, "tenant_id", &local);
 		const gchar *sent_site = local ? NULL : optional_string(payload, "site_id", &local);
 		if (!local && (g_strcmp0(sent_tenant, tenant) || g_strcmp0(sent_site, external))) refuse(&local, "Lightsite form identity mismatch");
@@ -149,7 +206,9 @@ static VentureEntity *lightsite_receive(VentureAttributionService *self,
 		if (!venture_database_commit(self->database, error)) goto fail;
 		guard.service = self; guard.site = site; guard.connection = connection;
 		*relay_result = venture_forms_relay_checked(self->database, org, scope, origin,
-			payload, now, lightsite_form_check, &guard, error);
+			payload, now, lightsite_form_check, &guard, &response, error);
+		if (*relay_result && !lightsite_form_evidence(&guard, response, payload, error))
+			g_clear_pointer(relay_result, json_node_unref);
 		return NULL;
 	} else result = capture_payload(self, site, connection, version, payload, now, &local);
 	if (local) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }

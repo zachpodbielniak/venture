@@ -18,7 +18,7 @@ venture_forms_relay_supported(VentureEntity *form, GPtrArray *fields)
 JsonNode *
 venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now,
-	VentureFormsRelayCheck check, gpointer check_data, GError **error)
+	VentureFormsRelayCheck check, gpointer check_data, VentureEntity **accepted_response, GError **error)
 {
 	static const gchar *const names[] = { "version", "tenant_id", "site_id", "submission_id", "form_id", "form_version", "answers", "referral_code", NULL };
 	g_autoptr(VentureEntity) form = NULL, version = NULL, response = NULL;
@@ -36,6 +36,7 @@ venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	FormsRelayGuard guard;
 	gboolean accepted;
 
+	if (accepted_response) *accepted_response = NULL;
 	if (organization_id <= 0 || !scope || !origin || !envelope) goto malformed;
 	/* A follow-up refusal rolls back its whole transaction before the shared
 	 * service retries the response alone. An enclosing transaction prevents it. */
@@ -105,6 +106,8 @@ venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	accepted = venture_forms_submit(database, form, answers, origin, now, &outcome, &response, &errors, error);
 	g_object_set_data(G_OBJECT(form), "venture-forms-relay-guard", NULL);
 	if (!accepted) return NULL;
+	if (accepted_response && outcome == VENTURE_FORMS_ACCEPTED && response)
+		*accepted_response = g_object_ref(response);
 	result = json_from_string("{}", NULL);
 	json_object_set_boolean_member(json_node_get_object(result), "accepted", outcome == VENTURE_FORMS_ACCEPTED);
 	if (errors != NULL) json_object_set_object_member(json_node_get_object(result), "errors", g_steal_pointer(&errors));
@@ -125,5 +128,5 @@ venture_forms_relay(VentureDatabase *database, gint64 organization_id,
 	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now, GError **error)
 {
 	return venture_forms_relay_checked(database, organization_id, scope, origin,
-		envelope, now, NULL, NULL, error);
+		envelope, now, NULL, NULL, NULL, error);
 }
