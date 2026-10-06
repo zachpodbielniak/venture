@@ -1,0 +1,1 @@
+{"auctions": [{"id": 5001, "item": {"id": 2770}, "quantity": 50, "unit_price": 1800, "time_left": "VERY_LONG"}, {"id": 5002, "item": {"id": 2589}, "quantity": 10, "unit_price": 900, "time_left": "VERY_LONG"}, {"id": 5099, "item": {"id": 2770}, "quantity": 5, "unit_price": 1800, "time_left": "VERY_LONG"}]}

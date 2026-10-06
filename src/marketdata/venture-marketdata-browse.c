@@ -2460,13 +2460,6 @@ md_deal_free(gpointer data)
 
 /* Cheapest against the region first, then by source, venue, instrument:
  * the same order every time, whatever order the sources were read in. */
-/* A sell venue's lowest price more than this many times the region's
- * median, or the venue's market value, is an asking price, not a market. */
-#define MD_SELL_OUTLIER (2)
-
-/* A sale rate under this is a market that sells almost nothing. */
-#define MD_SELL_MIN_RATE (0.02)
-
 /* The columns deals sort by, "deal" being the deal index's own order. */
 static const gchar *const md_deal_sorts[] = {
 	"deal", "name", "ilvl", "buy_at", "buy", "sell_at", "sell", "profit", "roi", "region", "rate", "qty", NULL
@@ -2562,22 +2555,13 @@ md_deal_sell_side(
 		    ((NULL != group_keys) && !g_strv_contains(group_keys, candidate->venue_key)))
 			continue;
 
-		/* A lowest listing far above what the item goes for is somebody's
-		 * asking price, not a market: a conch "on sale" for three million
-		 * gold is not where to sell a conch. Over twice the region's
-		 * median, or twice the venue's own market value, is ignored. */
-		if (((VENTURE_SERIES_NONE != candidate->region_median) && (candidate->region_median > 0) &&
-		     (candidate->min_price > MD_SELL_OUTLIER * candidate->region_median)) ||
-		    ((VENTURE_SERIES_NONE != candidate->market_value) && (candidate->market_value > 0) &&
-		     (candidate->min_price > MD_SELL_OUTLIER * candidate->market_value)))
+		if (!venture_series_row_sell_plausible(candidate, candidate->min_price))
 			continue;
 
-		/* Only where it sells: units estimated sold there, or a sale rate
-		 * worth the name. A venue where the item only ever sits -- every
-		 * listing of a junk item at 9,999,999g, so even the median is a
-		 * troll's -- has no sale price, only asking prices. */
-		if (!((!isnan(candidate->sold_per_day) && (candidate->sold_per_day > 0.0)) ||
-		      (!isnan(candidate->sale_rate) && (candidate->sale_rate >= MD_SELL_MIN_RATE))))
+		/* Over twenty times the buy price is a troll's listing, however
+		 * "sold" it looks (VENTURE_SERIES_SELL_MAX_MARKUP). */
+		if ((deal->row->min_price > 0) &&
+		    (candidate->min_price > VENTURE_SERIES_SELL_MAX_MARKUP * deal->row->min_price))
 			continue;
 
 		if ((G_MAXUINT == best) ||

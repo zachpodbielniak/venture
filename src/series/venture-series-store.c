@@ -6723,6 +6723,44 @@ venture_series_store_list_venues(
 	                      "listing venues", error);
 }
 
+gboolean
+venture_series_row_sell_plausible(
+	const VentureSeriesRow	*row,
+	gint64			 price
+){
+	g_return_val_if_fail(NULL != row, FALSE);
+
+	/* Only where it sells, once the store knows: units estimated sold
+	 * there, or a sale rate worth the name -- its own estimate, or the
+	 * source's. A venue where the item is known to only ever sit (every
+	 * listing of a junk item at 9,999,999g, so even the median is a
+	 * troll's) has no sale price, only asking prices. Where nothing is
+	 * known yet -- a store's first snapshots -- the price test below is
+	 * all there is to go on. */
+	{
+		gboolean known = !isnan(row->sold_per_day) || !isnan(row->sale_rate) ||
+		                 !isnan(row->source_sold_per_day) || !isnan(row->source_sale_rate);
+		gboolean sells = (!isnan(row->sold_per_day) && (row->sold_per_day > 0.0)) ||
+		                 (!isnan(row->source_sold_per_day) && (row->source_sold_per_day > 0.0)) ||
+		                 (!isnan(row->sale_rate) && (row->sale_rate >= VENTURE_SERIES_SELL_MIN_RATE)) ||
+		                 (!isnan(row->source_sale_rate) && (row->source_sale_rate >= VENTURE_SERIES_SELL_MIN_RATE));
+
+		if (known && !sells)
+			return FALSE;
+	}
+
+	/* A price far above what the item goes for is an asking price. */
+	if ((VENTURE_SERIES_NONE != row->region_median) && (row->region_median > 0) &&
+	    (price > VENTURE_SERIES_SELL_OUTLIER * row->region_median))
+		return FALSE;
+
+	if ((VENTURE_SERIES_NONE != row->market_value) && (row->market_value > 0) &&
+	    (price > VENTURE_SERIES_SELL_OUTLIER * row->market_value))
+		return FALSE;
+
+	return TRUE;
+}
+
 static const gchar series_sql_list_categories[] =
 	"SELECT category, count(*) FROM instruments"
 	" WHERE category IS NOT NULL AND category <> '' AND parent_key IS NULL"

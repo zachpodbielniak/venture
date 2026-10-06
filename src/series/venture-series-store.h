@@ -492,6 +492,56 @@ typedef struct
 } VentureSeriesRow;
 
 /**
+ * VENTURE_SERIES_SELL_OUTLIER:
+ *
+ * A sell price over this many times the group's median lowest price, or
+ * the venue's market value, is an asking price, not a market.
+ */
+#define VENTURE_SERIES_SELL_OUTLIER (2)
+
+/**
+ * VENTURE_SERIES_SELL_MAX_MARKUP:
+ *
+ * A sale at more than this many times what the same thing costs to buy is
+ * not a trade but a troll's listing. Trolls cancel and relist, so their
+ * listings vanish like sales and keep a market's median at their price;
+ * the gap between buying and selling is the one thing relisting cannot
+ * fake. Cross-realm flips that are real run to a few times, rarely past
+ * ten or twenty.
+ */
+#define VENTURE_SERIES_SELL_MAX_MARKUP (20)
+
+/**
+ * VENTURE_SERIES_SELL_MIN_RATE:
+ *
+ * A sale rate under this is a market that sells almost nothing.
+ */
+#define VENTURE_SERIES_SELL_MIN_RATE (0.02)
+
+/**
+ * venture_series_row_sell_plausible:
+ * @row: a venue's current row for an instrument
+ * @price: the price a sale there would be reckoned at
+ *
+ * Whether selling @row's instrument at its venue for @price is a sale
+ * anybody would make: where the store (or the source) knows anything of
+ * sales there, the instrument has been selling (units sold, or a sale
+ * rate of 2% or more); and @price is not over
+ * twice the group's median lowest price or the venue's market value.
+ * Without it a deal or an arbitrage "sells" at somebody's asking price --
+ * a conch listed for three million gold, junk whose every listing (and so
+ * its median) is a troll's 9,999,999 -- and promises returns of
+ * a hundred million percent.
+ *
+ * Returns: %TRUE when the sale is plausible
+ */
+gboolean
+venture_series_row_sell_plausible(
+	const VentureSeriesRow	*row,
+	gint64			 price
+);
+
+/**
  * venture_series_row_free:
  * @row: (transfer full) (nullable): a row
  */

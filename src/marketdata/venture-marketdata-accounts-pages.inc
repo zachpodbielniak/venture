@@ -1890,8 +1890,9 @@ venture_marketdata_web_inventory(
 		g_string_append(html, "</tbody></table></div></section>");
 	}
 
+	/* Paged on the server, so sorted there (data-server-sort). */
 	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table "
-	                      "accounts-inventory\"><thead><tr>");
+	                      "accounts-inventory\" data-server-sort><thead><tr>");
 	acw_sort_header(html, request, "/accounts/inventory", kept, sort, descending, "name", "Item", FALSE, TRUE);
 	acw_sort_header(html, request, "/accounts/inventory", kept, sort, descending, "quantity", "Units", TRUE, TRUE);
 	acw_sort_header(html, request, "/accounts/inventory", kept, sort, descending, "unit_value", "Each", TRUE, TRUE);

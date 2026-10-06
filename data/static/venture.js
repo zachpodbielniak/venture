@@ -5076,22 +5076,56 @@
 	});
 
 	/*
-	 * Tables marked data-client-sort sort in place: a click on a heading's
-	 * link reorders the rows already on the page by each cell's
-	 * data-sort-value (figures as numbers, names as text), keeps rows with
-	 * no value last either way, turns round on a second click, marks
-	 * aria-sort, and puts the link's address in the location bar without
-	 * loading it -- a reload or a shared link sorts on the server the same
-	 * way. Without script the headings are plain links that do that.
+	 * Tables sort and filter in place. A table marked data-client-sort --
+	 * and every market, arbitrage and accounts table, unless it is paged on
+	 * the server (data-server-sort) -- sorts by a click on a heading:
+	 * the rows already on the page reorder by each cell's data-sort-value,
+	 * or failing one the cell's text read as a figure ("9,999g 98s", "12.5%",
+	 * "1.2345 GOLD", "42") or as a name; rows with no value ("—") stay last
+	 * either way; a second click turns it round; aria-sort marks it. A
+	 * heading the server sorts by (data-sort-default) also puts its link's
+	 * address in the location bar, so a reload asks for the same order.
+	 * Tables of eight rows or more get a box that hides rows not matching
+	 * what is typed. Without script, headings are what the server made.
 	 */
+	var SORTABLE = "table.market-table, table.arbitrage-table, table[data-client-sort]";
+
+	function cellText(cell) {
+		var value = cell.getAttribute("data-sort-value");
+		var text;
+
+		if (value !== null) {
+			return value;
+		}
+
+		text = cell.textContent.replace(/\s+/g, " ").trim();
+		return (text === "" || /^[—–\-]+$/.test(text)) ? null : text;
+	}
+
+	/* A cell's text as a number: gold in copper, a percent, an amount with
+	 * its currency, a plain figure; NaN when it is not one. */
+	function cellNumber(text) {
+		var gold = /^(-?)(?:([\d,]+)g)?\s*(?:(\d+)s)?\s*(?:(\d+)c)?$/.exec(text);
+		var plain;
+
+		if (gold && (gold[2] || gold[3] || gold[4])) {
+			return (gold[1] ? -1 : 1) * ((parseInt((gold[2] || "0").replace(/,/g, ""), 10) * 10000) +
+			                             (parseInt(gold[3] || "0", 10) * 100) + parseInt(gold[4] || "0", 10));
+		}
+
+		plain = /^(-?[\d,]*\.?\d+)\s*(%|[A-Za-z]{1,5})?$/.exec(text);
+		return plain ? parseFloat(plain[1].replace(/,/g, "")) : NaN;
+	}
+
 	function sortTableBy(heading) {
 		var table = heading.closest("table");
 		var tbody = table ? table.tBodies[0] : null;
 		var headings = heading.parentNode.children;
 		var column = Array.prototype.indexOf.call(headings, heading);
-		var numeric = heading.getAttribute("data-sort-type") === "num";
+		var type = heading.getAttribute("data-sort-type") || "auto";
 		var current = heading.getAttribute("aria-sort");
 		var descending;
+		var numeric;
 		var rows;
 		var i;
 
@@ -5099,14 +5133,24 @@
 			return;
 		}
 
-		descending = current ? current === "ascending" : heading.getAttribute("data-sort-default") === "desc";
 		rows = Array.prototype.filter.call(tbody.rows, function (row) {
 			return row.cells.length > column && !row.cells[0].hasAttribute("colspan");
 		});
 
+		numeric = type === "num" || (type === "auto" && rows.every(function (row) {
+			var text = cellText(row.cells[column]);
+
+			return text === null || !isNaN(cellNumber(text)) ||
+			       row.cells[column].hasAttribute("data-sort-value");
+		}) && rows.some(function (row) { return cellText(row.cells[column]) !== null; }));
+
+		descending = current ? current === "ascending"
+		                     : (heading.getAttribute("data-sort-default") === "desc" ||
+		                        (!heading.hasAttribute("data-sort-default") && numeric));
+
 		rows.sort(function (a, b) {
-			var x = a.cells[column].getAttribute("data-sort-value");
-			var y = b.cells[column].getAttribute("data-sort-value");
+			var x = cellText(a.cells[column]);
+			var y = cellText(b.cells[column]);
 			var order;
 
 			if ((x === null) !== (y === null)) {
@@ -5117,7 +5161,8 @@
 				return 0;
 			}
 
-			order = numeric ? parseFloat(x) - parseFloat(y)
+			order = numeric ? (parseFloat(x) == x ? parseFloat(x) : cellNumber(x)) -
+			                  (parseFloat(y) == y ? parseFloat(y) : cellNumber(y))
 			                : x.localeCompare(y, undefined, { sensitivity: "base", numeric: true });
 
 			return descending ? -order : order;
@@ -5134,9 +5179,84 @@
 		heading.setAttribute("aria-sort", descending ? "descending" : "ascending");
 	}
 
+	/* A filter box over a table: rows whose text does not contain what is
+	 * typed are hidden, and a count says how many show. */
+	function addTableFilter(table) {
+		var tbody = table.tBodies[0];
+		var anchor = table.closest(".table-wrap") || table;
+		var box;
+		var input;
+		var count;
+
+		if (!tbody || tbody.rows.length < 8 || table.hasAttribute("data-filter-wired")) {
+			return;
+		}
+
+		table.setAttribute("data-filter-wired", "");
+		box = document.createElement("div");
+		box.className = "table-filter";
+		input = document.createElement("input");
+		input.type = "search";
+		input.placeholder = "Filter rows…";
+		input.setAttribute("aria-label", "Filter the rows of this table");
+		count = document.createElement("span");
+		count.className = "muted";
+		box.appendChild(input);
+		box.appendChild(count);
+		anchor.parentNode.insertBefore(box, anchor);
+
+		input.addEventListener("input", function () {
+			var needle = input.value.trim().toLocaleLowerCase();
+			var shown = 0;
+
+			Array.prototype.forEach.call(tbody.rows, function (row) {
+				var match = needle === "" || row.textContent.toLocaleLowerCase().indexOf(needle) >= 0;
+
+				row.hidden = !match;
+				shown += match ? 1 : 0;
+			});
+
+			count.textContent = needle === "" ? "" : shown + " of " + tbody.rows.length;
+		});
+	}
+
+	/* Headings without a link become buttons, so every column sorts. */
+	function wireSortableTables(root) {
+		Array.prototype.forEach.call((root || document).querySelectorAll(SORTABLE), function (table) {
+			if (table.hasAttribute("data-server-sort") || !table.tHead) {
+				return;
+			}
+
+			table.setAttribute("data-client-sort", "");
+			Array.prototype.forEach.call(table.tHead.rows[0] ? table.tHead.rows[0].cells : [], function (heading) {
+				var button;
+
+				if (!heading.hasAttribute("data-sort-type")) {
+					heading.setAttribute("data-sort-type", "auto");
+				}
+
+				if (heading.querySelector("a, button") || heading.textContent.trim() === "") {
+					return;
+				}
+
+				button = document.createElement("button");
+				button.type = "button";
+				button.className = "th-sort";
+				while (heading.firstChild) {
+					button.appendChild(heading.firstChild);
+				}
+				heading.appendChild(button);
+			});
+
+			addTableFilter(table);
+		});
+	}
+
 	document.addEventListener("click", function (event) {
-		var link = event.target.closest ? event.target.closest("table[data-client-sort] th a") : null;
-		var heading = link ? link.closest("th") : null;
+		var control = event.target.closest ? event.target.closest("table[data-client-sort] th a, " +
+		                                                           "table[data-client-sort] th button.th-sort")
+		                                   : null;
+		var heading = control ? control.closest("th") : null;
 		var next;
 
 		if (!heading || !heading.hasAttribute("data-sort-type") ||
@@ -5147,18 +5267,30 @@
 		event.preventDefault();
 		sortTableBy(heading);
 
-		/* The address of this order, for a reload or a shared link, and
-		 * the heading's next link turned round. */
-		try {
-			next = new URL(link.href, window.location.href);
-			next.searchParams.set("dir", heading.getAttribute("aria-sort") === "descending" ? "desc" : "asc");
-			window.history.replaceState(null, "", next.pathname + next.search);
-			next.searchParams.set("dir", heading.getAttribute("aria-sort") === "descending" ? "asc" : "desc");
-			link.href = next.pathname + next.search;
-		} catch (ignored) {
-			/* an old browser keeps the page sorted and the address as it was */
+		/* A server-sorted heading: the address of this order, for a reload
+		 * or a shared link, and its next link turned round. */
+		if (control.tagName === "A" && heading.hasAttribute("data-sort-default")) {
+			try {
+				next = new URL(control.href, window.location.href);
+				next.searchParams.set("dir", heading.getAttribute("aria-sort") === "descending" ? "desc" : "asc");
+				window.history.replaceState(null, "", next.pathname + next.search);
+				next.searchParams.set("dir", heading.getAttribute("aria-sort") === "descending" ? "asc" : "desc");
+				control.href = next.pathname + next.search;
+			} catch (ignored) {
+				/* an old browser keeps the page sorted and the address as it was */
+			}
 		}
 	});
+
+	document.addEventListener("htmx:afterSwap", function (event) {
+		wireSortableTables(event.target);
+	});
+
+	if (document.readyState === "loading") {
+		document.addEventListener("DOMContentLoaded", function () { wireSortableTables(document); });
+	} else {
+		wireSortableTables(document);
+	}
 
 	window.venture = {
 		toast: toast,

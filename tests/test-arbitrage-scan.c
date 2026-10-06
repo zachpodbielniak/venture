@@ -471,6 +471,34 @@ quote(
  * laid at ex-1 (home 2.0); match-2 home/away/draw at bk-1, bk-2 and bk-3.
  * Every snapshot is ten minutes old; @old_venue (if any) three hours.
  */
+/* A snapshot of @offers plus one more of each at the same price, whose
+ * listing ids (offset by 1000) are gone from the next snapshot: a sale. */
+static void
+sold_earlier(
+	VentureSeriesStore	*store,
+	const gchar		*venue,
+	const gchar		*currency,
+	gint64			 taken_at,
+	const Offer		*offers,
+	guint			 n_offers
+){
+	g_autoptr(GArray) more = g_array_new(FALSE, FALSE, sizeof(Offer));
+	guint i;
+
+	g_array_append_vals(more, offers, n_offers);
+
+	for (i = 0; i < n_offers; i++)
+	{
+		Offer extra = offers[i];
+
+		extra.id += 1000;
+		extra.quantity = 1;
+		g_array_append_val(more, extra);
+	}
+
+	snapshot(store, venue, currency, taken_at, (const Offer *)more->data, more->len);
+}
+
 static void
 seed_store(
 	Fixture		*fixture,
@@ -517,6 +545,15 @@ seed_store(
 	add_instrument(store, "h2", "Greens", "outcome", "Football", "match-2", t);
 	add_instrument(store, "a2", "Whites", "outcome", "Football", "match-2", t);
 	add_instrument(store, "d2", "Draw", "outcome", "Football", "match-2", t);
+
+	/* An hour earlier each realm also held one more of every item, gone
+	 * by now: sold, so the store knows each item sells where it is listed
+	 * -- a scan prices a sale only where things sell. Today's listings,
+	 * and so every figure below, are unchanged by it. */
+	sold_earlier(store, "realm-a", "USD", fixture->now - 4 * 3600, a, G_N_ELEMENTS(a));
+	sold_earlier(store, "realm-b", "USD", t - 3600, b, G_N_ELEMENTS(b));
+	sold_earlier(store, "realm-c", "USD", t - 3600, c, G_N_ELEMENTS(c));
+	sold_earlier(store, "realm-d", "EUR", t - 3600, d, G_N_ELEMENTS(d));
 
 	snapshot(store, "realm-a", "USD", (0 == g_strcmp0(old_venue, "realm-a")) ? fixture->now - 3 * 3600 : t,
 	         a, G_N_ELEMENTS(a));
@@ -727,6 +764,50 @@ seed_recipe(Fixture *fixture)
  * the plan. realm-c has no venue record and says so. What breaks if
  * this regresses: a flip priced without a venue's cut or the move.
  */
+/*
+ * A scan never sells to an asking price: a venue where an item sits at a
+ * price nobody pays -- listed, never sold -- is no venue to sell at, so
+ * no spread ends there, however dear. Before this every scan's best rows
+ * were a copper bought and a 9,999,999g troll listing "sold to".
+ */
+static void
+test_spread_ignores_asking_prices(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *dir = NULL;
+	JsonArray *rows;
+	guint i;
+	static const Offer troll[] = { { "herb", 90, 99999900, 1 } };
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	add_venue(store, "realm-troll", "auction_house", "eu", "USD", fixture->now - 7200);
+	snapshot(store, "realm-troll", "USD", fixture->now - 7200, troll, G_N_ELEMENTS(troll));
+	snapshot(store, "realm-troll", "USD", fixture->now - 600, troll, G_N_ELEMENTS(troll));
+	g_assert_true(venture_series_store_recompute_region(store, NULL, fixture->now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&store);
+
+	answer = scan(fixture, "{\"strategy\":\"spread\",\"units\":1,\"category_path\":\"Herbs\"}");
+	rows = json_object_get_array_member(json_node_get_object(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), >, 0);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+		g_assert_null(strstr(json_object_get_string_member(json_array_get_object_element(rows, i), "key"),
+		                     "realm-troll:"));
+}
+
 static void
 test_spread(
 	Fixture		*fixture,
@@ -2336,6 +2417,7 @@ main(
 	g_test_init(&argc, &argv, NULL);
 
 	ADD("spread", test_spread);
+	ADD("spread-ignores-asking-prices", test_spread_ignores_asking_prices);
 	ADD("spread-sources-and-rates", test_spread_sources_and_rates);
 	ADD("filters", test_filters);
 	ADD("stale", test_stale);

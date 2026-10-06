@@ -5792,3 +5792,11 @@ a:focus .item-tip > .item-tip-card { display: flex; }
  * page -- or the server -- last sorted by. */
 table[data-client-sort] th[aria-sort="ascending"] > a::after { content: " \25B4"; }
 table[data-client-sort] th[aria-sort="descending"] > a::after { content: " \25BE"; }
+
+/* Client-side sorting on every heading, and a filter box over the table. */
+th > button.th-sort { all: unset; cursor: pointer; display: inline; }
+th > button.th-sort:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
+table[data-client-sort] th[aria-sort="ascending"] > button.th-sort::after { content: " \25B4"; }
+table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { content: " \25BE"; }
+.table-filter { display: flex; align-items: center; gap: 0.75rem; margin: 0.5rem 0; }
+.table-filter input { max-width: 22rem; width: 100%; }
