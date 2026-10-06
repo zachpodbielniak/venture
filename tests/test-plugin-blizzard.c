@@ -834,6 +834,20 @@ test_sync(
 		g_assert_nonnull(strstr(blade->attrs_json, "\"color\":\"#1eff00\""));
 		g_assert_true(g_file_test(icon, G_FILE_TEST_IS_REGULAR));
 		g_assert_cmpint(venture_test_http_hits(&fixture->http, "/icons/56/135349.jpg"), ==, 1);
+
+		/* The plain item, listed only as a variant, carries the
+		 * tooltip too: without it, the next build's state read the row
+		 * as never looked up, and asked Blizzard for it every fetch. */
+		{
+			g_autoptr(VentureSeriesInstrumentRow) plain = NULL;
+
+			g_assert_true(venture_series_store_get_instrument(reader, "19019", &plain, &error));
+			g_assert_nonnull(plain);
+			g_assert_nonnull(plain->attrs_json);
+			g_assert_nonnull(strstr(plain->attrs_json, "\"icon\":\"/blizzard/icons/135349.jpg\""));
+			g_assert_nonnull(strstr(plain->attrs_json, "\"url\":\"https://www.wowhead.com/item=19019\""));
+			g_assert_null(strstr(plain->attrs_json, "bonus_lists"));
+		}
 	}
 
 	/* An hour later: 1002 (LONG) and 1005 (LONG) are gone, so sold; 1004

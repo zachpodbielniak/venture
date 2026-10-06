@@ -1840,6 +1840,52 @@ blizzard_items_from_store(
 	g_array_append_vals(unknown, still->data, still->len);
 }
 
+/*
+ * An item's attributes as the store keeps them, as JSON text: @variant's
+ * own (nullable; a variant's bonuses and modifiers), the item id, its
+ * vendor price, quality and level, its tooltip, and its links elsewhere
+ * for @instrument (the plain item's key, a variant's, or a caged pet's
+ * with @species).
+ */
+static gchar *
+blizzard_item_attrs(
+	const BlizzardItem	*item,
+	const gchar		*instrument,
+	gint64			 item_id,
+	JsonObject		*variant,
+	gint64			 species
+){
+	g_autoptr(JsonObject) attrs = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	attrs = (NULL != variant) ? json_object_ref(variant) : json_object_new();
+	json_object_set_int_member(attrs, "item_id", item_id);
+
+	if (item->vendor_sell >= 0)
+		json_object_set_int_member(attrs, "vendor_sell", item->vendor_sell);
+
+	if (NULL != item->quality)
+		json_object_set_string_member(attrs, "quality", item->quality);
+
+	if (item->level > 0)
+		json_object_set_int_member(attrs, "level", item->level);
+
+	if (NULL != item->display_json)
+	{
+		g_autoptr(JsonParser) parser = json_parser_new();
+
+		if (json_parser_load_from_data(parser, item->display_json, -1, NULL) &&
+		    JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+			json_object_set_member(attrs, "display", json_node_copy(json_parser_get_root(parser)));
+	}
+
+	blizzard_item_links(attrs, instrument, item_id, species);
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, attrs);
+
+	return json_to_string(node, FALSE);
+}
+
 static void
 blizzard_add_instruments(
 	VentureFeedRequest	*request,
@@ -1943,55 +1989,32 @@ blizzard_add_instruments(
 			 * put "2770" before "2770:b..."). */
 			if (!g_hash_table_contains(seen, parent) && !g_hash_table_contains(plain, parent))
 			{
+				/* With its attributes and tooltip, like any item: a
+				 * plain row left without them reads, at the next fetch,
+				 * as named by a build that drew no tooltip, and is
+				 * asked for again -- every fetch, for every item that
+				 * is only ever listed as variants. */
+				g_autofree gchar *parent_attrs = ((NULL != item) && (NULL != item->name))
+					? blizzard_item_attrs(item, parent, entry->item_id, NULL, 0) : NULL;
+
 				venture_feed_batch_add_instrument(batch, parent,
 				                                  (NULL != item) ? item->name : NULL, "item",
 				                                  (NULL != item) ? item->category : NULL,
-				                                  NULL, NULL, NULL);
+				                                  NULL, parent_attrs, NULL);
 				g_hash_table_add(plain, g_strdup(parent));
 			}
 		}
 
 		if ((NULL != item) && (NULL != item->name))
 		{
-			g_autoptr(JsonObject) attrs = NULL;
-			g_autoptr(JsonNode) node = NULL;
+			gint64 item_id;
 			gint64 species = 0;
 
-			attrs = (NULL != entry->variant) ? json_object_ref(entry->variant) : json_object_new();
-			json_object_set_int_member(attrs, "item_id", entry->item_id);
-
-			if (item->vendor_sell >= 0)
-				json_object_set_int_member(attrs, "vendor_sell", item->vendor_sell);
-
-			if (NULL != item->quality)
-				json_object_set_string_member(attrs, "quality", item->quality);
-
-			if (item->level > 0)
-				json_object_set_int_member(attrs, "level", item->level);
-
-			if (NULL != item->display_json)
-			{
-				g_autoptr(JsonParser) parser = json_parser_new();
-
-				if (json_parser_load_from_data(parser, item->display_json, -1, NULL) &&
-				    JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
-					json_object_set_member(attrs, "display",
-					                       json_node_copy(json_parser_get_root(parser)));
-			}
-
 			/* A caged pet is its cage's item; the species says which. */
-			{
-				gint64 item_id;
+			if (!blizzard_item_key_parse(instrument, &item_id, &species))
+				species = 0;
 
-				if (!blizzard_item_key_parse(instrument, &item_id, &species))
-					species = 0;
-			}
-
-			blizzard_item_links(attrs, instrument, entry->item_id, species);
-
-			node = json_node_new(JSON_NODE_OBJECT);
-			json_node_set_object(node, attrs);
-			attrs_json = json_to_string(node, FALSE);
+			attrs_json = blizzard_item_attrs(item, instrument, entry->item_id, entry->variant, species);
 			name = (species > 0)
 				? g_strdup_printf("%s (pet %" G_GINT64_FORMAT ")", item->name, species)
 				: g_strdup(item->name);
