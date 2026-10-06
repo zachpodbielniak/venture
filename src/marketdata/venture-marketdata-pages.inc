@@ -958,8 +958,10 @@ venture_marketdata_web_browse(
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></div>");
 	mdw_notes(html, root);
 
-	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table\">"
-	                      "<thead><tr>");
+	/* Paged on the server: a heading sorts every page there, not this one
+	 * here (data-server-sort keeps the client-side sorter off it). */
+	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table\" "
+	                      "data-server-sort><thead><tr>");
 	mdw_sort_header(html, request, echo, "name", "Instrument", FALSE);
 	mdw_sort_header(html, request, echo, "venue", "Venue", FALSE);
 	mdw_sort_header(html, request, echo, "min_price", "Lowest", TRUE);

@@ -361,6 +361,33 @@ snapshot(
  * The market, in cents: Peacebloom ("herb") 10.00 x10 at realm-a, 20.00 x5
  * at realm-b and 18.00 x3 at realm-c; a vial at realm-b. Ten minutes old.
  */
+/* A snapshot of @offers plus one more of each at the same price, whose
+ * listing ids (offset by 1000) are gone from the next snapshot: a sale. */
+static void
+sold_earlier(
+	VentureSeriesStore	*store,
+	const gchar		*venue,
+	gint64			 taken_at,
+	const Offer		*offers,
+	guint			 n_offers
+){
+	g_autoptr(GArray) more = g_array_new(FALSE, FALSE, sizeof(Offer));
+	guint i;
+
+	g_array_append_vals(more, offers, n_offers);
+
+	for (i = 0; i < n_offers; i++)
+	{
+		Offer extra = offers[i];
+
+		extra.id += 1000;
+		extra.quantity = 1;
+		g_array_append_val(more, extra);
+	}
+
+	snapshot(store, venue, taken_at, (const Offer *)more->data, more->len);
+}
+
 static void
 seed_store(
 	Fixture	*fixture,
@@ -398,6 +425,14 @@ seed_store(
 	instrument.category = "Parts";
 	g_assert_true(venture_series_store_upsert_instrument(store, &instrument, t, NULL, NULL, &error));
 	g_assert_no_error(error);
+
+	/* An hour earlier each realm held one more of each item, gone by now:
+	 * sold, so the store knows the herb sells where it is listed -- a
+	 * scan prices a sale only where things sell. Today's listings, and
+	 * every figure below, are unchanged by it. */
+	sold_earlier(store, "realm-a", t - 3600, a, G_N_ELEMENTS(a));
+	sold_earlier(store, "realm-b", t - 3600, b, G_N_ELEMENTS(b));
+	sold_earlier(store, "realm-c", t - 3600, c, G_N_ELEMENTS(c));
 
 	snapshot(store, "realm-a", t, a, G_N_ELEMENTS(a));
 	snapshot(store, "realm-b", t, b, G_N_ELEMENTS(b));

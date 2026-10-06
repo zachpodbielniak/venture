@@ -1271,6 +1271,16 @@ test_fee_model(
 		serve_battle_net(fixture);
 		id = create_source(fixture, "connected_realm_ids: [11, 3676]\ninclude_commodities: false\n",
 		                   client_secret, "manual");
+
+		/* Area 52 an hour ago held five more ore, bought since: the ore
+		 * sells there, so a scan may price a sale there at all. */
+		set_last_modified(api(fixture, "/data/wow/connected-realm/3676/auctions", "auctions-3676-earlier.json"),
+		                  "Mon, 05 Oct 2026 10:00:00 GMT");
+		run = sync_and_wait(fixture, id);
+		g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+		g_clear_object(&run);
+		set_last_modified(api(fixture, "/data/wow/connected-realm/3676/auctions", "auctions-3676.json"),
+		                  "Mon, 05 Oct 2026 11:00:00 GMT");
 		run = sync_and_wait(fixture, id);
 		g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
 

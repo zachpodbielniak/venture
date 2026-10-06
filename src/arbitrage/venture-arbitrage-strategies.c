@@ -234,11 +234,7 @@ arb_sell_price(
 	gint64			 source_id,
 	const VentureSeriesRow	*row
 ){
-	if (0 == g_strcmp0(walk->basis, "market"))
-		return arb_money(row->market_value, row->currency);
-
-	if (0 == g_strcmp0(walk->basis, "region_median"))
-		return arb_money(row->region_median, row->currency);
+	gint64 price;
 
 	if (0 == g_strcmp0(walk->basis, "bid"))
 		return arb_money(row->bid_price, row->currency);
@@ -254,7 +250,21 @@ arb_sell_price(
 		return arb_money(reference->sale_avg, reference->currency);
 	}
 
-	return arb_money(row->min_price, row->currency);
+	/*
+	 * A price read from listings is a sale only where the item sells and
+	 * at a price near what it goes for (venture_series_row_sell_plausible()).
+	 * Unguarded, every scan's best "opportunity" was buying for a copper
+	 * and selling to a troll's 9,999,999g listing: a hundred million
+	 * percent, gold-capped. A bid and the sale average are sales already.
+	 */
+	price = (0 == g_strcmp0(walk->basis, "market")) ? row->market_value
+	      : (0 == g_strcmp0(walk->basis, "region_median")) ? row->region_median
+	      : row->min_price;
+
+	if ((VENTURE_SERIES_NONE == price) || !venture_series_row_sell_plausible(row, price))
+		return NULL;
+
+	return arb_money(price, row->currency);
 }
 
 /* The spread of one row's price, sigma over mu, or NAN. */
@@ -436,6 +446,18 @@ arb_spread_pair(
 		return FALSE;
 
 	if (NULL == bought.unit_price)
+	{
+		arb_buy_clear(&bought);
+		return TRUE;
+	}
+
+	/* Selling at over twenty times the buy is selling to a troll's
+	 * listing, however "sold" it looks: trolls cancel and relist, so their
+	 * listings vanish like sales (VENTURE_SERIES_SELL_MAX_MARKUP). */
+	if ((0 == g_strcmp0(venture_money_get_currency(bought.unit_price), venture_money_get_currency(sell_price))) &&
+	    (venture_money_get_amount(bought.unit_price) > 0) &&
+	    (venture_money_get_amount(sell_price) >
+	     VENTURE_SERIES_SELL_MAX_MARKUP * venture_money_get_amount(bought.unit_price)))
 	{
 		arb_buy_clear(&bought);
 		return TRUE;
