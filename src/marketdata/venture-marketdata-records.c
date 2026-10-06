@@ -171,6 +171,30 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVenueGroup, venture_venue_group, venture_
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Venue group", NULL);)
 
 /* ==========================================================================
+ * Ignored accounts
+ *
+ * An account, or every account on one realm, the organization does not
+ * play: the characters a person keeps on a realm they never visit. An
+ * ignored account drops out of the Accounts pages (behind a "show
+ * ignored" switch), their totals, and "My characters". It is matched by
+ * its key -- a character's account key, or a realm's name or venue key,
+ * ignoring case -- so it outlives the store it was set from, and like a
+ * venue group it is shared in the organization rather than owned.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_account_ignore_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What is ignored, as it is shown: a character, a realm"),
+	VENTURE_FIELD("kind", "Kind", "character (one account) or realm (every account on it)",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
+	VENTURE_FIELD("key", "Key", "The account's key, or the realm's name or venue key",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccountIgnore, venture_account_ignore, venture_account_ignore_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Ignored account", NULL);)
+
+/* ==========================================================================
  * Watchlist entries
  *
  * One instrument on a watchlist, with the prices that would make it worth

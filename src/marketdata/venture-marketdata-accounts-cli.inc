@@ -26,6 +26,7 @@ static const VentureCliOption venture_cli_accounts_options[] = {
 	{ "dir", "dir", VENTURE_CLI_OPTION_TEXT, "asc|desc" },
 	{ "login", "login", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "by_login", "by_login", VENTURE_CLI_OPTION_BOOL, NULL },
+	{ "show_ignored", "show_ignored", VENTURE_CLI_OPTION_BOOL, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
@@ -63,6 +64,7 @@ static const VentureCliOption venture_cli_accounts_inventory_options[] = {
 	{ "per_page", "per_page", VENTURE_CLI_OPTION_INT, NULL },
 	{ "login", "login", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "group_by", "group_by", VENTURE_CLI_OPTION_TEXT, "login" },
+	{ "show_ignored", "show_ignored", VENTURE_CLI_OPTION_BOOL, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
@@ -79,6 +81,7 @@ static const VentureCliOption venture_cli_accounts_pnl_options[] = {
 	{ "instrument", "instrument", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "label", "label", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "top", "top", VENTURE_CLI_OPTION_INT, NULL },
+	{ "show_ignored", "show_ignored", VENTURE_CLI_OPTION_BOOL, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
@@ -272,6 +275,7 @@ static const gchar venture_cli_accounts_usage[] =
 	"usage: venturectl accounts VERB ...\n"
 	"  list [source=N] [group=REALM] [login=KEY] [basis=B] [sort=S] [dir=asc|desc]\n"
 	"       [expiring_hours=N] [mail_days=N] [stale_days=N] [by_login=true]\n"
+	"       [show_ignored=true]\n"
 	"                                   with logins, a table of them follows the accounts\n"
 	"  attention [the same options]     where to log in next, a login at a time, most\n"
 	"                                   urgent first\n"
@@ -279,9 +283,9 @@ static const gchar venture_cli_accounts_usage[] =
 	"  inventory [source=N] [account=KEY] [login=KEY] [place=P] [category=PATH]\n"
 	"            [search=TEXT] [min_value=\"100.00 GOLD\"] [dead=true] [dead_days=N]\n"
 	"            [basis=B] [sort=S] [dir=asc|desc] [page=N] [per_page=N]\n"
-	"            [group_by=login]\n"
+	"            [group_by=login] [show_ignored=true]\n"
 	"  pnl [source=N] [period=P] [group_by=G] [account=KEY] [login=KEY] [venue=KEY]\n"
-	"      [instrument=KEY] [label=TEXT] [top=N]\n"
+	"      [instrument=KEY] [label=TEXT] [top=N] [show_ignored=true]\n"
 	"  post SOURCE_ID [from=DATE] [until=DATE] [account=KEY] [dry_run=true]\n"
 	"                                   the source's ledger into the books, a journal per\n"
 	"                                   account per day (the source books daily); --stage\n"
@@ -290,6 +294,8 @@ static const gchar venture_cli_accounts_usage[] =
 	"                                   each matched sale as a closed arbitrage trade\n"
 	"                                   (the source books trades); --stage\n"
 	"Every verb takes organization_id=N (default: the active organization).\n"
+	"Accounts the organization ignores (account_ignore records) are left out of\n"
+	"list, attention, inventory and pnl unless show_ignored=true.\n"
 	"Bases: conservative (the default: the lower of the region's sale average and\n"
 	"the account's realm market value), market, min, historical, region_market,\n"
 	"region_sale_avg.\n"

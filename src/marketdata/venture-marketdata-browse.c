@@ -15,6 +15,7 @@
  */
 
 #include "venture.h"
+#include "marketdata/venture-marketdata-private.h"
 
 #include <math.h>
 #include <string.h>
@@ -1035,7 +1036,8 @@ md_match_venues(
 
 /*
  * The folded realm names (and realm slugs) the organization's characters
- * are on, from every push source's accounts. A source that cannot be read
+ * are on, from every push source's accounts less the ignored ones (see
+ * venture-marketdata-ignore.c). A source that cannot be read
  * is skipped: a missing realm in a convenience filter is not worth failing
  * a page for.
  */
@@ -1046,12 +1048,14 @@ md_character_realms(
 	guint		*out_characters
 ){
 	g_autoptr(GPtrArray) sources = NULL;
+	g_autoptr(VentureMarketdataIgnores) ignores = NULL;
 	GHashTable *realms;
 	guint i;
 
 	realms = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	*out_characters = 0;
 	sources = md_sources(context, organization_id, NULL);
+	ignores = venture_marketdata_ignores_load(context, organization_id);
 
 	for (i = 0; (NULL != sources) && (i < sources->len); i++)
 	{
@@ -1075,6 +1079,11 @@ md_character_realms(
 		for (j = 0; (NULL != accounts) && (j < accounts->len); j++)
 		{
 			VentureSeriesAccountRow *account = g_ptr_array_index(accounts, j);
+
+			/* A character the organization ignores, or one on a realm
+			 * it ignores, puts no realm in the group. */
+			if (0 != venture_marketdata_ignores_match(ignores, account, NULL))
+				continue;
 
 			if (!venture_string_is_empty(account->group_key))
 				g_hash_table_add(realms, md_fold(account->group_key));

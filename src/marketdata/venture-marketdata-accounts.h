@@ -142,6 +142,8 @@ venture_marketdata_accounts_bases(void);
  * @login: (nullable): only accounts reached through this login, by key
  * @login_first: order by login before the realm and @sort, for a table
  *   grouped by login then realm; implies @realm_first within a login
+ * @show_ignored: count the accounts the organization ignores (see
+ *   account_ignore) as well, each row marked; by default they are left out
  *
  * What the overview asks.
  */
@@ -160,6 +162,7 @@ typedef struct
 	gboolean	 realm_first;
 	const gchar	*login;
 	gboolean	 login_first;
+	gboolean	 show_ignored;
 } VentureMarketdataAccountsQuery;
 
 /**
@@ -277,6 +280,8 @@ venture_marketdata_account(
  *   login, by key
  * @group_by: (nullable): "login" for the holdings' value login by login
  *   beside the page; %NULL for none
+ * @show_ignored: count the accounts the organization ignores (see
+ *   account_ignore) as well, each row marked; by default they are left out
  *
  * What the inventory page asks.
  */
@@ -299,6 +304,7 @@ typedef struct
 	gint64		 now;
 	const gchar	*login;
 	const gchar	*group_by;
+	gboolean	 show_ignored;
 } VentureMarketdataInventoryQuery;
 
 /**
@@ -363,6 +369,8 @@ venture_marketdata_inventory(
  * @now: the moment; 0 for the clock
  * @login: (nullable): the rows of the accounts reached through one login,
  *   by key
+ * @show_ignored: count the accounts the organization ignores (see
+ *   account_ignore) as well, each row marked; by default they are left out
  *
  * What the profit and loss page asks.
  */
@@ -380,6 +388,7 @@ typedef struct
 	guint		 top;
 	gint64		 now;
 	const gchar	*login;
+	gboolean	 show_ignored;
 } VentureMarketdataPnlQuery;
 
 /**

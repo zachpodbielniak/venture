@@ -87,6 +87,10 @@ usage is in [market-production.md](market-production.md),
   `notes`. Picked as `venue_group=ID` on browse, find, deals and the
   instrument page; `venue_group=characters` is the realms the push
   sources' characters are on, with no record.
+- `account_ignore` -- **name**, `kind` (character|realm), `key` (an
+  account key, or a realm's name or slug; case ignored), `notes`. Leaves
+  the account(s) out of /accounts, inventory, pnl and `venue_group=characters`;
+  `show_ignored=true` brings them back marked.
 - `alert_rule` -- **name**, `kind` (below, above, pct_vs_reference,
   spread, out_of_stock, back_in_stock, shortage, spike, undercut,
   entry_match, position_expiring, inbound_expiring, account_stale,

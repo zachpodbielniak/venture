@@ -196,6 +196,39 @@ accounts_bind_add_int(
 	g_array_append_val(bindings, binding);
 }
 
+/*
+ * Appends " AND <column> NOT IN (?, ...)" for @keys, a NULL-terminated
+ * list of account keys to leave out (NULL or empty for none). @column is
+ * an account id, or an account key when @by_key; a row naming no account
+ * is nobody's to ignore, so it stays.
+ */
+static void
+accounts_where_exclude(
+	GString			*sql,
+	GArray			*bindings,
+	const gchar		*column,
+	gboolean		 by_key,
+	const gchar *const	*keys
+){
+	guint i;
+
+	if ((NULL == keys) || (NULL == keys[0]))
+		return;
+
+	g_string_append_printf(sql, " AND (%s IS NULL OR %s NOT IN (", column, column);
+
+	if (!by_key)
+		g_string_append(sql, "SELECT id FROM accounts WHERE key IN (");
+
+	for (i = 0; NULL != keys[i]; i++)
+	{
+		g_string_append(sql, (0 == i) ? "?" : ", ?");
+		accounts_bind_add_text(bindings, keys[i]);
+	}
+
+	g_string_append(sql, by_key ? "))" : ")))");
+}
+
 static SeriesOwnedStmt *
 accounts_prepare_bound(
 	VentureSeriesStore	 *self,
@@ -2250,6 +2283,8 @@ accounts_holding_where(
 		accounts_bind_add_text(bindings, filter->login_key);
 	}
 
+	accounts_where_exclude(sql, bindings, "h.account_id", FALSE, filter->exclude_account_keys);
+
 	if (NULL != filter->instrument_key)
 	{
 		g_string_append(sql, " AND h.instrument_key = ?");
@@ -2508,6 +2543,8 @@ venture_series_store_list_positions(
 		accounts_bind_add_text(bindings, filter->login_key);
 	}
 
+	accounts_where_exclude(sql, bindings, "a.key", TRUE, filter->exclude_account_keys);
+
 	if (NULL != filter->venue_key)
 	{
 		g_string_append(sql, " AND p.venue_key = ?");
@@ -2637,6 +2674,8 @@ venture_series_store_list_inbound(
 		g_string_append(sql, " AND a.login = ?");
 		accounts_bind_add_text(bindings, filter->login_key);
 	}
+
+	accounts_where_exclude(sql, bindings, "a.key", TRUE, filter->exclude_account_keys);
 
 	if (VENTURE_SERIES_NONE != filter->expires_before)
 	{
@@ -2833,6 +2872,8 @@ accounts_txn_where(
 		g_string_append(sql, " AND t.account_id IN (SELECT id FROM accounts WHERE login = ?)");
 		accounts_bind_add_text(bindings, filter->login_key);
 	}
+
+	accounts_where_exclude(sql, bindings, "t.account_id", FALSE, filter->exclude_account_keys);
 
 	if (NULL != filter->kind)
 	{
@@ -3372,6 +3413,8 @@ accounts_value_cte(
 		g_string_append(sql, " AND a.login = ?");
 		accounts_bind_add_text(bindings, filter->login_key);
 	}
+
+	accounts_where_exclude(sql, bindings, "a.key", TRUE, filter->exclude_account_keys);
 
 	if (NULL != filter->place)
 	{

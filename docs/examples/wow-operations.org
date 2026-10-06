@@ -222,6 +222,10 @@ Below it: gold on hand, inventory value, what is listed at buyout, what waits in
 
 Its gold over ninety days, its holdings by place (bags, bank, reagent bank, mail, on the auction house) with their value, every posted auction with its price against the realm's market and minimum and how long it has left, its mail, and its recent ledger. When the mirror has made its place, the page links to the location and to its listings.
 
+** Characters you do not play
+
+A character parked on a realm you never visit -- a name held on Medivh, an old bank alt -- still arrives with every push. Its page has two switches: /Ignore this character/, and /Ignore Medivh/ for every account on its realm. An ignored account drops out of the overview, its totals and attention list, inventory, profit and loss, and /My characters/ on Browse, Deals and Find, so a realm you only hold a name on prices nothing. The overview's /Ignored/ card lists what is ignored, each with /Stop ignoring/, and /Show ignored accounts/ (=show_ignored=1=) puts them back, marked, and counted again. Inventory and profit and loss say how many they leave out, with a link to include them; asking for one account by =account== always shows it. The switches are =account_ignore= records ([[file:../market-data.org::*Ignored accounts][Market data: ignored accounts]]), editable at =/e/account_ignore= too.
+
 ** Inventory: =/accounts/inventory=
 
 Every item across every account and place, summed, valued, and sorted by value; =login== narrows it to one login's characters and banks, and "Value by login" (=group_by=login=) adds what each login holds. The default basis, =conservative=, is the lower of the region's sale average and the realm's market value -- what the stack would really fetch, not what the most hopeful listing asks -- and =market=, =min=, =historical=, =region_market= and =region_sale_avg= are the others. Days of supply divide what you hold by what the region sells a day (TSM's =sold_per_day= where the store has none of its own); =dead=1= shows what has not sold in =dead_days= (30).

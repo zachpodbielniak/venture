@@ -126,6 +126,83 @@ venture_marketdata_promote_venue_in(
 	GError				**error
 );
 
+/*
+ * VentureMarketdataIgnores:
+ * The accounts and realms an organization ignores (account_ignore
+ * records), loaded once per answer. An account is ignored when its key is
+ * named as a character, or its realm -- its group or its venue, ignoring
+ * case -- is named as a realm.
+ */
+typedef struct _VentureMarketdataIgnores VentureMarketdataIgnores;
+
+VentureMarketdataIgnores *
+venture_marketdata_ignores_load(
+	VentureContext	*context,
+	gint64		 organization_id
+);
+
+void
+venture_marketdata_ignores_free(VentureMarketdataIgnores *ignores);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureMarketdataIgnores, venture_marketdata_ignores_free)
+
+/*
+ * venture_marketdata_ignores_json:
+ * The records, as [{id, kind, key, name}] by name, for a page that lists
+ * them to turn off. (transfer full)
+ */
+JsonArray *
+venture_marketdata_ignores_json(const VentureMarketdataIgnores *ignores);
+
+/*
+ * venture_marketdata_ignores_match:
+ * The id of the record that ignores @account -- its own before its
+ * realm's -- or 0. *@out_kind (nullable) is "character" or "realm".
+ */
+gint64
+venture_marketdata_ignores_match(
+	const VentureMarketdataIgnores	 *ignores,
+	const VentureSeriesAccountRow	 *account,
+	const gchar			**out_kind
+);
+
+/*
+ * venture_marketdata_ignores_character:
+ * The id of the record ignoring the account @account_key itself, or 0.
+ */
+gint64
+venture_marketdata_ignores_character(
+	const VentureMarketdataIgnores	*ignores,
+	const gchar			*account_key
+);
+
+/*
+ * venture_marketdata_ignores_realm:
+ * The id of the record ignoring the realm @group_key or @venue_key
+ * (either nullable), or 0.
+ */
+gint64
+venture_marketdata_ignores_realm(
+	const VentureMarketdataIgnores	*ignores,
+	const gchar			*group_key,
+	const gchar			*venue_key
+);
+
+/*
+ * venture_marketdata_ignores_split:
+ * Takes the ignored accounts out of @accounts (VentureSeriesAccountRow),
+ * in order, and answers their keys as a NULL-terminated array (never
+ * NULL; empty when none is ignored) for a filter's exclude_account_keys.
+ * The keys are copies, so they outlive the rows. With @keep the rows
+ * stay and only the keys are answered.
+ */
+gchar **
+venture_marketdata_ignores_split(
+	const VentureMarketdataIgnores	*ignores,
+	GPtrArray			*accounts,
+	gboolean			 keep
+);
+
 #endif /* VENTURE_HAVE_SQLITE */
 
 G_END_DECLS

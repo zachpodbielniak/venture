@@ -2629,6 +2629,245 @@ test_login_organizations(
 	                70000);
 }
 
+/* --- Ignoring accounts ------------------------------------------------------------ */
+
+/* POSTs a form, without following the redirect: its status, and where it
+ * sends the reader. */
+static guint
+http_post(
+	Fixture		 *fixture,
+	const gchar	 *path,
+	const gchar	 *form,
+	gchar		**out_location
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *url = NULL;
+	Reply reply;
+
+	memset(&reply, 0, sizeof(reply));
+	url = g_strconcat(venture_web_server_get_base_url(fixture->server), path, NULL);
+	message = soup_message_new("POST", url);
+	g_assert_nonnull(message);
+	bytes = g_bytes_new(form, strlen(form));
+	soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_session_send_and_read_async(fixture->session, message, G_PRIORITY_DEFAULT, NULL, reply_done, &reply);
+
+	while (!reply.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(reply.error);
+	g_bytes_unref(reply.body);
+
+	if (NULL != out_location)
+		*out_location = g_strdup(soup_message_headers_get_one(soup_message_get_response_headers(message),
+		                                                      "Location"));
+
+	return soup_message_get_status(message);
+}
+
+/* The organization's live account_ignore records. */
+static GPtrArray *
+ignores_of(Fixture *fixture)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT_IGNORE);
+	g_autoptr(GError) error = NULL;
+	GPtrArray *rows;
+
+	venture_query_set_organization(query, fixture->org);
+	rows = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+
+	return rows;
+}
+
+/* How many venues "My characters" stands for on browse. */
+static gint64
+character_venues(Fixture *fixture)
+{
+	g_autoptr(JsonNode) node = get_json(fixture, "/api/v1/market/browse?venue_group=characters", 200);
+
+	return json_object_get_int_member(root_of(node), "venue_group_venues");
+}
+
+/*
+ * A realm ignored (by its name, in another case) takes its characters out
+ * of the overview, its totals, inventory, the ledger and "My characters";
+ * shown, they come back marked; a character ignored on its own goes the
+ * same way; and the switches post and undo from the pages.
+ */
+static void
+test_ignore(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) realm = NULL;
+	g_autoptr(VentureEntity) bad = NULL;
+	g_autoptr(GPtrArray) records = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	VentureMarketdataAccountsQuery accounts;
+	VentureMarketdataInventoryQuery inventory;
+	VentureMarketdataPnlQuery pnl;
+	JsonObject *root;
+	JsonObject *total;
+	JsonArray *rows;
+	guint i;
+
+	(void)user_data;
+
+	seed(fixture);
+	g_assert_cmpint(character_venues(fixture), ==, 2);
+
+	/* A kind that is neither is refused. */
+	bad = VENTURE_ENTITY(venture_account_ignore_new());
+	venture_entity_set_organization_id(bad, fixture->org);
+	g_object_set(bad, "name", "Guild", "kind", "guild", "key", "x", NULL);
+	g_assert_false(venture_database_save(fixture->database, bad, NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+
+	realm = VENTURE_ENTITY(venture_account_ignore_new());
+	venture_entity_set_organization_id(realm, fixture->org);
+	g_object_set(realm, "name", "Realm B", "kind", "realm", "key", "realm b", NULL);
+	save(fixture, realm);
+
+	/* The overview: Herbz and Oldtimer gone, and counted as ignored. */
+	answer = overview(fixture, 0, 0, 0, NULL, FALSE);
+	root = root_of(answer);
+	rows = json_object_get_array_member(root, "accounts");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, i), "realm"), !=,
+		                "Realm B");
+
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(root, "summary"), "ignored"), ==, 2);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "ignores")), ==, 1);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Shown: all five, the ignored marked by why. */
+	venture_marketdata_accounts_query_init(&accounts);
+	accounts.organization_id = fixture->org;
+	accounts.now = fixture->now;
+	accounts.show_ignored = TRUE;
+	answer = venture_marketdata_accounts(fixture->context, &accounts, &error);
+	g_assert_no_error(error);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 5);
+	g_assert_cmpstr(json_object_get_string_member(find_row(rows, "key", "Herbz-B"), "ignored"), ==, "realm");
+	g_assert_false(json_object_has_member(find_row(rows, "key", "Drgold-A"), "ignored"));
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Inventory: Herbz's five ore and ten herbs are not counted. */
+	venture_marketdata_inventory_query_init(&inventory);
+	inventory.organization_id = fixture->org;
+	inventory.now = fixture->now;
+	answer = venture_marketdata_inventory(fixture->context, &inventory, &error);
+	g_assert_no_error(error);
+	root = root_of(answer);
+	rows = json_object_get_array_member(root, "rows");
+	g_assert_cmpint(json_object_get_int_member(find_row(rows, "instrument_key", "ore"), "quantity"), ==, 10);
+	g_assert_cmpint(json_object_get_int_member(find_row(rows, "instrument_key", "herb"), "quantity"), ==, 6);
+	g_assert_cmpint(json_object_get_int_member(root, "ignored"), ==, 2);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Asking for an ignored account by name is asking to see it. */
+	inventory.account = "Herbz-B";
+	answer = venture_marketdata_inventory(fixture->context, &inventory, &error);
+	g_assert_no_error(error);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpint(json_object_get_int_member(find_row(rows, "instrument_key", "ore"), "quantity"), ==, 5);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Profit and loss: Herbz's 12g sale, 8g buy and 4g net are gone. */
+	venture_marketdata_pnl_query_init(&pnl);
+	pnl.organization_id = fixture->org;
+	pnl.now = fixture->now;
+	pnl.group_by = "account";
+	answer = venture_marketdata_external_pnl(fixture->context, &pnl, &error);
+	g_assert_no_error(error);
+	root = root_of(answer);
+	total = json_array_get_object_element(json_object_get_array_member(root, "totals"), 0);
+	g_assert_cmpint(money_amount(total, "sales_amount"), ==, 80000);
+	g_assert_cmpint(money_amount(total, "net"), ==, 20000);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "buckets")), ==, 1);
+	g_clear_pointer(&answer, json_node_unref);
+
+	pnl.show_ignored = TRUE;
+	answer = venture_marketdata_external_pnl(fixture->context, &pnl, &error);
+	g_assert_no_error(error);
+	total = json_array_get_object_element(json_object_get_array_member(root_of(answer), "totals"), 0);
+	g_assert_cmpint(money_amount(total, "net"), ==, 60000);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* "My characters" is realm A alone. */
+	g_assert_cmpint(character_venues(fixture), ==, 1);
+
+	/* The account page says so, and offers the realm's switch off. */
+	path = g_strdup_printf("/api/v1/accounts/%" G_GINT64_FORMAT "/Herbz-B", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	total = json_object_get_object_member(root_of(answer), "ignore");
+	g_assert_true(json_object_get_boolean_member(total, "ignored"));
+	g_assert_cmpint(json_object_get_int_member(total, "realm_id"), ==, venture_entity_get_id(realm));
+	g_assert_cmpint(json_object_get_int_member(total, "account_id"), ==, 0);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/accounts/%" G_GINT64_FORMAT "/Herbz-B", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "Stop ignoring Realm B"));
+	g_assert_nonnull(strstr(page, "Ignore this character"));
+	g_clear_pointer(&page, g_free);
+
+	/* The overview lists what is ignored, with the switch to show it. */
+	page = get_page(fixture, "/accounts");
+	g_assert_nonnull(strstr(page, "Show ignored accounts"));
+	g_assert_null(strstr(page, ">Herbz<"));
+	g_clear_pointer(&page, g_free);
+	page = get_page(fixture, "/accounts/inventory");
+	g_assert_nonnull(strstr(page, "2 ignored accounts left out"));
+	g_clear_pointer(&page, g_free);
+
+	/* The switches: ignore Drgold (twice: one record), from its page,
+	 * and go back there; a "back" off the site goes to the overview. */
+	g_assert_cmpuint(http_post(fixture, "/accounts/ignores",
+	                           "kind=character&key=Drgold-A&name=Drgold&back=%2Faccounts%2F1%2FDrgold-A",
+	                           &location), ==, 302);
+	g_assert_cmpstr(location, ==, "/accounts/1/Drgold-A");
+	g_clear_pointer(&location, g_free);
+	g_assert_cmpuint(http_post(fixture, "/accounts/ignores",
+	                           "kind=character&key=Drgold-A&name=Drgold&back=%2F%2Fevil.example",
+	                           &location), ==, 302);
+	g_assert_cmpstr(location, ==, "/accounts");
+	g_clear_pointer(&location, g_free);
+	records = ignores_of(fixture);
+	g_assert_cmpuint(records->len, ==, 2);
+	g_clear_pointer(&records, g_ptr_array_unref);
+
+	answer = overview(fixture, 0, 0, 0, NULL, FALSE);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 2);
+	g_clear_pointer(&answer, json_node_unref);
+	g_assert_cmpint(character_venues(fixture), ==, 1);	/* the hostile character is on realm A */
+
+	/* Off again: the realm's switch, then everything is back. */
+	path = g_strdup_printf("/accounts/ignores/%" G_GINT64_FORMAT "/delete", venture_entity_get_id(realm));
+	g_assert_cmpuint(http_post(fixture, path, "back=%2Faccounts", NULL), ==, 302);
+	g_clear_pointer(&path, g_free);
+	g_assert_cmpuint(http_post(fixture, "/accounts/ignores/999999/delete", "", NULL), ==, 404);
+	records = ignores_of(fixture);
+	g_assert_cmpuint(records->len, ==, 1);
+	g_assert_cmpint(character_venues(fixture), ==, 2);
+
+	answer = overview(fixture, 0, 0, 0, NULL, FALSE);
+	rows = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 4);
+}
+
 #define ADD(path, func) \
 	g_test_add("/accounts-pages/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -2657,6 +2896,7 @@ main(
 	ADD("login-inventory-pnl", test_login_inventory_pnl);
 	ADD("login-doors", test_login_doors);
 	ADD("login-organizations", test_login_organizations);
+	ADD("ignore", test_ignore);
 
 	return g_test_run();
 }
