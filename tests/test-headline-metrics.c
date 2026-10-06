@@ -533,10 +533,10 @@ test_cac(Fixture *f, gconstpointer unused)
 /*
  * A new customer is the company's first cash, not an invoice status.
  *
- * January: $50 of acquisition spend; A pays a $2,000 invoice; B's $5,000
+ * January: $1,000 of acquisition spend; A pays a $2,000 invoice; B's $5,000
  * invoice is written off. The first version counted invoices that reached
  * "paid" by their paid_at, and a write-off makes an invoice paid: two new
- * customers and a CAC of $500. Only A paid anything: one, and $50.
+ * customers and a CAC of $500. Only A paid anything: one, and $1,000.
  *
  * A $50 refund to A in March cleared A's paid_at, and the first version
  * moved A out of January after the fact. First cash, once received, stays.

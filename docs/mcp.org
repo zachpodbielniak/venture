@@ -197,7 +197,7 @@ Pair it with [[file:../skills/venture/SKILL.md][the venture skill]], which cover
 
 The MCP server is a pull: the agent asks. For a push, VENTURE's podomation module raises =on_created=, =on_updated= and =on_deleted= for every record change from every surface, and podomation's webhook module POSTs — so "tell the agent when a deal closes" is a rule and no code at all.
 
-=data/examples/agent-host-triggers.pod= is the worked recipe, including two things that are easy to get wrong: the webhook module sets no headers, so the receiving endpoint has to authenticate by a capability URL rather than a bearer token or an HMAC; and an agent that writes back through the API re-raises the event, which the engine's cascade guard does not cover because the write arrives as a separate request. See [[file:automation.org][Automation]].
+=data/examples/clawtilla-triggers.pod= is the worked recipe, including two things that are easy to get wrong: the webhook module sets no headers, so the receiving endpoint has to authenticate by a capability URL rather than a bearer token or an HMAC; and an agent that writes back through the API re-raises the event, which the engine's cascade guard does not cover because the write arrives as a separate request. See [[file:automation.org][Automation]].
 
 ** The protocol, and why there is no SDK
 

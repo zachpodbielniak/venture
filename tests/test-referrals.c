@@ -752,7 +752,8 @@ test_upgrade(gconstpointer data)
 	g_assert_no_error(error);
 	execute(database, "INSERT INTO leads (uuid, organization_id, name, email, status, version) "
 		"VALUES ('old-lead', 1, 'Old inquiry', 'old@example.com', 'new', 1)");
-	execute(database, "DELETE FROM schema_migrations WHERE version IN (905, 906)");
+	/* History must stay a prefix of the scripts, so later versions go too. */
+	execute(database, "DELETE FROM schema_migrations WHERE version >= 905");
 	execute(database, "DROP TABLE referral_rewards; DROP TABLE referrals; DROP TABLE referral_codes; DROP TABLE referral_programs");
 	execute(database, "DROP INDEX idx_leads_referral_code");
 	execute(database, "ALTER TABLE leads DROP COLUMN referral_code");
