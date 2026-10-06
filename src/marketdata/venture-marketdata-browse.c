@@ -858,6 +858,60 @@ md_venues_json(
 
 /* --- Categories ------------------------------------------------------------ */
 
+/*
+ * A store's categories, kept a while: listing them groups every
+ * instrument (850,000 on a US auction house store), and every market page
+ * draws the picker, but the list changes only when a provider files a new
+ * kind of item. Keyed by the store's file; the pages are answered on one
+ * thread.
+ */
+#define MD_CATEGORY_CACHE_SECONDS (600)
+
+typedef struct
+{
+	gint64		 at;
+	GPtrArray	*categories;	/* VentureSeriesCategoryRow */
+} MdCategoryCache;
+
+static void
+md_category_cache_free(gpointer data)
+{
+	MdCategoryCache *entry = data;
+
+	g_ptr_array_unref(entry->categories);
+	g_free(entry);
+}
+
+static GPtrArray *
+md_categories_of(VentureSeriesStore *reader)
+{
+	static GHashTable *cache = NULL;
+	const gchar *path = venture_series_store_get_path(reader);
+	gint64 now = g_get_monotonic_time() / G_USEC_PER_SEC;
+	MdCategoryCache *entry;
+	GPtrArray *fresh;
+
+	if (NULL == cache)
+		cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, md_category_cache_free);
+
+	entry = (NULL != path) ? g_hash_table_lookup(cache, path) : NULL;
+
+	if ((NULL != entry) && (now - entry->at < MD_CATEGORY_CACHE_SECONDS))
+		return g_ptr_array_ref(entry->categories);
+
+	fresh = venture_series_store_list_categories(reader, NULL);
+
+	if ((NULL != fresh) && (NULL != path))
+	{
+		entry = g_new0(MdCategoryCache, 1);
+		entry->at = now;
+		entry->categories = g_ptr_array_ref(fresh);
+		g_hash_table_replace(cache, g_strdup(path), entry);
+	}
+
+	return fresh;
+}
+
 /* Adds @reader's categories to @counts (path -> plain instruments). */
 static void
 md_categories_add(
@@ -867,7 +921,7 @@ md_categories_add(
 	g_autoptr(GPtrArray) categories = NULL;
 	guint i;
 
-	categories = venture_series_store_list_categories(reader, NULL);
+	categories = md_categories_of(reader);
 
 	for (i = 0; (NULL != categories) && (i < categories->len); i++)
 	{

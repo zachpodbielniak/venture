@@ -5491,3 +5491,9 @@ a:focus .item-tip > .item-tip-card { display: flex; }
 .deal-total { display: flex; flex-direction: column; gap: 0.2em; padding: 0.6rem 0.9rem;
 	border-radius: 6px; font-size: 1.25em; font-weight: 600; font-variant-numeric: tabular-nums; }
 .deal-total > span { font-size: 0.65em; font-weight: 400; opacity: 0.85; }
+
+/* Tables that sort in place (data-client-sort): the active heading's
+ * arrow comes from its aria-sort, so it follows whichever column the
+ * page -- or the server -- last sorted by. */
+table[data-client-sort] th[aria-sort="ascending"] > a::after { content: " \25B4"; }
+table[data-client-sort] th[aria-sort="descending"] > a::after { content: " \25BE"; }

@@ -1954,6 +1954,48 @@ mdw_venue_chip(
 	g_string_append(html, "</span>");
 }
 
+/* A cell's sort value for the client-side sorter: a figure's raw number
+ * (money in minor units), or nothing when it has none -- which sorts last.
+ * The value is a number written here, never page text. */
+static void
+mdw_sort_value(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*member
+){
+	JsonNode *node = (NULL != object) ? json_object_get_member(object, member) : NULL;
+
+	if (NULL == node)
+		return;
+
+	if (JSON_NODE_HOLDS_OBJECT(node) && json_object_has_member(json_node_get_object(node), "amount"))
+		g_string_append_printf(html, " data-sort-value=\"%" G_GINT64_FORMAT "\"",
+		                       json_object_get_int_member(json_node_get_object(node), "amount"));
+	else if (JSON_NODE_HOLDS_VALUE(node) && (G_TYPE_INT64 == json_node_get_value_type(node)))
+		g_string_append_printf(html, " data-sort-value=\"%" G_GINT64_FORMAT "\"", json_node_get_int(node));
+	else if (JSON_NODE_HOLDS_VALUE(node) && (G_TYPE_DOUBLE == json_node_get_value_type(node)))
+	{
+		gchar number[G_ASCII_DTOSTR_BUF_SIZE];
+
+		g_string_append_printf(html, " data-sort-value=\"%s\"",
+		                       g_ascii_dtostr(number, sizeof(number), json_node_get_double(node)));
+	}
+}
+
+/* A cell's sort value as text (a name), escaped. */
+static void
+mdw_sort_text(
+	GString		*html,
+	const gchar	*text
+){
+	if (NULL == text)
+		return;
+
+	g_string_append(html, " data-sort-value=\"");
+	venture_html_escape_append(html, text);
+	g_string_append(html, "\"");
+}
+
 /* Whether a deals column reads most-first unless asked otherwise (names,
  * realms, a buy price and a share of the region read smallest first). */
 static gboolean
@@ -2008,15 +2050,16 @@ mdw_deals_header(
 	if (active)
 		g_string_append_printf(link, "&dir=%s", descending ? "asc" : "desc");
 
-	g_string_append_printf(html, "<th scope=\"col\"%s%s><a href=\"", numeric ? " class=\"num\"" : "",
-	                       active ? (descending ? " aria-sort=\"descending\"" : " aria-sort=\"ascending\"") : "");
+	g_string_append_printf(html, "<th scope=\"col\"%s%s data-sort-type=\"%s\" data-sort-default=\"%s\">"
+	                       "<a href=\"", numeric ? " class=\"num\"" : "",
+	                       active ? (descending ? " aria-sort=\"descending\"" : " aria-sort=\"ascending\"") : "",
+	                       numeric ? "num" : "text", mdw_deals_descends(key) ? "desc" : "asc");
 	venture_html_escape_append(html, link->str);
 	g_string_append(html, "\">");
 	venture_html_escape_append(html, label);
 
-	if (active)
-		g_string_append(html, descending ? " \xe2\x96\xbe" : " \xe2\x96\xb4");
-
+	/* The arrow is drawn from aria-sort (CSS), so it follows the
+	 * client-side sorter as well as the server's order. */
 	g_string_append(html, "</a></th>");
 }
 
@@ -2170,7 +2213,7 @@ venture_marketdata_web_deals(
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></div>");
 	mdw_notes(html, root);
 
-	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table deals-table\">"
+	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table deals-table\" data-client-sort>"
 	                      "<thead><tr>");
 	mdw_deals_header(html, request, query.sort, query.dir, "name", "Item", FALSE);
 	mdw_deals_header(html, request, query.sort, query.dir, "ilvl", "ilvl", TRUE);
@@ -2190,7 +2233,10 @@ venture_marketdata_web_deals(
 		JsonObject *sell = json_object_has_member(row, "sell") ? json_object_get_object_member(row, "sell") : NULL;
 		gdouble roi = mdw_double(row, "roi_pct");
 
-		g_string_append(html, "<tr><td><a href=\"");
+		g_string_append(html, "<tr><td");
+		mdw_sort_text(html, (NULL != mdw_text(row, "instrument_name")) ? mdw_text(row, "instrument_name")
+		                                                               : mdw_text(row, "instrument_key"));
+		g_string_append(html, "><a href=\"");
 		venture_html_escape_append(html, mdw_text(row, "url"));
 		g_string_append(html, "\">");
 		mdw_name(html, row, "instrument_name", "instrument_key");
@@ -2203,21 +2249,35 @@ venture_marketdata_web_deals(
 			g_string_append(html, "</div>");
 		}
 
-		g_string_append(html, "</td><td class=\"num\">");
+		g_string_append(html, "</td><td class=\"num\"");
+		mdw_sort_value(html, row, "level");
+		g_string_append(html, ">");
 		if (json_object_has_member(row, "level"))
 			g_string_append_printf(html, "%" G_GINT64_FORMAT, json_object_get_int_member(row, "level"));
-		g_string_append(html, "</td><td>");
+		g_string_append(html, "</td><td");
+		mdw_sort_text(html, (NULL != mdw_text(row, "venue_name")) ? mdw_text(row, "venue_name")
+		                                                          : mdw_text(row, "venue_key"));
+		g_string_append(html, ">");
 		mdw_venue_chip(html, row);
-		g_string_append(html, "</td><td class=\"num\">");
+		g_string_append(html, "</td><td class=\"num\"");
+		mdw_sort_value(html, row, "min_price");
+		g_string_append(html, ">");
 		mdw_money(html, row, "min_price");
-		g_string_append(html, "</td><td>");
+		g_string_append(html, "</td><td");
 
 		if (NULL != sell)
 		{
+			mdw_sort_text(html, (NULL != mdw_text(sell, "venue_name")) ? mdw_text(sell, "venue_name")
+			                                                           : mdw_text(sell, "venue_key"));
+			g_string_append(html, ">");
 			mdw_venue_chip(html, sell);
-			g_string_append(html, "</td><td class=\"num\">");
+			g_string_append(html, "</td><td class=\"num\"");
+			mdw_sort_value(html, sell, "min_price");
+			g_string_append(html, ">");
 			mdw_money(html, sell, "min_price");
-			g_string_append(html, "</td><td class=\"num\">");
+			g_string_append(html, "</td><td class=\"num\"");
+			mdw_sort_value(html, row, "profit");
+			g_string_append(html, ">");
 			mdw_chip_open(html, mdw_tone(roi, 20.0, 0.0));
 			mdw_money(html, row, "profit");
 			g_string_append(html, "</span><div class=\"deal-sub\">");
@@ -2226,16 +2286,22 @@ venture_marketdata_web_deals(
 			g_string_append(html, "</span></div>");
 		}
 		else
-			g_string_append(html, "<span class=\"muted\">nowhere it sells</span></td><td class=\"num\">"
+			g_string_append(html, "><span class=\"muted\">nowhere it sells</span></td><td class=\"num\">"
 			                      "&mdash;</td><td class=\"num\">&mdash;");
 
-		g_string_append(html, "</td><td class=\"num\">");
+		g_string_append(html, "</td><td class=\"num\"");
+		mdw_sort_value(html, row, "pct_vs_region");
+		g_string_append(html, ">");
 		mdw_chip_open(html, mdw_tone(mdw_double(row, "pct_vs_region"), 70.0, 90.0));
 		mdw_percent(html, row, "pct_vs_region", 1.0);
-		g_string_append(html, "</span></td><td class=\"num\">");
+		g_string_append(html, "</span></td><td class=\"num\"");
+		mdw_sort_value(html, NULL != sell ? sell : row, "sale_rate");
+		g_string_append(html, ">");
 		mdw_chip_open(html, mdw_tone(mdw_double(NULL != sell ? sell : row, "sale_rate"), 0.3, 0.1));
 		mdw_percent(html, NULL != sell ? sell : row, "sale_rate", 100.0);
-		g_string_append(html, "</span></td><td class=\"num\">");
+		g_string_append(html, "</span></td><td class=\"num\"");
+		mdw_sort_value(html, row, "quantity");
+		g_string_append(html, ">");
 		mdw_int(html, row, "quantity");
 		g_string_append(html, "</td></tr>");
 	}

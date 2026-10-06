@@ -413,6 +413,18 @@ static const gchar series_schema_step_8[] =
 	"   AND EXISTS (SELECT 1 FROM instruments p"
 	"               WHERE p.key = instruments.parent_key AND p.name IS NOT NULL);";
 
+/*
+ * The deals, in their own order. A deal is a row at or under its group's
+ * deal price -- about half of every store, since the deal price is the
+ * group's median -- so "the best fifty deals" sorted a million rows to keep
+ * fifty: seven seconds on a US-region auction house store. This index holds
+ * only deal rows, by their share of the region, so the first page is read
+ * in order and the query stops (venture_series_store_list_current()).
+ */
+static const gchar series_schema_step_9[] =
+	"CREATE INDEX IF NOT EXISTS current_deal_pct ON current (pct_vs_region)"
+	" WHERE deal_price IS NOT NULL AND min_price IS NOT NULL AND min_price <= deal_price;";
+
 /* Append only: a store records which of these it has run in user_version. */
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
@@ -422,7 +434,8 @@ static const gchar *const series_schema_steps[] = {
 	series_schema_step_5,
 	series_schema_step_6,
 	series_schema_step_7,
-	series_schema_step_8
+	series_schema_step_8,
+	series_schema_step_9
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -5498,6 +5511,39 @@ venture_series_store_list_current(
 	sql = g_string_new("SELECT " SERIES_ROW_COLUMNS SERIES_ROW_FROM);
 	bindings = g_array_new(FALSE, TRUE, sizeof(SeriesBinding));
 	g_array_set_clear_func(bindings, series_binding_clear);
+
+	/*
+	 * The first page of deals, cheapest against the region first, is chosen
+	 * by the share of the region alone -- which current_deal_pct holds in
+	 * order -- and only those rows are joined and sorted in full. Asking the
+	 * whole order of one query sorted every deal row first (the venue and
+	 * instrument tie-breaks are not in any index). Ties at the page's edge
+	 * are settled by the inner query's order rather than the venue's key;
+	 * a deals list has no second page for that to unsettle.
+	 */
+	if (filter->deals_only && (VENTURE_SERIES_SORT_PCT_VS_REGION == filter->sort) &&
+	    !filter->descending && (0 == filter->offset))
+	{
+		g_autoptr(GString) inner = g_string_new("SELECT c.rowid" SERIES_ROW_FROM);
+
+		if (!series_filter_where(filter, inner, bindings, currency, error))
+			return NULL;
+
+		g_string_append(inner, " AND c.pct_vs_region IS NOT NULL ORDER BY c.pct_vs_region LIMIT ?");
+		series_bind_add_int(bindings, count);
+		g_string_append_printf(sql, " WHERE c.rowid IN (%s)"
+		                            " ORDER BY c.pct_vs_region ASC NULLS LAST, v.key, i.key LIMIT ?",
+		                       inner->str);
+		series_bind_add_int(bindings, count);
+
+		stmt = series_prepare_bound(self, sql->str, bindings, error);
+		if (NULL == stmt)
+			return NULL;
+
+		return series_collect(self, stmt, series_row_from_any,
+		                      (GDestroyNotify)venture_series_row_free,
+		                      "listing deals", error);
+	}
 
 	if (!series_filter_where(filter, sql, bindings, currency, error))
 		return NULL;

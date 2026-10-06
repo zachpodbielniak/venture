@@ -1140,7 +1140,13 @@ test_deals(
 	g_clear_pointer(&page, g_free);
 	page = get_page(fixture, "/market/deals?group=eu&sort=buy");
 	g_assert_nonnull(strstr(page, "href=\"/market/deals?group=eu&amp;sort=ilvl\""));
-	g_assert_nonnull(strstr(page, "aria-sort=\"ascending\"><a href=\"/market/deals?group=eu&amp;sort=buy&amp;dir=desc\""));
+	g_assert_nonnull(strstr(page, "aria-sort=\"ascending\" data-sort-type=\"num\" data-sort-default=\"asc\">"
+	                              "<a href=\"/market/deals?group=eu&amp;sort=buy&amp;dir=desc\""));
+
+	/* And they sort in place: the table says so, and every cell carries
+	 * the raw figure (minor units for money) the page's script sorts by. */
+	g_assert_nonnull(strstr(page, "data-client-sort"));
+	g_assert_nonnull(strstr(page, "data-sort-value=\""));
 
 	g_clear_pointer(&page, g_free);
 	page = get_page(fixture, "/market/deals?group=eu");
