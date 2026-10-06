@@ -45,6 +45,13 @@ venturectl accounts help
   `buckets`, `top_items`) and the `flips`; options `source`, `period`,
   `group_by=week|month|account|instrument|venue|source|login`, `account`,
   `login`, `venue`, `instrument`, `label`, `top`.
+- Ignored accounts: `account_ignore` records (`kind=character|realm`,
+  `key`) leave characters, or every account on a realm, out of `list`,
+  `attention`, `inventory` and `pnl` (and "My characters" on the market
+  pages); each answer counts them (`summary.ignored` / `ignored`) and
+  `show_ignored=true` includes them, marked `ignored` on the overview.
+  Ignore one with `venturectl create account_ignore name=Medivh kind=realm
+  key=Medivh`, or the buttons on its account page.
 
 ## What the answers mean
 

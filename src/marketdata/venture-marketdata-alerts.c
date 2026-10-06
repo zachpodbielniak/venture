@@ -644,6 +644,7 @@ typedef struct
 	GPtrArray	*listings;		/* AlertsListing, newest first */
 	GHashTable	*venue_listings;	/* venue key -> GPtrArray of borrowed AlertsListing */
 	gboolean	 listings_capped;	/* more open listings than were frozen */
+	VentureMarketdataIgnores *ignores;	/* the accounts the account rules pass over */
 } AlertsFrozen;
 
 static void
@@ -680,6 +681,7 @@ alerts_frozen_free(gpointer data)
 	g_ptr_array_unref(frozen->rules);
 	g_clear_pointer(&frozen->venue_listings, g_hash_table_unref);
 	g_ptr_array_unref(frozen->listings);
+	g_clear_pointer(&frozen->ignores, venture_marketdata_ignores_free);
 	g_free(frozen);
 }
 
@@ -1316,6 +1318,10 @@ alerts_freeze(
 
 	if (undercut)
 		alerts_freeze_listings(database, frozen);
+
+	/* Read here, on the main thread, like the rules: an ignored
+	 * character's listings, mail and absence are nobody's business. */
+	frozen->ignores = venture_marketdata_ignores_load(context, frozen->organization_id);
 
 	return frozen;
 }
@@ -2155,6 +2161,8 @@ typedef struct
 	GPtrArray	*rows;		/* VentureSeriesAccountRow; NULL until read */
 	GHashTable	*by_key;	/* key -> borrowed VentureSeriesAccountRow */
 	GHashTable	*collect;	/* account key -> AlertsCollect; NULL until read */
+	const VentureMarketdataIgnores *ignores;	/* borrowed from the frozen data */
+	GHashTable	*ignored;	/* keys of the accounts left out of @rows */
 } AlertsAccounts;
 
 static void
@@ -2163,6 +2171,7 @@ alerts_accounts_clear(AlertsAccounts *accounts)
 	g_clear_pointer(&accounts->by_key, g_hash_table_unref);
 	g_clear_pointer(&accounts->rows, g_ptr_array_unref);
 	g_clear_pointer(&accounts->collect, g_hash_table_unref);
+	g_clear_pointer(&accounts->ignored, g_hash_table_unref);
 }
 
 static gboolean
@@ -2184,6 +2193,18 @@ alerts_accounts_load(
 	 * so there is no "only some were judged" to say here. */
 	if (NULL == accounts->rows)
 		return FALSE;
+
+	/* The ignored accounts are not judged: out of @rows for the rules
+	 * that walk accounts, and named in @ignored for those that walk
+	 * listings and mail. */
+	{
+		g_auto(GStrv) keys = venture_marketdata_ignores_split(accounts->ignores, accounts->rows, FALSE);
+
+		accounts->ignored = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+		for (i = 0; NULL != keys[i]; i++)
+			g_hash_table_add(accounts->ignored, g_strdup(keys[i]));
+	}
 
 	accounts->by_key = g_hash_table_new(g_str_hash, g_str_equal);
 
@@ -2343,7 +2364,7 @@ alerts_evaluate_positions(
 			JsonObject *candidate;
 			gboolean in_scope;
 
-			if (row->expires_at <= now)
+			if ((row->expires_at <= now) || g_hash_table_contains(accounts->ignored, row->account_key))
 				continue;
 
 			account = g_hash_table_lookup(accounts->by_key, row->account_key);
@@ -2435,7 +2456,7 @@ alerts_evaluate_inbound(
 			JsonObject *candidate;
 			gboolean in_scope;
 
-			if (row->expires_at <= now)
+			if ((row->expires_at <= now) || g_hash_table_contains(accounts->ignored, row->account_key))
 				continue;
 
 			account = g_hash_table_lookup(accounts->by_key, row->account_key);
@@ -2834,6 +2855,7 @@ alerts_evaluate(
 		gboolean ok;
 
 		memset(&accounts, 0, sizeof(accounts));
+		accounts.ignores = frozen->ignores;
 		ok = TRUE;
 
 		for (r = 0; ok && (r < frozen->rules->len); r++)

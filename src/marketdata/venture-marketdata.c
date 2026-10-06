@@ -471,6 +471,73 @@ marketdata_validate_watchlist_entry(
 	return TRUE;
 }
 
+/*
+ * An ignored account is a character or a realm, named by a key the store
+ * knows, once: a second record for the same one would be a second switch
+ * that turning the first off leaves on.
+ */
+static gboolean
+marketdata_validate_account_ignore(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *kind = NULL;
+	g_autofree gchar *key = NULL;
+	guint i;
+
+	(void)previous;
+	(void)user_data;
+
+	g_object_get(entity, "kind", &kind, "key", &key, NULL);
+
+	if ((0 != g_strcmp0(kind, "character")) && (0 != g_strcmp0(kind, "realm")))
+	{
+		venture_set_error_validation(error, "Kind", "is character or realm");
+		return FALSE;
+	}
+
+	if (venture_string_is_empty(key))
+	{
+		venture_set_error_validation(error, "Key", "is required");
+		return FALSE;
+	}
+
+	if (!venture_marketdata_check_text(key, "Key", error))
+		return FALSE;
+
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT_IGNORE);
+	venture_query_set_organization(query, venture_entity_get_organization_id(entity));
+	venture_query_set_limit(query, 2);
+
+	if (!venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, kind, error) ||
+	    !venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, key, error))
+		return FALSE;
+
+	rows = venture_database_find(database, query, error);
+
+	if (NULL == rows)
+		return FALSE;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *other = g_ptr_array_index(rows, i);
+
+		if (venture_entity_get_id(other) != venture_entity_get_id(entity))
+		{
+			venture_set_error_validation(error, "Key", "is already ignored (#%" G_GINT64_FORMAT ")",
+			                             venture_entity_get_id(other));
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 void
 venture_marketdata_install(VentureContext *context)
 {
@@ -495,6 +562,8 @@ venture_marketdata_install(VentureContext *context)
 	                                    marketdata_validate_watchlist, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_WATCHLIST_ENTRY,
 	                                    marketdata_validate_watchlist_entry, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_ACCOUNT_IGNORE,
+	                                    marketdata_validate_account_ignore, NULL, NULL);
 }
 
 /* ==========================================================================

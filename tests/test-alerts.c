@@ -1542,6 +1542,26 @@ test_alerts_accounts(
 		report = evaluate_at(fixture, rule, FALSE, now);
 		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
 		g_assert_true(report_has(report, "collect:Alt-Argent"));
+
+		/* Ignored accounts are not judged: a realm, by its name in
+		 * another case, and one character on its own. */
+		{
+			g_autoptr(VentureEntity) realm = VENTURE_ENTITY(venture_account_ignore_new());
+			g_autoptr(VentureEntity) mule = VENTURE_ENTITY(venture_account_ignore_new());
+
+			venture_entity_set_organization_id(realm, venture_entity_get_organization_id(rule));
+			g_object_set(realm, "name", "Argent Dawn", "kind", "realm", "key", "argent dawn", NULL);
+			save(fixture, realm);
+			venture_entity_set_organization_id(mule, venture_entity_get_organization_id(rule));
+			g_object_set(mule, "name", "Mule", "kind", "character", "key", "Mule-Thorium", NULL);
+			save(fixture, mule);
+			g_object_set(rule, "group-key", NULL, NULL);
+			save(fixture, rule);
+			g_clear_pointer(&report, json_object_unref);
+			report = evaluate_at(fixture, rule, FALSE, now);
+			g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+			g_assert_true(report_has(report, "collect:Drgold-Thorium"));
+		}
 	}
 }
 

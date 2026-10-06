@@ -706,6 +706,8 @@ venture_series_store_get_account(
  * @count: rows to return; 0 for %VENTURE_SERIES_MAX_ACCOUNT_ROWS
  * @login_key: (nullable): the accounts reached through one login ("" for
  *   those reached through none)
+ * @exclude_account_keys: (nullable) (array zero-terminated=1): accounts to
+ *   leave out, by key -- the ones the organization ignores
  *
  * Which holdings a read wants. Start from venture_series_holding_filter_init().
  */
@@ -719,6 +721,7 @@ typedef struct
 	guint		 offset;
 	guint		 count;
 	const gchar	*login_key;
+	const gchar *const	*exclude_account_keys;
 } VentureSeriesHoldingFilter;
 
 /**
@@ -845,6 +848,8 @@ venture_series_store_holdings_by_instrument(
  * @count: rows to return; 0 for %VENTURE_SERIES_MAX_ACCOUNT_ROWS
  * @login_key: (nullable): the accounts reached through one login ("" for
  *   those reached through none)
+ * @exclude_account_keys: (nullable) (array zero-terminated=1): accounts to
+ *   leave out, by key -- the ones the organization ignores
  *
  * Which positions a read wants. Start from
  * venture_series_position_filter_init(): "no bound" is not zero.
@@ -858,6 +863,7 @@ typedef struct
 	guint		 offset;
 	guint		 count;
 	const gchar	*login_key;
+	const gchar *const	*exclude_account_keys;
 } VentureSeriesPositionFilter;
 
 /**
@@ -942,6 +948,8 @@ venture_series_store_list_positions(
  * @count: rows to return; 0 for %VENTURE_SERIES_MAX_ACCOUNT_ROWS
  * @login_key: (nullable): the accounts reached through one login ("" for
  *   those reached through none)
+ * @exclude_account_keys: (nullable) (array zero-terminated=1): accounts to
+ *   leave out, by key -- the ones the organization ignores
  *
  * Which inbound rows a read wants. Start from
  * venture_series_inbound_filter_init().
@@ -953,6 +961,7 @@ typedef struct
 	guint		 offset;
 	guint		 count;
 	const gchar	*login_key;
+	const gchar *const	*exclude_account_keys;
 } VentureSeriesInboundFilter;
 
 /**
@@ -1070,6 +1079,8 @@ venture_series_store_balance_history(
  * @descending: newest first (listing only)
  * @login_key: (nullable): the accounts reached through one login ("" for
  *   those reached through none)
+ * @exclude_account_keys: (nullable) (array zero-terminated=1): accounts to
+ *   leave out, by key -- the ones the organization ignores
  *
  * Which ledger rows a read wants. Start from
  * venture_series_txn_filter_init(): "no bound" is not zero.
@@ -1087,6 +1098,7 @@ typedef struct
 	guint		 count;
 	gboolean	 descending;
 	const gchar	*login_key;
+	const gchar *const	*exclude_account_keys;
 } VentureSeriesTxnFilter;
 
 /**
@@ -1388,6 +1400,8 @@ venture_series_value_sort_to_string(VentureSeriesValueSort sort);
  *   most %VENTURE_SERIES_MAX_ACCOUNT_ROWS
  * @login_key: (nullable): the holdings of the accounts reached through one
  *   login ("" for those reached through none)
+ * @exclude_account_keys: (nullable) (array zero-terminated=1): accounts to
+ *   leave out, by key -- the ones the organization ignores
  *
  * What venture_series_store_value_instruments() and _value_lines() read.
  * Start from venture_series_value_filter_init(): two "no bound" values are
@@ -1412,6 +1426,7 @@ typedef struct
 	guint			 offset;
 	guint			 count;
 	const gchar		*login_key;
+	const gchar *const	*exclude_account_keys;
 } VentureSeriesValueFilter;
 
 /**

@@ -22,6 +22,7 @@
  */
 
 #include "venture.h"
+#include "marketdata/venture-marketdata-private.h"
 
 #include <math.h>
 #include <string.h>
@@ -1132,6 +1133,8 @@ typedef struct
 	JsonArray				*sources;
 	GArray					*shown;		/* source ids */
 	gchar					*first_currency;
+	VentureMarketdataIgnores		*ignores;
+	gint64					 ignored;	/* accounts ignored, shown or not */
 } MaOverview;
 
 static void
@@ -1148,6 +1151,7 @@ ma_overview_clear(MaOverview *view)
 	g_clear_pointer(&view->attention, g_hash_table_unref);
 	g_clear_pointer(&view->rows, g_ptr_array_unref);
 	g_clear_pointer(&view->login_index, g_hash_table_unref);
+	g_clear_pointer(&view->ignores, venture_marketdata_ignores_free);
 	g_clear_pointer(&view->login_choices, json_array_unref);
 	g_clear_pointer(&view->logins, g_ptr_array_unref);
 	g_clear_pointer(&view->sources, json_array_unref);
@@ -1700,6 +1704,8 @@ ma_overview_source(
 	g_autofree gchar *currency = NULL;
 	g_autofree gchar *default_group = NULL;
 	g_autofree gchar *name = NULL;
+	g_auto(GStrv) ignored = NULL;
+	const gchar *const *exclude = NULL;
 	VentureSeriesTxnFilter txns;
 	JsonObject *summary;
 	gint64 source_id;
@@ -1731,6 +1737,11 @@ ma_overview_source(
 	if (NULL == accounts)
 		return FALSE;
 
+	/* The accounts the organization ignores leave the list, and every
+	 * whole-source read below leaves them out by key. */
+	ignored = venture_marketdata_ignores_split(view->ignores, accounts, view->query->show_ignored);
+	view->ignored += g_strv_length(ignored);
+	exclude = view->query->show_ignored ? NULL : (const gchar *const *)ignored;
 	json_object_set_int_member(summary, "accounts", accounts->len);
 
 	if (0 == accounts->len)
@@ -1897,6 +1908,7 @@ ma_overview_source(
 			filter.exclude_place = "currency";
 			filter.count = 1;
 			filter.login_key = view->query->login;
+			filter.exclude_account_keys = exclude;
 
 			if (NULL != view->query->group_key)
 				filter.account_key = ((VentureSeriesAccountRow *)g_ptr_array_index(accounts, k))->key;
@@ -1934,6 +1946,7 @@ ma_overview_source(
 			venture_series_txn_filter_init(&txns);
 			ma_thirty_days(context, view->now, &txns.since, &txns.until);
 			txns.login_key = view->query->login;
+			txns.exclude_account_keys = exclude;
 
 			if (NULL != view->query->group_key)
 				txns.account_key = ((VentureSeriesAccountRow *)g_ptr_array_index(accounts, k))->key;
@@ -1981,6 +1994,7 @@ ma_overview_source(
 		filter.now = view->now;
 		filter.exclude_place = "currency";
 		filter.login_key = view->query->login;
+		filter.exclude_account_keys = exclude;
 		worth = venture_series_store_value_totals(store, &filter, VENTURE_SERIES_VALUE_GROUP_ACCOUNT,
 		                                          error);
 
@@ -2008,6 +2022,7 @@ ma_overview_source(
 		venture_series_txn_filter_init(&txns);
 		ma_thirty_days(context, view->now, &txns.since, &txns.until);
 		txns.login_key = view->query->login;
+		txns.exclude_account_keys = exclude;
 		totals = venture_series_store_txn_totals(store, &txns, VENTURE_SERIES_TXN_GROUP_ACCOUNT, error);
 
 		if (NULL == totals)
@@ -2076,6 +2091,18 @@ ma_overview_source(
 
 		shown = ma_account_row(view, source, account, realm, mine, currency, days, first_day);
 		g_ptr_array_add(view->rows, shown);
+
+		/* Only reached for an ignored account when they are shown. */
+		{
+			const gchar *why = NULL;
+			gint64 ignore_id = venture_marketdata_ignores_match(view->ignores, account, &why);
+
+			if (0 != ignore_id)
+			{
+				json_object_set_string_member(shown->json, "ignored", why);
+				json_object_set_int_member(shown->json, "ignore_id", ignore_id);
+			}
+		}
 
 		/* The account's share of its login's card. */
 		if (!venture_string_is_empty(account->login_key))
@@ -2609,6 +2636,7 @@ venture_marketdata_accounts(
 	ma_set_text(echo, "login", query->login);
 	json_object_set_string_member(echo, "sort", (NULL != query->sort) ? query->sort : "attention");
 	json_object_set_boolean_member(echo, "descending", query->descending);
+	json_object_set_boolean_member(echo, "show_ignored", query->show_ignored);
 	json_object_set_object_member(root, "query", echo);
 
 	list = json_array_new();
@@ -2656,6 +2684,7 @@ venture_marketdata_accounts(
 		view.login_choices = json_array_new();
 		view.sources = json_array_new();
 		view.shown = g_array_new(FALSE, FALSE, sizeof(gint64));
+		view.ignores = venture_marketdata_ignores_load(context, query->organization_id);
 
 		if (available)
 		{
@@ -2789,6 +2818,8 @@ venture_marketdata_accounts(
 		json_object_set_array_member(root, "login_choices", json_array_ref(view.login_choices));
 
 		json_object_set_int_member(summary, "accounts", view.accounts);
+		json_object_set_int_member(summary, "ignored", view.ignored);
+		json_object_set_array_member(root, "ignores", venture_marketdata_ignores_json(view.ignores));
 		json_object_set_int_member(summary, "characters", view.characters);
 		json_object_set_int_member(summary, "realms", g_hash_table_size(view.realms));
 		json_object_set_int_member(summary, "stale_accounts", view.stale);
@@ -3107,6 +3138,26 @@ venture_marketdata_account(
 
 		realm = ma_realm(account, venues);
 		ops = ma_ops_new();
+
+		/* Whether the organization ignores it, and what its page's
+		 * switches would write: the account itself, and its realm. */
+		{
+			g_autoptr(VentureMarketdataIgnores) ignores =
+				venture_marketdata_ignores_load(context, query->organization_id);
+			JsonObject *ignore = json_object_new();
+			const gchar *realm_key = !venture_string_is_empty(account->group_key)
+				? account->group_key : account->venue_key;
+			gint64 own = venture_marketdata_ignores_character(ignores, account->key);
+			gint64 realm_id;
+
+			realm_id = venture_marketdata_ignores_realm(ignores, account->group_key, account->venue_key);
+			json_object_set_int_member(ignore, "account_id", own);
+			json_object_set_int_member(ignore, "realm_id", realm_id);
+			ma_set_text(ignore, "realm_key", venture_string_is_empty(realm_key) ? NULL : realm_key);
+			ma_set_text(ignore, "realm_name", ('\0' != realm[0]) ? realm : realm_key);
+			json_object_set_boolean_member(ignore, "ignored", (0 != own) || (0 != realm_id));
+			json_object_set_object_member(root, "ignore", ignore);
+		}
 
 		/* Listings, valued and against the market where they are up. */
 		venture_series_position_filter_init(&position_filter);
@@ -3597,6 +3648,7 @@ venture_marketdata_inventory(
 	json_object_set_int_member(echo, "dead_days", dead_days);
 	json_object_set_string_member(echo, "sort", (NULL != query->sort) ? query->sort : "value");
 	json_object_set_boolean_member(echo, "descending", query->descending);
+	json_object_set_boolean_member(echo, "show_ignored", query->show_ignored);
 	json_object_set_object_member(root, "query", echo);
 	json_object_set_int_member(root, "page", page);
 	json_object_set_int_member(root, "per_page", per_page);
@@ -3643,6 +3695,9 @@ venture_marketdata_inventory(
 		g_autofree gchar *source_name = NULL;
 		VentureSeriesValueFilter filter;
 		VentureSeriesValueFilter everything;
+		g_autoptr(VentureMarketdataIgnores) ignores = NULL;
+		g_auto(GStrv) ignored = NULL;
+		const gchar *const *exclude = NULL;
 		VentureSeriesValueTotals totals;
 		VentureSeriesValueTotals portfolio;
 		JsonObject *object;
@@ -3710,6 +3765,15 @@ venture_marketdata_inventory(
 		if (NULL == accounts)
 			goto fail;
 
+		/* The ignored accounts leave the picker and the sums -- unless
+		 * one is asked for by name, which is asking to see it. */
+		ignores = venture_marketdata_ignores_load(context, query->organization_id);
+		ignored = venture_marketdata_ignores_split(ignores, accounts, query->show_ignored);
+		json_object_set_int_member(root, "ignored", g_strv_length(ignored));
+
+		if (!query->show_ignored && (NULL == query->account))
+			exclude = (const gchar *const *)ignored;
+
 		array = json_array_new();
 		login_of = g_hash_table_new(g_str_hash, g_str_equal);
 
@@ -3746,6 +3810,7 @@ venture_marketdata_inventory(
 		filter.account_key = query->account;
 		filter.login_key = query->login;
 		filter.place = query->place;
+		filter.exclude_account_keys = exclude;
 
 		/* A game's own tokens are holdings too, but not stock: left out
 		 * unless asked for by place. */
@@ -3796,6 +3861,7 @@ venture_marketdata_inventory(
 		everything.now = now;
 		everything.exclude_place = "currency";
 		everything.count = 1;
+		everything.exclude_account_keys = exclude;
 		whole = venture_series_store_value_instruments(store, &everything, &portfolio, error);
 
 		if (NULL == whole)
@@ -4238,6 +4304,7 @@ venture_marketdata_external_pnl(
 		ma_set_text(echo, "venue", query->venue);
 		ma_set_text(echo, "instrument", query->instrument);
 		ma_set_text(echo, "source", query->source);
+		json_object_set_boolean_member(echo, "show_ignored", query->show_ignored);
 		json_object_set_object_member(root, "query", echo);
 	}
 
@@ -4291,6 +4358,9 @@ venture_marketdata_external_pnl(
 		VentureSeriesTxnFilter filter;
 		VentureSeriesTxnGroup group;
 		VentureSeriesTxnGroup trend_group;
+		g_autoptr(VentureMarketdataIgnores) ignores = NULL;
+		g_autoptr(GPtrArray) accounts = NULL;
+		g_auto(GStrv) ignored = NULL;
 		JsonObject *object;
 		JsonArray *array;
 		gint64 source_id;
@@ -4336,6 +4406,20 @@ venture_marketdata_external_pnl(
 		filter.source = query->source;
 		filter.since = (G_MININT64 != since) ? since : VENTURE_SERIES_NONE;
 		filter.until = (G_MININT64 != until) ? until : VENTURE_SERIES_NONE;
+
+		/* The ignored accounts' rows are left out, unless shown or one
+		 * of them is asked for by name. */
+		ignores = venture_marketdata_ignores_load(context, query->organization_id);
+		accounts = venture_series_store_list_accounts(store, NULL, NULL, NULL, now, error);
+
+		if (NULL == accounts)
+			goto fail;
+
+		ignored = venture_marketdata_ignores_split(ignores, accounts, TRUE);
+		json_object_set_int_member(root, "ignored", g_strv_length(ignored));
+
+		if (!query->show_ignored && (NULL == query->account))
+			filter.exclude_account_keys = (const gchar *const *)ignored;
 
 		buckets = venture_series_store_txn_totals(store, &filter, group, error);
 

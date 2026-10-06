@@ -621,6 +621,186 @@ acw_period_label(
 	return (NULL != moment) ? g_date_time_format(moment, format) : g_strdup("");
 }
 
+/* --- Ignoring accounts ----------------------------------------------------------- */
+
+/* Where a switch sends the reader back to: a path on this site, or the
+ * overview -- never somewhere a form field could point elsewhere. */
+static const gchar *
+acw_back(HtmxRequest *request)
+{
+	const gchar *back = htmx_request_get_form_value(request, "back");
+
+	if ((NULL == back) || ('/' != back[0]) || ('/' == back[1]) || (NULL != strchr(back, '\\')) ||
+	    (NULL != strpbrk(back, "\r\n")))
+		return "/accounts";
+
+	return back;
+}
+
+/* A button that posts one ignore switch. @id > 0 turns that record off;
+ * otherwise it writes one for @kind and @key, shown as @name. */
+static void
+acw_ignore_button(
+	GString		*html,
+	gint64		 id,
+	const gchar	*kind,
+	const gchar	*key,
+	const gchar	*name,
+	const gchar	*back,
+	const gchar	*label
+){
+	if (id > 0)
+		g_string_append_printf(html, "<form method=\"post\" action=\"/accounts/ignores/%" G_GINT64_FORMAT
+		                             "/delete\" class=\"form-inline\">", id);
+	else
+	{
+		g_string_append(html, "<form method=\"post\" action=\"/accounts/ignores\" class=\"form-inline\">"
+		                      "<input type=\"hidden\" name=\"kind\" value=\"");
+		venture_html_escape_append(html, kind);
+		g_string_append(html, "\"><input type=\"hidden\" name=\"key\" value=\"");
+		venture_html_escape_append(html, key);
+		g_string_append(html, "\"><input type=\"hidden\" name=\"name\" value=\"");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "\">");
+	}
+
+	g_string_append(html, "<input type=\"hidden\" name=\"back\" value=\"");
+	venture_html_escape_append(html, back);
+	g_string_append(html, "\"><button class=\"btn btn-sm\" type=\"submit\">");
+	venture_html_escape_append(html, label);
+	g_string_append(html, "</button></form>");
+}
+
+/*
+ * The overview's card of what is ignored: each record with its switch
+ * off, and the link that shows or hides the ignored accounts. Drawn only
+ * when something is ignored.
+ */
+static void
+acw_ignores_card(
+	GString		*html,
+	HtmxRequest	*request,
+	JsonObject	*root,
+	gboolean	 show
+){
+	JsonArray *records = json_object_has_member(root, "ignores")
+		? json_object_get_array_member(root, "ignores") : NULL;
+	JsonObject *summary = json_object_get_object_member(root, "summary");
+	g_autoptr(GString) back = g_string_new("/accounts");
+	g_autofree gchar *toggle = NULL;
+	gint64 hidden = json_object_get_int_member(summary, "ignored");
+	guint i;
+
+	if ((NULL == records) || (0 == json_array_get_length(records)))
+		return;
+
+	if (show)
+		g_string_append(back, "?show_ignored=1");
+
+	/* The page as it is, the switch flipped. */
+	{
+		static const gchar *const kept[] = {
+			"source", "basis", "group", "expiring_hours", "mail_days", "stale_days", "by_realm",
+			"login", "by_login", "sort", "dir", NULL
+		};
+		GString *link = g_string_new("/accounts?");
+
+		for (i = 0; NULL != kept[i]; i++)
+		{
+			const gchar *value = mdw_param(request, kept[i]);
+
+			if (NULL == value)
+				continue;
+
+			g_string_append_printf(link, "%s=", kept[i]);
+			g_string_append_uri_escaped(link, value, NULL, FALSE);
+			g_string_append_c(link, '&');
+		}
+
+		g_string_append(link, show ? "show_ignored=0" : "show_ignored=1");
+		toggle = g_string_free(link, FALSE);
+	}
+
+	g_string_append(html, "<section class=\"card accounts-ignored-card\" aria-labelledby=\"ignored-h\">"
+	                      "<div class=\"card-head\"><h2 id=\"ignored-h\">Ignored</h2><a class=\"btn btn-sm\" "
+	                      "href=\"");
+	venture_html_escape_append(html, toggle);
+	g_string_append_printf(html, "\">%s</a></div><div class=\"card-body\"><p class=\"muted\">",
+	                       show ? "Hide ignored accounts" : "Show ignored accounts");
+
+	if (show)
+		g_string_append_printf(html, "%" G_GINT64_FORMAT " ignored account%s %s shown below, marked, and "
+		                             "counted in the figures above.", hidden, (1 == hidden) ? "" : "s",
+		                       (1 == hidden) ? "is" : "are");
+	else
+		g_string_append_printf(html, "%" G_GINT64_FORMAT " account%s left out of this page, its totals "
+		                             "and \"My characters\".", hidden, (1 == hidden) ? "" : "s");
+
+	g_string_append(html, "</p><ul class=\"accounts-ignored\">");
+
+	for (i = 0; i < json_array_get_length(records); i++)
+	{
+		JsonObject *record = json_array_get_object_element(records, i);
+		gboolean realm = (0 == g_strcmp0(mdw_text(record, "kind"), "realm"));
+
+		g_string_append(html, "<li><span class=\"badge\">");
+		g_string_append(html, realm ? "realm" : "character");
+		g_string_append(html, "</span> ");
+		venture_html_escape_append(html, mdw_text(record, "name"));
+		g_string_append(html, " ");
+		acw_ignore_button(html, json_object_get_int_member(record, "id"), NULL, NULL, NULL, back->str,
+		                  "Stop ignoring");
+		g_string_append(html, "</li>");
+	}
+
+	g_string_append(html, "</ul></div></section>");
+}
+
+/*
+ * A line saying how many ignored accounts a page leaves out, with the
+ * page again -- @kept's parameters as they are -- the other way round.
+ * Nothing when none is ignored.
+ */
+static void
+acw_ignored_note(
+	GString			*html,
+	HtmxRequest		*request,
+	JsonObject		*root,
+	const gchar		*path,
+	const gchar *const	*kept,
+	gboolean		 show
+){
+	g_autoptr(GString) link = NULL;
+	gint64 count = json_object_has_member(root, "ignored") ? json_object_get_int_member(root, "ignored") : 0;
+	guint i;
+
+	if (count <= 0)
+		return;
+
+	link = g_string_new(path);
+	g_string_append_c(link, '?');
+
+	for (i = 0; NULL != kept[i]; i++)
+	{
+		const gchar *value = mdw_param(request, kept[i]);
+
+		if ((NULL == value) || (0 == g_strcmp0(kept[i], "show_ignored")))
+			continue;
+
+		g_string_append_printf(link, "%s=", kept[i]);
+		g_string_append_uri_escaped(link, value, NULL, FALSE);
+		g_string_append_c(link, '&');
+	}
+
+	g_string_append(link, show ? "show_ignored=0" : "show_ignored=1");
+	g_string_append_printf(html, "<p class=\"muted accounts-ignored-note\">%" G_GINT64_FORMAT
+	                             " ignored account%s %s. <a href=\"", count, (1 == count) ? "" : "s",
+	                       show ? "included" : "left out");
+	venture_html_escape_append(html, link->str);
+	g_string_append_printf(html, "\">%s</a> \xc2\xb7 <a href=\"/accounts?show_ignored=1\">manage</a></p>",
+	                       show ? "Leave them out" : "Include them");
+}
+
 /* --- /accounts ---------------------------------------------------------------- */
 
 static gboolean
@@ -647,6 +827,7 @@ acw_overview_query(
 	query->login = mdw_param(request, "login");
 	query->sort = mdw_param(request, "sort");
 	query->descending = (0 == g_strcmp0(mdw_param(request, "dir"), "desc"));
+	query->show_ignored = mdw_flag(request, "show_ignored");
 
 	return TRUE;
 }
@@ -856,7 +1037,7 @@ venture_marketdata_web_accounts(
 ){
 	static const gchar *const kept[] = {
 		"source", "basis", "group", "expiring_hours", "mail_days", "stale_days", "by_realm",
-		"login", "by_login", NULL
+		"login", "by_login", "show_ignored", NULL
 	};
 	VentureWebServer *self = data;
 	g_autoptr(GError) error = NULL;
@@ -950,6 +1131,9 @@ venture_marketdata_web_accounts(
 		                             "then realm</label></div>",
 		                       by_login ? " checked" : "");
 
+	g_string_append_printf(html, "<div class=\"field\"><label><input type=\"checkbox\" "
+	                             "name=\"show_ignored\" value=\"1\"%s> Show ignored accounts</label></div>",
+	                       query.show_ignored ? " checked" : "");
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></details>");
 	mdw_notes(html, root);
 
@@ -1073,6 +1257,12 @@ venture_marketdata_web_accounts(
 			g_string_append(html, "</span>");
 		}
 
+		/* Only there with the ignored shown. */
+		if (NULL != mdw_text(row, "ignored"))
+			g_string_append_printf(html, " <span class=\"badge\" title=\"Ignored %s\">ignored</span>",
+			                       (0 == g_strcmp0(mdw_text(row, "ignored"), "realm"))
+			                       ? "with its realm" : "on its own");
+
 		if (JSON_NODE_HOLDS_VALUE(json_object_get_member(row, "level")) || (NULL != mdw_text(row, "class")))
 		{
 			g_string_append(html, "<div class=\"account-sub\">");
@@ -1143,6 +1333,7 @@ venture_marketdata_web_accounts(
 		                       "exports characters.</p></div></td></tr>", columns);
 
 	g_string_append(html, "</tbody></table></div></section>");
+	acw_ignores_card(html, request, root, query.show_ignored);
 	mdw_attribution(html, root);
 
 	return acw_page(self, request, "/accounts", "Accounts", html);
@@ -1314,7 +1505,41 @@ venture_marketdata_web_account(
 	mdw_when(html, account, "last_seen");
 	g_string_append(html, " \xc2\xb7 data from ");
 	acw_freshness(html, account);
-	g_string_append(html, "</p></div></div>");
+	g_string_append(html, "</p></div>");
+
+	/* The ignore switches: this character, and its whole realm. */
+	if (json_object_has_member(root, "ignore"))
+	{
+		JsonObject *ignore = json_object_get_object_member(root, "ignore");
+		g_autofree gchar *escaped = g_uri_escape_string(key, NULL, FALSE);
+		g_autofree gchar *back = g_strdup_printf("/accounts/%" G_GINT64_FORMAT "/%s",
+		                                         json_object_get_int_member(root, "data_source_id"), escaped);
+		const gchar *realm_key = mdw_text(ignore, "realm_key");
+		const gchar *realm_name = mdw_text(ignore, "realm_name");
+		gint64 own = json_object_get_int_member(ignore, "account_id");
+		gint64 realm_id = json_object_get_int_member(ignore, "realm_id");
+
+		g_string_append(html, "<div class=\"page-actions account-ignore\">");
+
+		if ((0 != own) || (0 != realm_id))
+			g_string_append(html, "<span class=\"badge warning\">Ignored</span>");
+
+		acw_ignore_button(html, own, "character", key, name, back,
+		                  (0 != own) ? "Stop ignoring this character" : "Ignore this character");
+
+		if (NULL != realm_key)
+		{
+			g_autofree gchar *label = g_strdup_printf((0 != realm_id) ? "Stop ignoring %s" : "Ignore %s",
+			                                          (NULL != realm_name) ? realm_name : realm_key);
+
+			acw_ignore_button(html, realm_id, "realm", realm_key,
+			                  (NULL != realm_name) ? realm_name : realm_key, back, label);
+		}
+
+		g_string_append(html, "</div>");
+	}
+
+	g_string_append(html, "</div>");
 	mdw_attribution(html, root);
 	mdw_notes(html, root);
 
@@ -1688,7 +1913,7 @@ venture_marketdata_web_inventory(
 ){
 	static const gchar *const kept[] = {
 		"source", "basis", "account", "place", "category", "search", "min_value", "dead", "dead_days",
-		"per_page", "login", "group_by", NULL
+		"per_page", "login", "group_by", "show_ignored", NULL
 	};
 	VentureWebServer *self = data;
 	g_autoptr(GError) error = NULL;
@@ -1735,6 +1960,7 @@ venture_marketdata_web_inventory(
 	query.account = mdw_param(request, "account");
 	query.login = mdw_param(request, "login");
 	query.group_by = mdw_param(request, "group_by");
+	query.show_ignored = mdw_flag(request, "show_ignored");
 	query.place = mdw_param(request, "place");
 	query.category = mdw_param(request, "category");
 	query.search = mdw_param(request, "search");
@@ -1841,8 +2067,12 @@ venture_marketdata_web_inventory(
 		                       query.descending ? "desc" : "asc");
 	}
 
+	if (query.show_ignored)
+		g_string_append(html, "<input type=\"hidden\" name=\"show_ignored\" value=\"1\">");
+
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></details>");
 	mdw_notes(html, root);
+	acw_ignored_note(html, request, root, "/accounts/inventory", kept, query.show_ignored);
 
 	{
 		g_autofree gchar *units = g_strdup_printf("%" G_GINT64_FORMAT " units in %" G_GINT64_FORMAT " lines",
@@ -2233,6 +2463,7 @@ venture_marketdata_web_pnl(
 	query.account = mdw_param(request, "account");
 	query.login = mdw_param(request, "login");
 	query.venue = mdw_param(request, "venue");
+	query.show_ignored = mdw_flag(request, "show_ignored");
 	query.instrument = mdw_param(request, "instrument");
 	query.source = mdw_param(request, "label");
 	answer = venture_marketdata_external_pnl(self->context, &query, &error);
@@ -2292,8 +2523,20 @@ venture_marketdata_web_pnl(
 	mdw_input(html, request, "Venue", "venue", "a venue's key");
 	mdw_input(html, request, "Item", "instrument", "an item's key");
 	mdw_input(html, request, "Source label", "label", "e.g. Auction");
+
+	if (query.show_ignored)
+		g_string_append(html, "<input type=\"hidden\" name=\"show_ignored\" value=\"1\">");
+
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></details>");
 	mdw_notes(html, root);
+	{
+		static const gchar *const kept[] = {
+			"source", "period", "since", "until", "group_by", "login", "account", "venue", "instrument",
+			"label", "top", NULL
+		};
+
+		acw_ignored_note(html, request, root, "/accounts/pnl", kept, query.show_ignored);
+	}
 
 	array = json_object_get_array_member(root, "totals");
 
@@ -2475,6 +2718,116 @@ venture_marketdata_web_pnl(
 
 /* --- Routes ---------------------------------------------------------------------------- */
 
+/* --- Ignoring accounts: the switches ---------------------------------------------- */
+
+/*
+ * POST /accounts/ignores: kind (character or realm), key, name, back.
+ * Ignoring what is already ignored is not an error -- the second click of
+ * a double click -- so an existing record is left as it is.
+ */
+static HtmxResponse *
+venture_marketdata_web_ignore(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) existing = NULL;
+	const gchar *kind;
+	const gchar *key;
+	const gchar *name;
+	VentureActor actor;
+	gint64 organization_id;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	gate = mdw_gate(self, request, FALSE, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_ACCOUNT_IGNORE);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	kind = htmx_request_get_form_value(request, "kind");
+	key = htmx_request_get_form_value(request, "key");
+	name = htmx_request_get_form_value(request, "name");
+
+	query = venture_query_new(VENTURE_TYPE_ACCOUNT_IGNORE);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 1);
+
+	if ((NULL != kind) && (NULL != key) &&
+	    venture_query_add_filter_string(query, "kind", VENTURE_FILTER_OP_EQ, kind, NULL) &&
+	    venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, key, NULL))
+		existing = venture_database_find(venture_context_get_database(self->context), query, NULL);
+
+	if ((NULL != existing) && (existing->len > 0))
+		return venture_web_redirect_to(acw_back(request));
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+	record = VENTURE_ENTITY(venture_account_ignore_new());
+	venture_entity_set_organization_id(record, organization_id);
+	g_object_set(record, "kind", kind, "key", key,
+	             "name", !venture_string_is_empty(name) ? name : key, NULL);
+
+	if (!venture_database_save(venture_context_get_database(self->context), record, &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(acw_back(request));
+}
+
+/* POST /accounts/ignores/:id/delete: the switch off again. */
+static HtmxResponse *
+venture_marketdata_web_unignore(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	VentureActor actor;
+	gint64 organization_id;
+	gint64 id;
+	HtmxResponse *gate;
+
+	gate = mdw_gate(self, request, FALSE, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_ACCOUNT_IGNORE);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error) ||
+	    !mdw_path_id(params, "id", &id, &error))
+		return venture_web_error_response(error);
+
+	record = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_ACCOUNT_IGNORE,
+	                              id, NULL);
+
+	if ((NULL == record) || (venture_entity_get_organization_id(record) != organization_id))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No ignored account #%" G_GINT64_FORMAT " in this organization", id);
+		return venture_web_error_response(error);
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_entity_is_deleted(record) &&
+	    !venture_database_delete(venture_context_get_database(self->context), record, &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to(acw_back(request));
+}
+
 static void
 venture_marketdata_accounts_pages_register(VentureWebServer *self)
 {
@@ -2489,6 +2842,8 @@ venture_marketdata_accounts_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_GET, "/accounts", venture_marketdata_web_accounts },
 		{ HTMX_METHOD_GET, "/accounts/inventory", venture_marketdata_web_inventory },
 		{ HTMX_METHOD_GET, "/accounts/pnl", venture_marketdata_web_pnl },
+		{ HTMX_METHOD_POST, "/accounts/ignores", venture_marketdata_web_ignore },
+		{ HTMX_METHOD_POST, "/accounts/ignores/:id/delete", venture_marketdata_web_unignore },
 		/* The key is the rest of the path: it may hold a slash. */
 		{ HTMX_METHOD_GET, "/accounts/:source/*", venture_marketdata_web_account },
 		{ HTMX_METHOD_GET, "/api/v1/accounts", venture_marketdata_web_accounts },

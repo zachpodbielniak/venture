@@ -37,6 +37,9 @@ VENTURE_DECLARE_ENTITY(VentureWatchlist, venture_watchlist, WATCHLIST)
 #define VENTURE_TYPE_VENUE_GROUP (venture_venue_group_get_type())
 VENTURE_DECLARE_ENTITY(VentureVenueGroup, venture_venue_group, VENUE_GROUP)
 
+#define VENTURE_TYPE_ACCOUNT_IGNORE (venture_account_ignore_get_type())
+VENTURE_DECLARE_ENTITY(VentureAccountIgnore, venture_account_ignore, ACCOUNT_IGNORE)
+
 #define VENTURE_TYPE_WATCHLIST_ENTRY (venture_watchlist_entry_get_type())
 VENTURE_DECLARE_ENTITY(VentureWatchlistEntry, venture_watchlist_entry, WATCHLIST_ENTRY)
 

@@ -682,7 +682,7 @@ static const gchar *const marketdata_reports[] = { "market_deals", "venue_index"
 static GType (*const marketdata_types[]) (void) = {
 	venture_venue_get_type, venture_instrument_get_type,
 	venture_watchlist_get_type, venture_watchlist_entry_get_type,
-	venture_venue_group_get_type,
+	venture_venue_group_get_type, venture_account_ignore_get_type,
 	venture_alert_rule_get_type, venture_alert_hit_get_type, NULL
 };
 /* Arbitrage trades and their legs, posted to the books. It requires
