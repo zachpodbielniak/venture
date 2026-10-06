@@ -5075,6 +5075,91 @@
 		}
 	});
 
+	/*
+	 * Tables marked data-client-sort sort in place: a click on a heading's
+	 * link reorders the rows already on the page by each cell's
+	 * data-sort-value (figures as numbers, names as text), keeps rows with
+	 * no value last either way, turns round on a second click, marks
+	 * aria-sort, and puts the link's address in the location bar without
+	 * loading it -- a reload or a shared link sorts on the server the same
+	 * way. Without script the headings are plain links that do that.
+	 */
+	function sortTableBy(heading) {
+		var table = heading.closest("table");
+		var tbody = table ? table.tBodies[0] : null;
+		var headings = heading.parentNode.children;
+		var column = Array.prototype.indexOf.call(headings, heading);
+		var numeric = heading.getAttribute("data-sort-type") === "num";
+		var current = heading.getAttribute("aria-sort");
+		var descending;
+		var rows;
+		var i;
+
+		if (!tbody || column < 0) {
+			return;
+		}
+
+		descending = current ? current === "ascending" : heading.getAttribute("data-sort-default") === "desc";
+		rows = Array.prototype.filter.call(tbody.rows, function (row) {
+			return row.cells.length > column && !row.cells[0].hasAttribute("colspan");
+		});
+
+		rows.sort(function (a, b) {
+			var x = a.cells[column].getAttribute("data-sort-value");
+			var y = b.cells[column].getAttribute("data-sort-value");
+			var order;
+
+			if ((x === null) !== (y === null)) {
+				return x === null ? 1 : -1;
+			}
+
+			if (x === null) {
+				return 0;
+			}
+
+			order = numeric ? parseFloat(x) - parseFloat(y)
+			                : x.localeCompare(y, undefined, { sensitivity: "base", numeric: true });
+
+			return descending ? -order : order;
+		});
+
+		rows.forEach(function (row) { tbody.appendChild(row); });
+
+		for (i = 0; i < headings.length; i++) {
+			if (headings[i] !== heading) {
+				headings[i].removeAttribute("aria-sort");
+			}
+		}
+
+		heading.setAttribute("aria-sort", descending ? "descending" : "ascending");
+	}
+
+	document.addEventListener("click", function (event) {
+		var link = event.target.closest ? event.target.closest("table[data-client-sort] th a") : null;
+		var heading = link ? link.closest("th") : null;
+		var next;
+
+		if (!heading || !heading.hasAttribute("data-sort-type") ||
+		    event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+			return;
+		}
+
+		event.preventDefault();
+		sortTableBy(heading);
+
+		/* The address of this order, for a reload or a shared link, and
+		 * the heading's next link turned round. */
+		try {
+			next = new URL(link.href, window.location.href);
+			next.searchParams.set("dir", heading.getAttribute("aria-sort") === "descending" ? "desc" : "asc");
+			window.history.replaceState(null, "", next.pathname + next.search);
+			next.searchParams.set("dir", heading.getAttribute("aria-sort") === "descending" ? "asc" : "desc");
+			link.href = next.pathname + next.search;
+		} catch (ignored) {
+			/* an old browser keeps the page sorted and the address as it was */
+		}
+	});
+
 	window.venture = {
 		toast: toast,
 		openModal: openModal,

@@ -278,6 +278,16 @@ venture_marketdata_find(
  * @max_pct: only rows at most this percent of the region median; NAN for
  *   no bound
  * @count: rows to return, 0 for 50, at most %VENTURE_MARKETDATA_DEALS_MAX
+ * @cut_pct: the marketplace's cut of a sale, in percent, taken from the
+ *   sell side when a deal's profit is reckoned (an auction house's is 5)
+ * @sort: (nullable): "deal" (the default: cheapest against the region
+ *   first), or a column: "name", "ilvl", "buy_at", "buy", "sell_at",
+ *   "sell", "profit", "roi", "region", "rate" (the sell venue's sale rate)
+ *   or "qty". A column sort reads a wide pool of deals and keeps the
+ *   first @count; a row with no value for it (nowhere to sell, no item
+ *   level) is last either way.
+ * @dir: (nullable): "asc" or "desc"; %NULL for the column's natural
+ *   order (most first for figures where more is better, A to Z for names)
  *
  * What the deals page asks. A deal is an instrument in stock at a venue
  * whose lowest price is at or under its group's deal price: the median of
@@ -296,6 +306,9 @@ typedef struct
 	const VentureMoney	*min_value;
 	gdouble			 max_pct;
 	guint			 count;
+	gdouble			 cut_pct;
+	const gchar		*sort;
+	const gchar		*dir;
 } VentureMarketdataDealsQuery;
 
 /**
@@ -315,7 +328,12 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query);
  *
  * The deals, cheapest against their region first: {available, notes,
  * sources, rows (each a browse row plus data_source_id, source_name,
- * discount and discount_pct), truncated}.
+ * discount and discount_pct, and -- where another venue has it in stock --
+ * sell: the dearest such venue's row in the venue group, else in the buy
+ * venue's group, with profit (its lowest price less the cut, less the buy
+ * price) and roi_pct), truncated, cut_pct, totals: {investment, sale,
+ * profit} over the rows with a sell side, one unit each, when they share a
+ * currency}.
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
  */

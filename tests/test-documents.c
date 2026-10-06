@@ -136,7 +136,7 @@ test_compose_invoice_and_send(Fixture *f, gconstpointer data)
 static void
 test_compose_invoice_dates(Fixture *f, gconstpointer data)
 {
-	g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+	g_autoptr(GDateTime) today = venture_settlement_service_today(venture_settlement_service_get(f->db));
 	g_autoptr(GDateTime) start = g_date_time_new_utc(g_date_time_get_year(today), 1, 1, 0, 0, 0);
 	g_autoptr(GDateTime) end = g_date_time_add_years(start, 1);
 	g_autoptr(VentureEntity) year = g_object_new(VENTURE_TYPE_FISCAL_YEAR,

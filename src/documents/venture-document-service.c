@@ -313,7 +313,7 @@ row_quantity(JsonObject *row)
 /* A calendar date must exist before the first save: fiscal-period checks
  * also apply to drafts. Explicit dates use the same parser as record forms. */
 static gboolean
-invoice_dates(JsonObject *spec, GDateTime **issued, GDateTime **due, GError **error)
+invoice_dates(JsonObject *spec, GDateTime *today, GDateTime **issued, GDateTime **due, GError **error)
 {
 	JsonNode *node;
 	gint64 days;
@@ -328,7 +328,12 @@ invoice_dates(JsonObject *spec, GDateTime **issued, GDateTime **due, GError **er
 		*issued = venture_time_from_string(json_node_get_string(node), error);
 	}
 	else
-		*issued = venture_time_from_string("today", error);
+		/* The business date, as the settlement service judges "the
+		 * future": the process's own "today" is a different date for some
+		 * hours of every day wherever the server's zone is not the
+		 * configured one, and an invoice dated by it was refused as
+		 * future-dated in the evening. */
+		*issued = g_date_time_ref(today);
 	if (*issued == NULL)
 	{
 		if (error == NULL || *error == NULL)
@@ -409,8 +414,13 @@ venture_document_service_compose_invoice_impl(VentureDocumentService *self, gint
 	guint i;
 	g_return_val_if_fail(VENTURE_IS_DOCUMENT_SERVICE(self), NULL);
 	lines = lines_of(spec, error);
-	if (lines == NULL || !invoice_dates(spec, &issued, &due, error))
-		return NULL;
+	{
+		g_autoptr(GDateTime) today = venture_settlement_service_today(
+			venture_settlement_service_get(self->database));
+
+		if (lines == NULL || !invoice_dates(spec, today, &issued, &due, error))
+			return NULL;
+	}
 	if (!venture_database_begin(self->database, error))
 		return NULL;
 	invoice = venture_invoice_new();
@@ -583,8 +593,12 @@ venture_document_service_compose_invoice(VentureDocumentService *self, gint64 or
 	}
 	/* Consent names concrete dates, not a relative "today" which could
 	 * resolve differently when the second actor retries tomorrow. */
-	if (!invoice_dates(spec, &issued, &due, error))
-		return NULL;
+	{
+		g_autoptr(GDateTime) today = venture_settlement_service_today(venture_settlement_service_get(db));
+
+		if (!invoice_dates(spec, today, &issued, &due, error))
+			return NULL;
+	}
 	spec_node = json_node_new(JSON_NODE_OBJECT);
 	json_node_set_object(spec_node, spec);
 	spec_text = venture_json_to_string(spec_node, FALSE);

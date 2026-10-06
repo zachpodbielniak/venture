@@ -738,6 +738,10 @@ md_row_set_display(
 
 	attrs = md_attrs_object(instrument->attrs_json);
 	md_set_display(object, attrs);
+
+	if ((NULL != attrs) && json_object_has_member(attrs, "level") &&
+	    JSON_NODE_HOLDS_VALUE(json_object_get_member(attrs, "level")))
+		json_object_set_int_member(object, "level", json_object_get_int_member(attrs, "level"));
 }
 
 /*
@@ -854,6 +858,60 @@ md_venues_json(
 
 /* --- Categories ------------------------------------------------------------ */
 
+/*
+ * A store's categories, kept a while: listing them groups every
+ * instrument (850,000 on a US auction house store), and every market page
+ * draws the picker, but the list changes only when a provider files a new
+ * kind of item. Keyed by the store's file; the pages are answered on one
+ * thread.
+ */
+#define MD_CATEGORY_CACHE_SECONDS (600)
+
+typedef struct
+{
+	gint64		 at;
+	GPtrArray	*categories;	/* VentureSeriesCategoryRow */
+} MdCategoryCache;
+
+static void
+md_category_cache_free(gpointer data)
+{
+	MdCategoryCache *entry = data;
+
+	g_ptr_array_unref(entry->categories);
+	g_free(entry);
+}
+
+static GPtrArray *
+md_categories_of(VentureSeriesStore *reader)
+{
+	static GHashTable *cache = NULL;
+	const gchar *path = venture_series_store_get_path(reader);
+	gint64 now = g_get_monotonic_time() / G_USEC_PER_SEC;
+	MdCategoryCache *entry;
+	GPtrArray *fresh;
+
+	if (NULL == cache)
+		cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, md_category_cache_free);
+
+	entry = (NULL != path) ? g_hash_table_lookup(cache, path) : NULL;
+
+	if ((NULL != entry) && (now - entry->at < MD_CATEGORY_CACHE_SECONDS))
+		return g_ptr_array_ref(entry->categories);
+
+	fresh = venture_series_store_list_categories(reader, NULL);
+
+	if ((NULL != fresh) && (NULL != path))
+	{
+		entry = g_new0(MdCategoryCache, 1);
+		entry->at = now;
+		entry->categories = g_ptr_array_ref(fresh);
+		g_hash_table_replace(cache, g_strdup(path), entry);
+	}
+
+	return fresh;
+}
+
 /* Adds @reader's categories to @counts (path -> plain instruments). */
 static void
 md_categories_add(
@@ -863,7 +921,7 @@ md_categories_add(
 	g_autoptr(GPtrArray) categories = NULL;
 	guint i;
 
-	categories = venture_series_store_list_categories(reader, NULL);
+	categories = md_categories_of(reader);
 
 	for (i = 0; (NULL != categories) && (i < categories->len); i++)
 	{
@@ -2371,6 +2429,7 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query)
 
 	memset(query, 0, sizeof(*query));
 	query->max_pct = NAN;
+	query->cut_pct = 5.0;
 }
 
 #ifdef VENTURE_HAVE_SQLITE
@@ -2381,6 +2440,9 @@ typedef struct
 	gint64			 data_source_id;
 	gchar			*source_name;
 	JsonObject		*display;
+	VentureSeriesRow	*sell;		/* the dearest venue to sell at, or NULL */
+	gint64			 profit;	/* sell less the cut less the buy */
+	gdouble			 roi;		/* profit / buy, percent */
 } MdDeal;
 
 static void
@@ -2389,6 +2451,7 @@ md_deal_free(gpointer data)
 	MdDeal *deal = data;
 
 	venture_series_row_free(deal->row);
+	venture_series_row_free(deal->sell);
 	g_free(deal->source_name);
 	if (NULL != deal->display)
 		json_object_unref(deal->display);
@@ -2397,6 +2460,145 @@ md_deal_free(gpointer data)
 
 /* Cheapest against the region first, then by source, venue, instrument:
  * the same order every time, whatever order the sources were read in. */
+/* A sell venue's lowest price more than this many times the region's
+ * median, or the venue's market value, is an asking price, not a market. */
+#define MD_SELL_OUTLIER (2)
+
+/* A sale rate under this is a market that sells almost nothing. */
+#define MD_SELL_MIN_RATE (0.02)
+
+/* The columns deals sort by, "deal" being the deal index's own order. */
+static const gchar *const md_deal_sorts[] = {
+	"deal", "name", "ilvl", "buy_at", "buy", "sell_at", "sell", "profit", "roi", "region", "rate", "qty", NULL
+};
+
+/* The merge's order: NULL for the deal index's own, else a column of
+ * md_deal_sorts, and which way. Set for the length of one sort; the
+ * server answers on one thread. */
+static const gchar *md_deal_sort = NULL;
+static gboolean md_deal_descending = FALSE;
+
+/* The columns sorted as text rather than as figures. */
+static const gchar *const md_deal_text_sorts[] = { "name", "buy_at", "sell_at", NULL };
+
+/* Whether a column reads most-first unless asked otherwise. */
+static gboolean
+md_deal_sort_descends(const gchar *sort)
+{
+	static const gchar *const ascending[] = { "name", "buy_at", "sell_at", "buy", "region", NULL };
+
+	return !g_strv_contains(ascending, sort);
+}
+
+/* The figure a deal is sorted by, NAN when it has none for that column. */
+static gdouble
+md_deal_figure(const MdDeal *deal, const gchar *sort)
+{
+	if (0 == g_strcmp0(sort, "ilvl"))
+		return json_object_has_member(deal->display, "level")
+			? (gdouble)json_object_get_int_member(deal->display, "level") : NAN;
+	if (0 == g_strcmp0(sort, "buy"))
+		return (gdouble)deal->row->min_price;
+	if (0 == g_strcmp0(sort, "region"))
+		return deal->row->pct_vs_region;
+	if (0 == g_strcmp0(sort, "qty"))
+		return (gdouble)deal->row->quantity;
+	if (NULL == deal->sell)
+		return NAN;
+	if (0 == g_strcmp0(sort, "sell"))
+		return (gdouble)deal->sell->min_price;
+	if (0 == g_strcmp0(sort, "profit"))
+		return (gdouble)deal->profit;
+	if (0 == g_strcmp0(sort, "roi"))
+		return deal->roi;
+	if (0 == g_strcmp0(sort, "rate"))
+		return deal->sell->sale_rate;
+	return NAN;
+}
+
+/* The text a deal is sorted by, NULL when it has none for that column. */
+static const gchar *
+md_deal_text(const MdDeal *deal, const gchar *sort)
+{
+	if (0 == g_strcmp0(sort, "name"))
+		return (NULL != deal->row->instrument_name) ? deal->row->instrument_name : deal->row->instrument_key;
+	if (0 == g_strcmp0(sort, "buy_at"))
+		return (NULL != deal->row->venue_name) ? deal->row->venue_name : deal->row->venue_key;
+	if ((0 == g_strcmp0(sort, "sell_at")) && (NULL != deal->sell))
+		return (NULL != deal->sell->venue_name) ? deal->sell->venue_name : deal->sell->venue_key;
+	return NULL;
+}
+
+/*
+ * Where @deal is best sold: the dearest venue offering its instrument, in
+ * @group_keys when given and else in the buy venue's group, other than
+ * the buy venue, with stock (a market with nothing in it has no price to
+ * sell at), where it has been selling, and whose price is not an outlier.
+ * Sets deal->sell, profit and roi; leaves sell NULL when there is nowhere.
+ */
+static void
+md_deal_sell_side(
+	MdDeal			*deal,
+	VentureSeriesStore	*reader,
+	const gchar *const	*group_keys,
+	gdouble			 cut_pct
+){
+	g_autoptr(GPtrArray) venues = NULL;
+	gint64 cut;
+	gint64 net;
+	guint best = G_MAXUINT;
+	guint i;
+
+	venues = venture_series_store_other_venues(reader, deal->row->instrument_key,
+	                                           (NULL != group_keys) ? NULL : deal->row->group_key, NULL);
+
+	for (i = 0; (NULL != venues) && (i < venues->len); i++)
+	{
+		VentureSeriesRow *candidate = g_ptr_array_index(venues, i);
+
+		if ((0 == g_strcmp0(candidate->venue_key, deal->row->venue_key)) ||
+		    (VENTURE_SERIES_NONE == candidate->min_price) || (0 == candidate->quantity) ||
+		    (0 != g_strcmp0(candidate->currency, deal->row->currency)) ||
+		    ((NULL != group_keys) && !g_strv_contains(group_keys, candidate->venue_key)))
+			continue;
+
+		/* A lowest listing far above what the item goes for is somebody's
+		 * asking price, not a market: a conch "on sale" for three million
+		 * gold is not where to sell a conch. Over twice the region's
+		 * median, or twice the venue's own market value, is ignored. */
+		if (((VENTURE_SERIES_NONE != candidate->region_median) && (candidate->region_median > 0) &&
+		     (candidate->min_price > MD_SELL_OUTLIER * candidate->region_median)) ||
+		    ((VENTURE_SERIES_NONE != candidate->market_value) && (candidate->market_value > 0) &&
+		     (candidate->min_price > MD_SELL_OUTLIER * candidate->market_value)))
+			continue;
+
+		/* Only where it sells: units estimated sold there, or a sale rate
+		 * worth the name. A venue where the item only ever sits -- every
+		 * listing of a junk item at 9,999,999g, so even the median is a
+		 * troll's -- has no sale price, only asking prices. */
+		if (!((!isnan(candidate->sold_per_day) && (candidate->sold_per_day > 0.0)) ||
+		      (!isnan(candidate->sale_rate) && (candidate->sale_rate >= MD_SELL_MIN_RATE))))
+			continue;
+
+		if ((G_MAXUINT == best) ||
+		    (candidate->min_price > ((VentureSeriesRow *)g_ptr_array_index(venues, best))->min_price))
+			best = i;
+	}
+
+	if (G_MAXUINT == best)
+		return;
+
+	g_ptr_array_set_free_func(venues, (GDestroyNotify)venture_series_row_free);
+	deal->sell = g_ptr_array_steal_index(venues, best);
+
+	/* The cut is taken from the sale, in whole minor units, rounded the
+	 * seller's way (down): a profit is never overstated by a fraction. */
+	cut = (gint64)ceil((gdouble)deal->sell->min_price * CLAMP(cut_pct, 0.0, 100.0) / 100.0);
+	net = deal->sell->min_price - cut;
+	deal->profit = net - deal->row->min_price;
+	deal->roi = (deal->row->min_price > 0) ? (100.0 * (gdouble)deal->profit / (gdouble)deal->row->min_price) : 0.0;
+}
+
 static gint
 md_deal_compare(
 	gconstpointer	a,
@@ -2405,6 +2607,41 @@ md_deal_compare(
 	const MdDeal *x = *(const MdDeal *const *)a;
 	const MdDeal *y = *(const MdDeal *const *)b;
 	gint order;
+
+	if (NULL != md_deal_sort)
+	{
+		if (g_strv_contains(md_deal_text_sorts, md_deal_sort))
+		{
+			const gchar *a_text = md_deal_text(x, md_deal_sort);
+			const gchar *b_text = md_deal_text(y, md_deal_sort);
+
+			/* Nothing to compare by goes last, whichever way. */
+			if ((NULL == a_text) != (NULL == b_text))
+				return (NULL == a_text) ? 1 : -1;
+
+			if (NULL != a_text)
+			{
+				g_autofree gchar *a_fold = g_utf8_casefold(a_text, -1);
+				g_autofree gchar *b_fold = g_utf8_casefold(b_text, -1);
+
+				order = g_utf8_collate(a_fold, b_fold);
+
+				if (0 != order)
+					return md_deal_descending ? -order : order;
+			}
+		}
+		else
+		{
+			gdouble a_value = md_deal_figure(x, md_deal_sort);
+			gdouble b_value = md_deal_figure(y, md_deal_sort);
+
+			if (isnan(a_value) != isnan(b_value))
+				return isnan(a_value) ? 1 : -1;
+
+			if (!isnan(a_value) && (a_value != b_value))
+				return ((a_value < b_value) != md_deal_descending) ? -1 : 1;
+		}
+	}
 
 	if (x->row->pct_vs_region < y->row->pct_vs_region)
 		return -1;
@@ -2456,6 +2693,29 @@ venture_marketdata_deals(
 		return NULL;
 	}
 
+	if (!isfinite(query->cut_pct) || (query->cut_pct < 0.0) || (query->cut_pct >= 100.0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "cut_pct is the marketplace's cut of a sale: a percent from 0 to under 100");
+		return NULL;
+	}
+
+	if ((NULL != query->sort) && !g_strv_contains(md_deal_sorts, query->sort))
+	{
+		g_autofree gchar *names = g_strjoinv(", ", (gchar **)md_deal_sorts);
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Deals sort by %s, not \"%s\"", names, query->sort);
+		return NULL;
+	}
+
+	if ((NULL != query->dir) && (0 != g_strcmp0(query->dir, "asc")) && (0 != g_strcmp0(query->dir, "desc")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "dir is asc or desc, not \"%s\"", query->dir);
+		return NULL;
+	}
+
 	root = json_object_new();
 	notes = json_array_new();
 	rows = json_array_new();
@@ -2468,6 +2728,12 @@ venture_marketdata_deals(
 		g_autoptr(GPtrArray) sources = NULL;
 		g_autoptr(GPtrArray) deals = NULL;
 		g_autoptr(GHashTable) category_counts = NULL;
+		gboolean by_trade = (NULL != query->sort) && (0 != g_strcmp0(query->sort, "deal"));
+		g_autofree gchar *totals_currency = NULL;
+		gint64 totals_investment = 0;
+		gint64 totals_profit = 0;
+		gint64 totals_rows = 0;
+		gboolean totals_mixed = FALSE;
 		const gchar *venue_keys[2];
 		gboolean truncated;
 		guint i;
@@ -2549,7 +2815,12 @@ venture_marketdata_deals(
 			filter.deals_only = TRUE;
 			filter.max_pct_vs_region = query->max_pct;
 			filter.sort = VENTURE_SERIES_SORT_PCT_VS_REGION;
-			filter.count = count + 1;
+
+			/* By deal, the index's own best count+1 is the answer. By
+			 * profit or return it is not: the cheapest against the
+			 * region are mostly things that sell nowhere, so a wide
+			 * pool of deals is priced and the best of those kept. */
+			filter.count = by_trade ? VENTURE_SERIES_MAX_PAGE : count + 1;
 
 			if (!venture_string_is_empty(query->venue))
 			{
@@ -2592,11 +2863,17 @@ venture_marketdata_deals(
 				 * outlives it. */
 				deal->display = json_object_new();
 				md_row_set_display(deal->display, reader, deal->row->instrument_key);
+				md_deal_sell_side(deal, reader, (const gchar *const *)group_keys, query->cut_pct);
 				g_ptr_array_add(deals, deal);
 			}
 		}
 
+		md_deal_sort = by_trade ? query->sort : NULL;
+		md_deal_descending = (NULL != query->dir) ? (0 == g_strcmp0(query->dir, "desc"))
+		                                          : (by_trade && md_deal_sort_descends(query->sort));
 		g_ptr_array_sort(deals, md_deal_compare);
+		md_deal_sort = NULL;
+		md_deal_descending = FALSE;
 
 		if (deals->len > count)
 		{
@@ -2614,6 +2891,9 @@ venture_marketdata_deals(
 			if (json_object_has_member(deal->display, "display"))
 				json_object_set_member(object, "display",
 				                       json_node_copy(json_object_get_member(deal->display, "display")));
+			if (json_object_has_member(deal->display, "level"))
+				json_object_set_member(object, "level",
+				                       json_node_copy(json_object_get_member(deal->display, "level")));
 			json_object_set_int_member(object, "data_source_id", deal->data_source_id);
 			json_object_set_string_member(object, "source_name", deal->source_name);
 
@@ -2624,7 +2904,42 @@ venture_marketdata_deals(
 				json_object_set_null_member(object, "discount");
 
 			md_set_ratio(object, "discount_pct", 100.0 - deal->row->pct_vs_region);
+
+			if (NULL != deal->sell)
+			{
+				json_object_set_object_member(object, "sell", md_row_object(deal->sell, deal->data_source_id));
+				md_set_money(object, "profit", deal->profit, deal->row->currency);
+				md_set_ratio(object, "roi_pct", deal->roi);
+
+				/* One of each: what buying every row once costs, sells
+				 * for after the cut, and makes. */
+				if (NULL == totals_currency)
+					totals_currency = g_strdup(deal->row->currency);
+
+				if (0 == g_strcmp0(totals_currency, deal->row->currency))
+				{
+					totals_investment += deal->row->min_price;
+					totals_profit += deal->profit;
+					totals_rows++;
+				}
+				else
+					totals_mixed = TRUE;
+			}
+
 			json_array_add_object_element(rows, object);
+		}
+
+		json_object_set_double_member(root, "cut_pct", query->cut_pct);
+
+		if ((totals_rows > 0) && !totals_mixed)
+		{
+			JsonObject *totals = json_object_new();
+
+			md_set_money(totals, "investment", totals_investment, totals_currency);
+			md_set_money(totals, "sale", totals_investment + totals_profit, totals_currency);
+			md_set_money(totals, "profit", totals_profit, totals_currency);
+			json_object_set_int_member(totals, "rows", totals_rows);
+			json_object_set_object_member(root, "totals", totals);
 		}
 
 		json_object_set_boolean_member(root, "truncated", truncated);
