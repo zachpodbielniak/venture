@@ -50,8 +50,7 @@ PASS: JavaScript-disabled form and identical replay produced one additional resp
 PASS: concurrent identical POSTs accepted one response; changed-content replay returned 409.
 #+end_example
 
-The recording and fixture are retained locally under
-=/home/user/venture-wt/lightsite-gap-demo/=. The transcript above is the portable
+The recording and fixture were kept locally. The transcript above is the portable
 acceptance evidence; the local video is not required to reproduce the tests.
 
 * Demonstration: provider and scanner failures

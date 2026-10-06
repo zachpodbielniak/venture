@@ -467,6 +467,35 @@ blizzard_icon_route(
 	return response;
 }
 
+/* ==========================================================================
+ * Class colours
+ *
+ * The game's own colour for each class, as its UI draws a character's name
+ * (RAID_CLASS_COLORS). tsmctl pushes a character's class as the game
+ * spells it ("DEATHKNIGHT"); the Accounts pages draw it in its colour.
+ * ========================================================================== */
+
+static gboolean
+blizzard_register_class_colors(
+	VentureContext	 *context,
+	GError		**error
+){
+	static const struct { const gchar *name; const gchar *color; } classes[] = {
+		{ "DEATHKNIGHT", "#c41e3a" }, { "DEMONHUNTER", "#a330c9" }, { "DRUID", "#ff7c0a" },
+		{ "EVOKER", "#33937f" }, { "HUNTER", "#aad372" }, { "MAGE", "#3fc7eb" },
+		{ "MONK", "#00ff98" }, { "PALADIN", "#f48cba" }, { "PRIEST", "#ffffff" },
+		{ "ROGUE", "#fff468" }, { "SHAMAN", "#0070dd" }, { "WARLOCK", "#8788ee" },
+		{ "WARRIOR", "#c69b6d" },
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(classes); i++)
+		if (!venture_context_set_account_class_color(context, classes[i].name, classes[i].color, error))
+			return FALSE;
+
+	return TRUE;
+}
+
 static gboolean
 blizzard_web(
 	VentureWebServer	 *server,
@@ -515,6 +544,9 @@ venture_plugin_register(
 	                                    "World of Warcraft auction house: a 5% cut on sale and a "
 	                                    "refundable deposit on the vendor price by duration",
 	                                    wow_fee_compute, wow_fee_validate, NULL, NULL, error))
+		return FALSE;
+
+	if (!blizzard_register_class_colors(context, error))
 		return FALSE;
 
 	if (!venture_export_format_registry_add(venture_context_get_export_formats(context),

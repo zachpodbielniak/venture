@@ -26,6 +26,7 @@ struct _VentureContext
 	VenturePluginProvidesRegistry	*plugin_provides;
 	VentureAutomationHandlerRegistry	*automation_handlers;
 	GPtrArray		*web_extensions;	/* VentureWebExtension */
+	GHashTable		*account_class_colors;	/* folded class -> "#rrggbb" */
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
@@ -70,6 +71,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->plugin_provides);
 	g_clear_object(&self->automation_handlers);
 	g_clear_pointer(&self->web_extensions, g_ptr_array_unref);
+	g_clear_pointer(&self->account_class_colors, g_hash_table_unref);
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
@@ -419,6 +421,75 @@ venture_context_get_confirmations(VentureContext *self)
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
 
 	return self->confirmations;
+}
+
+/* A class name as it is compared: lower-case letters and digits only, so
+ * "DEATHKNIGHT", "Death Knight" and "death_knight" are one class. */
+static gchar *
+venture_context_fold_class(const gchar *name)
+{
+	GString *folded = g_string_new(NULL);
+	const gchar *p;
+
+	for (p = name; (NULL != p) && ('\0' != *p); p++)
+		if (g_ascii_isalnum(*p))
+			g_string_append_c(folded, g_ascii_tolower(*p));
+
+	return g_string_free(folded, FALSE);
+}
+
+gboolean
+venture_context_set_account_class_color(
+	VentureContext	 *self,
+	const gchar	 *class_name,
+	const gchar	 *color,
+	GError		**error
+){
+	g_autofree gchar *folded = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), FALSE);
+
+	folded = venture_context_fold_class(class_name);
+
+	if ('\0' == folded[0])
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "An account class colour needs a class name");
+		return FALSE;
+	}
+
+	for (i = 1; (NULL != color) && (i < 7) && g_ascii_isxdigit(color[i]); i++)
+		;
+
+	if ((NULL == color) || ('#' != color[0]) || (7 != i) || ('\0' != color[7]))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a colour: use #rrggbb", (NULL != color) ? color : "");
+		return FALSE;
+	}
+
+	if (NULL == self->account_class_colors)
+		self->account_class_colors = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+	g_hash_table_replace(self->account_class_colors, g_steal_pointer(&folded), g_ascii_strdown(color, -1));
+	return TRUE;
+}
+
+const gchar *
+venture_context_lookup_account_class_color(
+	VentureContext	*self,
+	const gchar	*class_name
+){
+	g_autofree gchar *folded = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+
+	if ((NULL == self->account_class_colors) || (NULL == class_name))
+		return NULL;
+
+	folded = venture_context_fold_class(class_name);
+	return g_hash_table_lookup(self->account_class_colors, folded);
 }
 
 gchar *

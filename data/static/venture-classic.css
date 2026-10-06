@@ -5454,3 +5454,17 @@ a:focus .item-tip > .item-tip-card { display: flex; }
 .item-tip-right { white-space: nowrap; }
 .item-title { display: flex; align-items: center; gap: 0.5em; }
 .item-title-icon { width: 40px; height: 40px; border-radius: 5px; border: 1px solid #000; }
+
+/* --------------------------------------------------------------------------
+ * Account classes -- a plugin may give a class its game's colour. The class
+ * is a chip of its own, dark in either theme, so a white or pale class
+ * reads on a light page; the name takes the colour only where the theme
+ * is dark enough for every class to read.
+ * -------------------------------------------------------------------------- */
+.class-chip { color: var(--class-color); background: #15161e; border: 1px solid #2c2e3a;
+	border-radius: 4px; padding: 0 0.4em; font-weight: 600; }
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) .class-name { color: var(--class-color); }
+}
+:root[data-theme="dark"] .class-name,
+:root[data-theme="mocha"] .class-name { color: var(--class-color); }

@@ -860,6 +860,47 @@ test_overview_figures(
  * breaks: the realm a person must visit now listed below one that can
  * wait, or a threshold that changes nothing.
  */
+/*
+ * Class colours: a plugin registers one per class, matched on the class's
+ * letters and digits whatever its case or spacing; an account of that
+ * class carries it as class_color and the pages draw the class as a chip
+ * and the name in it. An unregistered class, or none, is drawn plainly.
+ */
+static void
+test_class_colors(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *page = NULL;
+	JsonArray *accounts;
+
+	(void)user_data;
+
+	g_assert_true(venture_context_set_account_class_color(fixture->context, "Warrior", "#C69B6D", &error));
+	g_assert_no_error(error);
+	g_assert_cmpstr(venture_context_lookup_account_class_color(fixture->context, "WAR RIOR"), ==, "#c69b6d");
+	g_assert_false(venture_context_set_account_class_color(fixture->context, "MAGE", "blue;x", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_false(venture_context_set_account_class_color(fixture->context, "  ", "#ffffff", &error));
+	g_clear_error(&error);
+
+	seed(fixture);
+	answer = overview(fixture, 0, 0, 0, NULL, FALSE);
+	accounts = json_object_get_array_member(root_of(answer), "accounts");
+	g_assert_cmpstr(json_object_get_string_member(find_row(accounts, "key", "Drgold-A"), "class_color"), ==,
+	                "#c69b6d");
+	g_assert_false(json_object_has_member(find_row(accounts, "key", "Herbz-B"), "class_color"));
+	g_assert_false(json_object_has_member(find_row(accounts, "key", "Oldtimer-B"), "class_color"));
+
+	page = get_page(fixture, "/accounts");
+	g_assert_nonnull(strstr(page, "<span class=\"class-chip\" style=\"--class-color:#c69b6d\">Warrior</span>"));
+	g_assert_nonnull(strstr(page, "<span class=\"class-name\" style=\"--class-color:#c69b6d\">Drgold</span>"));
+	g_assert_null(strstr(page, "--class-color:blue"));
+}
+
 static void
 test_attention(
 	Fixture		*fixture,
@@ -2601,6 +2642,7 @@ main(
 	ADD("empty", test_empty);
 	ADD("overview-figures", test_overview_figures);
 	ADD("attention", test_attention);
+	ADD("class-colors", test_class_colors);
 	ADD("account", test_account);
 	ADD("inventory", test_inventory);
 	ADD("pnl", test_pnl);

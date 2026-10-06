@@ -3,9 +3,7 @@
 * Scope
 
 Issues #170 and #171, based on =3ec6c54= (PR #169, which depends on #163).
-The worktree was created under the shared =flock= lock. Neither master nor
-PR #163's branch was modified. Lightsite's =docs/venture-accounts.org= was
-read from =/home/user/lightsite-daemon/trees/core= before implementation.
+Lightsite's =docs/venture-accounts.org= was read before implementation.
 
 * Failing-first checks
 
@@ -73,8 +71,7 @@ All 153 binaries therefore have passing results without a second full run.
 Live PostgreSQL migration coverage passed; 22 optional checks skipped.
 The litter check (with the failed fixture preserved outside the run directory),
 version check and both foreground/clock demonstrations passed.
-Raw local logs and owned demonstration fixtures are retained under
-=/home/user/venture-wt/lightsite-authority-notes/=.
+Raw logs and demonstration fixtures were kept locally.
 
 * Integration responsibilities
 

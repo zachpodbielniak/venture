@@ -386,6 +386,45 @@ VentureAutomationHandlerRegistry *
 venture_context_get_automation_handlers(VentureContext *self);
 
 /**
+ * venture_context_set_account_class_color:
+ * @self: a #VentureContext
+ * @class_name: an account class as a source reports it ("DEATHKNIGHT",
+ *   "Death Knight"); compared on its letters and digits, ignoring case
+ * @color: "#rrggbb"
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The colour accounts of @class_name are drawn in: a character's name and
+ * class on the Accounts pages, the way its game colours them. VENTURE
+ * knows no game's classes; a plugin registers them (blizzard-auctions
+ * registers World of Warcraft's). A later registration of the same class
+ * replaces the earlier. An account's own attrs.color, when a source sends
+ * one, wins over this.
+ *
+ * Returns: %TRUE on success; %FALSE for an empty class or a colour that is
+ *   not #rrggbb
+ */
+gboolean
+venture_context_set_account_class_color(
+	VentureContext	 *self,
+	const gchar	 *class_name,
+	const gchar	 *color,
+	GError		**error
+);
+
+/**
+ * venture_context_lookup_account_class_color:
+ * @self: a #VentureContext
+ * @class_name: (nullable): an account class
+ *
+ * Returns: (transfer none) (nullable): its registered "#rrggbb", or %NULL
+ */
+const gchar *
+venture_context_lookup_account_class_color(
+	VentureContext	*self,
+	const gchar	*class_name
+);
+
+/**
  * venture_context_get_plugin_cache_dir:
  * @self: a #VentureContext
  * @plugin: the plugin's name: lower-case letters, digits, '-' and '_'
