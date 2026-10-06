@@ -166,6 +166,62 @@ rows(Fixture *f, const gchar *name)
 }
 
 static void
+test_delivery_mail(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) customer = fresh(f, "company", f->company);
+	g_autoptr(VentureEntity) q = quote(f, "MAIL-01");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(GPtrArray) messages = NULL, deliveries = NULL;
+	g_autoptr(JsonNode) safe = NULL;
+	g_autofree gchar *recipient = NULL, *private_body = NULL, *token = NULL, *json = NULL;
+	(void)data;
+	g_object_set(f->config, "server-base-url", "https://quotes.example.test", NULL);
+	g_object_set(customer, "email", "buyer@example.test", NULL);
+	save(f, customer);
+	action(f, q, "send");
+	messages = rows(f, "mail_message");
+	g_assert_cmpuint(messages->len, ==, 1);
+	g_assert_cmpint(venture_entity_get_organization_id(g_ptr_array_index(messages, 0)), ==, f->org);
+	g_object_get(g_ptr_array_index(messages, 0), "to", &recipient, "private-text-body", &private_body, NULL);
+	g_assert_cmpstr(recipient, ==, "buyer@example.test");
+	g_assert_nonnull(strstr(private_body, "MAIL-01"));
+	g_assert_nonnull(strstr(private_body, "https://quotes.example.test/q/"));
+	g_clear_object(&q);
+	q = fresh(f, "quote", integer(l, "quote-id"));
+	g_object_get(q, "acceptance-token", &token, NULL);
+	g_assert_nonnull(strstr(private_body, token));
+	safe = venture_serializable_to_json(VENTURE_SERIALIZABLE(g_ptr_array_index(messages, 0)), FALSE);
+	json = json_to_string(safe, FALSE);
+	g_assert_null(strstr(json, token));
+	deliveries = rows(f, "quote_delivery");
+	g_assert_cmpuint(deliveries->len, ==, 1);
+	g_clear_pointer(&recipient, g_free);
+	g_object_get(g_ptr_array_index(deliveries, 0), "recipient", &recipient, NULL);
+	g_assert_cmpstr(recipient, ==, "buyer@example.test");
+}
+
+static void
+test_delivery_recipient_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) q = quote(f, "MAIL-REFUSED");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) r = request(f, q, "send");
+	g_autoptr(GPtrArray) messages = NULL, deliveries = NULL, events = NULL;
+	(void)data;
+	g_object_set(f->config, "server-base-url", "https://quotes.example.test", NULL);
+	g_assert_false(venture_database_save(f->db, r, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	status(f, q, "draft");
+	messages = rows(f, "mail_message");
+	deliveries = rows(f, "quote_delivery");
+	events = rows(f, "quote_event");
+	g_assert_cmpuint(messages->len, ==, 0);
+	g_assert_cmpuint(deliveries->len, ==, 0);
+	g_assert_cmpuint(events->len, ==, 0);
+}
+
+static void
 test_records(Fixture *f, gconstpointer data)
 {
 	const gchar *names[] = { "price_list", "price_list_item", "quote", "quote_line", "quote_event", "quote_delivery", "quote_action", NULL };
@@ -1083,6 +1139,8 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_get_default();
 	g_test_add("/quotes/percentage-parts", Fixture, NULL, setup, test_percentage_parts, teardown);
+	g_test_add("/quotes/delivery-mail", Fixture, NULL, setup, test_delivery_mail, teardown);
+	g_test_add("/quotes/delivery-recipient-rollback", Fixture, NULL, setup, test_delivery_recipient_rollback, teardown);
 	g_test_add("/quotes/records", Fixture, NULL, setup, test_records, teardown);
 	g_test_add("/quotes/tax-code", Fixture, NULL, setup, test_tax_code, teardown);
 	g_test_add("/quotes/totals", Fixture, NULL, setup, test_totals, teardown);
