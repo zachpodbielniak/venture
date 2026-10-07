@@ -2592,6 +2592,68 @@ md_deal_sell_side(
 	deal->roi = (deal->row->min_price > 0) ? (100.0 * (gdouble)deal->profit / (gdouble)deal->row->min_price) : 0.0;
 }
 
+/* The deals pickers' venues, one per name: [{name}] in name order. */
+static gint
+md_compare_names(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	return g_utf8_collate(*(const gchar *const *)a, *(const gchar *const *)b);
+}
+
+static JsonArray *
+md_venue_choices_json(GHashTable *choices)
+{
+	g_autoptr(GPtrArray) names = g_ptr_array_new();
+	JsonArray *array = json_array_new();
+	GHashTableIter iter;
+	gpointer value;
+	guint i;
+
+	g_hash_table_iter_init(&iter, choices);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+		g_ptr_array_add(names, value);
+
+	g_ptr_array_sort(names, md_compare_names);
+
+	for (i = 0; i < names->len; i++)
+	{
+		JsonObject *object = json_object_new();
+
+		json_object_set_string_member(object, "name", g_ptr_array_index(names, i));
+		json_array_add_object_element(array, object);
+	}
+
+	return array;
+}
+
+/* @wanted (a venue's key, else its whole name, case folded) as a key of
+ * @venues (VentureSeriesVenueRow), borrowed from them; NULL for none. */
+static const gchar *
+md_venue_key_for(
+	GPtrArray	*venues,
+	const gchar	*wanted
+){
+	g_autofree gchar *folded = md_fold(wanted);
+	guint i;
+
+	for (i = 0; (NULL != venues) && (i < venues->len); i++)
+		if (0 == g_strcmp0(((VentureSeriesVenueRow *)g_ptr_array_index(venues, i))->key, wanted))
+			return ((VentureSeriesVenueRow *)g_ptr_array_index(venues, i))->key;
+
+	for (i = 0; (NULL != venues) && (i < venues->len); i++)
+	{
+		VentureSeriesVenueRow *venue = g_ptr_array_index(venues, i);
+		g_autofree gchar *name = md_fold(venue->name);
+
+		if (!venture_string_is_empty(venue->name) && (0 == g_strcmp0(name, folded)))
+			return venue->key;
+	}
+
+	return NULL;
+}
+
 static gint
 md_deal_compare(
 	gconstpointer	a,
@@ -2722,14 +2784,26 @@ venture_marketdata_deals(
 		g_autoptr(GPtrArray) deals = NULL;
 		g_autoptr(GHashTable) category_counts = NULL;
 		gboolean by_trade = (NULL != query->sort) && (0 != g_strcmp0(query->sort, "deal"));
+		/* Selling at one venue throws away every deal that has no
+		 * price there, so the pool is the wide one, as for a sort. */
+		gboolean wide = by_trade || !venture_string_is_empty(query->sell_venue);
+		g_autoptr(GHashTable) choices = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		const gchar *buy_wanted = venture_string_is_empty(query->venue) ? NULL : query->venue;
+		const gchar *sell_wanted = venture_string_is_empty(query->sell_venue) ? NULL : query->sell_venue;
+		gboolean buy_aside = FALSE;
+		gboolean sell_aside = FALSE;
+		gboolean buy_used = FALSE;
+		gboolean sell_used = FALSE;
 		g_autofree gchar *totals_currency = NULL;
 		gint64 totals_investment = 0;
 		gint64 totals_profit = 0;
 		gint64 totals_rows = 0;
 		gboolean totals_mixed = FALSE;
 		const gchar *venue_keys[2];
+		const gchar *sell_keys[2];
 		gboolean truncated;
 		guint i;
+
 
 		if (query->data_source_id > 0)
 		{
@@ -2773,6 +2847,9 @@ venture_marketdata_deals(
 			g_autoptr(GPtrArray) found = NULL;
 			g_autoptr(GError) local_error = NULL;
 			g_auto(GStrv) group_keys = NULL;
+			g_autoptr(GPtrArray) venues = NULL;
+			const gchar *buy_key;
+			const gchar *sell_key;
 			VentureSeriesFilter filter;
 			guint j;
 
@@ -2786,14 +2863,15 @@ venture_marketdata_deals(
 			venture_series_filter_init(&filter);
 
 			/* Each source's venues answer for themselves: a group of
-			 * realms is a set of venue keys in this store, not another. */
-			if (venture_string_is_empty(query->venue) &&
-			    !venture_string_is_empty(query->venue_group))
-			{
-				g_autoptr(GPtrArray) venues = NULL;
-				g_autofree gchar *label = NULL;
+			 * realms is a set of venue keys in this store, not another.
+			 * They are also the buy and sell pickers' choices, by name:
+			 * two sources keep the same realm under their own keys (a
+			 * realm id, a realm slug), and it is one realm to choose. */
+			venues = venture_series_store_list_venues(reader, NULL);
 
-				venues = venture_series_store_list_venues(reader, NULL);
+			if (!venture_string_is_empty(query->venue_group))
+			{
+				g_autofree gchar *label = NULL;
 
 				if (!md_venue_group_keys(context, query->organization_id, venues,
 				                         query->venue_group, (0 == i) ? notes : NULL,
@@ -2802,6 +2880,44 @@ venture_marketdata_deals(
 
 				md_set_text(root, "venue_group_name", label);
 				filter.venue_keys = (const gchar **)group_keys;
+			}
+
+			for (j = 0; (NULL != venues) && (j < venues->len); j++)
+			{
+				VentureSeriesVenueRow *venue = g_ptr_array_index(venues, j);
+				const gchar *name = venture_string_is_empty(venue->name) ? venue->key : venue->name;
+
+				if ((NULL != group_keys) && !g_strv_contains((const gchar *const *)group_keys, venue->key))
+					continue;
+
+				g_autofree gchar *folded = md_fold(name);
+
+				if (!g_hash_table_contains(choices, folded))
+					g_hash_table_insert(choices, g_steal_pointer(&folded), g_strdup(name));
+			}
+
+			/* The picked venues in this store's keys. A store without
+			 * the one to buy or sell at has no deal on that route; one
+			 * outside the group (left over from the group picked
+			 * before) is set aside rather than empty the page. */
+			buy_key = (NULL != buy_wanted) ? md_venue_key_for(venues, buy_wanted) : NULL;
+			sell_key = (NULL != sell_wanted) ? md_venue_key_for(venues, sell_wanted) : NULL;
+
+			if (((NULL != buy_wanted) && (NULL == buy_key)) || ((NULL != sell_wanted) && (NULL == sell_key)))
+				continue;
+
+			if ((NULL != buy_key) && (NULL != group_keys) &&
+			    !g_strv_contains((const gchar *const *)group_keys, buy_key))
+			{
+				buy_aside = TRUE;
+				buy_key = NULL;
+			}
+
+			if ((NULL != sell_key) && (NULL != group_keys) &&
+			    !g_strv_contains((const gchar *const *)group_keys, sell_key))
+			{
+				sell_aside = TRUE;
+				sell_key = NULL;
 			}
 
 			filter.search = venture_string_is_empty(query->search) ? NULL : query->search;
@@ -2813,14 +2929,19 @@ venture_marketdata_deals(
 			 * profit or return it is not: the cheapest against the
 			 * region are mostly things that sell nowhere, so a wide
 			 * pool of deals is priced and the best of those kept. */
-			filter.count = by_trade ? VENTURE_SERIES_MAX_PAGE : count + 1;
+			filter.count = wide ? VENTURE_SERIES_MAX_PAGE : count + 1;
 
-			if (!venture_string_is_empty(query->venue))
+			if (NULL != buy_key)
 			{
-				venue_keys[0] = query->venue;
+				venue_keys[0] = buy_key;
 				venue_keys[1] = NULL;
 				filter.venue_keys = venue_keys;
 			}
+
+			sell_keys[0] = sell_key;
+			sell_keys[1] = NULL;
+			buy_used = buy_used || (NULL != buy_key);
+			sell_used = sell_used || (NULL != sell_key);
 
 			filter.group_key = venture_string_is_empty(query->group_key) ? NULL : query->group_key;
 			filter.category_prefix = venture_string_is_empty(query->category) ? NULL : query->category;
@@ -2856,7 +2977,18 @@ venture_marketdata_deals(
 				 * outlives it. */
 				deal->display = json_object_new();
 				md_row_set_display(deal->display, reader, deal->row->instrument_key);
-				md_deal_sell_side(deal, reader, (const gchar *const *)group_keys, query->cut_pct);
+				md_deal_sell_side(deal, reader,
+				                  (NULL != sell_key) ? sell_keys : (const gchar *const *)group_keys,
+				                  query->cut_pct);
+
+				/* Asked to sell at one venue, a deal that cannot be
+				 * sold there is not one. */
+				if ((NULL != sell_key) && (NULL == deal->sell))
+				{
+					md_deal_free(deal);
+					continue;
+				}
+
 				g_ptr_array_add(deals, deal);
 			}
 		}
@@ -2923,6 +3055,22 @@ venture_marketdata_deals(
 		}
 
 		json_object_set_double_member(root, "cut_pct", query->cut_pct);
+		json_object_set_array_member(root, "venue_choices", md_venue_choices_json(choices));
+
+		/* Set aside only where no source could use it. */
+		buy_aside = buy_aside && !buy_used;
+		sell_aside = sell_aside && !sell_used;
+
+		if (buy_aside)
+			md_note(notes, "The buy venue is not in this venue group, so every venue of the group is "
+			               "bought at.");
+
+		if (sell_aside)
+			md_note(notes, "The sell venue is not in this venue group, so the dearest venue of the "
+			               "group is sold at.");
+
+		md_set_text(root, "buy_venue", buy_aside ? NULL : buy_wanted);
+		md_set_text(root, "sell_venue", sell_aside ? NULL : sell_wanted);
 
 		if ((totals_rows > 0) && !totals_mixed)
 		{
@@ -2944,6 +3092,8 @@ venture_marketdata_deals(
 		json_object_set_array_member(root, "sources", json_array_new());
 	if (!json_object_has_member(root, "categories"))
 		json_object_set_array_member(root, "categories", json_array_new());
+	if (!json_object_has_member(root, "venue_choices"))
+		json_object_set_array_member(root, "venue_choices", json_array_new());
 
 	json_object_set_array_member(root, "rows", rows);
 	json_object_set_array_member(root, "notes", notes);

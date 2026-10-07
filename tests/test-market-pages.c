@@ -930,6 +930,132 @@ test_other_organization(
  * list with a venue dearer than the deal price, or a dollar bound that
  * lets euro rows through.
  */
+/*
+ * Where to buy and where to sell, picked: sell_venue keeps the deals that
+ * sell there and says so on every row; venue and sell_venue together are
+ * one route; the pickers offer only the venue group's venues, and a
+ * venue left over from another group is set aside with a note rather
+ * than emptying the page.
+ */
+static void
+test_deals_buy_sell_venues(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(VentureEntity) group = NULL;
+	g_autofree gchar *buy = NULL;
+	g_autofree gchar *sell = NULL;
+	g_autofree gchar *sell_name = NULL;
+	g_autofree gchar *escaped = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *venues = NULL;
+	JsonArray *rows;
+	JsonArray *choices;
+	gboolean found = FALSE;
+	guint i;
+
+	(void)user_data;
+	seed_store(fixture);
+
+	/* A route the data has: the first deal with somewhere to sell. */
+	answer = get_json(fixture, "/api/v1/market/deals?sort=profit", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 0; (NULL == sell) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		if (!json_object_has_member(row, "sell"))
+			continue;
+
+		buy = g_strdup(json_object_get_string_member(row, "venue_key"));
+		sell = g_strdup(json_object_get_string_member(json_object_get_object_member(row, "sell"), "venue_key"));
+		sell_name = g_strdup(json_object_get_string_member(json_object_get_object_member(row, "sell"),
+		                                                   "venue_name"));
+	}
+
+	g_assert_nonnull(sell);
+
+	/* With no group, every venue is offered. */
+	choices = json_object_get_array_member(root_of(answer), "venue_choices");
+	g_assert_cmpuint(json_array_get_length(choices), >, 2);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Sell there -- picked by name, as the page picks it: every row
+	 * sells there, and that route is among them. */
+	escaped = g_uri_escape_string(sell_name, NULL, FALSE);
+	path = g_strdup_printf("/api/v1/market/deals?sell_venue=%s", escaped);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), >, 0);
+	g_assert_cmpstr(json_object_get_string_member(root_of(answer), "sell_venue"), ==, sell_name);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		g_assert_true(json_object_has_member(row, "sell"));
+		g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(row, "sell"),
+		                                              "venue_key"), ==, sell);
+		found = found || (0 == g_strcmp0(json_object_get_string_member(row, "venue_key"), buy));
+	}
+
+	g_assert_true(found);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Buy here, sell there: one route. */
+	path = g_strdup_printf("/api/v1/market/deals?venue=%s&sell_venue=%s", buy, sell);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), >, 0);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		g_assert_cmpstr(json_object_get_string_member(row, "venue_key"), ==, buy);
+		g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(row, "sell"),
+		                                              "venue_key"), ==, sell);
+	}
+
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* A group of the buy venue alone: the pickers offer it alone, and
+	 * the sell venue, outside it, is set aside with a note. */
+	group = VENTURE_ENTITY(venture_venue_group_new());
+	venture_entity_set_organization_id(group, fixture->org);
+	g_object_set(group, "name", "Just one", "venues", buy, NULL);
+	save(fixture, group);
+	path = g_strdup_printf("/api/v1/market/deals?venue_group=%" G_GINT64_FORMAT "&sell_venue=%s", ID(group), sell);
+	answer = get_json(fixture, path, 200);
+	choices = json_object_get_array_member(root_of(answer), "venue_choices");
+	g_assert_cmpuint(json_array_get_length(choices), ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(choices, 0), "name"), ==,
+	                json_object_get_string_member(json_array_get_object_element(json_object_get_array_member(
+	                	root_of(answer), "rows"), 0), "venue_name"));
+	g_assert_null(json_object_get_string_member_with_default(root_of(answer), "sell_venue", NULL));
+	venues = json_to_string(json_object_get_member(root_of(answer), "notes"), FALSE);
+	g_assert_nonnull(strstr(venues, "The sell venue is not in this venue group"));
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* The page: two pickers, the chosen ones selected. */
+	path = g_strdup_printf("/market/deals?venue=%s&sell_venue=%s", buy, escaped);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "<select name=\"venue\">"));
+	g_assert_nonnull(strstr(page, "<select name=\"sell_venue\">"));
+	{
+		g_autofree gchar *chosen = g_strdup_printf("<option value=\"%s\" selected>", sell_name);
+		const gchar *picker = strstr(page, "<select name=\"sell_venue\">");
+
+		g_assert_nonnull(strstr(picker, chosen));
+	}
+}
+
 static void
 test_deals(
 	Fixture		*fixture,
@@ -2473,6 +2599,7 @@ main(
 	ADD("instrument-escaping", test_instrument_escaping);
 	ADD("other-organization", test_other_organization);
 	ADD("deals", test_deals);
+	ADD("deals-buy-sell-venues", test_deals_buy_sell_venues);
 	ADD("deals-ignore-asking-prices", test_deals_ignore_asking_prices);
 	ADD("venue-index", test_venue_index);
 	ADD("watchlist-and-actions", test_watchlist_and_actions);

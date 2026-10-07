@@ -2024,7 +2024,7 @@ mdw_deals_header(
 	gboolean	 numeric
 ){
 	static const gchar *const kept[] = {
-		"source", "search", "venue_group", "venue", "group", "category", "min_value", "max_pct", "top",
+		"source", "search", "venue_group", "venue", "sell_venue", "group", "category", "min_value", "max_pct", "top",
 		"cut", NULL
 	};
 	g_autoptr(GString) link = g_string_new("/market/deals?");
@@ -2063,6 +2063,41 @@ mdw_deals_header(
 	/* The arrow is drawn from aria-sort (CSS), so it follows the
 	 * client-side sorter as well as the server's order. */
 	g_string_append(html, "</a></th>");
+}
+
+/*
+ * A deals picker of where to buy or to sell: "anywhere", then the
+ * answer's venue_choices -- only the venue group's venues when a group is
+ * picked, so the list never offers a realm the group leaves out.
+ */
+static void
+mdw_deal_venue_picker(
+	GString		*html,
+	JsonObject	*root,
+	const gchar	*label,
+	const gchar	*name,
+	const gchar	*selected
+){
+	JsonArray *choices = json_object_has_member(root, "venue_choices")
+		? json_object_get_array_member(root, "venue_choices") : NULL;
+	guint i;
+
+	g_string_append_printf(html, "<div class=\"field\"><label>%s<select name=\"%s\">"
+	                             "<option value=\"\">%s</option>", label, name,
+	                       (0 == g_strcmp0(name, "venue")) ? "any venue" : "the dearest venue");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		const gchar *choice = json_object_get_string_member(json_array_get_object_element(choices, i), "name");
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, choice);
+		g_string_append_printf(html, "\"%s>", (0 == g_strcmp0(choice, selected)) ? " selected" : "");
+		venture_html_escape_append(html, choice);
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
 }
 
 static HtmxResponse *
@@ -2106,6 +2141,7 @@ venture_marketdata_web_deals(
 
 	query.count = (guint)value;
 	query.venue = mdw_param(request, "venue");
+	query.sell_venue = mdw_param(request, "sell_venue");
 	query.group_key = mdw_param(request, "group");
 	query.venue_group = mdw_param(request, "venue_group");
 	query.search = mdw_param(request, "search");
@@ -2178,7 +2214,8 @@ venture_marketdata_web_deals(
 	mdw_source_picker(html, root, query.data_source_id, TRUE);
 	mdw_input(html, request, "Search", "search", "name or key");
 	mdw_venue_group_picker(html, root, query.venue_group);
-	mdw_input(html, request, "Venue", "venue", "a venue's key");
+	mdw_deal_venue_picker(html, root, "Buy at", "venue", mdw_text(root, "buy_venue"));
+	mdw_deal_venue_picker(html, root, "Sell at", "sell_venue", mdw_text(root, "sell_venue"));
 	mdw_input(html, request, "Group", "group", "a group, e.g. eu");
 	mdw_category_picker(html, root, mdw_param(request, "category"));
 	mdw_input(html, request, "Worth at least", "min_value", "e.g. 10.00 GOLD");

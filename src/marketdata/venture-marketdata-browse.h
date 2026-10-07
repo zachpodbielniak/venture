@@ -267,10 +267,12 @@ venture_marketdata_find(
  * VentureMarketdataDealsQuery:
  * @organization_id: whose sources
  * @data_source_id: one source, or 0 for every source of the organization
- * @venue: (nullable): only this venue
+ * @venue: (nullable): buy only at this venue; with @venue_group, it must
+ *   be one of the group's (else it is set aside, with a note)
  * @group_key: (nullable): only venues in this group
  * @venue_group: (nullable): only the venues of this venue group, as on
- *   browse; ignored when @venue is given
+ *   browse: where to buy (unless @venue narrows it) and where to sell
+ *   (unless @sell_venue does)
  * @search: (nullable): only instruments whose name or key contains this
  * @category: (nullable): this category path and beneath
  * @min_value: (nullable): only rows worth at least this (market value, or
@@ -288,6 +290,9 @@ venture_marketdata_find(
  *   level) is last either way.
  * @dir: (nullable): "asc" or "desc"; %NULL for the column's natural
  *   order (most first for figures where more is better, A to Z for names)
+ * @sell_venue: (nullable): sell only at this venue: a deal with no
+ *   plausible price there is left out. With @venue_group it must be one
+ *   of the group's, like @venue.
  *
  * What the deals page asks. A deal is an instrument in stock at a venue
  * whose lowest price is at or under its group's deal price: the median of
@@ -309,6 +314,7 @@ typedef struct
 	gdouble			 cut_pct;
 	const gchar		*sort;
 	const gchar		*dir;
+	const gchar		*sell_venue;
 } VentureMarketdataDealsQuery;
 
 /**

@@ -571,6 +571,8 @@ static const VentureCliOption venture_cli_market_deals_options[] = {
 	{ "source", "source", VENTURE_CLI_OPTION_INT, NULL },
 	{ "data_source_id", "source", VENTURE_CLI_OPTION_INT, NULL },
 	{ "venue", "venue", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "sell_venue", "sell_venue", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "venue_group", "venue_group", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "group", "group", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "group_key", "group", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "category", "category", VENTURE_CLI_OPTION_TEXT, NULL },

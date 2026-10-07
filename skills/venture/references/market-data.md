@@ -63,6 +63,7 @@ Each page under Trading (`/market/browse`, `/market/deals`,
 venturectl market browse [source=N] [search=T] [category=PATH] [venue=KEY] [group=G] \
     [stock=true] [sort=COL] [dir=asc|desc] [page=N] [per_page=N] [organization_id=N]
 venturectl market deals group=eu min_value="10.00 GOLD" max_pct=80 top=20
+venturectl market deals venue_group=characters venue=3676 sell_venue=11  # buy at one realm, sell at another
 venturectl market venues [source=N] [group=G]
 venturectl market instrument 1 2589 units=200        # SOURCE_ID KEY; units= prices a bulk buy
 venturectl market watchlist [ID] organization_id=2   # 'watchlists' is the same verb
