@@ -288,6 +288,10 @@ do not reject the financial action. Bookkeeping payments are omitted. Hosted
 billing customers are omitted from generic receipts because the hosted
 application renders their owner notifications.
 
+On upgrade, any existing generic payment receipt remains owned by its original
+outbox identity. The notification feed does not add a second branded receipt,
+including when the old message is retrying, uncertain or retained as deleted.
+
 Failed checkout collections and retained failed prepaid attempts both produce
 failure facts. A settled installment stops reporting its earlier failure.
 

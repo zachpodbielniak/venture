@@ -76,6 +76,27 @@ static void test_notification_adjustments(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(notification(answer, "payment_failed"));
 	/* An opening balance is old money, not a newly received payment. */
 	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(answer), "events")), ==, 4);
+	{
+		g_autoptr(VentureMailMessage) prior = venture_mail_message_new(), queued = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *key = g_strdup_printf("receipt:%s", venture_entity_get_uuid(payment));
+		venture_entity_set_organization_id(VENTURE_ENTITY(prior), f->billing);
+		g_object_set(prior, "to", "owner@example.org", "subject", "Existing receipt", "text-body", "Receipt already prepared",
+			"idempotency-key", key, "related-type", "payment", "related-id", venture_entity_get_id(payment), NULL);
+		queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(f->db), prior, NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(queued);
+		g_clear_pointer(&answer, json_node_unref); answer = call(f, path, NULL, 200);
+		/* Upgrading must not add a branded duplicate beside an old receipt,
+		 * whether that receipt is queued, retrying or already delivered. */
+		g_assert_null(notification(answer, "receipt"));
+		{
+			g_autofree gchar *sql = g_strdup_printf("UPDATE mail_messages SET state='sent',deleted_at='2026-01-01T00:00:00Z' WHERE id=%" G_GINT64_FORMAT,
+				venture_entity_get_id(VENTURE_ENTITY(queued)));
+			g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+			g_clear_pointer(&answer, json_node_unref); answer = call(f, path, NULL, 200);
+			g_assert_null(notification(answer, "receipt"));
+		}
+	}
 }
 static void test_notification_installment(Fixture *f, gconstpointer unused)
 {

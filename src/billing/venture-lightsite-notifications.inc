@@ -50,6 +50,20 @@ mail_receipts(VentureDatabase *db, gint64 billing, gint64 company, JsonArray *ev
 		for (j = 0; j < rows->len; j++) {
 			VentureEntity *row = g_ptr_array_index(rows, j);
 			if (i == 0 && venture_payment_is_bookkeeping(VENTURE_PAYMENT(row))) continue;
+			if (i == 0) {
+				g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+				g_autoptr(GPtrArray) existing = NULL;
+				g_autofree gchar *key = g_strdup_printf("receipt:%s", venture_entity_get_uuid(row));
+				venture_query_set_organization(query, billing);
+				venture_query_set_limit(query, 1);
+				venture_query_set_include_deleted(query, TRUE);
+				venture_query_add_filter_string(query, "idempotency-key", VENTURE_FILTER_OP_EQ, key, NULL);
+				existing = venture_database_find(db, query, error);
+				if (!existing) return FALSE;
+				/* An upgrade must not compete with a receipt already owned by
+				 * the old sender, including retries, uncertainty or retention. */
+				if (existing->len) continue;
+			}
 			g_autoptr(VentureMoney) amount = NULL;
 			g_autoptr(GDateTime) date = NULL;
 			g_autofree gchar *kind = NULL;
