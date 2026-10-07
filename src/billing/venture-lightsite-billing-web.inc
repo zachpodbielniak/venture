@@ -113,6 +113,9 @@ venture_web_lightsite_billing_view(HtmxRequest *request, GHashTable *params, gpo
 		return lightsite_billing_finish(venture_web_error_response(error));
 	}
 	scope = venture_access_policy_enter(venture_database_get_access_policy(database), principal);
+	if (g_str_has_suffix(htmx_request_get_path(request), "/notifications"))
+		result = venture_lightsite_billing_notifications(database, lightsite_billing_organization(self), id, &error);
+	else
 	if (g_str_has_suffix(htmx_request_get_path(request), "/made-back"))
 		result = venture_lightsite_billing_made_back(database, lightsite_billing_organization(self), id, NULL, &error);
 	else result = venture_lightsite_billing_view(database, lightsite_billing_organization(self), id, &error);
@@ -279,6 +282,8 @@ static void
 venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *self)
 {
 	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/billing/:organization_id/notifications",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_view, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/cancel",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/prepay",

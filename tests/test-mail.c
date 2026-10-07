@@ -621,11 +621,13 @@ static void test_forget_private_intake(Fixture *f, gconstpointer data)
 	}
 }
 
+#include "test-money-mail.inc"
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/mail/registered", test_mail_registered);
+	g_test_add("/mail/money-confirmations", Fixture, NULL, setup, test_money_confirmations, teardown);
 	g_test_add("/mail/uncertain-idempotency-retry", Fixture, NULL, setup, test_uncertain, teardown);
 	g_test_add("/mail/backoff-dead", Fixture, NULL, setup, test_backoff, teardown);
 	g_test_add("/mail/expired-lease", Fixture, NULL, setup, test_lease, teardown);

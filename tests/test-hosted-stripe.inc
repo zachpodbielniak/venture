@@ -1,6 +1,20 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Reuse the provider fixture to prove the hosted boundary, including the
  * absence of payment during Setup and idempotent signed settlement. */
+static void assert_hosted_notice(Fixture *f, gint64 business, const gchar *kind)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = venture_lightsite_billing_notifications(f->database, f->organization_id, business, &error);
+	JsonArray *events;
+	guint i;
+	gboolean found = FALSE;
+	g_assert_no_error(error); g_assert_nonnull(answer);
+	events = json_object_get_array_member(json_node_get_object(answer), "events");
+	for (i = 0; i < json_array_get_length(events); i++)
+		if (!g_strcmp0(json_object_get_string_member(json_array_get_object_element(events, i), "kind"), kind)) found = TRUE;
+	g_assert_true(found);
+}
+
 static void
 test_hosted_saved_card(Fixture *f, gconstpointer data)
 {
@@ -63,6 +77,7 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	setup = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
 	g_assert_no_error(error);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(setup), "state"), ==, "card_ready");
+	assert_hosted_notice(f, business, "card_saved");
 	if (data) {
 		g_autoptr(JsonNode) waiting = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, FALSE, &error);
 		g_autoptr(GDateTime) now = venture_time_now(), past = g_date_time_add_days(now, -1);
@@ -95,5 +110,15 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	paid = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, TRUE, &error);
 	g_assert_no_error(error);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(paid), "state"), ==, "paid");
+	assert_hosted_notice(f, business, "receipt");
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(VentureEntity) retained = venture_database_get(f->database, VENTURE_TYPE_STRIPE_AUTHORIZATION, venture_entity_get_id(g_ptr_array_index(authorizations, 0)), &error);
+		g_assert_no_error(error);
+		g_object_set(retained, "enabled", FALSE, "status", "revoked", NULL);
+		g_assert_true(venture_stripe_save_owned(f->database, retained, NULL, &error)); g_assert_no_error(error);
+	}
+	assert_hosted_notice(f, business, "card_saved");
+
 	g_test_message("Hosted enrollment + verified Setup: zero invoices; publish replay: one invoice and one collection; signed fixture settlement: paid");
 }

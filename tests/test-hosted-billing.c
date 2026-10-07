@@ -72,7 +72,7 @@ static void setup(Fixture *f, gconstpointer unused)
 	f->db = venture_test_accounting_database(&error); g_assert_no_error(error);
 	f->config = venture_config_new();
 	f->directory = g_dir_make_tmp("venture-hosted-billing-XXXXXX", &error); g_assert_no_error(error);
-	g_object_set(f->config, "hosted-enabled", TRUE, "hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
+	g_object_set(f->config, "stripe-enabled", TRUE, "hosted-enabled", TRUE, "hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
 		"hosted-origin", "https://example.test", "security-password-iterations", (gint64)2000,
 		"state-dir", f->directory, "server-bind-address", bind, "server-port", (gint64)0, NULL);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error)); g_assert_no_error(error);
@@ -196,6 +196,22 @@ static void test_guarantee(Fixture *f, gconstpointer unused)
 	first = call(f, "/api/v1/lightsite/billing/guarantee", body, 200);
 	replay = call(f, "/api/v1/lightsite/billing/guarantee", body, 200);
 	a = json_node_get_object(first); b = json_node_get_object(replay);
+	{
+		g_autofree gchar *path = g_strdup_printf("/api/v1/lightsite/billing/%" G_GINT64_FORMAT "/notifications", f->business);
+		g_autoptr(JsonNode) notices = call(f, path, NULL, 200);
+		JsonArray *events = json_object_get_array_member(json_node_get_object(notices), "events");
+		guint n;
+		gboolean found = FALSE;
+		for (n = 0; n < json_array_get_length(events); n++) {
+			JsonObject *notice = json_array_get_object_element(events, n);
+			if (!g_strcmp0(json_object_get_string_member(notice, "kind"), "guarantee")) {
+				g_assert_cmpstr(json_object_get_string_member(notice, "state"), ==, unused && !strcmp(unused, "ineligible") ? "ineligible" : zero ? "met" : "credited");
+				found = TRUE;
+			}
+		}
+		g_assert_true(found);
+	}
+
 	if (zero) g_assert_cmpint(json_object_get_int_member(a, "credit_id"), ==, 0);
 	else g_assert_cmpint(json_object_get_int_member(a, "credit_id"), >, 0);
 	g_assert_cmpint(json_object_get_int_member(a, "credit_id"), ==, json_object_get_int_member(b, "credit_id"));
@@ -335,6 +351,10 @@ static void test_boundary(Fixture *f, gconstpointer unused)
 		g_free(f->token); f->token = venture_api_token_generate(token); save(f, VENTURE_ENTITY(token));
 		denied = call(f, "/api/v1/lightsite/billing/enroll", body, 403);
 		{
+			g_autofree gchar *path = g_strdup_printf("/api/v1/lightsite/billing/%" G_GINT64_FORMAT "/notifications", f->business);
+			g_autoptr(JsonNode) no_events = call(f, path, NULL, 403);
+		}
+		{
 			g_autofree gchar *cancel = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);
 			g_autoptr(JsonNode) no_cancel = call(f, "/api/v1/lightsite/billing/cancel", cancel, 403);
 		}
@@ -395,10 +415,14 @@ static void test_prepaid_terms(Fixture *f, gconstpointer annual)
 }
 
 #include "test-hosted-cancel.inc"
+#include "test-hosted-notifications.inc"
 
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/hosted-billing/notifications", Fixture, NULL, setup, test_notifications, teardown);
+	g_test_add("/hosted-billing/notification-installment", Fixture, NULL, setup, test_notification_installment, teardown);
+	g_test_add("/hosted-billing/notification-adjustments", Fixture, NULL, setup, test_notification_adjustments, teardown);
 	g_test_add("/hosted-billing/cancel-monthly", Fixture, NULL, setup, test_cancel_early, teardown);
 	g_test_add("/hosted-billing/cancel-prepaid", Fixture, "annual", setup, test_cancel_early, teardown);
 	g_test_add("/hosted-billing/cancel-published", Fixture, "published", setup, test_cancel_late, teardown);

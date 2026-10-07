@@ -685,7 +685,7 @@ send_receipt(VentureReceiptSender *sender, gint64 payment_id)
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *email = NULL, *key = NULL, *name = NULL, *encoded = NULL, *attachments = NULL;
-	g_autofree gchar *amount_text = NULL, *subject = NULL, *body = NULL, *customer = NULL;
+	g_autofree gchar *amount_text = NULL, *subject = NULL, *body = NULL, *customer = NULL, *external = NULL;
 	gint64 customer_id = 0;
 	gconstpointer data;
 	gsize size;
@@ -698,7 +698,10 @@ send_receipt(VentureReceiptSender *sender, gint64 payment_id)
 	company = venture_database_get(db, VENTURE_TYPE_COMPANY, customer_id, NULL);
 	if (NULL == company)
 		return;
-	g_object_get(company, "email", &email, NULL);
+	g_object_get(company, "email", &email, "external-id", &external, NULL);
+	/* The hosted application owns its branded billing receipt. */
+	if (external && g_str_has_prefix(external, "lightsite:organization:"))
+		return;
 	if (venture_string_is_empty(email))
 		return;
 

@@ -837,6 +837,7 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		goto done;
 	}
 	if (!write_record(self, q, actor, error) || !write_record(self, request, actor, error)) goto done;
+	if (!g_strcmp0(verb, "accept") && !venture_mail_confirm_money(self->database, q, actor, error)) goto done;
 	ok = TRUE;
 done:
 	self->busy = FALSE;

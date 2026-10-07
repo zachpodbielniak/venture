@@ -773,3 +773,4 @@ venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_or
 #include "venture-lightsite-enrollment.inc"
 #include "venture-lightsite-cancel.inc"
 #include "venture-lightsite-made-back.inc"
+#include "venture-lightsite-notifications.inc"
