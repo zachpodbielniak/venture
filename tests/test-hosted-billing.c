@@ -334,11 +334,68 @@ static void test_boundary(Fixture *f, gconstpointer unused)
 			"role", i ? VENTURE_USER_ROLE_VIEWER : VENTURE_USER_ROLE_EDITOR, NULL);
 		g_free(f->token); f->token = venture_api_token_generate(token); save(f, VENTURE_ENTITY(token));
 		denied = call(f, "/api/v1/lightsite/billing/enroll", body, 403);
+		{
+			g_autofree gchar *prepaid = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"single\"}", f->business, f->price);
+			g_autoptr(JsonNode) no_prepay = call(f, "/api/v1/lightsite/billing/prepay", prepaid, 403);
+		}
 	}
 }
+static void test_prepaid_enrollment(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"installments\"}", f->business, f->price);
+	g_autoptr(JsonNode) first = call(f, "/api/v1/lightsite/billing/prepay", body, 201);
+	g_autoptr(JsonNode) replay = call(f, "/api/v1/lightsite/billing/prepay", body, 200);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonObject *object = json_node_get_object(first);
+	(void)unused;
+	g_assert_cmpint(json_object_get_int_member(object, "term_months"), ==, 24);
+	g_assert_false(json_object_has_member(object, "charge_due_at"));
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(object, "total"), "amount"), ==, "20.00");
+	g_assert_cmpint(json_object_get_int_member(object, "subscription_id"), ==,
+		json_object_get_int_member(json_node_get_object(replay), "subscription_id"));
+	{
+		g_autoptr(GDateTime) now = venture_time_now(), later = g_date_time_add_days(now, 15);
+		g_autoptr(VentureEntity) renew = g_object_new(VENTURE_TYPE_BILLING_REQUEST,
+			"action", "renew", "subscription-id", json_object_get_int_member(object, "subscription_id"), "at", later, NULL);
+		venture_entity_set_organization_id(renew, f->billing); save(f, renew);
+		g_clear_object(&renew);
+		renew = g_object_new(VENTURE_TYPE_BILLING_REQUEST, "action", "renew-sweep", "at", later, NULL);
+		venture_entity_set_organization_id(renew, f->billing); save(f, renew);
+	}
+	venture_query_set_organization(query, f->billing);
+	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(invoices->len, ==, 0);
+}
+static void test_prepaid_terms(Fixture *f, gconstpointer annual)
+{
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	if (!annual) {
+		body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"single\"}", f->business, f->price);
+		answer = call(f, "/api/v1/lightsite/billing/prepay", body, 422);
+		return;
+	}
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"split\",\"shares\":[500,700,700]}", f->business, f->price);
+	answer = call(f, "/api/v1/lightsite/billing/prepay", body, 422);
+	g_clear_pointer(&body, g_free); g_clear_pointer(&answer, json_node_unref);
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"split\",\"shares\":[500,700,800]}", f->business, f->price);
+	answer = call(f, "/api/v1/lightsite/billing/prepay", body, 201);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(answer), "shares")), ==, 3);
+	g_clear_pointer(&answer, json_node_unref);
+	answer = call(f, "/api/v1/lightsite/billing/prepay", body, 200);
+	g_clear_pointer(&body, g_free); g_clear_pointer(&answer, json_node_unref);
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"split\",\"shares\":[600,600,800]}", f->business, f->price);
+	answer = call(f, "/api/v1/lightsite/billing/prepay", body, 409);
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/hosted-billing/prepaid-enrollment", Fixture, "annual", setup, test_prepaid_enrollment, teardown);
+	g_test_add("/hosted-billing/prepaid-shares", Fixture, "annual", setup, test_prepaid_terms, teardown);
+	g_test_add("/hosted-billing/prepaid-monthly-refused", Fixture, NULL, setup, test_prepaid_terms, teardown);
 	g_test_add("/hosted-billing/enrollment", Fixture, NULL, setup, test_enrollment, teardown);
 	g_test_add("/hosted-billing/activation", Fixture, NULL, setup, test_activation, teardown);
 	g_test_add("/hosted-billing/publish-without-card", Fixture, NULL, setup, test_publish_without_card, teardown);

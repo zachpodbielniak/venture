@@ -36,25 +36,9 @@ enrollment_write(VentureDatabase *db, gint64 billing, gint64 business, const gch
 	return save_receipt(db, receipt, actor, error);
 }
 
-/**
- * venture_lightsite_billing_enroll:
- * @database: hosted database
- * @billing: configured billing organization
- * @business: customer business
- * @price_id: active monthly or annual price in the billing organization
- * @created: (out) (optional): whether this call created the enrollment
- * @error: return location for an error
- *
- * Starts a fourteen-day deferred subscription without issuing an invoice.
- * The business has one enrollment for its lifetime. Repeating its price is
- * safe; changing the price on a retry is a conflict. The price's catalogue
- * trial is unchanged. Requires trusted-service authority.
- *
- * Returns: (transfer full) (nullable): durable enrollment identity and terms
- */
-JsonNode *
-venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint64 business,
-	gint64 price_id, gboolean *created, GError **error)
+static JsonNode *
+enrollment_create(VentureDatabase *database, gint64 billing, gint64 business,
+	gint64 price_id, const gchar *payment_path, JsonArray *shares, gboolean *created, GError **error)
 {
 	g_autoptr(GError) discarded = NULL;
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -70,13 +54,26 @@ venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint
 	const gchar *interval;
 	if (!error) error = &discarded;
 	if (created) *created = FALSE;
+	if (shares && (g_strcmp0(payment_path, "split") || json_array_get_length(shares) < 2 || json_array_get_length(shares) > 3)) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "only split payments accept two or three shares"); return NULL;
+	}
+	if (payment_path && strcmp(payment_path, "single") && strcmp(payment_path, "installments") &&
+		strcmp(payment_path, "ach") && strcmp(payment_path, "wire") && strcmp(payment_path, "split")) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "unknown prepaid payment path");
+		return NULL;
+	}
 	if (!prepare(database, billing, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
 	if (!business_valid(database, billing, business, error)) return NULL;
 	if (!venture_database_begin_serializable(database, error)) return NULL;
 	result = enrollment_read(database, billing, business, "enroll", error);
 	if (result) {
-		if (json_object_get_int_member(json_node_get_object(result), "plan_price_id") != price_id) {
+		JsonObject *prior = json_node_get_object(result);
+		const gchar *prior_path = json_object_has_member(prior, "payment_path") ?
+			json_object_get_string_member(prior, "payment_path") : NULL;
+		JsonArray *prior_shares = json_object_has_member(prior, "shares") ? json_object_get_array_member(prior, "shares") : NULL;
+		if (json_object_get_int_member(prior, "plan_price_id") != price_id || g_strcmp0(prior_path, payment_path) ||
+			((shares != NULL) != (prior_shares != NULL)) || (shares && !json_array_equal(shares, prior_shares))) {
 			refuse(error, VENTURE_ERROR_CONFLICT, "business already enrolled with different terms");
 			goto fail;
 		}
@@ -92,6 +89,11 @@ venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint
 		venture_money_get_amount(amount) <= 0 ||
 		(g_strcmp0(interval, "month") && g_strcmp0(interval, "year"))) {
 		refuse(error, VENTURE_ERROR_VALIDATION, "an active positive monthly or annual price is required");
+		goto fail;
+	}
+	if (payment_path && (strcmp(interval, "year") || number(price, "tax-code-id") ||
+		venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price)))) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "prepayment requires an annual fixed price without tax or metered additions");
 		goto fail;
 	}
 	cap = venture_money_multiply_rational(amount, !strcmp(interval, "year") ? 1 : 3,
@@ -121,6 +123,10 @@ venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint
 	venture_entity_set_organization_id(VENTURE_ENTITY(instruction), billing);
 	g_object_set(instruction, "action", "start", "company-id", venture_entity_get_id(company),
 		"plan-price-id", price_id, "seats", (gint64)1, "defer-days", (gint64)14, "at", now, NULL);
+	if (payment_path) {
+		g_autofree gchar *identity = g_strdup_printf("prepaid:%" G_GINT64_FORMAT, business);
+		g_object_set(instruction, "external-id", identity, NULL);
+	}
 	if (!execute(database, instruction, &actor, error)) goto fail;
 	deadline = g_date_time_add_days(now, 14);
 	object = json_object_new();
@@ -131,8 +137,30 @@ venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint
 	json_object_set_int_member(object, "subscription_id", number(VENTURE_ENTITY(instruction), "subscription-id"));
 	json_object_set_int_member(object, "plan_price_id", price_id);
 	json_object_set_member(object, "guarantee_cap", money_node(cap));
+	if (payment_path) {
+		g_autoptr(VentureMoney) total = venture_money_multiply_rational(amount, 2, 1, error);
+		if (!total) goto fail;
+		json_object_set_string_member(object, "payment_path", payment_path);
+		json_object_set_int_member(object, "term_months", 24);
+		json_object_set_int_member(object, "price_version", venture_entity_get_version(price));
+		json_object_set_member(object, "total", money_node(total));
+		if (shares) {
+			gint64 remaining = venture_money_get_amount(total);
+			guint i;
+			for (i = 0; i < json_array_get_length(shares); i++) {
+				JsonNode *share = json_array_get_element(shares, i);
+				if (!JSON_NODE_HOLDS_VALUE(share) || json_node_get_value_type(share) != G_TYPE_INT64 ||
+					json_node_get_int(share) <= 0 || json_node_get_int(share) > remaining) {
+					refuse(error, VENTURE_ERROR_VALIDATION, "shares must be positive integer minor units totaling the prepaid price"); goto fail;
+				}
+				remaining -= json_node_get_int(share);
+			}
+			if (remaining) { refuse(error, VENTURE_ERROR_VALIDATION, "shares must total the prepaid price"); goto fail; }
+			json_object_set_array_member(object, "shares", json_array_ref(shares));
+		}
+	}
 	set_time(object, "enrolled_at", now);
-	set_time(object, "charge_due_at", deadline);
+	if (!payment_path) set_time(object, "charge_due_at", deadline);
 	if (!enrollment_write(database, billing, business, "enroll", result, &actor, error)) goto fail;
 	if (!venture_database_commit(database, error)) return NULL;
 	if (created) *created = TRUE;
@@ -140,6 +168,55 @@ venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint
 fail:
 	venture_database_rollback(database);
 	return NULL;
+}
+
+/**
+ * venture_lightsite_billing_enroll:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: customer business
+ * @price_id: active monthly or annual price
+ * @created: (out) (optional): whether enrollment was created
+ * @error: return location for an error
+ *
+ * Starts a fourteen-day deferred subscription without issuing an invoice.
+ * Repeating its price is safe; changing the terms conflicts. Requires trusted
+ * service authority and leaves the catalogue trial unchanged.
+ *
+ * Returns: (transfer full) (nullable): durable enrollment identity and terms
+ */
+JsonNode *
+venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint64 business,
+	gint64 price_id, gboolean *created, GError **error)
+{
+	return enrollment_create(database, billing, business, price_id, NULL, NULL, created, error);
+}
+
+/**
+ * venture_lightsite_billing_prepay:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: customer business
+ * @price_id: annual fixed price
+ * @payment_path: single, installments, ach, wire or split
+ * @shares: (nullable): two or three split amounts in integer minor units
+ * @created: (out) (optional): whether enrollment was created
+ * @error: return location for an error
+ *
+ * Reserves an immutable 24-month prepaid offer without issuing an invoice.
+ * Requires trusted service authority. Only publication may start collection.
+ *
+ * Returns: (transfer full) (nullable): frozen terms and enrollment identity
+ */
+JsonNode *
+venture_lightsite_billing_prepay(VentureDatabase *database, gint64 billing, gint64 business,
+	gint64 price_id, const gchar *payment_path, JsonArray *shares, gboolean *created, GError **error)
+{
+	if (!payment_path) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "a prepaid payment path is required");
+		return NULL;
+	}
+	return enrollment_create(database, billing, business, price_id, payment_path, shares, created, error);
 }
 
 static VentureStripeService *
@@ -152,6 +229,25 @@ enrollment_provider(VentureContext *context, gint64 billing, GError **error)
 		if (owner == billing) return g_object_ref(injected);
 	}
 	return venture_stripe_service_for_organization(venture_context_get_database(context), billing, NULL, error);
+}
+
+static gboolean
+enrollment_prepaid_price(VentureDatabase *db, gint64 billing, JsonNode *enrollment, GError **error)
+{
+	JsonObject *terms = json_node_get_object(enrollment);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PREPAYMENT);
+	g_autoptr(VentureEntity) group = NULL, price = NULL;
+	venture_query_set_organization(query, billing);
+	venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ,
+		json_object_get_int_member(terms, "subscription_id"), NULL);
+	group = venture_database_find_one(db, query, error);
+	if (group) return TRUE;
+	if (error && *error) return FALSE;
+	price = get_record(db, VENTURE_TYPE_PLAN_PRICE, json_object_get_int_member(terms, "plan_price_id"), error);
+	if (!price) return FALSE;
+	if (venture_entity_get_organization_id(price) != billing || venture_entity_get_version(price) != json_object_get_int_member(terms, "price_version"))
+		return refuse(error, VENTURE_ERROR_CONFLICT, "the agreed prepaid price changed before payment setup");
+	return TRUE;
 }
 
 static VentureEntity *
@@ -206,6 +302,15 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 		return NULL;
 	}
 	subscription = json_object_get_int_member(json_node_get_object(enrollment), "subscription_id");
+	if (json_object_has_member(json_node_get_object(enrollment), "payment_path")) {
+		if (!enrollment_prepaid_price(db, billing, enrollment, error)) return NULL;
+		provider = enrollment_provider(context, billing, error);
+		if (!provider) return NULL;
+		return venture_stripe_service_prepay(provider, subscription,
+			json_object_get_string_member(json_node_get_object(enrollment), "payment_path"),
+			json_object_has_member(json_node_get_object(enrollment), "shares") ? json_object_get_array_member(json_node_get_object(enrollment), "shares") : NULL,
+			NULL, &actor, error);
+	}
 	permission = enrollment_permission(db, billing, subscription, error);
 	if (error && *error) return NULL;
 	if (permission) g_object_get(permission, "status", &status, NULL);
@@ -298,6 +403,19 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 		json_node_take_object(publication, json_object_new());
 		set_time(json_node_get_object(publication), "go_live_at", now);
 		if (!enrollment_write(db, billing, business, "publish", publication, &actor, error)) goto fail;
+	}
+	if (json_object_has_member(json_node_get_object(enrollment), "payment_path")) {
+		g_autoptr(GDateTime) first_publication = publication ? venture_time_from_string(
+			json_object_get_string_member(json_node_get_object(publication), "go_live_at"), error) : NULL;
+		if (publication && !first_publication) goto fail;
+		if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error)) return NULL;
+		if (!enrollment_prepaid_price(db, billing, enrollment, error)) return NULL;
+		provider = enrollment_provider(context, billing, error);
+		if (!provider) return NULL;
+		return venture_stripe_service_prepay(provider, subscription,
+			json_object_get_string_member(json_node_get_object(enrollment), "payment_path"),
+			json_object_has_member(json_node_get_object(enrollment), "shares") ? json_object_get_array_member(json_node_get_object(enrollment), "shares") : NULL,
+			first_publication, &actor, error);
 	}
 	result = json_node_new(JSON_NODE_OBJECT); object = json_object_new(); json_node_take_object(result, object);
 	json_object_set_int_member(object, "organization_id", business);

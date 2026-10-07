@@ -303,7 +303,7 @@ VENTURE_DEFINE_ENTITY(VentureBillingNotice, venture_billing_notice, billing_noti
 /* A durable instruction, so approval stages intent without granting CRUD the
  * authority to write subscription state. The service fills the result fields. */
 static const VentureFieldDecl billing_request_fields[] = {
-	VENTURE_FIELD_NAME("action", "Action", "start, activate, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, collect, renew-sweep, dunning-sweep"),
+	VENTURE_FIELD_NAME("action", "Action", "start, activate, prepay, prepay-installments, renew, change, change-seats, pause, resume, cancel, mark-payment-failed, recover, collect, renew-sweep, dunning-sweep"),
 	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NONE),

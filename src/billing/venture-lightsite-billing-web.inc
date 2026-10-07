@@ -150,7 +150,7 @@ venture_web_lightsite_billing_enroll(HtmxRequest *request, GHashTable *params, g
 	GBytes *body = htmx_request_get_body_bytes(request);
 	gsize length = 0;
 	const gchar *bytes = body ? g_bytes_get_data(body, &length) : NULL;
-	JsonNode *root, *business, *price;
+	JsonNode *root, *business, *price, *payment_path, *shares;
 	JsonObject *object;
 	gboolean created = FALSE;
 	HtmxResponse *response = lightsite_billing_gate(self, request, &principal);
@@ -164,13 +164,22 @@ venture_web_lightsite_billing_enroll(HtmxRequest *request, GHashTable *params, g
 	object = json_node_get_object(root);
 	business = json_object_get_member(object, "organization_id");
 	price = json_object_get_member(object, "plan_price_id");
-	if (json_object_get_size(object) != 2 || !business || !price ||
+	payment_path = json_object_get_member(object, "payment_path");
+	shares = json_object_get_member(object, "shares");
+	if (shares && (!payment_path || !JSON_NODE_HOLDS_ARRAY(shares))) goto malformed;
+	if (g_str_has_suffix(htmx_request_get_path(request), "/prepay")) {
+		if (!payment_path || !JSON_NODE_HOLDS_VALUE(payment_path) ||
+			json_node_get_value_type(payment_path) != G_TYPE_STRING) goto malformed;
+	} else if (payment_path) goto malformed;
+	if (json_object_get_size(object) != (payment_path ? 3u : 2u) + (shares ? 1u : 0u) || !business || !price ||
 		!JSON_NODE_HOLDS_VALUE(business) || json_node_get_value_type(business) != G_TYPE_INT64 ||
 		!JSON_NODE_HOLDS_VALUE(price) || json_node_get_value_type(price) != G_TYPE_INT64 ||
 		json_node_get_int(business) <= 0 || json_node_get_int(business) == G_MAXINT64 ||
 		json_node_get_int(price) <= 0 || json_node_get_int(price) == G_MAXINT64) goto malformed;
 	scope = venture_access_policy_enter(venture_database_get_access_policy(db), principal);
-	result = venture_lightsite_billing_enroll(db, lightsite_billing_organization(self),
+	if (payment_path) result = venture_lightsite_billing_prepay(db, lightsite_billing_organization(self),
+		json_node_get_int(business), json_node_get_int(price), json_node_get_string(payment_path), shares ? json_node_get_array(shares) : NULL, &created, &error);
+	else result = venture_lightsite_billing_enroll(db, lightsite_billing_organization(self),
 		json_node_get_int(business), json_node_get_int(price), &created, &error);
 	return lightsite_billing_finish(result ? venture_web_json_response(result, created ? 201 : 200) : venture_web_error_response(error));
 malformed:
@@ -268,6 +277,8 @@ static void
 venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *self)
 {
 	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/prepay",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/billing/:organization_id/made-back",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_view, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/guarantee",

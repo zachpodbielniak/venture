@@ -1,6 +1,46 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 
+static gboolean
+stripe_prepayment_tick(VentureContext *context, GDateTime *now)
+{
+	VentureDatabase *database = venture_context_get_database(context);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PREPAYMENT);
+	g_autoptr(VentureEntity) group = NULL;
+	g_autoptr(VentureStripeService) configured = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *cutoff = venture_time_to_string(now), *path = NULL;
+	VentureStripeService *service = venture_context_get_stripe_service(context);
+	VentureActor actor = { VENTURE_ACTOR_KIND_SYSTEM, "Prepaid collection", NULL, NULL, NULL };
+	gint64 subscription = 0, binding = 0, group_id = 0;
+	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_NE, "paid", NULL);
+	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_NE, "failed", NULL);
+	venture_query_add_filter_string(query, "next-attempt-at", VENTURE_FILTER_OP_LTE, cutoff, NULL);
+	venture_query_add_order(query, "next-attempt-at", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	group = venture_database_find_one(database, query, &error);
+	if (!group) return FALSE;
+	group_id = venture_entity_get_id(group);
+	g_object_get(group, "subscription-id", &subscription, "connection-id", &binding, "payment-path", &path, NULL);
+	if (!service) {
+		configured = venture_stripe_service_for_connection(database, venture_entity_get_organization_id(group), binding, FALSE, NULL, &error);
+		service = configured;
+	}
+	if (service) result = venture_stripe_service_prepay(service, subscription, path, NULL, FALSE, &actor, &error);
+	if (!result) {
+		g_autoptr(GDateTime) retry = g_date_time_add_minutes(now, 5);
+		g_clear_error(&error);
+		g_clear_object(&group);
+		group = venture_database_get(database, VENTURE_TYPE_STRIPE_PREPAYMENT, group_id, &error);
+		if (group) {
+			g_object_set(group, "next-attempt-at", retry, NULL);
+			venture_stripe_save_owned(database, group, &actor, NULL);
+		}
+	}
+	return TRUE;
+}
+
 /* Timers run only outside an authenticated request/transaction. They never
  * inherit another caller's authority while synchronous HTTP pumps the loop. */
 static gboolean
@@ -23,6 +63,7 @@ stripe_collection_tick(gpointer data)
 		return G_SOURCE_CONTINUE;
 	if (!venture_tenant_service_check_operation(venture_tenant_service_get(database), TRUE, &error))
 		return G_SOURCE_CONTINUE;
+	if (stripe_prepayment_tick(context, now)) return G_SOURCE_CONTINUE;
 	venture_query_set_limit(query, 1);
 	venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, NULL);
 	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", NULL);

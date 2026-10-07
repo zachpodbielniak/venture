@@ -131,3 +131,55 @@ make DEBUG=1 test-one T=test-hosted-billing
 make DEBUG=1 test-one T=test-stripe
 make DEBUG=1 test
 #+end_src
+
+* Fixed prepaid terms
+
+=POST /api/v1/lightsite/billing/prepay= uses the same trusted-service gate as
+=enroll=. It accepts =organization_id=, an annual fixed =plan_price_id= and
+=payment_path=: =single=, =installments=, =ach=, =wire= or =split=. Enrollment
+freezes a 24-month total (twice the annual price) and issues nothing. Identical
+retries return the same subscription; changed terms conflict. Tax additions,
+metered prices and monthly catalogue prices are refused for this contract.
+
+For =split=, optional =shares= contains two or three positive integer minor-unit
+amounts whose sum is the total. Omitting it selects two equal shares, with any
+rounding remainder on the last share. Each share requires a distinct saved card.
+Other paths reject =shares=. A publication call fixes the start of the 24-month
+term and creates exactly one invoice. Ordinary trial expiry and renewal sweeps
+cannot collect this enrollment; automatic renewal is disabled at term end.
+
+The existing =setup= and =publish= routes return a prepaid result containing
+=prepayment_id=, =invoice_id=, =state= and =payment_links= (slot and hosted URL).
+Setup links collect provider-hosted consent without charging. Expired links are
+replaced. No card or bank details pass through the hosted client. Bank debit
+requires an enabled USD connection and a verified reusable mandate. Wire uses
+USD customer-balance instructions; only a matching authenticated payment result
+with the exact customer, currency and amount settles the invoice. Merely opening
+instructions or returning from a browser never marks it paid.
+
+Installments collect half at publication and half 30 days later. The invoice's
+final due date is the second installment date. The persisted collector retries
+definite declines daily and reconciles uncertain responses before another
+mutation. Restarting the process preserves the schedule and payment identities.
+Manual settlement that changes the expected outstanding balance pauses further
+collection for reconciliation. Ordinary Checkout is unavailable while this
+collection owns the invoice.
+
+Split cards are all authorized before any capture. A definitive failure cancels
+remaining holds and refunds any captured share. Reversal is asynchronous: the
+state remains =compensating= until every cancellation or refund is verified,
+then becomes =failed=. It is never reported as partial success. A lost refund
+response is recovered from the original payment's refund history, including
+when the provider no longer retains the request's idempotency key. Captures and
+reversals remain in the private service-owned journal. Invoice allocations are
+posted only after every share succeeds. A compensated failure does not silently
+start another attempt. Unresolved authentication or contradictory evidence stays
+unpaid and requires reconciliation.
+
+=StripePrepayment= is a service-owned durable journal; ordinary record writes
+cannot create or alter it. Migration =000911_prepaid_collection.sql= is paired
+for SQLite and PostgreSQL and invents no historical collections. The local
+=test-prepaid-stripe= fixture proves all five paths, restart/retry, lost responses,
+compensation, expired setup, payment identity checks and manual-payment conflicts.
+=test-hosted-billing= covers the HTTP contract, authority, replay and frozen shares.
+These fixtures do not claim live-provider payment verification.

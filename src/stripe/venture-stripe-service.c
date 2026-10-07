@@ -324,8 +324,10 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GPtrArray) prepayments = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	gint status;
+	guint i;
 
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled (stripe.enabled)");
@@ -335,6 +337,14 @@ eligible(VentureStripeService *self, gint64 invoice_id, VentureEntity **invoice_
 	g_object_get(invoice, "status", &status, NULL);
 	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 		return refuse(error, "Checkout requires invoice status sent");
+	prepayments = find_id(self, VENTURE_TYPE_STRIPE_PREPAYMENT, "invoice-id", invoice_id, error);
+	if (!prepayments) return FALSE;
+	for (i = 0; i < prepayments->len; i++) {
+		g_autofree gchar *state = NULL;
+		g_object_get(g_ptr_array_index(prepayments, i), "state", &state, NULL);
+		if (g_strcmp0(state, "failed"))
+			return refuse(error, "This invoice already has a reserved prepaid collection");
+	}
 	lines = find_id(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id", invoice_id, error);
 	if (!lines) return FALSE;
 	if (lines->len < 1) return refuse(error, "Checkout requires at least one invoice line");
@@ -443,6 +453,7 @@ stripe_event_exception(VentureStripeService *self, VentureStripeEvent *event,
 #include "venture-stripe-recovery.inc"
 #include "venture-stripe-runner.inc"
 #include "venture-stripe-settlement.inc"
+#include "venture-stripe-prepay.inc"
 #include "venture-stripe-invoice-events.inc"
 #include "venture-stripe-events.inc"
 
