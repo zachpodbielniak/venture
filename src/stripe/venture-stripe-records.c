@@ -9,7 +9,7 @@ static const VentureFieldDecl prepayment_fields[] = {
 	VENTURE_FIELD("price-version", "Agreed price version", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("payment-path", "Payment choice", "single, installments, ach, wire or split", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("total", "Prepaid total", "Twenty-four months at the agreed annual price"),
-	VENTURE_FIELD("state", "State", "setup, collecting, waiting, compensating, failed or paid", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("state", "State", "setup, collecting, waiting, compensating, cancelled, failed or paid", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("customer-id", "Provider customer", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("legs", "Payment journal", "Service-owned saved-method and collection evidence", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("published-at", "First publication", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),

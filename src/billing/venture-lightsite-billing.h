@@ -5,6 +5,8 @@
 #error "Only <venture.h> can be included directly."
 #endif
 G_BEGIN_DECLS
+JsonNode *venture_lightsite_billing_cancel(VentureDatabase *database, gint64 billing,
+	gint64 business, GError **error);
 JsonNode *venture_lightsite_billing_prepay(VentureDatabase *database, gint64 billing,
 	gint64 business, gint64 price_id, const gchar *payment_path, JsonArray *shares, gboolean *created, GError **error);
 JsonNode *venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing,

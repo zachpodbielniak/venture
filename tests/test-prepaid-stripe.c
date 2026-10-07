@@ -37,7 +37,7 @@ static void prepaid_setup(Fixture *f, gconstpointer data)
 	const gchar *scenario = data ? data : "installments";
 	const gchar *path = g_str_has_prefix(scenario, "installments") ? "installments" :
 		g_str_has_prefix(scenario, "split") || !strcmp(scenario, "wrong-capture") ? "split" :
-		!strcmp(scenario, "lost-confirmation") || !strcmp(scenario, "setup-expired") || g_str_has_prefix(scenario, "wrong-") ? "single" : scenario;
+		!strcmp(scenario, "lost-confirmation") || !strcmp(scenario, "setup-expired") || !strcmp(scenario, "cancelled") || g_str_has_prefix(scenario, "wrong-") ? "single" : scenario;
 	g_autoptr(JsonNode) published = NULL, replay = NULL;
 	g_autoptr(JsonArray) shares = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
@@ -78,6 +78,19 @@ static void prepaid_setup(Fixture *f, gconstpointer data)
 		json_object_get_int_member(json_node_get_object(again), "prepayment_id"));
 	invoices = rows(f, "invoice"); g_assert_cmpuint(invoices->len, ==, 0);
 	if (!strcmp(scenario, "setup-expired")) { g_assert_cmpuint(fixture->sessions, ==, 2); return; }
+	if (!strcmp(scenario, "cancelled")) {
+		g_autoptr(VentureEntity) cancel = record_new(f, "billing_request");
+		g_object_set(cancel, "action", "cancel", "subscription-id", subscription, "at", now, NULL); save(f, cancel);
+		published = venture_stripe_service_prepay(provider, subscription, path, NULL, now, NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(published);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(published), "state"), ==, "cancelled");
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(published), "payment_links")), ==, 0);
+		g_assert_cmpuint(fixture->intents, ==, 0); g_assert_cmpuint(fixture->confirms, ==, 0);
+		g_assert_cmpuint(fixture->sessions, ==, 1);
+		g_clear_pointer(&invoices, g_ptr_array_unref); invoices = rows(f, "invoice"); g_assert_cmpuint(invoices->len, ==, 0);
+		g_test_message("Cancelled prepaid setup: delayed completion/publication produces no intent or invoice");
+		return;
+	}
 	if (!data) {
 		gint64 group_id = json_object_get_int_member(json_node_get_object(first), "prepayment_id");
 		g_autoptr(VentureEntity) forged = venture_database_get(f->database, VENTURE_TYPE_STRIPE_PREPAYMENT, group_id, &error);
@@ -122,6 +135,11 @@ static void prepaid_setup(Fixture *f, gconstpointer data)
 		balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->database), invoice, NULL, &error);
 		g_assert_no_error(error); g_assert_cmpint(venture_money_get_amount(balance), ==, 1000);
 		g_assert_cmpuint(fixture->confirms, ==, 1);
+		if (!strcmp(scenario, "installments-cancel")) {
+			g_autoptr(VentureEntity) cancel = record_new(f, "billing_request");
+			g_object_set(cancel, "action", "cancel", "subscription-id", subscription,
+				"at-period-end", TRUE, "at", now, NULL); save(f, cancel);
+		}
 		if (!strcmp(scenario, "installments-manual")) {
 			g_autoptr(VenturePayment) manual = venture_payment_new();
 			g_autoptr(GDateTime) paid_at = venture_time_now();
@@ -191,6 +209,8 @@ static void prepaid_setup(Fixture *f, gconstpointer data)
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/prepaid/cancelled", Fixture, "cancelled", set_up, prepaid_setup, tear_down);
+	g_test_add("/prepaid/installments-cancel", Fixture, "installments-cancel", set_up, prepaid_setup, tear_down);
 	g_test_add("/prepaid/setup-without-charge", Fixture, NULL, set_up, prepaid_setup, tear_down);
 	g_test_add("/prepaid/setup-expired", Fixture, "setup-expired", set_up, prepaid_setup, tear_down);
 	g_test_add("/prepaid/single", Fixture, "single", set_up, prepaid_setup, tear_down);

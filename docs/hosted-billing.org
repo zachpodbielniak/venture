@@ -183,3 +183,39 @@ for SQLite and PostgreSQL and invents no historical collections. The local
 compensation, expired setup, payment identity checks and manual-payment conflicts.
 =test-hosted-billing= covers the HTTP contract, authority, replay and frozen shares.
 These fixtures do not claim live-provider payment verification.
+
+* Cancel an enrollment
+
+=POST /api/v1/lightsite/billing/cancel= accepts exactly =organization_id=.
+It uses the same trusted service bearer authority as enrollment. The hosted
+client checks that the dashboard user owns that business before forwarding
+this request; browser sessions, customer tokens and viewer tokens cannot call
+this service boundary directly.
+
+Before fourteen days from =enrolled_at=, an unpublished enrollment with no
+invoice ends immediately. The response has =state: cancelled= and
+=no_charge: true=, with =cancelled_at= and =effective_at=. The subscription and
+immutable cancellation receipt commit together. An identical retry returns
+the original response, even after the deadline. Queued =publish= and
+=first-charge= calls return that response without collection. New enrollment,
+subscription changes and payment setup are refused for the cancelled business.
+The normal renewal sweep cannot issue an invoice for the ended subscription.
+A delayed prepaid setup completion becomes terminal =cancelled= without
+provider calls or payment links, and the prepaid timer skips it thereafter.
+
+Publication takes precedence over the unpaid trial, even within the first
+fourteen days. At or after the deadline, or after publication, the response
+instead reports =cancel_at_period_end= and =no_charge: false=. Existing
+monthly invoices and prepaid installment obligations remain; cancellation
+creates no automatic refund or credit. Prepaid terms still end after their
+original twenty-four months, with no renewal. Payment setup and collection
+of those already committed terms remain available.
+
+The built HTTP fixture =test-hosted-billing= covers early monthly and prepaid
+cancellation, replay, delayed publication/collection, a later renewal sweep,
+the day-fourteen boundary, incurred monthly invoices, invalid requests and
+authority. =test-prepaid-stripe= covers delayed setup completion after cancel
+and a second installment retained after cancellation at term end.
+=test-stripe /stripe/cancel-before-charge= verifies that an already verified
+saved card makes zero payment requests after cancellation on day thirteen.
+All provider calls in these proofs use fixtures.

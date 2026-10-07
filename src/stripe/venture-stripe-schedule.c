@@ -16,6 +16,7 @@ stripe_prepayment_tick(VentureContext *context, GDateTime *now)
 	gint64 subscription = 0, binding = 0, group_id = 0;
 	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_NE, "paid", NULL);
 	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_NE, "failed", NULL);
+	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_NE, "cancelled", NULL);
 	venture_query_add_filter_string(query, "next-attempt-at", VENTURE_FILTER_OP_LTE, cutoff, NULL);
 	venture_query_add_order(query, "next-attempt-at", VENTURE_SORT_ASCENDING, NULL);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);

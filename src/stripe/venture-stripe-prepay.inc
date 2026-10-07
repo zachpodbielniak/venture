@@ -39,7 +39,7 @@ prepay_reserve(VentureStripeService *self, gint64 subscription, const gchar *pat
 	g_autofree gchar *identity = NULL, *prior_path = NULL;
 	JsonArray *legs;
 	gint64 units, sum = 0;
-	gint interval = 0;
+	gint interval = 0, subscription_state = 0;
 	guint count = 1, i;
 	if (!path || (strcmp(path, "single") && strcmp(path, "installments") && strcmp(path, "ach") && strcmp(path, "wire") && strcmp(path, "split"))) {
 		refuse(error, "A prepaid payment choice is required"); return NULL;
@@ -75,6 +75,10 @@ prepay_reserve(VentureStripeService *self, gint64 subscription, const gchar *pat
 	if (error && *error) goto fail;
 	sub = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, error);
 	if (!sub) goto fail;
+	g_object_get(sub, "status", &subscription_state, NULL);
+	if (subscription_state >= 4) {
+		refuse(error, "An ended subscription cannot begin payment setup"); goto fail;
+	}
 	g_object_get(sub, "external-id", &identity, NULL);
 	price = owned_get(self, VENTURE_TYPE_PLAN_PRICE, stripe_number(sub, "plan-price-id"), error);
 	if (!price) goto fail;
@@ -536,6 +540,7 @@ venture_stripe_service_prepay(VentureStripeService *self, gint64 subscription_id
 	g_autofree gchar *text = NULL, *customer = NULL, *currency = NULL, *state = NULL;
 	JsonArray *legs;
 	gboolean ready = TRUE, all_paid = TRUE, all_authorized = TRUE, claimed = FALSE;
+	gint subscription_state = 0;
 	guint i;
 	if (!error) error = &discarded;
 	if (!stripe_finance(self, error) || !stripe_automatic_ready(self, error)) return NULL;
@@ -549,6 +554,23 @@ venture_stripe_service_prepay(VentureStripeService *self, gint64 subscription_id
 		"customer-id", &customer, "total", &total, "lease-until", &lease, "next-attempt-at", &next, NULL);
 	journal = venture_json_parse(text, error); if (!journal) return NULL;
 	legs = json_object_get_array_member(json_node_get_object(journal), "legs");
+	if (!strcmp(state, "cancelled")) return prepay_view(group, journal);
+	sub = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, error);
+	if (!sub) return NULL;
+	g_object_get(sub, "status", &subscription_state, NULL);
+	/* A late Setup completion is not permission to revive an unpaid trial.
+	 * Check before any provider call, including reads of a saved setup. */
+	if (subscription_state >= 4 && !stripe_number(group, "invoice-id")) {
+		for (i = 0; i < json_array_get_length(legs); i++) {
+			JsonObject *leg = json_array_get_object_element(legs, i);
+			json_object_remove_member(leg, "url");
+			json_object_remove_member(leg, "instructions_url");
+		}
+		g_object_set(group, "state", "cancelled", "lease-until", NULL, "next-attempt-at", NULL, NULL);
+		if (!prepay_save(self, group, journal, actor, error)) return NULL;
+		return prepay_view(group, journal);
+	}
+	g_clear_object(&sub);
 	if (!strcmp(state, "paid") || !strcmp(state, "failed") || (lease && g_date_time_compare(lease, now) > 0)) return prepay_view(group, journal);
 	/* A database lease prevents reentrant HTTP and a second process from
 	 * operating on the same group. Every provider write still has a stable key. */

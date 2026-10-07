@@ -1579,7 +1579,8 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 			g_object_get(sub, "external-id", &identity, NULL);
 			if (identity && g_str_has_prefix(identity, "prepaid:")) {
 				if (!g_strcmp0(verb, "renew")) return TRUE;
-				if (!prepaid && g_strcmp0(verb, "collect"))
+				if (!prepaid && g_strcmp0(verb, "collect") &&
+					!(g_strcmp0(verb, "cancel") == 0 && (state == 0 || scheduled)))
 					return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid terms require the prepaid collection service");
 			}
 			else if (prepaid) return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid enrollment is required");
@@ -1589,7 +1590,8 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		before = mrr(self, sub, price, seats, state, 0, error);
 		if (before == NULL)
 			return FALSE;
-		if ((!g_strcmp0(verb, "activate") || prepaid) && (state != 0 || flag(sub, "cancel-at-period-end")))
+		if ((!g_strcmp0(verb, "activate") || prepaid) &&
+			(state != 0 || (!prepaid && flag(sub, "cancel-at-period-end"))))
 			return refuse(error, VENTURE_ERROR_CONFLICT, "only an uncancelled trial may activate early");
 		if (prepaid && (choice(price, "interval") != 1 || number(sub, "discount-id") ||
 			venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price))))

@@ -1058,3 +1058,16 @@ removes both scripts' columns, tables and history from a migrated database
 holding a lead, migrates twice and checks the lead survived; it runs on
 PostgreSQL in its own schema when =VENTURE_TEST_MIGRATION_POSTGRES_URI= is
 set.
+
+* Hosted enrollment cancellation
+
+The HTTP cancellation regression first failed because the cancellation route
+was absent. The prepaid regression then failed when a delayed setup completion
+attempted to activate an ended trial. Both now return retained cancellation
+state without issuing an invoice. Hosted HTTP tests also cover replay, queued
+publication, the deadline boundary, period-end cancellation after publication,
+re-enrollment refusal and service authority. The saved-card collector fixture
+asserts zero payment requests after cancellation on day thirteen. The prepaid
+installment fixture proves that cancellation after publication preserves the
+already committed second payment. Provider interactions are deterministic
+fixtures; no live credentials are used.

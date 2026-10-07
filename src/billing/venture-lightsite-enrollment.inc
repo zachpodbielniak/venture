@@ -66,6 +66,13 @@ enrollment_create(VentureDatabase *database, gint64 billing, gint64 business,
 	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
 	if (!business_valid(database, billing, business, error)) return NULL;
 	if (!venture_database_begin_serializable(database, error)) return NULL;
+	{
+		g_autoptr(JsonNode) cancellation = enrollment_read(database, billing, business, "cancel", error);
+		if (cancellation) {
+			refuse(error, VENTURE_ERROR_CONFLICT, "cancelled enrollment cannot enroll again"); goto fail;
+		}
+		if (error && *error) goto fail;
+	}
 	result = enrollment_read(database, billing, business, "enroll", error);
 	if (result) {
 		JsonObject *prior = json_node_get_object(result);
@@ -282,7 +289,7 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 	g_autoptr(GError) discarded = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureAccessScope) internal = NULL;
-	g_autoptr(JsonNode) enrollment = NULL;
+	g_autoptr(JsonNode) enrollment = NULL, cancellation = NULL;
 	g_autoptr(VentureEntity) price = NULL, permission = NULL;
 	g_autoptr(VentureStripeService) provider = NULL;
 	g_autoptr(VentureStripeAuthorization) authorization = NULL;
@@ -296,6 +303,11 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 	if (!prepare(db, billing, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
 	if (!business_valid(db, billing, business, error)) return NULL;
+	cancellation = enrollment_read(db, billing, business, "cancel", error);
+	if (error && *error) return NULL;
+	if (cancellation && json_object_get_boolean_member(json_node_get_object(cancellation), "no_charge")) {
+		refuse(error, VENTURE_ERROR_CONFLICT, "cancelled enrollment cannot authorize payment"); return NULL;
+	}
 	enrollment = enrollment_read(db, billing, business, "enroll", error);
 	if (!enrollment) {
 		if (!error || !*error) refuse(error, VENTURE_ERROR_NOT_FOUND, "business is not enrolled");
@@ -372,7 +384,7 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureAccountingOperation) operation = NULL;
-	g_autoptr(JsonNode) enrollment = NULL, publication = NULL, receipt = NULL, result = NULL;
+	g_autoptr(JsonNode) enrollment = NULL, publication = NULL, receipt = NULL, result = NULL, cancellation = NULL;
 	g_autoptr(VentureEntity) permission = NULL, sub = NULL;
 	g_autoptr(VentureBillingRequest) instruction = NULL;
 	g_autoptr(VentureStripeService) provider = NULL;
@@ -390,6 +402,12 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 	operation = venture_accounting_operation_begin(db, "hosted.first-charge", NULL, NULL,
 		g_variant_new("(xb)", business, published), billing, &actor, error);
 	if (!operation || !venture_database_begin(db, error)) return NULL;
+	cancellation = enrollment_read(db, billing, business, "cancel", error);
+	if (error && *error) goto fail;
+	if (cancellation && json_object_get_boolean_member(json_node_get_object(cancellation), "no_charge")) {
+		venture_database_rollback(db);
+		return g_steal_pointer(&cancellation);
+	}
 	enrollment = enrollment_read(db, billing, business, "enroll", error);
 	if (!enrollment) {
 		if (!error || !*error) refuse(error, VENTURE_ERROR_NOT_FOUND, "business is not enrolled");

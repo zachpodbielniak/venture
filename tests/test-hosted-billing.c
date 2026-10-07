@@ -335,6 +335,10 @@ static void test_boundary(Fixture *f, gconstpointer unused)
 		g_free(f->token); f->token = venture_api_token_generate(token); save(f, VENTURE_ENTITY(token));
 		denied = call(f, "/api/v1/lightsite/billing/enroll", body, 403);
 		{
+			g_autofree gchar *cancel = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);
+			g_autoptr(JsonNode) no_cancel = call(f, "/api/v1/lightsite/billing/cancel", cancel, 403);
+		}
+		{
 			g_autofree gchar *prepaid = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"single\"}", f->business, f->price);
 			g_autoptr(JsonNode) no_prepay = call(f, "/api/v1/lightsite/billing/prepay", prepaid, 403);
 		}
@@ -390,9 +394,16 @@ static void test_prepaid_terms(Fixture *f, gconstpointer annual)
 	answer = call(f, "/api/v1/lightsite/billing/prepay", body, 409);
 }
 
+#include "test-hosted-cancel.inc"
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/hosted-billing/cancel-monthly", Fixture, NULL, setup, test_cancel_early, teardown);
+	g_test_add("/hosted-billing/cancel-prepaid", Fixture, "annual", setup, test_cancel_early, teardown);
+	g_test_add("/hosted-billing/cancel-published", Fixture, "published", setup, test_cancel_late, teardown);
+	g_test_add("/hosted-billing/cancel-deadline", Fixture, "deadline", setup, test_cancel_late, teardown);
+	g_test_add("/hosted-billing/cancel-missing", Fixture, NULL, setup, test_cancel_missing, teardown);
 	g_test_add("/hosted-billing/prepaid-enrollment", Fixture, "annual", setup, test_prepaid_enrollment, teardown);
 	g_test_add("/hosted-billing/prepaid-shares", Fixture, "annual", setup, test_prepaid_terms, teardown);
 	g_test_add("/hosted-billing/prepaid-monthly-refused", Fixture, NULL, setup, test_prepaid_terms, teardown);

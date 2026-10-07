@@ -217,7 +217,9 @@ venture_web_lightsite_billing_transition(HtmxRequest *request, GHashTable *param
 		json_node_get_value_type(business) != G_TYPE_INT64 || json_node_get_int(business) <= 0 ||
 		json_node_get_int(business) == G_MAXINT64) goto malformed;
 	scope = venture_access_policy_enter(venture_database_get_access_policy(db), principal);
-	if (g_str_has_suffix(path, "/setup"))
+	if (g_str_has_suffix(path, "/cancel"))
+		result = venture_lightsite_billing_cancel(db, lightsite_billing_organization(self), json_node_get_int(business), &error);
+	else if (g_str_has_suffix(path, "/setup"))
 		result = venture_lightsite_billing_setup(self->context, lightsite_billing_organization(self), json_node_get_int(business), &error);
 	else result = venture_lightsite_billing_first_charge(self->context, lightsite_billing_organization(self),
 		json_node_get_int(business), g_str_has_suffix(path, "/publish"), &error);
@@ -277,6 +279,8 @@ static void
 venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *self)
 {
 	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/cancel",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/prepay",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/billing/:organization_id/made-back",
