@@ -40,6 +40,15 @@ G_BEGIN_DECLS
 #define VENTURE_FEEDS_CHECK_EARLY (45)
 
 /**
+ * VENTURE_FEEDS_PROBE_MIN:
+ *
+ * The shortest wait for a venue's expected update worth a probe halfway
+ * there: under twenty minutes the probe and its two follow-ups would
+ * cost more requests than the minutes they could save.
+ */
+#define VENTURE_FEEDS_PROBE_MIN (20 * 60)
+
+/**
  * VENTURE_FEEDS_REGION_EVERY:
  *
  * Seconds between region recomputes of one store: half an hour, as
@@ -230,8 +239,14 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureFeedRun, venture_feed_run_unref)
  * The adaptive schedule, Undermine's. After new data: check
  * %VENTURE_FEEDS_CHECK_EARLY seconds before the venue's expected update,
  * or in a minute if that has passed, or in an hour if nothing has been
- * learned. After nothing new (a 304, a snapshot already held, a failure):
- * back off 1, 5, 15, then 30 minutes, and never sooner than a Retry-After.
+ * learned -- and, when the expected update is at least
+ * %VENTURE_FEEDS_PROBE_MIN away, first probe halfway there, so a learned
+ * interval that is a multiple of the real one is caught and unlearned.
+ * Nothing new before the expected update (a probe that found the old
+ * snapshot; pass @next_expected): look again in 1, then 5 minutes, then
+ * at the expected update. Nothing new after it, or a failure (pass
+ * %VENTURE_SERIES_NONE): back off 1, 5, 15, then 30 minutes. Never sooner
+ * than a Retry-After.
  *
  * Returns: when to check the unit next, Unix seconds
  */
