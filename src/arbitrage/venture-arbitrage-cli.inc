@@ -60,8 +60,9 @@ static const gchar venture_cli_arbitrage_usage[] =
 	"  abandon TRADE_ID [goods=keep|write_off] [abandoned_at=TIME]\n"
 	"  execute LEG_ID [occurred_at=TIME]\n"
 	"  registries                           strategies, fee models, export formats, options\n"
-	"Scan options: preset_id, data_source_id, buy_venues, sell_venues, group_key,\n"
-	"category_path, kind, instrument, recipe_id, units, buy_sources, sell_basis,\n"
+	"Scan options: preset_id, data_source_id, buy_venues, sell_venues, venue_group\n"
+	"(characters or a venue group's id), group_key, category_path, kind,\n"
+	"instrument, recipe_id, units, buy_sources, sell_basis,\n"
 	"total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct,\n"
 	"min_confidence, max_age_hours, share, sort, top (and a plugin strategy's own).\n"
 	"organization_id=N on scan, record and export answers for that organization\n"
@@ -87,6 +88,8 @@ static const VentureCliColumn venture_cli_arbitrage_scan_columns[] = {
 	{ "title", "opportunity", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "buy.venue_key", "buy at", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "sell.venue_key", "sell at", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "buy.stale", "buy stale", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sell.stale", "sell stale", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "units", "units", VENTURE_CLI_CELL_NUMBER, FALSE },
 	{ "net", "net", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "capital", "capital", VENTURE_CLI_CELL_MONEY, FALSE },

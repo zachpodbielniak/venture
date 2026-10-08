@@ -385,6 +385,7 @@ Every door takes the same names: the =arbitrage_scan= report's options, the quer
 | =data_source_id= | integer            | only this source's store; every source of the organization (at most 20) otherwise                           |
 | =buy_venues=     | keys, comma        | venues to buy (or back) at; every venue when empty                                                          |
 | =sell_venues=    | keys, comma        | venues to sell (or lay) at; every venue when empty                                                          |
+| =venue_group=    | text               | =characters= or a =venue_group= record's id: buy and sell only at its venues, each connected realm whole, in every source (Deals' picker) |
 | =group_key=      | text               | only venues in this group (a region)                                                                        |
 | =category_path=  | text               | only instruments under this store category path                                                             |
 | =kind=           | text               | only instruments of this kind                                                                               |
@@ -601,6 +602,10 @@ Past a bound the answer says so in a note ("narrow the question with a category,
 
 ** Presets
 
+*** A venue group
+
+=venue_group= narrows a scan the way Deals' venue group picker narrows Deals: both sides only at the group's venues -- the user's banking realms, say. The group is read with =venture_marketdata_venue_group_venue_keys()=, which gives the keys it stands for in every source of the organization, each connected realm whole (a group naming one realm takes every source's keys for its connected realm; see "Deals" in [[file:market-data.org][Market data]]), and the scan intersects =buy_venues= and =sell_venues= with them: no list is the whole group, a list keeps what is in the group, and a list with nothing in it -- left over from the group asked before -- is set aside for the whole group with a note. A strategy reading candidates from the index filters by =venture_arbitrage_scan_get_buy_venues()=, never by the =buy_venues= text. A group that is not the organization's is refused (NOT_FOUND), never ignored; =venue_group_name= in the answer names the one used. =/arbitrage= offers the same picker as Deals; the CLI, the reports, presets (as an option) and the =opportunities= widget take it as an option. Each row's =buy= and =sell= sides say how old their price is (=age_seconds=, =stale=; see "How old a price is" in [[file:market-data.org][Market data]]), and the page greys a stale side.
+
 An =arbitrage_strategy= record is a saved question: =name=, =strategy=, =data_source_id=, =buy_venues=, =sell_venues= and =options= -- the rest of the question as YAML (=min_profit: 10.00 GOLD=, =min_roi: 15=, =top: 20=). =preset_id= loads one; the record's fields and options fill the question and anything asked beside it wins. The save validator reads the options with the scan's own reader and holds the strategy to the registry (when written, as a venture type is), so a preset that saved is a preset that runs; a preset cannot load another. =/arbitrage= lists the organization's presets to load and saves the current question as one through the generic record form.
 
 ** Recording an opportunity
@@ -691,7 +696,7 @@ Every =/api/v1/arbitrage= route answers for the organization its =organization_i
 | Report            | Options                                                                                                  |
 |-------------------+----------------------------------------------------------------------------------------------------------|
 | =arbitrage_scan=  | every option of the question (above), and =organization_id=                                              |
-| =craft_arbitrage= | =recipe_id=, =units= (batches), =data_source_id=, =buy_venues=, =sell_venues=, =group_key=, =sell_basis=, =max_age_hours=, =organization_id= |
+| =craft_arbitrage= | =recipe_id=, =units= (batches), =data_source_id=, =buy_venues=, =sell_venues=, =venue_group=, =group_key=, =sell_basis=, =max_age_hours=, =organization_id= |
 
 =arbitrage_scan= is the scan's rows: strategy, opportunity, buy and sell venue, units, currency, capital, net, ROI, ROI a day, annualised, confidence, sale rate, data age and what is unquoted, with the scan's notes and what was left out and why. =craft_arbitrage= is the =transform= strategy with nothing left out for being a loss: per recipe, each input at its cheapest venue, ordered by venue so it reads as a shopping list (a reusable input says it is bought once), the output and its venue, and the profit -- blank and named when an input is unquoted. Both read the latest prices; the period is not used.
 

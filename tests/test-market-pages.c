@@ -1056,6 +1056,319 @@ test_deals_buy_sell_venues(
 	}
 }
 
+/*
+ * Every price on Deals and an item's page says how old it is, and one past
+ * series.stale_minutes is marked stale in the answer and on the page.
+ * What breaks if this regresses: a realm whose feed stopped hours ago
+ * reads as the cheapest place to buy, with nothing to say its price is
+ * old -- which is how Area 52 was called cheapest when Zul'jin was.
+ */
+static void
+test_deals_freshness(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	JsonArray *rows;
+	JsonArray *venues;
+	gboolean sold = FALSE;
+	guint i;
+
+	(void)user_data;
+	seed_store(fixture);
+
+	/* Every snapshot is an hour old: fresh under the default two hours. */
+	answer = get_json(fixture, "/api/v1/market/deals?sort=profit", 200);
+	g_assert_cmpint(json_object_get_int_member(root_of(answer), "stale_after_seconds"), ==, 7200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), >, 0);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		gint64 age = json_object_get_int_member(row, "buy_age_seconds");
+
+		g_assert_cmpstr(json_object_get_string_member(row, "buy_taken_at"), ==,
+		                json_object_get_string_member(row, "taken_at"));
+		g_assert_cmpint(age, >=, 3600);
+		g_assert_cmpint(age, <, 3600 + 300);
+		g_assert_false(json_object_get_boolean_member(row, "buy_stale"));
+
+		if (json_object_has_member(row, "sell"))
+		{
+			JsonObject *sell = json_object_get_object_member(row, "sell");
+
+			sold = TRUE;
+			g_assert_cmpstr(json_object_get_string_member(row, "sell_taken_at"), ==,
+			                json_object_get_string_member(sell, "taken_at"));
+			g_assert_false(json_object_get_boolean_member(row, "sell_stale"));
+			g_assert_false(json_object_get_boolean_member(sell, "stale"));
+			g_assert_cmpint(json_object_get_int_member(sell, "age_seconds"), >=, 3600);
+		}
+	}
+
+	g_assert_true(sold);
+	g_clear_pointer(&answer, json_node_unref);
+
+	page = get_page(fixture, "/market/deals?sort=profit");
+	g_assert_nonnull(strstr(page, "<span class=\"price-age\"><time datetime=\""));
+	g_assert_nonnull(strstr(page, "title=\"Price as of "));
+	g_assert_nonnull(strstr(page, ">1h</time>"));
+	/* (The page inlines the stylesheet, which names the class.) */
+	g_assert_null(strstr(page, "<span class=\"price-age is-stale\">"));
+	g_assert_null(strstr(page, "<td class=\"is-stale\""));
+	g_clear_pointer(&page, g_free);
+
+	/* Half an hour: the same prices are stale now, both sides. */
+	g_object_set(fixture->config, "series-stale-minutes", (gint64)30, NULL);
+	answer = get_json(fixture, "/api/v1/market/deals?sort=profit", 200);
+	g_assert_cmpint(json_object_get_int_member(root_of(answer), "stale_after_seconds"), ==, 1800);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		g_assert_true(json_object_get_boolean_member(row, "buy_stale"));
+		if (json_object_has_member(row, "sell"))
+			g_assert_true(json_object_get_boolean_member(row, "sell_stale"));
+	}
+
+	g_clear_pointer(&answer, json_node_unref);
+	page = get_page(fixture, "/market/deals?sort=profit");
+	g_assert_nonnull(strstr(page, "<td class=\"is-stale\""));
+	g_assert_nonnull(strstr(page, "<span class=\"price-age is-stale\"><time datetime=\""));
+	g_assert_nonnull(strstr(page, "<span class=\"price-age-flag\">stale</span>"));
+	g_clear_pointer(&page, g_free);
+
+	/* An item's venues and its "Now" card, the same way. */
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	g_assert_true(json_object_get_boolean_member(json_object_get_object_member(root_of(answer), "base"),
+	                                             "stale"));
+	venues = json_object_get_array_member(root_of(answer), "venues");
+	g_assert_cmpuint(json_array_get_length(venues), >, 0);
+
+	for (i = 0; i < json_array_get_length(venues); i++)
+	{
+		JsonObject *venue = json_array_get_object_element(venues, i);
+
+		g_assert_true(json_object_get_boolean_member(venue, "stale"));
+		g_assert_cmpint(json_object_get_int_member(venue, "age_seconds"), >=, 3600);
+	}
+
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "Price as of"));
+	g_assert_nonnull(strstr(page, "<span class=\"price-age-flag\">stale</span>"));
+}
+
+/* A venue named as a source names it, not by its key. */
+static void
+add_named_venue(
+	VentureSeriesStore	*store,
+	const gchar		*key,
+	const gchar		*name,
+	gint64			 seen_at
+){
+	g_autoptr(GError) error = NULL;
+	VentureSeriesVenue venue;
+
+	memset(&venue, 0, sizeof(venue));
+	venue.key = key;
+	venue.namespace_ = "realm";
+	venue.name = name;
+	venue.kind = "auction_house";
+	venue.group_key = "eu";
+	venue.currency = "USD";
+	g_assert_true(venture_series_store_upsert_venue(store, &venue, seen_at, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * One connected realm, two sources' keys for it: the fixture's source
+ * (Blizzard's way) knows it as venue "12", named for its three realms;
+ * a second source (a TSM push's way) keeps two of the realms apart, by
+ * slug. Copper ore is cheap there in both.
+ */
+static gint64
+seed_connected_realm(Fixture *fixture)
+{
+	g_autoptr(VentureDataSource) second = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(VentureSeriesStore) other = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	g_autofree gchar *other_dir = NULL;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	gint64 t = now - 3600;
+	static const Offer cheap[] = { { "2770", 40, 60, 9 } };
+	static const Offer slug_a[] = { { "2770", 50, 60, 9 } };
+	static const Offer slug_b[] = { { "2770", 51, 60, 9 } };
+	static const Offer slug_c[] = { { "2770", 52, 150, 2 } };
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	add_named_venue(store, "12", "Silver Hand, Thorium Brotherhood, Farstriders", t);
+	snapshot(store, "12", "USD", t, cheap, G_N_ELEMENTS(cheap));
+	g_assert_true(venture_series_store_recompute_region(store, NULL, now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+
+	second = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(second), fixture->org);
+	g_object_set(second, "name", "Pushes", "provider", "file_jsonl", "settings", "file: z.jsonl",
+	             "schedule", "manual", "currency", "USD", "instrument-namespace", "wow-item",
+	             "venue-namespace", "realm", NULL);
+	save(fixture, second);
+	other_dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(VENTURE_ENTITY(second)));
+	other = venture_series_store_open(other_dir, &error);
+	g_assert_no_error(error);
+	add_named_venue(other, "silver-hand", "Silver Hand", t);
+	add_named_venue(other, "thorium-brotherhood", "Thorium Brotherhood", t);
+	add_named_venue(other, "elsewhere", "Elsewhere", t);
+	add_instrument(other, "2770", "Copper Ore", "Materials/Ore", t);
+	snapshot(other, "silver-hand", "USD", t, slug_a, G_N_ELEMENTS(slug_a));
+	snapshot(other, "thorium-brotherhood", "USD", t, slug_b, G_N_ELEMENTS(slug_b));
+	snapshot(other, "elsewhere", "USD", t, slug_c, G_N_ELEMENTS(slug_c));
+	g_assert_true(venture_series_store_recompute_region(other, NULL, now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+
+	return ID(second);
+}
+
+/*
+ * The Deals pickers offer a connected realm once, however many sources
+ * key it and however many of its realms one source keeps apart, labelled
+ * by the realms a source keeps alone; any member's name or any source's
+ * key picks it, in every source. What breaks if it regresses: "Silver
+ * Hand", "Thorium Brotherhood" and "Silver Hand, Thorium Brotherhood,
+ * Farstriders" offered as three markets, and a pick by one name finding
+ * nothing in the source that knows only the connected realm.
+ */
+static void
+test_deals_connected_realms(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const asked[] = {
+		"Farstriders", "thorium-brotherhood", "12", "silver%20hand",
+		"Silver%20Hand%2C%20Thorium%20Brotherhood%20(%2B%20Farstriders)",
+	};
+	static const gchar label[] = "Silver Hand, Thorium Brotherhood (+ Farstriders)";
+	g_autoptr(VentureEntity) group = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *path = NULL;
+	JsonArray *choices;
+	JsonObject *realm = NULL;
+	gint64 second;
+	guint found = 0;
+	guint i;
+
+	(void)user_data;
+	seed_store(fixture);
+	second = seed_connected_realm(fixture);
+
+	answer = get_json(fixture, "/api/v1/market/deals", 200);
+	choices = json_object_get_array_member(root_of(answer), "venue_choices");
+
+	for (i = 0; i < json_array_get_length(choices); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+		const gchar *name = json_object_get_string_member(choice, "name");
+
+		/* No member realm is offered on its own beside it. */
+		g_assert_cmpstr(name, !=, "Silver Hand");
+		g_assert_cmpstr(name, !=, "Thorium Brotherhood");
+		g_assert_cmpstr(name, !=, "Silver Hand, Thorium Brotherhood, Farstriders");
+
+		if (0 == g_strcmp0(name, label))
+		{
+			realm = choice;
+			found++;
+		}
+	}
+
+	g_assert_cmpuint(found, ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(realm, "value"), ==, label);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(realm, "members")), ==, 3);
+	/* Three venues across two sources, each with its own age. */
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(realm, "venues")), ==, 3);
+	g_assert_false(json_object_get_boolean_member(
+		json_array_get_object_element(json_object_get_array_member(realm, "venues"), 0), "stale"));
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Any name or key for it buys there, in both sources. */
+	for (i = 0; i < G_N_ELEMENTS(asked); i++)
+	{
+		JsonArray *rows;
+		gboolean first = FALSE;
+		gboolean other = FALSE;
+		guint j;
+
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/api/v1/market/deals?search=copper%%20ore&venue=%s", asked[i]);
+		answer = get_json(fixture, path, 200);
+		g_assert_cmpstr(json_object_get_string_member(root_of(answer), "buy_venue"), ==, label);
+		rows = json_object_get_array_member(root_of(answer), "rows");
+
+		for (j = 0; j < json_array_get_length(rows); j++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, j);
+			const gchar *venue = json_object_get_string_member(row, "venue_key");
+
+			g_assert_true((0 == g_strcmp0(venue, "12")) || (0 == g_strcmp0(venue, "silver-hand")) ||
+			              (0 == g_strcmp0(venue, "thorium-brotherhood")));
+			g_assert_cmpstr(json_object_get_string_member(row, "realm"), ==, label);
+			first = first || (json_object_get_int_member(row, "data_source_id") == fixture->source_id);
+			other = other || (json_object_get_int_member(row, "data_source_id") == second);
+		}
+
+		if (!first || !other)
+			g_error("venue=%s: deals from %s", asked[i], first ? "the first source only"
+			                                               : other ? "the second source only" : "neither");
+		g_clear_pointer(&answer, json_node_unref);
+	}
+
+	/* A saved group naming one realm takes the whole connected realm,
+	 * and its picker offers that realm once. */
+	group = VENTURE_ENTITY(venture_venue_group_new());
+	venture_entity_set_organization_id(group, fixture->org);
+	g_object_set(group, "name", "Bank", "venues", "Farstriders", NULL);
+	save(fixture, group);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/deals?search=copper%%20ore&venue_group=%" G_GINT64_FORMAT, ID(group));
+	answer = get_json(fixture, path, 200);
+	choices = json_object_get_array_member(root_of(answer), "venue_choices");
+	g_assert_cmpuint(json_array_get_length(choices), ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(choices, 0), "name"), ==, label);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "rows")), >=, 2);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* The page: one option for it, selected when picked by a member. */
+	page = get_page(fixture, "/market/deals?venue=Farstriders");
+	{
+		const gchar *picker = strstr(page, "<select name=\"venue\">");
+		const gchar *end = (NULL != picker) ? strstr(picker, "</select>") : NULL;
+		g_autofree gchar *options = (NULL != end) ? g_strndup(picker, (gsize)(end - picker)) : NULL;
+		g_autofree gchar *selected = g_strdup_printf("<option value=\"Silver Hand, Thorium Brotherhood "
+		                                             "(+ Farstriders)\" selected>");
+
+		g_assert_nonnull(options);
+		g_assert_nonnull(strstr(options, selected));
+		g_assert_null(strstr(options, "<option value=\"Thorium Brotherhood\""));
+	}
+}
+
 static void
 test_deals(
 	Fixture		*fixture,
@@ -2600,6 +2913,8 @@ main(
 	ADD("other-organization", test_other_organization);
 	ADD("deals", test_deals);
 	ADD("deals-buy-sell-venues", test_deals_buy_sell_venues);
+	ADD("deals-freshness", test_deals_freshness);
+	ADD("deals-connected-realms", test_deals_connected_realms);
 	ADD("deals-ignore-asking-prices", test_deals_ignore_asking_prices);
 	ADD("venue-index", test_venue_index);
 	ADD("watchlist-and-actions", test_watchlist_and_actions);

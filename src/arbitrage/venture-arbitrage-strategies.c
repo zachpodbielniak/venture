@@ -72,8 +72,6 @@ arb_walk_init(
 	VentureArbitrageScan	*scan,
 	const gchar		*default_basis
 ){
-	const gchar *text;
-
 	memset(walk, 0, sizeof(*walk));
 	walk->scan = scan;
 	walk->options = venture_arbitrage_scan_get_options(scan);
@@ -85,8 +83,8 @@ arb_walk_init(
 	walk->kind = venture_json_object_get_string(walk->options, "kind", NULL);
 	walk->instrument = venture_json_object_get_string(walk->options, "instrument", NULL);
 	walk->basis = venture_json_object_get_string(walk->options, "sell_basis", default_basis);
-	text = venture_json_object_get_string(walk->options, "buy_venues", NULL);
-	walk->buy_venues = venture_string_is_empty(text) ? NULL : g_strsplit(text, ",", -1);
+	/* The scan's set, not the option: it is narrowed to a venue group. */
+	walk->buy_venues = g_strdupv((gchar **)venture_arbitrage_scan_get_buy_venues(scan));
 	walk->intervals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	walk->references = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 }
