@@ -16,9 +16,10 @@
  *   commodities           the region-wide commodity market:
  *                         /data/wow/auctions/commodities -- 25 requests
  *                         of budget per call, 304 or not
- *   realms                every connected realm the index lists, a few
- *                         with new data per fetch, when the settings name
- *                         none (see blizzard_fetch_all_realms())
+ *   realm-index           when the settings name no realm: the region's
+ *                         connected-realm index, kept so that every realm
+ *                         it lists is a unit of its own (see "The realm
+ *                         list" below)
  *
  * Each realm is a venue keyed by its connected realm id, grouped by
  * region, so the store's region figures compare realms of one region.
@@ -288,8 +289,6 @@ blizzard_settings_parse(
 	g_autofree gchar *dynamic_default = NULL;
 	g_autofree gchar *static_default = NULL;
 	const gchar *currency;
-	gint64 names;
-	gint64 realms;
 
 	if (NULL == settings)
 		settings = empty = json_object_new();
@@ -349,17 +348,19 @@ blizzard_settings_parse(
 			return NULL;
 	}
 
+	/* Bid-only auctions are off by default: one cannot be bought now, so
+	 * listed at its bid it set the "cheapest" price Deals, Browse and the
+	 * arbitrage scan send a buyer to. */
 	if (!blizzard_parse_bool(settings, "include_commodities", TRUE, &self->include_commodities, error) ||
-	    !blizzard_parse_bool(settings, "include_bid_only", TRUE, &self->include_bid_only, error))
+	    !blizzard_parse_bool(settings, "include_bid_only", FALSE, &self->include_bid_only, error))
 		return NULL;
 
-	names = 100;
-	realms = 10;
-
-	if (!blizzard_parse_count(settings, "item_names_per_fetch", names, 0, BLIZZARD_MAX_NAMES_PER_FETCH,
+	/* realms_per_fetch belonged to the every-realm walk, which is gone; a
+	 * source that still says it is not refused for it. */
+	if (!blizzard_parse_count(settings, "item_names_per_fetch", 100, 0, BLIZZARD_MAX_NAMES_PER_FETCH,
 	                          &self->item_names_per_fetch, error) ||
-	    !blizzard_parse_count(settings, "realms_per_fetch", realms, 1, BLIZZARD_MAX_REALMS_PER_FETCH,
-	                          &self->realms_per_fetch, error))
+	    !blizzard_parse_count(settings, "realm_index_hours", 24, 0, BLIZZARD_MAX_REALM_INDEX_HOURS,
+	                          &self->realm_index_hours, error))
 		return NULL;
 
 	/* In what: a code the operator registered, never one made up here. */
@@ -1558,6 +1559,12 @@ blizzard_seen_free(gpointer data)
  * its current bid divided the same way -- the least it can be had for,
  * if nobody outbids. An auction with none of the three, or no usable item
  * or quantity, is refused and counted.
+ *
+ * By default a bid-only auction is skipped, and counted apart from the
+ * refused: it is not malformed, it just cannot be bought now. Listed, it
+ * set the lowest price, so Deals sent a buyer to a realm where the item
+ * could only be bid on; and its end -- won by a bid or expired -- read as
+ * a listing that vanished, which the sale estimate counts as a buyout.
  */
 static gboolean
 blizzard_add_auctions(
@@ -1619,10 +1626,14 @@ blizzard_add_auctions(
 		{
 			total = blizzard_int(auction, "buyout", -1);
 
-			if ((total < 0) && frozen->settings->include_bid_only)
+			if ((total < 0) && (blizzard_int(auction, "bid", -1) >= 0))
 			{
+				bid_only++;
+
+				if (!frozen->settings->include_bid_only)
+					continue;
+
 				total = blizzard_int(auction, "bid", -1);
-				bid_only += (total >= 0) ? 1 : 0;
 			}
 
 			price = (total >= 0) ? venture_series_math_div_round(total, quantity) : -1;
@@ -1667,10 +1678,18 @@ blizzard_add_auctions(
 		venture_feed_batch_add_note(batch, note);
 	}
 
-	if (bid_only > 0)
+	if ((bid_only > 0) && frozen->settings->include_bid_only)
 	{
 		g_autofree gchar *note = g_strdup_printf("%s: %" G_GINT64_FORMAT " auctions have a bid and no "
 		                                         "buyout; listed at their bid", venue_key, bid_only);
+
+		venture_feed_batch_add_note(batch, note);
+	}
+	else if (bid_only > 0)
+	{
+		g_autofree gchar *note = g_strdup_printf("%s: %" G_GINT64_FORMAT " bid-only auctions skipped: "
+		                                         "no buyout, so they cannot be bought now", venue_key,
+		                                         bid_only);
 
 		venture_feed_batch_add_note(batch, note);
 	}
@@ -2246,39 +2265,329 @@ blizzard_fetch_venue(
 	return blizzard_add_auctions(frozen, batch, venue_key, taken_at, root, seen, error);
 }
 
+/* ==========================================================================
+ * The realm list
+ *
+ * A source that names no realm gets one unit per connected realm the
+ * region's index lists -- the same unit names an explicit list makes
+ * ("11", "3676"), so moving a source between the two keeps every unit's
+ * If-Modified-Since and cursor (the store keeps them as ims:<unit> and
+ * cursor:<unit>) and every venue's learned update time (keyed by the same
+ * id). One unit per realm is what lets the adaptive schedule check each
+ * realm just before its own hourly snapshot; the walk this replaced read
+ * ten realms with new data a fetch, so on a region of 83 a realm's prices
+ * were up to eight hours old.
+ *
+ * Units are listed on the main thread, from the settings alone, when the
+ * source is frozen -- no credentials, no HTTP client, no network. So the
+ * index is read by a unit of its own, realm-index, at most once every
+ * realm_index_hours, and kept here: a file per API origin and namespace
+ * under the plugin's cache directory, which list_units reads, and which a
+ * failed read of the index leaves as it was -- the last known list keeps
+ * serving. A list that changed moves the generation, and the plugin's
+ * after-run hook (blizzard-plugin.c) asks the feeds service to freeze its
+ * sources again, which lists their units afresh.
+ *
+ * Before any list is known (a new source, a new region) the units are
+ * realm-index alone, then commodities: the first pass reads the index and
+ * the next has every realm. The every-realm walk is not kept as a
+ * fallback for that pass: it would read the same index, then a few realms
+ * once, then be replaced -- a second fetch path, with a cursor of its own,
+ * for one pass.
+ * ========================================================================== */
+
+typedef struct
+{
+	GArray	*ids;		/* gint64, ascending */
+	gint64	 fetched_at;	/* Unix seconds */
+} BlizzardRealmList;
+
+static GMutex blizzard_realm_lock;
+static gchar *blizzard_realm_dir_path = NULL;
+static GHashTable *blizzard_realm_memory = NULL;	/* place -> BlizzardRealmList */
+static gint blizzard_realm_generation = 0;
+
+static void
+blizzard_realm_list_free(gpointer data)
+{
+	BlizzardRealmList *list = data;
+
+	g_array_unref(list->ids);
+	g_free(list);
+}
+
+void
+blizzard_set_realm_dir(const gchar *dir)
+{
+	g_mutex_lock(&blizzard_realm_lock);
+	g_free(blizzard_realm_dir_path);
+	blizzard_realm_dir_path = g_strdup(dir);
+	g_mutex_unlock(&blizzard_realm_lock);
+}
+
+guint
+blizzard_realms_get_generation(void)
+{
+	return (guint)g_atomic_int_get(&blizzard_realm_generation);
+}
+
 /*
- * The every-realm unit, for a source whose settings name no realm: the
- * connected-realm index, then the realms in id order from where the last
- * fetch stopped, each with its own If-Modified-Since, until
- * realms_per_fetch of them had new data. 304s are cheap -- one request,
- * no body -- so a fetch walks past every realm that has not updated; it
- * stops early only to bound how much one batch holds. Its cursor is
- *
- *     {"after": <last realm id read>, "seen": {"<id>": <Last-Modified>, ...}}
- *
- * Listing realms in connected_realm_ids instead gives each its own unit,
- * schedule and adaptive polling, which is what a large region wants.
+ * Where a region's list is kept: the file under the cache directory, or,
+ * with none, a name for the in-memory table. The index answers per API
+ * origin and namespace, so those are the key; the origin is hashed into
+ * the file name (it is an address), the namespace is a word the settings
+ * held to [a-z0-9.-]. Caller holds the lock.
  */
-static VentureFeedBatch *
-blizzard_fetch_all_realms(
+static gchar *
+blizzard_realm_place(const BlizzardSettings *settings)
+{
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *digest = NULL;
+	g_autofree gchar *name = NULL;
+
+	key = g_strconcat(settings->api_base, " ", settings->dynamic_namespace, NULL);
+
+	if (NULL == blizzard_realm_dir_path)
+		return g_strconcat("memory:", key, NULL);
+
+	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, key, -1);
+	name = g_strdup_printf("%s-%.16s.json", settings->dynamic_namespace, digest);
+
+	return g_build_filename(blizzard_realm_dir_path, name, NULL);
+}
+
+/* A list as the file spells it, judged as strictly as the index is. */
+static BlizzardRealmList *
+blizzard_realm_list_read(
+	const BlizzardSettings	*settings,
+	const gchar		*path
+){
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(GArray) ids = NULL;
+	JsonObject *object;
+	JsonArray *array;
+	BlizzardRealmList *list;
+	guint i;
+
+	if (!json_parser_load_from_file(parser, path, NULL) ||
+	    !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)))
+		return NULL;
+
+	object = json_node_get_object(json_parser_get_root(parser));
+
+	/* The name is a hash's prefix: make sure it is this origin's. */
+	if ((0 != g_strcmp0(venture_json_object_get_string(object, "api_base", NULL), settings->api_base)) ||
+	    (0 != g_strcmp0(venture_json_object_get_string(object, "namespace", NULL),
+	                    settings->dynamic_namespace)) ||
+	    (NULL == (array = blizzard_array(object, "ids"))) ||
+	    (0 == json_array_get_length(array)) || (json_array_get_length(array) > BLIZZARD_MAX_REALMS))
+		return NULL;
+
+	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; i < json_array_get_length(array); i++)
+	{
+		JsonNode *element = json_array_get_element(array, i);
+		gint64 id;
+
+		if (!JSON_NODE_HOLDS_VALUE(element) || (G_TYPE_INT64 != json_node_get_value_type(element)))
+			return NULL;
+
+		id = json_node_get_int(element);
+
+		if ((id < 1) || (id > G_MAXINT32))
+			return NULL;
+
+		g_array_append_val(ids, id);
+	}
+
+	g_array_sort(ids, blizzard_compare_int64);
+
+	list = g_new0(BlizzardRealmList, 1);
+	list->ids = g_steal_pointer(&ids);
+	list->fetched_at = blizzard_int(object, "fetched_at", 0);
+
+	return list;
+}
+
+/*
+ * The last known list for these settings' region, or FALSE when none is.
+ * Memory first: it holds whatever this process wrote, and the file only
+ * matters after a restart.
+ */
+static gboolean
+blizzard_realms_load(
+	const BlizzardSettings	 *settings,
+	GArray			**out_ids,
+	gint64			 *out_fetched_at
+){
+	g_autofree gchar *place = NULL;
+	BlizzardRealmList *list;
+
+	g_mutex_lock(&blizzard_realm_lock);
+
+	if (NULL == blizzard_realm_memory)
+		blizzard_realm_memory = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		                                              blizzard_realm_list_free);
+
+	place = blizzard_realm_place(settings);
+	list = g_hash_table_lookup(blizzard_realm_memory, place);
+
+	if ((NULL == list) && (NULL != blizzard_realm_dir_path))
+	{
+		list = blizzard_realm_list_read(settings, place);
+
+		if (NULL != list)
+			g_hash_table_replace(blizzard_realm_memory, g_strdup(place), list);
+	}
+
+	if (NULL != list)
+	{
+		*out_ids = g_array_copy(list->ids);
+
+		if (NULL != out_fetched_at)
+			*out_fetched_at = list->fetched_at;
+	}
+
+	g_mutex_unlock(&blizzard_realm_lock);
+
+	return NULL != list;
+}
+
+/*
+ * Keeps a list just read from the index, and says whether it differs from
+ * the one known before (a changed list moves the generation). The file is
+ * written whole under a temporary name and renamed; a write that fails
+ * leaves the list in memory, for this process's life.
+ */
+static gboolean
+blizzard_realms_store(
+	const BlizzardSettings	*settings,
+	GArray			*ids,
+	gint64			 fetched_at,
+	guint			*out_added,
+	guint			*out_removed
+){
+	g_autofree gchar *place = NULL;
+	BlizzardRealmList *before;
+	BlizzardRealmList *list;
+	gboolean changed;
+	guint added;
+	guint removed;
+	guint i;
+	guint j;
+
+	g_mutex_lock(&blizzard_realm_lock);
+
+	if (NULL == blizzard_realm_memory)
+		blizzard_realm_memory = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		                                              blizzard_realm_list_free);
+
+	place = blizzard_realm_place(settings);
+	before = g_hash_table_lookup(blizzard_realm_memory, place);
+
+	if ((NULL == before) && (NULL != blizzard_realm_dir_path))
+	{
+		before = blizzard_realm_list_read(settings, place);
+
+		if (NULL != before)
+			g_hash_table_replace(blizzard_realm_memory, g_strdup(place), before);
+	}
+
+	/* Both ascending: one merge counts what came and what went. */
+	added = 0;
+	removed = 0;
+
+	for (i = 0, j = 0; (NULL != before) && ((i < ids->len) || (j < before->ids->len));)
+	{
+		gint64 now_id = (i < ids->len) ? g_array_index(ids, gint64, i) : G_MAXINT64;
+		gint64 was_id = (j < before->ids->len) ? g_array_index(before->ids, gint64, j) : G_MAXINT64;
+
+		if (now_id == was_id)
+		{
+			i++;
+			j++;
+		}
+		else if (now_id < was_id)
+		{
+			added++;
+			i++;
+		}
+		else
+		{
+			removed++;
+			j++;
+		}
+	}
+
+	if (NULL == before)
+		added = ids->len;
+
+	changed = (NULL == before) || (added > 0) || (removed > 0);
+
+	list = g_new0(BlizzardRealmList, 1);
+	list->ids = g_array_copy(ids);
+	list->fetched_at = fetched_at;
+	g_hash_table_replace(blizzard_realm_memory, g_strdup(place), list);
+
+	if (NULL != blizzard_realm_dir_path)
+	{
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+		g_autoptr(JsonNode) root = NULL;
+		g_autofree gchar *text = NULL;
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "api_base");
+		json_builder_add_string_value(builder, settings->api_base);
+		json_builder_set_member_name(builder, "namespace");
+		json_builder_add_string_value(builder, settings->dynamic_namespace);
+		json_builder_set_member_name(builder, "fetched_at");
+		json_builder_add_int_value(builder, fetched_at);
+		json_builder_set_member_name(builder, "ids");
+		json_builder_begin_array(builder);
+
+		for (i = 0; i < ids->len; i++)
+			json_builder_add_int_value(builder, g_array_index(ids, gint64, i));
+
+		json_builder_end_array(builder);
+		json_builder_end_object(builder);
+		root = json_builder_get_root(builder);
+		text = json_to_string(root, FALSE);
+
+		/* g_file_set_contents() renames over the old file: a reader never
+		 * sees half of one. A failure is only a list kept in memory. */
+		(void)g_file_set_contents(place, text, -1, NULL);
+	}
+
+	if (changed)
+		g_atomic_int_inc(&blizzard_realm_generation);
+
+	g_mutex_unlock(&blizzard_realm_lock);
+
+	*out_added = added;
+	*out_removed = removed;
+
+	return changed;
+}
+
+/*
+ * The connected-realm index, as ids ascending: the index lists hrefs, and
+ * the id is the path segment after connected-realm/. A side request in
+ * the sense that its date is no unit's If-Modified-Since: the realm-index
+ * unit must get the list whenever it asks, and a 304 would leave a source
+ * whose cache was lost with no list at all.
+ */
+static GArray *
+blizzard_read_realm_index(
 	VentureFeedRequest	 *request,
 	BlizzardFrozen		 *frozen,
 	GError			**error
 ){
-	g_autoptr(VentureFeedBatch) batch = NULL;
 	g_autoptr(JsonNode) listing = NULL;
-	g_autoptr(JsonNode) cursor = NULL;
-	g_autoptr(JsonObject) seen_times = NULL;
 	g_autoptr(GArray) ids = NULL;
-	g_autoptr(GHashTable) seen = NULL;
 	g_autofree gchar *url = NULL;
 	JsonArray *realms;
-	JsonObject *previous;
-	gint64 after;
 	guint status;
-	guint start;
-	guint with_data;
-	guint k;
 	guint i;
 
 	url = blizzard_url(frozen, "/data/wow/connected-realm/index");
@@ -2306,8 +2615,6 @@ blizzard_fetch_all_realms(
 		return NULL;
 	}
 
-	/* The index lists hrefs; the id is the path segment after
-	 * connected-realm/. */
 	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
 	realms = blizzard_array(json_node_get_object(listing), "connected_realms");
 
@@ -2316,19 +2623,26 @@ blizzard_fetch_all_realms(
 		JsonNode *element = json_array_get_element(realms, i);
 		const gchar *href;
 		const gchar *at;
+		gboolean repeated = FALSE;
 		gint64 id;
+		guint j;
 
 		href = JSON_NODE_HOLDS_OBJECT(element)
 			? venture_json_object_get_string(json_node_get_object(element), "href", NULL) : NULL;
 		at = (NULL != href) ? strstr(href, "/connected-realm/") : NULL;
 		id = (NULL != at) ? g_ascii_strtoll(at + strlen("/connected-realm/"), NULL, 10) : 0;
 
-		if ((id > 0) && (id <= G_MAXINT32))
+		for (j = 0; j < ids->len; j++)
+			repeated = repeated || (g_array_index(ids, gint64, j) == id);
+
+		if ((id > 0) && (id <= G_MAXINT32) && !repeated)
 			g_array_append_val(ids, id);
 	}
 
 	g_array_sort(ids, blizzard_compare_int64);
 
+	/* An empty index is a fault at the far end, not a region with no
+	 * realms: kept, it would take every realm's unit away. */
 	if ((0 == ids->len) || (ids->len > BLIZZARD_MAX_REALMS))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
@@ -2336,100 +2650,60 @@ blizzard_fetch_all_realms(
 		return NULL;
 	}
 
-	/* Where the last fetch stopped, and each realm's Last-Modified. */
-	cursor = (NULL != venture_feed_request_get_cursor(request))
-		? json_from_string(venture_feed_request_get_cursor(request), NULL) : NULL;
-	previous = ((NULL != cursor) && JSON_NODE_HOLDS_OBJECT(cursor)) ? json_node_get_object(cursor) : NULL;
-	after = blizzard_int(previous, "after", 0);
-	seen_times = json_object_new();
+	return g_steal_pointer(&ids);
+}
+
+/*
+ * The realm-index unit: the index, when the known list is older than
+ * realm_index_hours (or there is none), kept for list_units. It stores
+ * nothing in the series store -- an unchanged or fresh list is "not
+ * modified", a changed one a batch carrying only a note -- and a failure
+ * is the unit's own: the last known list goes on serving.
+ */
+static VentureFeedBatch *
+blizzard_fetch_realm_index(
+	VentureFeedRequest	 *request,
+	BlizzardFrozen		 *frozen,
+	GError			**error
+){
+	g_autoptr(VentureFeedBatch) batch = NULL;
+	g_autoptr(GArray) known = NULL;
+	g_autoptr(GArray) ids = NULL;
+	g_autofree gchar *note = NULL;
+	gint64 fetched_at = 0;
+	gint64 now;
+	guint added;
+	guint removed;
 
 	batch = venture_feed_batch_new();
-	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, blizzard_seen_free);
+	now = g_get_real_time() / G_USEC_PER_SEC;
 
-	for (start = 0; (start < ids->len) && (g_array_index(ids, gint64, start) <= after); start++)
-		;
-
-	with_data = 0;
-
-	for (k = 0; k < ids->len; k++)
-	{
-		g_autoptr(GError) local_error = NULL;
-		g_autofree gchar *key = NULL;
-		gint64 id;
-		gint64 since;
-		gint64 last_modified = VENTURE_SERIES_NONE;
-
-		id = g_array_index(ids, gint64, (start + k) % ids->len);
-		key = g_strdup_printf("%" G_GINT64_FORMAT, id);
-		since = blizzard_int(blizzard_object(previous, "seen"), key, VENTURE_SERIES_NONE);
-
-		if (!blizzard_fetch_venue(request, frozen, batch, key, TRUE, since, seen, &status, &last_modified,
-		                          &local_error))
-		{
-			/* A realm that went away is a note; anything else stops the
-			 * walk, keeping what was read as a partial batch. */
-			if (g_error_matches(local_error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))
-			{
-				venture_feed_batch_add_note(batch, local_error->message);
-				after = id;
-				continue;
-			}
-
-			if (0 == with_data)
-			{
-				g_propagate_error(error, g_steal_pointer(&local_error));
-				return NULL;
-			}
-
-			venture_feed_batch_set_error(batch, local_error->message, 0);
-			break;
-		}
-
-		after = id;
-
-		if ((200 == status) && (VENTURE_SERIES_NONE != last_modified))
-			json_object_set_int_member(seen_times, key, last_modified);
-		else if (VENTURE_SERIES_NONE != since)
-			json_object_set_int_member(seen_times, key, since);
-
-		if ((200 == status) && (++with_data >= frozen->settings->realms_per_fetch))
-			break;
-	}
-
-	/* Realms not reached this time keep the times they had. */
-	for (i = 0; i < ids->len; i++)
-	{
-		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, g_array_index(ids, gint64, i));
-		gint64 kept = blizzard_int(blizzard_object(previous, "seen"), key, VENTURE_SERIES_NONE);
-
-		if (!json_object_has_member(seen_times, key) && (VENTURE_SERIES_NONE != kept))
-			json_object_set_int_member(seen_times, key, kept);
-	}
-
-	{
-		g_autoptr(JsonObject) next = json_object_new();
-		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
-		g_autofree gchar *text = NULL;
-
-		json_object_set_int_member(next, "after", after);
-		json_object_set_object_member(next, "seen", json_object_ref(seen_times));
-		json_node_set_object(node, next);
-		text = json_to_string(node, FALSE);
-		venture_feed_batch_set_cursor(batch, text);
-	}
-
-	if (0 == with_data)
+	if (blizzard_realms_load(frozen->settings, &known, &fetched_at) &&
+	    (now - fetched_at < (gint64)frozen->settings->realm_index_hours * 3600) && (now >= fetched_at))
 	{
 		venture_feed_batch_set_not_modified(batch, TRUE);
 		return g_steal_pointer(&batch);
 	}
 
-	blizzard_add_instruments(request, frozen, batch, seen);
+	ids = blizzard_read_realm_index(request, frozen, error);
+
+	if (NULL == ids)
+		return NULL;
+
+	if (!blizzard_realms_store(frozen->settings, ids, now, &added, &removed))
+	{
+		venture_feed_batch_set_not_modified(batch, TRUE);
+		return g_steal_pointer(&batch);
+	}
+
+	note = g_strdup_printf("the index lists %u connected realms (%u new, %u gone); each is a unit "
+	                       "of its own from the next pass", ids->len, added, removed);
+	venture_feed_batch_add_note(batch, note);
 
 	return g_steal_pointer(&batch);
 }
 
-/* One unit: a realm, the commodity market, or every realm. */
+/* One unit: a realm, the commodity market, or the realm index. */
 static VentureFeedBatch *
 blizzard_fetch(
 	VentureFeedRequest	 *request,
@@ -2451,8 +2725,25 @@ blizzard_fetch(
 		return NULL;
 	}
 
-	if (0 == g_strcmp0(unit, BLIZZARD_UNIT_ALL_REALMS))
-		return blizzard_fetch_all_realms(request, frozen, error);
+	if (0 == g_strcmp0(unit, BLIZZARD_UNIT_REALM_INDEX))
+		return blizzard_fetch_realm_index(request, frozen, error);
+
+	/* Anything else is the commodity market or a realm's id: a Test of a
+	 * unit named otherwise ("realms", from before) is refused here, not
+	 * sent to Battle.net as a path. */
+	{
+		gint64 id = 0;
+
+		if ((0 != g_strcmp0(unit, BLIZZARD_UNIT_COMMODITIES)) &&
+		    ((NULL == unit) || !g_ascii_string_to_signed(unit, 10, 1, G_MAXINT32, &id, NULL)))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "blizzard_auctions has no unit %s: a connected realm id, %s or %s",
+			            (NULL != unit) ? unit : "(none)", BLIZZARD_UNIT_COMMODITIES,
+			            BLIZZARD_UNIT_REALM_INDEX);
+			return NULL;
+		}
+	}
 
 	batch = venture_feed_batch_new();
 	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, blizzard_seen_free);
@@ -2553,16 +2844,22 @@ blizzard_provider_schema(VentureDataSourceProvider *provider)
 		"\"description\":\"The id of a client made at develop.battle.net; not a secret\"},"
 		"\"client_secret\":{\"type\":\"string\",\"title\":\"Client secret\",\"x-sensitive\":true},"
 		"\"connected_realm_ids\":{\"type\":\"array\",\"title\":\"Connected realms\","
-		"\"description\":\"Connected realm ids, each its own unit; empty reads every realm the index lists\"},"
+		"\"description\":\"Connected realm ids, each its own unit. Empty: every realm the region's "
+		"index lists, each its own unit all the same, and the index read again daily (realm_index_hours) "
+		"so a realm Blizzard adds is picked up\"},"
 		"\"include_commodities\":{\"type\":\"boolean\",\"title\":\"Commodity market\",\"default\":true},"
 		"\"include_bid_only\":{\"type\":\"boolean\",\"title\":\"List bid-only auctions at their bid\","
-		"\"default\":true},"
+		"\"default\":false,\"description\":\"An auction with a bid and no buyout cannot be bought now; "
+		"listed, its bid becomes the lowest price Deals and Browse show\"},"
 		"\"currency\":{\"type\":\"string\",\"title\":\"Currency\",\"default\":\"GOLD\","
 		"\"description\":\"A registered currency with exponent 4: prices are in copper\"},"
 		"\"locale\":{\"type\":\"string\",\"title\":\"Locale\",\"default\":\"en_US\"},"
-		"\"item_names_per_fetch\":{\"type\":\"integer\",\"title\":\"Item names per fetch\",\"default\":100},"
-		"\"realms_per_fetch\":{\"type\":\"integer\",\"title\":\"Realms with new data per fetch\","
-		"\"default\":10},"
+		"\"item_names_per_fetch\":{\"type\":\"integer\",\"title\":\"Item names per fetch\",\"default\":100,"
+		"\"minimum\":0,\"maximum\":5000,\"description\":\"Item lookups one fetch may make, 0 to 5000; "
+		"each costs up to 3 requests (item, media, icon), so 5000 is up to 15,000 of the hour's 36,000\"},"
+		"\"realm_index_hours\":{\"type\":\"integer\",\"title\":\"Hours between realm index reads\","
+		"\"default\":24,\"minimum\":0,\"maximum\":168,\"description\":\"With no realms listed, how "
+		"old the known realm list may grow before it is read again; 0 reads it whenever its unit runs\"},"
 		"\"key_modifier_types\":{\"type\":\"array\",\"title\":\"Modifier types that make a variant\"},"
 		"\"dynamic_namespace\":{\"type\":\"string\",\"title\":\"Dynamic namespace override\"},"
 		"\"static_namespace\":{\"type\":\"string\",\"title\":\"Static namespace override\"},"
@@ -2613,8 +2910,13 @@ blizzard_provider_freeze(
 	return frozen;
 }
 
-/* The connected realms the settings name, else the every-realm unit; then
- * the commodity market. */
+/*
+ * The connected realms the settings name; else every realm of the last
+ * known index, as the same unit names, and the realm-index unit that keeps
+ * that list current; then the commodity market. Reads the kept list (a
+ * small file) but never the network: this runs on the main thread when a
+ * source is saved or frozen. See "The realm list".
+ */
 static gchar **
 blizzard_provider_units(
 	VentureDataSourceProvider	 *provider,
@@ -2639,7 +2941,18 @@ blizzard_provider_units(
 		                                       g_array_index(parsed->realm_ids, gint64, i)));
 
 	if (0 == parsed->realm_ids->len)
-		g_ptr_array_add(units, g_strdup(BLIZZARD_UNIT_ALL_REALMS));
+	{
+		g_autoptr(GArray) known = NULL;
+
+		if (blizzard_realms_load(parsed, &known, NULL))
+		{
+			for (i = 0; i < known->len; i++)
+				g_ptr_array_add(units, g_strdup_printf("%" G_GINT64_FORMAT,
+				                                       g_array_index(known, gint64, i)));
+		}
+
+		g_ptr_array_add(units, g_strdup(BLIZZARD_UNIT_REALM_INDEX));
+	}
 
 	if (parsed->include_commodities)
 		g_ptr_array_add(units, g_strdup(BLIZZARD_UNIT_COMMODITIES));
