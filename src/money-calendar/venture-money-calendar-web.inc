@@ -144,7 +144,9 @@ money_calendar_append_grid(GString *html, MoneyCalendarPage *page, const gchar *
 	g_autofree gchar *first_day = g_date_time_format(start, "%Y-%m-%d");
 	g_autofree gchar *today = g_date_time_format(page->today, "%Y-%m-%d");
 	guint i, rows = 0;
-	g_string_append_printf(html, "<table class=\"%s\"><thead><tr>", css_class);
+	/* A calendar: its rows are weeks in order, its columns the days of
+	 * one, so a sort would make a different, wrong month (data-no-sort). */
+	g_string_append_printf(html, "<table class=\"%s\" data-no-sort><thead><tr>", css_class);
 	for (i = 0; i < 7; i++)
 		g_string_append_printf(html, "<th>%s</th>", names[i]);
 	g_string_append(html, "<th>Week</th></tr></thead><tbody>");

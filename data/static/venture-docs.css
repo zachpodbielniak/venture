@@ -242,6 +242,9 @@ a { color: var(--docs-accent); }
 }
 
 .docs-article th { background: var(--docs-code-bg); }
+/* Headings sort the table (venture-docs.js); the arrow follows aria-sort. */
+.docs-article th[aria-sort="ascending"]::after { content: " \25B4"; }
+.docs-article th[aria-sort="descending"]::after { content: " \25BE"; }
 
 .docs-article hr {
 	margin: 2rem 0;

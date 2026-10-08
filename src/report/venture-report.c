@@ -35,6 +35,8 @@ struct _VentureReportResult
 	GPtrArray		*metrics;	/* VentureMetric */
 	GPtrArray		*rows;		/* GHashTable, key -> GValue */
 	GHashTable		*current_row;
+	GHashTable		*summary;	/* rows that total others; a set */
+	gboolean		 ordered;
 };
 
 static const GEnumValue venture_report_column_kind_values[] = {
@@ -101,6 +103,7 @@ venture_report_result_finalize(GObject *object)
 	g_clear_pointer(&self->columns, g_ptr_array_unref);
 	g_clear_pointer(&self->metrics, g_ptr_array_unref);
 	g_clear_pointer(&self->rows, g_ptr_array_unref);
+	g_clear_pointer(&self->summary, g_hash_table_unref);
 
 	G_OBJECT_CLASS(venture_report_result_parent_class)->finalize(object);
 }
@@ -119,6 +122,7 @@ venture_report_result_init(VentureReportResult *self)
 		(GDestroyNotify)venture_metric_free);
 	self->rows = g_ptr_array_new_with_free_func(
 		(GDestroyNotify)g_hash_table_unref);
+	self->summary = g_hash_table_new(g_direct_hash, g_direct_equal);
 }
 
 VentureReportResult *
@@ -175,6 +179,33 @@ venture_report_result_begin_row(VentureReportResult *self)
 	                                          g_free,
 	                                          venture_report_value_free);
 	g_ptr_array_add(self->rows, self->current_row);
+}
+
+void
+venture_report_result_mark_summary(VentureReportResult *self)
+{
+	g_return_if_fail(VENTURE_IS_REPORT_RESULT(self));
+	g_return_if_fail(NULL != self->current_row);
+
+	g_hash_table_add(self->summary, self->current_row);
+}
+
+void
+venture_report_result_set_ordered(
+	VentureReportResult	*self,
+	gboolean		 ordered
+){
+	g_return_if_fail(VENTURE_IS_REPORT_RESULT(self));
+
+	self->ordered = ordered;
+}
+
+gboolean
+venture_report_result_get_ordered(VentureReportResult *self)
+{
+	g_return_val_if_fail(VENTURE_IS_REPORT_RESULT(self), FALSE);
+
+	return self->ordered;
 }
 
 /*
@@ -677,6 +708,35 @@ venture_report_result_format_cell(
 	return g_strdup("");
 }
 
+/* One row of the HTML table; a total is marked so both looks set it apart. */
+static void
+venture_report_append_row(
+	GString			*html,
+	VentureReportResult	*self,
+	GHashTable		*row,
+	gboolean		 summary
+){
+	guint i;
+
+	g_string_append(html, summary ? "<tr class=\"total\">" : "<tr>");
+
+	for (i = 0; i < self->columns->len; i++)
+	{
+		const VentureReportColumn *column;
+		g_autofree gchar *cell = NULL;
+
+		column = g_ptr_array_index(self->columns, i);
+		cell = venture_report_format_cell(column, row);
+
+		g_string_append_printf(html, "<td class=\"%s\">",
+			(VENTURE_REPORT_COLUMN_TEXT == column->kind) ? "" : "num");
+		venture_statements_append_reference(html, column->key, cell);
+		g_string_append(html, "</td>");
+	}
+
+	g_string_append(html, "</tr>");
+}
+
 gchar *
 venture_report_result_render_html_body(
 	VentureReportResult	*self,
@@ -735,8 +795,14 @@ venture_report_result_render_html_body(
 
 	if (with_table && (self->columns->len > 0))
 	{
-		g_string_append(html, "<div class=\"table-wrap\">"
-		                      "<table class=\"data\"><thead><tr>");
+		guint shown = 0;
+		guint hidden = 0;
+
+		/* A statement's rows are its layout -- a section, its accounts,
+		 * its total -- so the page must not offer to sort them. */
+		g_string_append_printf(html, "<div class=\"table-wrap\">"
+		                      "<table class=\"data\"%s><thead><tr>",
+		                      self->ordered ? " data-no-sort" : "");
 
 		for (i = 0; i < self->columns->len; i++)
 		{
@@ -751,39 +817,50 @@ venture_report_result_render_html_body(
 
 		g_string_append(html, "</tr></thead><tbody>");
 
+		/* Totals of a sortable table go to the foot, where a sort does
+		 * not reach them; a statement keeps them where they fall. */
 		for (j = 0; j < self->rows->len; j++)
 		{
-			if ((max_rows > 0) && (j >= max_rows))
+			GHashTable *row = g_ptr_array_index(self->rows, j);
+			gboolean summary = g_hash_table_contains(self->summary, row);
+
+			if (summary && !self->ordered)
+				continue;
+
+			if ((max_rows > 0) && (shown >= max_rows))
 			{
+				hidden++;
+				continue;
+			}
+
+			venture_report_append_row(html, self, row, summary);
+			shown++;
+		}
+
+		g_string_append(html, "</tbody>");
+
+		if ((hidden > 0) || (!self->ordered && (g_hash_table_size(self->summary) > 0)))
+		{
+			g_string_append(html, "<tfoot>");
+
+			if (hidden > 0)
 				g_string_append_printf(html,
 					"<tr><td colspan=\"%u\" class=\"muted\">"
 					"and %u more</td></tr>",
-					self->columns->len, self->rows->len - max_rows);
-				break;
-			}
+					self->columns->len, hidden);
 
-			g_string_append(html, "<tr>");
-
-			for (i = 0; i < self->columns->len; i++)
+			for (j = 0; !self->ordered && (j < self->rows->len); j++)
 			{
-				const VentureReportColumn *column;
-				g_autofree gchar *cell = NULL;
+				GHashTable *row = g_ptr_array_index(self->rows, j);
 
-				column = g_ptr_array_index(self->columns, i);
-				cell = venture_report_format_cell(column,
-					g_ptr_array_index(self->rows, j));
-
-				g_string_append_printf(html, "<td class=\"%s\">",
-					(VENTURE_REPORT_COLUMN_TEXT == column->kind)
-						? "" : "num");
-				venture_statements_append_reference(html, column->key, cell);
-				g_string_append(html, "</td>");
+				if (g_hash_table_contains(self->summary, row))
+					venture_report_append_row(html, self, row, TRUE);
 			}
 
-			g_string_append(html, "</tr>");
+			g_string_append(html, "</tfoot>");
 		}
 
-		g_string_append(html, "</tbody></table></div>");
+		g_string_append(html, "</table></div>");
 	}
 
 	if (with_table && (self->rows->len == 0))

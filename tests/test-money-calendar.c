@@ -768,6 +768,8 @@ test_web_page(ServerFixture *s, gconstpointer unused)
 	g_assert_cmpuint(request(s, "/money/calendar?period=2026-01&as_of=2026-01-01", &month, NULL), ==, 200);
 	g_assert_nonnull(strstr(month, "money-calendar"));
 	g_assert_nonnull(strstr(month, "class=\"cal-month\""));
+	/* Weeks in order and days in columns: a sort would make a wrong month. */
+	g_assert_nonnull(strstr(month, "class=\"cal-month\" data-no-sort>"));
 	link = g_strdup_printf("href=\"/e/vendor_bill/%" G_GINT64_FORMAT "\"", s->base.bill);
 	g_assert_nonnull(strstr(month, link));
 	g_assert_nonnull(strstr(month, "INV-1"));

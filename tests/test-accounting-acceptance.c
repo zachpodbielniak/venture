@@ -103,6 +103,30 @@ first(Fixture *f, GType type, const gchar *field, const gchar *value)
 	return record;
 }
 
+/* A statement's rows are its layout -- sections, accounts, totals -- so its
+ * page must not offer to sort them (data-no-sort); a trial balance is a
+ * list of accounts and sorts like one. If this regresses, a click on
+ * "Current" puts Total assets above the accounts it adds up. */
+static void
+assert_statement_ordered(Fixture *f, const gchar *report_name, gboolean ordered)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026-01", &error);
+	g_autoptr(VentureReportResult) report = NULL;
+	g_autofree gchar *html = NULL;
+	g_assert_no_error(error);
+	json_object_set_int_member(options, "organization_id", f->org);
+	json_object_set_string_member(options, "currency", "USD");
+	report = venture_report_generate(venture_report_registry_lookup(
+		venture_context_get_report_registry(f->context), report_name), f->context, range, options, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(report);
+	g_assert_cmpint(venture_report_result_get_ordered(report), ==, ordered);
+	html = venture_report_result_render(report, VENTURE_OUTPUT_FORMAT_HTML);
+	g_assert_cmpint(NULL != strstr(html, "<table class=\"data\" data-no-sort>"), ==, ordered);
+}
+
 static gint64
 statement_cell(Fixture *f, const gchar *report_name, const gchar *key)
 {
@@ -208,6 +232,9 @@ finish_cycle(Fixture *f, const VentureActor *actor)
 	g_assert_cmpint(statement_cell(f, "income_statement", "net_income"), ==, 5000);
 	g_assert_cmpint(statement_cell(f, "balance_sheet", "assets"), ==, 5500);
 	g_assert_cmpint(statement_cell(f, "balance_sheet", "difference"), ==, 0);
+	assert_statement_ordered(f, "income_statement", TRUE);
+	assert_statement_ordered(f, "balance_sheet", TRUE);
+	assert_statement_ordered(f, "trial_balance", FALSE);
 	period = first(f, VENTURE_TYPE_FISCAL_PERIOD, NULL, NULL);
 	workspace = venture_close_service_open(venture_close_service_get(f->db),
 		venture_entity_get_id(period), "USD", actor, &error);

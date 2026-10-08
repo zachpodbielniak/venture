@@ -447,6 +447,11 @@ venture_report_registry_add(registry,
 
 It now appears in the CLI, the web UI, the REST API and the AI's report tool.
 
+On the page its table sorts on any heading, in the browser (see [[file:interface.org][the interface]], "Tables"). Two calls say what a sort must not do:
+
+- =venture_report_result_mark_summary()=, after =begin_row()=, marks the row as a total of the others. It is drawn in the table's foot, where no order moves it among the rows it adds up; the CSV, JSON and Org renders are unchanged.
+- =venture_report_result_set_ordered(result, TRUE)= says the rows' order is the report -- a statement's sections, accounts and totals, a consolidation's eliminations. Its table is drawn with =data-no-sort= and its totals stay where they were written. The statements set it; a list of things never should.
+
 A plugin needing state can subclass =VentureReport= instead and override
 =generate=; both end up in the same registry and are indistinguishable to
 every consumer. Registering a name that already exists replaces it, so a

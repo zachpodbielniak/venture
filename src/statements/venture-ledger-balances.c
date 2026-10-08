@@ -569,6 +569,9 @@ financial_statement(Books *books, VentureDateRange *period, gboolean balance_she
 {
 	g_autoptr(VentureReportResult) r = venture_report_result_new(balance_sheet ? "Balance sheet" : "Income statement", period);
 	guint c, i;
+	/* Sections, their accounts and their totals, per book: the order is
+	 * the statement. */
+	venture_report_result_set_ordered(r, TRUE);
 	statement_columns(r);
 	text_column(r, "section", "Section");
 	for (c = 0; c < books->currencies->len; c++)
@@ -740,6 +743,7 @@ cash_flow(Books *books, VentureDateRange *period, GError **error)
 	static const gchar *const labels[] = { "Change in receivables", "Change in payables", "Change in inventory", "Change in tax payable" };
 	g_autoptr(VentureReportResult) r = venture_report_result_new("Cash flow (indirect)", period);
 	guint c, i;
+	venture_report_result_set_ordered(r, TRUE);
 	statement_columns(r);
 	for (c = 0; c < books->currencies->len; c++)
 	{
@@ -957,6 +961,8 @@ reconciliation(Books *books, VentureDatabase *db, gint64 org,
 	g_autoptr(VentureReportResult) r = venture_report_result_new("P&L reconciliation", period);
 	const gchar *currency = venture_json_object_get_string(options, "currency", NULL);
 	guint i, t;
+	/* Each source type's rows, then its difference. */
+	venture_report_result_set_ordered(r, TRUE);
 	statement_columns(r);
 	text_column(r, "source_type", "Source type");
 	text_column(r, "source_id", "Source ID");
@@ -1081,6 +1087,7 @@ with_comparative(VentureReportResult *current, VentureReportResult *prior,
 {
 	g_autoptr(VentureReportResult) r = venture_report_result_new(venture_report_result_get_title(current), period);
 	g_autoptr(JsonNode) json = venture_report_result_to_json(current);
+	venture_report_result_set_ordered(r, venture_report_result_get_ordered(current));
 	JsonObject *object = json_node_get_object(json);
 	JsonArray *columns = json_object_get_array_member(object, "columns");
 	guint i, j, k;

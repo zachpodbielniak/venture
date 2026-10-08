@@ -218,3 +218,81 @@
 		}
 	});
 })();
+
+/*
+ * Tables in an article sort on a click on a heading, as they do in the
+ * app: figures as numbers ("$1,234.50", "12%", "2026-10-08"), anything
+ * else as text, a second click turns it round. The app's sorter lives in
+ * venture.js, which the documentation site does not load; this is the
+ * small part of it a page of reference tables needs.
+ */
+(function () {
+	"use strict";
+
+	function key(cell) {
+		var text = cell.textContent.replace(/\s+/g, " ").trim();
+		var date = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+		var figure = /^\(?[+\-]?[^\d\s(]{0,3}\s*([+\-]?\d[\d,]*(?:\.\d+)?)\s*(%|[A-Za-z]{1,16})?\)?$/.exec(text);
+
+		if (date) {
+			return Date.UTC(+date[1], +date[2] - 1, +date[3]);
+		}
+
+		if (figure) {
+			return (/^\(|^-|^[^\d]*-/.test(text) ? -1 : 1) * Math.abs(parseFloat(figure[1].replace(/,/g, "")));
+		}
+
+		return text === "" ? null : text;
+	}
+
+	Array.prototype.forEach.call(document.querySelectorAll(".docs-article table"), function (table) {
+		var head = table.tHead;
+		var body = table.tBodies[0];
+
+		if (!head || head.rows.length !== 1 || !body || table.querySelector("[rowspan]")) {
+			return;
+		}
+
+		Array.prototype.forEach.call(head.rows[0].cells, function (heading, column) {
+			heading.style.cursor = "pointer";
+			heading.tabIndex = 0;
+			heading.setAttribute("role", "button");
+
+			function sort() {
+				var rows = Array.prototype.slice.call(body.rows);
+				var descending = heading.getAttribute("aria-sort") === "ascending";
+				var keys = rows.map(function (row) { return row.cells[column] ? key(row.cells[column]) : null; });
+				var numeric = keys.every(function (k) { return k === null || typeof k === "number"; });
+				var order = rows.map(function (row, i) { return i; });
+
+				order.sort(function (a, b) {
+					var x = keys[a];
+					var y = keys[b];
+					var c;
+
+					if ((x === null) !== (y === null)) {
+						return x === null ? 1 : -1;
+					}
+
+					c = x === null ? 0 : numeric ? x - y
+					  : String(x).localeCompare(String(y), undefined, { sensitivity: "base", numeric: true });
+					return c === 0 ? a - b : (descending ? -c : c);
+				});
+
+				order.forEach(function (i) { body.appendChild(rows[i]); });
+				Array.prototype.forEach.call(head.rows[0].cells, function (other) {
+					other.removeAttribute("aria-sort");
+				});
+				heading.setAttribute("aria-sort", descending ? "descending" : "ascending");
+			}
+
+			heading.addEventListener("click", sort);
+			heading.addEventListener("keydown", function (event) {
+				if (event.key === "Enter" || event.key === " ") {
+					event.preventDefault();
+					sort();
+				}
+			});
+		});
+	});
+})();

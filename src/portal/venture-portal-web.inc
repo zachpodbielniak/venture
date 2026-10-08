@@ -137,7 +137,7 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 			if (invoice == NULL)
 				continue;
 			if (shown++ == 0)
-				g_string_append(html, "<table><tr><th>Invoice</th><th>Still owed</th></tr>");
+				g_string_append(html, "<table><thead><tr><th>Invoice</th><th>Still owed</th></tr></thead><tbody>");
 			g_object_get(invoice, "number", &number, NULL);
 			balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(database), invoice_id, NULL, NULL);
 			owed = balance != NULL ? venture_money_to_display_string(balance, TRUE) : g_strdup("");
@@ -148,7 +148,7 @@ venture_portal_append_subscriptions(VentureWebServer *self, GString *html, Ventu
 			g_string_append(html, "</td></tr>");
 		}
 		if (shown > 0)
-			g_string_append(html, "</table>");
+			g_string_append(html, "</tbody></table>");
 
 		if (!live)
 		{
@@ -278,7 +278,8 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), &error);
 	if (invoices == NULL)
 		return venture_web_error_response(error);
-	g_string_append(html, "<h1>Your invoices</h1><table>");
+	g_string_append(html, "<h1>Your invoices</h1><table><thead><tr><th>Invoice</th>"
+		"<th><span class=\"visually-hidden\">Pay</span></th><th>Reminders</th></tr></thead><tbody>");
 	for (i = 0; i < invoices->len; i++)
 	{
 		VentureEntity *invoice = g_ptr_array_index(invoices, i);
@@ -299,7 +300,7 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		}
 		g_string_append(html, "</td></tr>");
 	}
-	g_string_append(html, "</table>");
+	g_string_append(html, "</tbody></table>");
 	venture_portal_append_subscriptions(self, html, access, token);
 	g_string_append(html, "</body></html>");
 	return htmx_response_new_with_content(html->str);

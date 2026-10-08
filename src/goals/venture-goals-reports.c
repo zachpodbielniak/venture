@@ -1585,6 +1585,7 @@ venture_goals_materials(
 	for (link = currencies; NULL != link; link = link->next)
 	{
 		venture_report_result_begin_row(result);
+		venture_report_result_mark_summary(result);
 		venture_report_result_set_text(result, "product",
 			(0 == unpriced->len) ? "Total" : "Total of priced lines");
 		venture_report_result_set_text(result, "currency", link->data);

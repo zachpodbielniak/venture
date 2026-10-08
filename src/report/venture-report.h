@@ -114,6 +114,43 @@ void
 venture_report_result_begin_row(VentureReportResult *self);
 
 /**
+ * venture_report_result_mark_summary:
+ * @self: a #VentureReportResult
+ *
+ * Marks the row being built as a total of the others. On a page that sorts
+ * the table it is drawn in the table's foot, so no order moves it among
+ * the rows it adds up; in a statement (see
+ * venture_report_result_set_ordered()) it stays where it was written.
+ */
+void
+venture_report_result_mark_summary(VentureReportResult *self);
+
+/**
+ * venture_report_result_set_ordered:
+ * @self: a #VentureReportResult
+ * @ordered: whether the rows' order is part of what the report says
+ *
+ * A statement's rows are its layout -- a section, its accounts, its total,
+ * the next section -- and any other order is a different, wrong statement.
+ * An ordered result's table is drawn with data-no-sort, which keeps the
+ * page's sorter off it. Most reports are lists and leave this unset.
+ */
+void
+venture_report_result_set_ordered(
+	VentureReportResult	*self,
+	gboolean		 ordered
+);
+
+/**
+ * venture_report_result_get_ordered:
+ * @self: a #VentureReportResult
+ *
+ * Returns: whether the rows' order is the report's layout
+ */
+gboolean
+venture_report_result_get_ordered(VentureReportResult *self);
+
+/**
  * venture_report_result_set_text:
  * @self: a #VentureReportResult
  * @key: the column key

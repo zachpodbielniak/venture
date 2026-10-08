@@ -943,8 +943,19 @@ venture_widget_kind_list(
 	}
 	else
 	{
+		/* Headed like the list it stands for, so it sorts like one. */
 		g_string_append(html, "<div class=\"table-wrap\"><table class=\"data "
-		                      "widget-table\"><tbody>");
+		                      "widget-table\"><thead><tr><th scope=\"col\">Name</th>");
+
+		for (c = 0; c < columns->len; c++)
+		{
+			g_string_append(html, "<th scope=\"col\">");
+			venture_html_escape_append(html,
+				venture_field_spec_get_label(g_ptr_array_index(columns, c)));
+			g_string_append(html, "</th>");
+		}
+
+		g_string_append(html, "</tr></thead><tbody>");
 	}
 
 	for (i = 0; i < records->len; i++)

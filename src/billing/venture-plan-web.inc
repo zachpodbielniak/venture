@@ -209,7 +209,7 @@ venture_plan_new_page(VentureWebServer *self, gint64 organization)
 	g_string_append(html, "</div>"
 		"<label class=\"doc-field\"><span class=\"field-label\">What it includes</span>"
 		"<textarea name=\"description\" rows=\"2\" placeholder=\"Shown to you when choosing a plan\"></textarea></label>"
-		"<table class=\"line-items\"><thead><tr><th>Billed</th><th class=\"num\">Price</th><th></th>"
+		"<table class=\"line-items\" data-no-sort><thead><tr><th>Billed</th><th class=\"num\">Price</th><th></th>"
 		"<th class=\"num\">Free trial (days)</th><th>Tax</th><th></th></tr></thead><tbody data-lines>");
 	venture_plan_append_price_row(html, "0", "month", currency, taxes);
 	g_string_append(html, "</tbody></table>"

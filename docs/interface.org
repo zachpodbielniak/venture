@@ -179,6 +179,35 @@ The panel is positioned against the viewport rather than its container. A card c
 
 Where a form wants a record's id, the same idea applies twice over: a search box in front of the number input finds the record by name through =/ui/records/search=, and the id it fills in came from a record that exists. Asking for a number meant opening the list in another tab to read one off it, and a mistyped digit links to a different record silently.
 
+** Tables
+
+Every table with a heading row sorts and filters in the browser. A click on a heading reorders the rows on the page; a second click turns it round; =aria-sort= marks the column and draws the arrow. A heading that is not already a link becomes a button, so the keyboard reaches it. Tables of eight rows or more get a box that hides the rows not matching what is typed, with a count of what is left. This is the default rather than something a table opts into, because the tables nobody had marked were exactly the ones found not sorting: =wireSortableTables()= in =venture.js= takes every =table= on the page, and a =MutationObserver= takes the ones that arrive later -- an htmx swap, a streamed chat answer, a modal.
+
+What a cell sorts by, in order: its =data-sort-value=; the =datetime= of a =<time>= inside it, so "3 min ago" sorts by the moment; its text read as a figure -- gold ("9,999g 98s" in copper), money in any currency ("$1,234.56", "1,234.56 USD", "USD 1,234.56", "-$5.00", the accountant's "(5.00)"), a percent, a date ("2026-10-08", "2026-10-08 12:30 UTC", "8 Oct 2026", "2026-W41"), an age ("12 min ago", "in 3 h", "just now"), a plain figure with its unit -- and otherwise as a name, numbers in names in numeric order. A column is numeric when four values in five read as figures, so one "n/a" does not turn it alphabetical; whatever does not read sorts last, with the empty cells ("—"), either way round. A numeric column sorts largest (or newest) first on the first click.
+
+Rows that are not data keep their place:
+
+- a row that is one cell across the table -- "Nothing matches.", or a group's heading such as a realm or a login (=<th scope="rowgroup">=) -- stays put, and the rows under it sort among themselves;
+- a total belongs in =<tfoot>=, where no sort reaches it; one left in the body (=class="total"=, =subtotal=, =summary=, =data-sort-pin=, or a first cell spanning columns with figures after it) stays at the foot of its group. A report row marked with =venture_report_result_mark_summary()= is drawn in the foot.
+
+Some tables must not sort, and are left alone:
+
+| Left alone | Because |
+|-------------------------------------------------------------+-------------------------------------------------------------------|
+| =data-no-sort= on the table or an ancestor | the server knows the order is the content |
+| a statement report (=venture_report_result_set_ordered()=) | sections, accounts and totals: another order is a wrong statement |
+| the money calendar's month and week grids | rows are weeks, columns are days |
+| a line editor (=tbody[data-lines]=, or a field posted by a form outside its own row) | its rows post in order, and its script numbers them |
+| a cell spanning rows (=rowspan=) | the rows it spans belong together |
+| no =<thead>=, or more than one heading row | nothing to click, or no single column under a heading |
+| =.chart-data= / =.visually-hidden= | a chart's table for a screen reader, in the chart's order |
+
+A tick box or a form inside its own row does not count as an editor: it goes with its row. =data-no-filter= keeps the filter box off a table whose page has a finder of its own (the report index). A single heading opts out with =data-no-sort= on its =th=.
+
+A table paged on the server says =data-server-sort= -- Browse, the inventory, every record list (=/e/TYPE=) -- because a heading must sort every page, not the fifty on screen. Its headings stay links the server sorts by, and with script a click on one, or on its pager, fetches that address and swaps only the table's card (=[data-sort-region]=, else the =.card=, else the =.table-wrap=) for the one in the answer: the filters, the search box and the scroll position stay where they were. The address goes into the history, so back and forward step through the orders, and the hidden =sort=/=dir= fields of a filter form beside the table are brought up to date, so the next "Show" asks for the order on screen. Anything unexpected -- an error, a redirect to the login page, an answer without the table -- becomes the ordinary page load it replaced. Without script the links load the page.
+
+The documentation site does not load =venture.js=; =venture-docs.js= sorts its tables the plain way (figures, dates and names), which is all a page of reference tables needs.
+
 ** Home and the ticket board
 
 *Home answers the morning's questions on one screen.* The =today= dashboard template -- the demo's home -- is four rows: money in and out this month, invoices and bills past due, what needs you (your tickets, the triage queue, promises missed, bills to approve), then the late invoices, the bills falling due, the urgent tickets, what awaits your approval and the things you do next. Every figure links to the records behind it. The home page's head is one line: the page's name, today's date and *Edit this page*; the other dashboards are in the sidebar. A metric's period reads as words ("September 2026", "All time"), never as the parameter it was asked with. The widgets are the dashboard kinds, rendered in the core like any other page's -- the web layer draws only the frame.
