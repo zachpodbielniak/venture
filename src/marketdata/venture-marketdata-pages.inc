@@ -740,6 +740,87 @@ mdw_time_label(
 	return g_date_time_format(local, format);
 }
 
+/* Whether the answer marks @object's @prefix price stale (see mdw_age()). */
+static gboolean
+mdw_stale(
+	JsonObject	*object,
+	const gchar	*prefix
+){
+	g_autofree gchar *name = g_strconcat(prefix, "stale", NULL);
+	JsonNode *node = (NULL != object) ? json_object_get_member(object, name) : NULL;
+
+	return (NULL != node) && JSON_NODE_HOLDS_VALUE(node) &&
+	       (G_TYPE_BOOLEAN == json_node_get_value_type(node)) && json_node_get_boolean(node);
+}
+
+/* " class=\"is-stale\"" for a cell whose price is stale, else nothing. */
+static void
+mdw_stale_class(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*prefix
+){
+	if (mdw_stale(object, prefix))
+		g_string_append(html, " class=\"is-stale\"");
+}
+
+/*
+ * How old a price is, compactly, under the venue it was taken at: "12m",
+ * "3h", "2d", in a <time> whose title is the exact moment in the
+ * configured zone. The answer judges staleness (@prefix "stale", against
+ * series.stale_minutes); a stale one is flagged in words as well as in
+ * colour, since colour alone says nothing to a screen reader. The answer
+ * computed the age at its own "now", so a page and its JSON twin agree.
+ */
+static void
+mdw_age(
+	VentureWebServer	*self,
+	GString			*html,
+	JsonObject		*object,
+	const gchar		*prefix
+){
+	g_autofree gchar *at_name = g_strconcat(prefix, "taken_at", NULL);
+	g_autofree gchar *age_name = g_strconcat(prefix, "age_seconds", NULL);
+	g_autofree gchar *exact = NULL;
+	g_autofree gchar *compact = NULL;
+	const gchar *at = mdw_text(object, at_name);
+	gboolean stale = mdw_stale(object, prefix);
+	JsonNode *node = (NULL != object) ? json_object_get_member(object, age_name) : NULL;
+	gint64 age;
+
+	if ((NULL == at) || (NULL == node) || !JSON_NODE_HOLDS_VALUE(node))
+	{
+		g_string_append(html, "<span class=\"price-age is-stale\">no time"
+		                      "<span class=\"price-age-flag\">stale</span></span>");
+		return;
+	}
+
+	age = json_node_get_int(node);
+
+	if (age < 60)
+		compact = g_strdup("<1m");
+	else if (age < 3600)
+		compact = g_strdup_printf("%" G_GINT64_FORMAT "m", age / 60);
+	else if (age < 2 * 86400)
+		compact = g_strdup_printf("%" G_GINT64_FORMAT "h", age / 3600);
+	else
+		compact = g_strdup_printf("%" G_GINT64_FORMAT "d", age / 86400);
+
+	exact = mdw_time_label(self, at, "%Y-%m-%d %H:%M %Z");
+	g_string_append_printf(html, "<span class=\"price-age%s\"><time datetime=\"", stale ? " is-stale" : "");
+	venture_html_escape_append(html, at);
+	g_string_append(html, "\" title=\"Price as of ");
+	venture_html_escape_append(html, exact);
+	g_string_append(html, "\">");
+	venture_html_escape_append(html, compact);
+	g_string_append(html, "</time>");
+
+	if (stale)
+		g_string_append(html, "<span class=\"price-age-flag\">stale</span>");
+
+	g_string_append(html, "</span>");
+}
+
 /* --- /market/browse ------------------------------------------------------- */
 
 static gboolean
@@ -1553,6 +1634,8 @@ venture_marketdata_web_instrument(
 		g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Now</h2></div>"
 		                      "<div class=\"stat-row market-stats\">");
 		mdw_stat_of(html, "Lowest price", mdw_money, base, "min_price");
+		mdw_age(self, value, base, "");
+		mdw_stat(html, "Price as of", value->str);
 		mdw_stat_of(html, "Quantity", mdw_int, base, "quantity");
 		mdw_stat_of(html, "Last seen", mdw_when, base, "last_seen");
 		mdw_stat_of(html, "Median, 14 days", mdw_money, base, "median_14d");
@@ -1748,13 +1831,16 @@ venture_marketdata_web_instrument(
 			JsonObject *row = json_array_get_object_element(venues, i);
 			gboolean current = (0 == g_strcmp0(mdw_text(row, "venue_key"), venue));
 
-			g_string_append_printf(html, "<tr%s><td><a href=\"", current ? " aria-current=\"true\" class=\"selected\"" : "");
+			g_string_append_printf(html, "<tr%s><td", current ? " aria-current=\"true\" class=\"selected\"" : "");
+			mdw_stale_class(html, row, "");
+			g_string_append(html, "><a href=\"");
 			venture_html_escape_append(html, mdw_text(row, "url"));
 			g_string_append(html, "\">");
 			mdw_name(html, row, "venue_name", "venue_key");
 			g_string_append(html, "</a></td><td>");
 			venture_html_escape_append(html, mdw_text(row, "group_key"));
-			g_string_append(html, "</td><td class=\"num\">");
+			g_string_append(html, "</td><td class=\"num");
+			g_string_append(html, mdw_stale(row, "") ? " is-stale\">" : "\">");
 			mdw_money(html, row, "min_price");
 			g_string_append(html, "</td><td class=\"num\">");
 			mdw_int(html, row, "quantity");
@@ -1763,7 +1849,7 @@ venture_marketdata_web_instrument(
 			g_string_append(html, "</td><td class=\"num\">");
 			mdw_percent(html, row, "pct_vs_region", 1.0);
 			g_string_append(html, "</td><td>");
-			mdw_when(html, row, "taken_at");
+			mdw_age(self, html, row, "");
 			g_string_append(html, "</td><td>");
 			mdw_links(html, row, FALSE);
 			g_string_append(html, "</td></tr>");
@@ -1941,6 +2027,17 @@ mdw_chip_open(
 
 /* A venue's name, short, its whole name on hover: a connected realm is
  * named for all its realms. */
+/* What a venue is called on Deals: its connected realm, else its name,
+ * else its key. */
+static const gchar *
+mdw_venue_label(JsonObject *row)
+{
+	if (NULL != mdw_text(row, "realm"))
+		return mdw_text(row, "realm");
+
+	return (NULL != mdw_text(row, "venue_name")) ? mdw_text(row, "venue_name") : mdw_text(row, "venue_key");
+}
+
 static void
 mdw_venue_chip(
 	GString		*html,
@@ -1948,11 +2045,14 @@ mdw_venue_chip(
 ){
 	const gchar *name = (NULL != mdw_text(row, "venue_name")) ? mdw_text(row, "venue_name")
 	                                                          : mdw_text(row, "venue_key");
+	/* The connected realm as the pickers name it, where the answer
+	 * says; the source's own name stays in the title. */
+	const gchar *shown = mdw_venue_label(row);
 
 	g_string_append(html, "<span class=\"venue-chip\" title=\"");
 	venture_html_escape_append(html, name);
 	g_string_append(html, "\">");
-	venture_html_escape_append(html, name);
+	venture_html_escape_append(html, shown);
 	g_string_append(html, "</span>");
 }
 
@@ -2294,11 +2394,13 @@ venture_marketdata_web_deals(
 		if (json_object_has_member(row, "level"))
 			g_string_append_printf(html, "%" G_GINT64_FORMAT, json_object_get_int_member(row, "level"));
 		g_string_append(html, "</td><td");
-		mdw_sort_text(html, (NULL != mdw_text(row, "venue_name")) ? mdw_text(row, "venue_name")
-		                                                          : mdw_text(row, "venue_key"));
+		mdw_stale_class(html, row, "buy_");
+		mdw_sort_text(html, mdw_venue_label(row));
 		g_string_append(html, ">");
 		mdw_venue_chip(html, row);
-		g_string_append(html, "</td><td class=\"num\"");
+		mdw_age(self, html, row, "buy_");
+		g_string_append(html, "</td><td class=\"num");
+		g_string_append(html, mdw_stale(row, "buy_") ? " is-stale\"" : "\"");
 		mdw_sort_value(html, row, "min_price");
 		g_string_append(html, ">");
 		mdw_money(html, row, "min_price");
@@ -2306,11 +2408,13 @@ venture_marketdata_web_deals(
 
 		if (NULL != sell)
 		{
-			mdw_sort_text(html, (NULL != mdw_text(sell, "venue_name")) ? mdw_text(sell, "venue_name")
-			                                                           : mdw_text(sell, "venue_key"));
+			mdw_stale_class(html, row, "sell_");
+			mdw_sort_text(html, mdw_venue_label(sell));
 			g_string_append(html, ">");
 			mdw_venue_chip(html, sell);
-			g_string_append(html, "</td><td class=\"num\"");
+			mdw_age(self, html, row, "sell_");
+			g_string_append(html, "</td><td class=\"num");
+			g_string_append(html, mdw_stale(row, "sell_") ? " is-stale\"" : "\"");
 			mdw_sort_value(html, sell, "min_price");
 			g_string_append(html, ">");
 			mdw_money(html, sell, "min_price");

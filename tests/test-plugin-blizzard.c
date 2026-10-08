@@ -601,7 +601,8 @@ test_settings(
 		"connected_realm_ids: [11, -3]\n",
 		"include_commodities: maybe\n",
 		"locale: english\n",
-		"realms_per_fetch: 0\n",
+		"realm_index_hours: 169\n",
+		"item_names_per_fetch: 5001\n",
 		/*
 		 * PCRE's "$" matches just before a single trailing newline as
 		 * well as at the true end of the subject, so "en_US\n" passed
@@ -637,7 +638,8 @@ test_settings(
 	/* And the same settings, good, save. */
 	{
 		g_autoptr(VentureDataSource) source = venture_data_source_new();
-		g_autofree gchar *settings = settings_text(fixture, "connected_realm_ids: [11, \"3676\"]\n");
+		g_autofree gchar *settings = settings_text(fixture, "connected_realm_ids: [11, \"3676\"]\n"
+		                                               "item_names_per_fetch: 5000\nrealm_index_hours: 0\n");
 
 		venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
 		g_object_set(source, "name", "Good", "provider", "blizzard_auctions", "settings", settings,
@@ -673,7 +675,8 @@ test_settings(
  *   filed under its plain item, and named from the item endpoint, which
  *   also gives the vendor price the fee model reads;
  * - prices are copper in GOLD: a unit_price as given, a buyout divided by
- *   its quantity, a bid-only auction at its bid (and said so in the run);
+ *   its quantity; a bid-only auction is skipped (and said so in the run),
+ *   because it cannot be bought now and its bid is not a price to buy at;
  * - the venue is named from the connected realm, grouped by region;
  * - the second sync sends the first's Last-Modified, dates its snapshot by
  *   its own, and the sale estimate reads time_left's lower bound: a LONG
@@ -685,7 +688,9 @@ test_settings(
  * What breaks if this regresses: the whole connector -- and the subtle
  * parts are the key format (two spellings of one variant split its
  * history), the copper exponent, and the expiry bound (counting expiries
- * as sales inflates every sale rate the arbitrage scan reads).
+ * as sales inflates every sale rate the arbitrage scan reads). A bid-only
+ * auction listed at its bid made it the realm's cheapest -- Deals sent a
+ * buyer there -- and its end a "sale".
  */
 static void
 test_sync(
@@ -729,9 +734,11 @@ test_sync(
 	g_assert_nonnull(strstr(seen, "namespace=dynamic-us"));
 	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/token"), ==, 1);
 
-	/* Two auctions refused (no price; no quantity), one bid-only. */
+	/* Two auctions refused (no price; no quantity), and one bid-only
+	 * skipped, which is not a refusal: nothing is wrong with it. */
 	notes = run_text(first, "notes");
-	g_assert_nonnull(strstr(notes, "have a bid and no buyout"));
+	g_assert_nonnull(strstr(notes, "11: 1 bid-only auctions skipped"));
+	g_assert_null(strstr(notes, "listed at their bid"));
 	g_assert_cmpint(run_int(first, "refused"), ==, 2);
 
 	reader = reader_of(fixture, id);
@@ -759,8 +766,8 @@ test_sync(
 		g_assert_nonnull(pet);
 		g_assert_cmpint(pet->min_price, ==, 1500000);
 		g_assert_cmpstr(pet->instrument_name, ==, "Pet Cage (pet 39)");
-		g_assert_nonnull(cloth);
-		g_assert_cmpint(cloth->min_price, ==, 500);
+		/* Linen's only auction is bid-only: nothing to buy, no price. */
+		g_assert_null(cloth);
 
 		g_assert_nonnull(market);
 		g_assert_cmpint(market->min_price, ==, 1100);
@@ -850,8 +857,9 @@ test_sync(
 		}
 	}
 
-	/* An hour later: 1002 (LONG) and 1005 (LONG) are gone, so sold; 1004
-	 * (SHORT) is gone and may have expired; 1008 is new. */
+	/* An hour later: 1002 (LONG) is gone, so sold; 1004 (SHORT) is gone
+	 * and may have expired; 1008 is new. 1005, the bid-only Linen, is
+	 * gone too, but was never a listing: its end is no sale. */
 	{
 		VentureTestRoute *route = api(fixture, "/data/wow/connected-realm/11/auctions",
 		                              "auctions-11-later.json");
@@ -885,8 +893,8 @@ test_sync(
 		g_assert_cmpint(day->sold_estimate, ==, 5);
 
 		cloth_days = venture_series_store_daily(reader, "11", KEY_CLOTH, 0, &error);
-		day = &g_array_index(cloth_days, VentureSeriesDay, 0);
-		g_assert_cmpint(day->sold_estimate, ==, 1);
+		g_assert_no_error(error);
+		g_assert_cmpuint(cloth_days->len, ==, 0);
 
 		pet_days = venture_series_store_daily(reader, "11", KEY_PET, 0, &error);
 		day = &g_array_index(pet_days, VentureSeriesDay, 0);
@@ -921,41 +929,115 @@ test_sync(
 	g_assert_false(file_contains(wal, client_secret));
 }
 
+/* The units the provider lists for the base settings plus @extra, joined
+ * by commas: what a source with them is frozen into. */
+static gchar *
+units_of(
+	Fixture		*fixture,
+	const gchar	*extra
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) settings = NULL;
+	g_auto(GStrv) units = NULL;
+	g_autofree gchar *text = settings_text(fixture, extra);
+	VentureDataSourceProvider *provider;
+
+	provider = venture_data_source_provider_registry_lookup(
+		venture_context_get_data_source_providers(fixture->context), "blizzard_auctions");
+	g_assert_nonnull(provider);
+	settings = venture_feeds_parse_settings(text, &error);
+	g_assert_no_error(error);
+	units = venture_data_source_provider_list_units(provider, settings, &error);
+	g_assert_no_error(error);
+
+	return g_strjoinv(",", units);
+}
+
+/* What the realm list cache holds, as the one file in its directory. */
+static gchar *
+realm_cache(Fixture *fixture)
+{
+	g_autofree gchar *dir = g_build_filename(fixture->state_dir, "plugin-cache", "blizzard-auctions", "realms",
+	                                         NULL);
+	g_autoptr(GDir) listing = g_dir_open(dir, 0, NULL);
+	g_autofree gchar *path = NULL;
+	const gchar *name;
+	gchar *contents = NULL;
+
+	g_assert_nonnull(listing);
+	name = g_dir_read_name(listing);
+	g_assert_nonnull(name);
+	path = g_build_filename(dir, name, NULL);
+	g_assert_null(g_dir_read_name(listing));
+	g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+
+	return contents;
+}
+
 /*
- * A source naming no realm reads every realm the index lists, in id
- * order, from where its cursor says the last fetch stopped, each with its
- * own If-Modified-Since kept in that cursor. With realms_per_fetch 1, the
- * first sync reads realm 11, the second 3676, the third finds both
- * unchanged.
+ * A source naming no realm finds them itself. Before any index is known
+ * its units are realm-index alone; the first sync reads the index, keeps
+ * it, and the source is frozen again into one unit per realm -- the very
+ * names an explicit list makes -- beside realm-index. A failed read of
+ * the index keeps the last list (a source frozen afterwards still gets
+ * every realm), and a realm the index gains becomes a unit.
  *
- * What breaks if this regresses: an operator who left the list empty
- * gets one realm forever, or every realm's auctions in one batch however
- * big the region is.
+ * What breaks if this regresses: an empty list goes back to one unit for
+ * the region (a realm's prices hours old, Deals pointing at auctions long
+ * sold); a unit named unlike the explicit list's starts every realm's
+ * history afresh when a source switches; a Battle.net outage takes every
+ * realm's unit away; a realm Blizzard adds is never read.
  */
 static void
-test_every_realm(
+test_realm_discovery(
 	Fixture		*fixture,
 	gconstpointer	 user_data
 ){
 	g_autoptr(VentureEntity) one = NULL;
 	g_autoptr(VentureEntity) two = NULL;
 	g_autoptr(VentureEntity) three = NULL;
+	g_autoptr(VentureEntity) four = NULL;
 	g_autoptr(VentureSeriesStore) reader = NULL;
-	g_autofree gchar *ims = NULL;
+	g_autofree gchar *units = NULL;
+	g_autofree gchar *listed = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autofree gchar *cache = NULL;
+	g_autofree gchar *message = NULL;
 	gint64 id;
 
 	(void)user_data;
 
 	serve_battle_net(fixture);
-	id = create_source(fixture, "include_commodities: false\nrealms_per_fetch: 1\nitem_names_per_fetch: 0\n",
+
+	/* Nothing known yet: the index is the only unit. */
+	units = units_of(fixture, "include_commodities: false\n");
+	g_assert_cmpstr(units, ==, "realm-index");
+	g_clear_pointer(&units, g_free);
+
+	id = create_source(fixture, "include_commodities: false\nitem_names_per_fetch: 0\nrealm_index_hours: 0\n",
 	                   client_secret, "manual");
 
 	one = sync_and_wait(fixture, id);
 	g_assert_cmpint(run_status(one), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
-	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/11/auctions"), ==, 1);
-	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/3676/auctions"), ==, 0);
+	g_assert_cmpint(run_int(one, "units"), ==, 1);
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/index"), ==, 1);
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/11/auctions"), ==, 0);
+	notes = run_text(one, "notes");
+	g_assert_nonnull(strstr(notes, "the index lists 2 connected realms (2 new, 0 gone)"));
 
+	/* Kept, and the units are an explicit list's, in id order. */
+	cache = realm_cache(fixture);
+	g_assert_nonnull(strstr(cache, "\"ids\":[11,3676]"));
+	units = units_of(fixture, "include_commodities: false\n");
+	listed = units_of(fixture, "include_commodities: false\nconnected_realm_ids: [11, 3676]\n");
+	g_assert_cmpstr(listed, ==, "11,3676");
+	g_assert_cmpstr(units, ==, "11,3676,realm-index");
+
+	/* The source was frozen again: this sync reads both realms. */
 	two = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(two), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(two, "units"), ==, 3);
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/11/auctions"), ==, 1);
 	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/3676/auctions"), ==, 1);
 	reader = reader_of(fixture, id);
 
@@ -969,27 +1051,143 @@ test_every_realm(
 		g_assert_null(ore->instrument_name);
 	}
 
-	/* Both realms answer 304 to a conditional request now. */
-	{
-		VentureTestRoute *route;
-
-		route = api(fixture, "/data/wow/connected-realm/11/auctions", "auctions-11.json");
-		route->not_modified_when_asked = TRUE;
-		route = api(fixture, "/data/wow/connected-realm/3676/auctions", "auctions-3676.json");
-		route->not_modified_when_asked = TRUE;
-	}
-
+	/* Battle.net's index fails: that unit fails, the realms are still
+	 * read, and the list -- for this source and any frozen now -- stays. */
+	venture_test_http_route(&fixture->http, "/data/wow/connected-realm/index", 503, "{}");
 	three = sync_and_wait(fixture, id);
-	g_assert_cmpint(run_status(three), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
-	g_assert_cmpint(run_int(three, "not-modified"), ==, 1);
+	message = run_text(three, "error");
+	g_assert_nonnull(message);
+	g_assert_nonnull(strstr(message, "realm-index"));
 	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/11/auctions"), ==, 2);
 	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/3676/auctions"), ==, 2);
-	ims = venture_test_http_seen(&fixture->http, "/data/wow/connected-realm/3676/auctions",
-	                             "If-Modified-Since");
+	g_clear_pointer(&units, g_free);
+	units = units_of(fixture, "include_commodities: false\n");
+	g_assert_cmpstr(units, ==, "11,3676,realm-index");
+
+	/* A realm appears in the index: it is a unit from the next freeze. */
+	{
+		g_autofree gchar *index = g_strdup_printf(
+			"{\"connected_realms\":["
+			"{\"href\":\"%s/data/wow/connected-realm/3676?namespace=dynamic-us\"},"
+			"{\"href\":\"%s/data/wow/connected-realm/1234?namespace=dynamic-us\"},"
+			"{\"href\":\"%s/data/wow/connected-realm/11?namespace=dynamic-us\"}]}",
+			fixture->http.origin, fixture->http.origin, fixture->http.origin);
+		VentureTestRoute *route = venture_test_http_route(&fixture->http, "/data/wow/connected-realm/index",
+		                                                  200, index);
+
+		route->require_authorization = g_strconcat("Bearer ", access_token, NULL);
+	}
+
+	four = sync_and_wait(fixture, id);
+	g_clear_pointer(&notes, g_free);
+	notes = run_text(four, "notes");
+	g_assert_nonnull(strstr(notes, "the index lists 3 connected realms (1 new, 0 gone)"));
+	g_clear_pointer(&units, g_free);
+	units = units_of(fixture, "include_commodities: false\n");
+	g_assert_cmpstr(units, ==, "11,1234,3676,realm-index");
+	g_clear_pointer(&cache, g_free);
+	cache = realm_cache(fixture);
+	g_assert_nonnull(strstr(cache, "\"ids\":[11,1234,3676]"));
+}
+
+/*
+ * A source that listed its realms by id and is switched to an empty list
+ * keeps each realm's history: once the index is read, its units have the
+ * same names, so each asks Battle.net with the If-Modified-Since its
+ * explicit unit last saw. And a fresh list is not read again within
+ * realm_index_hours.
+ *
+ * What breaks if this regresses: switching a deployment from its listed
+ * realms to discovery refetches every realm whole and loses the adaptive
+ * schedule each had learned -- or, with names that differ, keeps two
+ * histories of one realm.
+ */
+static void
+test_realm_switch(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) first = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(VentureEntity) third = NULL;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *settings = NULL;
+	g_autofree gchar *ims = NULL;
+	VentureTestRoute *route;
+	gint64 id;
+
+	(void)user_data;
+
+	serve_battle_net(fixture);
+	id = create_source(fixture, "connected_realm_ids: [11, 3676]\ninclude_commodities: false\n"
+	                   "item_names_per_fetch: 0\n", client_secret, "manual");
+	first = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(first), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(first, "units"), ==, 2);
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/index"), ==, 0);
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, id, &error);
+	g_assert_no_error(error);
+	settings = settings_text(fixture, "include_commodities: false\nitem_names_per_fetch: 0\n");
+	g_object_set(source, "settings", settings, NULL);
+	save(fixture, source);
+
+	second = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(second), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/index"), ==, 1);
+
+	route = api(fixture, "/data/wow/connected-realm/11/auctions", "auctions-11.json");
+	route->not_modified_when_asked = TRUE;
+	route = api(fixture, "/data/wow/connected-realm/3676/auctions", "auctions-3676.json");
+	route->not_modified_when_asked = TRUE;
+
+	third = schedule_and_wait(fixture, id);
+	g_assert_cmpint(run_status(third), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	g_assert_cmpint(run_int(third, "units"), ==, 3);
+	g_assert_cmpint(run_int(third, "not-modified"), ==, 3);
+	ims = venture_test_http_seen(&fixture->http, "/data/wow/connected-realm/3676/auctions", "If-Modified-Since");
+	g_assert_cmpstr(ims, ==, first_modified);
+	g_clear_pointer(&ims, g_free);
+	ims = venture_test_http_seen(&fixture->http, "/data/wow/connected-realm/11/auctions", "If-Modified-Since");
 	g_assert_cmpstr(ims, ==, first_modified);
 
-	/* The index is read on every fetch: it is how a new realm appears. */
-	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/index"), ==, 3);
+	/* Read a moment ago: not asked for again. */
+	g_assert_cmpint(venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/index"), ==, 1);
+}
+
+/*
+ * include_bid_only, set, lists a bid-only auction at its bid and says so
+ * -- the old behaviour, now only on request.
+ *
+ * What breaks if this regresses: an operator who wants bids in the store
+ * cannot have them, or the default lets them back in.
+ */
+static void
+test_bid_only_opt_in(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(VentureSeriesRow) cloth = NULL;
+	g_autofree gchar *notes = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	serve_battle_net(fixture);
+	id = create_source(fixture, "connected_realm_ids: [11]\ninclude_commodities: false\n"
+	                   "include_bid_only: true\nitem_names_per_fetch: 0\n", client_secret, "manual");
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	notes = run_text(run, "notes");
+	g_assert_nonnull(strstr(notes, "1 auctions have a bid and no buyout; listed at their bid"));
+	g_assert_cmpint(run_int(run, "refused"), ==, 2);
+	reader = reader_of(fixture, id);
+	cloth = current(reader, "11", KEY_CLOTH);
+	g_assert_nonnull(cloth);
+	g_assert_cmpint(cloth->min_price, ==, 500);
 }
 
 /*
@@ -1790,7 +1988,9 @@ main(
 
 	ADD("settings", test_settings);
 	ADD("sync", test_sync);
-	ADD("every-realm", test_every_realm);
+	ADD("realm-discovery", test_realm_discovery);
+	ADD("realm-switch-keeps-history", test_realm_switch);
+	ADD("bid-only-opt-in", test_bid_only_opt_in);
 	ADD("commodities-cost-25-even-on-304", test_commodities_cost);
 	ADD("rate-limited", test_rate_limited);
 	ADD("bad-credentials", test_bad_credentials);

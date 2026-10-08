@@ -745,6 +745,8 @@ venture_series_venue_stats_free(VentureSeriesVenueStats *stats);
  * @attrs_json: (nullable): its attributes
  * @first_seen: when the store first saw it
  * @last_seen: when the store last saw it
+ * @last_taken_at: its newest snapshot, or %VENTURE_SERIES_NONE when it
+ *   has none (a venue known only from a push's accounts or statistics)
  *
  * A venue as stored.
  */
@@ -759,6 +761,7 @@ typedef struct
 	gchar	*attrs_json;
 	gint64	 first_seen;
 	gint64	 last_seen;
+	gint64	 last_taken_at;
 } VentureSeriesVenueRow;
 
 /**

@@ -199,6 +199,15 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("series-max-store-mb", "series", "max_store_mb", 0,
 	        "Size in MiB past which a store refuses new instruments; "
 	        "0 for no cap"),
+	/*
+	 * A price older than this is drawn as stale on the Trading pages.
+	 * Two hours is a little over Blizzard's hourly auction dump plus the
+	 * plugin's round of realms: past it a realm has missed an update,
+	 * and the "cheapest realm" may only be the one nobody has looked at
+	 * since its prices moved. A feed that updates daily wants it longer.
+	 */
+	VC_INT ("series-stale-minutes", "series", "stale_minutes", 120,
+	        "Minutes after which a price on the Trading pages is marked stale"),
 	/* On by default: a source serves only its current snapshot, so a
 	 * store's history exists nowhere else and cannot be fetched again. */
 	VC_BOOL("series-include-in-backup", "series", "include_in_backup", TRUE,
@@ -1762,11 +1771,13 @@ venture_config_validate(
 		gint64 hourly_days;
 		gint64 daily_days;
 		gint64 max_store_mb;
+		gint64 stale_minutes;
 
 		g_object_get(self,
 		             "series-hourly-days", &hourly_days,
 		             "series-daily-days", &daily_days,
 		             "series-max-store-mb", &max_store_mb,
+		             "series-stale-minutes", &stale_minutes,
 		             NULL);
 
 		/*
@@ -1780,6 +1791,14 @@ venture_config_validate(
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 			                    "series.hourly_days, series.daily_days and "
 			                    "series.max_store_mb must be zero or more");
+			return FALSE;
+		}
+
+		/* Zero would mark every price stale the moment it arrived. */
+		if ((stale_minutes < 1) || (stale_minutes > 10080))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "series.stale_minutes must be 1 to 10080 (a week)");
 			return FALSE;
 		}
 	}

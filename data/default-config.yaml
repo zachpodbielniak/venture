@@ -509,6 +509,12 @@ series:
   # docs/backup.org.
   include_in_backup: true
 
+  # Minutes after which a price on the Trading pages (Deals, an item's
+  # venues, arbitrage) is drawn as stale, 1 to 10080. Two hours is a little
+  # over Blizzard's hourly dump plus a round of realms; a daily feed wants
+  # longer.
+  stale_minutes: 120
+
 # Market data feeds: data sources fetched on a schedule, on a worker thread,
 # into the series stores above. Off unless turned on, because a source
 # makes this server call outside hosts. See docs/market-data.org.

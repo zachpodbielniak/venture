@@ -52,7 +52,7 @@ G_BEGIN_DECLS
 
 /* The two units that are not a connected realm's id. */
 #define BLIZZARD_UNIT_COMMODITIES	"commodities"
-#define BLIZZARD_UNIT_ALL_REALMS	"realms"
+#define BLIZZARD_UNIT_REALM_INDEX	"realm-index"
 
 /*
  * What one request costs against Blizzard's budget (36,000 an hour per
@@ -70,10 +70,15 @@ G_BEGIN_DECLS
  */
 #define BLIZZARD_MIN_SPACING_US		(10000)
 
-/* Bounds a setting may not pass. */
+/*
+ * Bounds a setting may not pass. A name costs at most three requests (the
+ * item, its media, the icon from the CDN once per icon), so 5000 names is
+ * at most 15,000 of the hour's 36,000: one fetch with a cold cache cannot
+ * spend the whole hour, and a region's ~85 realm units need ~350 a hour.
+ */
 #define BLIZZARD_MAX_REALMS		(1000)
-#define BLIZZARD_MAX_NAMES_PER_FETCH	(1000)
-#define BLIZZARD_MAX_REALMS_PER_FETCH	(200)
+#define BLIZZARD_MAX_NAMES_PER_FETCH	(5000)
+#define BLIZZARD_MAX_REALM_INDEX_HOURS	(168)
 
 /**
  * BlizzardSettings:
@@ -87,13 +92,14 @@ G_BEGIN_DECLS
  * @dynamic_namespace: e.g. dynamic-us: auctions, realms
  * @static_namespace: e.g. static-us: items, professions, recipes
  * @realm_ids: (element-type gint64): the connected realms; empty for every
- *   one the index lists
+ *   one the index lists (see blizzard_realms_units())
  * @include_commodities: whether the region's commodity market is a unit
  * @include_bid_only: whether an auction with a bid and no buyout is listed
- *   at its bid
+ *   at its bid; off by default, since it cannot be bought now
  * @item_names_per_fetch: item lookups one fetch may make; 0 for none
- * @realms_per_fetch: in the every-realm unit, realms with new data one
- *   fetch reads before it stops
+ * @realm_index_hours: with no realms named, how old the known realm list
+ *   may grow before the realm-index unit asks Blizzard again; 0 for every
+ *   time the unit runs
  * @key_modifier_types: (element-type gint64) (nullable): the modifier
  *   types that make an item a variant; %NULL for every one
  *
@@ -113,7 +119,7 @@ typedef struct
 	gboolean	 include_commodities;
 	gboolean	 include_bid_only;
 	guint		 item_names_per_fetch;
-	guint		 realms_per_fetch;
+	guint		 realm_index_hours;
 	GArray		*key_modifier_types;
 } BlizzardSettings;
 
@@ -192,6 +198,28 @@ blizzard_set_icon_dir(const gchar *dir);
  */
 const gchar *
 blizzard_get_icon_dir(void);
+
+/**
+ * blizzard_set_realm_dir:
+ * @dir: (nullable): the plugin's cache directory for realm lists, or %NULL
+ *   to keep them in memory only (lost at a restart)
+ *
+ * Set once at registration, from venture_context_get_plugin_cache_dir().
+ */
+void
+blizzard_set_realm_dir(const gchar *dir);
+
+/**
+ * blizzard_realms_get_generation:
+ *
+ * A count that moves whenever a region's known list of connected realms
+ * changes, so the main thread can tell that sources naming no realm have
+ * units to gain or lose and freeze them again. Any thread.
+ *
+ * Returns: the count
+ */
+guint
+blizzard_realms_get_generation(void);
 
 /**
  * BlizzardFrozen:

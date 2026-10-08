@@ -1018,6 +1018,94 @@ test_stale(
 }
 
 /*
+ * venue_group, as on Deals: both sides only at the group's venues; a
+ * buy_venues outside the group set aside for the group, with a note; a
+ * group that is not there refused; and each side says how old its price
+ * is. What breaks if it regresses: a scan "restricted" to the realms a
+ * person banks on that buys or sells anywhere, or a group typo that
+ * quietly scans the whole region.
+ */
+static void
+test_venue_group(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) group = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(JsonNode) aside = NULL;
+	g_autoptr(JsonObject) asked = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *options = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *chosen = NULL;
+	JsonArray *rows;
+	JsonObject *row;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_venues(fixture);
+
+	group = VENTURE_ENTITY(venture_venue_group_new());
+	venture_entity_set_organization_id(group, fixture->org);
+	g_object_set(group, "name", "Banking realms", "venues", "realm-a, realm-c", NULL);
+	save(fixture, group);
+
+	options = g_strdup_printf("{\"units\":2,\"instrument\":\"herb\",\"venue_group\":\"%" G_GINT64_FORMAT "\"}",
+	                          ID(group));
+	answer = scan(fixture, options);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(answer), "venue_group_name"), ==,
+	                "Banking realms");
+	rows = rows_of(answer);
+	g_assert_cmpuint(json_array_get_length(rows), >, 0);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		const gchar *buy;
+		const gchar *sell;
+
+		row = json_array_get_object_element(rows, i);
+		buy = json_object_get_string_member(json_object_get_object_member(row, "buy"), "venue_key");
+		sell = json_object_get_string_member(json_object_get_object_member(row, "sell"), "venue_key");
+		g_assert_true((0 == g_strcmp0(buy, "realm-a")) || (0 == g_strcmp0(buy, "realm-c")));
+		g_assert_true((0 == g_strcmp0(sell, "realm-a")) || (0 == g_strcmp0(sell, "realm-c")));
+	}
+
+	/* realm-b sells dearest, but is not in the group. */
+	g_assert_null(row_with_key(answer, key_of(fixture, "spread:S:realm-a>S:realm-b:herb")));
+	row = row_with_key(answer, key_of(fixture, "spread:S:realm-a>S:realm-c:herb"));
+	g_assert_nonnull(row);
+
+	/* Ten minutes old: fresh, and each side says so. */
+	g_assert_false(json_object_get_boolean_member(json_object_get_object_member(row, "buy"), "stale"));
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(row, "sell"), "age_seconds"), >=,
+	                600);
+
+	/* A buy venue outside the group is set aside for the group. */
+	g_clear_pointer(&options, g_free);
+	options = g_strdup_printf("{\"units\":2,\"instrument\":\"herb\",\"buy_venues\":\"realm-b\","
+	                          "\"venue_group\":\"%" G_GINT64_FORMAT "\"}", ID(group));
+	aside = scan(fixture, options);
+	g_assert_true(noted(aside, "None of buy_venues is in the venue group"));
+	g_assert_nonnull(row_with_key(aside, key_of(fixture, "spread:S:realm-a>S:realm-c:herb")));
+
+	/* A group that is not there is refused, not ignored. */
+	asked = object_of("{\"instrument\":\"herb\",\"venue_group\":\"999999\"}");
+	g_assert_null(venture_arbitrage_scan_run(fixture->context, fixture->org, asked, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+
+	/* The page: the venue group picker, the group chosen, the ages. */
+	path = g_strdup_printf("/arbitrage?units=2&instrument=herb&venue_group=%" G_GINT64_FORMAT, ID(group));
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "<select name=\"venue_group\">"));
+	chosen = g_strdup_printf("<option value=\"%" G_GINT64_FORMAT "\" selected>Banking realms</option>", ID(group));
+	g_assert_nonnull(strstr(page, chosen));
+	g_assert_nonnull(strstr(page, "<span class=\"price-age\"><time datetime=\""));
+}
+
+/*
  * transform, three batches. With the vial's only venue left out of the
  * buy set the row is blank -- net, capital and ROI null, never zero --
  * and names the vial. With it in: six herbs at realm-a (60.00), one
@@ -2421,6 +2509,7 @@ main(
 	ADD("spread-sources-and-rates", test_spread_sources_and_rates);
 	ADD("filters", test_filters);
 	ADD("stale", test_stale);
+	ADD("venue-group", test_venue_group);
 	ADD("transform", test_transform);
 	ADD("transform-transfer-currency", test_transform_transfer_currency);
 	ADD("deal", test_deal);

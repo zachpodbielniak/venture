@@ -1148,6 +1148,8 @@ venture_arbitrage_craft_report(
 	"\"data_source_id\":{\"type\":\"integer\",\"description\":\"Only this source's stores\"}," \
 	"\"buy_venues\":{\"type\":\"string\",\"description\":\"Venue keys to buy at, comma separated\"}," \
 	"\"sell_venues\":{\"type\":\"string\",\"description\":\"Venue keys to sell at, comma separated\"}," \
+	"\"venue_group\":{\"type\":\"string\",\"description\":\"Buy and sell only at a venue group's " \
+	"venues: characters, or a venue_group record's id\"}," \
 	"\"group_key\":{\"type\":\"string\",\"description\":\"Only venues in this group\"}," \
 	"\"category_path\":{\"type\":\"string\",\"description\":\"Only instruments under this store " \
 	"category path\"}," \
@@ -1304,6 +1306,8 @@ venture_arbitrage_register_reports(VentureReportRegistry *registry)
 		"comma separated\"},"
 		"\"sell_venues\":{\"type\":\"string\",\"description\":\"Venue keys to sell the output "
 		"at, comma separated\"},"
+		"\"venue_group\":{\"type\":\"string\",\"description\":\"Buy inputs and sell the "
+		"output only at a venue group's venues: characters, or a venue_group record's id\"},"
 		"\"group_key\":{\"type\":\"string\",\"description\":\"Only venues in this group\"},"
 		"\"sell_basis\":{\"type\":\"string\",\"enum\":[\"min\",\"market\",\"sale_avg\","
 		"\"region_median\",\"bid\"],\"description\":\"What the output sells for; min by "

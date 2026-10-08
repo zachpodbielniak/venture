@@ -630,6 +630,12 @@ static const VentureCliColumn venture_cli_market_deal_columns[] = {
 	{ "discount", "discount", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "pct_vs_region", "vs region", VENTURE_CLI_CELL_PERCENT, FALSE },
 	{ "quantity", "qty", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "buy_age_seconds", "age s", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "buy_stale", "stale", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sell.venue_key", "sell at", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sell.min_price", "sell", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "sell_age_seconds", "sell age s", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "sell_stale", "sell stale", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
 
@@ -655,6 +661,8 @@ static const VentureCliColumn venture_cli_market_instrument_venue_columns[] = {
 	{ "market_value", "market", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "pct_vs_region", "vs region", VENTURE_CLI_CELL_PERCENT, FALSE },
 	{ "taken_at", "taken", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "age_seconds", "age s", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "stale", "stale", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
 

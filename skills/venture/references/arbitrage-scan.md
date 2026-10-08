@@ -18,7 +18,10 @@ deal price), `transform` (a recipe's inputs at their cheapest venues;
 `back_lay`, or a plugin's.
 
 - Filters: `preset_id`, `data_source_id`, `buy_venues`, `sell_venues`
-  (comma-separated **venue keys**), `group_key`, `category_path`, `kind`,
+  (comma-separated **venue keys**), `venue_group` (`characters` or a
+  `venue_group` id: both sides only at its venues, each connected realm
+  whole across sources; a `buy_venues` outside it is set aside with a
+  note; an unknown group is 404), `group_key`, `category_path`, `kind`,
   `instrument`, `units`, `sell_basis` (`min`, `market`, `sale_avg`,
   `region_median`, `bid`), `min_profit`, `max_capital`, `total_stake`
   (**money names its currency**: `"10.00 GOLD"`; a bare amount is
@@ -38,7 +41,11 @@ deal price), `transform` (a recipe's inputs at their cheapest venues;
 - Report `craft_arbitrage` -- per recipe, each input at its cheapest venue
   (a shopping list; a reusable input is bought once), the output's best
   venue and the profit: `recipe_id`, `units`, `data_source_id`,
-  `buy_venues`, `sell_venues`, `group_key`, `sell_basis`, `max_age_hours`.
+  `buy_venues`, `sell_venues`, `venue_group`, `group_key`, `sell_basis`,
+  `max_age_hours`.
+- Each row's `buy`/`sell` side carries `taken_at`, `age_seconds` and
+  `stale` (older than `series.stale_minutes`); the CLI table shows
+  `buy stale`/`sell stale`.
 - **Presets** are `arbitrage_strategy` records (`name`, `strategy`,
   `data_source_id`, `buy_venues`, `sell_venues`, `options` as YAML of the
   other filters); the save refuses a misspelt filter.
