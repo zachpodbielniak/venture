@@ -280,7 +280,44 @@ venture_feeds_schedule_next_auto(
 
 		/* Expected already: the venue is late, which is what the
 		 * back-off is for, starting at its first step. */
-		return (next > now) ? next : now + worker_backoff[0];
+		if (next <= now)
+			return now + worker_backoff[0];
+
+		/*
+		 * A probe halfway there. The interval is learned from the
+		 * gaps the schedule itself saw, so an interval twice the
+		 * real one never corrects itself: checked every two hours, a
+		 * realm Blizzard updates hourly only ever shows two-hour gaps,
+		 * and its prices run up to two hours old. A check halfway
+		 * catches the update the learned interval says cannot happen,
+		 * and its gap teaches the real interval back.
+		 */
+		if ((next - now) >= VENTURE_FEEDS_PROBE_MIN)
+			return now + (next_expected - now) / 2 - VENTURE_FEEDS_CHECK_EARLY;
+
+		return next;
+	}
+
+	/*
+	 * Nothing new before the venue is due -- a halfway probe that found
+	 * the old snapshot: a short look round (1, then 5 minutes, for an
+	 * update that lands a little after the halfway mark), then back to
+	 * the expected time with the back-off reset, so a venue that is
+	 * then late is chased from its first step.
+	 */
+	if ((retry_after <= 0) && (VENTURE_SERIES_NONE != next_expected) &&
+	    (next_expected - VENTURE_FEEDS_CHECK_EARLY > now))
+	{
+		step = MIN(*backoff_step, G_N_ELEMENTS(worker_backoff) - 1);
+
+		if ((step < 2) && (now + worker_backoff[step] < next_expected - VENTURE_FEEDS_CHECK_EARLY))
+		{
+			*backoff_step = step + 1;
+			return now + worker_backoff[step];
+		}
+
+		*backoff_step = 0;
+		return next_expected - VENTURE_FEEDS_CHECK_EARLY;
 	}
 
 	step = MIN(*backoff_step, G_N_ELEMENTS(worker_backoff) - 1);
@@ -1574,7 +1611,9 @@ worker_unit_reschedule(
 	default:
 		unit->due = venture_feeds_schedule_next_auto(
 			UNIT_NEW == outcome,
-			(UNIT_NEW == outcome) ? worker_unit_expected(source, unit) : VENTURE_SERIES_NONE,
+			/* A failure is chased on the back-off; a check that only
+			 * found the old snapshot goes back to the expected time. */
+			(UNIT_FAILED != outcome) ? worker_unit_expected(source, unit) : VENTURE_SERIES_NONE,
 			retry_after, &unit->backoff, now);
 		break;
 	}

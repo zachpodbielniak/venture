@@ -844,6 +844,152 @@ venture_feeds_web_api_runs(
 	return venture_web_json_response(node, 200);
 }
 
+/* @when as ISO 8601 under @member, or null when the store has none. */
+static void
+venture_feeds_web_set_time_member(
+	JsonObject	*object,
+	const gchar	*member,
+	gint64		 when
+){
+	g_autoptr(GDateTime) moment = NULL;
+	g_autofree gchar *text = NULL;
+
+	if ((VENTURE_SERIES_NONE == when) || (when <= 0))
+	{
+		json_object_set_null_member(object, member);
+		return;
+	}
+
+	moment = g_date_time_new_from_unix_utc(when);
+	text = venture_time_to_string(moment);
+	json_object_set_string_member(object, member, text);
+}
+
+/*
+ * GET /api/v1/feeds/:id/venues?stale_after=SECONDS: per venue, when its
+ * newest snapshot was taken and whether that is older than @stale_after
+ * (default two hours). A source's runs can all say "ok" while one venue
+ * has not moved in a day -- a walk that never reaches it, a realm the
+ * provider stopped listing -- and the prices shown for it are then a
+ * day old with nothing on the page to say so. This is what a monitor
+ * polls to catch that. The upload timer on /feeds is the same data.
+ */
+static HtmxResponse *
+venture_feeds_web_api_venues(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GPtrArray) venues = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureFeedsService *service;
+	const gchar *stale_text;
+	JsonObject *root;
+	JsonArray *list;
+	HtmxResponse *gate;
+	gint64 organization_id;
+	gint64 stale_after;
+	gint64 now;
+	gint64 oldest;
+	guint stale;
+	guint i;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_require_module_api(self, "feeds");
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	source = venture_feeds_web_source(self, organization_id, g_hash_table_lookup(params, "id"), &error);
+
+	if (NULL == source)
+		return venture_web_error_response(error);
+
+	stale_text = htmx_request_get_query_param(request, "stale_after");
+	stale_after = 2 * 3600;
+
+	if ((NULL != stale_text) &&
+	    !g_ascii_string_to_signed(stale_text, 10, 60, 30 * 86400, &stale_after, NULL))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "stale_after is 60 to 2592000 seconds");
+		return venture_web_error_response(error);
+	}
+
+	list = json_array_new();
+	now = g_get_real_time() / G_USEC_PER_SEC;
+	oldest = VENTURE_SERIES_NONE;
+	stale = 0;
+	service = venture_context_get_feeds_service(self->context);
+	reader = (NULL != service)
+	         ? venture_feeds_service_open_reader(service, venture_entity_get_id(source), NULL)
+	         : NULL;
+	venues = (NULL != reader) ? venture_series_store_list_venues(reader, NULL) : NULL;
+
+	for (i = 0; (NULL != venues) && (i < venues->len); i++)
+	{
+		VentureSeriesVenueRow *venue = g_ptr_array_index(venues, i);
+		VentureSeriesVenueState state;
+		JsonObject *row;
+		gboolean taken;
+		gboolean is_stale;
+
+		if (!venture_series_store_get_venue_state(reader, venue->key, &state, NULL))
+			continue;
+
+		taken = state.found && (VENTURE_SERIES_NONE != state.last_taken_at);
+		/* A venue with no snapshot at all is the stalest there is. */
+		is_stale = !taken || ((now - state.last_taken_at) > stale_after);
+		stale += is_stale ? 1 : 0;
+
+		if (taken && ((VENTURE_SERIES_NONE == oldest) || (state.last_taken_at < oldest)))
+			oldest = state.last_taken_at;
+
+		row = json_object_new();
+		json_object_set_string_member(row, "key", venue->key);
+		json_object_set_string_member(row, "name", !venture_string_is_empty(venue->name)
+		                                           ? venue->name : venue->key);
+		venture_feeds_web_set_time_member(row, "last_taken_at", taken ? state.last_taken_at
+		                                                               : VENTURE_SERIES_NONE);
+		venture_feeds_web_set_time_member(row, "last_fetched_at", state.found ? state.last_fetched_at
+		                                                                       : VENTURE_SERIES_NONE);
+
+		if (taken)
+			json_object_set_int_member(row, "age_seconds", MAX(0, now - state.last_taken_at));
+		else
+			json_object_set_null_member(row, "age_seconds");
+
+		json_object_set_int_member(row, "interval_seconds", state.found ? state.interval_seconds : 0);
+		venture_feeds_web_set_time_member(row, "next_expected", state.found ? state.next_expected
+		                                                                     : VENTURE_SERIES_NONE);
+		json_object_set_boolean_member(row, "stale", is_stale);
+		json_array_add_object_element(list, row);
+	}
+
+	root = json_object_new();
+	json_object_set_int_member(root, "data_source_id", venture_entity_get_id(source));
+	json_object_set_int_member(root, "stale_after", stale_after);
+	json_object_set_int_member(root, "venue_count", json_array_get_length(list));
+	json_object_set_int_member(root, "stale_count", stale);
+	venture_feeds_web_set_time_member(root, "oldest_taken_at", oldest);
+	json_object_set_array_member(root, "venues", list);
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(node, root);
+
+	return venture_web_json_response(node, 200);
+}
+
 /*
  * /feeds/:id/credentials: the provider's sensitive settings, sealed in
  * the integration store under "feed-<uuid>". Write-only, like every
@@ -1262,6 +1408,8 @@ venture_feeds_web_register(VentureWebServer *self)
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_api_due, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/feeds/:id/runs", VENTURE_DATA_CLASS_TENANT,
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_api_runs, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/feeds/:id/venues", VENTURE_DATA_CLASS_TENANT,
+	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_api_venues, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/feeds/:id/sync", VENTURE_DATA_CLASS_TENANT,
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_sync, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/feeds/:id/push", VENTURE_DATA_CLASS_TENANT,
