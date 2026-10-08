@@ -118,6 +118,20 @@ to_stripe_amount(const VentureMoney *money, gint64 *out, GError **error)
 	return TRUE;
 }
 
+gboolean
+venture_stripe_charge_units(const VentureMoney *money, gint64 *units, GError **error)
+{
+	if (!money || !units)
+		return refuse(error, "Checkout requires a positive open balance");
+	return to_stripe_amount(money, units, error);
+}
+
+VentureMoney *
+venture_stripe_money_from_charge_units(gint64 amount, const gchar *currency)
+{
+	return charge_money(amount, currency);
+}
+
 static void
 set_property(GObject *object, guint id, const GValue *value, GParamSpec *pspec)
 {

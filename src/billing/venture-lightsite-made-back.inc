@@ -214,21 +214,6 @@ made_back_impl(VentureDatabase *database, gint64 billing, gint64 business,
 	return g_steal_pointer(&result);
 }
 
-/**
- * venture_lightsite_billing_made_back:
- * @database: hosted database
- * @billing: configured billing organization
- * @business: enrolled and published business
- * @until: (nullable): exclusive end, no later than now or the ninety-day cutoff
- * @error: return location for an error
- *
- * Measures retained signed acquisitions in one serializable snapshot. Won
- * value and frozen invoice net are shown separately; explicit linked overlap
- * counts once. Current source labels do not establish provenance. Missing
- * financial values, ambiguous acquisition and mixed currencies fail closed.
- *
- * Returns: (transfer full) (nullable): exact totals and measurement period
- */
 JsonNode *
 venture_lightsite_billing_made_back(VentureDatabase *database, gint64 billing, gint64 business,
 	GDateTime *until, GError **error)

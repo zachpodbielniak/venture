@@ -75,8 +75,11 @@ headline metrics, Stripe and commerce connectors. Conventions are in
   `quote_id`; *action* `authorize_payment` (stripe).
 - `subscription_event` (every lifecycle change with MRR before/after,
   `invoice_id`, `final_invoice_id`), `billing_request` (a staged billing
-  instruction), `billing_notice`, `dunning_step`, `customer_payment_method`,
-  `usage_record` (`quantity`, `idempotency_key`).
+  instruction; `action` includes `activate`, `prepay` and
+  `prepay-installments`; `defer_days` overrides the catalogue trial on
+  start, and zero keeps catalogue terms; `term_end` is the stored end of a
+  published uninvoiced prepaid cancellation), `billing_notice`, `dunning_step`,
+  `customer_payment_method`, `usage_record` (`quantity`, `idempotency_key`).
 
 ## projects (requires invoicing, receivables) -- report `project_margin`
 
@@ -130,6 +133,9 @@ order's currency), `goods_receipt`/`goods_receipt_line`,
   `stripe_event` (verified evidence; *action* `retry`),
   `stripe_authorization` (customer's recurring permission; *actions*
   `verify`, `revoke_authorization`, `collect_due (0)`),
+  `stripe_prepayment` (service-owned 24-month collection journal:
+  `payment_path` single/installments/ach/wire/split, `state`, sensitive
+  `customer_id` and `legs`; one per subscription; never written by CRUD),
   `stripe_price_link`, `stripe_customer_link`, `processor_payout(_item)`,
   `processor_dispute`, `processor_exception`. Never write evidence by CRUD.
 - commerce (requires invoicing, receivables, integrations):

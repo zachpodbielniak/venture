@@ -134,3 +134,20 @@ static void test_notification_installment(Fixture *f, gconstpointer unused)
 	g_clear_pointer(&answer, json_node_unref); answer = call(f, path, NULL, 200);
 	g_assert_null(notification(answer, "payment_failed"));
 }
+static void test_notification_isk_charge_units(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *path = g_strdup_printf("/api/v1/lightsite/billing/%" G_GINT64_FORMAT "/notifications", f->business);
+	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT "}", f->business, f->price);
+	g_autoptr(JsonNode) enrolled = call(f, "/api/v1/lightsite/billing/enroll", body, 201), answer = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), published = g_date_time_add_days(now, -29);
+	g_autofree gchar *date = venture_time_to_string(published), *uuid = g_uuid_string_random(), *sql = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 subscription = json_object_get_int_member(json_node_get_object(enrolled), "subscription_id");
+	gint64 company = json_object_get_int_member(json_node_get_object(enrolled), "company_id");
+	(void)unused;
+	/* 10000 Stripe units of ISK are 100.00 kr, not 10000 kr. */
+	sql = g_strdup_printf("INSERT INTO stripe_prepayments (uuid,organization_id,subscription_id,company_id,payment_path,total_amount,total_currency,total_exponent,state,legs,published_at) VALUES ('%s',%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT ",'installments',20000,'ISK',0,'waiting','{\"legs\":[{\"amount\":10000,\"paid\":true,\"method\":\"example-method\",\"setup\":\"example-setup\"},{\"amount\":10000,\"method\":\"example-method\"}]}','%s')", uuid, f->billing, subscription, company, date);
+	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
+	answer = call(f, path, NULL, 200);
+	g_assert_cmpstr(json_object_get_string_member(notification(answer, "installment_due"), "amount"), ==, "100.00 ISK");
+}

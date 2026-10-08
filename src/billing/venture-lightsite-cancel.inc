@@ -1,20 +1,4 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-/**
- * venture_lightsite_billing_cancel:
- * @database: hosted database
- * @billing: configured billing organization
- * @business: enrolled customer business
- * @error: return location for an error
- *
- * Cancels an unpublished enrollment strictly before its fourteen-day deadline
- * without a charge. The subscription and immutable receipt commit together;
- * delayed publication, setup and collection cannot revive it. Publication or
- * deadline expiry uses normal period-end cancellation and preserves incurred
- * invoices, including outstanding prepaid installments. Requires the trusted
- * service authority; the hosted client authenticates its dashboard owner.
- *
- * Returns: (transfer full) (nullable): the original cancellation decision
- */
 JsonNode *
 venture_lightsite_billing_cancel(VentureDatabase *database, gint64 billing,
 	gint64 business, GError **error)
@@ -65,20 +49,40 @@ venture_lightsite_billing_cancel(VentureDatabase *database, gint64 billing,
 		g_strcmp0(enum_nick(sub, "status"), "cancelled")) {
 		refuse(error, VENTURE_ERROR_CONFLICT, "enrollment already left its unpaid trial"); goto fail;
 	}
+	/* The unpaid trial end is not the prepaid term. Store go-live plus
+	 * twenty-four months before scheduling the end, and report that date. */
+	if (prepaid && publication && !invoice) {
+		g_autoptr(GDateTime) live = venture_time_from_string(
+			json_object_get_string_member(json_node_get_object(publication), "go_live_at"), error);
+		if (!live) goto fail;
+		effective = g_date_time_add_months(live, 24);
+	}
 	if (strcmp(enum_nick(sub, "status"), "cancelled")) {
 		instruction = venture_billing_request_new();
 		venture_entity_set_organization_id(VENTURE_ENTITY(instruction), billing);
 		g_object_set(instruction, "action", "cancel", "subscription-id", subscription,
 			"at-period-end", !no_charge, "at", now, "expected-version", venture_entity_get_version(sub), NULL);
+		if (effective) g_object_set(instruction, "term-end", effective, NULL);
 		if (!execute(database, instruction, &actor, error)) goto fail;
 	}
-	if (no_charge) effective = g_date_time_ref(now);
-	else if (prepaid && publication && !invoice) {
-		g_autoptr(GDateTime) live = venture_time_from_string(
-			json_object_get_string_member(json_node_get_object(publication), "go_live_at"), error);
-		if (!live) goto fail;
-		effective = g_date_time_add_months(live, 24);
-	} else g_object_get(sub, "current-period-end", &effective, NULL);
+	if (no_charge) {
+		g_clear_pointer(&effective, g_date_time_unref);
+		effective = g_date_time_ref(now);
+	} else if (!effective) {
+		g_clear_object(&sub);
+		sub = get_record(database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, error);
+		if (!sub) goto fail;
+		g_object_get(sub, "current-period-end", &effective, NULL);
+	} else {
+		g_autoptr(GDateTime) stored = NULL;
+		g_clear_object(&sub);
+		sub = get_record(database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, error);
+		if (!sub) goto fail;
+		g_object_get(sub, "current-period-end", &stored, NULL);
+		if (!stored || g_date_time_compare(stored, effective) != 0) {
+			refuse(error, VENTURE_ERROR_CONFLICT, "prepaid term end was not stored"); goto fail;
+		}
+	}
 	result = json_node_new(JSON_NODE_OBJECT); object = json_object_new(); json_node_take_object(result, object);
 	json_object_set_int_member(object, "organization_id", business);
 	json_object_set_int_member(object, "subscription_id", subscription);

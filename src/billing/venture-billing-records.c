@@ -311,6 +311,8 @@ static const VentureFieldDecl billing_request_fields[] = {
 	VENTURE_FIELD("seats", "Seats", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("at", "Effective date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("at-period-end", "At period end", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("term-end", "Prepaid term end", "Cancel at period end: replace an uninvoiced prepaid trial end with this date",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dry-run", "Dry run", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("discount-id", "Discount", "Start: a discount the plan offers", "plan_discount", VENTURE_COLUMN_FLAG_NONE),

@@ -141,7 +141,10 @@ mail_installment(VentureDatabase *db, gint64 billing, gint64 subscription, JsonA
 				if (!paid && g_strcmp0(state, "cancelled") && (attempt > 0 || !g_strcmp0(state, "failed") || !g_strcmp0(state, "compensating"))) {
 					g_autofree gchar *identity = g_strdup_printf("payment_failed:prepaid:%" G_GINT64_FORMAT ":%u:%" G_GINT64_FORMAT,
 						venture_entity_get_id(group), slot, attempt);
-					g_autoptr(VentureMoney) failed_amount = venture_money_new_for_currency(json_object_get_int_member(part, "amount"), venture_money_get_currency(total));
+					/* Leg amounts are Stripe charge units, not ISO minor units. */
+					g_autoptr(VentureMoney) failed_amount = venture_stripe_money_from_charge_units(
+						json_object_get_int_member(part, "amount"), venture_money_get_currency(total));
+					if (!failed_amount) return refuse(error, VENTURE_ERROR_FAILED, "Prepayment evidence is incomplete");
 					event = mail_fact(events, "payment_failed", venture_entity_get_id(group), NULL, failed_amount);
 					json_object_set_string_member(event, "id", identity);
 				}
@@ -161,21 +164,15 @@ mail_installment(VentureDatabase *db, gint64 billing, gint64 subscription, JsonA
 		}
 		leg = json_array_get_object_element(legs, 1);
 		if (json_object_has_member(leg, "paid") && json_object_get_boolean_member(leg, "paid")) continue;
-		/* Provider units have the currency exponent, as used by prepayment. */
-		amount = venture_money_new_for_currency(json_object_get_int_member(leg, "amount"), venture_money_get_currency(total));
+		/* Provider units use Stripe's charge scale, including ISK and UGX. */
+		amount = venture_stripe_money_from_charge_units(json_object_get_int_member(leg, "amount"), venture_money_get_currency(total));
+		if (!amount) return refuse(error, VENTURE_ERROR_FAILED, "Prepayment evidence is incomplete");
 		event = mail_fact(events, "installment_due", venture_entity_get_id(group), live, amount);
 		set_time(event, "due_at", due);
 	}
 	return TRUE;
 }
-/**
- * venture_lightsite_billing_notifications:
- * @database: hosted source database
- * @billing: configured operator billing organization
- * @business: customer business identity
- * @error: (out) (optional): unauthorized or incomplete evidence
- * Returns: (transfer full) (nullable): scoped, minimal events with stable identities
- */
+
 JsonNode *
 venture_lightsite_billing_notifications(VentureDatabase *database, gint64 billing, gint64 business, GError **error)
 {

@@ -38,7 +38,11 @@ before SMTP: a retry can use rotated credentials for the same connection,
 but replacing an account does not move old attempts to it. The settings
 page's test sends only its selected test message and shows the retained
 delivery evidence. `mail.receipts` (default true) mails a customer a
-receipt with its PDF when a payment is recorded.
+receipt with its PDF when a payment is recorded. A company whose
+`external_id` is `lightsite:organization:…` is skipped: the hosted
+application sends that owner's receipt. An existing outbox row keeps its
+original identity across that change. Quote acceptance confirmations are
+queued by the quote service ([receivables.md](receivables.md)).
 
 ## Inbound mail (module `mail_sync`)
 

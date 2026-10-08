@@ -1506,10 +1506,13 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	gboolean scheduled = flag(request, "at-period-end");
 	gboolean credited = FALSE;
 	gboolean prepaid;
-	g_object_get(request, "action", &verb, "at", &at, NULL);
+	g_autoptr(GDateTime) term_end = NULL;
+	g_object_get(request, "action", &verb, "at", &at, "term-end", &term_end, NULL);
 	prepaid = !g_strcmp0(verb, "prepay") || !g_strcmp0(verb, "prepay-installments");
 	if (at == NULL || org <= 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "an organization and effective date are required");
+	if (term_end != NULL && (g_strcmp0(verb, "cancel") != 0 || !scheduled))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "term end applies only to prepaid cancellation at period end");
 	if (g_strcmp0(verb, "start") == 0)
 	{
 		g_autoptr(VentureEntity) customer = load(self, VENTURE_TYPE_COMPANY, number(request, "company-id"), org, error);
@@ -1578,8 +1581,14 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 			g_autofree gchar *identity = NULL;
 			g_object_get(sub, "external-id", &identity, NULL);
 			if (identity && g_str_has_prefix(identity, "prepaid:")) {
-				if (!g_strcmp0(verb, "renew")) return TRUE;
-				if (!prepaid && g_strcmp0(verb, "collect") &&
+				/* A due prepaid term ends through the ordinary renewal path
+				 * below. Until cancel-at-period-end is set, renewal must not
+				 * issue: collection belongs to the prepaid service. */
+				if (!g_strcmp0(verb, "renew")) {
+					if (!flag(sub, "cancel-at-period-end"))
+						return TRUE;
+				}
+				else if (!prepaid && g_strcmp0(verb, "collect") &&
 					!(g_strcmp0(verb, "cancel") == 0 && (state == 0 || scheduled)))
 					return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid terms require the prepaid collection service");
 			}
@@ -1698,7 +1707,23 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		{
 			kind = 7;
 			if (scheduled)
+			{
+				/* Publication of an uninvoiced prepaid term replaces the
+				 * unpaid trial end. The date is the one renewal will honor. */
+				if (term_end != NULL)
+				{
+					g_autofree gchar *identity = NULL;
+					g_object_get(sub, "external-id", &identity, NULL);
+					if (identity == NULL || !g_str_has_prefix(identity, "prepaid:"))
+						return refuse(error, VENTURE_ERROR_VALIDATION, "term end applies only to prepaid cancellation at period end");
+					if (start == NULL || g_date_time_compare(term_end, start) <= 0)
+						return refuse(error, VENTURE_ERROR_VALIDATION, "prepaid term end must follow the period start");
+					g_object_set(sub, "current-period-end", term_end, NULL);
+					g_clear_pointer(&end, g_date_time_unref);
+					end = g_date_time_ref(term_end);
+				}
 				g_object_set(sub, "cancel-at-period-end", TRUE, NULL);
+			}
 			else
 			{
 				g_auto(UnusedCredit) credit = { NULL, NULL, 0, 0, 0 };
@@ -1889,7 +1914,11 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 		gint64 id = venture_entity_get_id(sub);
 		g_autofree gchar *identity = NULL;
 		g_object_get(sub, "external-id", &identity, NULL);
-		if (identity && g_str_has_prefix(identity, "prepaid:")) continue;
+		/* Unpublished prepaid terms are not ordinary trials. Once the
+		 * prepaid invoice or a published cancellation has scheduled the
+		 * end, a due period ends here and is not invoiced again. */
+		if (identity && g_str_has_prefix(identity, "prepaid:") && !flag(sub, "cancel-at-period-end"))
+			continue;
 		if (steps == NULL)
 		{
 			if (!dry && !trial_reminder(self, sub, at, actor, error))

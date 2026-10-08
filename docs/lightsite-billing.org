@@ -40,18 +40,20 @@ Plans for now, all monthly, managed AI included (no usage lines):
 |------+-------------+---------|
 | =lightsite.billing_organization_id= | =VENTURE_LIGHTSITE_BILLING_ORGANIZATION_ID= | =0= |
 
-The ID of the billing organization. =0= (unset) turns the three routes off:
-an authorized caller gets 404. A configured ID that is not a live
+The ID of the billing organization. =0= (unset) turns every Lightsite billing
+route off: an authorized caller gets 404. A configured ID that is not a live
 organization is also 404. Nothing ever falls back to the default
 organization -- billing from whichever organization happens to be first is
 the failure this setting exists to rule out. The value is read on every
 request, like the other settings, and needs the billing module on.
+Deferred enrollment, the first charge, prepaid terms, made-back measurement,
+the one-time guarantee and cancellation are [[file:hosted-billing.org][Hosted enrollment and guarantee]].
 
 * Authority
 
 Exactly the [[file:lightsite-accounts.org][trusted-service sign-up]]'s, through the same check
-(=venture_tenant_service_check_trusted_service()=), for all three routes,
-reads included:
+(=venture_tenant_service_check_trusted_service()=), for every route below
+and in [[file:hosted-billing.org][Hosted enrollment and guarantee]], reads included:
 
 - Only =Authorization: Bearer <token>=. No credential, an invalid or expired
   token, or a browser session cookie: 401.

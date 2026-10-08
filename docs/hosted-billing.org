@@ -144,9 +144,15 @@ metered prices and monthly catalogue prices are refused for this contract.
 For =split=, optional =shares= contains two or three positive integer minor-unit
 amounts whose sum is the total. Omitting it selects two equal shares, with any
 rounding remainder on the last share. Each share requires a distinct saved card.
-Other paths reject =shares=. A publication call fixes the start of the 24-month
+Other paths reject =shares=. Those minor units are scaled to Stripe charge units
+before collection. ISK and UGX use two Stripe decimals even though their ISO
+exponent is zero. A share that is not an integral charge unit is refused.
+Owner notices format the stored charge units back into money.
+A publication call fixes the start of the 24-month
 term and creates exactly one invoice. Ordinary trial expiry and renewal sweeps
-cannot collect this enrollment; automatic renewal is disabled at term end.
+cannot collect this enrollment before that invoice. Once the term is due and
+=cancel-at-period-end= is set, the renewal sweep ends the subscription and does
+not issue another invoice.
 
 The existing =setup= and =publish= routes return a prepaid result containing
 =prepayment_id=, =invoice_id=, =state= and =payment_links= (slot and hosted URL).
@@ -177,8 +183,9 @@ start another attempt. Unresolved authentication or contradictory evidence stays
 unpaid and requires reconciliation.
 
 =StripePrepayment= is a service-owned durable journal; ordinary record writes
-cannot create or alter it. Migration =000911_prepaid_collection.sql= is paired
-for SQLite and PostgreSQL and invents no historical collections. The local
+cannot create or alter it. Migrations =000911_prepaid_collection.sql= and
+=000912_prepaid_term_end.sql= are paired for SQLite and PostgreSQL and invent
+no historical collections or term ends. The local
 =test-prepaid-stripe= fixture proves all five paths, restart/retry, lost responses,
 compensation, expired setup, payment identity checks and manual-payment conflicts.
 =test-hosted-billing= covers the HTTP contract, authority, replay and frozen shares.
@@ -207,9 +214,11 @@ Publication takes precedence over the unpaid trial, even within the first
 fourteen days. At or after the deadline, or after publication, the response
 instead reports =cancel_at_period_end= and =no_charge: false=. Existing
 monthly invoices and prepaid installment obligations remain; cancellation
-creates no automatic refund or credit. Prepaid terms still end after their
-original twenty-four months, with no renewal. Payment setup and collection
-of those already committed terms remain available.
+creates no automatic refund or credit. A published prepaid enrollment that
+has not yet been invoiced stores =go_live_at= plus twenty-four months as the
+subscription's period end and reports that stored date. Prepaid terms still
+end after their original twenty-four months, with no renewal. Payment setup
+and collection of those already committed terms remain available.
 
 The built HTTP fixture =test-hosted-billing= covers early monthly and prepaid
 cancellation, replay, delayed publication/collection, a later renewal sweep,

@@ -93,6 +93,60 @@ static void test_cancel_late(Fixture *f, gconstpointer kind)
 	g_test_message("Late cancellation: normal period-end cancellation, no free-trial promise or automatic refund");
 }
 
+static void test_cancel_published_prepaid(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *enroll = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"single\"}", f->business, f->price);
+	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);
+	g_autoptr(JsonNode) enrolled = call(f, "/api/v1/lightsite/billing/prepay", enroll, 201);
+	g_autoptr(JsonNode) cancelled = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) before = venture_time_now(), after = NULL, earliest = NULL, latest = NULL, effective = NULL, stored = NULL;
+	g_autoptr(JsonNode) published = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GPtrArray) invoices = NULL;
+	gint64 subscription = json_object_get_int_member(json_node_get_object(enrolled), "subscription_id");
+	gint state = 0;
+	(void)unused;
+	/* No Stripe connection: publication still commits go_live_at, then collection fails. */
+	published = call(f, "/api/v1/lightsite/billing/publish", body, 500);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(published), "error"), ==, "config");
+	{
+		g_autoptr(OrmResult) rows = venture_database_query_raw(f->db,
+			"SELECT outcome FROM lightsite_billing_receipts WHERE outcome='publish'", NULL, &error);
+		g_assert_no_error(error);
+		g_assert_true(orm_result_next(rows));
+	}
+	after = venture_time_now();
+	earliest = g_date_time_add_months(before, 24);
+	latest = g_date_time_add_months(after, 24);
+	cancelled = call(f, "/api/v1/lightsite/billing/cancel", body, 200);
+	g_assert_false(json_object_get_boolean_member(json_node_get_object(cancelled), "no_charge"));
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(cancelled), "state"), ==, "cancel_at_period_end");
+	effective = venture_time_from_string(json_object_get_string_member(json_node_get_object(cancelled), "effective_at"), &error);
+	g_assert_no_error(error); g_assert_nonnull(effective);
+	g_assert_cmpint(g_date_time_compare(effective, earliest), >=, 0);
+	g_assert_cmpint(g_date_time_compare(effective, latest), <=, 0);
+	sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, &error);
+	g_assert_no_error(error); g_object_get(sub, "current-period-end", &stored, NULL);
+	g_assert_cmpint(g_date_time_compare(stored, effective), ==, 0);
+	venture_query_set_organization(query, f->billing);
+	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(invoices->len, ==, 0);
+	{
+		g_autoptr(GDateTime) later = g_date_time_add_days(effective, 1);
+		g_autoptr(VentureEntity) sweep = g_object_new(VENTURE_TYPE_BILLING_REQUEST, "action", "renew-sweep", "at", later, NULL);
+		venture_entity_set_organization_id(sweep, f->billing); save(f, sweep);
+	}
+	g_clear_object(&sub);
+	sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, &error);
+	g_assert_no_error(error); g_object_get(sub, "status", &state, NULL); g_assert_cmpint(state, ==, 4);
+	g_clear_pointer(&invoices, g_ptr_array_unref);
+	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(invoices->len, ==, 0);
+	g_test_message("Published prepaid cancellation stores the 24-month end and the sweep ends it with no invoice");
+}
+
 static void test_cancel_missing(Fixture *f, gconstpointer unused)
 {
 	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);

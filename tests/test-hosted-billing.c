@@ -392,6 +392,86 @@ static void test_prepaid_enrollment(Fixture *f, gconstpointer unused)
 	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
 	g_assert_cmpuint(invoices->len, ==, 0);
 }
+static void test_prepaid_term_end(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"single\"}", f->business, f->price);
+	g_autoptr(JsonNode) enrolled = call(f, "/api/v1/lightsite/billing/prepay", body, 201);
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureEntity) issue = g_object_new(VENTURE_TYPE_BILLING_REQUEST, "action", "prepay",
+		"subscription-id", json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"), "at", now, NULL);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	gint state = 0;
+	(void)unused;
+	venture_entity_set_organization_id(issue, f->billing); save(f, issue);
+	sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
+		json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"), &error);
+	g_assert_no_error(error);
+	{
+		g_autoptr(GDateTime) end = NULL, later = NULL;
+		g_autoptr(VentureEntity) sweep = NULL;
+		gboolean scheduled = FALSE;
+		g_object_get(sub, "current-period-end", &end, "cancel-at-period-end", &scheduled, NULL);
+		g_assert_true(scheduled); g_assert_nonnull(end);
+		later = g_date_time_add_days(end, 1);
+		sweep = g_object_new(VENTURE_TYPE_BILLING_REQUEST, "action", "renew-sweep", "at", later, NULL);
+		venture_entity_set_organization_id(sweep, f->billing); save(f, sweep);
+	}
+	g_clear_object(&sub);
+	sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
+		json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"), &error);
+	g_assert_no_error(error); g_object_get(sub, "status", &state, NULL); g_assert_cmpint(state, ==, 4);
+	venture_query_set_organization(query, f->billing);
+	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(invoices->len, ==, 1);
+	g_test_message("Prepaid term: one invoice, then the due renewal ends the subscription");
+}
+static void test_prepaid_isk_shares(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) current = venture_database_get(f->db, VENTURE_TYPE_PLAN_PRICE, f->price, NULL);
+	g_autoptr(VentureEntity) price = g_object_new(VENTURE_TYPE_PLAN_PRICE, "currency", "MGA", "active", TRUE, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) refused = NULL, accepted = NULL, setup = NULL;
+	g_autofree gchar *bad = NULL, *good = NULL;
+	gint64 plan_id = 0;
+	(void)unused;
+	g_object_get(current, "plan-id", &plan_id, NULL);
+	venture_entity_set_organization_id(price, f->billing);
+	g_object_set(price, "plan-id", plan_id, NULL);
+	g_assert_true(venture_entity_set_field_from_string(price, "interval", "year", &error));
+	g_assert_true(venture_entity_set_field_from_string(price, "amount", "10.00 MGA", &error));
+	g_assert_no_error(error); save(f, price);
+	bad = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"split\",\"shares\":[10,1990]}", f->business, venture_entity_get_id(price));
+	refused = call(f, "/api/v1/lightsite/billing/prepay", bad, 422);
+	g_assert_nonnull(refused);
+	g_clear_object(&price);
+	price = g_object_new(VENTURE_TYPE_PLAN_PRICE, "currency", "ISK", "active", TRUE, NULL);
+	venture_entity_set_organization_id(price, f->billing);
+	g_object_set(price, "plan-id", plan_id, NULL);
+	g_assert_true(venture_entity_set_field_from_string(price, "interval", "year", &error));
+	g_assert_true(venture_entity_set_field_from_string(price, "amount", "1000 ISK", &error));
+	g_assert_no_error(error); save(f, price);
+	good = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT ",\"payment_path\":\"split\",\"shares\":[400,1600]}", f->business, venture_entity_get_id(price));
+	accepted = call(f, "/api/v1/lightsite/billing/prepay", good, 201);
+	g_assert_cmpint(json_array_get_int_element(json_object_get_array_member(json_node_get_object(accepted), "shares"), 0), ==, 400);
+	g_assert_cmpint(json_array_get_int_element(json_object_get_array_member(json_node_get_object(accepted), "shares"), 1), ==, 1600);
+	{
+		g_autoptr(VentureMoney) total = venture_money_new(2000, "ISK", 0);
+		g_autoptr(VentureMoney) shown = NULL;
+		gint64 units = 0;
+		g_assert_true(venture_stripe_charge_units(total, &units, &error)); g_assert_no_error(error);
+		g_assert_cmpint(units, ==, 200000);
+		shown = venture_stripe_money_from_charge_units(10000, "ISK");
+		g_assert_nonnull(shown);
+		g_assert_cmpstr(venture_money_to_string(shown), ==, "100.00 ISK");
+	}
+	setup = venture_lightsite_billing_setup(f->context, f->billing, f->business, &error);
+	g_assert_null(setup); g_assert_nonnull(error);
+	g_assert_null(strstr(error->message, "share")); g_assert_null(strstr(error->message, "Share"));
+	g_test_message("ISK shares stay minor units and scale to Stripe charge units before collection");
+}
 static void test_prepaid_terms(Fixture *f, gconstpointer annual)
 {
 	g_autofree gchar *body = NULL;
@@ -422,6 +502,7 @@ int main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/hosted-billing/notifications", Fixture, NULL, setup, test_notifications, teardown);
 	g_test_add("/hosted-billing/notification-installment", Fixture, NULL, setup, test_notification_installment, teardown);
+	g_test_add("/hosted-billing/notification-isk", Fixture, NULL, setup, test_notification_isk_charge_units, teardown);
 	g_test_add("/hosted-billing/notification-adjustments", Fixture, NULL, setup, test_notification_adjustments, teardown);
 	g_test_add("/hosted-billing/cancel-monthly", Fixture, NULL, setup, test_cancel_early, teardown);
 	g_test_add("/hosted-billing/cancel-prepaid", Fixture, "annual", setup, test_cancel_early, teardown);
@@ -429,7 +510,10 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-billing/cancel-deadline", Fixture, "deadline", setup, test_cancel_late, teardown);
 	g_test_add("/hosted-billing/cancel-missing", Fixture, NULL, setup, test_cancel_missing, teardown);
 	g_test_add("/hosted-billing/prepaid-enrollment", Fixture, "annual", setup, test_prepaid_enrollment, teardown);
+	g_test_add("/hosted-billing/prepaid-term-end", Fixture, "annual", setup, test_prepaid_term_end, teardown);
+	g_test_add("/hosted-billing/prepaid-isk-shares", Fixture, NULL, setup, test_prepaid_isk_shares, teardown);
 	g_test_add("/hosted-billing/prepaid-shares", Fixture, "annual", setup, test_prepaid_terms, teardown);
+	g_test_add("/hosted-billing/cancel-published-prepaid", Fixture, "annual", setup, test_cancel_published_prepaid, teardown);
 	g_test_add("/hosted-billing/prepaid-monthly-refused", Fixture, NULL, setup, test_prepaid_terms, teardown);
 	g_test_add("/hosted-billing/enrollment", Fixture, NULL, setup, test_enrollment, teardown);
 	g_test_add("/hosted-billing/activation", Fixture, NULL, setup, test_activation, teardown);

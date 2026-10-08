@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
+static VentureMoney *enrollment_money(JsonObject *object, const gchar *name, GError **error);
+
 /* Immutable operation receipts are also the enrollment journal. Their unique
  * keys include tombstones, so removing a customer cannot reset the guarantee. */
 static gchar *
@@ -34,6 +36,59 @@ enrollment_write(VentureDatabase *db, gint64 billing, gint64 business, const gch
 		"outcome", operation, "result", text, NULL);
 	venture_entity_set_organization_id(receipt, billing);
 	return save_receipt(db, receipt, actor, error);
+}
+
+/* Hosted shares are minor units of the prepaid total. Stripe collects ISK
+ * and UGX in two-decimal charge units, so the same integers are scaled
+ * once, here, before the provider journal stores them. */
+static gboolean
+enrollment_charge_share(const VentureMoney *total, gint64 minor, gint64 *units, GError **error)
+{
+	g_autoptr(VentureMoney) piece = NULL;
+	GError *scale_error = NULL;
+	if (minor <= 0) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "shares must be positive integer minor units totaling the prepaid price");
+		return FALSE;
+	}
+	piece = venture_money_new(minor, venture_money_get_currency(total), venture_money_get_exponent(total));
+	if (!piece || !venture_stripe_charge_units(piece, units, &scale_error) || *units <= 0) {
+		g_clear_error(&scale_error);
+		refuse(error, VENTURE_ERROR_VALIDATION, "shares must be positive integral Stripe charge units totaling the prepaid price");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static JsonArray *
+enrollment_charge_shares(JsonArray *shares, const VentureMoney *total, GError **error)
+{
+	JsonArray *scaled = json_array_new();
+	gint64 expected = 0, sum = 0;
+	guint i;
+	if (!total || !venture_stripe_charge_units(total, &expected, error)) {
+		json_array_unref(scaled);
+		return NULL;
+	}
+	for (i = 0; i < json_array_get_length(shares); i++) {
+		JsonNode *share = json_array_get_element(shares, i);
+		gint64 part = 0;
+		if (!JSON_NODE_HOLDS_VALUE(share) || json_node_get_value_type(share) != G_TYPE_INT64 ||
+			!enrollment_charge_share(total, json_node_get_int(share), &part, error) ||
+			part > expected - sum) {
+			json_array_unref(scaled);
+			if (error && !*error)
+				refuse(error, VENTURE_ERROR_VALIDATION, "shares must be positive integral Stripe charge units totaling the prepaid price");
+			return NULL;
+		}
+		sum += part;
+		json_array_add_int_element(scaled, part);
+	}
+	if (sum != expected) {
+		json_array_unref(scaled);
+		refuse(error, VENTURE_ERROR_VALIDATION, "shares must total the prepaid price");
+		return NULL;
+	}
+	return scaled;
 }
 
 static JsonNode *
@@ -153,6 +208,7 @@ enrollment_create(VentureDatabase *database, gint64 billing, gint64 business,
 		json_object_set_member(object, "total", money_node(total));
 		if (shares) {
 			gint64 remaining = venture_money_get_amount(total);
+			g_autoptr(JsonArray) scaled = NULL;
 			guint i;
 			for (i = 0; i < json_array_get_length(shares); i++) {
 				JsonNode *share = json_array_get_element(shares, i);
@@ -163,6 +219,10 @@ enrollment_create(VentureDatabase *database, gint64 billing, gint64 business,
 				remaining -= json_node_get_int(share);
 			}
 			if (remaining) { refuse(error, VENTURE_ERROR_VALIDATION, "shares must total the prepaid price"); goto fail; }
+			/* Prove the minor units survive the Stripe scale before the
+			 * receipt freezes the caller's own integers. */
+			scaled = enrollment_charge_shares(shares, total, error);
+			if (!scaled) goto fail;
 			json_object_set_array_member(object, "shares", json_array_ref(shares));
 		}
 	}
@@ -177,21 +237,6 @@ fail:
 	return NULL;
 }
 
-/**
- * venture_lightsite_billing_enroll:
- * @database: hosted database
- * @billing: configured billing organization
- * @business: customer business
- * @price_id: active monthly or annual price
- * @created: (out) (optional): whether enrollment was created
- * @error: return location for an error
- *
- * Starts a fourteen-day deferred subscription without issuing an invoice.
- * Repeating its price is safe; changing the terms conflicts. Requires trusted
- * service authority and leaves the catalogue trial unchanged.
- *
- * Returns: (transfer full) (nullable): durable enrollment identity and terms
- */
 JsonNode *
 venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint64 business,
 	gint64 price_id, gboolean *created, GError **error)
@@ -199,22 +244,6 @@ venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing, gint
 	return enrollment_create(database, billing, business, price_id, NULL, NULL, created, error);
 }
 
-/**
- * venture_lightsite_billing_prepay:
- * @database: hosted database
- * @billing: configured billing organization
- * @business: customer business
- * @price_id: annual fixed price
- * @payment_path: single, installments, ach, wire or split
- * @shares: (nullable): two or three split amounts in integer minor units
- * @created: (out) (optional): whether enrollment was created
- * @error: return location for an error
- *
- * Reserves an immutable 24-month prepaid offer without issuing an invoice.
- * Requires trusted service authority. Only publication may start collection.
- *
- * Returns: (transfer full) (nullable): frozen terms and enrollment identity
- */
 JsonNode *
 venture_lightsite_billing_prepay(VentureDatabase *database, gint64 billing, gint64 business,
 	gint64 price_id, const gchar *payment_path, JsonArray *shares, gboolean *created, GError **error)
@@ -270,19 +299,6 @@ enrollment_permission(VentureDatabase *db, gint64 billing, gint64 subscription, 
 	return venture_database_find_one(db, query, error);
 }
 
-/**
- * venture_lightsite_billing_setup:
- * @context: hosted application context
- * @billing: configured billing organization
- * @business: enrolled customer business
- * @error: return location for an error
- *
- * Creates or resumes hosted payment authorization without charging. No card
- * identity or secret is returned. An already verified permission returns
- * card_ready without creating another Setup session.
- *
- * Returns: (transfer full) (nullable): state and transient hosted URL
- */
 JsonNode *
 venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 business, GError **error)
 {
@@ -315,13 +331,21 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 	}
 	subscription = json_object_get_int_member(json_node_get_object(enrollment), "subscription_id");
 	if (json_object_has_member(json_node_get_object(enrollment), "payment_path")) {
+		g_autoptr(VentureMoney) prepaid_total = NULL;
+		g_autoptr(JsonArray) scaled = NULL;
+		JsonArray *stored = json_object_has_member(json_node_get_object(enrollment), "shares") ?
+			json_object_get_array_member(json_node_get_object(enrollment), "shares") : NULL;
 		if (!enrollment_prepaid_price(db, billing, enrollment, error)) return NULL;
+		if (stored) {
+			prepaid_total = enrollment_money(json_node_get_object(enrollment), "total", error);
+			scaled = prepaid_total ? enrollment_charge_shares(stored, prepaid_total, error) : NULL;
+			if (!scaled) return NULL;
+		}
 		provider = enrollment_provider(context, billing, error);
 		if (!provider) return NULL;
 		return venture_stripe_service_prepay(provider, subscription,
 			json_object_get_string_member(json_node_get_object(enrollment), "payment_path"),
-			json_object_has_member(json_node_get_object(enrollment), "shares") ? json_object_get_array_member(json_node_get_object(enrollment), "shares") : NULL,
-			NULL, &actor, error);
+			scaled, NULL, &actor, error);
 	}
 	permission = enrollment_permission(db, billing, subscription, error);
 	if (error && *error) return NULL;
@@ -360,22 +384,6 @@ enrollment_first_invoice(VentureDatabase *db, gint64 billing, gint64 subscriptio
 	return event ? number(event, "invoice-id") : 0;
 }
 
-/**
- * venture_lightsite_billing_first_charge:
- * @context: hosted application context
- * @billing: configured billing organization
- * @business: enrolled customer business
- * @published: whether this is a confirmed first-publication notification
- * @error: return location for an error
- *
- * Records go-live once, then starts the first paid period at publication or
- * after fourteen days. Verified saved-card authority is required. The durable
- * invoice is reserved before calling the provider; retries collect that same
- * invoice. Provider success alone does not mean paid: normal signed settlement
- * updates the invoice. Publication remains recorded when collection fails.
- *
- * Returns: (transfer full) (nullable): go-live, invoice identity and current state
- */
 JsonNode *
 venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, gint64 business,
 	gboolean published, GError **error)
@@ -425,15 +433,23 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 	if (json_object_has_member(json_node_get_object(enrollment), "payment_path")) {
 		g_autoptr(GDateTime) first_publication = publication ? venture_time_from_string(
 			json_object_get_string_member(json_node_get_object(publication), "go_live_at"), error) : NULL;
+		g_autoptr(VentureMoney) prepaid_total = NULL;
+		g_autoptr(JsonArray) scaled = NULL;
+		JsonArray *stored = json_object_has_member(json_node_get_object(enrollment), "shares") ?
+			json_object_get_array_member(json_node_get_object(enrollment), "shares") : NULL;
 		if (publication && !first_publication) goto fail;
+		if (stored) {
+			prepaid_total = enrollment_money(json_node_get_object(enrollment), "total", error);
+			scaled = prepaid_total ? enrollment_charge_shares(stored, prepaid_total, error) : NULL;
+			if (!scaled) goto fail;
+		}
 		if (!venture_database_commit(db, error) || !venture_accounting_operation_finish(operation, error)) return NULL;
 		if (!enrollment_prepaid_price(db, billing, enrollment, error)) return NULL;
 		provider = enrollment_provider(context, billing, error);
 		if (!provider) return NULL;
 		return venture_stripe_service_prepay(provider, subscription,
 			json_object_get_string_member(json_node_get_object(enrollment), "payment_path"),
-			json_object_has_member(json_node_get_object(enrollment), "shares") ? json_object_get_array_member(json_node_get_object(enrollment), "shares") : NULL,
-			first_publication, &actor, error);
+			scaled, first_publication, &actor, error);
 	}
 	result = json_node_new(JSON_NODE_OBJECT); object = json_object_new(); json_node_take_object(result, object);
 	json_object_set_int_member(object, "organization_id", business);
@@ -499,25 +515,6 @@ enrollment_money(JsonObject *object, const gchar *name, GError **error)
 		json_object_get_string_member(value, "currency"), error);
 }
 
-/**
- * venture_lightsite_billing_guarantee:
- * @database: hosted database
- * @billing: configured billing organization
- * @business: enrolled customer business
- * @shortfall: measured nonnegative shortfall in the enrolled currency
- * @eligible: frozen checklist result from the trusted hosted client
- * @measurement: opaque identity of the retained measurement, not personal data
- * @error: return location for an error
- *
- * The hosted client owns checklist and paid-versus-made-back measurement.
- * Venture accepts that attestation only from its trusted service authority,
- * after ninety days from first publication, and applies at most the original
- * three-month cap as an ordinary customer credit. An identical retry returns
- * the original answer; a different measurement cannot pay again. Even zero
- * and ineligible outcomes are retained. No refund is created.
- *
- * Returns: (transfer full) (nullable): frozen measurement and credit identity
- */
 JsonNode *
 venture_lightsite_billing_guarantee(VentureDatabase *database, gint64 billing, gint64 business,
 	const VentureMoney *shortfall, gboolean eligible, const gchar *measurement, GError **error)
