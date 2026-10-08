@@ -6662,10 +6662,13 @@ venture_series_store_get_venue_state(
 	return TRUE;
 }
 
+/* The venue's newest snapshot rides along: a page showing a venue's
+ * price must be able to say how old it is, and one read per venue would
+ * be a hundred reads a page on a whole region. */
 static const gchar series_sql_list_venues[] =
-	"SELECT key, namespace, name, kind, group_key, currency, attrs,"
-	"       first_seen, last_seen"
-	" FROM venues ORDER BY key";
+	"SELECT v.key, v.namespace, v.name, v.kind, v.group_key, v.currency, v.attrs,"
+	"       v.first_seen, v.last_seen, s.last_taken_at"
+	" FROM venues v LEFT JOIN venue_state s ON s.venue_id = v.id ORDER BY v.key";
 
 static gpointer
 series_venue_row_from(sqlite3_stmt *stmt)
@@ -6682,6 +6685,7 @@ series_venue_row_from(sqlite3_stmt *stmt)
 	row->attrs_json = series_column_strdup(stmt, 6);
 	row->first_seen = sqlite3_column_int64(stmt, 7);
 	row->last_seen = sqlite3_column_int64(stmt, 8);
+	row->last_taken_at = series_column_figure(stmt, 9);
 
 	if (NULL == row->group_key)
 		row->group_key = g_strdup("");

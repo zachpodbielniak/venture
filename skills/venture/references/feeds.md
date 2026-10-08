@@ -32,7 +32,8 @@ an error -- and evaluating an alert rule is refused. Operator settings
 default), `feeds.file_roots`, `feeds.max_response_mb`, `max_push_mb` (32),
 `request_timeout`, `max_records_per_run` (500), `run_window_minutes` (15),
 `series.hourly_days` (14), `daily_days` (0 = forever), `max_store_mb`,
-`include_in_backup`, and `plugins.allow_exec` (false).
+`include_in_backup`, `stale_minutes` (120: when the Trading pages call a
+price stale), and `plugins.allow_exec` (false).
 
 ## A data source
 

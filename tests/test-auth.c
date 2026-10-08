@@ -5957,6 +5957,59 @@ test_auth_feeds_push(
 	g_clear_pointer(&node, json_node_unref);
 	g_clear_pointer(&body, g_free);
 
+	/* A venue's snapshot three hours old: stale by default, not past a day. */
+	{
+		g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+		g_autoptr(GDateTime) then = g_date_time_add_hours(now, -3);
+		g_autofree gchar *taken = g_date_time_format(then, "%Y-%m-%dT%H:%M:%SZ");
+		g_autofree gchar *snapshot = g_strdup_printf(
+			"{\"type\":\"snapshot\",\"venue\":\"thorium\",\"taken_at\":\"%s\",\"complete\":true}\n"
+			"{\"type\":\"listing\",\"venue\":\"thorium\",\"instrument\":\"2770\",\"price\":\"1.25\","
+			"\"quantity\":20,\"id\":\"l1\"}\n", taken);
+		g_autofree gchar *venues = NULL;
+		JsonObject *answer;
+		JsonObject *venue;
+
+		g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson", snapshot, &body, path),
+		                 ==, SOUP_STATUS_OK);
+		g_clear_pointer(&body, g_free);
+
+		venues = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/venues",
+		                         venture_entity_get_id(home_push));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", venues, viewer, NULL, &body, NULL),
+		                 ==, SOUP_STATUS_OK);
+		node = json_from_string(body, &error);
+		g_assert_no_error(error);
+		answer = json_node_get_object(node);
+		g_assert_cmpint(json_object_get_int_member(answer, "venue_count"), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(answer, "stale_count"), ==, 1);
+		venue = json_array_get_object_element(json_object_get_array_member(answer, "venues"), 0);
+		g_assert_cmpstr(json_object_get_string_member(venue, "key"), ==, "thorium");
+		g_assert_true(json_object_get_boolean_member(venue, "stale"));
+		g_assert_cmpint(json_object_get_int_member(venue, "age_seconds"), >=, 3 * 3600);
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+		g_clear_pointer(&venues, g_free);
+
+		venues = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/venues?stale_after=86400",
+		                         venture_entity_get_id(home_push));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", venues, viewer, NULL, &body, NULL),
+		                 ==, SOUP_STATUS_OK);
+		node = json_from_string(body, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(node), "stale_count"), ==, 0);
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+		g_clear_pointer(&venues, g_free);
+
+		venues = g_strdup_printf("/api/v1/feeds/%" G_GINT64_FORMAT "/venues?stale_after=5",
+		                         venture_entity_get_id(home_push));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", venues, viewer, NULL, NULL, NULL),
+		                 ==, SOUP_STATUS_BAD_REQUEST);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/feeds/999999/venues", viewer,
+		                                        NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	}
+
 	/* A broken second line: the run failed, naming it. */
 	g_assert_cmpuint(push_call(fixture, editor, "application/x-ndjson",
 	                           "{\"type\":\"account\",\"key\":\"a\",\"kind\":\"character\"}\n"

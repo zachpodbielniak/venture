@@ -5790,6 +5790,18 @@ a:focus .item-tip > .item-tip-card { display: flex; }
 	border-radius: 6px; font-size: 1.25em; font-weight: 600; font-variant-numeric: tabular-nums; }
 .deal-total > span { font-size: 0.65em; font-weight: 400; opacity: 0.85; }
 
+/* How old a price is, under its venue: muted while fresh; past
+ * series.stale_minutes the price and its venue grey out and the age turns
+ * the warning colour, because a stale realm reads exactly like a cheap one. */
+.price-age { display: block; font-size: 0.8em; margin-top: 0.15em; color: var(--text-muted);
+	font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price-age time { color: inherit; }
+.price-age.is-stale { color: var(--warning); font-weight: 600; }
+.price-age-flag { margin-left: 0.35em; padding: 0 0.35em; border-radius: 3px;
+	background: var(--warning-soft); font-size: 0.9em; text-transform: uppercase; letter-spacing: 0.03em; }
+td.is-stale .venue-chip { opacity: 0.55; }
+td.is-stale { color: var(--text-muted); }
+
 /* Tables that sort in place (data-client-sort): the active heading's
  * arrow comes from its aria-sort, so it follows whichever column the
  * page -- or the server -- last sorted by. */

@@ -1045,9 +1045,20 @@ test_feeds_adaptive_interval(void)
 	guint step = 2;
 	gint64 next;
 
+	/* An hour away: a probe halfway, then 1 and 5 minutes on, then the
+	 * expected update itself, with the back-off reset. */
 	next = venture_feeds_schedule_next_auto(TRUE, now + 3600, 0, &step, now);
-	g_assert_cmpint(next, ==, now + 3600 - VENTURE_FEEDS_CHECK_EARLY);
+	g_assert_cmpint(next, ==, now + 1800 - VENTURE_FEEDS_CHECK_EARLY);
 	g_assert_cmpuint(step, ==, 0);
+	g_assert_cmpint(venture_feeds_schedule_next_auto(FALSE, now + 3600, 0, &step, now + 1800), ==, now + 1860);
+	g_assert_cmpint(venture_feeds_schedule_next_auto(FALSE, now + 3600, 0, &step, now + 1860), ==, now + 2160);
+	g_assert_cmpint(venture_feeds_schedule_next_auto(FALSE, now + 3600, 0, &step, now + 2160), ==,
+	                now + 3600 - VENTURE_FEEDS_CHECK_EARLY);
+	g_assert_cmpuint(step, ==, 0);
+
+	/* Nearer than VENTURE_FEEDS_PROBE_MIN: straight to the expected update. */
+	next = venture_feeds_schedule_next_auto(TRUE, now + 600, 0, &step, now);
+	g_assert_cmpint(next, ==, now + 600 - VENTURE_FEEDS_CHECK_EARLY);
 
 	/* Expected already: late, so the first back-off step. */
 	next = venture_feeds_schedule_next_auto(TRUE, now - 10, 0, &step, now);

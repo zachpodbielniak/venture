@@ -2575,8 +2575,22 @@ and `docs/examples/wow-operations.org` have the rest.
   `VENTURE_FEED_HTTP_UNCONDITIONAL`.** A token, an index, a name lookup:
   otherwise its Last-Modified becomes the unit's If-Modified-Since and the
   next fetch asks the auctions "anything newer than the item database?".
-  The every-realm unit keeps each realm's date in its cursor and sends it
-  itself, unconditionally.
+  The realm index is unconditional even as the `realm-index` unit's own
+  answer: a 304 to a source whose kept realm list was lost leaves it no
+  realm units at all.
+- **A source naming no realm gets the explicit list's unit names.**
+  `list_units` runs on the main thread with only the settings, so it
+  reads the realm list the `realm-index` unit kept (plugin cache,
+  `realms/`) and makes one unit per id, spelt as `connected_realm_ids`
+  would (`"3676"`): the store keys `ims:<unit>`, `cursor:<unit>` and the
+  venue by that name, so switching between the two keeps every realm's
+  history. A changed list moves a generation; the plugin's after-run
+  hook refreezes the sources. A failed index read keeps the last list.
+  Do not bring the every-realm walk back: one unit for a region read ten
+  realms an hour and left a realm's price eight hours old.
+- **A bid-only auction is not a listing** unless `include_bid_only` is
+  set. It cannot be bought now, so its bid became the "cheapest" price
+  Deals sent buyers to, and its end read as a buyout sale.
 - **A manual sync sends no If-Modified-Since, and refreezes the source.**
   A test of a conditional fetch needs a scheduled run (switch the source to
   `auto` and wait for the run, as `schedule_and_wait()` does); a token or
