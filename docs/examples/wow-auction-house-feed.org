@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-04]
-#+updated: [2026-10-04]
-#+version: 0.2.0
+#+updated: [2026-10-08]
+#+version: 0.3.0
 
 * What this is
 
@@ -61,7 +61,7 @@ venturectl create currency code=GOLD name=Gold kind=virtual exponent=4 book_trea
 cat > settings.yaml <<'EOF'
 region: us
 client_id: 0123456789abcdef0123456789abcdef
-connected_realm_ids: [11, 3676]
+connected_realm_ids: []        # every realm of the region, found from its index
 include_commodities: true
 requests_per_hour: 36000
 EOF
@@ -78,13 +78,13 @@ Then set the client secret on the source's credentials page, =/feeds/ID/credenti
 | =region=               | =us=                             | =us=, =eu=, =kr= or =tw=: the API origin, the namespaces and every venue's group                                                |
 | =client_id=            | none                             | the Battle.net client's id                                                                                                    |
 | =client_secret=        | --                               | *credential*: set on the credentials page, never here                                                                         |
-| =connected_realm_ids=  | empty                            | connected realm ids, each its own unit; empty reads every realm the index lists, through one =realms= unit                     |
+| =connected_realm_ids=  | empty                            | connected realm ids, each its own unit; empty: every realm the region's index lists, each its own unit all the same (below)   |
 | =include_commodities=  | =true=                           | the region-wide commodity market as a unit                                                                                    |
-| =include_bid_only=     | =true=                           | list an auction with a bid and no buyout at its bid (the least it can be had for)                                             |
+| =include_bid_only=     | =false=                          | list an auction with a bid and no buyout at its bid; off, it is skipped, since it cannot be bought now (see the price below)   |
 | =currency=             | =GOLD=                           | the registered currency, exponent 4, prices are emitted in                                                                    |
 | =locale=               | =en_US=                          | the locale item and realm names are asked in                                                                                  |
-| =item_names_per_fetch= | 100                              | item detail lookups one fetch may make, 0 to 1000 (0 for none)                                                                |
-| =realms_per_fetch=     | 10                               | in the =realms= unit, how many realms with new data one fetch reads before it stops, 1 to 200                                  |
+| =item_names_per_fetch= | 100                              | item detail lookups one fetch may make, 0 to 5000 (0 for none); see the budget below                                          |
+| =realm_index_hours=    | 24                               | with no realms listed, how old the known realm list may grow before the index is read again, 0 to 168 (0: every check)        |
 | =key_modifier_types=   | every type                       | the modifier types that make an item a variant (see the key format below)                                                     |
 | =requests_per_hour=    | 36000                            | the hourly budget; Blizzard allows 36,000 per client, and the schema's default applies when the setting is left out |
 | =dynamic_namespace=, =static_namespace= | =dynamic-<region>=, =static-<region>= | overrides, for a classic realm (=dynamic-classic-us=) or a test                                               |
@@ -100,11 +100,23 @@ Each unit is fetched on its own schedule. With =schedule: auto=, a unit is check
 |-----------------------+---------------------------------------------+-------------|
 | a connected realm id  | =/data/wow/connected-realm/{id}/auctions=    | 1           |
 | =commodities=         | =/data/wow/auctions/commodities=            | 25          |
-| =realms= (no ids set) | the index, then each realm in id order      | 1 per realm, plus 1 |
+| =realm-index= (no ids set) | =/data/wow/connected-realm/index=, once every =realm_index_hours= | 1 a day |
 
 *The commodity market costs 25, even when it answers 304.* Blizzard charges it either way, so the budget is spent before the request goes out and never refunded. A source polling commodities every hour spends 600 of its 36,000. Name lookups, the token and a realm's name cost 1 each. A unit that would overspend the hour waits for the next one (the run says =deferred=); a 429 is honoured with its =Retry-After=.
 
-Listing realms in =connected_realm_ids= is better for a whole region than leaving it empty: each realm gets its own unit, schedule and adaptive polling. The =realms= unit walks them a few at a time instead (=realms_per_fetch= with new data per fetch; 304s are skipped cheaply), keeping each realm's =Last-Modified= in its cursor.
+** Every realm: leave the list empty
+
+With =connected_realm_ids= empty the source finds the region's realms itself, and each is a unit of its own -- its own schedule, checked 45 seconds before its own snapshot is due. The units are named exactly as a listed id would be (="3676"=), so a realm's =If-Modified-Since=, its learned update time and its venue are the same whichever way the source names it, and switching a source from a list to empty (or back) loses nothing.
+
+The =realm-index= unit reads the index and keeps the list in the plugin's cache, =<state_dir>/plugin-cache/blizzard-auctions/realms/=, one file per API origin and namespace. It asks Battle.net only when the list is older than =realm_index_hours= (a day); otherwise it answers "not modified" for free. When the list changes -- the first read, a realm Blizzard adds, one it merges away -- the run says =the index lists N connected realms (N new, N gone)= and the source is frozen again with a unit per realm. A failed read of the index fails only that unit: the last list goes on serving, across restarts too.
+
+A brand-new source (or a new region) has no list yet, so its first pass is =realm-index= (and =commodities=) alone; the realms follow from the next pass, a moment later.
+
+Listing ids is for reading /some/ realms. (Before 0.3.0 an empty list was one =realms= unit that walked the region ten realms with new data a fetch, so a realm's prices were up to eight hours old; =realms_per_fetch= belonged to it and is now ignored.)
+
+** The budget
+
+Blizzard allows 36,000 requests an hour per client. A region of ~85 connected realms polled adaptively costs about 85 to 350 an hour (one per snapshot, a few more when a check comes before Blizzard publishes), the commodity market 600, the index one a day, and the token and realm names a few after each refreeze. That leaves some 35,000 an hour for item names. A name costs up to three: the item, its media, and the icon from the CDN the first time any item uses it. =item_names_per_fetch= bounds them per fetch, and every realm unit is a fetch: at 5000, one fetch with a cold cache may spend up to 15,000 and the next few the rest of the hour, after which units wait (=deferred=) for the next. The names are shared by all of a source's units and kept in the store, so this is the first hours of a new source only. 1000 is a good setting for a whole region; 5000 names a fresh one in an hour or two at the cost of those hours' realm checks.
 
 * What lands in the store
 
@@ -137,7 +149,7 @@ Bonus ids are sorted ascending with repeats dropped, modifiers sorted by type th
 
 ** The price
 
-In copper, the auction's =unit_price= when it has one (commodities, and stackables on a realm); otherwise its =buyout= divided by its quantity, rounded half to even; otherwise, with =include_bid_only=, its current =bid= divided the same way -- the run notes how many were listed at a bid. An auction with no item, no quantity or none of the three is refused and counted.
+In copper, the auction's =unit_price= when it has one (commodities, and stackables on a realm); otherwise its =buyout= divided by its quantity, rounded half to even. An auction with a bid and no buyout is *skipped*, and the run notes how many (=N bid-only auctions skipped=): it cannot be bought now, so its bid is no price to buy at -- listed, it became the realm's cheapest and Deals, Browse and the arbitrage scan sent buyers to it -- and its end, whether a bid won it or it expired, would read as a buyout sale. With =include_bid_only= on, it is listed at its current =bid= divided by its quantity instead, and the run says how many were. An auction with no item, no quantity or no price is refused and counted.
 
 ** time_left, and what counts as sold
 
@@ -215,6 +227,7 @@ one TradeSkillMaster item string per item a row names -- the row's item and a cr
 | =... answered 429 Too Many Requests; retry after N seconds= | nothing: the unit waits; lower the realms or the budget if it recurs                  |
 | =Battle.net has no connected realm 1234 (HTTP 404)=        | the id is wrong for the region; the index at =/data/wow/connected-realm/index= lists them |
 | =item names: N items still to name=                        | nothing: later fetches name them, =item_names_per_fetch= at a time                      |
+| =realm-index: The connected realm index lists 0 realms=, or an HTTP error | nothing: the last known realm list keeps serving, and the unit tries again        |
 
 * Where to read next
 

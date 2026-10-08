@@ -417,6 +417,47 @@ venture_plugin_info(void)
  * Icons
  * ========================================================================== */
 
+#ifdef VENTURE_HAVE_SQLITE
+
+/* Where a context keeps the realm-list generation its sources were last
+ * frozen at (blizzard_realms_get_generation(), plus one so that unset is
+ * NULL). Per context, read and written on the main thread only. */
+#define BLIZZARD_REALMS_SEEN_KEY "blizzard-realms-seen"
+
+/*
+ * After every run, on the main thread: when a realm-index unit (of any
+ * source) found the region's list changed, freeze every source again, so
+ * a source naming no realm gains a unit for a realm Blizzard added and
+ * loses one it took away. Coalesced by the feeds service, and rare -- a
+ * new list is a cold start or a realm launch -- so the caches a refreeze
+ * drops (the token, names) cost a few requests a month.
+ */
+static void
+blizzard_realms_after_run(
+	VentureContext	*context,
+	VentureFeedRun	*run,
+	VentureEntity	*run_record,
+	gpointer	 user_data
+){
+	guint seen;
+	guint now;
+
+	(void)run;
+	(void)run_record;
+	(void)user_data;
+
+	seen = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(context), BLIZZARD_REALMS_SEEN_KEY));
+	now = blizzard_realms_get_generation() + 1;
+
+	if (seen == now)
+		return;
+
+	g_object_set_data(G_OBJECT(context), BLIZZARD_REALMS_SEEN_KEY, GUINT_TO_POINTER(now));
+	venture_feeds_queue_refresh(context);
+}
+
+#endif /* VENTURE_HAVE_SQLITE */
+
 /*
  * GET /blizzard/icons/<file id>.jpg: an icon from the plugin's cache.
  *
@@ -563,11 +604,24 @@ venture_plugin_register(
 		                                                             &cache_error);
 		g_autofree gchar *icons = (NULL != dir) ? g_build_filename(dir, "icons", NULL) : NULL;
 
+		g_autofree gchar *realms = (NULL != dir) ? g_build_filename(dir, "realms", NULL) : NULL;
+
 		if ((NULL != icons) && (0 == g_mkdir_with_parents(icons, 0700)))
 			blizzard_set_icon_dir(icons);
 		else
 			g_message("blizzard-auctions: no icon cache (%s); items are drawn without icons",
 			          (NULL != cache_error) ? cache_error->message : "cannot create it");
+
+		/* The realm lists sources naming no realm are unitised from: kept
+		 * across restarts here, else for this process only. */
+		if ((NULL != realms) && (0 == g_mkdir_with_parents(realms, 0700)))
+			blizzard_set_realm_dir(realms);
+		else
+		{
+			blizzard_set_realm_dir(NULL);
+			g_message("blizzard-auctions: no realm list cache; a source naming no realm reads the "
+			          "realm index again after each restart");
+		}
 	}
 
 	{
@@ -583,6 +637,20 @@ venture_plugin_register(
 	 * above is. */
 	if (!blizzard_recipes_register(context, error))
 		return FALSE;
+
+	/* After the last step that can fail, like the action: a feeds hook is
+	 * not taken back by a failed load either. Seen as of now, so loading
+	 * the plugin does not itself refreeze every source. */
+	g_object_set_data(G_OBJECT(context), BLIZZARD_REALMS_SEEN_KEY,
+	                  GUINT_TO_POINTER(blizzard_realms_get_generation() + 1));
+
+	if (!venture_feeds_add_hook(context, "blizzard_realms", NULL, NULL, blizzard_realms_after_run, NULL,
+	                            NULL))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PLUGIN,
+		                    "blizzard-auctions is already loaded into this context");
+		return FALSE;
+	}
 
 	venture_context_add_web_extension(context, blizzard_web, NULL, NULL);
 #else
