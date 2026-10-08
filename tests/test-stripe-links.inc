@@ -132,7 +132,49 @@ test_payment_link(Fixture *f, gconstpointer data)
 		g_autoptr(VentureWebServer) server = NULL;
 		g_autofree gchar *state_directory = NULL, *path = g_strdup_printf("/pay/%s", token), *body = NULL;
 		venture_context_set_stripe_service(f->context, service);
+		if (!g_strcmp0(mode, "hosted"))
+		{
+			VentureTenantService *tenant = venture_tenant_service_get(f->database);
+			g_object_set(f->config, "hosted-enabled", TRUE,
+				"hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
+				"hosted-origin", "https://venture.example", NULL);
+			g_assert_true(venture_tenant_service_configure(tenant, f->config, &error));
+			g_assert_no_error(error);
+			g_assert_true(venture_tenant_service_initialize(tenant, &error));
+			g_assert_no_error(error);
+		}
 		server = start_server(f, &state_directory);
+		if (!g_strcmp0(mode, "hosted"))
+		{
+			VentureTenantService *tenant = venture_tenant_service_get(f->database);
+			guint calls = ((FakeTransport *)transport)->calls;
+			/* Same-origin referrers keep the browser form Origin usable
+			 * without leaking the payment capability to the provider. */
+			g_assert_cmpuint(http_request_origin(server, "GET", path, NULL, NULL, &body,
+				"venture.example", NULL, "same-origin"), ==, 200);
+			g_assert_nonnull(strstr(body, "Continue to secure payment"));
+			g_assert_cmpuint(http_request_origin(server, "POST", "/pay/invalid", "application/x-www-form-urlencoded", "", NULL,
+				"venture.example", "https://venture.example", NULL), ==, 404);
+			g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, calls);
+			g_assert_cmpuint(http_request_origin(server, "POST", path, "application/x-www-form-urlencoded", "", NULL,
+				"other.example", "null", NULL), ==, 403);
+			g_assert_cmpuint(http_request_origin(server, "POST", "/api/v1/company", "application/json", "{}", NULL,
+				"venture.example", "null", NULL), ==, 403);
+			g_assert_cmpuint(http_request_origin(server, "POST", path, "application/x-www-form-urlencoded", "", NULL,
+				"venture.example", "https://other.example", NULL), ==, 403);
+			g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, calls);
+			g_assert_cmpuint(http_request_origin(server, "POST", path, "application/x-www-form-urlencoded", "invoice_id=999999", NULL,
+				"venture.example", "https://venture.example", NULL), ==, 303);
+			calls = ((FakeTransport *)transport)->calls;
+			{ gboolean ok = venture_tenant_service_set_state_operator(tenant, "suspended", "Payment fixture", &error);
+			  g_assert_no_error(error); g_assert_true(ok); }
+			g_assert_cmpuint(http_request_origin(server, "POST", path, "application/x-www-form-urlencoded", "", NULL,
+				"venture.example", "https://venture.example", NULL), ==, 403);
+			g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, calls);
+			venture_web_server_stop(server);
+			venture_test_remove_tree(state_directory);
+			return;
+		}
 		if (!g_strcmp0(mode, "form") || !g_strcmp0(mode, "api"))
 		{
 			g_autofree gchar *action_path = g_strdup_printf("/api/v1/invoice/%" G_GINT64_FORMAT "/actions/payment_link", venture_entity_get_id(invoice));

@@ -156,8 +156,8 @@ static gchar *signature(const gchar *body);
 static gchar *binding_signature(const gchar *body, const gchar *secret);
 
 static guint
-http_request(VentureWebServer *server, const gchar *method, const gchar *path,
-	const gchar *content_type, const gchar *body, gchar **out)
+http_request_origin(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out, const gchar *host, const gchar *origin, const gchar *referrer_policy)
 {
 	g_autoptr(SoupSession) session = NULL;
 	g_autoptr(SoupMessage) message = NULL;
@@ -170,6 +170,8 @@ http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
 	message = soup_message_new(method, url);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (host) soup_message_headers_replace(soup_message_get_request_headers(message), "Host", host);
+	if (origin) soup_message_headers_replace(soup_message_get_request_headers(message), "Origin", origin);
 	if (body && (!g_strcmp0(path, "/webhooks/stripe") || g_str_has_prefix(path, "/webhooks/stripe/")))
 	{
 		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : (!g_strcmp0(path, "/webhooks/stripe") ? signature(body) : binding_signature(body, "whsec_original"));
@@ -189,9 +191,18 @@ http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	g_assert_no_error(response.error);
 	if (out != NULL)
 		*out = g_strndup(g_bytes_get_data(response.bytes, NULL), g_bytes_get_size(response.bytes));
+	if (referrer_policy)
+		g_assert_cmpstr(soup_message_headers_get_one(soup_message_get_response_headers(message), "Referrer-Policy"), ==, referrer_policy);
 	status = soup_message_get_status(message);
 	g_clear_pointer(&response.bytes, g_bytes_unref);
 	return status;
+}
+
+static guint
+http_request(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out)
+{
+	return http_request_origin(server, method, path, content_type, body, out, NULL, NULL, NULL);
 }
 
 static void
@@ -246,12 +257,14 @@ start_server(Fixture *f, gchar **state_dir)
 	g_autoptr(GError) error = NULL;
 	VentureWebServer *server;
 	guint16 port;
+	gboolean hosted = FALSE;
 
 	*state_dir = g_dir_make_tmp("venture-stripe-XXXXXX", &error);
 	g_assert_no_error(error);
 	port = 0;
+	g_object_get(f->config, "hosted-enabled", &hosted, NULL);
 	g_object_set(f->config, "state-dir", *state_dir, "server-bind-address", "127.0.0.1",
-		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+		"server-port", (gint64)port, "security-require-auth", hosted, NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
@@ -1071,6 +1084,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/forms/booking-expired", Fixture, "booking-expired", set_up, test_paid_form, tear_down);
 	g_test_add("/stripe/forms/booking-failed", Fixture, "booking-failed", set_up, test_paid_form, tear_down);
 	g_test_add("/stripe/forms/booking-late", Fixture, "booking-late", set_up, test_paid_form, tear_down);
+	g_test_add("/stripe/payment-link/hosted-private-origin", Fixture, "hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/basic", Fixture, NULL, set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/authorization", Fixture, "authorization", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/changed", Fixture, "changed", set_up, test_payment_link, tear_down);

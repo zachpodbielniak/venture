@@ -166,7 +166,10 @@ stored, compared in constant time. The record fixes organization, account,
 invoice ID and revision, expiry and revocation state. GET reveals only the
 outstanding amount and payment continuation. POST accepts the capability's
 invoice only, irrespective of submitted invoice selectors. Responses disable
-caching and referrer forwarding. Missing, tampered, expired, revoked, paid,
+caching and cross-origin referrer forwarding. The same-origin referrer policy
+keeps the anonymous browser form compatible with hosted workspace Origin
+validation; the capability is not forwarded to the external payment page.
+Missing, tampered, expired, revoked, paid,
 deleted or changed-invoice capabilities return the same unavailable page.
 
 Continuing creates or reuses one Checkout whose provider deadline cannot outlive
