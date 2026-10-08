@@ -122,6 +122,7 @@ struct _VentureFeedBatch
 
 	gchar		*cursor;
 	gboolean	 not_modified;
+	gboolean	 units_changed;	/* the provider's units() would now answer differently */
 	gchar		*error;
 	gint64		 retry_after;
 	gint64		 refused;

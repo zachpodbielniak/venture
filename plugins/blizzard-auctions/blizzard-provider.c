@@ -2699,6 +2699,9 @@ blizzard_fetch_realm_index(
 	note = g_strdup_printf("the index lists %u connected realms (%u new, %u gone); each is a unit "
 	                       "of its own from the next pass", ids->len, added, removed);
 	venture_feed_batch_add_note(batch, note);
+	/* Close the run now: the after-run hook that refreezes the source
+	 * would otherwise wait out the run window, the new realms unread. */
+	venture_feed_batch_set_units_changed(batch, TRUE);
 
 	return g_steal_pointer(&batch);
 }

@@ -553,6 +553,33 @@ gboolean
 venture_feed_batch_get_not_modified(VentureFeedBatch *self);
 
 /**
+ * venture_feed_batch_set_units_changed:
+ * @self: a batch
+ * @changed: whether this fetch changed what the provider's units() lists
+ *
+ * Says that the source's unit list is now different -- a provider that
+ * discovers its units, as the Blizzard plugin reads the realm index,
+ * learned a new set. The worker then closes the source's open run at the
+ * end of this pass instead of at the end of its run window, so the
+ * after-run hooks run (and can queue a refresh that freezes the new units)
+ * within seconds rather than up to a window later.
+ */
+void
+venture_feed_batch_set_units_changed(
+	VentureFeedBatch	*self,
+	gboolean		 changed
+);
+
+/**
+ * venture_feed_batch_get_units_changed:
+ * @self: a batch
+ *
+ * Returns: whether the fetch changed the source's unit list
+ */
+gboolean
+venture_feed_batch_get_units_changed(VentureFeedBatch *self);
+
+/**
  * venture_feed_batch_set_error:
  * @self: a batch
  * @message: (nullable): what went wrong after some of the batch was made

@@ -1102,6 +1102,52 @@ test_realm_discovery(
  * schedule each had learned -- or, with names that differ, keeps two
  * histories of one realm.
  */
+/*
+ * On its own schedule, with a run window as a deployment has one: the
+ * realms the index lists are read within seconds, not when the window
+ * closes. The after-run hook is what refreezes the source, so the pass
+ * that learned a new list must close its run at once.
+ *
+ * What breaks if this regresses: switching a source to every realm, or
+ * Blizzard adding one, leaves the new realms unread for up to an hour.
+ */
+static void
+test_realm_discovery_scheduled(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) first = NULL;
+	g_autofree gchar *notes = NULL;
+	gint64 deadline;
+	gint64 id;
+
+	(void)user_data;
+
+	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15, NULL);
+	serve_battle_net(fixture);
+	id = create_source(fixture, "include_commodities: false\nitem_names_per_fetch: 0\n",
+	                   client_secret, "manual");
+
+	/* The index's pass is written at once, window or no window. */
+	first = schedule_and_wait(fixture, id);
+	g_assert_cmpint(run_status(first), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+	notes = run_text(first, "notes");
+	g_assert_nonnull(strstr(notes, "the index lists 2 connected realms"));
+
+	deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+	while ((venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/11/auctions") < 1) ||
+	       (venture_test_http_hits(&fixture->http, "/data/wow/connected-realm/3676/auctions") < 1))
+	{
+		g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(2000);
+	}
+
+	settle(fixture);
+}
+
 static void
 test_realm_switch(
 	Fixture		*fixture,
@@ -1989,6 +2035,7 @@ main(
 	ADD("settings", test_settings);
 	ADD("sync", test_sync);
 	ADD("realm-discovery", test_realm_discovery);
+	ADD("realm-discovery-scheduled", test_realm_discovery_scheduled);
 	ADD("realm-switch-keeps-history", test_realm_switch);
 	ADD("bid-only-opt-in", test_bid_only_opt_in);
 	ADD("commodities-cost-25-even-on-304", test_commodities_cost);

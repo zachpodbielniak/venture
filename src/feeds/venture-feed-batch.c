@@ -1418,6 +1418,24 @@ venture_feed_batch_get_not_modified(VentureFeedBatch *self)
 }
 
 void
+venture_feed_batch_set_units_changed(
+	VentureFeedBatch	*self,
+	gboolean		 changed
+){
+	g_return_if_fail(NULL != self);
+
+	self->units_changed = changed;
+}
+
+gboolean
+venture_feed_batch_get_units_changed(VentureFeedBatch *self)
+{
+	g_return_val_if_fail(NULL != self, FALSE);
+
+	return self->units_changed;
+}
+
+void
 venture_feed_batch_set_error(
 	VentureFeedBatch	*self,
 	const gchar		*message,

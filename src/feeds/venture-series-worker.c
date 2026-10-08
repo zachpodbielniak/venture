@@ -419,6 +419,7 @@ struct _WorkerPass
 	gboolean		 manual;
 	gboolean		 failed;
 	gboolean		 wrote;
+	gboolean		 units_changed;	/* a unit changed the unit list */
 	VentureFeedRequest	*request;	/* the unit in flight */
 	gint64			 started_at;
 	WorkerPush		*push;		/* the body this pass reads, if pushed */
@@ -1709,6 +1710,7 @@ worker_unit_fetched(
 	}
 	else if (venture_feed_batch_get_not_modified(batch))
 	{
+		pass->units_changed |= venture_feed_batch_get_units_changed(batch);
 		worker_run_remote_quota(source, run, unit_name, batch);
 		run->not_modified++;
 		run->succeeded++;
@@ -1724,6 +1726,7 @@ worker_unit_fetched(
 		guint i;
 
 		ingest.venues = venues;
+		pass->units_changed |= venture_feed_batch_get_units_changed(batch);
 		run->refused += batch->refused;
 		worker_run_remote_quota(source, run, unit_name, batch);
 
@@ -1890,8 +1893,10 @@ worker_pass_finish(WorkerPass *pass)
 
 		open->finished_at = now;
 
-		/* A failure is told at once; quiet passes wait for the window. */
-		if (pass->failed || (0 == source->spec->run_window) ||
+		/* A failure is told at once, and so is a new unit list: the
+		 * after-run hooks are what freeze it, and a run window is an
+		 * hour of the new units going unread. Quiet passes wait. */
+		if (pass->failed || pass->units_changed || (0 == source->spec->run_window) ||
 		    (now - open->started_at >= (gint64)source->spec->run_window))
 		{
 			venture_feed_run_finish(open, now);
