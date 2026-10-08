@@ -5125,13 +5125,19 @@
 			return value;
 		}
 
-		/* "3 min ago" is for reading; the moment is in the attribute. */
+		text = cell.textContent.replace(/\s+/g, " ").trim();
+
+		/* "3h" is for reading; the moment is in the attribute. Only when
+		 * the time is what the cell says, though: a venue's name with its
+		 * price's age beside it sorts by the name. A "stale" flag is part
+		 * of the age, not other content. */
 		time = cell.querySelector ? cell.querySelector("time[datetime]") : null;
-		if (time) {
+		if (time && Array.prototype.reduce.call(cell.querySelectorAll(".price-age-flag"), function (left, flag) {
+			return left.replace(flag.textContent, "");
+		}, text.replace(time.textContent.replace(/\s+/g, " ").trim(), "")).trim() === "") {
 			return time.getAttribute("datetime");
 		}
 
-		text = cell.textContent.replace(/\s+/g, " ").trim();
 		return (text === "" || /^[—–\-]+$/.test(text)) ? null : text;
 	}
 

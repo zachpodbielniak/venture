@@ -27,7 +27,8 @@ function cell(text, options) {
     return attrs({
         textContent: text, colSpan: options.colspan || 1, rowSpan: options.rowspan || 1,
         querySelector: (s) => (s === 'time[datetime]' && options.datetime
-            ? attrs({}, { datetime: options.datetime }) : null),
+            ? attrs({ textContent: options.timeText || text }, { datetime: options.datetime }) : null),
+        querySelectorAll: () => (options.flag ? [{ textContent: options.flag }] : []),
         className: ''
     }, options.attrs);
 }
@@ -122,6 +123,21 @@ t = table(['When'], [[
 ]]);
 sortBy(t.heading(0));
 assert.deepEqual(column(t, 0), ['just now', '3 h ago', '2 days ago']);
+
+/* A price's age with its "stale" flag is still the age; a venue's name
+ * with the age beside it sorts by the name. */
+t = table(['Age', 'Venue'], [[
+    row([cell('3hstale', { datetime: '2026-10-08T09:00:00Z', timeText: '3h', flag: 'stale' }),
+         cell('Zul\'jin 3h', { datetime: '2026-10-08T09:00:00Z', timeText: '3h' })]),
+    row([cell('12m', { datetime: '2026-10-08T11:48:00.250000Z' }),
+         cell('Area 52 12m', { datetime: '2026-10-08T11:48:00Z', timeText: '12m' })]),
+    row([cell('2d', { datetime: '2026-10-06T12:00:00Z' }),
+         cell('Mal\'Ganis 2d', { datetime: '2026-10-06T12:00:00Z', timeText: '2d' })])
+]]);
+sortBy(t.heading(0));
+assert.deepEqual(column(t, 0), ['12m', '3hstale', '2d'], 'newest price first');
+sortBy(t.heading(1));
+assert.deepEqual(column(t, 1), ['Area 52 12m', 'Mal\'Ganis 2d', 'Zul\'jin 3h']);
 
 /* Groups sort inside themselves; their headings and totals stay put. */
 const divider = (label) => row([cell(label, { colspan: 2, attrs: { scope: 'rowgroup' } })]);
