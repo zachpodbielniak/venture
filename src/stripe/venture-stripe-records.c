@@ -1,6 +1,23 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 
+static const VentureFieldDecl prepayment_fields[] = {
+	VENTURE_FIELD_REF("connection-id", "Connection", NULL, "integration_connection", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("subscription-id", "Subscription", NULL, "customer_subscription", VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD_REF("company-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("price-version", "Agreed price version", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payment-path", "Payment choice", "single, installments, ach, wire or split", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("total", "Prepaid total", "Twenty-four months at the agreed annual price"),
+	VENTURE_FIELD("state", "State", "setup, collecting, waiting, compensating, cancelled, failed or paid", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("customer-id", "Provider customer", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("legs", "Payment journal", "Service-owned saved-method and collection evidence", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("published-at", "First publication", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("lease-until", "Worker lease", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("next-attempt-at", "Next check", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED)
+};
+VENTURE_DEFINE_ENTITY(VentureStripePrepayment, venture_stripe_prepayment, prepayment_fields)
+
 static const VentureFieldDecl price_fields[] = {
 	VENTURE_FIELD_REF("connection-id", "Integration connection", "Immutable provider account and environment; zero means legacy unbound", "integration_connection", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("product-id", "Product", NULL, "product", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),

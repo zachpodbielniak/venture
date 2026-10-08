@@ -1,0 +1,230 @@
+#+title: Hosted enrollment and one-time guarantee credit
+
+* Ownership and authority
+
+The hosted client calls these operations with the same trusted workspace
+administrator service token as hosted signup. Browser sessions, customer
+members, viewer tokens and unscoped credentials do not acquire this authority.
+Every HTTP response is =Cache-Control: no-store=.
+
+A business has its own organization. The operator's configured billing
+organization holds its plans, subscriptions, invoices and collection provider.
+The business is represented there by a customer company. Its own customer
+invoices and attribution remain in its own organization. A guarantee credits
+the customer company in the billing organization; it never creates a refund.
+
+* Enrollment and saved payment authority
+
+=POST /api/v1/lightsite/billing/enroll= accepts exactly =organization_id= and
+=plan_price_id=. The price must be active, positive, and monthly or annual in
+the configured billing organization. One business has one lifetime enrollment.
+The first call returns 201; the same terms return 200 and the same subscription.
+Different terms on a retry conflict. An existing subscription cannot enroll.
+The =hosted:= receipt prefix is reserved from legacy subscription requests.
+
+Enrollment creates a fourteen-day trial through the billing service without
+changing the catalogue price or issuing an invoice. The receipt retains the
+subscription, billing customer, enrollment time, charge deadline and guarantee
+cap. The cap is three initial monthly prices, or one quarter of the initial
+annual price using exact money rounding. Later catalogue changes cannot raise
+it. The older =/subscriptions= operation retains its immediate-start behavior;
+new deferred onboarding must use =/enroll=.
+
+=POST /api/v1/lightsite/billing/setup= accepts exactly =organization_id=.
+It returns =awaiting_card= and a transient hosted URL, or =card_ready= for
+already verified authority. Setup reuses the existing subscription authorization
+service. It saves reusable payment authority and creates no invoice or charge.
+The owner follows the hosted page; the client never handles card details.
+The existing provider verification/webhook path activates permission.
+
+* First charge
+
+=POST /api/v1/lightsite/billing/publish= accepts exactly =organization_id=.
+The trusted client calls it when the business first goes live. Its server receipt
+time becomes the immutable =go_live_at=. Retrying never restarts the clock.
+Publication is recorded even when the owner has not completed payment setup.
+
+=POST /api/v1/lightsite/billing/first-charge= accepts the same object. The client
+may call it on day fourteen and retry either operation after a failure. Before
+publication and before the deadline, verified enrollment remains =building=.
+Without verified authority it returns =awaiting_card=, without issuing an invoice.
+
+At publication, the billing service's =activate= action ends an uncancelled
+trial and anchors its first paid period now. At the deadline the ordinary
+=renew= action ends the trial. A retained subscription event also lets the
+operation adopt an invoice already created by the recurring scheduler.
+A unique receipt identifies the first invoice, even after later renewals.
+Collection uses the existing invoice-wide idempotent provider attempt. Network
+uncertainty leaves =collection_pending= and a retryable invoice identity.
+Only verified settlement makes the result =paid=; provider HTTP success alone
+does not post cash. Collection problems do not suspend the business or its site.
+
+* Made-back measurement
+
+=GET /api/v1/lightsite/billing/:organization_id/made-back= returns =won=,
+=invoiced=, =overlap= and =made_back= as exact money, together with =go_live_at=
+and an exclusive =until=. The default end is the earlier of now and ninety days
+after go-live. The C API can request an earlier end in that window.
+
+Only acquisition bindings whose original submission retained a verified hosted
+connection qualify. A later site connection, an unsigned public capture, or a
+current CRM source label does not establish hosted provenance. The original
+capture must fall in the measurement period, and conversion must precede the
+financial event. A later signed enquiry cannot reclassify an originally
+unsigned acquisition. Analytics consent is not required for a business enquiry.
+
+Signed ordinary form relays retain the accepted response’s lead as acquisition
+evidence, without copying its answers or creating another lead. Evidence uses
+the immutable response identity: replay repairs an interrupted evidence write
+without repeating form acceptance. Response-only fallback creates no acquisition.
+
+Won value is the current management value of a won deal, dated at its close.
+Invoiced value uses frozen invoice issue/void net evidence, after discount and
+excluding tax and shipping. The event's recorded instant places it in the
+window; a calendar book date at midnight must not exclude a same-day issue.
+Explicit quote/deal links identify overlap: a won
+job of 20.00 with a linked invoice of 15.00 contributes 20.00, not 35.00.
+Currency mismatches, ambiguous acquisition and missing qualifying financial
+amounts fail rather than producing a guessed total. The reader does not convert
+currencies. The measurement must be retained by the caller at its decision time;
+current CRM values are not a historical valuation archive.
+
+* One-time account credit
+
+=POST /api/v1/lightsite/billing/guarantee= accepts exactly:
+
+| Field | Meaning |
+| organization_id | Enrolled business |
+| shortfall | Nonnegative exact money, for example =10.00 USD= |
+| eligible | Frozen checklist result, boolean |
+| measurement | Opaque retained evidence identity, 1–128 identifier characters |
+
+The trusted hosted client owns the checklist and the paid-versus-made-back
+calculation. It must use actual settled payments, not invoices merely issued,
+and retain its evidence under =measurement=. Venture enforces the ninety-day
+minimum from first go-live, enrolled currency, initial cap and one lifetime
+outcome. The credit is =min(shortfall, cap)= when eligible, otherwise zero.
+An exact retry replays the original result. A different measurement, eligibility
+or shortfall conflicts. Zero and ineligible outcomes also consume the one-time
+measurement; they cannot become a later payout.
+
+The ordinary settlement service posts the customer credit and ledger evidence.
+The credit and immutable receipt commit together. Generic record writes,
+deletes or purges cannot replace the receipt. Concurrent attempts either replay
+or receive a transaction conflict to retry; they never pay twice.
+
+* Upgrade and verification
+
+Migration =000910_billing_deferred_start.sql= is paired for both database
+backends. It verifies the additive =billing_request.defer_days= metadata;
+existing requests keep their catalogue trial semantics. No historic invoice,
+permission or measurement is invented.
+
+The hosted HTTP fixture exercises enrollment, publication, credit replay,
+eligibility, annual caps and attribution through the built server. The provider
+fixture exercises hosted Setup, publication and deadline collection, retries,
+and signed settlement with deterministic provider responses. These are local
+fixtures, not evidence of a transaction with a live provider.
+
+#+begin_src sh
+make DEBUG=1 test-one T=test-hosted-billing
+make DEBUG=1 test-one T=test-stripe
+make DEBUG=1 test
+#+end_src
+
+* Fixed prepaid terms
+
+=POST /api/v1/lightsite/billing/prepay= uses the same trusted-service gate as
+=enroll=. It accepts =organization_id=, an annual fixed =plan_price_id= and
+=payment_path=: =single=, =installments=, =ach=, =wire= or =split=. Enrollment
+freezes a 24-month total (twice the annual price) and issues nothing. Identical
+retries return the same subscription; changed terms conflict. Tax additions,
+metered prices and monthly catalogue prices are refused for this contract.
+
+For =split=, optional =shares= contains two or three positive integer minor-unit
+amounts whose sum is the total. Omitting it selects two equal shares, with any
+rounding remainder on the last share. Each share requires a distinct saved card.
+Other paths reject =shares=. Those minor units are scaled to Stripe charge units
+before collection. ISK and UGX use two Stripe decimals even though their ISO
+exponent is zero. A share that is not an integral charge unit is refused.
+Owner notices format the stored charge units back into money.
+A publication call fixes the start of the 24-month
+term and creates exactly one invoice. Ordinary trial expiry and renewal sweeps
+cannot collect this enrollment before that invoice. Once the term is due and
+=cancel-at-period-end= is set, the renewal sweep ends the subscription and does
+not issue another invoice.
+
+The existing =setup= and =publish= routes return a prepaid result containing
+=prepayment_id=, =invoice_id=, =state= and =payment_links= (slot and hosted URL).
+Setup links collect provider-hosted consent without charging. Expired links are
+replaced. No card or bank details pass through the hosted client. Bank debit
+requires an enabled USD connection and a verified reusable mandate. Wire uses
+USD customer-balance instructions; only a matching authenticated payment result
+with the exact customer, currency and amount settles the invoice. Merely opening
+instructions or returning from a browser never marks it paid.
+
+Installments collect half at publication and half 30 days later. The invoice's
+final due date is the second installment date. The persisted collector retries
+definite declines daily and reconciles uncertain responses before another
+mutation. Restarting the process preserves the schedule and payment identities.
+Manual settlement that changes the expected outstanding balance pauses further
+collection for reconciliation. Ordinary Checkout is unavailable while this
+collection owns the invoice.
+
+Split cards are all authorized before any capture. A definitive failure cancels
+remaining holds and refunds any captured share. Reversal is asynchronous: the
+state remains =compensating= until every cancellation or refund is verified,
+then becomes =failed=. It is never reported as partial success. A lost refund
+response is recovered from the original payment's refund history, including
+when the provider no longer retains the request's idempotency key. Captures and
+reversals remain in the private service-owned journal. Invoice allocations are
+posted only after every share succeeds. A compensated failure does not silently
+start another attempt. Unresolved authentication or contradictory evidence stays
+unpaid and requires reconciliation.
+
+=StripePrepayment= is a service-owned durable journal; ordinary record writes
+cannot create or alter it. Migrations =000911_prepaid_collection.sql= and
+=000912_prepaid_term_end.sql= are paired for SQLite and PostgreSQL and invent
+no historical collections or term ends. The local
+=test-prepaid-stripe= fixture proves all five paths, restart/retry, lost responses,
+compensation, expired setup, payment identity checks and manual-payment conflicts.
+=test-hosted-billing= covers the HTTP contract, authority, replay and frozen shares.
+These fixtures do not claim live-provider payment verification.
+
+* Cancel an enrollment
+
+=POST /api/v1/lightsite/billing/cancel= accepts exactly =organization_id=.
+It uses the same trusted service bearer authority as enrollment. The hosted
+client checks that the dashboard user owns that business before forwarding
+this request; browser sessions, customer tokens and viewer tokens cannot call
+this service boundary directly.
+
+Before fourteen days from =enrolled_at=, an unpublished enrollment with no
+invoice ends immediately. The response has =state: cancelled= and
+=no_charge: true=, with =cancelled_at= and =effective_at=. The subscription and
+immutable cancellation receipt commit together. An identical retry returns
+the original response, even after the deadline. Queued =publish= and
+=first-charge= calls return that response without collection. New enrollment,
+subscription changes and payment setup are refused for the cancelled business.
+The normal renewal sweep cannot issue an invoice for the ended subscription.
+A delayed prepaid setup completion becomes terminal =cancelled= without
+provider calls or payment links, and the prepaid timer skips it thereafter.
+
+Publication takes precedence over the unpaid trial, even within the first
+fourteen days. At or after the deadline, or after publication, the response
+instead reports =cancel_at_period_end= and =no_charge: false=. Existing
+monthly invoices and prepaid installment obligations remain; cancellation
+creates no automatic refund or credit. A published prepaid enrollment that
+has not yet been invoiced stores =go_live_at= plus twenty-four months as the
+subscription's period end and reports that stored date. Prepaid terms still
+end after their original twenty-four months, with no renewal. Payment setup
+and collection of those already committed terms remain available.
+
+The built HTTP fixture =test-hosted-billing= covers early monthly and prepaid
+cancellation, replay, delayed publication/collection, a later renewal sweep,
+the day-fourteen boundary, incurred monthly invoices, invalid requests and
+authority. =test-prepaid-stripe= covers delayed setup completion after cancel
+and a second installment retained after cancellation at term end.
+=test-stripe /stripe/cancel-before-charge= verifies that an already verified
+saved card makes zero payment requests after cancellation on day thirteen.
+All provider calls in these proofs use fixtures.

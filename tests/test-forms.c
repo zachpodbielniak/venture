@@ -843,6 +843,8 @@ test_signed_relay(Fixture *f, gconstpointer unused)
 	}
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 1);
 	g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_ATTRIBUTION_SUBMISSION), ==, 1);
+	g_assert_cmpint(count(f, VENTURE_TYPE_ATTRIBUTION_BINDING), ==, 1);
 	venture_web_server_stop(f->server); g_clear_object(&f->server);
 	g_clear_object(&f->context); g_clear_object(&f->db);
 	f->db = venture_database_new(database_uri, &error); g_assert_no_error(error);

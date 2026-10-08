@@ -40,18 +40,20 @@ Plans for now, all monthly, managed AI included (no usage lines):
 |------+-------------+---------|
 | =lightsite.billing_organization_id= | =VENTURE_LIGHTSITE_BILLING_ORGANIZATION_ID= | =0= |
 
-The ID of the billing organization. =0= (unset) turns the three routes off:
-an authorized caller gets 404. A configured ID that is not a live
+The ID of the billing organization. =0= (unset) turns every Lightsite billing
+route off: an authorized caller gets 404. A configured ID that is not a live
 organization is also 404. Nothing ever falls back to the default
 organization -- billing from whichever organization happens to be first is
 the failure this setting exists to rule out. The value is read on every
 request, like the other settings, and needs the billing module on.
+Deferred enrollment, the first charge, prepaid terms, made-back measurement,
+the one-time guarantee and cancellation are [[file:hosted-billing.org][Hosted enrollment and guarantee]].
 
 * Authority
 
 Exactly the [[file:lightsite-accounts.org][trusted-service sign-up]]'s, through the same check
-(=venture_tenant_service_check_trusted_service()=), for all three routes,
-reads included:
+(=venture_tenant_service_check_trusted_service()=), for every route below
+and in [[file:hosted-billing.org][Hosted enrollment and guarantee]], reads included:
 
 - Only =Authorization: Bearer <token>=. No credential, an invalid or expired
   token, or a browser session cookie: 401.
@@ -262,3 +264,40 @@ make DEBUG=1 test-one T=test-lightsite-billing
 make DEBUG=1 test-one T=test-lightsite-signup
 make DEBUG=1 test-one T=test-auth
 #+end_src
+
+* Notification facts and financial confirmations
+
+=GET /api/v1/lightsite/billing/<organization_id>/notifications= uses the
+existing trusted-service boundary. The response binds =workspace_id= and
+=organization_id= and lists minimal events with stable =id= and =kind= values.
+It does not return payment methods, provider customer identities or sealed
+settings. The hosted caller owns email presentation and persists each handoff
+before sending through the mail outbox.
+
+Events cover verified saved methods, a first charge within two days, recorded
+receipts, unresolved failed collection, a second installment within two days,
+committed cancellation, refunds, credit notes and a committed guarantee result.
+Opening balances are not new payment receipts. Cancelled or completed payment
+paths do not produce upcoming-installment notices. A later method revocation
+does not erase the fact that it was verified. A guarantee email requires an
+actual assessment receipt; this read never invents eligibility or grants money.
+
+Customer quote acceptance enqueues its confirmation inside the acceptance
+transaction, using the quoted contact or customer email and a stable record
+identity, with text and HTML. Customer payments reuse the existing committed
+payment receipt and its PDF; no second confirmation is added. Missing addresses
+do not reject the financial action. Bookkeeping payments are omitted. Hosted
+billing customers are omitted from generic receipts because the hosted
+application renders their owner notifications.
+
+On upgrade, any existing generic payment receipt remains owned by its original
+outbox identity. The notification feed does not add a second branded receipt,
+including when the old message is retrying, uncertain or retained as deleted.
+
+Failed checkout collections and retained failed prepaid attempts both produce
+failure facts. A settled installment stops reporting its earlier failure.
+
+Quote delivery reuses the existing private-link outbox implementation from the
+quote-mail change. No payment-provider request is made by any notification read
+or email renderer. SMTP delivery, retries and uncertain outcomes remain owned
+by the durable outbox.

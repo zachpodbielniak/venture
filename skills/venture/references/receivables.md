@@ -78,7 +78,14 @@ venturectl quote start-subscription 7          # the accepted quote's plan line,
 venturectl deal quote 12                       # a draft quote from the deal's lines (or revise it)
 ```
 
-Acceptance creates and issues the invoice in the same transaction unless
+`quote send` queues one customer email in the outbox when `server.base_url`
+is HTTPS and the contact or customer has an address; the acceptance link
+stays in that sensitive body. A missing address or a non-HTTPS origin
+leaves the quote in draft. An empty base URL still marks the quote sent
+and keeps the delivery row, without queueing mail.
+Acceptance queues a confirmation in the same transaction and does not fail
+when the address is missing. Neither call speaks SMTP. Acceptance creates
+and issues the invoice in the same transaction unless
 `billing_mode=progress`. A `quote_line` with `plan_price_id` (quantity =
 seats, no discount or tax) is left off that invoice -- the subscription
 bills it -- and `quote start-subscription` starts the subscription once and

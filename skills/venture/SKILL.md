@@ -92,17 +92,17 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`2dab58944a41cf136a810241c62f941b519203a0` (2026-10-05, server version
+`8955f90bfeebbc78cbd0206c106364ae0069dd8a` (2026-10-08, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
 to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
-<!-- skill-baseline:start -- reviewed 2026-10-05 against 2dab589 -->
+<!-- skill-baseline:start -- reviewed 2026-10-08 against 8955f90 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=2dab58944a41cf136a810241c62f941b519203a0
+base=8955f90bfeebbc78cbd0206c106364ae0069dd8a
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -300,6 +300,7 @@ ids, notes) in words.
 | "Provision a Lightsite owner" | trusted idempotent sign-up service | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
+| "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish`, `first-charge`, `cancel`, `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |
 | "What fields does X have?" | `describe X`; actions from `/api/v1/schema/X` | [records.md](references/records.md) |
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |
@@ -429,5 +430,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `2dab589`; when the live server disagrees,
+- This skill describes baseline `8955f90`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.

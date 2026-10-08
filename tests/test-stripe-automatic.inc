@@ -60,6 +60,11 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 		g_autoptr(GDateTime) began = g_date_time_add_days(today, -20);
 		g_object_set(action, "at", began, NULL);
 	}
+	else if (data && !g_strcmp0(data, "cancel-before-charge"))
+	{
+		g_autoptr(GDateTime) today = venture_time_now(), began = g_date_time_add_days(today, -13);
+		g_object_set(action, "at", began, "defer-days", (gint64)14, NULL);
+	}
 	else if (data && !g_strcmp0(data, "renewal-collection"))
 	{
 		/* One period ended a day ago, so exactly one renewal is due now. */
@@ -191,6 +196,23 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 			stored = venture_database_get(f->database, VENTURE_TYPE_STRIPE_AUTHORIZATION,
 				venture_entity_get_id(VENTURE_ENTITY(authorization)), &error);
 			g_assert_cmpint(venture_entity_get_version(stored), ==, version);
+		}
+		if (data && !g_strcmp0(data, "cancel-before-charge"))
+		{
+			g_autoptr(GDateTime) now = venture_time_now(), later = g_date_time_add_days(now, 40);
+			g_autoptr(VentureEntity) cancel = record_new(f, "billing_request");
+			g_autoptr(GPtrArray) invoices = NULL;
+			gint processed;
+			g_object_set(cancel, "action", "cancel", "subscription-id", subscription_id, "at", now, NULL); save(f, cancel);
+			processed = venture_stripe_service_collect_due(service, later, 10, NULL, &error);
+			g_assert_no_error(error); g_assert_cmpint(processed, >=, 0);
+			g_assert_false(venture_stripe_service_verify_authorization(service,
+				venture_entity_get_id(stored), NULL, &error));
+			g_assert_nonnull(error); g_clear_error(&error);
+			invoices = rows(f, "invoice"); g_assert_cmpuint(invoices->len, ==, 0);
+			g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 0);
+			g_test_message("Verified saved card, cancelled on day 13: later collector payment requests=0; invoices=0");
+			return;
 		}
 		if (data && !g_strcmp0(data, "catalog"))
 		{

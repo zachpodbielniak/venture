@@ -28,6 +28,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
 - [[file:lightsite-accounts.org][Lightsite account validation]] — scoped provisioning identity for hosted organizations
 - [[file:lightsite-billing.org][Lightsite billing]] — binding a Lightsite business to a plan in the billing organization, and what it owes
+- [[file:hosted-billing.org][Hosted enrollment and guarantee]] — saved payment authority, deferred first charge, attributed value and one-time account credit
 
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way
 - [[file:quickstart.org][Quickstart]] — build it, run it, record your first sale

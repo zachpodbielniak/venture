@@ -6,6 +6,146 @@
 #endif
 G_BEGIN_DECLS
 /**
+ * venture_lightsite_billing_notifications:
+ * @database: hosted source database
+ * @billing: configured operator billing organization
+ * @business: customer business identity
+ * @error: (out) (optional): unauthorized or incomplete evidence
+ *
+ * Owner-facing facts for one business: verified methods, upcoming charges,
+ * receipts, failed collection, cancellation and a committed guarantee.
+ * Writes nothing and returns no payment credentials.
+ *
+ * Returns: (transfer full) (nullable): scoped events with stable identities
+ */
+JsonNode *venture_lightsite_billing_notifications(VentureDatabase *database, gint64 billing,
+	gint64 business, GError **error);
+/**
+ * venture_lightsite_billing_cancel:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: enrolled customer business
+ * @error: return location for an error
+ *
+ * Cancels an unpublished enrollment strictly before its fourteen-day deadline
+ * without a charge. The subscription and immutable receipt commit together;
+ * delayed publication, setup and collection cannot revive it. Publication or
+ * deadline expiry uses normal period-end cancellation and preserves incurred
+ * invoices, including outstanding prepaid installments. Requires the trusted
+ * service authority; the hosted client authenticates its dashboard owner.
+ *
+ * Returns: (transfer full) (nullable): the original cancellation decision
+ */
+JsonNode *venture_lightsite_billing_cancel(VentureDatabase *database, gint64 billing,
+	gint64 business, GError **error);
+/**
+ * venture_lightsite_billing_prepay:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: customer business
+ * @price_id: annual fixed price
+ * @payment_path: single, installments, ach, wire or split
+ * @shares: (nullable): two or three split amounts in integer minor units of the prepaid total; collection scales them to Stripe charge units
+ * @created: (out) (optional): whether enrollment was created
+ * @error: return location for an error
+ *
+ * Reserves an immutable 24-month prepaid offer without issuing an invoice.
+ * Requires trusted service authority. Only publication may start collection.
+ *
+ * Returns: (transfer full) (nullable): frozen terms and enrollment identity
+ */
+JsonNode *venture_lightsite_billing_prepay(VentureDatabase *database, gint64 billing,
+	gint64 business, gint64 price_id, const gchar *payment_path, JsonArray *shares, gboolean *created, GError **error);
+/**
+ * venture_lightsite_billing_enroll:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: customer business
+ * @price_id: active monthly or annual price
+ * @created: (out) (optional): whether enrollment was created
+ * @error: return location for an error
+ *
+ * Starts a fourteen-day deferred subscription without issuing an invoice.
+ * Repeating its price is safe; changing the terms conflicts. Requires trusted
+ * service authority and leaves the catalogue trial unchanged.
+ *
+ * Returns: (transfer full) (nullable): durable enrollment identity and terms
+ */
+JsonNode *venture_lightsite_billing_enroll(VentureDatabase *database, gint64 billing,
+	gint64 business, gint64 price_id, gboolean *created, GError **error);
+/**
+ * venture_lightsite_billing_setup:
+ * @context: hosted application context
+ * @billing: configured billing organization
+ * @business: enrolled customer business
+ * @error: return location for an error
+ *
+ * Creates or resumes hosted payment authorization without charging. No card
+ * identity or secret is returned. An already verified permission returns
+ * card_ready without creating another Setup session.
+ *
+ * Returns: (transfer full) (nullable): state and transient hosted URL
+ */
+JsonNode *venture_lightsite_billing_setup(VentureContext *context, gint64 billing,
+	gint64 business, GError **error);
+/**
+ * venture_lightsite_billing_first_charge:
+ * @context: hosted application context
+ * @billing: configured billing organization
+ * @business: enrolled customer business
+ * @published: whether this is a confirmed first-publication notification
+ * @error: return location for an error
+ *
+ * Records go-live once, then starts the first paid period at publication or
+ * after fourteen days. Verified saved-card authority is required. The durable
+ * invoice is reserved before calling the provider; retries collect that same
+ * invoice. Provider success alone does not mean paid: normal signed settlement
+ * updates the invoice. Publication remains recorded when collection fails.
+ *
+ * Returns: (transfer full) (nullable): go-live, invoice identity and current state
+ */
+JsonNode *venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing,
+	gint64 business, gboolean published, GError **error);
+/**
+ * venture_lightsite_billing_made_back:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: enrolled and published business
+ * @until: (nullable): exclusive end, no later than now or the ninety-day cutoff
+ * @error: return location for an error
+ *
+ * Measures retained signed acquisitions in one serializable snapshot. Won
+ * value and frozen invoice net are shown separately; explicit linked overlap
+ * counts once. Current source labels do not establish provenance. Missing
+ * financial values, ambiguous acquisition and mixed currencies fail closed.
+ *
+ * Returns: (transfer full) (nullable): exact totals and measurement period
+ */
+JsonNode *venture_lightsite_billing_made_back(VentureDatabase *database, gint64 billing,
+	gint64 business, GDateTime *until, GError **error);
+/**
+ * venture_lightsite_billing_guarantee:
+ * @database: hosted database
+ * @billing: configured billing organization
+ * @business: enrolled customer business
+ * @shortfall: measured nonnegative shortfall in the enrolled currency
+ * @eligible: frozen checklist result from the trusted hosted client
+ * @measurement: opaque identity of the retained measurement, not personal data
+ * @error: return location for an error
+ *
+ * The hosted client owns checklist and paid-versus-made-back measurement.
+ * Venture accepts that attestation only from its trusted service authority,
+ * after ninety days from first publication, and applies at most the original
+ * three-month cap as an ordinary customer credit. An identical retry returns
+ * the original answer; a different measurement cannot pay again. Even zero
+ * and ineligible outcomes are retained. No refund is created.
+ *
+ * Returns: (transfer full) (nullable): frozen measurement and credit identity
+ */
+JsonNode *venture_lightsite_billing_guarantee(VentureDatabase *database, gint64 billing,
+	gint64 business, const VentureMoney *shortfall, gboolean eligible,
+	const gchar *measurement, GError **error);
+/**
  * venture_lightsite_billing_subscribe:
  * @database: the hosted workspace's database
  * @billing_organization_id: the configured billing organization, 0 when unset

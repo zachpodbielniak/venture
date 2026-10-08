@@ -194,6 +194,21 @@ A business appears there as a `company` with
 `external_id=lightsite:organization:<id>`; change its subscription through
 `billing change`, never by editing the subscription record directly.
 
-the operator's billing organization and each customer business keep separate Stripe
+The operator's billing organization and each customer business keep separate Stripe
 connections. These routes expose connection status, never keys. A successful
 page load is not payment evidence.
+
+Hosted self-serve enrollment is a trusted bearer call, not `billing start`
+and not `POST /lightsite/billing/subscriptions` (that binding still starts
+immediately). The routes are `enroll`, `prepay`, `setup`, `publish`,
+`first-charge`, `cancel`, `guarantee`, and GET `made-back` and
+`notifications` ([api-routes.md](api-routes.md)). Enrollment and prepay
+issue no invoice; setup charges nothing; the first charge is `paid` only
+after signed settlement; cancel before day fourteen charges nothing; a published
+prepaid cancel stores the twenty-four-month end and the renewal sweep ends it
+then without another invoice. Split shares are minor units of the total, scaled
+to Stripe charge units (ISK and UGX use two charge decimals). The
+guarantee is one capped credit, including zero. `stripe_prepayment` is
+service-owned, and checkout is refused while a non-failed prepayment owns
+the invoice. No route returns a card or a provider customer id. The
+contract, bodies and fixtures are `docs/hosted-billing.org`.

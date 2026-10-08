@@ -2,11 +2,54 @@
 #ifndef VENTURE_STRIPE_SERVICE_H
 #define VENTURE_STRIPE_SERVICE_H
 G_BEGIN_DECLS
+/**
+ * venture_stripe_service_prepay:
+ * @self: organization payment service
+ * @subscription_id: prepaid annual subscription
+ * @payment_path: immutable payment choice
+ * @shares: (nullable): exact integer charge units for two or three split cards
+ * @published_at: (nullable): trusted first-publication time, or NULL to resume
+ * @actor: (nullable): audit actor
+ * @error: return location for an error
+ *
+ * Resumes the durable prepaid collection. Saved methods are verified through
+ * hosted setup; this API never accepts payment credentials. Repeated calls
+ * retain the original invoice, schedule and provider operation identities.
+ *
+ * Returns: (transfer full) (nullable): owner-safe state and hosted setup links
+ */
 #ifndef __GI_SCANNER__
 typedef struct _StripeTransport StripeTransport;
 #endif
 #define VENTURE_TYPE_STRIPE_SERVICE (venture_stripe_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureStripeService, venture_stripe_service, VENTURE, STRIPE_SERVICE, GObject)
+JsonNode *venture_stripe_service_prepay(VentureStripeService *self, gint64 subscription_id,
+	const gchar *payment_path, JsonArray *shares, GDateTime *published_at, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_charge_units:
+ * @money: an ISO amount
+ * @units: (out): Stripe charge units
+ * @error: (out) (optional): currency or scale refusal
+ *
+ * Converts @money into the integer units Stripe charges. ISK and UGX use
+ * two charge decimals even though their ISO exponent is zero. One mapper
+ * serves checkout, prepaid shares and signed settlement.
+ *
+ * Returns: %TRUE when @units is a positive integral charge amount
+ */
+gboolean venture_stripe_charge_units(const VentureMoney *money, gint64 *units, GError **error);
+/**
+ * venture_stripe_money_from_charge_units:
+ * @amount: Stripe charge units
+ * @currency: ISO currency code
+ *
+ * Rebuilds money from Stripe charge units. ISK and UGX amounts that are
+ * not divisible by one hundred are refused, because those currencies have
+ * no fractional ISO unit at Stripe's two-decimal charge scale.
+ *
+ * Returns: (transfer full) (nullable): the amount, or %NULL when the units do not fit the currency
+ */
+VentureMoney *venture_stripe_money_from_charge_units(gint64 amount, const gchar *currency);
 /**
  * venture_stripe_service_new: (skip)
  * @database: storage
