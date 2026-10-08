@@ -2213,6 +2213,13 @@ pages").
   `sale_rate` and `sold_per_day` are columns (step 4). Sorts are an
   allowlist (`venture_marketdata_browse_sorts()`) and an unknown one is a
   400, never ignored.
+- **A store filter tests only `current`'s columns.** `series_filter_where()`
+  asks a venue, search or category as an id set (`c.instrument_id IN
+  (SELECT id FROM instruments ...)`), so counts and page bounds read
+  `current` alone; joining three million rows to `instruments` to count
+  or order them was most of a twenty-second browse. A new filter keeps
+  to that, and a new sort goes through `series_list_bounded()`, which
+  `/series-store/paging-matches-full-order` holds to the full order.
 - **An instrument key is the rest of the path.** libsoup hands handlers the
   path already unescaped, so a key holding `%2F` arrives as two segments:
   the routes are `/market/i/:source/*` and `mdw_path_key()` takes

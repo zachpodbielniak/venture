@@ -425,6 +425,24 @@ static const gchar series_schema_step_9[] =
 	"CREATE INDEX IF NOT EXISTS current_deal_pct ON current (pct_vs_region)"
 	" WHERE deal_price IS NOT NULL AND min_price IS NOT NULL AND min_price <= deal_price;";
 
+/*
+ * Reading instruments without reading instruments. The table is mostly
+ * attribute JSON -- over a gigabyte for a US auction house store's 1.2
+ * million items and variants -- and three readers walked all of it: a
+ * search (a LIKE on name_fold or key, no prefix to seek), the category
+ * picker (by category, but only plain items, and parent_key was not in
+ * an index) and the whole-store sort by name. Each of these is a narrow
+ * index the reader scans instead: the search in place of the table, the
+ * plain items' categories alone, and the name order the browse walks
+ * from (venture_series_store_list_current()). Names change seldom, so
+ * the writer's hourly upserts rarely touch them.
+ */
+static const gchar series_schema_step_10[] =
+	"CREATE INDEX IF NOT EXISTS instruments_search ON instruments (name_fold, key);"
+	"CREATE INDEX IF NOT EXISTS instruments_category_plain ON instruments (category)"
+	" WHERE parent_key IS NULL;"
+	"CREATE INDEX IF NOT EXISTS instruments_sort_name ON instruments (COALESCE(name_fold, key));";
+
 /* Append only: a store records which of these it has run in user_version. */
 static const gchar *const series_schema_steps[] = {
 	series_schema_step_1,
@@ -435,7 +453,8 @@ static const gchar *const series_schema_steps[] = {
 	series_schema_step_6,
 	series_schema_step_7,
 	series_schema_step_8,
-	series_schema_step_9
+	series_schema_step_9,
+	series_schema_step_10
 };
 
 #define SERIES_SCHEMA_VERSION (G_N_ELEMENTS(series_schema_steps))
@@ -5252,6 +5271,15 @@ series_bind_add_int(
 /*
  * The WHERE clause of a filter, with its bindings. Every value reaches
  * SQL as a parameter; the only text spliced in is fixed.
+ *
+ * It names only current's own columns: a venue or instrument narrowing is
+ * a set of ids from a subquery, never a test on the joined row. That is
+ * what lets a count and a page's bound read current alone. Joined, every
+ * one of three million rows was looked up in instruments -- a table of
+ * attribute JSON larger than current itself -- to be counted or ordered,
+ * which is most of the twenty seconds a whole-store browse took. The
+ * answers are the same: a current row always has its venue and its
+ * instrument, which are never deleted.
  */
 static gboolean
 series_filter_where(
@@ -5286,25 +5314,25 @@ series_filter_where(
 			g_string_append(sql, " AND 0");
 		else
 		{
-			g_string_append(sql, " AND v.key IN (");
+			g_string_append(sql, " AND c.venue_id IN (SELECT id FROM venues WHERE key IN (");
 			for (i = 0; i < n; i++)
 			{
 				g_string_append(sql, (0 == i) ? "?" : ", ?");
 				series_bind_add_text(bindings, filter->venue_keys[i]);
 			}
-			g_string_append(sql, ")");
+			g_string_append(sql, "))");
 		}
 	}
 
 	if (NULL != filter->group_key)
 	{
-		g_string_append(sql, " AND v.group_key = ?");
+		g_string_append(sql, " AND c.venue_id IN (SELECT id FROM venues WHERE group_key = ?)");
 		series_bind_add_text(bindings, filter->group_key);
 	}
 
 	if (NULL != filter->instrument_key)
 	{
-		g_string_append(sql, " AND i.key = ?");
+		g_string_append(sql, " AND c.instrument_id IN (SELECT id FROM instruments WHERE key = ?)");
 		series_bind_add_text(bindings, filter->instrument_key);
 	}
 
@@ -5326,8 +5354,8 @@ series_filter_where(
 		escaped = series_like_escape(fold);
 		pattern = g_strdup_printf("%%%s%%", escaped);
 
-		g_string_append(sql, " AND (i.name_fold LIKE ? ESCAPE '\\'"
-		                     " OR i.key LIKE ? ESCAPE '\\')");
+		g_string_append(sql, " AND c.instrument_id IN (SELECT id FROM instruments"
+		                     " WHERE name_fold LIKE ? ESCAPE '\\' OR key LIKE ? ESCAPE '\\')");
 		series_bind_add_text(bindings, pattern);
 		series_bind_add_text(bindings, pattern);
 	}
@@ -5340,8 +5368,8 @@ series_filter_where(
 		escaped = series_like_escape(filter->category_prefix);
 		pattern = g_strdup_printf("%s/%%", escaped);
 
-		g_string_append(sql, " AND (i.category = ?"
-		                     " OR i.category LIKE ? ESCAPE '\\')");
+		g_string_append(sql, " AND c.instrument_id IN (SELECT id FROM instruments"
+		                     " WHERE category = ? OR category LIKE ? ESCAPE '\\')");
 		series_bind_add_text(bindings, filter->category_prefix);
 		series_bind_add_text(bindings, pattern);
 	}
@@ -5471,6 +5499,113 @@ series_row_from_any(sqlite3_stmt *stmt)
 	return series_row_from(stmt);
 }
 
+/* Whether @filter narrows by nothing but current's own figures. */
+static gboolean
+series_filter_is_current_only(const VentureSeriesFilter *filter)
+{
+	return (NULL == filter->venue_keys) && (NULL == filter->group_key) &&
+	       (NULL == filter->instrument_key) &&
+	       ((NULL == filter->search) || ('\0' == filter->search[0])) &&
+	       ((NULL == filter->category_prefix) || ('\0' == filter->category_prefix[0]));
+}
+
+/*
+ * A page of a sort by one of current's columns (or the venue's key), read
+ * without ordering the whole store.
+ *
+ * The page is the offset + count first rows in the sort's order, nulls
+ * last. If that many rows have a value, the last of them has some value
+ * B, and every row of the page has a value at or before B: so the page is
+ * the same page of only the rows at or before B, which are those count +
+ * offset rows plus B's ties. B is found on current alone (an index or one
+ * pass over its narrow rows, no join), and only the rows up to it are
+ * joined and fully ordered -- venue and instrument tie-breaks included,
+ * so the answer is row for row the one ordering everything gave.
+ *
+ * Sets *out_rows to NULL, not an error, when fewer than offset + count
+ * rows have a value (a page reaching into the nulls, or past the end):
+ * the caller orders everything, as before. Ordering everything was a
+ * temporary B-tree of three million joined rows on a US auction house
+ * store, a dozen seconds a page.
+ */
+static gboolean
+series_list_bounded(
+	VentureSeriesStore		 *self,
+	const VentureSeriesFilter	 *filter,
+	guint				  count,
+	GPtrArray			**out_rows,
+	GError				**error
+){
+	g_autoptr(GString) sql = NULL;
+	g_autoptr(GString) bound = NULL;
+	g_autoptr(GArray) bindings = NULL;
+	g_autoptr(SeriesOwnedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	gchar currency[VENTURE_MONEY_CURRENCY_LEN];
+	const gchar *column;
+	const gchar *direction;
+
+	*out_rows = NULL;
+	column = series_sort_columns[filter->sort];
+	direction = filter->descending ? "DESC" : "ASC";
+
+	/* Past what a page number can reach; the plain sort answers. */
+	if ((guint64)filter->offset + count > G_MAXINT32)
+		return TRUE;
+
+	sql = g_string_new("SELECT " SERIES_ROW_COLUMNS SERIES_ROW_FROM);
+	bound = g_string_new(NULL);
+	bindings = g_array_new(FALSE, TRUE, sizeof(SeriesBinding));
+	g_array_set_clear_func(bindings, series_binding_clear);
+
+	/* The venue's key is the one sort column not on current: walked from
+	 * venues in key order, each venue's rows counted off its index, so
+	 * the bound is found without joining or sorting every row. */
+	if (VENTURE_SERIES_SORT_VENUE == filter->sort)
+		g_string_append(bound, "SELECT v.key FROM venues v CROSS JOIN current c ON c.venue_id = v.id");
+	else
+		g_string_printf(bound, "SELECT %s FROM current c", column);
+
+	if (!series_filter_where(filter, sql, bindings, currency, error) ||
+	    !series_filter_where(filter, bound, bindings, currency, error))
+		return FALSE;
+
+	g_string_append_printf(bound, " AND %s IS NOT NULL ORDER BY %s %s LIMIT 1 OFFSET ?",
+	                       column, column, direction);
+	series_bind_add_int(bindings, (gint64)filter->offset + count - 1);
+
+	/* The venues up to the bound as ids, like every other narrowing, so
+	 * the rows are found from current's venue index and not by joining
+	 * all of them to test the key. */
+	if (VENTURE_SERIES_SORT_VENUE == filter->sort)
+		g_string_append_printf(sql, " AND c.venue_id IN (SELECT id FROM venues WHERE key %s (%s))",
+		                       filter->descending ? ">=" : "<=", bound->str);
+	else
+		g_string_append_printf(sql, " AND %s IS NOT NULL AND %s %s (%s)",
+		                       column, column, filter->descending ? ">=" : "<=", bound->str);
+
+	g_string_append_printf(sql, " ORDER BY %s %s NULLS LAST, v.key, i.key LIMIT ? OFFSET ?",
+	                       column, direction);
+	series_bind_add_int(bindings, count);
+	series_bind_add_int(bindings, filter->offset);
+
+	stmt = series_prepare_bound(self, sql->str, bindings, error);
+	if (NULL == stmt)
+		return FALSE;
+
+	rows = series_collect(self, stmt, series_row_from_any,
+	                      (GDestroyNotify)venture_series_row_free,
+	                      "listing current prices", error);
+	if (NULL == rows)
+		return FALSE;
+
+	/* No bound (too few rows with a value) compares as NULL: no rows. */
+	if (rows->len > 0)
+		*out_rows = g_steal_pointer(&rows);
+
+	return TRUE;
+}
+
 GPtrArray *
 venture_series_store_list_current(
 	VentureSeriesStore		 *self,
@@ -5524,7 +5659,9 @@ venture_series_store_list_current(
 	if (filter->deals_only && (VENTURE_SERIES_SORT_PCT_VS_REGION == filter->sort) &&
 	    !filter->descending && (0 == filter->offset))
 	{
-		g_autoptr(GString) inner = g_string_new("SELECT c.rowid" SERIES_ROW_FROM);
+		/* current alone, as the filter allows: joining here looked
+		 * up every candidate's venue and instrument to keep fifty. */
+		g_autoptr(GString) inner = g_string_new("SELECT c.rowid FROM current c");
 
 		if (!series_filter_where(filter, inner, bindings, currency, error))
 			return NULL;
@@ -5543,6 +5680,32 @@ venture_series_store_list_current(
 		return series_collect(self, stmt, series_row_from_any,
 		                      (GDestroyNotify)venture_series_row_free,
 		                      "listing deals", error);
+	}
+
+	if (filter->sort != VENTURE_SERIES_SORT_NAME)
+	{
+		GPtrArray *bounded = NULL;
+
+		if (!series_list_bounded(self, filter, count, &bounded, error))
+			return NULL;
+
+		if (NULL != bounded)
+			return bounded;
+	}
+	else if (series_filter_is_current_only(filter))
+	{
+		/*
+		 * By name over the whole store: instruments in name order
+		 * (instruments_sort_name), each one's rows, and a stop once the
+		 * page is full. Joined the other way round every row was looked
+		 * up and sorted. Only without a narrowing by instrument or venue,
+		 * which would leave the walk reading most of instruments in name
+		 * order to find a page of matches; those sets are small enough
+		 * for the plain sort below.
+		 */
+		g_string_assign(sql, "SELECT " SERIES_ROW_COLUMNS " FROM instruments i"
+		                     " CROSS JOIN current c ON c.instrument_id = i.id"
+		                     " JOIN venues v ON v.id = c.venue_id");
 	}
 
 	if (!series_filter_where(filter, sql, bindings, currency, error))
@@ -5585,7 +5748,8 @@ venture_series_store_count_current(
 	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), FALSE);
 	g_return_val_if_fail(NULL != out_count, FALSE);
 
-	sql = g_string_new("SELECT count(*)" SERIES_ROW_FROM);
+	/* current alone: the filter names nothing else (series_filter_where()). */
+	sql = g_string_new("SELECT count(*) FROM current c");
 	bindings = g_array_new(FALSE, TRUE, sizeof(SeriesBinding));
 	g_array_set_clear_func(bindings, series_binding_clear);
 
