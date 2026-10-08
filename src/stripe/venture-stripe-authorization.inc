@@ -56,6 +56,13 @@ venture_stripe_service_authorize_subscription(VentureStripeService *self,
 	transaction = TRUE;
 	subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, error);
 	if (!subscription || !venture_access_policy_check_write(venture_database_get_access_policy(self->database), subscription, "write", error)) goto fail;
+	{
+		g_autofree gchar *identity = NULL;
+		g_object_get(subscription, "external-id", &identity, NULL);
+		if (identity && g_str_has_prefix(identity, "prepaid:")) {
+			refuse(error, "Prepaid terms require their own saved-method setup"); goto fail;
+		}
+	}
 	g_object_get(subscription, "status", &state, "company-id", &company_id, "plan-price-id", &price_id, "seats", &seats, NULL);
 	if (state > 2) { refuse(error, "Only trialing, active or past-due subscriptions can authorize collection"); goto fail; }
 	price = owned_get(self, VENTURE_TYPE_PLAN_PRICE, price_id, error);

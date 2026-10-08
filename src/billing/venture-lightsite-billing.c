@@ -584,6 +584,15 @@ execute(VentureDatabase *database, VentureBillingRequest *request, const Venture
 	return venture_billing_service_execute(venture_billing_service_get(database), request, actor, error);
 }
 
+static gboolean
+subscription_not_cancelled(VentureDatabase *database, gint64 billing, gint64 business, GError **error)
+{
+	g_autofree gchar *key = g_strdup_printf("hosted:%" G_GINT64_FORMAT ":cancel", business);
+	g_autoptr(VentureEntity) cancellation = find_receipt(database, billing, key, error);
+	if (cancellation) return refuse(error, VENTURE_ERROR_CONFLICT, "cancelled enrollment cannot subscribe again");
+	return !error || !*error;
+}
+
 static JsonNode *
 subscribe_impl(VentureDatabase *database, gint64 billing_organization_id, gint64 organization_id,
 	const gchar *plan_code, const gchar *idempotency_key, gboolean *created, GError **error)
@@ -600,6 +609,10 @@ subscribe_impl(VentureDatabase *database, gint64 billing_organization_id, gint64
 	gint64 actor_id = 0, billing = billing_organization_id, price_id;
 	gboolean committed = FALSE;
 		if (created) *created = FALSE;
+	if (idempotency_key && g_str_has_prefix(idempotency_key, "hosted:")) {
+		refuse(error, VENTURE_ERROR_VALIDATION, "hosted: keys are reserved for enrollment operations");
+		return NULL;
+	}
 	if (!key_valid(idempotency_key)) {
 		refuse(error, VENTURE_ERROR_VALIDATION, "idempotency_key must be 1-128 of A-Z a-z 0-9 . _ : -");
 		return NULL;
@@ -625,6 +638,7 @@ subscribe_impl(VentureDatabase *database, gint64 billing_organization_id, gint64
 	if (receipt) return replay(receipt, hash, error);
 	if (error && *error) return NULL;
 	if (!business_valid(database, billing, organization_id, error)) return NULL;
+	if (!subscription_not_cancelled(database, billing, organization_id, error)) return NULL;
 	business = get_record(database, VENTURE_TYPE_ORGANIZATION, organization_id, error);
 	if (!business) return NULL;
 	g_object_get(business, "name", &business_name, NULL);
@@ -661,6 +675,7 @@ subscribe_impl(VentureDatabase *database, gint64 billing_organization_id, gint64
 		if (!operation) return NULL;
 	}
 	if (!venture_database_begin(database, error)) return NULL;
+	if (!subscription_not_cancelled(database, billing, organization_id, error)) goto rollback;
 	/* Answered while this one was being prepared: treat it as the replay. */
 	g_clear_object(&receipt);
 	receipt = find_receipt(database, billing, idempotency_key, error);
@@ -754,3 +769,8 @@ venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_or
 	}
 	return result;
 }
+
+#include "venture-lightsite-enrollment.inc"
+#include "venture-lightsite-cancel.inc"
+#include "venture-lightsite-made-back.inc"
+#include "venture-lightsite-notifications.inc"

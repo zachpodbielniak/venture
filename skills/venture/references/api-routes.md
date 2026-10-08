@@ -131,5 +131,14 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /account/identity-link` | signed-in local member links provider identity | -- |
 | `GET /account-authority` | explicit active memberships and bounded site permissions | -- |
 | `POST /lightsite/billing/subscriptions` | trusted idempotent business-to-plan binding | -- |
+| `POST /lightsite/billing/enroll` | fourteen-day deferred enrollment, no invoice | -- |
+| `POST /lightsite/billing/prepay` | frozen 24-month prepaid terms, no invoice until publication | -- |
+| `POST /lightsite/billing/setup` | hosted saved-method setup, no charge | -- |
+| `POST /lightsite/billing/publish` | record first go-live; may start the first charge | -- |
+| `POST /lightsite/billing/first-charge` | idempotent first collection at publication or day fourteen | -- |
+| `POST /lightsite/billing/cancel` | no-charge cancel before the deadline, else period end | -- |
+| `POST /lightsite/billing/guarantee` | one-time capped account credit from a retained measurement | -- |
+| `GET /lightsite/billing/:organization_id/made-back` | won, invoiced and overlap since go-live | -- |
+| `GET /lightsite/billing/:organization_id/notifications` | owner notification facts, no payment credentials | -- |
 | `GET /lightsite/billing/:organization_id` | business plan, balance and own Stripe status | -- |
 | `GET /lightsite/billing` | staff billing overview | -- |

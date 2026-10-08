@@ -409,6 +409,8 @@ test_receipt_sent_on_payment(Fixture *f, gconstpointer data)
 		}
 	}
 	g_assert_cmpuint(receipts, ==, 1);
+	/* Recording the payment adds only its existing PDF receipt. */
+	g_assert_cmpuint(messages->len, ==, 1);
 	g_assert_cmpstr(to, ==, "orders@bellhaven.example");
 	g_assert_nonnull(strstr(attachments, "application/pdf"));
 
@@ -564,12 +566,28 @@ static void
 test_receipt_for_bare_save(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VenturePayment) payment = payment_new(f, "cash");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GPtrArray) messages = NULL;
 
 	(void)data;
 
 	g_assert_false(venture_database_has_transaction(f->db));
 	save(f, VENTURE_ENTITY(payment));
 	g_assert_cmpuint(count_receipts(f), ==, 1);
+	messages = venture_database_find(f->db, query, NULL);
+	g_assert_cmpuint(messages->len, ==, 1);
+}
+
+static void
+test_hosted_receipt_owned_by_application(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) company = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, NULL);
+	g_autoptr(VenturePayment) payment = payment_new(f, "cash");
+	(void)data;
+	g_object_set(company, "external-id", "lightsite:organization:example", NULL);
+	save(f, company);
+	apply_payment(f, payment);
+	g_assert_cmpuint(count_receipts(f), ==, 0);
 }
 
 /*
@@ -645,6 +663,8 @@ main(int argc, char *argv[])
 	           test_receipt_skips_bookkeeping, tear_down);
 	g_test_add("/financial-documents/receipt-for-bare-save", Fixture, NULL, set_up,
 	           test_receipt_for_bare_save, tear_down);
+	g_test_add("/financial-documents/hosted-receipt", Fixture, NULL, set_up,
+	           test_hosted_receipt_owned_by_application, tear_down);
 	g_test_add("/financial-documents/invoice-pdf-exemption", Fixture, NULL, set_up,
 	           test_invoice_pdf_exemption, tear_down);
 	g_test_add("/financial-documents/content-disposition", Fixture, NULL, set_up,

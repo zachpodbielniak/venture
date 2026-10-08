@@ -128,10 +128,21 @@ Unknown tokens return 404. Public requests share a per-peer token bucket of
 30 requests, refilling at one request per two seconds. The token and delivery
 URL are sensitive fields omitted from generic output and audit diffs.
 
-This module does not send mail. The mail lane must wire one adapter from
-committed =quote_delivery= rows to =VentureMailer=, resolve the quote's
-customer/contact email, and combine its relative acceptance URL with the
-installation's public base URL. No electronic signature beyond a typed name,
+When =server.base_url= is configured, sending queues one customer email in
+the existing durable mail outbox within the quote transaction. The public
+address must use HTTPS. The named contact's email takes precedence over the
+customer company's email; both records must belong to the quote's business
+and the contact must belong to that customer. Missing recipient information
+leaves the quote in draft. The retained delivery row records the recipient.
+
+The message contains the quote number, total and private link to the complete
+proposal. Its acceptance link is stored only in the outbox's sensitive body,
+excluded from ordinary serialization and audit output. The quote UUID provides
+the stable delivery identity. SMTP submission happens later through the
+organization's configured mail connection; retry its existing outbox row after
+a known failure. A sent quote status records issuance, not inbox receipt.
+Offline ledgers without a public base address retain their delivery intent
+without queuing email. No electronic signature beyond a typed name,
 contracts, statements of work or delivery projects are created.
 
 * Reporting and upgrades

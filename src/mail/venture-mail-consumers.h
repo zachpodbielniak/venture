@@ -21,4 +21,17 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
  * Returns: success; user and welcome/reset notification commit together
  */
 gboolean venture_mail_save_user(VentureMailOutbox *outbox, VentureEntity *user, const VentureActor *actor, gboolean *handled, GError **error);
+/**
+ * venture_mail_confirm_money:
+ * @database: financial source database
+ * @record: accepted quote
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): enqueue failure
+ *
+ * Internal service hook. The caller owns the action transaction; the message
+ * rolls back with it. Missing customer addresses do not refuse acceptance.
+ * Returns: whether the confirmation was queued or legitimately omitted
+ */
+gboolean venture_mail_confirm_money(VentureDatabase *database, VentureEntity *record,
+    const VentureActor *actor, GError **error);
 #endif

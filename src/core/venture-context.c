@@ -260,6 +260,8 @@ venture_context_new(
 	venture_ai_provider_service_set_config(venture_ai_provider_service_get(self->database), config);
 	g_object_bind_property(config, "server-base-url", venture_sequence_service_get(self->database), "base-url",
 		G_BINDING_SYNC_CREATE);
+	g_object_bind_property(config, "server-base-url", venture_database_get_quote_service(self->database), "base-url",
+		G_BINDING_SYNC_CREATE);
 	/* Bound, like the base URL: turning price-change mail off on a running
 	 * install must stop the next one, not the one after a restart. */
 	g_object_bind_property(config, "billing-trial-reminder-days", venture_billing_service_get(self->database),

@@ -867,7 +867,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "ad435805a0b0f4228ef7a98ae9b03bb3d06591ac");
+		g_assert_cmpstr(g_strstrip(out), ==, "ea69a1c326a7bb555dc8b6ed5ee2f5c4d2fd9a9d");
 	}
 }
 
@@ -1052,6 +1052,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
 #include "test-stripe-automatic.inc"
+#include "test-hosted-stripe.inc"
 
 int
 main(int argc, char **argv)
@@ -1121,6 +1122,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/automatic-expiry-collision", Fixture, "expiry-collision", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-retry", Fixture, "retry", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-cancel", Fixture, "cancel", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/cancel-before-charge", Fixture, "cancel-before-charge", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/price-uniqueness", Fixture, NULL, set_up, test_price_uniqueness, tear_down);
 	g_test_add("/stripe/module-start", Fixture, NULL, set_up, test_module_start, tear_down);
 
@@ -1164,6 +1166,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);
 	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
 	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/hosted-saved-card", Fixture, NULL, set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-day-fourteen", Fixture, "timer", set_up, test_hosted_saved_card, tear_down);
 
 	return g_test_run();
 }

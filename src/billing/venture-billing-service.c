@@ -615,7 +615,7 @@ carried_credit(VentureBillingService *self, VentureEntity *sub, const VentureMon
 
 static gboolean
 issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
-	GDateTime *at, GDateTime *period_start, const VentureActor *actor, gint64 *invoice_id, GError **error)
+	GDateTime *at, GDateTime *period_start, guint terms, guint due_days, const VentureActor *actor, gint64 *invoice_id, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VentureEntity) line = NULL;
@@ -624,6 +624,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	g_autoptr(VentureMoney) adjustment = NULL;
 	g_autofree gchar *date = g_date_time_format(period_start, "%F");
 	g_autofree gchar *invoice_number = NULL;
+	g_autoptr(GDateTime) due = g_date_time_add_days(at, due_days);
 	g_autofree gchar *discount_label = NULL, *description = NULL, *plan_name = NULL, *price_name = NULL;
 	gint64 org = venture_entity_get_organization_id(sub);
 	if (!venture_period_guard_is_postable(VENTURE_PERIOD_GUARD(venture_database_get_period_guard(self->database)),
@@ -632,6 +633,11 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	amount = price_amount(price, number(sub, "seats"), error);
 	if (amount == NULL)
 		return FALSE;
+	if (terms != 1) {
+		VentureMoney *combined = venture_money_multiply_int(amount, terms, error);
+		if (!combined) return FALSE;
+		g_clear_pointer(&amount, venture_money_free); amount = combined;
+	}
 	{
 		VentureMoney *discounted = apply_discount(self, sub, amount, org, &discount_label, error);
 		if (discounted == NULL)
@@ -659,7 +665,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	invoice = new_record(VENTURE_TYPE_INVOICE, org);
 	g_object_set(invoice, "number", invoice_number, "company-id", number(sub, "company-id"),
 		"contact-id", number(sub, "contact-id"), "venture-id", number(plan, "venture-id"),
-		"issued-at", at, "due-at", at, NULL);
+		"issued-at", at, "due-at", due, NULL);
 	if (!venture_database_save(self->database, invoice, actor, error))
 		return FALSE;
 	line = new_record(VENTURE_TYPE_INVOICE_LINE, org);
@@ -670,7 +676,7 @@ issue(VentureBillingService *self, VentureEntity *sub, VentureEntity *price,
 	g_object_get(plan, "name", &plan_name, NULL);
 	price_name = venture_entity_get_display_name(price);
 	{
-		g_autoptr(GDateTime) until = next_period(price, period_start);
+		g_autoptr(GDateTime) until = terms == 2 ? g_date_time_add_months(period_start, 24) : next_period(price, period_start);
 		g_autofree gchar *to = g_date_time_format(until, "%F");
 		GString *text = g_string_new(NULL);
 		g_string_append_printf(text, "%s \xe2\x80\x94 %s", plan_name != NULL ? plan_name : "Subscription", price_name);
@@ -1499,9 +1505,14 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	gint64 issuing = 0;
 	gboolean scheduled = flag(request, "at-period-end");
 	gboolean credited = FALSE;
-	g_object_get(request, "action", &verb, "at", &at, NULL);
+	gboolean prepaid;
+	g_autoptr(GDateTime) term_end = NULL;
+	g_object_get(request, "action", &verb, "at", &at, "term-end", &term_end, NULL);
+	prepaid = !g_strcmp0(verb, "prepay") || !g_strcmp0(verb, "prepay-installments");
 	if (at == NULL || org <= 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "an organization and effective date are required");
+	if (term_end != NULL && (g_strcmp0(verb, "cancel") != 0 || !scheduled))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "term end applies only to prepaid cancellation at period end");
 	if (g_strcmp0(verb, "start") == 0)
 	{
 		g_autoptr(VentureEntity) customer = load(self, VENTURE_TYPE_COMPANY, number(request, "company-id"), org, error);
@@ -1523,6 +1534,10 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		if (seats == 0)
 			seats = 1;
 		trial = number(price, "trial-days");
+		if (number(request, "defer-days") < 0 || number(request, "defer-days") > 366 ||
+			(number(request, "defer-days") && flag(request, "skip-trial")))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "deferred start must be between zero and 366 days and cannot skip trial");
+		if (number(request, "defer-days")) trial = number(request, "defer-days");
 		if (trial < 0 || trial > 366)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "trial days must be between zero and 366");
 		/* Billing from the first day, when the customer wants to pay now. */
@@ -1562,12 +1577,41 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		if (start == NULL || end == NULL || (last != NULL && g_date_time_compare(at, last) < 0))
 			return refuse(error, VENTURE_ERROR_VALIDATION, "events must be chronological and periods complete");
 		old_state = state = choice(sub, "status");
+		{
+			g_autofree gchar *identity = NULL;
+			g_object_get(sub, "external-id", &identity, NULL);
+			if (identity && g_str_has_prefix(identity, "prepaid:")) {
+				/* A due prepaid term ends through the ordinary renewal path
+				 * below. Until cancel-at-period-end is set, renewal must not
+				 * issue: collection belongs to the prepaid service. */
+				if (!g_strcmp0(verb, "renew")) {
+					if (!flag(sub, "cancel-at-period-end"))
+						return TRUE;
+				}
+				else if (!prepaid && g_strcmp0(verb, "collect") &&
+					!(g_strcmp0(verb, "cancel") == 0 && (state == 0 || scheduled)))
+					return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid terms require the prepaid collection service");
+			}
+			else if (prepaid) return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid enrollment is required");
+		}
 		old_seats = seats = number(sub, "seats");
 		old_price = venture_entity_get_id(price);
 		before = mrr(self, sub, price, seats, state, 0, error);
 		if (before == NULL)
 			return FALSE;
-		if (g_strcmp0(verb, "renew") == 0)
+		if ((!g_strcmp0(verb, "activate") || prepaid) &&
+			(state != 0 || (!prepaid && flag(sub, "cancel-at-period-end"))))
+			return refuse(error, VENTURE_ERROR_CONFLICT, "only an uncancelled trial may activate early");
+		if (prepaid && (choice(price, "interval") != 1 || number(sub, "discount-id") ||
+			venture_plan_price_is_metered(VENTURE_PLAN_PRICE(price))))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "prepayment requires a fixed undiscounted annual plan");
+		if (g_strcmp0(verb, "activate") == 0 || prepaid)
+		{
+			g_clear_pointer(&end, g_date_time_unref);
+			end = g_date_time_ref(at);
+			g_object_set(sub, "trial-end", at, "billing-anchor", at, NULL);
+		}
+		if (g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "activate") == 0 || prepaid)
 		{
 			GDateTime *next;
 			if (state != 0 && state != 1 && !(state < 4 && flag(sub, "cancel-at-period-end")))
@@ -1599,9 +1643,11 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 					g_set_object(&price, next_price);
 					g_object_set(sub, "plan-price-id", venture_entity_get_id(price), "pending-plan-price-id", (gint64)0, "billing-anchor", end, NULL);
 				}
-				if (!issue(self, sub, price, at, end, actor, &invoice_id, error))
+				if (!issue(self, sub, price, at, end, prepaid ? 2 : 1,
+					!g_strcmp0(verb, "prepay-installments") ? 30 : 0, actor, &invoice_id, error))
 					return FALSE;
-				next = anchored_period(sub, price, end);
+				next = prepaid ? g_date_time_add_months(end, 24) : anchored_period(sub, price, end);
+				if (prepaid) g_object_set(sub, "cancel-at-period-end", TRUE, NULL);
 				g_object_set(sub, "current-period-start", end, "current-period-end", next, "pending-adjustment", NULL, NULL);
 				g_date_time_unref(next);
 				state = 1;
@@ -1661,7 +1707,23 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 		{
 			kind = 7;
 			if (scheduled)
+			{
+				/* Publication of an uninvoiced prepaid term replaces the
+				 * unpaid trial end. The date is the one renewal will honor. */
+				if (term_end != NULL)
+				{
+					g_autofree gchar *identity = NULL;
+					g_object_get(sub, "external-id", &identity, NULL);
+					if (identity == NULL || !g_str_has_prefix(identity, "prepaid:"))
+						return refuse(error, VENTURE_ERROR_VALIDATION, "term end applies only to prepaid cancellation at period end");
+					if (start == NULL || g_date_time_compare(term_end, start) <= 0)
+						return refuse(error, VENTURE_ERROR_VALIDATION, "prepaid term end must follow the period start");
+					g_object_set(sub, "current-period-end", term_end, NULL);
+					g_clear_pointer(&end, g_date_time_unref);
+					end = g_date_time_ref(term_end);
+				}
 				g_object_set(sub, "cancel-at-period-end", TRUE, NULL);
+			}
 			else
 			{
 				g_auto(UnusedCredit) credit = { NULL, NULL, 0, 0, 0 };
@@ -1789,7 +1851,7 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 	/* Insertion gives the event a real referent; veto still rolls it back. */
 	if (!write_record(self, sub, actor, error))
 		return FALSE;
-	if (old_price == 0 && state == 1 && !issue(self, sub, price, at, start, actor, &invoice_id, error))
+	if (old_price == 0 && state == 1 && !issue(self, sub, price, at, start, 1, 0, actor, &invoice_id, error))
 		return FALSE;
 	event = new_record(VENTURE_TYPE_SUBSCRIPTION_EVENT, org);
 	g_object_set(event, "subscription-id", venture_entity_get_id(sub), "kind", kind, "at", at,
@@ -1850,6 +1912,13 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 		g_autoptr(VentureEntity) action = NULL;
 		gint state = choice(sub, "status");
 		gint64 id = venture_entity_get_id(sub);
+		g_autofree gchar *identity = NULL;
+		g_object_get(sub, "external-id", &identity, NULL);
+		/* Unpublished prepaid terms are not ordinary trials. Once the
+		 * prepaid invoice or a published cancellation has scheduled the
+		 * end, a due period ends here and is not invoiced again. */
+		if (identity && g_str_has_prefix(identity, "prepaid:") && !flag(sub, "cancel-at-period-end"))
+			continue;
 		if (steps == NULL)
 		{
 			if (!dry && !trial_reminder(self, sub, at, actor, error))
@@ -1979,7 +2048,8 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 	if (flag(copy, "dry-run") && g_strcmp0(verb, "renew-sweep") != 0 && g_strcmp0(verb, "dunning-sweep") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "dry-run is available for sweeps only");
 	/* Changes to future terms and dunning state do not themselves post money. */
-	can_post = g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "renew-sweep") == 0 ||
+	can_post = g_strcmp0(verb, "prepay") == 0 || g_strcmp0(verb, "prepay-installments") == 0 ||
+		g_strcmp0(verb, "activate") == 0 || g_strcmp0(verb, "renew") == 0 || g_strcmp0(verb, "renew-sweep") == 0 ||
 		g_strcmp0(verb, "collect") == 0 ||
 		/* Cancelling now credits the unused days of the period. */
 		(g_strcmp0(verb, "cancel") == 0 && !flag(copy, "at-period-end"));
@@ -1988,7 +2058,8 @@ venture_billing_service_execute(VentureBillingService *self, VentureBillingReque
 		g_autoptr(VentureEntity) price = load(self, VENTURE_TYPE_PLAN_PRICE,
 			number(copy, "plan-price-id"), venture_entity_get_organization_id(copy), error);
 		if (price == NULL) return FALSE;
-		can_post = number(price, "trial-days") == 0;
+		can_post = flag(copy, "skip-trial") ||
+			(number(copy, "defer-days") == 0 && number(price, "trial-days") == 0);
 	}
 	if (!flag(copy, "dry-run") && can_post)
 	{

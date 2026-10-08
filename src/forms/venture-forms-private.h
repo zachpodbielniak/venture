@@ -291,7 +291,7 @@ gboolean venture_forms_relay_supported(VentureEntity *form, GPtrArray *fields);
 typedef gboolean (*VentureFormsRelayCheck)(gpointer data, GError **error);
 JsonNode *venture_forms_relay_checked(VentureDatabase *database, gint64 organization_id,
 	const gchar *scope, const gchar *origin, JsonObject *envelope, GDateTime *now,
-	VentureFormsRelayCheck check, gpointer check_data, GError **error);
+	VentureFormsRelayCheck check, gpointer check_data, VentureEntity **accepted_response, GError **error);
 
 G_END_DECLS
 

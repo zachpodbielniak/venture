@@ -78,6 +78,7 @@ subscriptions. See Stripe's [[https://docs.stripe.com/payments/ach-direct-debit]
 | Record | Retained contract |
 |--------+-------------------|
 | =stripe_authorization= | Subscription terms, exact cap, hosted Setup/mandate proof, enabled state and next collection check |
+| =stripe_prepayment= | One prepaid subscription's frozen 24-month total, payment path, invoice and service-owned collection journal. Ordinary writes cannot create or alter it. See [[file:hosted-billing.org][Hosted enrollment and guarantee]] |
 | =stripe_customer_link= | Organization, immutable connection and company/contact customer mapping |
 | =stripe_price_link= | Organization/account product catalog reference |
 | =stripe_checkout= | Invoice, reserved exact money, account, fixed return URLs/ACH choice/deadline, provider identity and settlement reference |

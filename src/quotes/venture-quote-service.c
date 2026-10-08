@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "venture-quote-mail.h"
 #include <sys/random.h>
 #include <errno.h>
 #include <string.h>
@@ -11,6 +12,7 @@ struct _VentureQuoteService {
 	VentureEntity *writing;
 	VentureEntity *removing;
 	gboolean busy;
+	gchar *base_url;
 };
 G_DEFINE_FINAL_TYPE(VentureQuoteService, venture_quote_service, G_TYPE_OBJECT)
 
@@ -26,6 +28,7 @@ get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 {
 	VentureQuoteService *self = VENTURE_QUOTE_SERVICE(object);
 	if (id == 1) g_value_set_object(value, self->database);
+	else if (id == 2) g_value_set_string(value, self->base_url);
 	else G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
 
@@ -39,6 +42,10 @@ set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
 		if (self->database != NULL)
 			g_object_add_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	}
+	else if (id == 2) {
+		g_free(self->base_url);
+		self->base_url = g_value_dup_string(value);
+	}
 	else G_OBJECT_WARN_INVALID_PROPERTY_ID(object, id, spec);
 }
 
@@ -46,6 +53,7 @@ static void
 finalize(GObject *object)
 {
 	VentureQuoteService *self = VENTURE_QUOTE_SERVICE(object);
+	g_free(self->base_url);
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	G_OBJECT_CLASS(venture_quote_service_parent_class)->finalize(object);
@@ -83,6 +91,9 @@ venture_quote_service_class_init(VentureQuoteServiceClass *klass)
 	g_object_class_install_property(object, 1,
 		g_param_spec_object("database", "Database", "Owning database", VENTURE_TYPE_DATABASE,
 		G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY | G_PARAM_STATIC_STRINGS));
+	g_object_class_install_property(object, 2,
+		g_param_spec_string("base-url", "Base URL", "Public address for quote acceptance", "",
+			G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
@@ -783,6 +794,7 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		url = g_strconcat("/q/", token, NULL);
 		venture_entity_set_organization_id(delivery, org);
 		g_object_set(delivery, "quote-id", venture_entity_get_id(q), "channel", "email", "acceptance-url", url, NULL);
+		if (!venture_quote_mail_enqueue(self->database, q, delivery, self->base_url, actor, error)) goto done;
 		if (!write_record(self, delivery, actor, error)) goto done;
 	}
 	else if (g_strcmp0(verb, "accept") == 0 && state(q) == VENTURE_QUOTE_SENT)
@@ -825,6 +837,7 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		goto done;
 	}
 	if (!write_record(self, q, actor, error) || !write_record(self, request, actor, error)) goto done;
+	if (!g_strcmp0(verb, "accept") && !venture_mail_confirm_money(self->database, q, actor, error)) goto done;
 	ok = TRUE;
 done:
 	self->busy = FALSE;
