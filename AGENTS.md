@@ -1380,6 +1380,15 @@ than one that fails.
   Floating panels (`.picker-panel`, `.record-results`) are
   `position: fixed` and placed by `placeFloating()`, because `.card` has
   `overflow: hidden` and clipped them.
+- **Every table with a `<thead>` sorts in the browser; say why one must
+  not.** `wireSortableTables()` in venture.js takes every table, so a new
+  one sorts with no attribute at all. Mark the exceptions on the server:
+  `data-no-sort` where the order is the content (a calendar grid, a line
+  editor's `tbody[data-lines]`), `venture_report_result_set_ordered()` for
+  a statement, `data-server-sort` for a paged table (its heading links are
+  fetched and only its card swapped). Put a total in `<tfoot>` -- in a
+  report, `venture_report_result_mark_summary()` -- or a sort moves it among
+  the rows it adds up. `docs/interface.org` ("Tables") has the rest.
 - **An error notice is announced.** `<div class="notice negative" role="alert">`
   and the error page's `role="alert"` are what a test asserts on now;
   toasts go into the server-rendered `<div class="toasts" role="status"

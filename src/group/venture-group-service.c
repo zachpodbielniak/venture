@@ -295,6 +295,9 @@ venture_group_service_consolidated(VentureGroupService *self, gint64 parent_id,
 	books = venture_ledger_balances_new(self->database);
 	result = venture_report_result_new(trial ? "Consolidated trial balance" :
 		(sheet ? "Consolidated balance sheet" : "Consolidated income statement"), period);
+	/* A statement's eliminations and totals sit where they mean something;
+	 * the trial balance is a list of accounts. */
+	venture_report_result_set_ordered(result, !trial);
 	venture_report_result_add_column(result, "key", "Code", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "name", "Account", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "organization", "Organization", VENTURE_REPORT_COLUMN_TEXT);

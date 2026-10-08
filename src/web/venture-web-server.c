@@ -6951,9 +6951,12 @@ venture_web_ui_list(
 			venture_web_append_bulk_bar(self, content, request, type_name,
 			                            prototype);
 
+		/* Paged, so sorted on the server: a heading must order every
+		 * page. data-server-sort has the page's script fetch the order
+		 * and swap this card rather than sort the rows it can see. */
 		g_string_append_printf(content,
 			"<div class=\"card\"><div class=\"table-wrap\">"
-			"<table class=\"data%s\" data-list><thead><tr>%s",
+			"<table class=\"data%s\" data-list data-server-sort><thead><tr>%s",
 			bulk ? " selectable" : "",
 			bulk ? "<th class=\"tick\"><input type=\"checkbox\" "
 			       "data-bulk-all title=\"Select all\"></th>" : "");
@@ -7166,7 +7169,9 @@ venture_web_ui_reports(
 	                       "and the records can answer.</span></div><div class=\"page-actions\">"
 	                       "<input type=\"search\" placeholder=\"Find a report\xe2\x80\xa6\" "
 	                       "aria-label=\"Find a report\" data-report-filter autofocus></div></div>"
-	                       "<div class=\"card\"><table class=\"data report-index\"><tbody>");
+	                       "<div class=\"card\"><table class=\"data report-index\" data-no-filter>"
+	                       "<thead><tr><th scope=\"col\">Report</th><th scope=\"col\">What it answers</th>"
+	                       "<th scope=\"col\"><span class=\"visually-hidden\">Export</span></th></tr></thead><tbody>");
 
 	for (i = 0; i < reports->len; i++)
 	{

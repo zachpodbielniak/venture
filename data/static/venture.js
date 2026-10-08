@@ -3252,6 +3252,7 @@
 			count.textContent = picked.length + " selected";
 			bar.hidden = picked.length === 0;
 
+			all = document.querySelector("[data-bulk-all]");
 			if (all) {
 				all.checked = picked.length > 0 && picked.length === boxes().length;
 			}
@@ -3287,12 +3288,14 @@
 			}
 		});
 
-		if (all) {
-			all.addEventListener("change", function () {
-				boxes().forEach(function (box) { box.checked = all.checked; });
+		/* Delegated, and the box looked up each time: a sort swaps the
+		 * list's table, heading row and all, for a fresh one. */
+		document.addEventListener("change", function (event) {
+			if (event.target.matches("[data-bulk-all]")) {
+				boxes().forEach(function (box) { box.checked = event.target.checked; });
 				sync();
-			});
-		}
+			}
+		});
 
 		field.addEventListener("change", valueControl);
 		valueControl();
@@ -5076,99 +5079,363 @@
 	});
 
 	/*
-	 * Tables sort and filter in place. A table marked data-client-sort --
-	 * and every market, arbitrage and accounts table, unless it is paged on
-	 * the server (data-server-sort) -- sorts by a click on a heading:
-	 * the rows already on the page reorder by each cell's data-sort-value,
-	 * or failing one the cell's text read as a figure ("9,999g 98s", "12.5%",
-	 * "1.2345 GOLD", "42") or as a name; rows with no value ("—") stay last
-	 * either way; a second click turns it round; aria-sort marks it. A
-	 * heading the server sorts by (data-sort-default) also puts its link's
-	 * address in the location bar, so a reload asks for the same order.
-	 * Tables of eight rows or more get a box that hides rows not matching
-	 * what is typed. Without script, headings are what the server made.
+	 * Every table with a heading row sorts and filters in place. A click
+	 * on a heading reorders the rows already on the page by each cell's
+	 * data-sort-value, or failing one its <time datetime>, or failing
+	 * that its text read as a figure -- gold ("9,999g 98s"), money in any
+	 * currency ("$1,234.56", "1,234.56 USD", "(5.00)"), a percent, a date
+	 * ("2026-10-08 12:30", "8 Oct 2026"), an age ("12 min ago", "in 3 h")
+	 * -- or as a name; rows with no value ("—") stay last either way; a
+	 * second click turns it round; aria-sort marks it. A heading the
+	 * server sorts by (data-sort-default) also puts its link's address in
+	 * the location bar, so a reload asks for the same order. Tables of
+	 * eight rows or more get a box that hides rows not matching what is
+	 * typed. Without script, headings are what the server made.
+	 *
+	 * It is the default rather than a class to opt into because the
+	 * tables nobody had marked were the ones found not sorting. What is
+	 * left out is left out because sorting it would be wrong, and
+	 * sortRefusal() says each reason.
+	 *
+	 * A table paged on the server (data-server-sort: Browse, the
+	 * inventory, every record list) cannot sort here, since a heading
+	 * must sort every page; its headings and pager fetch the next order
+	 * and swap only the table's card, so the page around it stays put.
 	 */
-	var SORTABLE = "table.market-table, table.arbitrage-table, table[data-client-sort]";
+	var MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+	/* Only a month's name or its abbreviation: "Mayor 2026" is a name. */
+	var MONTH_NAME = /^(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sept?(ember)?|oct(ober)?|nov(ember)?|dec(ember)?)$/i;
+	var AGE_UNITS = {
+		s: 1, sec: 1, second: 1, m: 60, min: 60, minute: 60, h: 3600, hr: 3600, hour: 3600,
+		d: 86400, day: 86400, w: 604800, wk: 604800, week: 604800,
+		mo: 2592000, month: 2592000, y: 31536000, yr: 31536000, year: 31536000
+	};
 
 	function cellText(cell) {
-		var value = cell.getAttribute("data-sort-value");
+		var value;
+		var time;
 		var text;
 
+		if (!cell) {
+			return null;
+		}
+
+		value = cell.getAttribute("data-sort-value");
 		if (value !== null) {
 			return value;
 		}
 
 		text = cell.textContent.replace(/\s+/g, " ").trim();
+
+		/* "3h" is for reading; the moment is in the attribute. Only when
+		 * the time is what the cell says, though: a venue's name with its
+		 * price's age beside it sorts by the name. A "stale" flag is part
+		 * of the age, not other content. */
+		time = cell.querySelector ? cell.querySelector("time[datetime]") : null;
+		if (time && Array.prototype.reduce.call(cell.querySelectorAll(".price-age-flag"), function (left, flag) {
+			return left.replace(flag.textContent, "");
+		}, text.replace(time.textContent.replace(/\s+/g, " ").trim(), "")).trim() === "") {
+			return time.getAttribute("datetime");
+		}
+
 		return (text === "" || /^[—–\-]+$/.test(text)) ? null : text;
 	}
 
-	/* A cell's text as a number: gold in copper, a percent, an amount with
-	 * its currency, a plain figure; NaN when it is not one. */
+	/* A calendar date or moment as milliseconds since the epoch, read as
+	 * UTC unless it names an offset; NaN when it is not one. */
+	function cellDate(text) {
+		var iso = /^(\d{4})-(\d{2})(?:-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?)?)?\s*(Z|UTC|GMT|[+\-]\d{2}:?\d{2})?$/i.exec(text);
+		var week = /^(\d{4})-W(\d{2})$/.exec(text);
+		var named = /^(?:[A-Za-z]{3,9},?\s+|Week of\s+)?(?:(\d{1,2})\s+)?([A-Za-z]{3,9})\.?\s+(?:(\d{1,2}),?\s+)?(\d{4})(?:,?\s+(\d{1,2}):(\d{2}))?(?:\s*(?:UTC|GMT|Z))?$/i.exec(text);
+		var age = /^(?:(in)\s+)?(\d+)\s*([a-z]+?)s?(\s+ago)?$/i.exec(text);
+		var ms;
+		var offset;
+		var month;
+		var unit;
+
+		if (iso) {
+			ms = Date.UTC(+iso[1], +iso[2] - 1, iso[3] ? +iso[3] : 1, iso[4] ? +iso[4] : 0,
+			              iso[5] ? +iso[5] : 0, iso[6] ? +iso[6] : 0,
+			              iso[7] ? Math.round(parseFloat(iso[7]) * 1000) : 0);
+			offset = iso[8] ? /^([+\-])(\d{2}):?(\d{2})$/.exec(iso[8]) : null;
+			if (offset) {
+				ms -= (offset[1] === "-" ? -1 : 1) * ((+offset[2] * 60) + (+offset[3])) * 60000;
+			}
+			return ms;
+		}
+
+		if (week) {
+			return Date.UTC(+week[1], 0, 1) + ((+week[2] - 1) * 604800000);
+		}
+
+		if (named) {
+			month = MONTH_NAME.test(named[2]) ? MONTHS.indexOf(named[2].slice(0, 3).toLowerCase()) : -1;
+			if (month >= 0 && !(named[1] && named[3])) {
+				return Date.UTC(+named[4], month, +(named[1] || named[3] || 1),
+				                named[5] ? +named[5] : 0, named[6] ? +named[6] : 0);
+			}
+		}
+
+		if (/^(just )?now$/i.test(text)) {
+			return Date.now();
+		}
+
+		/* An age needs its "ago" or "in": "3 h" alone is a duration. */
+		if (age && (age[1] || age[4]) && !(age[1] && age[4])) {
+			unit = AGE_UNITS[age[3].toLowerCase()];
+			if (unit) {
+				return Date.now() + ((age[1] ? 1 : -1) * +age[2] * unit * 1000);
+			}
+		}
+
+		return NaN;
+	}
+
+	/* A cell's text as a number: gold in copper, a date or age in
+	 * milliseconds, money in any currency, a percent, a plain figure;
+	 * NaN when it is not one. */
 	function cellNumber(text) {
 		var gold = /^(-?)(?:([\d,]+)g)?\s*(?:(\d+)s)?\s*(?:(\d+)c)?$/.exec(text);
-		var plain;
+		var when;
+		var s;
+		var negative = false;
+		var m;
 
 		if (gold && (gold[2] || gold[3] || gold[4])) {
 			return (gold[1] ? -1 : 1) * ((parseInt((gold[2] || "0").replace(/,/g, ""), 10) * 10000) +
 			                             (parseInt(gold[3] || "0", 10) * 100) + parseInt(gold[4] || "0", 10));
 		}
 
-		plain = /^(-?[\d,]*\.?\d+)\s*(%|[A-Za-z]{1,5})?$/.exec(text);
-		return plain ? parseFloat(plain[1].replace(/,/g, "")) : NaN;
+		when = cellDate(text);
+		if (!isNaN(when)) {
+			return when;
+		}
+
+		/* Accountants write a negative in brackets, "(5.00)"; a minus
+		 * can come before or after the symbol ("-$5", "$-5"). */
+		s = text.replace(/[   ]/g, " ").replace(/−/g, "-").trim();
+		if (/^\(.*\)$/.test(s)) {
+			negative = true;
+			s = s.slice(1, -1).trim();
+		}
+
+		m = /^([+\-])?\s*(?:[A-Z][A-Z0-9_]{1,15}\s+)?([+\-])?\s*(?:(?:[A-Z]{1,3})?[^\w\s.,+\-()%]{1,2})?\s*([+\-])?\s*(\d[\d,]*(?:\.\d+)?|\.\d+)\s*(?:%|[A-Za-z][A-Za-z0-9_]{0,15}|[^\w\s.,+\-()%]{1,2})?$/.exec(s);
+		if (!m) {
+			return NaN;
+		}
+
+		if (m[1] === "-" || m[2] === "-" || m[3] === "-") {
+			negative = !negative;
+		}
+
+		return (negative ? -1 : 1) * parseFloat(m[4].replace(/,/g, ""));
+	}
+
+	/* A value as a number for a numeric column: a plain figure as it is,
+	 * anything else parsed. */
+	function sortNumber(value) {
+		return (value !== null && parseFloat(value) == value) ? parseFloat(value) : cellNumber(value);
+	}
+
+	/*
+	 * Why a table must not sort here, or null when it may. Each reason is
+	 * a case where a different order is a wrong one, not just a new one.
+	 */
+	function sortRefusal(table) {
+		var refusal = null;
+
+		if (table.matches("[data-no-sort], .chart-data, .visually-hidden") || table.closest("[data-no-sort]")) {
+			return "marked";
+		}
+
+		/* Paged: a heading must sort every page, which only the server can. */
+		if (table.hasAttribute("data-server-sort")) {
+			return "server";
+		}
+
+		/* No heading row to click; and stacked headings would leave the
+		 * column a heading names a guess. */
+		if (!table.tHead || table.tHead.rows.length !== 1 || table.tBodies.length === 0) {
+			return "no heading";
+		}
+
+		Array.prototype.forEach.call(table.tBodies, function (tbody) {
+			if (refusal) {
+				return;
+			}
+
+			/* A line editor: its rows are posted in order, and its script
+			 * keeps them. */
+			if (tbody.hasAttribute("data-lines")) {
+				refusal = "editor";
+				return;
+			}
+
+			Array.prototype.forEach.call(tbody.rows, function (row) {
+				if (refusal) {
+					return;
+				}
+
+				Array.prototype.forEach.call(row.cells, function (cell) {
+					/* A cell over several rows ties them together. */
+					if ((cell.rowSpan || 1) > 1) {
+						refusal = "rowspan";
+					}
+				});
+
+				/* A field posted by a form outside its own row: moving the
+				 * row moves it in what the form sends. A form inside the
+				 * row, or a tick box, is the row's own and goes with it. */
+				Array.prototype.forEach.call(row.querySelectorAll("input, select, textarea"), function (control) {
+					if (control.type === "checkbox" || control.type === "radio" ||
+					    control.type === "submit" || control.type === "button") {
+						return;
+					}
+
+					if (!control.form || !row.contains(control.form)) {
+						refusal = "form controls";
+					}
+				});
+			});
+		});
+
+		return refusal;
+	}
+
+	/* A heading row's cell for a column, counting spans; null when a
+	 * cell spanning several columns covers it. */
+	function cellAt(row, column) {
+		var position = 0;
+		var i;
+
+		for (i = 0; i < row.cells.length; i++) {
+			if (position === column) {
+				return row.cells[i];
+			}
+
+			position += row.cells[i].colSpan || 1;
+
+			if (position > column) {
+				return null;
+			}
+		}
+
+		return null;
+	}
+
+	/* A row that heads a group ("No realm", a login), or says the table
+	 * is empty: it stays where it is and the rows under it sort among
+	 * themselves. */
+	function isDivider(row) {
+		var first = row.cells[0];
+
+		return !first || (row.cells.length === 1 && (first.colSpan || 1) > 1) ||
+		       first.getAttribute("scope") === "rowgroup";
+	}
+
+	/* A total left in the body: it stays at the foot of its group. */
+	function isPinned(row) {
+		return /(^|\s)(total|subtotal|summary)(\s|$)/.test(row.className || "") ||
+		       row.hasAttribute("data-sort-pin") ||
+		       (row.cells.length > 1 && (row.cells[0].colSpan || 1) > 1);
 	}
 
 	function sortTableBy(heading) {
 		var table = heading.closest("table");
-		var tbody = table ? table.tBodies[0] : null;
 		var headings = heading.parentNode.children;
-		var column = Array.prototype.indexOf.call(headings, heading);
 		var type = heading.getAttribute("data-sort-type") || "auto";
 		var current = heading.getAttribute("aria-sort");
+		var column = 0;
+		var keyed = [];
+		var groups = [];
+		var parsed = 0;
+		var present = 0;
 		var descending;
 		var numeric;
-		var rows;
 		var i;
 
-		if (!tbody || column < 0) {
+		if (!table || sortRefusal(table)) {
 			return;
 		}
 
-		rows = Array.prototype.filter.call(tbody.rows, function (row) {
-			return row.cells.length > column && !row.cells[0].hasAttribute("colspan");
+		for (i = 0; i < headings.length && headings[i] !== heading; i++) {
+			column += headings[i].colSpan || 1;
+		}
+
+		/* Each run of rows between dividers sorts on its own, its totals
+		 * after it. */
+		Array.prototype.forEach.call(table.tBodies, function (tbody) {
+			var group = { divider: null, rows: [], pinned: [] };
+
+			groups.push({ tbody: tbody, groups: [group] });
+			Array.prototype.forEach.call(tbody.rows, function (row) {
+				var value;
+
+				if (isDivider(row)) {
+					group = { divider: row, rows: [], pinned: [] };
+					groups[groups.length - 1].groups.push(group);
+					return;
+				}
+
+				if (isPinned(row)) {
+					group.pinned.push(row);
+					return;
+				}
+
+				value = cellText(cellAt(row, column));
+				keyed.push({ row: row, value: value, index: keyed.length, group: group });
+
+				if (value !== null) {
+					present++;
+					parsed += isNaN(sortNumber(value)) ? 0 : 1;
+				}
+			});
 		});
 
-		numeric = type === "num" || (type === "auto" && rows.every(function (row) {
-			var text = cellText(row.cells[column]);
+		/* Numeric when nearly every value reads as one: a "n/a" or a
+		 * "never" in a column of figures sorts last, not alphabetically. */
+		numeric = type === "num" || (type === "auto" && present > 0 && parsed >= Math.ceil(present * 0.8));
 
-			return text === null || !isNaN(cellNumber(text)) ||
-			       row.cells[column].hasAttribute("data-sort-value");
-		}) && rows.some(function (row) { return cellText(row.cells[column]) !== null; }));
+		keyed.forEach(function (entry) {
+			entry.key = entry.value === null ? null : numeric ? sortNumber(entry.value) : entry.value;
+			if (numeric && isNaN(entry.key)) {
+				entry.key = null;
+			}
+		});
 
 		descending = current ? current === "ascending"
 		                     : (heading.getAttribute("data-sort-default") === "desc" ||
 		                        (!heading.hasAttribute("data-sort-default") && numeric));
 
-		rows.sort(function (a, b) {
-			var x = cellText(a.cells[column]);
-			var y = cellText(b.cells[column]);
+		keyed.sort(function (a, b) {
 			var order;
 
-			if ((x === null) !== (y === null)) {
-				return x === null ? 1 : -1;
+			if ((a.key === null) !== (b.key === null)) {
+				return a.key === null ? 1 : -1;
 			}
 
-			if (x === null) {
-				return 0;
-			}
+			order = a.key === null ? 0
+			      : numeric ? a.key - b.key
+			      : a.key.localeCompare(b.key, undefined, { sensitivity: "base", numeric: true });
 
-			order = numeric ? (parseFloat(x) == x ? parseFloat(x) : cellNumber(x)) -
-			                  (parseFloat(y) == y ? parseFloat(y) : cellNumber(y))
-			                : x.localeCompare(y, undefined, { sensitivity: "base", numeric: true });
+			if (order === 0) {
+				return a.index - b.index;
+			}
 
 			return descending ? -order : order;
 		});
 
-		rows.forEach(function (row) { tbody.appendChild(row); });
+		keyed.forEach(function (entry) { entry.group.rows.push(entry); });
+		groups.forEach(function (body) {
+			body.groups.forEach(function (each) {
+				if (each.divider) {
+					body.tbody.appendChild(each.divider);
+				}
+
+				each.rows.forEach(function (entry) { body.tbody.appendChild(entry.row); });
+				each.pinned.forEach(function (row) { body.tbody.appendChild(row); });
+			});
+		});
 
 		for (i = 0; i < headings.length; i++) {
 			if (headings[i] !== heading) {
@@ -5179,16 +5446,32 @@
 		heading.setAttribute("aria-sort", descending ? "descending" : "ascending");
 	}
 
+	/* The rows a filter or a count is about: neither dividers nor totals. */
+	function dataRows(table) {
+		var rows = [];
+
+		Array.prototype.forEach.call(table.tBodies, function (tbody) {
+			Array.prototype.forEach.call(tbody.rows, function (row) {
+				if (!isDivider(row) && !isPinned(row)) {
+					rows.push(row);
+				}
+			});
+		});
+
+		return rows;
+	}
+
 	/* A filter box over a table: rows whose text does not contain what is
-	 * typed are hidden, and a count says how many show. */
+	 * typed are hidden, a group heading with nothing left under it too,
+	 * and a count says how many show. */
 	function addTableFilter(table) {
-		var tbody = table.tBodies[0];
-		var anchor = table.closest(".table-wrap") || table;
+		var anchor = table.closest(".table-wrap, .md-table") || table;
+		var total = dataRows(table).length;
 		var box;
 		var input;
 		var count;
 
-		if (!tbody || tbody.rows.length < 8 || table.hasAttribute("data-filter-wired")) {
+		if (total < 8 || table.hasAttribute("data-filter-wired") || table.hasAttribute("data-no-filter")) {
 			return;
 		}
 
@@ -5209,33 +5492,71 @@
 			var needle = input.value.trim().toLocaleLowerCase();
 			var shown = 0;
 
-			Array.prototype.forEach.call(tbody.rows, function (row) {
-				var match = needle === "" || row.textContent.toLocaleLowerCase().indexOf(needle) >= 0;
+			Array.prototype.forEach.call(table.tBodies, function (tbody) {
+				var divider = null;
+				var any = false;
 
-				row.hidden = !match;
-				shown += match ? 1 : 0;
+				function closeGroup() {
+					if (divider) {
+						divider.hidden = needle !== "" && !any;
+					}
+				}
+
+				Array.prototype.forEach.call(tbody.rows, function (row) {
+					var match;
+
+					if (isDivider(row)) {
+						closeGroup();
+						divider = row;
+						any = false;
+						return;
+					}
+
+					if (isPinned(row)) {
+						return;
+					}
+
+					match = needle === "" || row.textContent.toLocaleLowerCase().indexOf(needle) >= 0;
+					row.hidden = !match;
+					shown += match ? 1 : 0;
+					any = any || match;
+				});
+
+				closeGroup();
 			});
 
-			count.textContent = needle === "" ? "" : shown + " of " + tbody.rows.length;
+			count.textContent = needle === "" ? "" : shown + " of " + total;
 		});
 	}
 
 	/* Headings without a link become buttons, so every column sorts. */
 	function wireSortableTables(root) {
-		Array.prototype.forEach.call((root || document).querySelectorAll(SORTABLE), function (table) {
-			if (table.hasAttribute("data-server-sort") || !table.tHead) {
+		Array.prototype.forEach.call((root || document).querySelectorAll("table:not([data-sort-wired])"), function (table) {
+			table.setAttribute("data-sort-wired", "");
+
+			if (sortRefusal(table)) {
 				return;
 			}
 
 			table.setAttribute("data-client-sort", "");
-			Array.prototype.forEach.call(table.tHead.rows[0] ? table.tHead.rows[0].cells : [], function (heading) {
+			Array.prototype.forEach.call(table.tHead.rows[0].cells, function (heading) {
 				var button;
+
+				if (heading.hasAttribute("data-no-sort")) {
+					return;
+				}
 
 				if (!heading.hasAttribute("data-sort-type")) {
 					heading.setAttribute("data-sort-type", "auto");
 				}
 
-				if (heading.querySelector("a, button") || heading.textContent.trim() === "") {
+				/* A column with no visible name ("Remove", "Export" for a
+				 * screen reader) is a column of controls, not of values. */
+				if (heading.querySelector("a, button, input, select") ||
+				    heading.textContent.trim() === "" ||
+				    Array.prototype.reduce.call(heading.querySelectorAll(".visually-hidden"), function (left, hidden) {
+					    return left.replace(hidden.textContent, "");
+				    }, heading.textContent).trim() === "") {
 					return;
 				}
 
@@ -5264,6 +5585,12 @@
 			return;
 		}
 
+		/* An editor that grew form rows since the page loaded: the link
+		 * (if any) does what it says. */
+		if (sortRefusal(heading.closest("table"))) {
+			return;
+		}
+
 		event.preventDefault();
 		sortTableBy(heading);
 
@@ -5282,14 +5609,183 @@
 		}
 	});
 
-	document.addEventListener("htmx:afterSwap", function (event) {
-		wireSortableTables(event.target);
+	/* What a server-sorted table's answer replaces: its card, which holds
+	 * the pager too, so "Page 2 of 9" and the Next link follow the order. */
+	function sortRegion(table) {
+		return table.closest("[data-sort-region]") || table.closest(".card") ||
+		       table.closest(".table-wrap") || table;
+	}
+
+	/* A GET form beside the table carries the order in hidden fields
+	 * (Browse's "Show" keeps sort and dir); without the answer's copies a
+	 * later filter would ask for the order before this one. */
+	function syncHiddenState(fresh, region) {
+		var mine = document.querySelectorAll("form");
+		var theirs = fresh.querySelectorAll("form");
+		var i;
+
+		if (mine.length !== theirs.length) {
+			return;
+		}
+
+		for (i = 0; i < mine.length; i++) {
+			if (region.contains(mine[i]) || (mine[i].getAttribute("method") || "get").toLowerCase() !== "get" ||
+			    mine[i].getAttribute("action") !== theirs[i].getAttribute("action")) {
+				continue;
+			}
+
+			Array.prototype.forEach.call(mine[i].querySelectorAll("input[type=hidden][name]"), function (input) {
+				input.parentNode.removeChild(input);
+			});
+			Array.prototype.forEach.call(theirs[i].querySelectorAll("input[type=hidden][name]"), function (input) {
+				mine[i].appendChild(document.importNode(input, true));
+			});
+		}
+	}
+
+	/* Fetch @url and swap the server-sorted table's region for the one in
+	 * the answer; anything unexpected becomes the ordinary page load it
+	 * replaced. */
+	function swapServerTable(table, url, push, focusColumn) {
+		var region = sortRegion(table);
+		var index = Array.prototype.indexOf.call(document.querySelectorAll("table[data-server-sort]"), table);
+
+		if (!window.fetch || !window.DOMParser || index < 0) {
+			window.location.assign(url);
+			return;
+		}
+
+		region.setAttribute("aria-busy", "true");
+		window.fetch(url, { credentials: "same-origin", headers: { "Accept": "text/html" } })
+			.then(function (response) {
+				/* A redirect is the login page or somewhere else entirely. */
+				if (!response.ok || response.redirected) {
+					throw new Error("HTTP " + response.status);
+				}
+				return response.text();
+			})
+			.then(function (html) {
+				var fresh = new DOMParser().parseFromString(html, "text/html");
+				var next = fresh.querySelectorAll("table[data-server-sort]")[index];
+				var replacement;
+				var target;
+
+				if (!next) {
+					throw new Error("the answer has no such table");
+				}
+
+				replacement = document.importNode(sortRegion(next), true);
+				syncHiddenState(fresh, region);
+				region.parentNode.replaceChild(replacement, region);
+
+				if (push) {
+					if (!window.history.state || !window.history.state.ventureSort) {
+						window.history.replaceState({ ventureSort: true }, "", window.location.href);
+					}
+					window.history.pushState({ ventureSort: true }, "", url);
+				}
+
+				replacement.dispatchEvent(new CustomEvent("htmx:afterSwap", {
+					bubbles: true, detail: { target: replacement }
+				}));
+
+				/* The ticks start clear in the answer; the bulk bar should
+				 * say so. */
+				target = replacement.querySelector("[data-bulk-id]");
+				if (target) {
+					target.dispatchEvent(new Event("change", { bubbles: true }));
+				}
+
+				/* Keep the keyboard where it was: on the same heading. */
+				if (focusColumn >= 0) {
+					target = replacement.querySelector("table[data-server-sort]");
+					target = target && target.tHead ? target.tHead.rows[0].cells[focusColumn] : null;
+					target = target ? target.querySelector("a") : null;
+					if (target) {
+						target.focus();
+					}
+				}
+			})
+			.catch(function () {
+				window.location.assign(url);
+			});
+	}
+
+	document.addEventListener("click", function (event) {
+		var link = event.target.closest ? event.target.closest("a[href]") : null;
+		var heading;
+		var table = null;
+		var pager;
+
+		if (!link || event.defaultPrevented || event.button !== 0 ||
+		    event.metaKey || event.ctrlKey || event.shiftKey || event.altKey ||
+		    (link.target && link.target !== "_self")) {
+			return;
+		}
+
+		heading = link.closest("th");
+		if (heading && heading.closest("thead")) {
+			table = heading.closest("table[data-server-sort]");
+		} else {
+			pager = link.closest(".pager");
+			if (pager) {
+				table = pager.parentNode.querySelector("table[data-server-sort]");
+				if (table && !sortRegion(table).contains(pager)) {
+					table = null;
+				}
+			}
+		}
+
+		if (!table || link.origin !== window.location.origin) {
+			return;
+		}
+
+		event.preventDefault();
+		swapServerTable(table, link.href, true,
+		                heading ? Array.prototype.indexOf.call(heading.parentNode.children, heading) : -1);
 	});
 
-	if (document.readyState === "loading") {
-		document.addEventListener("DOMContentLoaded", function () { wireSortableTables(document); });
-	} else {
+	/* Tables arrive after the page too -- an htmx swap, a streamed chat
+	 * answer, a modal -- so new ones are wired as they appear. */
+	function watchTables() {
+		var pending = false;
+
 		wireSortableTables(document);
+
+		/* Back and forward over orders swapped in above: the address
+		 * changed and the table must follow it. */
+		window.addEventListener("popstate", function (event) {
+			var table = document.querySelector("table[data-server-sort]");
+
+			if (event.state && event.state.ventureSort && table) {
+				swapServerTable(table, window.location.href, false, -1);
+			}
+		});
+
+		if (!window.MutationObserver) {
+			document.addEventListener("htmx:afterSwap", function (event) {
+				wireSortableTables(event.target);
+			});
+			return;
+		}
+
+		new MutationObserver(function () {
+			if (pending) {
+				return;
+			}
+
+			pending = true;
+			window.requestAnimationFrame(function () {
+				pending = false;
+				wireSortableTables(document);
+			});
+		}).observe(document.body, { childList: true, subtree: true });
+	}
+
+	if (document.readyState === "loading") {
+		document.addEventListener("DOMContentLoaded", watchTables);
+	} else {
+		watchTables();
 	}
 
 	window.venture = {
@@ -5298,7 +5794,13 @@
 		openPalette: openPalette,
 		setTheme: setTheme,
 		togglePanel: togglePanel,
-		scrollChatToBottom: scrollChatToBottom
+		scrollChatToBottom: scrollChatToBottom,
+		/* The table sorter's pieces, for tests/table-sort.cjs. */
+		tables: {
+			figure: cellNumber,
+			refusal: sortRefusal,
+			sortBy: sortTableBy
+		}
 	};
 
 	if (document.readyState === "loading") {

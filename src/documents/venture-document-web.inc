@@ -443,7 +443,8 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 	}
 	g_string_append(html, "</div>");
 
-	g_string_append_printf(html, "<table class=\"line-items\"><thead><tr>"
+	/* A line editor: its rows post in order (data-no-sort). */
+	g_string_append_printf(html, "<table class=\"line-items\" data-no-sort><thead><tr>"
 		"<th>Item</th><th class=\"num\">Qty</th><th class=\"num\">Unit price</th>"
 		"<th class=\"num\">Discount %%</th><th>Tax</th><th class=\"num\">Amount</th>"
 		"<th><span class=\"visually-hidden\">Remove</span></th>"

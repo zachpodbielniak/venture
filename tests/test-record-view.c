@@ -1228,6 +1228,35 @@ test_accessible_shell(Fixture *f, gconstpointer data)
 }
 
 /*
+ * Every table sorts in the browser unless the server says why it must
+ * not. A record list is paged, so it says data-server-sort and its
+ * headings fetch the next order; a line editor posts its rows in order,
+ * so it says data-no-sort; the report index gained a heading row so it
+ * sorts at all, and keeps its own finder (data-no-filter). If one of these
+ * goes, the list sorts one page of many as if it were all of them, or a
+ * sort reorders the invoice lines about to be posted.
+ */
+static void
+test_table_sort_markers(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *list = NULL;
+	g_autofree gchar *invoice = NULL;
+	g_autofree gchar *bill = NULL;
+	g_autofree gchar *reports = NULL;
+
+	(void)data;
+
+	list = get(f, "/e/contact");
+	g_assert_nonnull(strstr(list, " data-list data-server-sort><thead>"));
+	invoice = get(f, "/invoices/compose");
+	g_assert_nonnull(strstr(invoice, "<table class=\"line-items\" data-no-sort><thead>"));
+	bill = get(f, "/bills/compose");
+	g_assert_nonnull(strstr(bill, "<table class=\"line-items\" data-no-sort><thead>"));
+	reports = get(f, "/reports");
+	g_assert_nonnull(strstr(reports, "<table class=\"data report-index\" data-no-filter><thead>"));
+}
+
+/*
  * The ticket board reads without opening a ticket: each card says whose
  * it is, who has it (or that nobody does), how long it has waited and how
  * urgent it is in words; the columns are headings with human names; the
@@ -1419,6 +1448,8 @@ main(int argc, char *argv[])
 	           test_errors_for_people, tear_down);
 	g_test_add("/record-view/save-refusal-says-why", Fixture, NULL, set_up,
 	           test_save_refusal_says_why, tear_down);
+	g_test_add("/record-view/table-sort-markers", Fixture, NULL, set_up,
+	           test_table_sort_markers, tear_down);
 	g_test_add("/record-view/accessible-shell", Fixture, NULL, set_up,
 	           test_accessible_shell, tear_down);
 	g_test_add("/record-view/ticket-board", Fixture, NULL, set_up,

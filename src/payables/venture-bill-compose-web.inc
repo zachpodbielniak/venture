@@ -163,7 +163,8 @@ venture_bill_compose_page(VentureWebServer *self, HtmxRequest *request)
 		g_string_append(html, "<div class=\"doc-parties\"><label class=\"doc-field\"><span class=\"field-label\">Due</span>"
 			"<input type=\"date\" name=\"due-date\"><span class=\"field-help\">When you have to pay it.</span></label></div>");
 
-	g_string_append_printf(html, "<table class=\"line-items\"><thead><tr>"
+	/* A line editor: its rows post in order (data-no-sort). */
+	g_string_append_printf(html, "<table class=\"line-items\" data-no-sort><thead><tr>"
 		"<th>What it was for, and spent from</th><th class=\"num\">Qty</th><th class=\"num\">Unit price</th>"
 		"<th class=\"num\">Tax</th><th class=\"num\">Amount</th>"
 		"<th><span class=\"visually-hidden\">Remove</span></th></tr></thead><tbody data-lines>");

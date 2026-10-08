@@ -4440,14 +4440,14 @@ td.overdue { color: var(--negative); }
 table.line-items th { white-space: nowrap; }
 
 /* A table nobody gave a class is still a table: read like the others. */
-.main table:not([class]) { width: 100%; border-collapse: collapse; font-size: 14.5px; }
-.main table:not([class]) th {
+.main table:not([class]), .main table.table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.main table:not([class]) th, .main table.table th {
 	text-align: left; font-size: 12.5px; font-weight: 600; color: var(--text-muted);
 	padding: 10px var(--space-4); border-bottom: 1px solid var(--border-strong);
 }
-.main table:not([class]) td { padding: 10px var(--space-4); border-bottom: 1px solid var(--border);
+.main table:not([class]) td, .main table.table td { padding: 10px var(--space-4); border-bottom: 1px solid var(--border);
                                vertical-align: top; }
-.main table:not([class]) tbody tr:hover { background: var(--surface-hover); }
+.main table:not([class]) tbody tr:hover, .main table.table tbody tr:hover { background: var(--surface-hover); }
 .card > table:not([class]), .card > form > table:not([class]) { margin: 0; }
 table.report-index td.row-title { width: 28%; white-space: nowrap; }
 table.report-index td.row-end, table.data td.row-end { text-align: right; width: 1%; white-space: nowrap; }
@@ -5808,9 +5808,21 @@ td.is-stale { color: var(--text-muted); }
 table[data-client-sort] th[aria-sort="ascending"] > a::after { content: " \25B4"; }
 table[data-client-sort] th[aria-sort="descending"] > a::after { content: " \25BE"; }
 
-/* Client-side sorting on every heading, and a filter box over the table. */
+/* Client-side sorting on every heading, and a filter box over the table.
+ * Written against th alone, not table.data th: the sorter wires every
+ * table with a heading row -- .data, .table, .line-items, a plain one, a
+ * Markdown one -- and a heading that looks like a link in one of them and
+ * like nothing in another hides that it sorts. */
 th > button.th-sort { all: unset; cursor: pointer; display: inline; }
-th > button.th-sort:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
+th > button.th-sort, th > a.th-sort { color: inherit; text-decoration: none; }
+th > button.th-sort:hover, th > a.th-sort:hover { color: var(--accent); text-decoration: none; }
+th[aria-sort] > button.th-sort, th.sorted > a.th-sort { color: var(--accent); }
+th > button.th-sort:focus-visible, th > a.th-sort:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; }
+/* A server-sorted table while its next order is fetched. */
+[aria-busy="true"] > .table-wrap, [aria-busy="true"] > table { opacity: 0.6; transition: opacity var(--transition); }
+/* A total a statement keeps among its rows (a report row marked summary). */
+table.data tbody tr.total td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+.widget-table th { padding: var(--space-2) var(--space-3); }
 table[data-client-sort] th[aria-sort="ascending"] > button.th-sort::after { content: " \25B4"; }
 table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { content: " \25BE"; }
 .table-filter { display: flex; align-items: center; gap: 0.75rem; margin: 0.5rem 0; }
