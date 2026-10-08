@@ -17,6 +17,7 @@
 
 #ifdef VENTURE_HAVE_SQLITE
 
+#include <glib/gstdio.h>
 #include <math.h>
 #include <string.h>
 
@@ -1884,6 +1885,86 @@ test_upgrade_instrument_indexes(
 	g_assert_cmpint(((VentureSeriesCategoryRow *)categories->pdata[0])->instruments, ==, 2);
 }
 
+/* The size of a file, 0 when there is none. */
+static goffset
+file_size(const gchar *path)
+{
+	GStatBuf buf;
+
+	return (0 == g_stat(path, &buf)) ? (goffset)buf.st_size : 0;
+}
+
+/*
+ * A checkpoint empties the write-ahead log, and a reader still on an old
+ * snapshot makes it wait at most the time it was given and report the
+ * log left, never fail. Without it a store read all day kept a log as
+ * large as itself, and every read probed all of it.
+ */
+static void
+test_checkpoint(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *wal = NULL;
+	gboolean complete;
+	gint64 started;
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	guint i;
+
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+	wal = g_strconcat(path, "-wal", NULL);
+
+	for (i = 0; i < 20; i++)
+	{
+		g_autofree gchar *key = g_strdup_printf("item-%u", i);
+
+		put_price(fixture->store, "realm", key, T0 + i * HOUR, 100 + i, 1);
+	}
+
+	g_assert_cmpint(file_size(wal), >, 0);
+	g_assert_true(venture_series_store_checkpoint(fixture->store, 1000, &complete, &error));
+	g_assert_no_error(error);
+	g_assert_true(complete);
+	g_assert_cmpint(file_size(wal), ==, 0);
+
+	/* A reader holding a snapshot from before the next commit. */
+	g_assert_cmpint(sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, "SELECT key FROM instruments", -1, &stmt, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+
+	put_price(fixture->store, "realm", "item-late", T0 + 30 * HOUR, 7, 1);
+
+	started = g_get_monotonic_time();
+	g_assert_true(venture_series_store_checkpoint(fixture->store, 50, &complete, &error));
+	g_assert_no_error(error);
+	g_assert_false(complete);
+	g_assert_cmpint(g_get_monotonic_time() - started, <, 5 * G_USEC_PER_SEC);
+
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+
+	g_assert_true(venture_series_store_checkpoint(fixture->store, 1000, &complete, &error));
+	g_assert_no_error(error);
+	g_assert_true(complete);
+	g_assert_cmpint(file_size(wal), ==, 0);
+
+	/* Only a writer, outside a transaction. */
+	g_assert_true(venture_series_store_begin(fixture->store, &error));
+	g_assert_false(venture_series_store_checkpoint(fixture->store, 10, &complete, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	venture_series_store_rollback(fixture->store);
+
+	reader = venture_series_store_open_reader(fixture->dir, &error);
+	g_assert_no_error(error);
+	g_assert_false(venture_series_store_checkpoint(reader, 10, &complete, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 /* --- History ---------------------------------------------------------------------- */
 
 /*
@@ -2626,6 +2707,7 @@ main(
 	ADD("list-current", test_list_current);
 	ADD("paging-matches-full-order", test_paging_matches_full_order);
 	ADD("upgrade-instrument-indexes", test_upgrade_instrument_indexes);
+	ADD("checkpoint", test_checkpoint);
 	ADD("heat", test_heat);
 	ADD("reference", test_reference);
 	ADD("venue-state", test_venue_state);

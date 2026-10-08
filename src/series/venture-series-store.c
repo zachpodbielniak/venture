@@ -468,6 +468,14 @@ static const gchar *const series_schema_steps[] = {
 /* How long a writer or reader waits on the other's lock, in milliseconds. */
 #define SERIES_BUSY_TIMEOUT_MS (10000)
 
+/*
+ * What a writer leaves of its write-ahead log after a checkpoint resets
+ * it, in bytes. Without a limit the file stays as large as the largest
+ * log ever written (a region recompute rewrites every current row), and
+ * the next pass writes into gigabytes of stale frames.
+ */
+#define SERIES_JOURNAL_LIMIT 67108864
+
 /* The most venue keys one filter may name. */
 #define SERIES_MAX_FILTER_VENUES (512)
 
@@ -778,6 +786,65 @@ venture_series_store_rollback(VentureSeriesStore *self)
 		sqlite3_exec(self->db, "ROLLBACK", NULL, NULL, NULL);
 		self->depth = 0;
 	}
+}
+
+/*
+ * SQLite's own checkpoints run after a commit, passive: they copy what no
+ * reader still needs and never wait. The log only starts over from its
+ * beginning when one completes with no reader left on it, and a store
+ * read all day never gets there -- the US auction house store's log was
+ * found at 3.7 GB beside a 3.8 GB file. Every page a reader fetches is
+ * looked up in the log's index first, a probe per 4096 frames not yet
+ * copied back, so a log that readers keep from being copied slows every
+ * read as well as filling the disk. The worker calls
+ * this after a pass, when nothing else is writing; the wait is bounded
+ * so a slow page cannot hold the worker, and a miss is caught by the next
+ * pass.
+ */
+gboolean
+venture_series_store_checkpoint(
+	VentureSeriesStore	 *self,
+	guint			  wait_ms,
+	gboolean		 *out_complete,
+	GError			**error
+){
+	gint log_frames = 0;
+	gint copied = 0;
+	gint rc;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), FALSE);
+
+	if (NULL != out_complete)
+		*out_complete = FALSE;
+
+	if (self->read_only || (self->depth > 0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Only a writer outside a transaction checkpoints");
+		return FALSE;
+	}
+
+	sqlite3_busy_timeout(self->db, (gint)MIN(wait_ms, (guint)SERIES_BUSY_TIMEOUT_MS));
+	rc = sqlite3_wal_checkpoint_v2(self->db, NULL, SQLITE_CHECKPOINT_TRUNCATE, &log_frames, &copied);
+	sqlite3_busy_timeout(self->db, SERIES_BUSY_TIMEOUT_MS);
+
+	if (SQLITE_BUSY == rc)
+	{
+		g_debug("series store %s: checkpoint left %d of %d log frames to readers",
+		        self->path, log_frames - copied, log_frames);
+		return TRUE;
+	}
+
+	if (SQLITE_OK != rc)
+	{
+		series_set_sqlite_error(self, rc, "checkpointing", error);
+		return FALSE;
+	}
+
+	if (NULL != out_complete)
+		*out_complete = TRUE;
+
+	return TRUE;
 }
 
 /* --- Packed blobs ---------------------------------------------------------------- */
@@ -1558,7 +1625,9 @@ series_open(
 	    !series_exec(self, "PRAGMA cache_size = -16384",
 	                 "sizing the cache", error) ||
 	    !series_exec(self, "PRAGMA temp_store = MEMORY",
-	                 "choosing the temp store", error))
+	                 "choosing the temp store", error) ||
+	    !series_exec(self, "PRAGMA journal_size_limit = " G_STRINGIFY(SERIES_JOURNAL_LIMIT),
+	                 "bounding the log", error))
 		return NULL;
 
 	if (!series_migrate(self, version, error))

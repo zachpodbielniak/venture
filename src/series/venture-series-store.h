@@ -1187,6 +1187,29 @@ venture_series_store_commit(
 void
 venture_series_store_rollback(VentureSeriesStore *self);
 
+/**
+ * venture_series_store_checkpoint:
+ * @self: the writer handle, outside any transaction
+ * @wait_ms: how long to wait for readers to move off the log, in
+ *   milliseconds
+ * @out_complete: (out) (optional): %TRUE when the log was emptied
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Copies the write-ahead log into the store and truncates it, waiting at
+ * most @wait_ms for readers still reading an older snapshot. A reader
+ * that keeps the log from emptying is not an error: *@out_complete is
+ * %FALSE and the next checkpoint tries again.
+ *
+ * Returns: %TRUE unless the checkpoint itself failed
+ */
+gboolean
+venture_series_store_checkpoint(
+	VentureSeriesStore	 *self,
+	guint			  wait_ms,
+	gboolean		 *out_complete,
+	GError			**error
+);
+
 /* --- Venues, instruments, meta ------------------------------------------------ */
 
 /**

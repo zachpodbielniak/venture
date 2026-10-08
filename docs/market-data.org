@@ -1100,6 +1100,7 @@ A US auction house store is three million =current= rows over 1.2 million instru
 - A page of a sort by a column of =current= (or the venue's key) is read up to a bound: the value of the =offset + count=-th row with a value, found on =current= alone; then only the rows at or before it are joined and ordered in full, ties broken by venue and instrument key as ever, so the page is the one ordering everything would give. A page reaching into the nulls falls back to ordering everything.
 - The sort by name over the whole store walks =instruments_sort_name= and stops when the page is full; narrowed by a venue, a search or a category it sorts the narrowed set.
 - Schema step 10 adds three narrow indexes on =instruments=: =instruments_search= (=name_fold=, =key=), which a search scans instead of the table; =instruments_category_plain=, the plain items' categories, which the picker counts; and =instruments_sort_name=.
+- After each pass that wrote, the worker checkpoints the store's write-ahead log back to nothing (=venture_series_store_checkpoint()=), waiting at most two seconds for readers on an older snapshot; the writer also sets =journal_size_limit= (64 MiB). SQLite's own checkpoints are passive and the log only restarts when one completes with no reader on it, so a store read all day kept a log as large as itself, and every page a reader fetches is looked up in the log's index first.
 
 ** No data sources
 
