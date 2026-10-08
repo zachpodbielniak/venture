@@ -407,6 +407,17 @@ arw_filters(
 	}
 
 	g_string_append(html, "</select></label></div>");
+
+	/* The venue group picker Deals has: buy and sell only at the group's
+	 * venues (the user's banking realms, say). */
+	{
+		g_autoptr(JsonNode) groups = venture_marketdata_venue_group_choices(self->context, organization_id);
+		g_autoptr(JsonObject) holder = json_object_new();
+
+		json_object_set_array_member(holder, "venue_groups", json_array_ref(json_node_get_array(groups)));
+		mdw_venue_group_picker(html, holder, venture_json_object_get_string(options, "venue_group", NULL));
+	}
+
 	arw_input(html, options, "Buy at", "buy_venues", "venue keys, comma separated");
 	arw_input(html, options, "Sell at", "sell_venues", "venue keys, comma separated");
 	arw_input(html, options, "Group", "group_key", "e.g. eu");
@@ -503,23 +514,48 @@ arw_missing(
 	g_string_append(html, "</div>");
 }
 
-static void
-arw_venue(
-	GString		*html,
+/* A row's buy or sell side, or NULL when the strategy names none. */
+static JsonObject *
+arw_side(
 	JsonObject	*row,
 	const gchar	*side
 ){
-	JsonObject *object;
+	JsonNode *node = json_object_get_member(row, side);
 
-	object = json_object_has_member(row, side) ? json_object_get_object_member(row, side) : NULL;
+	return ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node)) ? json_node_get_object(node) : NULL;
+}
+
+/* A side's venue cell, with how old its price is when the scan says --
+ * as on Deals, a stale side is greyed and flagged. */
+static void
+arw_venue(
+	VentureWebServer	*self,
+	GString			*html,
+	JsonObject		*row,
+	const gchar		*side
+){
+	JsonObject *object = arw_side(row, side);
+
+	g_string_append(html, "<td");
+
+	if ((NULL != object) && json_object_has_member(object, "age_seconds"))
+		mdw_stale_class(html, object, "");
+
+	g_string_append(html, ">");
 
 	if (NULL == object)
 	{
 		mdw_dash(html);
+		g_string_append(html, "</td>");
 		return;
 	}
 
 	mdw_name(html, object, "venue_name", "venue_key");
+
+	if (json_object_has_member(object, "age_seconds"))
+		mdw_age(self, html, object, "");
+
+	g_string_append(html, "</td>");
 }
 
 static void
@@ -572,11 +608,10 @@ arw_results(
 		g_string_append(html, "<tr><td>");
 		venture_html_escape_append(html, venture_json_object_get_string(row, "title", ""));
 		arw_missing(html, row);
-		g_string_append(html, "</td><td>");
-		arw_venue(html, row, "buy");
-		g_string_append(html, "</td><td>");
-		arw_venue(html, row, "sell");
-		g_string_append(html, "</td><td class=\"num\">");
+		g_string_append(html, "</td>");
+		arw_venue(self, html, row, "buy");
+		arw_venue(self, html, row, "sell");
+		g_string_append(html, "<td class=\"num\">");
 		mdw_int(html, row, "units");
 		g_string_append(html, "</td><td class=\"num\">");
 		mdw_money(html, row, "net");
@@ -1254,6 +1289,7 @@ venture_arbitrage_web_report_controls(
 	venture_web_goals_input(request, content, "Data source", "data_source_id", "id; every source");
 	venture_web_goals_input(request, content, "Buy at", "buy_venues", "venue keys, comma separated");
 	venture_web_goals_input(request, content, "Sell at", "sell_venues", "venue keys, comma separated");
+	venture_web_goals_input(request, content, "Venue group", "venue_group", "characters or a group's id");
 	venture_web_goals_input(request, content, "Group", "group_key", "every group");
 	venture_web_goals_input(request, content, "Units", "units", "1");
 	venture_web_goals_input(request, content, "Sell at price", "sell_basis", "min, market, sale_avg, region_median, bid");

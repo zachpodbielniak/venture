@@ -177,7 +177,9 @@ typedef struct
  * instrument, venue, venue_name, group_key, base, reference, venues (every
  * venue's current row, cheapest first), hourly (14 days), heat (the last
  * seven days by weekday and hour in the configured zone, lowest price and
- * quantity), daily (60 days), bulk, tiers, watchlists, record_id}.
+ * quantity), daily (60 days), bulk, tiers, watchlists, record_id,
+ * stale_after_seconds}. base and each venue carry age_seconds and stale
+ * beside taken_at, as a deal's sides do.
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
  *   (NOT_FOUND for another organization's source, a store that has
@@ -264,6 +266,74 @@ venture_marketdata_find(
 );
 
 /**
+ * VENTURE_MARKETDATA_STALE_MINUTES_DEFAULT:
+ *
+ * series.stale_minutes when the configuration says nothing.
+ */
+#define VENTURE_MARKETDATA_STALE_MINUTES_DEFAULT (120)
+
+/**
+ * venture_marketdata_stale_seconds:
+ * @context: a #VentureContext
+ *
+ * The age past which a price on the Trading pages is stale
+ * (series.stale_minutes). A stale price is still shown -- it may be the
+ * only one there is -- but marked, because a realm whose feed stopped
+ * looks exactly like a cheap realm.
+ *
+ * Returns: seconds, at least 60
+ */
+gint64
+venture_marketdata_stale_seconds(VentureContext *context);
+
+/**
+ * venture_marketdata_venue_group_choices:
+ * @context: a #VentureContext
+ * @organization_id: whose groups
+ *
+ * What a venue group picker offers, as Deals and Browse offer it:
+ * [{value, name}] -- "characters" when a push source exists, then the
+ * organization's saved groups by name. Empty with feeds off.
+ *
+ * Returns: (transfer full): a JSON array
+ */
+JsonNode *
+venture_marketdata_venue_group_choices(
+	VentureContext	*context,
+	gint64		 organization_id
+);
+
+/**
+ * venture_marketdata_venue_group_venue_keys:
+ * @context: a #VentureContext
+ * @organization_id: whose group and sources
+ * @spec: (nullable): "characters" or a venue group record's id; empty or
+ *   %NULL for no group
+ * @out_keys: (out) (transfer full) (array zero-terminated=1): the venue
+ *   keys the group stands for in every source of the organization, each
+ *   connected realm whole (a group naming one realm of a connected realm
+ *   takes every source's keys for it); an empty array when it matches
+ *   nothing; %NULL when @spec asks for no group
+ * @out_label: (out) (optional) (transfer full): the group's name
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A venue group as the venue keys a filter compares, as Deals reads it,
+ * for callers that filter by key whatever the source (the arbitrage scan).
+ *
+ * Returns: %FALSE on error (INVALID_ARGUMENT for a malformed @spec,
+ *   NOT_FOUND for another organization's group or none)
+ */
+gboolean
+venture_marketdata_venue_group_venue_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *spec,
+	gchar		***out_keys,
+	gchar		**out_label,
+	GError		**error
+);
+
+/**
  * VentureMarketdataDealsQuery:
  * @organization_id: whose sources
  * @data_source_id: one source, or 0 for every source of the organization
@@ -293,6 +363,7 @@ venture_marketdata_find(
  * @sell_venue: (nullable): sell only at this venue: a deal with no
  *   plausible price there is left out. With @venue_group it must be one
  *   of the group's, like @venue.
+ * @now: the time "now" is, for each price's age; 0 for the wall clock
  *
  * What the deals page asks. A deal is an instrument in stock at a venue
  * whose lowest price is at or under its group's deal price: the median of
@@ -315,6 +386,7 @@ typedef struct
 	const gchar		*sort;
 	const gchar		*dir;
 	const gchar		*sell_venue;
+	gint64			 now;
 } VentureMarketdataDealsQuery;
 
 /**
@@ -340,6 +412,19 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query);
  * price) and roi_pct), truncated, cut_pct, totals: {investment, sale,
  * profit} over the rows with a sell side, one unit each, when they share a
  * currency}.
+ *
+ * venue_choices has one entry per connected realm the sources describe
+ * between them -- {name, value, group_key, members, venues:
+ * [{data_source_id, venue_key, taken_at, age_seconds, stale}]} -- and
+ * @venue and @sell_venue take its name, any member realm's name, or a
+ * source's name or key for it. A row says its connected realm in "realm"
+ * (the sell object too).
+ *
+ * Every price says how old it is: a row carries buy_taken_at,
+ * buy_age_seconds and buy_stale for its own price and, with a sell side,
+ * sell_taken_at, sell_age_seconds and sell_stale (the sell object carries
+ * them unprefixed too); the root carries stale_after_seconds
+ * (venture_marketdata_stale_seconds()).
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
  */

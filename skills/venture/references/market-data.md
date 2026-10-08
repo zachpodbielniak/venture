@@ -64,6 +64,7 @@ venturectl market browse [source=N] [search=T] [category=PATH] [venue=KEY] [grou
     [stock=true] [sort=COL] [dir=asc|desc] [page=N] [per_page=N] [organization_id=N]
 venturectl market deals group=eu min_value="10.00 GOLD" max_pct=80 top=20
 venturectl market deals venue_group=characters venue=3676 sell_venue=11  # buy at one realm, sell at another
+venturectl market deals venue=Farstriders     # any member realm's name picks its whole connected realm
 venturectl market venues [source=N] [group=G]
 venturectl market instrument 1 2589 units=200        # SOURCE_ID KEY; units= prices a bulk buy
 venturectl market watchlist [ID] organization_id=2   # 'watchlists' is the same verb
@@ -79,6 +80,21 @@ venturectl market help                               # every verb, options, exam
   market_value, region_median, pct_vs_region, sale_rate, sold_per_day,
   deal_price, listings, name, updated, venue` (anything else is a 400,
   exit 2); `per_page` is at most 200 (default 50).
+- Deals' `venue_choices` are one per **connected realm** across every
+  source (Blizzard keys a connected realm by id, TSM each realm by slug):
+  `{name, value, group_key, members, venues: [{data_source_id, venue_key,
+  taken_at, age_seconds, stale}]}`, labelled by the realms a source keeps
+  alone, e.g. `Cenarius (+ Cairne, Frostmane, ...)`. `venue`/`sell_venue`
+  take the label, any member realm's name or any source's key; each row
+  says its `realm`. A venue group is read as whole connected realms.
+- **Every price says how old it is.** Deals rows: `buy_taken_at`,
+  `buy_age_seconds`, `buy_stale`, and `sell_*` likewise (the `sell` object
+  unprefixed); an item's `base` and `venues[]` and arbitrage `buy`/`sell`
+  sides: `age_seconds`, `stale`. Stale is older than
+  `series.stale_minutes` (120) or no time at all; the root says
+  `stale_after_seconds`. The pages show "12m"/"3h" under the realm and grey
+  a stale price with a "stale" flag. Check it before trusting a "cheapest
+  realm": a realm whose feed stopped looks exactly like a cheap one.
 - `market instrument SOURCE_ID KEY`: KEY is the store key (`herb`,
   `2589:b1234`), not an instrument record id; a key with `/` is fine.
 - Tables show money with its currency and leave a missing figure blank,

@@ -631,13 +631,30 @@ GPtrArray *
 venture_arbitrage_scan_get_sources(VentureArbitrageScan *scan);
 
 /**
+ * venture_arbitrage_scan_get_buy_venues:
+ * @scan: the scan
+ *
+ * The venue keys to buy at: `buy_venues` narrowed to `venue_group`'s
+ * venues when the question names one, the group's venues when it names
+ * only a group. A strategy reading candidates from an index filters by
+ * this, never by the `buy_venues` option text, which knows nothing of a
+ * group.
+ *
+ * Returns: (transfer none) (nullable) (array zero-terminated=1): the keys,
+ *   %NULL for every venue (an empty array is none)
+ */
+const gchar *const *
+venture_arbitrage_scan_get_buy_venues(VentureArbitrageScan *scan);
+
+/**
  * venture_arbitrage_scan_venue_allowed:
  * @scan: the scan
  * @buy: the buy side's set (else the sell side's)
  * @venue_key: a venue's key
  *
  * Returns: whether the question's venue set for that side (`buy_venues`
- *   or `sell_venues`, empty meaning every venue) takes @venue_key
+ *   or `sell_venues`, empty meaning every venue, narrowed to
+ *   `venue_group`'s venues when it names one) takes @venue_key
  */
 gboolean
 venture_arbitrage_scan_venue_allowed(

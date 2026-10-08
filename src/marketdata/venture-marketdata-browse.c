@@ -46,6 +46,24 @@ md_now(gint64 now)
 	return (now > 0) ? now : g_get_real_time() / G_USEC_PER_SEC;
 }
 
+gint64
+venture_marketdata_stale_seconds(VentureContext *context)
+{
+	VentureConfig *config;
+	gint64 minutes = VENTURE_MARKETDATA_STALE_MINUTES_DEFAULT;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), minutes * 60);
+
+	config = venture_context_get_config(context);
+
+	if (NULL != config)
+		g_object_get(config, "series-stale-minutes", &minutes, NULL);
+
+	/* The configuration refuses anything else at startup; a test that
+	 * sets the property directly is held to the same bounds. */
+	return CLAMP(minutes, 1, 10080) * 60;
+}
+
 #ifdef VENTURE_HAVE_SQLITE
 
 /* A price in minor units as a money object, or null when unknown. */
@@ -126,6 +144,37 @@ md_set_time(
 
 	text = venture_time_to_string(moment);
 	json_object_set_string_member(object, name, text);
+}
+
+/*
+ * How old a price is: @prefix "taken_at" (when its snapshot was taken),
+ * "age_seconds" (now less that, null when unknown) and "stale" (older
+ * than @stale_after). A price with no time is stale -- nothing says it is
+ * current -- which is the side to be wrong on: a realm whose feed stopped
+ * eight hours ago read as the cheapest place to buy, with nothing on the
+ * page to say so.
+ */
+static void
+md_set_age(
+	JsonObject	*object,
+	const gchar	*prefix,
+	gint64		 taken_at,
+	gint64		 now,
+	gint64		 stale_after
+){
+	g_autofree gchar *at = g_strconcat(prefix, "taken_at", NULL);
+	g_autofree gchar *age = g_strconcat(prefix, "age_seconds", NULL);
+	g_autofree gchar *stale = g_strconcat(prefix, "stale", NULL);
+	gboolean known = (VENTURE_SERIES_NONE != taken_at) && (taken_at > 0);
+
+	md_set_time(object, at, taken_at);
+
+	if (known)
+		json_object_set_int_member(object, age, MAX((gint64)0, now - taken_at));
+	else
+		json_object_set_null_member(object, age);
+
+	json_object_set_boolean_member(object, stale, !known || (now - taken_at > stale_after));
 }
 
 #endif /* VENTURE_HAVE_SQLITE */
@@ -1250,7 +1299,691 @@ md_venue_groups_json(
 	return array;
 }
 
+/* --- Connected realms ------------------------------------------------------ */
+
+static void
+md_unref_reader(gpointer reader)
+{
+	if (NULL != reader)
+		g_object_unref(reader);
+}
+
+static void
+md_unref_venues(gpointer venues)
+{
+	if (NULL != venues)
+		g_ptr_array_unref(venues);
+}
+
+/*
+ * One auction house as the sources between them know it. Sources key a
+ * realm their own way: Blizzard by connected-realm id, named for all of
+ * its realms ("Silver Hand, Thorium Brotherhood, Farstriders"); a TSM
+ * push by one realm's slug, named for that realm alone ("Thorium
+ * Brotherhood"). A connected realm shares one auction house, so every one
+ * of those is the same place to buy and sell, and a picker listing them
+ * separately offered four entries for one market and let a pick by one
+ * member's name miss the source that only knows the connected realm.
+ * Realms are matched by member name within a group (a region): a realm is
+ * in exactly one connected realm of its region.
+ */
+typedef struct
+{
+	gint64	 data_source_id;
+	gchar	*key;
+	gint64	 last_taken_at;
+} MdRealmVenue;
+
+typedef struct
+{
+	gchar		*group_key;
+	GPtrArray	*members;	/* gchar *, as spelt, in the connected realm's order */
+	GHashTable	*alone;		/* folded members some source keeps as a venue of their own */
+	GPtrArray	*venues;	/* MdRealmVenue */
+	gchar		*label;
+} MdRealm;
+
+typedef struct
+{
+	GPtrArray	*realms;	/* MdRealm */
+	GPtrArray	*pending;	/* MdPendingVenue, until md_realms_build() */
+	GHashTable	*by_member;	/* "group\037folded member" -> MdRealm */
+	GHashTable	*by_venue;	/* "source id\037key" -> MdRealm */
+	GHashTable	*by_name;	/* folded label, name, member or key -> MdRealm */
+} MdRealms;
+
+typedef struct
+{
+	gint64	 data_source_id;
+	gchar	*key;
+	gchar	*group_key;
+	gchar	**members;
+	gint64	 last_taken_at;
+} MdPendingVenue;
+
+static void
+md_realm_venue_free(gpointer data)
+{
+	MdRealmVenue *venue = data;
+
+	g_free(venue->key);
+	g_free(venue);
+}
+
+static void
+md_realm_free(gpointer data)
+{
+	MdRealm *realm = data;
+
+	g_free(realm->group_key);
+	g_ptr_array_unref(realm->members);
+	g_hash_table_unref(realm->alone);
+	g_ptr_array_unref(realm->venues);
+	g_free(realm->label);
+	g_free(realm);
+}
+
+static void
+md_pending_venue_free(gpointer data)
+{
+	MdPendingVenue *venue = data;
+
+	g_free(venue->key);
+	g_free(venue->group_key);
+	g_strfreev(venue->members);
+	g_free(venue);
+}
+
+static void
+md_realms_free(MdRealms *realms)
+{
+	if (NULL == realms)
+		return;
+
+	g_ptr_array_unref(realms->realms);
+	g_clear_pointer(&realms->pending, g_ptr_array_unref);
+	g_hash_table_unref(realms->by_member);
+	g_hash_table_unref(realms->by_venue);
+	g_hash_table_unref(realms->by_name);
+	g_free(realms);
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(MdRealms, md_realms_free)
+
+static MdRealms *
+md_realms_new(void)
+{
+	MdRealms *realms = g_new0(MdRealms, 1);
+
+	realms->realms = g_ptr_array_new_with_free_func(md_realm_free);
+	realms->pending = g_ptr_array_new_with_free_func(md_pending_venue_free);
+	realms->by_member = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	realms->by_venue = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	realms->by_name = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+	return realms;
+}
+
+/* A venue's realms: the comma-separated parts of its name, trimmed, or
+ * its key when it has no name. */
+static gchar **
+md_realm_members(VentureSeriesVenueRow *venue)
+{
+	g_autoptr(GPtrArray) members = g_ptr_array_new_with_free_func(g_free);
+	g_auto(GStrv) parts = NULL;
+	guint i;
+
+	parts = g_strsplit(venture_string_is_empty(venue->name) ? "" : venue->name, ",", -1);
+
+	for (i = 0; NULL != parts[i]; i++)
+	{
+		g_strstrip(parts[i]);
+		if ('\0' != parts[i][0])
+			g_ptr_array_add(members, g_strdup(parts[i]));
+	}
+
+	if (0 == members->len)
+		g_ptr_array_add(members, g_strdup(venue->key));
+
+	g_ptr_array_add(members, NULL);
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&members), FALSE);
+}
+
+/* Remembers @venues (VentureSeriesVenueRow) of one source, copied. */
+static void
+md_realms_add(
+	MdRealms	*realms,
+	gint64		 data_source_id,
+	GPtrArray	*venues
+){
+	guint i;
+
+	for (i = 0; (NULL != venues) && (i < venues->len); i++)
+	{
+		VentureSeriesVenueRow *row = g_ptr_array_index(venues, i);
+		MdPendingVenue *venue = g_new0(MdPendingVenue, 1);
+
+		venue->data_source_id = data_source_id;
+		venue->key = g_strdup(row->key);
+		venue->group_key = g_strdup((NULL != row->group_key) ? row->group_key : "");
+		venue->members = md_realm_members(row);
+		venue->last_taken_at = row->last_taken_at;
+		g_ptr_array_add(realms->pending, venue);
+	}
+}
+
+/* Connected realms (the most members) first, so a realm known alone
+ * joins the connected realm naming it rather than starting its own. */
+static gint
+md_pending_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const MdPendingVenue *x = *(const MdPendingVenue *const *)a;
+	const MdPendingVenue *y = *(const MdPendingVenue *const *)b;
+	guint nx = g_strv_length(x->members);
+	guint ny = g_strv_length(y->members);
+
+	if (nx != ny)
+		return (nx > ny) ? -1 : 1;
+
+	if (x->data_source_id != y->data_source_id)
+		return (x->data_source_id < y->data_source_id) ? -1 : 1;
+
+	return g_strcmp0(x->key, y->key);
+}
+
+static gchar *
+md_realm_member_key(
+	const gchar	*group_key,
+	const gchar	*member
+){
+	g_autofree gchar *folded = md_fold(member);
+
+	return g_strdup_printf("%s\037%s", group_key, folded);
+}
+
+/* Names @realm by @text for a person's input, unless another has it. */
+static void
+md_realms_name(
+	MdRealms	*realms,
+	const gchar	*text,
+	MdRealm		*realm
+){
+	gchar *folded = md_fold(text);
+
+	if (('\0' == folded[0]) || g_hash_table_contains(realms->by_name, folded))
+		g_free(folded);
+	else
+		g_hash_table_insert(realms->by_name, folded, realm);
+}
+
+/*
+ * Groups what md_realms_add() was given into connected realms and labels
+ * each: the realms some source keeps alone -- the ones a person plays and
+ * pushes -- lead, the rest follow in brackets, so "Cenarius (+ Cairne,
+ * Frostmane, ...)" is found by the name the person knows and still says
+ * which market it is.
+ */
+static void
+md_realms_build(MdRealms *realms)
+{
+	g_autoptr(GHashTable) labels = NULL;
+	guint i;
+
+	g_ptr_array_sort(realms->pending, md_pending_compare);
+
+	for (i = 0; i < realms->pending->len; i++)
+	{
+		MdPendingVenue *venue = g_ptr_array_index(realms->pending, i);
+		MdRealmVenue *place;
+		MdRealm *realm = NULL;
+		guint j;
+
+		for (j = 0; (NULL == realm) && (NULL != venue->members[j]); j++)
+		{
+			g_autofree gchar *key = md_realm_member_key(venue->group_key, venue->members[j]);
+
+			realm = g_hash_table_lookup(realms->by_member, key);
+		}
+
+		if (NULL == realm)
+		{
+			realm = g_new0(MdRealm, 1);
+			realm->group_key = g_strdup(venue->group_key);
+			realm->members = g_ptr_array_new_with_free_func(g_free);
+			realm->alone = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+			realm->venues = g_ptr_array_new_with_free_func(md_realm_venue_free);
+			g_ptr_array_add(realms->realms, realm);
+		}
+
+		for (j = 0; NULL != venue->members[j]; j++)
+		{
+			gchar *key = md_realm_member_key(venue->group_key, venue->members[j]);
+
+			if (g_hash_table_contains(realms->by_member, key))
+				g_free(key);
+			else
+			{
+				g_hash_table_insert(realms->by_member, key, realm);
+				g_ptr_array_add(realm->members, g_strdup(venue->members[j]));
+			}
+		}
+
+		if (1 == g_strv_length(venue->members))
+			g_hash_table_add(realm->alone, md_fold(venue->members[0]));
+
+		place = g_new0(MdRealmVenue, 1);
+		place->data_source_id = venue->data_source_id;
+		place->key = g_strdup(venue->key);
+		place->last_taken_at = venue->last_taken_at;
+		g_ptr_array_add(realm->venues, place);
+		g_hash_table_insert(realms->by_venue,
+		                    g_strdup_printf("%" G_GINT64_FORMAT "\037%s", venue->data_source_id, venue->key),
+		                    realm);
+	}
+
+	labels = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+	for (i = 0; i < realms->realms->len; i++)
+	{
+		MdRealm *realm = g_ptr_array_index(realms->realms, i);
+		g_autoptr(GString) lead = g_string_new(NULL);
+		g_autoptr(GString) rest = g_string_new(NULL);
+		gboolean any_alone = FALSE;
+		gchar *folded_label;
+		guint j;
+
+		for (j = 0; j < realm->members->len; j++)
+		{
+			g_autofree gchar *folded = md_fold(g_ptr_array_index(realm->members, j));
+
+			any_alone = any_alone || g_hash_table_contains(realm->alone, folded);
+		}
+
+		for (j = 0; j < realm->members->len; j++)
+		{
+			const gchar *member = g_ptr_array_index(realm->members, j);
+			g_autofree gchar *folded = md_fold(member);
+			/* Nobody keeps one alone: the connected realm's first leads. */
+			gboolean leads = any_alone ? g_hash_table_contains(realm->alone, folded) : (0 == j);
+			GString *into = leads ? lead : rest;
+
+			g_string_append_printf(into, "%s%s", (into->len > 0) ? ", " : "", member);
+		}
+
+		realm->label = (rest->len > 0) ? g_strdup_printf("%s (+ %s)", lead->str, rest->str)
+		                               : g_strdup(lead->str);
+		folded_label = md_fold(realm->label);
+		g_hash_table_replace(labels, folded_label,
+		                     GUINT_TO_POINTER(GPOINTER_TO_UINT(g_hash_table_lookup(labels, folded_label)) + 1));
+	}
+
+	/* The same realm name in two regions: say which is which. */
+	for (i = 0; i < realms->realms->len; i++)
+	{
+		MdRealm *realm = g_ptr_array_index(realms->realms, i);
+		g_autofree gchar *folded = md_fold(realm->label);
+
+		if ((GPOINTER_TO_UINT(g_hash_table_lookup(labels, folded)) > 1) &&
+		    !venture_string_is_empty(realm->group_key))
+		{
+			g_autofree gchar *group = g_ascii_strup(realm->group_key, -1);
+			gchar *label = g_strdup_printf("%s [%s]", realm->label, group);
+
+			g_free(realm->label);
+			realm->label = label;
+		}
+	}
+
+	/* What a person may type for one: its label first, then any member
+	 * realm's name, then a source's whole name or key for it. */
+	for (i = 0; i < realms->realms->len; i++)
+	{
+		MdRealm *realm = g_ptr_array_index(realms->realms, i);
+
+		md_realms_name(realms, realm->label, realm);
+	}
+
+	for (i = 0; i < realms->pending->len; i++)
+	{
+		MdPendingVenue *venue = g_ptr_array_index(realms->pending, i);
+		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT "\037%s", venue->data_source_id,
+		                                        venue->key);
+		MdRealm *realm = g_hash_table_lookup(realms->by_venue, key);
+		g_autofree gchar *whole = g_strjoinv(", ", venue->members);
+		guint j;
+
+		for (j = 0; NULL != venue->members[j]; j++)
+			md_realms_name(realms, venue->members[j], realm);
+		md_realms_name(realms, whole, realm);
+	}
+
+	for (i = 0; i < realms->pending->len; i++)
+	{
+		MdPendingVenue *venue = g_ptr_array_index(realms->pending, i);
+		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT "\037%s", venue->data_source_id,
+		                                        venue->key);
+
+		md_realms_name(realms, venue->key, g_hash_table_lookup(realms->by_venue, key));
+	}
+
+	g_clear_pointer(&realms->pending, g_ptr_array_unref);
+}
+
+/* The connected realm @wanted names (a label, a realm's name, a source's
+ * whole name or key for it), or NULL. */
+static MdRealm *
+md_realms_find(
+	MdRealms	*realms,
+	const gchar	*wanted
+){
+	g_autofree gchar *folded = md_fold(wanted);
+
+	return g_hash_table_lookup(realms->by_name, folded);
+}
+
+/* The connected realm one source's venue belongs to, or NULL. */
+static MdRealm *
+md_realms_of(
+	MdRealms	*realms,
+	gint64		 data_source_id,
+	const gchar	*key
+){
+	g_autofree gchar *lookup = g_strdup_printf("%" G_GINT64_FORMAT "\037%s", data_source_id, key);
+
+	return g_hash_table_lookup(realms->by_venue, lookup);
+}
+
+/* @realm's venues in one source, as a NULL-terminated array: NULL when
+ * that source has none of it. */
+static gchar **
+md_realm_keys(
+	MdRealm		*realm,
+	gint64		 data_source_id
+){
+	g_autoptr(GPtrArray) keys = g_ptr_array_new_with_free_func(g_free);
+	guint i;
+
+	for (i = 0; (NULL != realm) && (i < realm->venues->len); i++)
+	{
+		MdRealmVenue *venue = g_ptr_array_index(realm->venues, i);
+
+		if (venue->data_source_id == data_source_id)
+			g_ptr_array_add(keys, g_strdup(venue->key));
+	}
+
+	if (0 == keys->len)
+		return NULL;
+
+	g_ptr_array_add(keys, NULL);
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&keys), FALSE);
+}
+
+/*
+ * The connected realms a venue group names, in any source: a group
+ * naming "Farstriders" means the connected realm one source keys as "12"
+ * and another keeps as "silver-hand" and "thorium-brotherhood", though
+ * only the first has the name. *out_realms is NULL when @spec asks for no
+ * group. @venue_lists holds each of @sources' venues, NULL where a store
+ * could not be read.
+ */
+static gboolean
+md_realms_of_group(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	MdRealms	 *realms,
+	GPtrArray	 *sources,
+	GPtrArray	 *venue_lists,
+	const gchar	 *spec,
+	JsonArray	 *notes,
+	GHashTable	**out_realms,
+	gchar		**out_label,
+	GError		**error
+){
+	g_autoptr(GHashTable) named = NULL;
+	guint i;
+
+	*out_realms = NULL;
+	if (NULL != out_label)
+		*out_label = NULL;
+
+	if (venture_string_is_empty(spec))
+		return TRUE;
+
+	named = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+	for (i = 0; (NULL != sources) && (i < sources->len); i++)
+	{
+		gint64 source_id = venture_entity_get_id(g_ptr_array_index(sources, i));
+		g_auto(GStrv) keys = NULL;
+		g_autofree gchar *label = NULL;
+		guint j;
+
+		if (!md_venue_group_keys(context, organization_id, g_ptr_array_index(venue_lists, i), spec,
+		                         (0 == i) ? notes : NULL, &keys, &label, error))
+			return FALSE;
+
+		if ((NULL != out_label) && (NULL == *out_label))
+			*out_label = g_steal_pointer(&label);
+
+		for (j = 0; (NULL != keys) && (NULL != keys[j]); j++)
+		{
+			MdRealm *realm = md_realms_of(realms, source_id, keys[j]);
+
+			if (NULL != realm)
+				g_hash_table_add(named, realm);
+		}
+	}
+
+	*out_realms = g_steal_pointer(&named);
+	return TRUE;
+}
+
+/* One source's venue keys in @named (MdRealm set) as a NULL-terminated
+ * array, empty when it has none of them; NULL for no group. */
+static gchar **
+md_realms_group_keys(
+	GHashTable	*named,
+	gint64		 data_source_id
+){
+	g_autoptr(GPtrArray) keys = NULL;
+	GHashTableIter iter;
+	gpointer realm;
+
+	if (NULL == named)
+		return NULL;
+
+	keys = g_ptr_array_new_with_free_func(g_free);
+	g_hash_table_iter_init(&iter, named);
+
+	while (g_hash_table_iter_next(&iter, &realm, NULL))
+	{
+		guint i;
+
+		for (i = 0; i < ((MdRealm *)realm)->venues->len; i++)
+		{
+			MdRealmVenue *venue = g_ptr_array_index(((MdRealm *)realm)->venues, i);
+
+			if (venue->data_source_id == data_source_id)
+				g_ptr_array_add(keys, g_strdup(venue->key));
+		}
+	}
+
+	g_ptr_array_add(keys, NULL);
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&keys), FALSE);
+}
+
+/* The label of the connected realm a source's venue is in, as the
+ * pickers spell it, so a row and the picker that chose it agree; NULL for
+ * none. Borrowed from @realms. */
+static const gchar *
+md_realm_label(
+	MdRealms	*realms,
+	gint64		 data_source_id,
+	const gchar	*venue_key
+){
+	MdRealm *realm = md_realms_of(realms, data_source_id, venue_key);
+
+	return (NULL != realm) ? realm->label : NULL;
+}
+
+/* A picker's choice for @realm: {name, value, members, venues:
+ * [{data_source_id, venue_key, taken_at, age_seconds, stale}]}. */
+static JsonObject *
+md_realm_choice(
+	MdRealm	*realm,
+	gint64	 now,
+	gint64	 stale_after
+){
+	JsonObject *object = json_object_new();
+	JsonArray *members = json_array_new();
+	JsonArray *venues = json_array_new();
+	guint i;
+
+	json_object_set_string_member(object, "name", realm->label);
+	json_object_set_string_member(object, "value", realm->label);
+	json_object_set_string_member(object, "group_key", realm->group_key);
+
+	for (i = 0; i < realm->members->len; i++)
+		json_array_add_string_element(members, g_ptr_array_index(realm->members, i));
+
+	for (i = 0; i < realm->venues->len; i++)
+	{
+		MdRealmVenue *venue = g_ptr_array_index(realm->venues, i);
+		JsonObject *one = json_object_new();
+
+		json_object_set_int_member(one, "data_source_id", venue->data_source_id);
+		json_object_set_string_member(one, "venue_key", venue->key);
+		md_set_age(one, "", venue->last_taken_at, now, stale_after);
+		json_array_add_object_element(venues, one);
+	}
+
+	json_object_set_array_member(object, "members", members);
+	json_object_set_array_member(object, "venues", venues);
+
+	return object;
+}
+
 #endif /* VENTURE_HAVE_SQLITE */
+
+JsonNode *
+venture_marketdata_venue_group_choices(
+	VentureContext	*context,
+	gint64		 organization_id
+){
+	JsonNode *node;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	node = json_node_new(JSON_NODE_ARRAY);
+#ifdef VENTURE_HAVE_SQLITE
+	/* The groups' choices read the data sources, whose table need not
+	 * exist with feeds off. */
+	if (venture_context_module_enabled(context, "feeds"))
+	{
+		json_node_take_array(node, md_venue_groups_json(context, organization_id));
+		return node;
+	}
+#endif
+	(void)organization_id;
+	json_node_take_array(node, json_array_new());
+	return node;
+}
+
+gboolean
+venture_marketdata_venue_group_venue_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *spec,
+	gchar		***out_keys,
+	gchar		**out_label,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != out_keys, FALSE);
+
+	*out_keys = NULL;
+	if (NULL != out_label)
+		*out_label = NULL;
+
+	if (venture_string_is_empty(spec))
+		return TRUE;
+
+#ifdef VENTURE_HAVE_SQLITE
+	{
+		g_autoptr(GPtrArray) sources = NULL;
+		g_autoptr(GPtrArray) venue_lists = NULL;
+		g_autoptr(MdRealms) realms = NULL;
+		g_autoptr(GPtrArray) keys = NULL;
+		g_autoptr(GHashTable) seen = NULL;
+		g_autoptr(GHashTable) named = NULL;
+		guint i;
+
+		/* A group with feeds off names nothing it could be judged by. */
+		sources = venture_context_module_enabled(context, "feeds")
+			? md_sources(context, organization_id, NULL) : NULL;
+		venue_lists = g_ptr_array_new_with_free_func(md_unref_venues);
+		realms = md_realms_new();
+		keys = g_ptr_array_new_with_free_func(g_free);
+		seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+		for (i = 0; (NULL != sources) && (i < sources->len); i++)
+		{
+			g_autoptr(VentureSeriesStore) reader = md_reader(context, g_ptr_array_index(sources, i), NULL, NULL);
+			GPtrArray *venues = (NULL != reader) ? venture_series_store_list_venues(reader, NULL) : NULL;
+
+			g_ptr_array_add(venue_lists, venues);
+			md_realms_add(realms, venture_entity_get_id(g_ptr_array_index(sources, i)), venues);
+		}
+
+		md_realms_build(realms);
+
+		if (!md_realms_of_group(context, organization_id, realms, sources, venue_lists, spec, NULL,
+		                        &named, out_label, error))
+			return FALSE;
+
+		for (i = 0; (NULL != sources) && (i < sources->len); i++)
+		{
+			g_auto(GStrv) group_keys = md_realms_group_keys(named,
+			                                                venture_entity_get_id(g_ptr_array_index(sources, i)));
+			guint j;
+
+			for (j = 0; (NULL != group_keys) && (NULL != group_keys[j]); j++)
+				if (g_hash_table_add(seen, g_strdup(group_keys[j])))
+					g_ptr_array_add(keys, g_strdup(group_keys[j]));
+		}
+
+		/* Judged once more with no store at all, so a group that does
+		 * not exist is refused even before any source has data. */
+		if ((NULL == sources) || (0 == sources->len))
+		{
+			g_auto(GStrv) none = NULL;
+
+			/* "characters" reads the data sources, whose table need
+			 * not exist with feeds off; it names nothing then. */
+			if (!venture_context_module_enabled(context, "feeds") &&
+			    (0 == g_strcmp0(spec, MD_GROUP_CHARACTERS)))
+			{
+				if (NULL != out_label)
+					*out_label = g_strdup("My characters");
+			}
+			else if (!md_venue_group_keys(context, organization_id, NULL, spec, NULL, &none,
+			                              out_label, error))
+				return FALSE;
+		}
+
+		g_ptr_array_add(keys, NULL);
+		*out_keys = (gchar **)g_ptr_array_free(g_steal_pointer(&keys), FALSE);
+	}
+#else
+	(void)organization_id;
+	(void)error;
+	*out_keys = g_new0(gchar *, 1);
+#endif
+
+	return TRUE;
+}
 
 /* --- Browse ---------------------------------------------------------------- */
 
@@ -1753,6 +2486,7 @@ venture_marketdata_instrument(
 	JsonObject *root;
 	JsonArray *notes;
 	gint64 now;
+	gint64 stale_after;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(NULL != query, NULL);
@@ -1775,12 +2509,15 @@ venture_marketdata_instrument(
 	}
 
 	now = md_now(query->now);
+	stale_after = venture_marketdata_stale_seconds(context);
 	(void)now;
+	(void)stale_after;
 	root = json_object_new();
 	notes = json_array_new();
 	json_object_set_boolean_member(root, "available", FALSE);
 	json_object_set_int_member(root, "data_source_id", query->data_source_id);
 	json_object_set_string_member(root, "key", query->key);
+	json_object_set_int_member(root, "stale_after_seconds", stale_after);
 
 	if (md_series_ready(context, notes))
 	{
@@ -1961,6 +2698,8 @@ venture_marketdata_instrument(
 					JsonObject *venue_row = md_row_object(one, query->data_source_id);
 					JsonArray *row_links = json_array_new();
 
+					md_set_age(venue_row, "", one->taken_at, now, stale_after);
+
 					md_links_append(row_links, g_hash_table_lookup(venue_attrs, one->venue_key),
 					                instrument_attrs);
 					json_object_set_array_member(venue_row, "links", row_links);
@@ -2014,7 +2753,7 @@ venture_marketdata_instrument(
 			md_set_figure(object, "quantity", row->quantity);
 			json_object_set_int_member(object, "listings", row->listings);
 			md_set_money(object, "market_value", row->market_value, row->currency);
-			md_set_time(object, "taken_at", row->taken_at);
+			md_set_age(object, "", row->taken_at, now, stale_after);
 			md_set_time(object, "last_seen", row->seen_at);
 			md_set_money(object, "median_14d",
 			             md_median_days(daily, row->currency, now - MD_MEDIAN_DAYS * MD_DAY),
@@ -2450,6 +3189,8 @@ typedef struct
 	gchar			*source_name;
 	JsonObject		*display;
 	VentureSeriesRow	*sell;		/* the dearest venue to sell at, or NULL */
+	const gchar		*buy_label;	/* the connected realms' labels, borrowed */
+	const gchar		*sell_label;	/* from the answer's MdRealms, or NULL */
 	gint64			 profit;	/* sell less the cut less the buy */
 	gdouble			 roi;		/* profit / buy, percent */
 } MdDeal;
@@ -2524,10 +3265,13 @@ md_deal_text(const MdDeal *deal, const gchar *sort)
 {
 	if (0 == g_strcmp0(sort, "name"))
 		return (NULL != deal->row->instrument_name) ? deal->row->instrument_name : deal->row->instrument_key;
+	/* By the names the page shows: the connected realm's label. */
 	if (0 == g_strcmp0(sort, "buy_at"))
-		return (NULL != deal->row->venue_name) ? deal->row->venue_name : deal->row->venue_key;
+		return (NULL != deal->buy_label) ? deal->buy_label
+		     : (NULL != deal->row->venue_name) ? deal->row->venue_name : deal->row->venue_key;
 	if ((0 == g_strcmp0(sort, "sell_at")) && (NULL != deal->sell))
-		return (NULL != deal->sell->venue_name) ? deal->sell->venue_name : deal->sell->venue_key;
+		return (NULL != deal->sell_label) ? deal->sell_label
+		     : (NULL != deal->sell->venue_name) ? deal->sell->venue_name : deal->sell->venue_key;
 	return NULL;
 }
 
@@ -2592,66 +3336,66 @@ md_deal_sell_side(
 	deal->roi = (deal->row->min_price > 0) ? (100.0 * (gdouble)deal->profit / (gdouble)deal->row->min_price) : 0.0;
 }
 
-/* The deals pickers' venues, one per name: [{name}] in name order. */
+/* The deals pickers' venues, one per connected realm, in label order. */
 static gint
-md_compare_names(
+md_compare_realms(
 	gconstpointer	a,
 	gconstpointer	b
 ){
-	return g_utf8_collate(*(const gchar *const *)a, *(const gchar *const *)b);
+	return g_utf8_collate((*(MdRealm *const *)a)->label, (*(MdRealm *const *)b)->label);
 }
 
 static JsonArray *
-md_venue_choices_json(GHashTable *choices)
-{
-	g_autoptr(GPtrArray) names = g_ptr_array_new();
+md_venue_choices_json(
+	GHashTable	*choices,
+	gint64		 now,
+	gint64		 stale_after
+){
+	g_autoptr(GPtrArray) realms = g_ptr_array_new();
 	JsonArray *array = json_array_new();
 	GHashTableIter iter;
-	gpointer value;
+	gpointer realm;
 	guint i;
 
 	g_hash_table_iter_init(&iter, choices);
 
-	while (g_hash_table_iter_next(&iter, NULL, &value))
-		g_ptr_array_add(names, value);
+	while (g_hash_table_iter_next(&iter, &realm, NULL))
+		g_ptr_array_add(realms, realm);
 
-	g_ptr_array_sort(names, md_compare_names);
+	g_ptr_array_sort(realms, md_compare_realms);
 
-	for (i = 0; i < names->len; i++)
-	{
-		JsonObject *object = json_object_new();
-
-		json_object_set_string_member(object, "name", g_ptr_array_index(names, i));
-		json_array_add_object_element(array, object);
-	}
+	for (i = 0; i < realms->len; i++)
+		json_array_add_object_element(array, md_realm_choice(g_ptr_array_index(realms, i), now, stale_after));
 
 	return array;
 }
 
-/* @wanted (a venue's key, else its whole name, case folded) as a key of
- * @venues (VentureSeriesVenueRow), borrowed from them; NULL for none. */
-static const gchar *
-md_venue_key_for(
-	GPtrArray	*venues,
-	const gchar	*wanted
+/* @keys less those outside @group_keys; NULL when none is left. With no
+ * group, @keys as they are. Transfer full. */
+static gchar **
+md_keys_in_group(
+	gchar		**keys,
+	gchar		**group_keys
 ){
-	g_autofree gchar *folded = md_fold(wanted);
+	g_autoptr(GPtrArray) kept = NULL;
 	guint i;
 
-	for (i = 0; (NULL != venues) && (i < venues->len); i++)
-		if (0 == g_strcmp0(((VentureSeriesVenueRow *)g_ptr_array_index(venues, i))->key, wanted))
-			return ((VentureSeriesVenueRow *)g_ptr_array_index(venues, i))->key;
+	if ((NULL == keys) || (NULL == group_keys))
+		return keys;
 
-	for (i = 0; (NULL != venues) && (i < venues->len); i++)
-	{
-		VentureSeriesVenueRow *venue = g_ptr_array_index(venues, i);
-		g_autofree gchar *name = md_fold(venue->name);
+	kept = g_ptr_array_new_with_free_func(g_free);
 
-		if (!venture_string_is_empty(venue->name) && (0 == g_strcmp0(name, folded)))
-			return venue->key;
-	}
+	for (i = 0; NULL != keys[i]; i++)
+		if (g_strv_contains((const gchar *const *)group_keys, keys[i]))
+			g_ptr_array_add(kept, g_strdup(keys[i]));
 
-	return NULL;
+	g_strfreev(keys);
+
+	if (0 == kept->len)
+		return NULL;
+
+	g_ptr_array_add(kept, NULL);
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&kept), FALSE);
 }
 
 static gint
@@ -2725,6 +3469,8 @@ venture_marketdata_deals(
 	JsonArray *notes;
 	JsonArray *rows;
 	guint count;
+	gint64 now;
+	gint64 stale_after;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(NULL != query, NULL);
@@ -2733,6 +3479,9 @@ venture_marketdata_deals(
 		return NULL;
 
 	count = (0 == query->count) ? 50 : query->count;
+	now = md_now(query->now);
+	stale_after = venture_marketdata_stale_seconds(context);
+	(void)now;
 
 	if (count > VENTURE_MARKETDATA_DEALS_MAX)
 	{
@@ -2776,6 +3525,7 @@ venture_marketdata_deals(
 	rows = json_array_new();
 	json_object_set_boolean_member(root, "available", FALSE);
 	json_object_set_boolean_member(root, "truncated", FALSE);
+	json_object_set_int_member(root, "stale_after_seconds", stale_after);
 
 	if (md_series_ready(context, notes))
 	{
@@ -2787,7 +3537,13 @@ venture_marketdata_deals(
 		/* Selling at one venue throws away every deal that has no
 		 * price there, so the pool is the wide one, as for a sort. */
 		gboolean wide = by_trade || !venture_string_is_empty(query->sell_venue);
-		g_autoptr(GHashTable) choices = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		g_autoptr(GHashTable) choices = g_hash_table_new(g_direct_hash, g_direct_equal);
+		g_autoptr(GPtrArray) readers = NULL;
+		g_autoptr(GPtrArray) venue_lists = NULL;
+		g_autoptr(MdRealms) realms = NULL;
+		g_autoptr(GHashTable) group_realms = NULL;
+		MdRealm *buy_realm = NULL;
+		MdRealm *sell_realm = NULL;
 		const gchar *buy_wanted = venture_string_is_empty(query->venue) ? NULL : query->venue;
 		const gchar *sell_wanted = venture_string_is_empty(query->sell_venue) ? NULL : query->sell_venue;
 		gboolean buy_aside = FALSE;
@@ -2799,8 +3555,6 @@ venture_marketdata_deals(
 		gint64 totals_profit = 0;
 		gint64 totals_rows = 0;
 		gboolean totals_mixed = FALSE;
-		const gchar *venue_keys[2];
-		const gchar *sell_keys[2];
 		gboolean truncated;
 		guint i;
 
@@ -2836,6 +3590,46 @@ venture_marketdata_deals(
 		category_counts = md_categories_new();
 
 		/*
+		 * Every source's venues first, so the pickers and a picked realm
+		 * see the connected realms all of them describe (MdRealm): the
+		 * same auction house is a Blizzard connected-realm id in one
+		 * store and a TSM realm slug in another.
+		 */
+		readers = g_ptr_array_new_with_free_func(md_unref_reader);
+		venue_lists = g_ptr_array_new_with_free_func(md_unref_venues);
+		realms = md_realms_new();
+
+		for (i = 0; i < sources->len; i++)
+		{
+			VentureSeriesStore *one = md_reader(context, g_ptr_array_index(sources, i), notes, NULL);
+			GPtrArray *venues = (NULL != one) ? venture_series_store_list_venues(one, NULL) : NULL;
+
+			g_ptr_array_add(readers, one);
+			g_ptr_array_add(venue_lists, venues);
+			md_realms_add(realms, venture_entity_get_id(g_ptr_array_index(sources, i)), venues);
+		}
+
+		md_realms_build(realms);
+
+		{
+			g_autofree gchar *label = NULL;
+
+			if (!md_realms_of_group(context, query->organization_id, realms, sources, venue_lists,
+			                        query->venue_group, notes, &group_realms, &label, error))
+				goto fail;
+
+			if (NULL != group_realms)
+				md_set_text(root, "venue_group_name", label);
+		}
+
+		/* A picked venue is its connected realm, whichever member's name
+		 * or source's key named it. */
+		if (NULL != buy_wanted)
+			buy_realm = md_realms_find(realms, buy_wanted);
+		if (NULL != sell_wanted)
+			sell_realm = md_realms_find(realms, sell_wanted);
+
+		/*
 		 * Each source answers its own best count+1 deals from the deal
 		 * index; the merge keeps the best count of all of them, and the
 		 * extra one says whether anything was cut.
@@ -2843,17 +3637,16 @@ venture_marketdata_deals(
 		for (i = 0; i < sources->len; i++)
 		{
 			VentureEntity *source = g_ptr_array_index(sources, i);
-			g_autoptr(VentureSeriesStore) reader = NULL;
+			gint64 source_id = venture_entity_get_id(source);
+			VentureSeriesStore *reader = g_ptr_array_index(readers, i);
+			GPtrArray *venues = g_ptr_array_index(venue_lists, i);
 			g_autoptr(GPtrArray) found = NULL;
 			g_autoptr(GError) local_error = NULL;
 			g_auto(GStrv) group_keys = NULL;
-			g_autoptr(GPtrArray) venues = NULL;
-			const gchar *buy_key;
-			const gchar *sell_key;
+			g_auto(GStrv) buy_keys = NULL;
+			g_auto(GStrv) sell_keys = NULL;
 			VentureSeriesFilter filter;
 			guint j;
-
-			reader = md_reader(context, source, notes, NULL);
 
 			if (NULL == reader)
 				continue;
@@ -2862,62 +3655,49 @@ venture_marketdata_deals(
 			md_categories_add(category_counts, reader);
 			venture_series_filter_init(&filter);
 
-			/* Each source's venues answer for themselves: a group of
-			 * realms is a set of venue keys in this store, not another.
-			 * They are also the buy and sell pickers' choices, by name:
-			 * two sources keep the same realm under their own keys (a
-			 * realm id, a realm slug), and it is one realm to choose. */
-			venues = venture_series_store_list_venues(reader, NULL);
-
-			if (!venture_string_is_empty(query->venue_group))
+			/* A group of realms is a set of venue keys in this store,
+			 * not another: every one this source has for the
+			 * connected realms the group names. */
+			if (NULL != group_realms)
 			{
-				g_autofree gchar *label = NULL;
-
-				if (!md_venue_group_keys(context, query->organization_id, venues,
-				                         query->venue_group, (0 == i) ? notes : NULL,
-				                         &group_keys, &label, error))
-					goto fail;
-
-				md_set_text(root, "venue_group_name", label);
+				group_keys = md_realms_group_keys(group_realms, source_id);
 				filter.venue_keys = (const gchar **)group_keys;
 			}
 
+			/* The pickers' choices: one per connected realm. */
 			for (j = 0; (NULL != venues) && (j < venues->len); j++)
 			{
 				VentureSeriesVenueRow *venue = g_ptr_array_index(venues, j);
-				const gchar *name = venture_string_is_empty(venue->name) ? venue->key : venue->name;
+				MdRealm *realm = md_realms_of(realms, source_id, venue->key);
 
 				if ((NULL != group_keys) && !g_strv_contains((const gchar *const *)group_keys, venue->key))
 					continue;
 
-				g_autofree gchar *folded = md_fold(name);
-
-				if (!g_hash_table_contains(choices, folded))
-					g_hash_table_insert(choices, g_steal_pointer(&folded), g_strdup(name));
+				if (NULL != realm)
+					g_hash_table_add(choices, realm);
 			}
 
-			/* The picked venues in this store's keys. A store without
-			 * the one to buy or sell at has no deal on that route; one
+			/* The picked realms in this store's keys -- several when a
+			 * source keeps each member realm apart. A store without the
+			 * one to buy or sell at has no deal on that route; one
 			 * outside the group (left over from the group picked
 			 * before) is set aside rather than empty the page. */
-			buy_key = (NULL != buy_wanted) ? md_venue_key_for(venues, buy_wanted) : NULL;
-			sell_key = (NULL != sell_wanted) ? md_venue_key_for(venues, sell_wanted) : NULL;
+			buy_keys = md_realm_keys(buy_realm, source_id);
+			sell_keys = md_realm_keys(sell_realm, source_id);
 
-			if (((NULL != buy_wanted) && (NULL == buy_key)) || ((NULL != sell_wanted) && (NULL == sell_key)))
+			if (((NULL != buy_wanted) && (NULL == buy_keys)) || ((NULL != sell_wanted) && (NULL == sell_keys)))
 				continue;
 
-			if ((NULL != buy_key) && (NULL != group_keys) &&
-			    !g_strv_contains((const gchar *const *)group_keys, buy_key))
+			if (NULL != buy_keys)
 			{
-				buy_aside = TRUE;
-				buy_key = NULL;
+				buy_keys = md_keys_in_group(buy_keys, group_keys);
+				buy_aside = buy_aside || (NULL == buy_keys);
 			}
 
-			if ((NULL != sell_key) && (NULL != group_keys) &&
-			    !g_strv_contains((const gchar *const *)group_keys, sell_key))
+			if (NULL != sell_keys)
 			{
-				sell_aside = TRUE;
-				sell_key = NULL;
+				sell_keys = md_keys_in_group(sell_keys, group_keys);
+				sell_aside = sell_aside || (NULL == sell_keys);
 			}
 
 			filter.search = venture_string_is_empty(query->search) ? NULL : query->search;
@@ -2931,17 +3711,11 @@ venture_marketdata_deals(
 			 * pool of deals is priced and the best of those kept. */
 			filter.count = wide ? VENTURE_SERIES_MAX_PAGE : count + 1;
 
-			if (NULL != buy_key)
-			{
-				venue_keys[0] = buy_key;
-				venue_keys[1] = NULL;
-				filter.venue_keys = venue_keys;
-			}
+			if (NULL != buy_keys)
+				filter.venue_keys = (const gchar **)buy_keys;
 
-			sell_keys[0] = sell_key;
-			sell_keys[1] = NULL;
-			buy_used = buy_used || (NULL != buy_key);
-			sell_used = sell_used || (NULL != sell_key);
+			buy_used = buy_used || (NULL != buy_keys);
+			sell_used = sell_used || (NULL != sell_keys);
 
 			filter.group_key = venture_string_is_empty(query->group_key) ? NULL : query->group_key;
 			filter.category_prefix = venture_string_is_empty(query->category) ? NULL : query->category;
@@ -2970,7 +3744,7 @@ venture_marketdata_deals(
 
 				deal = g_new0(MdDeal, 1);
 				deal->row = g_ptr_array_steal_index_fast(found, j - 1);
-				deal->data_source_id = venture_entity_get_id(source);
+				deal->data_source_id = source_id;
 				deal->source_name = md_source_name(source);
 
 				/* Read while this source's store is open: the merge
@@ -2978,12 +3752,16 @@ venture_marketdata_deals(
 				deal->display = json_object_new();
 				md_row_set_display(deal->display, reader, deal->row->instrument_key);
 				md_deal_sell_side(deal, reader,
-				                  (NULL != sell_key) ? sell_keys : (const gchar *const *)group_keys,
+				                  (const gchar *const *)((NULL != sell_keys) ? sell_keys : group_keys),
 				                  query->cut_pct);
+
+				deal->buy_label = md_realm_label(realms, source_id, deal->row->venue_key);
+				if (NULL != deal->sell)
+					deal->sell_label = md_realm_label(realms, source_id, deal->sell->venue_key);
 
 				/* Asked to sell at one venue, a deal that cannot be
 				 * sold there is not one. */
-				if ((NULL != sell_key) && (NULL == deal->sell))
+				if ((NULL != sell_keys) && (NULL == deal->sell))
 				{
 					md_deal_free(deal);
 					continue;
@@ -3030,9 +3808,19 @@ venture_marketdata_deals(
 
 			md_set_ratio(object, "discount_pct", 100.0 - deal->row->pct_vs_region);
 
+			/* Each side's price is as old as the snapshot it came from;
+			 * a page must be able to say so beside the realm. */
+			md_set_age(object, "buy_", deal->row->taken_at, now, stale_after);
+			md_set_text(object, "realm", deal->buy_label);
+
 			if (NULL != deal->sell)
 			{
-				json_object_set_object_member(object, "sell", md_row_object(deal->sell, deal->data_source_id));
+				JsonObject *sell = md_row_object(deal->sell, deal->data_source_id);
+
+				md_set_age(sell, "", deal->sell->taken_at, now, stale_after);
+				md_set_text(sell, "realm", deal->sell_label);
+				json_object_set_object_member(object, "sell", sell);
+				md_set_age(object, "sell_", deal->sell->taken_at, now, stale_after);
 				md_set_money(object, "profit", deal->profit, deal->row->currency);
 				md_set_ratio(object, "roi_pct", deal->roi);
 
@@ -3055,7 +3843,7 @@ venture_marketdata_deals(
 		}
 
 		json_object_set_double_member(root, "cut_pct", query->cut_pct);
-		json_object_set_array_member(root, "venue_choices", md_venue_choices_json(choices));
+		json_object_set_array_member(root, "venue_choices", md_venue_choices_json(choices, now, stale_after));
 
 		/* Set aside only where no source could use it. */
 		buy_aside = buy_aside && !buy_used;
@@ -3069,8 +3857,10 @@ venture_marketdata_deals(
 			md_note(notes, "The sell venue is not in this venue group, so the dearest venue of the "
 			               "group is sold at.");
 
-		md_set_text(root, "buy_venue", buy_aside ? NULL : buy_wanted);
-		md_set_text(root, "sell_venue", sell_aside ? NULL : sell_wanted);
+		/* Echoed as the picker spells it, so the page selects it
+		 * whichever member's name or key was asked for. */
+		md_set_text(root, "buy_venue", buy_aside ? NULL : (NULL != buy_realm) ? buy_realm->label : buy_wanted);
+		md_set_text(root, "sell_venue", sell_aside ? NULL : (NULL != sell_realm) ? sell_realm->label : sell_wanted);
 
 		if ((totals_rows > 0) && !totals_mixed)
 		{

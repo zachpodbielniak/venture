@@ -346,6 +346,7 @@ static const ArbOption arb_options[] = {
 	{ "data_source_id", ARB_OPT_INT, 0, G_MAXINT64, NULL },
 	{ "buy_venues", ARB_OPT_LIST, 0, 0, NULL },
 	{ "sell_venues", ARB_OPT_LIST, 0, 0, NULL },
+	{ "venue_group", ARB_OPT_TEXT, 0, 0, NULL },
 	{ "group_key", ARB_OPT_TEXT, 0, 0, NULL },
 	{ "category_path", ARB_OPT_TEXT, 0, 0, NULL },
 	{ "kind", ARB_OPT_TEXT, 0, 0, NULL },
@@ -813,10 +814,12 @@ struct _VentureArbitrageScan
 	gint64				 organization_id;
 	JsonObject			*options;
 	gint64				 now;
+	gint64				 stale_after;	/* series.stale_minutes, in seconds */
 	GDateTime			*when;
 	gint64				 units;
 	gchar				**buy_venues;
 	gchar				**sell_venues;
+	gchar				*venue_group_name;
 	GPtrArray			*sources;	/* VentureEntity */
 	GHashTable			*stores;	/* source id -> store, or none */
 	GHashTable			*venues;	/* "id\037key" -> VentureArbitrageVenue */
@@ -868,6 +871,7 @@ arb_scan_free(VentureArbitrageScan *scan)
 	g_clear_pointer(&scan->when, g_date_time_unref);
 	g_strfreev(scan->buy_venues);
 	g_strfreev(scan->sell_venues);
+	g_free(scan->venue_group_name);
 	g_clear_pointer(&scan->sources, g_ptr_array_unref);
 	g_clear_pointer(&scan->stores, g_hash_table_unref);
 	g_clear_pointer(&scan->venues, g_hash_table_unref);
@@ -928,6 +932,14 @@ venture_arbitrage_scan_get_sources(VentureArbitrageScan *scan)
 	g_return_val_if_fail(NULL != scan, NULL);
 
 	return scan->sources;
+}
+
+const gchar *const *
+venture_arbitrage_scan_get_buy_venues(VentureArbitrageScan *scan)
+{
+	g_return_val_if_fail(NULL != scan, NULL);
+
+	return (const gchar *const *)scan->buy_venues;
 }
 
 gboolean
@@ -1301,6 +1313,19 @@ arb_side_object(
 	venture_arbitrage_set_money(object, "amount", amount);
 	venture_arbitrage_set_money(object, "fees", fees);
 	arb_set_time(object, "taken_at", side->taken_at);
+
+	/* How old the price is, judged as the Trading pages judge it: a
+	 * spread from a realm whose feed stopped is a spread nobody can take. */
+	if (side->taken_at > 0)
+	{
+		json_object_set_int_member(object, "age_seconds", MAX((gint64)0, scan->now - side->taken_at));
+		json_object_set_boolean_member(object, "stale", scan->now - side->taken_at > scan->stale_after);
+	}
+	else
+	{
+		json_object_set_null_member(object, "age_seconds");
+		json_object_set_boolean_member(object, "stale", TRUE);
+	}
 
 	return object;
 }
@@ -1768,6 +1793,61 @@ arb_list(
 	return g_strsplit(text, ",", -1);
 }
 
+/*
+ * One side's venues narrowed to a venue group's @group, as Deals narrows
+ * its pickers: no list is the whole group; a list keeps what is in the
+ * group; a list with nothing in it -- left over from the group asked
+ * before -- is set aside for the whole group, with a note, rather than
+ * answer nothing. Transfer full of @set.
+ */
+static gchar **
+arb_narrow_to_group(
+	VentureArbitrageScan	*scan,
+	gchar			**set,
+	gchar			**group,
+	const gchar		*side
+){
+	g_autoptr(GPtrArray) kept = NULL;
+	guint dropped = 0;
+	guint i;
+
+	if (NULL == set)
+		return g_strdupv(group);
+
+	kept = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; NULL != set[i]; i++)
+	{
+		if (g_strv_contains((const gchar *const *)group, set[i]))
+			g_ptr_array_add(kept, g_strdup(set[i]));
+		else
+			dropped++;
+	}
+
+	g_strfreev(set);
+
+	if (0 == kept->len)
+	{
+		g_autofree gchar *note = g_strdup_printf("None of %s is in the venue group, so every venue of "
+		                                         "the group is used.", side);
+
+		venture_arbitrage_scan_add_note(scan, note);
+		return g_strdupv(group);
+	}
+
+	if (dropped > 0)
+	{
+		g_autofree gchar *note = g_strdup_printf("%u of %s %s not in the venue group and %s left out.",
+		                                         dropped, side, (1 == dropped) ? "is" : "are",
+		                                         (1 == dropped) ? "was" : "were");
+
+		venture_arbitrage_scan_add_note(scan, note);
+	}
+
+	g_ptr_array_add(kept, NULL);
+	return (gchar **)g_ptr_array_free(g_steal_pointer(&kept), FALSE);
+}
+
 static void
 arb_exclude(
 	GHashTable	*excluded,
@@ -2109,6 +2189,7 @@ venture_arbitrage_scan_run_full(
 	scan->organization_id = organization_id;
 	scan->options = json_object_ref(normalised);
 	scan->now = g_get_real_time() / G_USEC_PER_SEC;
+	scan->stale_after = venture_marketdata_stale_seconds(context);
 	scan->when = g_date_time_new_from_unix_utc(scan->now);
 	scan->units = venture_json_object_get_int(normalised, "units", 1);
 	scan->buy_venues = arb_list(normalised, "buy_venues");
@@ -2170,6 +2251,28 @@ venture_arbitrage_scan_run_full(
 		venture_arbitrage_scan_add_note(scan, "No data sources in this organization yet.");
 	}
 
+	/* A venue group narrows both sides to its venues, as on Deals: the
+	 * keys it stands for in every source, each connected realm whole.
+	 * Judged even with no data, so a group that is not there is still
+	 * refused rather than quietly scanning everything. */
+	if (!venture_string_is_empty(venture_json_object_get_string(normalised, "venue_group", NULL)))
+	{
+		g_auto(GStrv) group = NULL;
+
+		if (!venture_marketdata_venue_group_venue_keys(context, organization_id,
+		                                               venture_json_object_get_string(normalised,
+		                                                                              "venue_group", NULL),
+		                                               &group, &scan->venue_group_name, error))
+			return NULL;
+
+		if (available && (0 == g_strv_length(group)))
+			venture_arbitrage_scan_add_note(scan, "The venue group names no venue any source has, so "
+			                                      "nothing is bought or sold.");
+
+		scan->buy_venues = arb_narrow_to_group(scan, scan->buy_venues, group, "buy_venues");
+		scan->sell_venues = arb_narrow_to_group(scan, scan->sell_venues, group, "sell_venues");
+	}
+
 	if (available && !strategy->scan(scan, strategy->user_data, error))
 		return NULL;
 
@@ -2220,6 +2323,10 @@ venture_arbitrage_scan_run_full(
 	json_object_set_boolean_member(root, "available", available);
 	json_object_set_string_member(root, "strategy", strategy->name);
 	json_object_set_object_member(root, "options", json_object_ref(normalised));
+
+	if (NULL != scan->venue_group_name)
+		json_object_set_string_member(root, "venue_group_name", scan->venue_group_name);
+
 	json_object_set_int_member(root, "examined", examined);
 	json_object_set_boolean_member(root, "truncated", kept->len > top);
 	counts = json_object_new();
