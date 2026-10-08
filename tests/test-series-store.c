@@ -17,6 +17,7 @@
 
 #ifdef VENTURE_HAVE_SQLITE
 
+#include <glib/gstdio.h>
 #include <math.h>
 #include <string.h>
 
@@ -1583,6 +1584,387 @@ test_list_current(
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/*
+ * The keys of a page as the whole store ordered would give it: the
+ * query list_current() asked before it read pages by a bound, every row
+ * joined and sorted, with the filter tested on the joined row. The
+ * reference the bounded reads are held to.
+ */
+static GPtrArray *
+reference_page(
+	const gchar	*path,
+	const gchar	*where,
+	const gchar	*column,
+	gboolean	 descending,
+	guint		 offset,
+	guint		 count
+){
+	g_autofree gchar *sql = NULL;
+	GPtrArray *keys;
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+
+	keys = g_ptr_array_new_with_free_func(g_free);
+	sql = g_strdup_printf("SELECT v.key, i.key FROM current c JOIN venues v ON v.id = c.venue_id"
+	                      " JOIN instruments i ON i.id = c.instrument_id WHERE %s"
+	                      " ORDER BY %s %s NULLS LAST, v.key, i.key LIMIT %u OFFSET %u",
+	                      where, column, descending ? "DESC" : "ASC", count, offset);
+
+	g_assert_cmpint(sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, sql, -1, &stmt, NULL), ==, SQLITE_OK);
+
+	while (SQLITE_ROW == sqlite3_step(stmt))
+		g_ptr_array_add(keys, g_strdup_printf("%s/%s", sqlite3_column_text(stmt, 0),
+		                                      sqlite3_column_text(stmt, 1)));
+
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+
+	return keys;
+}
+
+static gint64
+reference_count(
+	const gchar	*path,
+	const gchar	*where
+){
+	g_autofree gchar *sql = NULL;
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	gint64 count;
+
+	sql = g_strdup_printf("SELECT count(*) FROM current c JOIN venues v ON v.id = c.venue_id"
+	                      " JOIN instruments i ON i.id = c.instrument_id WHERE %s", where);
+
+	g_assert_cmpint(sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, sql, -1, &stmt, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+	count = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+
+	return count;
+}
+
+/*
+ * Every page of every sort, both ways, under each kind of narrowing, is
+ * row for row the page the whole store ordered gives, and every count is
+ * the joined count. A page is now read up to a bound found on current
+ * alone, the name order walked from its index and the narrowings asked as
+ * id sets; what breaks if one of those drifts is a browse page that
+ * repeats a row or skips one at a page edge -- the prices tie a lot here,
+ * nulls included, so the edges fall in ties.
+ */
+static void
+test_paging_matches_full_order(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	static const gchar *const venue_keys[] = { "delta", "bravo", "alpha", "charlie" };
+	static const gchar *const picked[] = { "alpha", "charlie", NULL };
+	static const guint offsets[] = { 0, 1, 2, 5, 9, 17, 30, 55, 79, 80, 200 };
+	static const guint counts[] = { 1, 3, 7, 50 };
+	static const struct
+	{
+		const gchar	*where;
+		const gchar	*search;
+		const gchar	*category;
+		gboolean	 in_stock;
+		gboolean	 venues;
+		const gchar	*group;
+	} cases[] = {
+		{ "1", NULL, NULL, FALSE, FALSE, NULL },
+		{ "c.min_price IS NOT NULL AND (c.quantity IS NULL OR c.quantity > 0)", NULL, NULL, TRUE, FALSE, NULL },
+		{ "v.key IN ('alpha', 'charlie')", NULL, NULL, FALSE, TRUE, NULL },
+		{ "v.group_key = 'north'", NULL, NULL, FALSE, FALSE, "north" },
+		{ "(i.name_fold LIKE '%ore%' OR i.key LIKE '%ore%')", "ORE", NULL, FALSE, FALSE, NULL },
+		{ "(i.category = 'metal' OR i.category LIKE 'metal/%')", NULL, "metal", FALSE, FALSE, NULL },
+	};
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	guint v;
+	guint k;
+	guint s;
+
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+
+	for (v = 0; v < G_N_ELEMENTS(venue_keys); v++)
+		set_venue(fixture->store, venue_keys[v], venue_keys[v], (v % 2) ? "north" : "south");
+
+	/* Twenty instruments: names that tie and names missing (sorted by
+	 * key), keys in an order unlike their ids, two categories. */
+	for (k = 0; k < 20; k++)
+	{
+		g_autofree gchar *key = g_strdup_printf("%c%02u", 'z' - (gchar)(k % 7), k);
+		g_autofree gchar *name = g_strdup_printf("%s %u", (k % 3) ? "Ore" : "Herb", k % 4);
+
+		set_instrument(fixture->store, key, (5 == k % 6) ? NULL : name,
+		               (k % 2) ? "metal/bars" : "plants");
+	}
+
+	/* Two snapshots a venue: the second drops some instruments, whose
+	 * rows stay with no price, and prices repeat across rows. */
+	for (v = 0; v < G_N_ELEMENTS(venue_keys); v++)
+	{
+		guint pass;
+
+		for (pass = 0; pass < 2; pass++)
+		{
+			VentureSeriesSnapshot *snapshot = begin(fixture->store, venue_keys[v], T0 + pass * HOUR, TRUE);
+
+			for (k = 0; k < 20; k++)
+			{
+				g_autofree gchar *key = g_strdup_printf("%c%02u", 'z' - (gchar)(k % 7), k);
+
+				if ((1 == pass) && (0 == (k + v) % 4))
+					continue;
+
+				add_listing(snapshot, key, 0, 100 + 10 * ((k * 7 + v * 3 + pass) % 5),
+				            1 + (k + v) % 3, -1);
+			}
+
+			commit(fixture->store, snapshot);
+		}
+	}
+
+	g_assert_true(venture_series_store_recompute_region(fixture->store, NULL, T0 + 2 * HOUR,
+	                                                    VENTURE_SERIES_NONE, NULL, NULL, &error));
+	g_assert_no_error(error);
+
+	for (s = 0; s < G_N_ELEMENTS(cases); s++)
+	{
+		VentureSeriesFilter filter;
+		gint64 count;
+		guint sort;
+
+		venture_series_filter_init(&filter);
+		filter.search = cases[s].search;
+		filter.category_prefix = cases[s].category;
+		filter.in_stock_only = cases[s].in_stock;
+		filter.venue_keys = cases[s].venues ? picked : NULL;
+		filter.group_key = cases[s].group;
+
+		g_assert_true(venture_series_store_count_current(fixture->store, &filter, &count, &error));
+		g_assert_no_error(error);
+		g_assert_cmpint(count, ==, reference_count(path, cases[s].where));
+		g_assert_cmpint(count, >, 0);
+
+		for (sort = VENTURE_SERIES_SORT_MIN_PRICE; sort <= VENTURE_SERIES_SORT_SOLD_PER_DAY; sort++)
+		{
+			const gchar *column;
+			guint d;
+			guint o;
+			guint n;
+
+			switch (sort)
+			{
+			case VENTURE_SERIES_SORT_MIN_PRICE: column = "c.min_price"; break;
+			case VENTURE_SERIES_SORT_MARKET_VALUE: column = "c.market_value"; break;
+			case VENTURE_SERIES_SORT_QUANTITY: column = "c.quantity"; break;
+			case VENTURE_SERIES_SORT_LISTINGS: column = "c.listings"; break;
+			case VENTURE_SERIES_SORT_PCT_VS_REGION: column = "c.pct_vs_region"; break;
+			case VENTURE_SERIES_SORT_DEAL_PRICE: column = "c.deal_price"; break;
+			case VENTURE_SERIES_SORT_REGION_MEDIAN: column = "c.region_median"; break;
+			case VENTURE_SERIES_SORT_NAME: column = "COALESCE(i.name_fold, i.key)"; break;
+			case VENTURE_SERIES_SORT_UPDATED: column = "c.taken_at"; break;
+			case VENTURE_SERIES_SORT_VENUE: column = "v.key"; break;
+			case VENTURE_SERIES_SORT_SALE_RATE: column = "c.sale_rate"; break;
+			default: column = "c.sold_per_day"; break;
+			}
+
+			for (d = 0; d < 2; d++)
+			for (o = 0; o < G_N_ELEMENTS(offsets); o++)
+			for (n = 0; n < G_N_ELEMENTS(counts); n++)
+			{
+				g_autoptr(GPtrArray) rows = NULL;
+				g_autoptr(GPtrArray) want = NULL;
+				guint r;
+
+				filter.sort = (VentureSeriesSort)sort;
+				filter.descending = (1 == d);
+				filter.offset = offsets[o];
+				filter.count = counts[n];
+
+				rows = list(fixture->store, &filter);
+				want = reference_page(path, cases[s].where, column, filter.descending,
+				                      filter.offset, filter.count);
+
+				if (rows->len != want->len)
+					g_error("case %u sort %s %s offset %u count %u: %u rows, wanted %u", s,
+					        venture_series_sort_to_string(filter.sort), d ? "desc" : "asc",
+					        filter.offset, filter.count, rows->len, want->len);
+
+				for (r = 0; r < rows->len; r++)
+				{
+					g_autofree gchar *got = g_strdup_printf("%s/%s", ROW(rows, r)->venue_key,
+					                                        ROW(rows, r)->instrument_key);
+
+					if (0 != g_strcmp0(got, g_ptr_array_index(want, r)))
+						g_error("case %u sort %s %s offset %u count %u row %u: %s, wanted %s", s,
+						        venture_series_sort_to_string(filter.sort), d ? "desc" : "asc",
+						        filter.offset, filter.count, r, got,
+						        (const gchar *)g_ptr_array_index(want, r));
+				}
+			}
+		}
+	}
+}
+
+/*
+ * A store from before step 10 gains its instrument indexes when opened,
+ * its rows intact, and is read through them: the search and the name
+ * order answer from the indexes the step made, the category picker
+ * counts plain items only. A v9 store is this schema less step 10's
+ * indexes, which is what is made here.
+ */
+static void
+test_upgrade_instrument_indexes(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) categories = NULL;
+	g_autofree gchar *path = NULL;
+	VentureSeriesFilter filter;
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	gint indexes;
+
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+	set_venue(fixture->store, "a", "Alpha", "eu");
+	set_instrument(fixture->store, "2770", "Copper Ore", "Trade Goods/Metal");
+	set_instrument(fixture->store, "2771", "Tin Ore", "Trade Goods/Metal");
+	put_price(fixture->store, "a", "2770", T0, 10, 1);
+	put_price(fixture->store, "a", "2771", T0 + HOUR, 20, 1);
+	g_clear_object(&fixture->store);
+
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(db, "DROP INDEX instruments_search;"
+	                                 "DROP INDEX instruments_category_plain;"
+	                                 "DROP INDEX instruments_sort_name;"
+	                                 "PRAGMA user_version = 9;", NULL, NULL, NULL), ==, SQLITE_OK);
+	sqlite3_close(db);
+	g_assert_cmpint(read_user_version(path), ==, 9);
+
+	fixture->store = venture_series_store_open(fixture->dir, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(read_user_version(path), ==, venture_series_store_schema_version());
+
+	g_assert_cmpint(sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name IN"
+	                                       " ('instruments_search', 'instruments_category_plain',"
+	                                       "  'instruments_sort_name')", -1, &stmt, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+	indexes = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+	g_assert_cmpint(indexes, ==, 3);
+
+	venture_series_filter_init(&filter);
+	filter.search = "tin";
+	{
+		g_autoptr(GPtrArray) rows = list(fixture->store, &filter);
+
+		g_assert_cmpuint(rows->len, ==, 1);
+		g_assert_cmpstr(ROW(rows, 0)->instrument_key, ==, "2771");
+	}
+
+	venture_series_filter_init(&filter);
+	filter.sort = VENTURE_SERIES_SORT_NAME;
+	{
+		g_autoptr(GPtrArray) rows = list(fixture->store, &filter);
+
+		g_assert_cmpuint(rows->len, ==, 2);
+		g_assert_cmpstr(ROW(rows, 0)->instrument_name, ==, "Copper Ore");
+		g_assert_cmpstr(ROW(rows, 1)->instrument_name, ==, "Tin Ore");
+	}
+
+	categories = venture_series_store_list_categories(fixture->store, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(categories->len, ==, 1);
+	g_assert_cmpint(((VentureSeriesCategoryRow *)categories->pdata[0])->instruments, ==, 2);
+}
+
+/* The size of a file, 0 when there is none. */
+static goffset
+file_size(const gchar *path)
+{
+	GStatBuf buf;
+
+	return (0 == g_stat(path, &buf)) ? (goffset)buf.st_size : 0;
+}
+
+/*
+ * A checkpoint empties the write-ahead log, and a reader still on an old
+ * snapshot makes it wait at most the time it was given and report the
+ * log left, never fail. Without it a store read all day kept a log as
+ * large as itself, and every read probed all of it.
+ */
+static void
+test_checkpoint(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *wal = NULL;
+	gboolean complete;
+	gint64 started;
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	guint i;
+
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+	wal = g_strconcat(path, "-wal", NULL);
+
+	for (i = 0; i < 20; i++)
+	{
+		g_autofree gchar *key = g_strdup_printf("item-%u", i);
+
+		put_price(fixture->store, "realm", key, T0 + i * HOUR, 100 + i, 1);
+	}
+
+	g_assert_cmpint(file_size(wal), >, 0);
+	g_assert_true(venture_series_store_checkpoint(fixture->store, 1000, &complete, &error));
+	g_assert_no_error(error);
+	g_assert_true(complete);
+	g_assert_cmpint(file_size(wal), ==, 0);
+
+	/* A reader holding a snapshot from before the next commit. */
+	g_assert_cmpint(sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, "SELECT key FROM instruments", -1, &stmt, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+
+	put_price(fixture->store, "realm", "item-late", T0 + 30 * HOUR, 7, 1);
+
+	started = g_get_monotonic_time();
+	g_assert_true(venture_series_store_checkpoint(fixture->store, 50, &complete, &error));
+	g_assert_no_error(error);
+	g_assert_false(complete);
+	g_assert_cmpint(g_get_monotonic_time() - started, <, 5 * G_USEC_PER_SEC);
+
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+
+	g_assert_true(venture_series_store_checkpoint(fixture->store, 1000, &complete, &error));
+	g_assert_no_error(error);
+	g_assert_true(complete);
+	g_assert_cmpint(file_size(wal), ==, 0);
+
+	/* Only a writer, outside a transaction. */
+	g_assert_true(venture_series_store_begin(fixture->store, &error));
+	g_assert_false(venture_series_store_checkpoint(fixture->store, 10, &complete, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	venture_series_store_rollback(fixture->store);
+
+	reader = venture_series_store_open_reader(fixture->dir, &error);
+	g_assert_no_error(error);
+	g_assert_false(venture_series_store_checkpoint(reader, 10, &complete, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 /* --- History ---------------------------------------------------------------------- */
 
 /*
@@ -2323,6 +2705,9 @@ main(
 	ADD("region-small", test_region_small);
 	ADD("region-deal-price", test_region_deal_price);
 	ADD("list-current", test_list_current);
+	ADD("paging-matches-full-order", test_paging_matches_full_order);
+	ADD("upgrade-instrument-indexes", test_upgrade_instrument_indexes);
+	ADD("checkpoint", test_checkpoint);
 	ADD("heat", test_heat);
 	ADD("reference", test_reference);
 	ADD("venue-state", test_venue_state);

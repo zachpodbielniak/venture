@@ -39,6 +39,9 @@
  * schedule's minute and a clock jump are both noticed. */
 #define WORKER_MAX_SLEEP_MS (60 * 1000)
 
+/* How long a pass's checkpoint waits for readers on the old log. */
+#define WORKER_CHECKPOINT_WAIT_MS (2000)
+
 /* The back-off after a check that found nothing new: 1, 5, 15, 30 min. */
 static const gint64 worker_backoff[] = { 60, 300, 900, 1800 };
 
@@ -1851,6 +1854,16 @@ worker_pass_finish(WorkerPass *pass)
 				worker_run_note(source, pass->run, "retention", error->message);
 				g_clear_error(&error);
 			}
+		}
+
+		/* The log back to nothing while no unit is writing; see
+		 * venture_series_store_checkpoint(). A reader in the way
+		 * is waited for briefly and otherwise left to the next pass. */
+		if (pass->wrote &&
+		    !venture_series_store_checkpoint(source->store, WORKER_CHECKPOINT_WAIT_MS, NULL, &error))
+		{
+			g_debug("feeds: checkpoint: %s", error->message);
+			g_clear_error(&error);
 		}
 
 		worker_quota_save(source);
