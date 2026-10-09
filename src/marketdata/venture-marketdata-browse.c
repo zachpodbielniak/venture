@@ -4266,7 +4266,6 @@ typedef struct
 {
 	VentureSeriesRow	*row;
 	gint64			 data_source_id;
-	guint			 source_index;	/* in the answer's readers */
 	gchar			*source_name;
 	JsonObject		*display;
 	VentureSeriesRow	*sell;		/* the dearest venue to sell at, or NULL */
@@ -4964,7 +4963,6 @@ venture_marketdata_deals(
 				 * outlives it. */
 				deal->display = json_object_new();
 				md_row_set_display(deal->display, reader, deal->row->instrument_key);
-				deal->source_index = i;
 				md_deal_sell_side(deal, reader,
 				                  (const gchar *const *)((NULL != sell_keys) ? sell_keys : group_keys),
 				                  query->cut_pct, query->min_sold_per_day);
