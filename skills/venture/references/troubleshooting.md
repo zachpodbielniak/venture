@@ -105,6 +105,9 @@ Five habits that settle most problems before a theory is needed:
 | "No such data source in organization 1" | add `organization_id=N` | [feeds.md](feeds.md) |
 | push refused, exit 4 | not a push source, switched off, or four pushes in flight | [feeds.md](feeds.md) |
 | a run stores nothing | `track: known` without the instrument; origins/file roots | [feeds.md](feeds.md) |
+| a series store only grows | `feeds upkeep-status ID`: `size.auto_vacuum` `none` needs one `feeds upkeep ID rebuild=1`; `last.error`; `series.daily_days`/`idle_days` 0 keep forever | [feeds.md](feeds.md) |
+| `/metrics` 404 | `metrics.access` is `off`, or `loopback` and the request came through a proxy (forwarding header) | [operations.md](operations.md) |
+| `/metrics` 403 with a token | its `scopes` must include `metrics` (or it is the owner's) | [operations.md](operations.md) |
 | provider name unknown | an exec plugin with `plugins.allow_exec` off | [plugins.md](plugins.md) |
 | positions not mirrored | instruments without products; `create_products` | [feeds.md](feeds.md) |
 | `market quote` `found: false` | currency mismatch, several groups, nothing observed | [market-data.md](market-data.md) |

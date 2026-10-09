@@ -223,6 +223,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 * Sections
 
 - *server* — bind address, port, TLS, request limits
+- *metrics* — =access= (=off=): who may read =GET /metrics= -- =off=, =loopback=, =token= or =loopback_or_token=. See [[*Metrics][Metrics]] below
 - *database* — URI, pool size, automatic migration
 - *security* — authentication, sessions, password iterations, rate limit
 - *locale* — currency, timezone, fiscal year start
@@ -244,7 +245,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *kb* — knowledge base chunking, search and import limits; the
   =embedding_*= keys are legacy hints, organizations bind providers
   explicitly
-- *series* — market data history: =hourly_days= (14; 0 keeps forever), =daily_days= (0, forever) and =max_store_mb= (0, no cap; past it a store refuses new instruments but keeps updating known ones); all three must be zero or more. =stale_minutes= (120, 1 to 10080) is the age past which a price on the Trading pages is drawn as stale. =include_in_backup= (true) copies every store beside each installation backup, one =backup_run= per store, on the feeds worker; a source serves only its current snapshot, so a store's history exists nowhere else. See [[file:market-data.org][Market data]] and [[file:backup.org][Backups]]
+- *series* — market data history: =hourly_days= (14; 0 keeps forever), =daily_days= (0, forever), =idle_days= (0, forever: how long a venue's row for an instrument it stopped listing, and then an instrument nothing refers to, is kept) and =max_store_mb= (0, no cap; past it a store refuses new instruments but keeps updating known ones); all four must be zero or more. =upkeep_hour= (-1, or 0 to 23 UTC) is when each store's daily upkeep runs. =stale_minutes= (120, 1 to 10080) is the age past which a price on the Trading pages is drawn as stale. =include_in_backup= (true) copies every store beside each installation backup, one =backup_run= per store, on the feeds worker; a source serves only its current snapshot, so a store's history exists nowhere else. See [[file:market-data.org][Market data]] and [[file:backup.org][Backups]]
 - *feeds* — market data feeds, off by default: =enabled=; =allowed_origins= (exact origins a source may fetch from, comma-separated, deny by default; plain http only for a loopback host); =file_roots= (absolute directories a file source may read under, comma-separated, deny by default); =max_response_mb= (64, 1 to 4096: the largest answer or file a fetch reads); =max_push_mb= (32, 1 to 4096: the largest body =POST /api/v1/feeds/:id/push= takes, under the transport's =server.max_request_size_mb=); =request_timeout= (60, 1 to 3600 seconds, the whole exchange); =max_records_per_run= (500, 0 to 100000: main-database records a run may write); =run_window_minutes= (15, 0 to 1440; scheduled passes within this many minutes are recorded as one run, 0 records every pass). All are read on the main thread and frozen into each source; a change refreezes every source. See below and [[file:market-data.org][Market data]]
 - *backup* — where scheduled backups go and how many are kept; see below
 - *stripe*, *payroll*, *bankfeed*, *commerce*, *group* — one =enabled=
@@ -413,6 +414,8 @@ Two sections, both read only on the main thread and handed to the feeds worker a
 | =feeds.run_window_minutes=  | 15      | 0 to 1440    | =VENTURE_FEEDS_RUN_WINDOW_MINUTES=    | scheduled passes gathered into one recorded run; 0 records every pass                                        |
 | =series.hourly_days=        | 14      | 0 or more    | =VENTURE_SERIES_HOURLY_DAYS=          | days of hourly history kept, today included; 0 keeps it forever                                              |
 | =series.daily_days=         | 0       | 0 or more    | =VENTURE_SERIES_DAILY_DAYS=           | days of daily history kept; 0 keeps it forever                                                               |
+| =series.idle_days=          | 0       | 0 or more    | =VENTURE_SERIES_IDLE_DAYS=            | days a venue's row for an instrument it no longer lists is kept, and an instrument nothing refers to; 0 keeps them forever |
+| =series.upkeep_hour=        | -1      | -1 to 23     | =VENTURE_SERIES_UPKEEP_HOUR=          | UTC hour each store's daily upkeep waits for; -1 runs it a day after the last, whenever a pass ends              |
 | =series.max_store_mb=       | 0       | 0 or more    | =VENTURE_SERIES_MAX_STORE_MB=         | MiB past which a store refuses instruments it has never seen; known ones carry on; 0 for no cap              |
 | =series.include_in_backup=  | true    | --           | =VENTURE_SERIES_INCLUDE_IN_BACKUP=    | copy every series store beside each installation backup                                                      |
 | =series.stale_minutes=      | 120     | 1 to 10080   | =VENTURE_SERIES_STALE_MINUTES=        | minutes after which a price on the Trading pages (Deals, an item's venues, arbitrage) is drawn as stale       |
@@ -426,7 +429,10 @@ What each is for, and why the default is what it is:
 - *=max_response_mb= and =request_timeout= are per fetch*, judged on =Content-Length= first and again on what arrives; one deadline covers connecting, waiting and reading, so a far end trickling a byte at a time is still cut off.
 - *=max_records_per_run= bounds the main database*, not the store: a run's =price_observation= and =exchange_rate= upserts are written on the main thread, and a source that returned a hundred thousand of them would stall every request while they saved. What is cut is counted in the run's notes. 0 writes none.
 - *=run_window_minutes= keeps the run list readable.* An adaptive schedule may fetch a busy source every few minutes; each pass is still a pass, but passes within the window are recorded as one =data_source_run=.
-- *=series.hourly_days= is the one with a finite default* because hourly history is what fills a disk -- one blob per venue, instrument and day; daily history is the one that cannot be fetched again, so it is kept forever unless you say otherwise. Purging runs once a day on the worker.
+- *=series.hourly_days= is the one with a finite default* because hourly history is what fills a disk -- one blob per venue, instrument and day; daily history is the one that cannot be fetched again, so it is kept forever unless you say otherwise. Retention runs once a day on the worker, in batches, as part of each store's upkeep (see [[file:market-data.org::*Upkeep][Market data: Upkeep]]).
+- *=series.daily_days= stays forever by default* for the same reason: a default that deleted history nobody can fetch again would be a surprise discovered a year late. A full World of Warcraft region writes about 2.2 million daily rows a day -- some 150 MiB with the index -- so an install that keeps one should choose a horizon (a year and a bit, 400, keeps a year-over-year comparison).
+- *=series.idle_days= is off by default* because an absent instrument's row is what says "out of stock" -- the stock alerts and the Trading pages read it -- and deleting it makes the instrument's return a first sighting, with no "back in stock". On a source whose instrument list churns (item variants: tens of thousands of new keys a day) the rows of everything listed once pile up in the two largest tables forever; 30 keeps a month of absences.
+- *=series.upkeep_hour= picks a quiet hour.* The upkeep is batched and yields to every fetch, so it does not need one; a fixed hour just keeps its I/O away from whatever else the disk does at night.
 - *=series.include_in_backup= is on* because a source serves only its current snapshot: the history in a store exists nowhere else. See [[file:backup.org::*Series stores][Backups: series stores]].
 
 #+begin_src yaml
@@ -442,6 +448,19 @@ plugins:
 #+end_src
 
 The stores themselves, the providers and the worker are in [[file:market-data.org][Market data]]; the walk-throughs in [[file:examples/wow-auction-house-feed.org][a WoW auction house feed]], [[file:examples/odds-api-feed.org][an odds feed]] and [[file:examples/dropship-supplier-feed.org][a supplier's price list]] set each of these for a real source.
+
+** Metrics
+
+=GET /metrics= answers in the Prometheus text format (see [[file:market-data.org::*Metrics][Market data: Metrics]] for the families). It says what the install is doing -- request rates, every feed's runs, every venue's age -- so it is never public, and =metrics.access= (=VENTURE_METRICS_ACCESS=) decides who may read it:
+
+| Value               | Who                                                                                                   |
+|---------------------+-------------------------------------------------------------------------------------------------------|
+| =off= (default)     | nobody: 404                                                                                           |
+| =loopback=          | a request from 127.0.0.1 or ::1 carrying no forwarding header; anything else 404                      |
+| =token=             | an API token whose =scopes= include =metrics= (any role), or the owner; 401 without a credential, 403 with the wrong one |
+| =loopback_or_token= | either                                                                                                |
+
+A tunnel or reverse proxy on the same host connects from loopback too -- =cloudflared= does -- so =loopback= refuses a request carrying =Forwarded=, =X-Forwarded-For=, =X-Forwarded-Host=, =X-Real-IP=, =CF-Connecting-IP= or =True-Client-IP=: forwarded is somebody else's. In a YAML file =off= is read as a boolean; =false= is accepted as the same thing. A container's published port is not loopback either: from another container use =token=, with a token of its own: mint one on =/account/tokens= (it is shown once, and carries your role), then narrow it -- =venturectl update api_token ID role=viewer scopes=metrics= -- so the scraper's credential reads =/metrics= and, as a viewer, nothing it could change. =scopes= is a comma-separated list; =metrics= is the only scope anything checks today. Any other value refuses startup.
 
 * HTTP receive and connection limits
 

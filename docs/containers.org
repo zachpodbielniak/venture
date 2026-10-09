@@ -245,6 +245,28 @@ state and the AI conversation log, which are smaller but still yours.
 startup; =database.auto_migrate: false= turns that into a deliberate separate
 step with =venture --migrate=.
 
+*Monitoring.* =GET /metrics= is off. A Prometheus in another container is
+not on loopback -- a published port arrives from the container network's
+gateway -- so give it a token: =VENTURE_METRICS_ACCESS=token=, and a viewer
+token whose =scopes= are =metrics= (mint it on =/account/tokens=, then
+=venturectl update api_token ID role=viewer scopes=metrics=). Never
+=loopback= behind a tunnel that runs in the container's own network
+namespace; =loopback= already refuses a forwarded request, but the token is
+the rule that does not depend on how the tunnel is wired. See
+[[file:configuration.org::*Metrics][Configuration: Metrics]].
+
+*Market data stores.* With feeds on, each data source's store lives under
+the state volume and gets a daily upkeep on the feeds worker (retention in
+batches, free pages handed back, the log truncated). Set
+=VENTURE_SERIES_DAILY_DAYS= (and, for a source whose instrument keys churn,
+=VENTURE_SERIES_IDLE_DAYS=): daily history is kept forever otherwise, and
+a WoW region writes about 150 MiB of it a day. A store made before
+incremental vacuum was chosen correctly needs one rebuild to be able to
+shrink: =venturectl feeds upkeep ID rebuild=1 --wait=. It pauses the feeds
+while it rewrites the file and needs free space of about twice the store,
+so set =SQLITE_TMPDIR= to a directory on the state volume -- the container's
+=/tmp= is its writable layer. See [[file:market-data.org::*Upkeep][Market data: Upkeep]].
+
 * Under podman specifically
 
 ** Rootless bind mounts

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * venture-feeds-cli.inc - venturectl feeds sync|push|runs|due
+ * venture-feeds-cli.inc - venturectl feeds sync|push|runs|due|upkeep|upkeep-status
  *
  * Thin calls on /api/v1/feeds. The records themselves need no verb of
  * their own -- `list data_source`, `act data_source ID sync` -- these are
@@ -12,6 +12,11 @@
 
 /* The CLI waits this long for a queued run before it says so and stops. */
 #define VENTURE_CLI_FEEDS_WAIT_SECONDS (300)
+
+/* And this long for an upkeep: a rebuild of a store of several gigabytes
+ * takes tens of minutes on a slow disk, and the passes wait for the
+ * passes in flight before it starts. */
+#define VENTURE_CLI_FEEDS_UPKEEP_WAIT_SECONDS (4 * 3600)
 
 /* How long a push with --wait may take to answer: the server waits up to
  * two minutes for the run, and the session's own default (a minute) would
@@ -283,6 +288,169 @@ venture_cli_feeds_push(
 	return venture_cli_feeds_run_result(run, error);
 }
 
+/* GET /api/v1/feeds/ID/upkeep, and the last result's finished_at in
+ * *@out_finished (0 when there is none). */
+static JsonNode *
+venture_cli_feeds_upkeep_state(
+	VentureCli	 *cli,
+	const gchar	 *id,
+	gint64		  organization_id,
+	gint64		 *out_finished,
+	gboolean	 *out_running,
+	GError		**error
+){
+	g_autoptr(JsonNode) response = NULL;
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *path = NULL;
+	JsonObject *object;
+	JsonNode *last;
+	JsonNode *running;
+
+	base = g_strdup_printf("/api/v1/feeds/%s/upkeep", id);
+	path = venture_cli_organization_path(base, organization_id);
+	response = venture_cli_request(cli, "GET", path, NULL, error);
+
+	if (NULL == response)
+		return NULL;
+
+	if (!JSON_NODE_HOLDS_OBJECT(response))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_SERIALIZATION,
+		                    "The server's upkeep answer is not a JSON object");
+		return NULL;
+	}
+
+	object = json_node_get_object(response);
+	last = json_object_get_member(object, "last");
+	running = json_object_get_member(object, "running");
+	*out_finished = ((NULL != last) && JSON_NODE_HOLDS_OBJECT(last))
+		? venture_json_object_get_int(json_node_get_object(last), "finished_at", 0) : 0;
+	*out_running = (NULL != running) && JSON_NODE_HOLDS_OBJECT(running);
+
+	return g_steal_pointer(&response);
+}
+
+/*
+ * feeds upkeep ID [rebuild=1] [--wait] [organization_id=N]: queues the
+ * store's upkeep. With --wait it asks once every two seconds until a
+ * result newer than the one before is kept and none is under way, prints
+ * it, and exits 1 when it stopped on an error; it gives up (exit 7)
+ * after VENTURE_CLI_FEEDS_UPKEEP_WAIT_SECONDS.
+ *
+ * feeds upkeep-status ID [organization_id=N]: what is under way, what the
+ * last one did and the store's sizes now.
+ */
+static gint
+venture_cli_feeds_upkeep(
+	VentureCli	 *cli,
+	gchar		**args,
+	gboolean	  wait,
+	GError		**error
+){
+	static const gchar usage[] =
+		"usage: venturectl feeds upkeep ID [rebuild=1] [--wait] [organization_id=N] | "
+		"feeds upkeep-status ID [organization_id=N]";
+	g_autoptr(JsonNode) response = NULL;
+	g_autoptr(JsonNode) state = NULL;
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *path = NULL;
+	gboolean status_only;
+	gboolean rebuild;
+	gboolean running;
+	gint64 organization_id;
+	gint64 before;
+	gint64 deadline;
+	guint i;
+
+	status_only = (0 == g_strcmp0(args[1], "upkeep-status"));
+	rebuild = FALSE;
+	organization_id = 0;
+
+	for (i = 3; NULL != args[i]; i++)
+	{
+		if (!status_only && (0 == g_strcmp0(args[i], "rebuild=1")))
+			rebuild = TRUE;
+		else if (!status_only && (0 == g_strcmp0(args[i], "rebuild=0")))
+			rebuild = FALSE;
+		else if (g_str_has_prefix(args[i], "organization_id=") && (0 == organization_id) &&
+		         g_ascii_string_to_signed(args[i] + strlen("organization_id="), 10, 1, G_MAXINT64,
+		                                  &organization_id, NULL))
+			continue;
+		else
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "%s (\"%s\")",
+			            usage, args[i]);
+			return -1;
+		}
+	}
+
+	if (status_only && wait)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "--wait belongs to feeds upkeep, not upkeep-status");
+		return -1;
+	}
+
+	state = venture_cli_feeds_upkeep_state(cli, args[2], organization_id, &before, &running, error);
+
+	if (NULL == state)
+		return -1;
+
+	if (status_only)
+	{
+		venture_cli_output(cli, state);
+		return 0;
+	}
+
+	base = g_strdup_printf("/api/v1/feeds/%s/upkeep%s", args[2], rebuild ? "?rebuild=1" : "");
+	path = venture_cli_organization_path(base, organization_id);
+	response = venture_cli_request(cli, "POST", path, NULL, error);
+
+	if (NULL == response)
+		return -1;
+
+	if (!wait)
+	{
+		venture_cli_output(cli, response);
+		return 0;
+	}
+
+	deadline = g_get_monotonic_time() + (gint64)VENTURE_CLI_FEEDS_UPKEEP_WAIT_SECONDS * G_TIME_SPAN_SECOND;
+
+	while (g_get_monotonic_time() < deadline)
+	{
+		g_autoptr(JsonNode) now = NULL;
+		gint64 finished;
+
+		g_usleep(2 * G_USEC_PER_SEC);
+		now = venture_cli_feeds_upkeep_state(cli, args[2], organization_id, &finished, &running, error);
+
+		if (NULL == now)
+			return -1;
+
+		if ((finished > before) && !running)
+		{
+			JsonObject *last = json_object_get_object_member(json_node_get_object(now), "last");
+			const gchar *failure = venture_json_object_get_string(last, "error", NULL);
+
+			venture_cli_output(cli, json_object_get_member(json_node_get_object(now), "last"));
+
+			if (!venture_string_is_empty(failure))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "The upkeep stopped: %s", failure);
+				return -1;
+			}
+
+			return 0;
+		}
+	}
+
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_TIMEOUT,
+	            "The upkeep is queued, but no result was kept within %d seconds; see "
+	            "venturectl feeds upkeep-status %s", VENTURE_CLI_FEEDS_UPKEEP_WAIT_SECONDS, args[2]);
+	return -1;
+}
+
 static gint
 venture_cli_command_feeds(
 	VentureCli	 *cli,
@@ -293,12 +461,18 @@ venture_cli_command_feeds(
 	static const gchar usage[] =
 		"usage: venturectl feeds sync ID [--wait] [organization_id=N] | "
 		"feeds push ID FILE|- [--wait] [organization_id=N] | "
-		"feeds runs ID [organization_id=N] | feeds due [organization_id=N]";
+		"feeds runs ID [organization_id=N] | feeds due [organization_id=N] | "
+		"feeds upkeep ID [rebuild=1] [--wait] [organization_id=N] | "
+		"feeds upkeep-status ID [organization_id=N]";
 	g_autoptr(JsonNode) response = NULL;
 	g_autofree gchar *base = NULL;
 	g_autofree gchar *path = NULL;
 	gint64 organization_id;
 	gint64 parsed;
+
+	if (((0 == g_strcmp0(args[1], "upkeep")) || (0 == g_strcmp0(args[1], "upkeep-status"))) &&
+	    (NULL != args[2]) && g_ascii_string_to_signed(args[2], 10, 1, G_MAXINT64, &parsed, NULL))
+		return venture_cli_feeds_upkeep(cli, args, wait, error);
 
 	if ((NULL == args[1]) ||
 	    ((0 != g_strcmp0(args[1], "due")) &&

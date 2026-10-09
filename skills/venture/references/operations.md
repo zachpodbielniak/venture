@@ -2,7 +2,8 @@
 
 Read this for scheduled backups, verification and restore drills,
 federation and offline working copies, hosted (tenant) workspace
-administration, operator-only server commands, and HTTP transport limits.
+administration, operator-only server commands, HTTP transport limits and
+`/metrics`.
 Users, configuration and providers are in [platform.md](platform.md).
 Sources: `docs/backup.org`, `docs/backup-retention.org`,
 `docs/federation.org`, `docs/hosted-workspaces.org`,
@@ -144,6 +145,30 @@ incomplete TLS/header or a saturated listener
 Rejected partial bodies never reach a handler. Do not blindly retry a write
 whose response was lost after dispatch: read its retained identity first.
 Changes need a restart; HTTP/2 must terminate at the gateway.
+
+## Metrics
+
+`GET /metrics` (root, not `/api/v1`) is Prometheus text: the process
+(start time, uptime, RSS, open fds, `venture_build_info{version}`), HTTP
+requests by `class` (page, api, health, metrics, hooks, static, public) and
+status with a latency histogram, and per data source: runs by status,
+units, rows, bytes, the newest run and success, the hourly budget, the
+store's file/log/free bytes and vacuum mode, each venue's newest snapshot
+and its age, the last upkeep, and alert hits by kind. Never labelled by
+instrument. `metrics.access` (`VENTURE_METRICS_ACCESS`): `off` (default,
+404), `loopback` (127.0.0.1/::1 with no `X-Forwarded-For`/`Forwarded`/
+`CF-Connecting-IP`/`X-Real-IP` -- a tunnel on the same host is not
+loopback), `token` (bearer API token whose comma-separated `scopes` include
+`metrics`, any role; or the owner) or `loopback_or_token`.
+
+```bash
+# mint on /account/tokens (shown once, carries your role), then narrow it:
+venturectl update api_token 12 role=viewer scopes=metrics
+curl -H "Authorization: Bearer vk_..." http://venture:8747/metrics
+```
+
+Series store upkeep (retention in batches, vacuum, the one-time
+`rebuild=1`) is in [feeds.md](feeds.md).
 
 ## Trusted Lightsite self-sign-up
 

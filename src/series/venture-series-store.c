@@ -1452,17 +1452,6 @@ series_migrate(
 ){
 	guint step;
 
-	if (0 == version)
-	{
-		/*
-		 * Incremental vacuum lets a purge hand space back to the file
-		 * system; it can only be chosen before the first table exists.
-		 */
-		if (!series_exec(self, "PRAGMA auto_vacuum = INCREMENTAL",
-		                 "choosing the vacuum mode", error))
-			return FALSE;
-	}
-
 	for (step = (guint)version + 1; step <= SERIES_SCHEMA_VERSION; step++)
 	{
 		g_autofree gchar *bump = NULL;
@@ -1612,6 +1601,22 @@ series_open(
 			return NULL;
 		}
 	}
+
+	/*
+	 * Incremental vacuum lets a purge hand space back to the file system.
+	 * It can only be chosen while the file is still empty -- and choosing
+	 * WAL below writes the header, after which the pragma is silently
+	 * ignored. It used to be asked for after WAL, in the first schema
+	 * step, so every store was made with no vacuum mode at all and each
+	 * purge's incremental_vacuum did nothing; such a store is switched
+	 * by a rebuild (venture_series_store_upkeep_step() with
+	 * VENTURE_SERIES_UPKEEP_REBUILD). Version 0 here is a file with no
+	 * tables, checked just above.
+	 */
+	if ((0 == version) &&
+	    !series_exec(self, "PRAGMA auto_vacuum = INCREMENTAL",
+	                 "choosing the vacuum mode", error))
+		return NULL;
 
 	/*
 	 * WAL so readers never wait on the writer; NORMAL synchronisation
@@ -5111,6 +5116,884 @@ venture_series_store_purge(
 		*out = result;
 
 	return TRUE;
+}
+
+/* --- Upkeep ---------------------------------------------------------------------------- */
+
+gboolean
+venture_series_store_get_file_size(
+	VentureSeriesStore	 *self,
+	VentureSeriesFileSize	 *out,
+	GError			**error
+){
+	g_autofree gchar *wal = NULL;
+	GStatBuf info;
+	gint64 pages;
+	gint64 free_pages;
+	gint64 page_size;
+	gint64 mode;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), FALSE);
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	memset(out, 0, sizeof(*out));
+
+	if (!series_read_int(self, "PRAGMA page_count", &pages, error) ||
+	    !series_read_int(self, "PRAGMA freelist_count", &free_pages, error) ||
+	    !series_read_int(self, "PRAGMA page_size", &page_size, error) ||
+	    !series_read_int(self, "PRAGMA auto_vacuum", &mode, error))
+		return FALSE;
+
+	out->file_bytes = (guint64)MAX(pages, (gint64)0) * (guint64)page_size;
+	out->free_bytes = (guint64)MAX(free_pages, (gint64)0) * (guint64)page_size;
+	out->auto_vacuum = (gint)mode;
+
+	/* No log on disk is a log of nothing: a checkpoint that truncated it
+	 * and a handle that closed last both leave none. */
+	wal = g_strconcat(self->path, "-wal", NULL);
+
+	if (0 == g_stat(wal, &info))
+		out->wal_bytes = (guint64)info.st_size;
+
+	return TRUE;
+}
+
+typedef enum
+{
+	UPKEEP_BEGIN = 0,
+	UPKEEP_HOURLY,
+	UPKEEP_QUOTES,
+	UPKEEP_SNAPSHOTS,
+	UPKEEP_DAILY,
+	UPKEEP_ENTRIES,
+	UPKEEP_ACCOUNTS,
+	UPKEEP_IDLE_CURRENT,
+	UPKEEP_IDLE_SETS,
+	UPKEEP_IDLE_PINS,
+	UPKEEP_IDLE_INSTRUMENTS,
+	UPKEEP_REBUILD,
+	UPKEEP_VACUUM,
+	UPKEEP_OPTIMIZE,
+	UPKEEP_CHECKPOINT,
+	UPKEEP_END,
+	UPKEEP_DONE
+} UpkeepStage;
+
+struct _VentureSeriesUpkeep
+{
+	gint64				 now;
+	guint				 hourly_days;
+	guint				 daily_days;
+	guint				 idle_days;
+	VentureSeriesUpkeepFlags	 flags;
+
+	UpkeepStage			 stage;
+	gint64				 cursor;	/* the last id a range stage examined */
+	VentureSeriesUpkeepResult	 result;
+};
+
+/* How long the upkeep's checkpoint waits for readers on an older
+ * snapshot; a miss is caught by the next pass's checkpoint. */
+#define SERIES_UPKEEP_CHECKPOINT_MS (2000)
+
+/* Rows ANALYZE samples per index when the planner statistics are
+ * refreshed: enough for the planner, and a bounded read of a store of
+ * any size. */
+#define SERIES_UPKEEP_ANALYSIS_LIMIT "1000"
+
+VentureSeriesUpkeep *
+venture_series_upkeep_new(
+	gint64				 now,
+	guint				 hourly_days,
+	guint				 daily_days,
+	guint				 idle_days,
+	VentureSeriesUpkeepFlags	 flags
+){
+	VentureSeriesUpkeep *upkeep;
+
+	upkeep = g_new0(VentureSeriesUpkeep, 1);
+	upkeep->now = now;
+	upkeep->hourly_days = hourly_days;
+	upkeep->daily_days = daily_days;
+	upkeep->idle_days = idle_days;
+	upkeep->flags = flags;
+	upkeep->stage = UPKEEP_BEGIN;
+
+	return upkeep;
+}
+
+void
+venture_series_upkeep_free(VentureSeriesUpkeep *upkeep)
+{
+	g_free(upkeep);
+}
+
+const VentureSeriesUpkeepResult *
+venture_series_upkeep_get_result(VentureSeriesUpkeep *upkeep)
+{
+	g_return_val_if_fail(NULL != upkeep, NULL);
+
+	return &upkeep->result;
+}
+
+gboolean
+venture_series_upkeep_is_done(VentureSeriesUpkeep *upkeep)
+{
+	g_return_val_if_fail(NULL != upkeep, TRUE);
+
+	return UPKEEP_DONE == upkeep->stage;
+}
+
+VentureSeriesUpkeepFlags
+venture_series_upkeep_get_flags(VentureSeriesUpkeep *upkeep)
+{
+	g_return_val_if_fail(NULL != upkeep, 0);
+
+	return upkeep->flags;
+}
+
+/*
+ * The batched retention deletes. Each takes the bound as ?1 and the batch
+ * as ?2 and deletes at most a batch of the oldest-by-index rows, through
+ * the purge's own index; a WITHOUT ROWID table is matched on its whole
+ * primary key, which SQLite looks up by that key for each row the inner
+ * select names (checked with EXPLAIN QUERY PLAN against a 4.6 GB store).
+ * Fewer rows than a batch means nothing past the bound is left.
+ */
+static const gchar series_sql_upkeep_hourly[] =
+	"DELETE FROM hourly WHERE id IN"
+	" (SELECT id FROM hourly WHERE day < ?1 LIMIT ?2)";
+static const gchar series_sql_upkeep_quotes[] =
+	"DELETE FROM quote_history WHERE (venue_id, instrument_id, side, taken_at) IN"
+	" (SELECT venue_id, instrument_id, side, taken_at FROM quote_history"
+	"   WHERE taken_at < ?1 LIMIT ?2)";
+static const gchar series_sql_upkeep_snapshots[] =
+	"DELETE FROM snapshots WHERE (venue_id, taken_at) IN"
+	" (SELECT venue_id, taken_at FROM snapshots WHERE taken_at < ?1 LIMIT ?2)";
+static const gchar series_sql_upkeep_daily[] =
+	"DELETE FROM daily WHERE (venue_id, instrument_id, day, currency) IN"
+	" (SELECT venue_id, instrument_id, day, currency FROM daily"
+	"   WHERE day < ?1 LIMIT ?2)";
+static const gchar series_sql_upkeep_entries[] =
+	"DELETE FROM entries WHERE id IN"
+	" (SELECT id FROM entries WHERE COALESCE(published_at, fetched_at) < ?1 LIMIT ?2)";
+
+/*
+ * The idle sweeps walk their table by id, a batch at a time, because
+ * neither `current.seen_at` nor `instruments.last_seen` is indexed -- and
+ * should not be: both move on every snapshot, and an index on them would
+ * be rewritten a million times an hour to serve a daily sweep. ?1 is the
+ * last id examined; the range select answers the batch's last id and how
+ * many it holds.
+ */
+static const gchar series_sql_upkeep_range_current[] =
+	"SELECT max(id), count(*) FROM"
+	" (SELECT id FROM current WHERE id > ?1 ORDER BY id LIMIT ?2)";
+static const gchar series_sql_upkeep_idle_current[] =
+	"DELETE FROM current WHERE id > ?1 AND id <= ?2 AND seen_at < ?3";
+static const gchar series_sql_upkeep_idle_sets[] =
+	"UPDATE venue_state SET listing_set = NULL, listing_set_at = NULL,"
+	"  listing_set_currency = NULL"
+	" WHERE listing_set_at < ?1";
+static const gchar series_sql_upkeep_range_instruments[] =
+	"SELECT max(id), count(*) FROM"
+	" (SELECT id FROM instruments WHERE id > ?1 ORDER BY id LIMIT ?2)";
+
+/*
+ * The operator's positions, inbound items and entries name instruments
+ * without an index on the name to probe; they are small, so the sweep
+ * gathers their keys once into a temporary table (memory: temp_store)
+ * rather than scanning them once per instrument.
+ */
+static const gchar series_sql_upkeep_pins[] =
+	"CREATE TEMP TABLE IF NOT EXISTS upkeep_pinned (key TEXT PRIMARY KEY) WITHOUT ROWID;"
+	"DELETE FROM temp.upkeep_pinned;"
+	"INSERT OR IGNORE INTO temp.upkeep_pinned (key)"
+	" SELECT instrument_key FROM account_positions"
+	" UNION SELECT instrument_key FROM account_inbound WHERE instrument_key IS NOT NULL"
+	" UNION SELECT i.key FROM entries e JOIN instruments i ON i.id = e.instrument_id;";
+
+/*
+ * An instrument goes when nobody has listed it for the idle retention
+ * and nothing refers to it: no venue's current row, no history of any
+ * kind, no region figure, no quote, no variant naming it as its parent
+ * and none of the operator's rows. The histories are keyed venue first,
+ * so each is probed per venue (CROSS JOIN keeps SQLite from scanning the
+ * table instead -- it chose that, unasked, for both hourly and daily);
+ * there are tens of venues and millions of rows. A sighting later makes
+ * the instrument again, under a new id, with nothing lost: everything
+ * that could have pointed at the old one was required to be gone.
+ */
+static const gchar series_sql_upkeep_idle_instruments[] =
+	"DELETE FROM instruments WHERE id > ?1 AND id <= ?2 AND last_seen < ?3"
+	" AND NOT EXISTS (SELECT 1 FROM current c WHERE c.instrument_id = instruments.id)"
+	" AND NOT EXISTS (SELECT 1 FROM venues v CROSS JOIN hourly h"
+	"                  WHERE h.venue_id = v.id AND h.instrument_id = instruments.id)"
+	" AND NOT EXISTS (SELECT 1 FROM venues v CROSS JOIN daily d"
+	"                  WHERE d.venue_id = v.id AND d.instrument_id = instruments.id)"
+	" AND NOT EXISTS (SELECT 1 FROM venues v CROSS JOIN quote_history q"
+	"                  WHERE q.venue_id = v.id AND q.instrument_id = instruments.id)"
+	" AND NOT EXISTS (SELECT 1 FROM quotes q WHERE q.instrument_id = instruments.id)"
+	" AND NOT EXISTS (SELECT 1 FROM region r WHERE r.instrument_id = instruments.id)"
+	" AND NOT EXISTS (SELECT 1 FROM instruments k WHERE k.parent_key = instruments.key)"
+	" AND NOT EXISTS (SELECT 1 FROM account_holdings a WHERE a.instrument_key = instruments.key)"
+	" AND NOT EXISTS (SELECT 1 FROM external_txns x WHERE x.instrument_key = instruments.key)"
+	" AND instruments.key NOT IN (SELECT key FROM temp.upkeep_pinned)";
+
+/* The first day kept of @days counting today, as the purge counts. */
+static gint64
+series_upkeep_first_day(
+	VentureSeriesUpkeep	*upkeep,
+	guint			 days
+){
+	return series_day_of(upkeep->now) - (gint64)days + 1;
+}
+
+/*
+ * One batch of a retention: its own short transaction. *@out_more is
+ * whether a full batch went, so there may be more.
+ */
+static gboolean
+series_upkeep_delete(
+	VentureSeriesStore	 *self,
+	const gchar		 *sql,
+	gint64			  bound,
+	guint			  batch,
+	gint64			 *count,
+	gboolean		 *out_more,
+	GError			**error
+){
+	gint64 deleted;
+
+	if (!series_txn_begin(self, error))
+		return FALSE;
+
+	{
+		g_autoptr(SeriesCachedStmt) stmt = series_stmt(self, sql, error);
+
+		if (NULL == stmt)
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		sqlite3_bind_int64(stmt, 1, bound);
+		sqlite3_bind_int64(stmt, 2, (gint64)batch);
+
+		if (!series_step_done(self, stmt, "deleting history past its retention", error))
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		deleted = sqlite3_changes(self->db);
+	}
+
+	if (!series_txn_commit(self, error))
+		return FALSE;
+
+	*count += deleted;
+	*out_more = (deleted >= (gint64)batch);
+
+	return TRUE;
+}
+
+/*
+ * One batch of an idle sweep: the next @batch ids after the cursor, and
+ * the rows among them past the bound deleted. *@out_more is whether the
+ * table went on past the batch.
+ */
+static gboolean
+series_upkeep_sweep(
+	VentureSeriesStore	 *self,
+	VentureSeriesUpkeep	 *upkeep,
+	const gchar		 *range_sql,
+	const gchar		 *delete_sql,
+	gint64			  bound,
+	guint			  batch,
+	gint64			 *count,
+	gboolean		 *out_more,
+	GError			**error
+){
+	gint64 last;
+	gint64 examined;
+	gint rc;
+
+	{
+		g_autoptr(SeriesCachedStmt) range = series_stmt(self, range_sql, error);
+
+		if (NULL == range)
+			return FALSE;
+
+		sqlite3_bind_int64(range, 1, upkeep->cursor);
+		sqlite3_bind_int64(range, 2, (gint64)batch);
+		rc = sqlite3_step(range);
+
+		if (SQLITE_ROW != rc)
+		{
+			series_set_sqlite_error(self, rc, "finding the next batch", error);
+			return FALSE;
+		}
+
+		examined = sqlite3_column_int64(range, 1);
+		last = sqlite3_column_int64(range, 0);
+	}
+
+	if (0 == examined)
+	{
+		*out_more = FALSE;
+		return TRUE;
+	}
+
+	if (!series_txn_begin(self, error))
+		return FALSE;
+
+	{
+		g_autoptr(SeriesCachedStmt) stmt = series_stmt(self, delete_sql, error);
+
+		if (NULL == stmt)
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		sqlite3_bind_int64(stmt, 1, upkeep->cursor);
+		sqlite3_bind_int64(stmt, 2, last);
+		sqlite3_bind_int64(stmt, 3, bound);
+
+		if (!series_step_done(self, stmt, "deleting idle rows", error))
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		*count += sqlite3_changes(self->db);
+	}
+
+	if (!series_txn_commit(self, error))
+		return FALSE;
+
+	upkeep->cursor = last;
+	*out_more = (examined >= (gint64)batch);
+
+	return TRUE;
+}
+
+/* Stops a rebuild at the next progress callback once cancelled. */
+static gint
+series_upkeep_interrupt(gpointer data)
+{
+	return g_cancellable_is_cancelled((GCancellable *)data) ? 1 : 0;
+}
+
+/*
+ * The whole file rewritten, switched to incremental vacuum on the way:
+ * the only way to change a store's vacuum mode once it has tables, and
+ * the only way to give back space a store made before
+ * series_open() chose the mode first ever had. Not batched -- SQLite
+ * copies every page in one transaction -- so it holds the writer for
+ * the whole copy; readers carry on, on their snapshot. A cancel rolls it
+ * back and leaves the file as it was.
+ *
+ * The copy is built in a temporary file, not in memory: temp_store is
+ * MEMORY for the store's sorts, and a VACUUM under it holds the whole
+ * database in RAM. SQLite puts the file in SQLITE_TMPDIR (else /var/tmp,
+ * /usr/tmp, /tmp); the log grows to about the store's size until the
+ * checkpoint after it truncates it.
+ */
+static gboolean
+series_upkeep_rebuild(
+	VentureSeriesStore	 *self,
+	GCancellable		 *cancellable,
+	GError			**error
+){
+	gint rc;
+
+	if (self->depth > 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		                    "A series store is rebuilt only outside a transaction");
+		return FALSE;
+	}
+
+	if (g_cancellable_set_error_if_cancelled(cancellable, error))
+		return FALSE;
+
+	if (!series_exec(self, "PRAGMA auto_vacuum = INCREMENTAL", "choosing the vacuum mode", error) ||
+	    !series_exec(self, "PRAGMA temp_store = FILE", "choosing the temp store", error))
+		return FALSE;
+
+	/* Asked every thousand virtual-machine steps: a few microseconds, so
+	 * a stop is noticed at once and costs the copy nothing. */
+	if (NULL != cancellable)
+		sqlite3_progress_handler(self->db, 1000, series_upkeep_interrupt, cancellable);
+
+	rc = sqlite3_exec(self->db, "VACUUM", NULL, NULL, NULL);
+
+	sqlite3_progress_handler(self->db, 0, NULL, NULL);
+
+	if (SQLITE_OK != rc)
+	{
+		if (SQLITE_INTERRUPT == (rc & 0xff))
+			g_set_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED,
+			            "Rebuilding %s was cancelled; the file is as it was",
+			            self->path);
+		else
+			series_set_sqlite_error(self, rc, "rebuilding", error);
+
+		sqlite3_exec(self->db, "PRAGMA temp_store = MEMORY", NULL, NULL, NULL);
+		return FALSE;
+	}
+
+	return series_exec(self, "PRAGMA temp_store = MEMORY", "choosing the temp store", error);
+}
+
+/* One slice of the free list handed back to the file system. */
+static gboolean
+series_upkeep_vacuum(
+	VentureSeriesStore	 *self,
+	VentureSeriesUpkeep	 *upkeep,
+	guint			  batch,
+	gboolean		 *out_more,
+	GError			**error
+){
+	g_autofree gchar *sql = NULL;
+	gint64 before;
+	gint64 after;
+	guint pages;
+
+	*out_more = FALSE;
+
+	if (!series_read_int(self, "PRAGMA freelist_count", &before, error))
+		return FALSE;
+
+	if (before <= 0)
+		return TRUE;
+
+	/* A quarter of a batch of rows' worth of pages: moving a page is a
+	 * write, and 5000 of them is 20 MiB. */
+	pages = MAX(batch / 4, 1u);
+	sql = g_strdup_printf("PRAGMA incremental_vacuum(%u)", pages);
+
+	if (!series_exec(self, sql, "handing free pages back", error) ||
+	    !series_read_int(self, "PRAGMA freelist_count", &after, error))
+		return FALSE;
+
+	upkeep->result.pages_vacuumed += MAX(before - after, (gint64)0);
+
+	/* No progress is the end too, whatever is left. */
+	*out_more = (after > 0) && (after < before);
+
+	return TRUE;
+}
+
+/* Whether @stage has anything to do in @upkeep. */
+static gboolean
+series_upkeep_stage_applies(
+	VentureSeriesStore	*self,
+	VentureSeriesUpkeep	*upkeep,
+	UpkeepStage		 stage
+){
+	gboolean retention = (0 != (upkeep->flags & VENTURE_SERIES_UPKEEP_RETENTION));
+
+	switch (stage)
+	{
+	case UPKEEP_HOURLY:
+	case UPKEEP_QUOTES:
+	case UPKEEP_SNAPSHOTS:
+		return retention && (upkeep->hourly_days > 0);
+
+	case UPKEEP_DAILY:
+	case UPKEEP_ENTRIES:
+	case UPKEEP_ACCOUNTS:
+		return retention && (upkeep->daily_days > 0);
+
+	case UPKEEP_IDLE_CURRENT:
+	case UPKEEP_IDLE_SETS:
+	case UPKEEP_IDLE_PINS:
+	case UPKEEP_IDLE_INSTRUMENTS:
+		return retention && (upkeep->idle_days > 0);
+
+	case UPKEEP_REBUILD:
+		return 0 != (upkeep->flags & VENTURE_SERIES_UPKEEP_REBUILD);
+
+	/* Only at the outermost level: inside an operator's batch the
+	 * vacuum and the checkpoint would do nothing. */
+	case UPKEEP_VACUUM:
+		return (0 != (upkeep->flags & (VENTURE_SERIES_UPKEEP_VACUUM | VENTURE_SERIES_UPKEEP_REBUILD))) &&
+		       (0 == self->depth);
+
+	case UPKEEP_OPTIMIZE:
+		return (0 != (upkeep->flags & VENTURE_SERIES_UPKEEP_OPTIMIZE)) && (0 == self->depth);
+
+	case UPKEEP_CHECKPOINT:
+		return (0 != (upkeep->flags & (VENTURE_SERIES_UPKEEP_CHECKPOINT | VENTURE_SERIES_UPKEEP_REBUILD))) &&
+		       (0 == self->depth);
+
+	case UPKEEP_BEGIN:
+	case UPKEEP_END:
+		return TRUE;
+
+	case UPKEEP_DONE:
+	default:
+		return FALSE;
+	}
+}
+
+/* On to the next stage with something to do, so the stage an upkeep
+ * reports is the one its next step will take. */
+static void
+series_upkeep_skip(
+	VentureSeriesStore	*self,
+	VentureSeriesUpkeep	*upkeep
+){
+	while ((UPKEEP_DONE != upkeep->stage) &&
+	       !series_upkeep_stage_applies(self, upkeep, upkeep->stage))
+	{
+		upkeep->stage++;
+		upkeep->cursor = 0;
+	}
+}
+
+static const gchar *const series_upkeep_stage_names[] = {
+	"begin", "hourly", "quote_history", "snapshots", "daily", "entries", "accounts",
+	"idle_current", "idle_listing_sets", "idle_pins", "idle_instruments", "rebuild",
+	"vacuum", "optimize", "checkpoint", "end", "done"
+};
+
+G_STATIC_ASSERT(G_N_ELEMENTS(series_upkeep_stage_names) == UPKEEP_DONE + 1);
+
+const gchar *
+venture_series_upkeep_get_stage(VentureSeriesUpkeep *upkeep)
+{
+	g_return_val_if_fail(NULL != upkeep, "done");
+
+	return series_upkeep_stage_names[upkeep->stage];
+}
+
+gboolean
+venture_series_store_upkeep_step(
+	VentureSeriesStore	 *self,
+	VentureSeriesUpkeep	 *upkeep,
+	guint			  batch_rows,
+	GCancellable		 *cancellable,
+	GError			**error
+){
+	VentureSeriesUpkeepResult *result;
+	gboolean more;
+	gint64 first;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), FALSE);
+	g_return_val_if_fail(NULL != upkeep, FALSE);
+
+	if (!series_require_writer(self, error))
+		return FALSE;
+
+	batch_rows = MAX(batch_rows, 1u);
+	result = &upkeep->result;
+
+	series_upkeep_skip(self, upkeep);
+
+	if (UPKEEP_DONE == upkeep->stage)
+		return TRUE;
+
+	more = FALSE;
+	result->batches++;
+
+	switch (upkeep->stage)
+	{
+	case UPKEEP_BEGIN:
+		if (!venture_series_store_get_file_size(self, &result->before, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_HOURLY:
+		first = series_upkeep_first_day(upkeep, upkeep->hourly_days);
+		if (!series_upkeep_delete(self, series_sql_upkeep_hourly, first, batch_rows,
+		                          &result->purged.hourly, &more, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_QUOTES:
+		first = series_upkeep_first_day(upkeep, upkeep->hourly_days);
+		if (!series_upkeep_delete(self, series_sql_upkeep_quotes, first * 86400, batch_rows,
+		                          &result->purged.quotes, &more, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_SNAPSHOTS:
+		first = series_upkeep_first_day(upkeep, upkeep->hourly_days);
+		if (!series_upkeep_delete(self, series_sql_upkeep_snapshots, first * 86400, batch_rows,
+		                          &result->purged.snapshots, &more, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_DAILY:
+		first = series_upkeep_first_day(upkeep, upkeep->daily_days);
+		if (!series_upkeep_delete(self, series_sql_upkeep_daily, first, batch_rows,
+		                          &result->purged.daily, &more, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_ENTRIES:
+		first = series_upkeep_first_day(upkeep, upkeep->daily_days);
+		if (!series_upkeep_delete(self, series_sql_upkeep_entries, first * 86400, batch_rows,
+		                          &result->purged.entries, &more, error))
+			return FALSE;
+		break;
+
+	/* The operator's history is small, and its rule (an account's newest
+	 * balance in each currency stays) is one statement: one step. */
+	case UPKEEP_ACCOUNTS:
+	{
+		VentureSeriesPurgeResult accounts;
+
+		memset(&accounts, 0, sizeof(accounts));
+		first = series_upkeep_first_day(upkeep, upkeep->daily_days);
+
+		if (!series_txn_begin(self, error))
+			return FALSE;
+
+		if (!venture_series_accounts_purge(self, first, &accounts, error))
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		if (!series_txn_commit(self, error))
+			return FALSE;
+
+		result->purged.balances += accounts.balances;
+		result->purged.txns += accounts.txns;
+		break;
+	}
+
+	case UPKEEP_IDLE_CURRENT:
+		first = series_upkeep_first_day(upkeep, upkeep->idle_days);
+		if (!series_upkeep_sweep(self, upkeep, series_sql_upkeep_range_current,
+		                         series_sql_upkeep_idle_current, first * 86400, batch_rows,
+		                         &result->current, &more, error))
+			return FALSE;
+		break;
+
+	/*
+	 * A venue's kept listing set names instruments by id. One older
+	 * than the idle retention is dropped before the instruments are:
+	 * otherwise a venue that went quiet would keep ids the sweep is
+	 * about to free, and diff its next snapshot against them. The next
+	 * complete snapshot starts a new set, as a venue's first does.
+	 */
+	case UPKEEP_IDLE_SETS:
+	{
+		g_autoptr(SeriesCachedStmt) stmt = NULL;
+
+		first = series_upkeep_first_day(upkeep, upkeep->idle_days);
+
+		if (!series_txn_begin(self, error))
+			return FALSE;
+
+		stmt = series_stmt(self, series_sql_upkeep_idle_sets, error);
+
+		if (NULL == stmt)
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		sqlite3_bind_int64(stmt, 1, first * 86400);
+
+		if (!series_step_done(self, stmt, "dropping stale listing sets", error))
+		{
+			series_txn_rollback_one(self);
+			return FALSE;
+		}
+
+		result->listing_sets += sqlite3_changes(self->db);
+
+		if (!series_txn_commit(self, error))
+			return FALSE;
+		break;
+	}
+
+	case UPKEEP_IDLE_PINS:
+		if (!series_exec(self, series_sql_upkeep_pins, "gathering the instruments the operator holds",
+		                 error))
+			return FALSE;
+		break;
+
+	case UPKEEP_IDLE_INSTRUMENTS:
+		first = series_upkeep_first_day(upkeep, upkeep->idle_days);
+		if (!series_upkeep_sweep(self, upkeep, series_sql_upkeep_range_instruments,
+		                         series_sql_upkeep_idle_instruments, first * 86400, batch_rows,
+		                         &result->instruments, &more, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_REBUILD:
+		if (!series_upkeep_rebuild(self, cancellable, error))
+			return FALSE;
+		result->rebuilt = TRUE;
+		break;
+
+	case UPKEEP_VACUUM:
+	{
+		gint64 mode;
+
+		if (!series_read_int(self, "PRAGMA auto_vacuum", &mode, error))
+			return FALSE;
+
+		/* Not incremental: there is nothing a slice can do. */
+		if ((2 == mode) && !series_upkeep_vacuum(self, upkeep, batch_rows, &more, error))
+			return FALSE;
+		break;
+	}
+
+	/* The analysis is bounded per index, so this is quick on a store of
+	 * any size; it is still a write, of sqlite_stat1. */
+	case UPKEEP_OPTIMIZE:
+		if (!series_exec(self, "PRAGMA analysis_limit = " SERIES_UPKEEP_ANALYSIS_LIMIT ";"
+		                 " PRAGMA optimize;", "refreshing the planner statistics", error))
+			return FALSE;
+		result->optimized = TRUE;
+		break;
+
+	case UPKEEP_CHECKPOINT:
+		if (!venture_series_store_checkpoint(self, SERIES_UPKEEP_CHECKPOINT_MS,
+		                                     &result->checkpointed, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_END:
+		if (!venture_series_store_get_file_size(self, &result->after, error))
+			return FALSE;
+		break;
+
+	case UPKEEP_DONE:
+	default:
+		break;
+	}
+
+	if (!more)
+	{
+		upkeep->stage++;
+		upkeep->cursor = 0;
+		series_upkeep_skip(self, upkeep);
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_series_store_upkeep(
+	VentureSeriesStore	 *self,
+	VentureSeriesUpkeep	 *upkeep,
+	guint			  batch_rows,
+	GError			**error
+){
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), FALSE);
+	g_return_val_if_fail(NULL != upkeep, FALSE);
+
+	while (!venture_series_upkeep_is_done(upkeep))
+	{
+		if (!venture_series_store_upkeep_step(self, upkeep, batch_rows, NULL, error))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+static void
+series_upkeep_size_json(
+	JsonBuilder			*builder,
+	const gchar			*name,
+	const VentureSeriesFileSize	*size
+){
+	json_builder_set_member_name(builder, name);
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "file_bytes");
+	json_builder_add_int_value(builder, (gint64)size->file_bytes);
+	json_builder_set_member_name(builder, "free_bytes");
+	json_builder_add_int_value(builder, (gint64)size->free_bytes);
+	json_builder_set_member_name(builder, "wal_bytes");
+	json_builder_add_int_value(builder, (gint64)size->wal_bytes);
+	json_builder_set_member_name(builder, "auto_vacuum");
+	json_builder_add_string_value(builder, (2 == size->auto_vacuum) ? "incremental"
+	                                       : (1 == size->auto_vacuum) ? "full" : "none");
+	json_builder_end_object(builder);
+}
+
+gchar *
+venture_series_upkeep_result_to_json(
+	const VentureSeriesUpkeepResult	*result,
+	gint64				 started_at,
+	gint64				 finished_at,
+	VentureSeriesUpkeepFlags	 flags
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) root = NULL;
+	gint64 before;
+	gint64 after;
+
+	g_return_val_if_fail(NULL != result, NULL);
+
+	before = (gint64)(result->before.file_bytes + result->before.wal_bytes);
+	after = (gint64)(result->after.file_bytes + result->after.wal_bytes);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "started_at");
+	json_builder_add_int_value(builder, started_at);
+	json_builder_set_member_name(builder, "finished_at");
+	json_builder_add_int_value(builder, finished_at);
+	json_builder_set_member_name(builder, "rebuild");
+	json_builder_add_boolean_value(builder, 0 != (flags & VENTURE_SERIES_UPKEEP_REBUILD));
+
+	json_builder_set_member_name(builder, "deleted");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "hourly");
+	json_builder_add_int_value(builder, result->purged.hourly);
+	json_builder_set_member_name(builder, "daily");
+	json_builder_add_int_value(builder, result->purged.daily);
+	json_builder_set_member_name(builder, "quotes");
+	json_builder_add_int_value(builder, result->purged.quotes);
+	json_builder_set_member_name(builder, "snapshots");
+	json_builder_add_int_value(builder, result->purged.snapshots);
+	json_builder_set_member_name(builder, "entries");
+	json_builder_add_int_value(builder, result->purged.entries);
+	json_builder_set_member_name(builder, "balances");
+	json_builder_add_int_value(builder, result->purged.balances);
+	json_builder_set_member_name(builder, "txns");
+	json_builder_add_int_value(builder, result->purged.txns);
+	json_builder_set_member_name(builder, "current");
+	json_builder_add_int_value(builder, result->current);
+	json_builder_set_member_name(builder, "instruments");
+	json_builder_add_int_value(builder, result->instruments);
+	json_builder_set_member_name(builder, "listing_sets");
+	json_builder_add_int_value(builder, result->listing_sets);
+	json_builder_end_object(builder);
+
+	json_builder_set_member_name(builder, "pages_vacuumed");
+	json_builder_add_int_value(builder, result->pages_vacuumed);
+	json_builder_set_member_name(builder, "batches");
+	json_builder_add_int_value(builder, result->batches);
+	json_builder_set_member_name(builder, "optimized");
+	json_builder_add_boolean_value(builder, result->optimized);
+	json_builder_set_member_name(builder, "checkpointed");
+	json_builder_add_boolean_value(builder, result->checkpointed);
+	json_builder_set_member_name(builder, "rebuilt");
+	json_builder_add_boolean_value(builder, result->rebuilt);
+	series_upkeep_size_json(builder, "before", &result->before);
+	series_upkeep_size_json(builder, "after", &result->after);
+
+	/* File and log together: a rebuild moves the whole store through
+	 * the log, and only the two summed say what the disk got back. */
+	json_builder_set_member_name(builder, "reclaimed_bytes");
+	json_builder_add_int_value(builder, before - after);
+	json_builder_end_object(builder);
+
+	root = json_builder_get_root(builder);
+
+	return json_to_string(root, FALSE);
 }
 
 /* --- Reading: rows ------------------------------------------------------------------------ */

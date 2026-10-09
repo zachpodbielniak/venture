@@ -351,6 +351,49 @@ venture_feeds_service_purge_history(
 );
 
 /**
+ * venture_feeds_service_upkeep:
+ * @self: the service
+ * @data_source_id: a data_source
+ * @rebuild: also rewrite the store's file whole (`VACUUM`), which is
+ *   what switches a store made before incremental vacuum worked to it.
+ *   Every source's passes wait while the rewrite runs
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Queues the store's upkeep now -- retention, free pages handed back,
+ * planner statistics, the log truncated -- rather than at its daily
+ * time. Never waits: venture_feeds_service_dup_upkeep() says when it is
+ * done and what it did.
+ *
+ * Returns: %TRUE when it was queued
+ */
+gboolean
+venture_feeds_service_upkeep(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	gboolean		  rebuild,
+	GError			**error
+);
+
+/**
+ * venture_feeds_service_dup_upkeep:
+ * @self: the service
+ * @data_source_id: a data_source
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The store's upkeep: `running` (the stage of one under way, or %NULL),
+ * `last` (what the last one did, as the store keeps it, with its sizes
+ * before and after) and `size` (the store now).
+ *
+ * Returns: (transfer full) (nullable): a JSON object
+ */
+JsonNode *
+venture_feeds_service_dup_upkeep(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	GError			**error
+);
+
+/**
  * venture_feeds_service_dup_status:
  * @self: the service
  *

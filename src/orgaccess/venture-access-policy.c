@@ -958,9 +958,12 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 			scope = venture_access_policy_enter(policy, actor);
 			if (venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context))) > 0)
 				policy->organization_id = venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context)));
+			/* /metrics belongs to no organization: a scraper's token has
+			 * no membership and is answered there, not sent to /account. */
 			if (!g_object_get_data(G_OBJECT(request), "venture-hosted-control") &&
 			    !venture_access_policy_has_membership(policy, actor) &&
 				0 != g_strcmp0(path, "/account") && 0 != g_strcmp0(path, "/look") &&
+				0 != g_strcmp0(path, "/metrics") &&
 				!g_str_has_prefix(path, "/api/") && !g_str_has_prefix(path, "/ui/") && !g_str_has_prefix(path, "/e/"))
 			{
 				HtmxResponse *response = htmx_response_new();

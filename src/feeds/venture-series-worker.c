@@ -384,6 +384,8 @@ struct _VentureSeriesWorker
 	SoupSession		*session;
 	GSource			*timer;
 	guint			 copies;	/* store copies on their own threads */
+	guint			 rebuilds;	/* upkeeps with a rebuild still to come:
+						 * no pass starts while there is one */
 
 	/* Set by stop() on the main thread, read here: atomic. */
 	gint			 stopping;
@@ -405,9 +407,21 @@ struct _WorkerSource
 	VentureDataSourceRunTrigger manual_trigger;
 
 	gint64			 last_region;
-	gint64			 last_purge;
 	gint64			 last_cron;
 	gboolean		 removed;
+
+	/* The store's upkeep: the one under way, stepped from a low-priority
+	 * idle so a fetch's completion always goes first; one an operator
+	 * asked for, waiting for it; and when the last one finished, read
+	 * from the store's meta so a restart does not repeat it. */
+	VentureSeriesUpkeep	*upkeep;
+	GSource			*upkeep_source;
+	gint64			 upkeep_started_at;
+	gboolean		 upkeep_counted;	/* live: an operator is waiting */
+	gboolean		 upkeep_requested;
+	VentureSeriesUpkeepFlags upkeep_request_flags;
+	gboolean		 upkeep_loaded;
+	gint64			 last_upkeep;
 };
 
 struct _WorkerPass
@@ -462,11 +476,15 @@ worker_unit_free(gpointer data)
 	g_free(unit);
 }
 
+static void worker_upkeep_abandon(WorkerSource *source);
+
 static void
 worker_source_free(gpointer data)
 {
 	WorkerSource *source = data;
 	WorkerPush *push;
+
+	worker_upkeep_abandon(source);
 
 	/* A push never started is live work no run will answer now. */
 	while (NULL != (push = g_queue_pop_head(&source->pushes)))
@@ -852,6 +870,306 @@ venture_series_worker_delete_store(
 	}
 
 	return TRUE;
+}
+
+/* --- Upkeep ---------------------------------------------------------------------- */
+
+/*
+ * A store's upkeep -- retention, the free pages handed back, the planner
+ * statistics, the log truncated, and an operator's rebuild -- runs here,
+ * on the thread that holds the writer, one bounded step per turn of the
+ * loop at low priority: a fetch's completion, a command or a push always
+ * goes first, so ingestion never waits behind more than one step. The
+ * result is kept in the store's meta (VENTURE_SERIES_META_UPKEEP), where
+ * the service, the API and /metrics read it with a reader handle: nothing
+ * crosses back to the main thread.
+ */
+
+static gboolean worker_upkeep_step(gpointer data);
+
+static void
+worker_upkeep_arm(
+	WorkerSource	*source,
+	guint		 delay_ms
+){
+	if (NULL != source->upkeep_source)
+	{
+		g_source_destroy(source->upkeep_source);
+		g_clear_pointer(&source->upkeep_source, g_source_unref);
+	}
+
+	source->upkeep_source = (0 == delay_ms) ? g_idle_source_new() : g_timeout_source_new(delay_ms);
+	g_source_set_priority(source->upkeep_source, G_PRIORITY_LOW);
+	g_source_set_callback(source->upkeep_source, worker_upkeep_step, source, NULL);
+	g_source_attach(source->upkeep_source, source->worker->context);
+}
+
+/* When the store's last upkeep finished, once per store opened. */
+static void
+worker_upkeep_load(WorkerSource *source)
+{
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) node = NULL;
+
+	if (source->upkeep_loaded || (NULL == source->store))
+		return;
+
+	source->upkeep_loaded = TRUE;
+	text = venture_series_store_get_meta(source->store, VENTURE_SERIES_META_UPKEEP, NULL);
+	node = (NULL != text) ? json_from_string(text, NULL) : NULL;
+
+	if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+		source->last_upkeep = json_object_get_int_member_with_default(json_node_get_object(node),
+		                                                              "finished_at", 0);
+}
+
+/*
+ * Once a day: a day after the last, or -- with series.upkeep_hour -- on
+ * the first pass to finish at or after that UTC hour on a day that has
+ * not had one.
+ */
+static gboolean
+worker_upkeep_due(
+	WorkerSource	*source,
+	gint64		 now
+){
+	gint hour = source->spec->upkeep_hour;
+
+	if (hour < 0)
+		return (now - source->last_upkeep) >= 86400;
+
+	if ((now / 86400) == (source->last_upkeep / 86400))
+		return FALSE;
+
+	return ((now % 86400) / 3600) >= hour;
+}
+
+static gboolean
+worker_upkeep_rebuild_pending(WorkerSource *source)
+{
+	return (NULL != source->upkeep) &&
+	       (0 != (venture_series_upkeep_get_flags(source->upkeep) & VENTURE_SERIES_UPKEEP_REBUILD)) &&
+	       !venture_series_upkeep_get_result(source->upkeep)->rebuilt;
+}
+
+static void
+worker_upkeep_start(
+	WorkerSource			*source,
+	VentureSeriesUpkeepFlags	 flags,
+	gboolean			 counted
+){
+	VentureSeriesWorker *self = source->worker;
+	VentureFeedSource *spec = source->spec;
+
+	source->upkeep_started_at = worker_now();
+	source->upkeep = venture_series_upkeep_new(source->upkeep_started_at, spec->hourly_days,
+	                                           spec->daily_days, spec->idle_days, flags);
+	source->upkeep_counted = counted;
+
+	if (0 != (flags & VENTURE_SERIES_UPKEEP_REBUILD))
+		self->rebuilds++;
+
+	g_debug("feeds: source %" G_GINT64_FORMAT ": upkeep begins%s", spec->id,
+	        (0 != (flags & VENTURE_SERIES_UPKEEP_REBUILD)) ? ", with a rebuild" : "");
+
+	worker_upkeep_arm(source, 0);
+	worker_publish_status(self);
+}
+
+/* Drops the upkeep under way and any asked for, with no result kept: the
+ * source is going, the store is being deleted or the worker is stopping. */
+static void
+worker_upkeep_abandon(WorkerSource *source)
+{
+	VentureSeriesWorker *self = source->worker;
+
+	if (NULL != source->upkeep_source)
+	{
+		g_source_destroy(source->upkeep_source);
+		g_clear_pointer(&source->upkeep_source, g_source_unref);
+	}
+
+	if (NULL != source->upkeep)
+	{
+		if (worker_upkeep_rebuild_pending(source))
+			self->rebuilds--;
+
+		if (source->upkeep_counted)
+			worker_live_add(self, -1);
+
+		g_clear_pointer(&source->upkeep, venture_series_upkeep_free);
+	}
+
+	if (source->upkeep_requested)
+	{
+		source->upkeep_requested = FALSE;
+		worker_live_add(self, -1);
+	}
+}
+
+/* Starts the upkeep an operator asked for, once none is under way. */
+static void
+worker_upkeep_kick(WorkerSource *source)
+{
+	g_autoptr(GError) error = NULL;
+
+	if ((NULL != source->upkeep) || !source->upkeep_requested)
+		return;
+
+	if (!worker_store_open(source, &error))
+	{
+		g_message("feeds: source %" G_GINT64_FORMAT ": no upkeep: %s", source->spec->id,
+		          error->message);
+		source->upkeep_requested = FALSE;
+		worker_live_add(source->worker, -1);
+		worker_publish_status(source->worker);
+		return;
+	}
+
+	worker_upkeep_load(source);
+
+	/* The request's count passes to the upkeep that answers it. */
+	source->upkeep_requested = FALSE;
+	worker_upkeep_start(source, source->upkeep_request_flags, TRUE);
+}
+
+static void
+worker_upkeep_finish(
+	WorkerSource	*source,
+	const gchar	*failure
+){
+	VentureSeriesWorker *self = source->worker;
+	const VentureSeriesUpkeepResult *result;
+	g_autofree gchar *json = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 now;
+
+	now = worker_now();
+	result = venture_series_upkeep_get_result(source->upkeep);
+	json = venture_series_upkeep_result_to_json(result, source->upkeep_started_at, now,
+	                                            venture_series_upkeep_get_flags(source->upkeep));
+
+	if (NULL != failure)
+	{
+		g_autoptr(JsonNode) node = json_from_string(json, NULL);
+
+		if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+		{
+			json_object_set_string_member(json_node_get_object(node), "error", failure);
+			g_free(json);
+			json = json_to_string(node, FALSE);
+		}
+	}
+
+	if ((NULL != source->store) &&
+	    !venture_series_store_set_meta(source->store, VENTURE_SERIES_META_UPKEEP, json, &error))
+		g_message("feeds: source %" G_GINT64_FORMAT ": could not keep its upkeep's result: %s",
+		          source->spec->id, error->message);
+
+	/* A failed upkeep waits for tomorrow too, rather than running again
+	 * after every pass; the result says why, and /metrics says it failed. */
+	source->last_upkeep = now;
+
+	if (NULL != failure)
+		g_message("feeds: source %" G_GINT64_FORMAT ": upkeep stopped: %s", source->spec->id,
+		          failure);
+	else
+		g_message("feeds: source %" G_GINT64_FORMAT ": upkeep took %" G_GINT64_FORMAT
+		          " s, %u steps; %" G_GINT64_FORMAT " hourly, %" G_GINT64_FORMAT " daily, %"
+		          G_GINT64_FORMAT " idle rows and %" G_GINT64_FORMAT " instruments deleted; %"
+		          G_GINT64_FORMAT " -> %" G_GINT64_FORMAT " bytes on disk",
+		          source->spec->id, now - source->upkeep_started_at, result->batches,
+		          result->purged.hourly, result->purged.daily, result->current,
+		          result->instruments,
+		          (gint64)(result->before.file_bytes + result->before.wal_bytes),
+		          (gint64)(result->after.file_bytes + result->after.wal_bytes));
+
+	if (worker_upkeep_rebuild_pending(source))
+		self->rebuilds--;
+
+	if (source->upkeep_counted)
+		worker_live_add(self, -1);
+
+	g_clear_pointer(&source->upkeep, venture_series_upkeep_free);
+	source->upkeep_counted = FALSE;
+
+	worker_upkeep_kick(source);
+	worker_publish_status(self);
+	worker_reschedule(self);
+}
+
+static gboolean
+worker_any_pass(VentureSeriesWorker *self)
+{
+	GHashTableIter iter;
+	gpointer value;
+
+	g_hash_table_iter_init(&iter, self->sources);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+	{
+		if (NULL != ((WorkerSource *)value)->pass)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+static gboolean
+worker_upkeep_step(gpointer data)
+{
+	WorkerSource *source = data;
+	VentureSeriesWorker *self = source->worker;
+	g_autoptr(GError) error = NULL;
+	gboolean rebuilt;
+
+	g_clear_pointer(&source->upkeep_source, g_source_unref);
+
+	if (g_atomic_int_get(&self->stopping) || (NULL == source->upkeep))
+		return G_SOURCE_REMOVE;
+
+	if (!worker_store_open(source, &error))
+	{
+		worker_upkeep_finish(source, error->message);
+		return G_SOURCE_REMOVE;
+	}
+
+	/*
+	 * The rebuild holds the writer for the whole copy: it waits for every
+	 * pass in flight to end, and none starts meanwhile (worker_tick()), so
+	 * no fetch completes into a loop that cannot answer it.
+	 */
+	if ((0 == g_strcmp0(venture_series_upkeep_get_stage(source->upkeep), "rebuild")) &&
+	    worker_any_pass(self))
+	{
+		worker_upkeep_arm(source, 1000);
+		return G_SOURCE_REMOVE;
+	}
+
+	rebuilt = venture_series_upkeep_get_result(source->upkeep)->rebuilt;
+
+	if (!venture_series_store_upkeep_step(source->store, source->upkeep, VENTURE_SERIES_UPKEEP_BATCH,
+	                                      self->cancellable, &error))
+	{
+		worker_upkeep_finish(source, error->message);
+		return G_SOURCE_REMOVE;
+	}
+
+	/* The rebuild done, the passes may start again. */
+	if (!rebuilt && venture_series_upkeep_get_result(source->upkeep)->rebuilt)
+	{
+		self->rebuilds--;
+		worker_reschedule(self);
+	}
+
+	if (venture_series_upkeep_is_done(source->upkeep))
+	{
+		worker_upkeep_finish(source, NULL);
+		return G_SOURCE_REMOVE;
+	}
+
+	worker_upkeep_arm(source, 0);
+	return G_SOURCE_REMOVE;
 }
 
 /* --- Units' schedule ------------------------------------------------------------- */
@@ -1845,19 +2163,12 @@ worker_pass_finish(WorkerPass *pass)
 			}
 		}
 
-		if (now - source->last_purge >= 86400)
-		{
-			VentureSeriesPurgeResult purged;
+		/* Retention and the rest of the upkeep on their own clock, in
+		 * steps between whatever else the loop has to do. */
+		worker_upkeep_load(source);
 
-			if (venture_series_store_purge(source->store, now, source->spec->hourly_days,
-			                               source->spec->daily_days, &purged, &error))
-				source->last_purge = now;
-			else
-			{
-				worker_run_note(source, pass->run, "retention", error->message);
-				g_clear_error(&error);
-			}
-		}
+		if ((NULL == source->upkeep) && worker_upkeep_due(source, now))
+			worker_upkeep_start(source, VENTURE_SERIES_UPKEEP_SCHEDULED, FALSE);
 
 		/* The log back to nothing while no unit is writing; see
 		 * venture_series_store_checkpoint(). A reader in the way
@@ -2122,6 +2433,14 @@ worker_tick(gpointer data)
 	if (g_atomic_int_get(&self->stopping))
 		return G_SOURCE_REMOVE;
 
+	/* A rebuild is waiting for the passes in flight to end: none starts,
+	 * and what is due runs once it is done. */
+	if (self->rebuilds > 0)
+	{
+		worker_reschedule(self);
+		return G_SOURCE_REMOVE;
+	}
+
 	now = worker_now();
 	g_hash_table_iter_init(&iter, self->sources);
 
@@ -2240,6 +2559,12 @@ worker_reschedule(VentureSeriesWorker *self)
 	now = worker_now();
 	wait_ms = (earliest <= now) ? 0 : MIN((earliest - now) * 1000, WORKER_MAX_SLEEP_MS);
 
+	/* Not an idle while a rebuild waits: the tick would start nothing and
+	 * ask again at once, and the upkeep's own steps, at low priority,
+	 * would never run. */
+	if (self->rebuilds > 0)
+		wait_ms = MAX(wait_ms, (gint64)1000);
+
 	self->timer = (0 == wait_ms) ? g_idle_source_new() : g_timeout_source_new((guint)wait_ms);
 	g_source_set_callback(self->timer, worker_tick, self, NULL);
 	g_source_attach(self->timer, self->context);
@@ -2288,6 +2613,36 @@ worker_publish_status(VentureSeriesWorker *self)
 		json_builder_add_int_value(builder, source->quota.spent);
 		json_builder_set_member_name(builder, "quota_limit");
 		json_builder_add_int_value(builder, source->spec->requests_per_hour);
+		json_builder_set_member_name(builder, "upkeep");
+
+		if (NULL != source->upkeep)
+		{
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "stage");
+			json_builder_add_string_value(builder, venture_series_upkeep_get_stage(source->upkeep));
+			json_builder_set_member_name(builder, "started_at");
+			json_builder_add_int_value(builder, source->upkeep_started_at);
+			json_builder_set_member_name(builder, "rebuild");
+			json_builder_add_boolean_value(builder,
+				0 != (venture_series_upkeep_get_flags(source->upkeep) & VENTURE_SERIES_UPKEEP_REBUILD));
+			json_builder_set_member_name(builder, "queued");
+			json_builder_add_boolean_value(builder, source->upkeep_requested);
+			json_builder_end_object(builder);
+		}
+		else if (source->upkeep_requested)
+		{
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "stage");
+			json_builder_add_string_value(builder, "queued");
+			json_builder_set_member_name(builder, "rebuild");
+			json_builder_add_boolean_value(builder,
+				0 != (source->upkeep_request_flags & VENTURE_SERIES_UPKEEP_REBUILD));
+			json_builder_set_member_name(builder, "queued");
+			json_builder_add_boolean_value(builder, TRUE);
+			json_builder_end_object(builder);
+		}
+		else
+			json_builder_add_null_value(builder);
 		json_builder_set_member_name(builder, "units");
 		json_builder_begin_array(builder);
 
@@ -2339,7 +2694,8 @@ typedef enum
 	COMMAND_SYNC,
 	COMMAND_PURGE,
 	COMMAND_BACKUP,
-	COMMAND_PUSH
+	COMMAND_PUSH,
+	COMMAND_UPKEEP
 } WorkerCommandKind;
 
 typedef struct
@@ -2353,6 +2709,7 @@ typedef struct
 	gchar				*destination;
 	gchar				*push_id;
 	GBytes				*body;
+	VentureSeriesUpkeepFlags	 upkeep_flags;
 } WorkerCommand;
 
 static void
@@ -2480,8 +2837,11 @@ worker_command(gpointer data)
 
 		if (NULL != source)
 		{
+			worker_upkeep_abandon(source);
 			g_clear_object(&source->store);
 			source->quota_loaded = FALSE;
+			source->upkeep_loaded = FALSE;
+			source->last_upkeep = 0;
 		}
 
 		if (!venture_series_worker_delete_store(command->store_dir, &error))
@@ -2508,6 +2868,23 @@ worker_command(gpointer data)
 		g_queue_push_tail(&source->pushes, push);
 		break;
 	}
+
+	case COMMAND_UPKEEP:
+		source = worker_install(self, command->spec);
+
+		/* One already waiting: this request joins it. Live from now
+		 * until its upkeep has finished and kept its result. */
+		if (source->upkeep_requested)
+			source->upkeep_request_flags |= command->upkeep_flags;
+		else
+		{
+			source->upkeep_requested = TRUE;
+			source->upkeep_request_flags = command->upkeep_flags;
+			worker_live_add(self, 1);
+		}
+
+		worker_upkeep_kick(source);
+		break;
 	}
 
 	worker_publish_status(self);
@@ -2613,6 +2990,24 @@ venture_series_worker_purge(
 	command->kind = COMMAND_PURGE;
 	command->id = source_id;
 	command->store_dir = g_strdup(store_dir);
+	worker_send(self, command);
+}
+
+void
+venture_series_worker_upkeep(
+	VentureSeriesWorker		*self,
+	VentureFeedSource		*source,
+	VentureSeriesUpkeepFlags	 flags
+){
+	WorkerCommand *command;
+
+	g_return_if_fail(VENTURE_IS_SERIES_WORKER(self));
+	g_return_if_fail(NULL != source);
+
+	command = g_new0(WorkerCommand, 1);
+	command->kind = COMMAND_UPKEEP;
+	command->spec = venture_feed_source_ref(source);
+	command->upkeep_flags = flags;
 	worker_send(self, command);
 }
 

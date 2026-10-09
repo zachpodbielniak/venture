@@ -73,6 +73,7 @@ See [[file:mcp.org][venturectl mcp]].
 | Method   | Path                                | Purpose                              |
 |----------+-------------------------------------+--------------------------------------|
 | =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state |
+| =GET=    | =/metrics=                          | Prometheus text; off unless =metrics.access= allows the caller ([[file:configuration.org::*Metrics][Metrics]]) |
 | =GET=    | =/api/v1/schema=                    | every record type and its fields     |
 | =GET=    | =/api/v1/schema/:type=              | one record type                      |
 | =GET=    | =/api/v1/:type=                     | list, filtered                       |

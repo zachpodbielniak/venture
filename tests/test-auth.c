@@ -1303,6 +1303,8 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/1/runs"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/sync", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/push", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/feeds/1/upkeep"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/feeds/1/upkeep", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 #endif
 	/* Market data: the records through the generic routes, and the
 	 * oracle and promotion, which are not records. */
@@ -2926,6 +2928,11 @@ test_auth_health_stays_public(
 	/* The login page, obviously. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/login"),
 	                 ==, SOUP_STATUS_OK);
+
+	/* And /metrics is not public: off by default, so not even there.
+	 * tests/test-metrics.c covers the loopback and token rules. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/metrics"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
 }
 
 
