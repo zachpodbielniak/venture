@@ -92,14 +92,14 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`8955f90bfeebbc78cbd0206c106364ae0069dd8a` (2026-10-08, server version
+`59a5c10bb94737b4e1a8a0b0b715506c6791b4fe` (2026-10-09, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
 to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
-<!-- skill-baseline:start -- reviewed 2026-10-08 against 8955f90 -->
+<!-- skill-baseline:start -- reviewed 2026-10-09 against 59a5c10 -->
 ```bash
 # From a checkout: what changed since this skill was written?
 base=8955f90bfeebbc78cbd0206c106364ae0069dd8a
@@ -432,5 +432,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `8955f90`; when the live server disagrees,
+- This skill describes baseline `59a5c10`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.
