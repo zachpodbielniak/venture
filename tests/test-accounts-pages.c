@@ -258,7 +258,10 @@ seed(Fixture *fixture)
 	/* The accounts. */
 	line(body, "{\"type\":\"account\",\"key\":\"Drgold-A\",\"name\":\"Drgold\",\"kind\":\"character\","
 	           "\"group\":\"Realm A\",\"venue\":\"realm-a\",\"last_seen\":\"%s\","
-	           "\"attrs\":{\"class\":\"WARRIOR\",\"level\":80}}", seen1);
+	           "\"attrs\":{\"class\":\"WARRIOR\",\"level\":80,\"profession:Tailoring\":65,"
+	           "\"profession_max:Tailoring\":100,\"profession:Cooking\":1,\"profession_max:Cooking\":100,"
+	           "\"profession_secondary:Cooking\":true,\"profession_max:Mining\":75,"
+	           "\"profession_tiers:Tailoring\":\"Classic 300/300; Khaz Algar 65/100; odd entry\"}}", seen1);
 	line(body, "{\"type\":\"account\",\"key\":\"Herbz-B\",\"name\":\"Herbz\",\"kind\":\"character\","
 	           "\"group\":\"Realm B\",\"venue\":\"realm-b\",\"last_seen\":\"%s\","
 	           "\"attrs\":{\"class\":\"DRUID\",\"level\":70}}", seen2);
@@ -899,6 +902,85 @@ test_class_colors(
 	g_assert_nonnull(strstr(page, "<span class=\"class-chip\" style=\"--class-color:#c69b6d\">Warrior</span>"));
 	g_assert_nonnull(strstr(page, "<span class=\"class-name\" style=\"--class-color:#c69b6d\">Drgold</span>"));
 	g_assert_null(strstr(page, "--class-color:blue"));
+}
+
+/*
+ * Professions ride on an account line's scalar attrs --
+ * "profession:<Name>" the skill, "profession_max:<Name>" the cap,
+ * "profession_secondary:<Name>" true for a secondary one -- and the
+ * overview lists them under the character, primary first, each a link to
+ * Crafting narrowed to the character and the profession, after a link to
+ * Crafting narrowed to the character. A cap with no skill names nothing.
+ *
+ * What breaks if this regresses: the overview no longer says who can make
+ * what, and the way from a character to the crafts it knows is gone.
+ */
+static void
+test_professions(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *page = NULL;
+	JsonArray *accounts;
+	JsonArray *professions;
+	JsonObject *first;
+	JsonObject *second;
+
+	(void)user_data;
+
+	seed(fixture);
+	answer = overview(fixture, 0, 0, 0, NULL, FALSE);
+	accounts = json_object_get_array_member(root_of(answer), "accounts");
+	professions = json_object_get_array_member(find_row(accounts, "key", "Drgold-A"), "professions");
+	g_assert_cmpuint(json_array_get_length(professions), ==, 2);
+	first = json_array_get_object_element(professions, 0);
+	second = json_array_get_object_element(professions, 1);
+	g_assert_cmpstr(json_object_get_string_member(first, "name"), ==, "Tailoring");
+	g_assert_cmpint(json_object_get_int_member(first, "skill"), ==, 65);
+	g_assert_cmpint(json_object_get_int_member(first, "max"), ==, 100);
+	g_assert_false(json_object_get_boolean_member(first, "secondary"));
+	g_assert_cmpstr(json_object_get_string_member(first, "crafting_url"), ==,
+	                "/arbitrage/crafting?character=Drgold-A&profession=Tailoring");
+	/* Its ranks by expansion, in the order given; an entry of another
+	 * shape is kept as text. */
+	{
+		JsonArray *tiers = json_object_get_array_member(first, "tiers");
+		JsonObject *khaz;
+
+		g_assert_cmpuint(json_array_get_length(tiers), ==, 3);
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(tiers, 0), "label"), ==,
+		                "Classic");
+		khaz = json_array_get_object_element(tiers, 1);
+		g_assert_cmpstr(json_object_get_string_member(khaz, "label"), ==, "Khaz Algar");
+		g_assert_cmpint(json_object_get_int_member(khaz, "rank"), ==, 65);
+		g_assert_cmpint(json_object_get_int_member(khaz, "max"), ==, 100);
+		g_assert_cmpstr(json_object_get_string_member(khaz, "crafting_url"), ==,
+		                "/arbitrage/crafting?character=Drgold-A&profession=Tailoring&expansion=Khaz%20Algar");
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(tiers, 2), "text"), ==,
+		                "odd entry");
+		g_assert_false(json_object_has_member(json_array_get_object_element(tiers, 2), "rank"));
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(second, "tiers")), ==, 0);
+	}
+	g_assert_cmpstr(json_object_get_string_member(second, "name"), ==, "Cooking");
+	g_assert_true(json_object_get_boolean_member(second, "secondary"));
+	g_assert_cmpstr(json_object_get_string_member(find_row(accounts, "key", "Drgold-A"), "crafting_url"), ==,
+	                "/arbitrage/crafting?character=Drgold-A");
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(find_row(accounts, "key", "Herbz-B"),
+	                                                                     "professions")), ==, 0);
+
+	page = get_page(fixture, "/accounts");
+	g_assert_nonnull(strstr(page, "<div class=\"account-sub account-professions\">"
+	                              "<a href=\"/arbitrage/crafting?character=Drgold-A\">Crafting</a>: "
+	                              "<a href=\"/arbitrage/crafting?character=Drgold-A&amp;profession=Tailoring\">"
+	                              "Tailoring 65/100</a> <details class=\"account-tiers\"><summary>by expansion"
+	                              "</summary><a href=\"/arbitrage/crafting?character=Drgold-A&amp;"
+	                              "profession=Tailoring&amp;expansion=Classic\">Classic 300/300</a> \xc2\xb7 "
+	                              "<a href=\"/arbitrage/crafting?character=Drgold-A&amp;profession=Tailoring&amp;"
+	                              "expansion=Khaz%20Algar\">Khaz Algar 65/100</a> \xc2\xb7 odd entry</details>"
+	                              " \xc2\xb7 "
+	                              "<a href=\"/arbitrage/crafting?character=Drgold-A&amp;profession=Cooking\">"
+	                              "Cooking 1/100</a></div>"));
 }
 
 static void
@@ -2882,6 +2964,7 @@ main(
 	ADD("overview-figures", test_overview_figures);
 	ADD("attention", test_attention);
 	ADD("class-colors", test_class_colors);
+	ADD("professions", test_professions);
 	ADD("account", test_account);
 	ADD("inventory", test_inventory);
 	ADD("pnl", test_pnl);

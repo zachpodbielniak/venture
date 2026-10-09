@@ -60,10 +60,21 @@ open whatever `buy_venues`/`sell_venues` say), `cover` (surebets; `total_stake`)
   [option=value ...]` -- every recipe priced by `transform`, losses kept:
   `recipe_category_id`, `buy_realm` (empty: cheapest realm per reagent),
   `sell_realm` (empty: the best), `venue_group`, `units`, `sell_basis`,
-  `max_age_hours`, `share`, `recipe_id`, `data_source_id`; anything else is
-  refused (exit 2). Realms are named as Deals names them; an unknown one is
-  NOT_FOUND. Rows add `recipe_category`; the answer has `realm_choices`,
-  `categories`, `options` (the scan question "Add to plan" sends back).
+  `max_age_hours`, `share`, `recipe_id`, `data_source_id`, and the
+  filters `character` (account keys `Name-Realm`, comma separated or one
+  parameter each), `profession`, `expansion` (category names, any case),
+  `only_known` (1/0; default 1 once any recipe has a knower), `min_profit`
+  and `max_cost` (a bare number is in the craft's currency), `min_margin`
+  (percent), `min_sold_per_day`; anything else is refused (exit 2). Every
+  chosen recipe is priced -- not the scan's 200 by name; past 5000 it
+  refuses and says narrow -- profit first, unpriced last (`unpriced`), and
+  a bound leaves an unpriced recipe out and counts it in
+  `excluded.unpriced`. Realms are named as Deals names them; an unknown one
+  is NOT_FOUND. Rows add `recipe_category`, `expansion`, `known_by`,
+  `knowers` (`{key, rank}`, rank like "Khaz Algar 65/100" from the
+  account's attrs); the answer has `realm_choices`, `categories`,
+  `character_choices`, `profession_choices`, `expansion_choices`,
+  `recipes`, `options` (the scan question "Add to plan" sends back).
   **It computes nothing itself** -- quote its figures, they are the
   strategy's.
 - **The plan is planned `arbitrage_trade`s**, not a record type: "Add to

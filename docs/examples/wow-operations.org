@@ -128,6 +128,10 @@ tsmctl venture push --wait       # push, and wait for VENTURE to write the run
 
 The same command works on any machine tsmctl can read the install from: with =host: mob-zach= in the config it reads the WoW machine's files over ssh, read-only, and mirrors them locally first.
 
+** The recipes your characters know
+
+=tsmctl venture recipes= sends the crafts TradeSkillMaster has recorded for your characters -- each one's spell, item, number made, reagents and who knows it -- to the Blizzard source's =import_recipes= action as its =recipes= parameter, so Crafting prices exactly what you can make, and filters by who knows each recipe. Each character's =account= line carries its professions in its attrs (=profession:<Name>=, =profession_max:<Name>=, =profession_secondary:<Name>=, and =profession_tiers:<Name>= by expansion; see [[file:../market-data.org::*Operator accounts][Market data]]): the Accounts overview lists them under the character, each a link into Crafting narrowed to the character, the profession and an expansion. It goes to a =blizzard_auctions= source (whose store prices the items), not to the =push= source, and reads nothing from Battle.net. Running it again after learning recipes adds them and changes nothing else. The request and what the import writes are in [[file:wow-auction-house-feed.org::*The recipes your characters know, from TradeSkillMaster][the auction house example]].
+
 ** Pushing on logout: the systemd units
 
 WoW writes SavedVariables only on logout (or =/reload=), so that is when there is something new. Three user units push then:

@@ -124,6 +124,24 @@ venture_arbitrage_scan_run_full(
 	GError		**error
 );
 
+/* The scan with @recipe_ids as the only recipes `transform` prices, every
+ * one of them however many (Crafting chose and bounded them), and every
+ * row kept past `top`. */
+JsonNode *
+venture_arbitrage_scan_run_recipes(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	JsonObject	 *options,
+	gboolean	  keep_all,
+	const GArray	 *recipe_ids,
+	GError		**error
+);
+
+/* Crafting's recipes for this scan (gint64 ids), or NULL when the scan
+ * chooses its own. */
+const GArray *
+venture_arbitrage_scan_get_recipe_ids(VentureArbitrageScan *scan);
+
 /* One CSV field, quoted when it must be and defused when a spreadsheet
  * would run it as a formula: every CSV the module writes uses it. */
 void

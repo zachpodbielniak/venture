@@ -37,6 +37,11 @@
  * Running it twice changes nothing the first run made: a recipe is found
  * again by its output product and name, a component by its recipe and
  * product, and only a quantity that moved is written.
+ *
+ * Handed `recipes` -- the list a person's characters know, from
+ * TradeSkillMaster by way of tsmctl -- it reads none of that tree and
+ * makes exactly those, by the same instrument, product and component
+ * path ("Recipes handed in" below).
  */
 
 #include "blizzard.h"
@@ -493,6 +498,144 @@ typedef enum
 	BLIZZARD_RECIPE_UNCHANGED
 } BlizzardRecipeOutcome;
 
+/* One recipe's import, in the caller's transaction: what it came to, and
+ * why when it was skipped. FALSE is an error. */
+typedef gboolean (*BlizzardRecipeFunc)(BlizzardImport		 *import,
+                                       gpointer			  data,
+                                       BlizzardRecipeOutcome	 *out_outcome,
+                                       gchar			**out_reason,
+                                       GError			**error);
+
+/* Adds @count of @product_id to @lines. Two slots of one reagent are one
+ * line: the component validator allows one line per product. */
+static void
+blizzard_lines_add(
+	GArray	*lines,
+	gint64	 product_id,
+	gint64	 count
+){
+	BlizzardLine line;
+	guint j;
+
+	for (j = 0; j < lines->len; j++)
+	{
+		BlizzardLine *existing = &g_array_index(lines, BlizzardLine, j);
+
+		if (existing->product_id == product_id)
+		{
+			existing->quantity += count;
+			return;
+		}
+	}
+
+	line.product_id = product_id;
+	line.quantity = count;
+	g_array_append_val(lines, line);
+}
+
+/*
+ * The recipe's lines brought to @lines: one per reagent, a quantity
+ * brought up to date. A deleted line is left deleted and a new one made
+ * beside it. With @prune, a consumed line whose product @lines no longer
+ * names is deleted, because the list it came from is the whole recipe; a
+ * reusable line (a tool someone added by hand) is left alone either way,
+ * and without @prune so is every line the list does not name. *@changed
+ * is set when anything was written.
+ */
+static gboolean
+blizzard_write_components(
+	BlizzardImport	 *import,
+	VentureEntity	 *record,
+	GArray		 *lines,
+	gboolean	  prune,
+	gboolean	 *changed,
+	GError		**error
+){
+	guint i;
+
+	for (i = 0; i < lines->len; i++)
+	{
+		BlizzardLine *line = &g_array_index(lines, BlizzardLine, i);
+		g_autoptr(VentureEntity) component = NULL;
+		gint64 stored = 0;
+
+		if (!blizzard_find_one(import, VENTURE_TYPE_RECIPE_COMPONENT, "recipe-id",
+		                       venture_entity_get_id(record), "product-id", NULL, line->product_id,
+		                       &component, error))
+			return FALSE;
+
+		if ((NULL != component) && venture_entity_is_deleted(component))
+			g_clear_object(&component);
+
+		if (NULL == component)
+		{
+			component = blizzard_new_record(import, "recipe_component", error);
+
+			if (NULL == component)
+				return FALSE;
+
+			g_object_set(component, "recipe-id", venture_entity_get_id(record),
+			             "product-id", line->product_id, "quantity", line->quantity, NULL);
+		}
+		else
+		{
+			g_object_get(component, "quantity", &stored, NULL);
+
+			if (stored == line->quantity)
+				continue;
+
+			g_object_set(component, "quantity", line->quantity, NULL);
+		}
+
+		if (!venture_database_save(import->database, component, import->actor, error))
+			return FALSE;
+
+		*changed = TRUE;
+	}
+
+	if (prune)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) found = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_RECIPE_COMPONENT);
+		venture_query_set_organization(query, import->organization_id);
+
+		if (!venture_query_add_filter_int(query, "recipe-id", VENTURE_FILTER_OP_EQ,
+		                                  venture_entity_get_id(record), error))
+			return FALSE;
+
+		found = venture_database_find(import->database, query, error);
+
+		if (NULL == found)
+			return FALSE;
+
+		for (i = 0; i < found->len; i++)
+		{
+			VentureEntity *component = g_ptr_array_index(found, i);
+			gboolean reusable = FALSE;
+			gboolean listed = FALSE;
+			gint64 product = 0;
+			guint j;
+
+			g_object_get(component, "product-id", &product, "reusable", &reusable, NULL);
+
+			for (j = 0; (j < lines->len) && !listed; j++)
+				listed = (g_array_index(lines, BlizzardLine, j).product_id == product);
+
+			if (listed || reusable)
+				continue;
+
+			if (!venture_database_delete(import->database, component, import->actor, error))
+				return FALSE;
+
+			*changed = TRUE;
+		}
+	}
+
+	return TRUE;
+}
+
 /*
  * One recipe JSON as records, inside the caller's transaction. A recipe
  * that cannot be made -- it makes no item, an item has no product -- is
@@ -502,13 +645,14 @@ typedef enum
 static gboolean
 blizzard_import_recipe(
 	BlizzardImport		 *import,
-	JsonObject		 *recipe,
+	gpointer		  data,
 	BlizzardRecipeOutcome	 *out_outcome,
 	gchar			**out_reason,
 	GError			**error
 ){
 	g_autoptr(VentureEntity) record = NULL;
 	g_autoptr(GArray) lines = NULL;
+	JsonObject *recipe = data;
 	JsonObject *crafted;
 	JsonObject *quantity;
 	JsonArray *reagents;
@@ -520,7 +664,6 @@ blizzard_import_recipe(
 	gint64 category_id;
 	gboolean changed;
 	guint i;
-	guint j;
 
 	*out_outcome = BLIZZARD_RECIPE_SKIPPED;
 	locale = import->frozen->settings->locale;
@@ -565,8 +708,7 @@ blizzard_import_recipe(
 		JsonNode *element = json_array_get_element(reagents, i);
 		JsonObject *line;
 		JsonObject *reagent;
-		BlizzardLine merged;
-		gboolean found = FALSE;
+		gint64 product_id;
 		gint64 count;
 
 		line = JSON_NODE_HOLDS_OBJECT(element) ? json_node_get_object(element) : NULL;
@@ -578,31 +720,14 @@ blizzard_import_recipe(
 			continue;
 
 		if (!blizzard_item_product(import, blizzard_int(reagent, "id", 0),
-		                           blizzard_text(reagent, "name", locale), &merged.product_id,
+		                           blizzard_text(reagent, "name", locale), &product_id,
 		                           out_reason, error))
 			return FALSE;
 
-		if (0 == merged.product_id)
+		if (0 == product_id)
 			return TRUE;
 
-		/* Two slots of one reagent are one line: the component
-		 * validator allows one line per product. */
-		for (j = 0; j < lines->len; j++)
-		{
-			BlizzardLine *existing = &g_array_index(lines, BlizzardLine, j);
-
-			if (existing->product_id == merged.product_id)
-			{
-				existing->quantity += count;
-				found = TRUE;
-			}
-		}
-
-		if (!found)
-		{
-			merged.quantity = count;
-			g_array_append_val(lines, merged);
-		}
+		blizzard_lines_add(lines, product_id, count);
 	}
 
 	/* The recipe: found again by what it makes and what it is called. */
@@ -677,48 +802,10 @@ blizzard_import_recipe(
 		}
 	}
 
-	/* The lines: one per reagent, a quantity brought up to date. A line
-	 * someone added by hand (a tool) is left alone, and so is a deleted
-	 * one -- a new line is made beside it. */
-	for (i = 0; i < lines->len; i++)
-	{
-		BlizzardLine *line = &g_array_index(lines, BlizzardLine, i);
-		g_autoptr(VentureEntity) component = NULL;
-		gint64 stored = 0;
-
-		if (!blizzard_find_one(import, VENTURE_TYPE_RECIPE_COMPONENT, "recipe-id",
-		                       venture_entity_get_id(record), "product-id", NULL, line->product_id,
-		                       &component, error))
-			return FALSE;
-
-		if ((NULL != component) && venture_entity_is_deleted(component))
-			g_clear_object(&component);
-
-		if (NULL == component)
-		{
-			component = blizzard_new_record(import, "recipe_component", error);
-
-			if (NULL == component)
-				return FALSE;
-
-			g_object_set(component, "recipe-id", venture_entity_get_id(record),
-			             "product-id", line->product_id, "quantity", line->quantity, NULL);
-		}
-		else
-		{
-			g_object_get(component, "quantity", &stored, NULL);
-
-			if (stored == line->quantity)
-				continue;
-
-			g_object_set(component, "quantity", line->quantity, NULL);
-		}
-
-		if (!venture_database_save(import->database, component, import->actor, error))
-			return FALSE;
-
-		changed = TRUE;
-	}
+	/* The lines. Battle.net's recipe is not the whole of a recipe a
+	 * person keeps here, so a line it does not name is left alone. */
+	if (!blizzard_write_components(import, record, lines, FALSE, &changed, error))
+		return FALSE;
 
 	if (BLIZZARD_RECIPE_CREATED != *out_outcome)
 		*out_outcome = changed ? BLIZZARD_RECIPE_UPDATED : BLIZZARD_RECIPE_UNCHANGED;
@@ -729,13 +816,16 @@ blizzard_import_recipe(
 /*
  * One recipe in a transaction of its own, so a failure keeps every recipe
  * before it. A save the records refused (a validator, a missing target)
- * skips this recipe and says why; anything else stops the import.
+ * skips this recipe and says why, naming it by @label; anything else
+ * stops the import.
  */
 static gboolean
 blizzard_import_one(
-	BlizzardImport	 *import,
-	JsonObject	 *recipe,
-	GError		**error
+	BlizzardImport		 *import,
+	BlizzardRecipeFunc	  func,
+	gpointer		  data,
+	const gchar		 *label,
+	GError			**error
 ){
 	g_autoptr(GError) local_error = NULL;
 	g_autofree gchar *reason = NULL;
@@ -744,7 +834,7 @@ blizzard_import_one(
 	if (!venture_database_begin(import->database, error))
 		return FALSE;
 
-	if (!blizzard_import_recipe(import, recipe, &outcome, &reason, &local_error))
+	if (!func(import, data, &outcome, &reason, &local_error))
 	{
 		venture_database_rollback(import->database);
 
@@ -756,9 +846,7 @@ blizzard_import_one(
 		}
 
 		g_clear_pointer(&reason, g_free);
-		reason = g_strdup_printf("%s (recipe %" G_GINT64_FORMAT "): %s",
-		                         venture_json_object_get_string(recipe, "name", "a recipe"),
-		                         blizzard_int(recipe, "id", 0), local_error->message);
+		reason = g_strdup_printf("%s: %s", label, local_error->message);
 		blizzard_import_skip(import, reason);
 		return TRUE;
 	}
@@ -1036,6 +1124,7 @@ blizzard_import_walk(
 			{
 				g_autoptr(JsonNode) recipe_node = NULL;
 				g_autofree gchar *recipe_path = NULL;
+				g_autofree gchar *label = NULL;
 				JsonObject *recipe;
 
 				if (0 == budget)
@@ -1052,14 +1141,697 @@ blizzard_import_walk(
 				budget--;
 				import->read++;
 				import->category_name = g_ptr_array_index(sections, r);
+				label = g_strdup_printf("%s (recipe %" G_GINT64_FORMAT ")",
+				                        venture_json_object_get_string(recipe, "name", "a recipe"),
+				                        blizzard_int(recipe, "id", 0));
 
-				if (!blizzard_import_one(import, recipe, error))
+				if (!blizzard_import_one(import, blizzard_import_recipe, recipe, label, error))
 					return NULL;
 			}
 		}
 	}
 
 	return g_strdup("");
+}
+
+/* ==========================================================================
+ * Recipes handed in
+ *
+ * `recipes` is the list itself -- what a person's characters know, as
+ * TradeSkillMaster has it (`tsmctl venture recipes` sends it) -- so the
+ * import is exactly those recipes and nothing of Battle.net is read: no
+ * token, no index, no walk. Each element names its spell, the item it
+ * makes and its reagents by item id. A recipe is found again by its spell
+ * (`external-ref` wow-spell:<id>), else by what it makes and its name as
+ * the walk finds one -- adopting it, so a recipe imported from Battle.net
+ * first is the same record -- and the list is the whole recipe: a reagent
+ * it no longer names is deleted. It is filed profession / expansion /
+ * section, as the walk files profession / tier / section, and who knows
+ * it -- market data account keys, "Name-Realm" -- is its `known-by`
+ * field, replaced whole, which Crafting filters on. An element of the
+ * wrong shape is a skip with its reason, never the end of the call.
+ * ========================================================================== */
+
+/* The most recipes one call may be handed, and reagents one may name. */
+#define BLIZZARD_SUPPLIED_MAX		(2000)
+#define BLIZZARD_SUPPLIED_REAGENTS	(32)
+#define BLIZZARD_SUPPLIED_KNOWN_BY	(100)
+
+/* What a supplied recipe's spell is filed as, and the notes line that says
+ * which characters know it. */
+#define BLIZZARD_SPELL_NAMESPACE	"wow-spell"
+#define BLIZZARD_KNOWN_BY		"Known by: "
+
+/* The parameters that steer the walk, refused beside `recipes`. */
+static const gchar *const blizzard_walk_parameters[] = {
+	"max_recipes", "profession_id", "professions", "skill_tier", "cursor"
+};
+
+typedef struct
+{
+	gint64		 item;
+	gint64		 quantity;
+	const gchar	*name;
+} BlizzardReagent;
+
+/* One element of `recipes`, read. Its strings are borrowed from the
+ * parameter's JSON. */
+typedef struct
+{
+	gint64		 spell_id;
+	const gchar	*name;
+	const gchar	*profession;
+	const gchar	*expansion;
+	const gchar	*category;
+	gint64		 item;
+	const gchar	*item_name;
+	gint64		 quantity;
+	GArray		*reagents;	/* BlizzardReagent */
+	gchar		*known_by;	/* "A, B"; "" for nobody; NULL when not said */
+	gchar		*known_keys;	/* the same as a JSON list; "" for nobody */
+} BlizzardSupplied;
+
+static void
+blizzard_supplied_clear(BlizzardSupplied *supplied)
+{
+	g_clear_pointer(&supplied->reagents, g_array_unref);
+	g_clear_pointer(&supplied->known_by, g_free);
+	g_clear_pointer(&supplied->known_keys, g_free);
+}
+
+/* @member of @object, or NULL when it is missing or null. */
+static JsonNode *
+blizzard_member(
+	JsonObject	*object,
+	const gchar	*member
+){
+	JsonNode *node;
+
+	node = json_object_has_member(object, member) ? json_object_get_member(object, member) : NULL;
+
+	return ((NULL != node) && !JSON_NODE_HOLDS_NULL(node)) ? node : NULL;
+}
+
+/* @node as a string, or NULL when it is anything else. */
+static const gchar *
+blizzard_node_text(JsonNode *node)
+{
+	if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_STRING != json_node_get_value_type(node)))
+		return NULL;
+
+	return json_node_get_string(node);
+}
+
+/*
+ * @node as a number of at least @least: a JSON integer as it is, or a
+ * number with a fraction rounded down when @round_down allows one (a
+ * whole number written 4.0 is always accepted). FALSE for anything else.
+ */
+static gboolean
+blizzard_node_count(
+	JsonNode	*node,
+	gint64		 least,
+	gboolean	 round_down,
+	gint64		*out
+){
+	if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node))
+		return FALSE;
+
+	if (G_TYPE_INT64 == json_node_get_value_type(node))
+		*out = json_node_get_int(node);
+	else if (G_TYPE_DOUBLE == json_node_get_value_type(node))
+	{
+		gdouble value = json_node_get_double(node);
+		gint64 whole;
+
+		/* Out of range (NaN included) before the cast, which would be
+		 * undefined for it. */
+		if (!((value >= 0.0) && (value <= (gdouble)G_MAXINT32)))
+			return FALSE;
+
+		whole = (gint64)value;
+
+		if (!round_down && ((gdouble)whole < value))
+			return FALSE;
+
+		*out = whole;
+	}
+	else
+		return FALSE;
+
+	return (*out >= least) && (*out <= G_MAXINT32);
+}
+
+/* Orders names for blizzard_supplied_read()'s known-by list. */
+static gint
+blizzard_compare_names(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	return g_strcmp0(*(const gchar *const *)a, *(const gchar *const *)b);
+}
+
+/*
+ * Reads one element of `recipes` into @out. FALSE, with *@out_reason,
+ * when it is not the shape the action documents; @out is cleared by the
+ * caller either way.
+ */
+static gboolean
+blizzard_supplied_read(
+	JsonNode		 *element,
+	BlizzardSupplied	 *out,
+	gchar			**out_reason
+){
+	JsonObject *object;
+	JsonNode *node;
+	JsonArray *reagents;
+	guint i;
+
+	if (!JSON_NODE_HOLDS_OBJECT(element))
+	{
+		*out_reason = g_strdup("is not an object");
+		return FALSE;
+	}
+
+	object = json_node_get_object(element);
+
+	if (!blizzard_node_count(blizzard_member(object, "spell_id"), 1, FALSE, &out->spell_id))
+	{
+		*out_reason = g_strdup("spell_id must be a positive whole number");
+		return FALSE;
+	}
+
+	out->name = blizzard_node_text(blizzard_member(object, "name"));
+	out->profession = blizzard_node_text(blizzard_member(object, "profession"));
+
+	if (venture_string_is_empty(out->name) || venture_string_is_empty(out->profession))
+	{
+		*out_reason = g_strdup("name and profession must be text");
+		return FALSE;
+	}
+
+	/* The expansion (the profession's tier, "Khaz Algar") and the
+	 * section of its book: text, or nothing. */
+	node = blizzard_member(object, "expansion");
+	out->expansion = blizzard_node_text(node);
+
+	if ((NULL != node) && (NULL == out->expansion))
+	{
+		*out_reason = g_strdup("expansion must be text or null");
+		return FALSE;
+	}
+
+	node = blizzard_member(object, "category");
+	out->category = blizzard_node_text(node);
+
+	if ((NULL != node) && (NULL == out->category))
+	{
+		*out_reason = g_strdup("category must be text or null");
+		return FALSE;
+	}
+
+	if (!blizzard_node_count(blizzard_member(object, "item"), 1, FALSE, &out->item))
+	{
+		*out_reason = g_strdup("item must be the id of the item it makes");
+		return FALSE;
+	}
+
+	out->item_name = blizzard_node_text(blizzard_member(object, "item_name"));
+
+	/* TradeSkillMaster's number made is an average where a craft can
+	 * make more than one (1.5 for a proc); a recipe counts whole units,
+	 * so it is rounded down -- the batch a craft can count on, as the
+	 * walk reads a range's minimum. Left out, a craft makes one. */
+	node = blizzard_member(object, "quantity");
+	out->quantity = 1;
+
+	if ((NULL != node) && !blizzard_node_count(node, 1, TRUE, &out->quantity))
+	{
+		*out_reason = g_strdup("quantity must be a number of at least 1");
+		return FALSE;
+	}
+
+	node = blizzard_member(object, "reagents");
+	reagents = ((NULL != node) && JSON_NODE_HOLDS_ARRAY(node)) ? json_node_get_array(node) : NULL;
+
+	if ((NULL == reagents) || (0 == json_array_get_length(reagents)) ||
+	    (json_array_get_length(reagents) > BLIZZARD_SUPPLIED_REAGENTS))
+	{
+		*out_reason = g_strdup_printf("reagents must be a list of 1 to %d reagents",
+		                              BLIZZARD_SUPPLIED_REAGENTS);
+		return FALSE;
+	}
+
+	out->reagents = g_array_new(FALSE, FALSE, sizeof(BlizzardReagent));
+
+	for (i = 0; i < json_array_get_length(reagents); i++)
+	{
+		JsonNode *line = json_array_get_element(reagents, i);
+		BlizzardReagent reagent;
+
+		if (!JSON_NODE_HOLDS_OBJECT(line) ||
+		    !blizzard_node_count(blizzard_member(json_node_get_object(line), "item"), 1, FALSE,
+		                         &reagent.item) ||
+		    !blizzard_node_count(blizzard_member(json_node_get_object(line), "quantity"), 1, FALSE,
+		                         &reagent.quantity))
+		{
+			*out_reason = g_strdup_printf("reagents[%u] must be {\"item\": id, \"quantity\": whole number "
+			                              "of at least 1}", i);
+			return FALSE;
+		}
+
+		reagent.name = blizzard_node_text(blizzard_member(json_node_get_object(line), "name"));
+		g_array_append_val(out->reagents, reagent);
+	}
+
+	/* Who knows it, as market data account keys ("Name-Realm", the key of
+	 * the character's `account` line): kept exactly, sorted and once
+	 * each, so the same characters in another order are no change. Not
+	 * said is not "nobody". */
+	node = blizzard_member(object, "known_by");
+
+	if (NULL != node)
+	{
+		g_autoptr(GPtrArray) names = g_ptr_array_new_with_free_func(g_free);
+		g_autoptr(GString) joined = g_string_new(NULL);
+		g_autoptr(JsonArray) keys = json_array_new();
+		g_autoptr(JsonNode) keys_node = NULL;
+		JsonArray *array = JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL;
+
+		if ((NULL == array) || (json_array_get_length(array) > BLIZZARD_SUPPLIED_KNOWN_BY))
+		{
+			*out_reason = g_strdup_printf("known_by must be a list of at most %d names",
+			                              BLIZZARD_SUPPLIED_KNOWN_BY);
+			return FALSE;
+		}
+
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			const gchar *text = blizzard_node_text(json_array_get_element(array, i));
+			const gchar *at;
+
+			if (venture_string_is_empty(text))
+			{
+				*out_reason = g_strdup("known_by must be a list of account keys");
+				return FALSE;
+			}
+
+			/* A key is matched exactly, so it is never cleaned up --
+			 * one that could not be a key (a control character would
+			 * also end its notes line) is refused. */
+			for (at = text; '\0' != *at; at++)
+			{
+				if ((guchar)*at < 0x20)
+				{
+					*out_reason = g_strdup("known_by holds a key with a control character");
+					return FALSE;
+				}
+			}
+
+			g_ptr_array_add(names, g_strdup(text));
+		}
+
+		g_ptr_array_sort(names, blizzard_compare_names);
+
+		for (i = 0; i < names->len; i++)
+		{
+			if ((i > 0) && (0 == g_strcmp0(g_ptr_array_index(names, i), g_ptr_array_index(names, i - 1))))
+				continue;
+
+			if (joined->len > 0)
+				g_string_append(joined, ", ");
+
+			g_string_append(joined, g_ptr_array_index(names, i));
+			json_array_add_string_element(keys, g_ptr_array_index(names, i));
+		}
+
+		out->known_by = g_string_free(g_steal_pointer(&joined), FALSE);
+		keys_node = json_node_new(JSON_NODE_ARRAY);
+		json_node_set_array(keys_node, keys);
+		out->known_keys = (json_array_get_length(keys) > 0) ? venture_json_to_string(keys_node, FALSE)
+		                                                    : g_strdup("");
+	}
+
+	return TRUE;
+}
+
+/*
+ * @notes with its "Known by: " line saying @known_by: replaced where there
+ * is one, added at the end where there is none, taken out when @known_by
+ * is empty. Every other line is a person's and is kept as it is.
+ */
+static gchar *
+blizzard_notes_known_by(
+	const gchar	*notes,
+	const gchar	*known_by
+){
+	g_auto(GStrv) lines = NULL;
+	GString *out;
+	gboolean placed = FALSE;
+	guint i;
+
+	lines = g_strsplit((NULL != notes) ? notes : "", "\n", -1);
+	out = g_string_new(NULL);
+
+	for (i = 0; NULL != lines[i]; i++)
+	{
+		const gchar *line = lines[i];
+
+		if (g_str_has_prefix(line, BLIZZARD_KNOWN_BY))
+		{
+			if (placed || venture_string_is_empty(known_by))
+				continue;
+
+			placed = TRUE;
+
+			if (i > 0)
+				g_string_append_c(out, '\n');
+
+			g_string_append_printf(out, "%s%s", BLIZZARD_KNOWN_BY, known_by);
+			continue;
+		}
+
+		if (i > 0)
+			g_string_append_c(out, '\n');
+
+		g_string_append(out, line);
+	}
+
+	if (!placed && !venture_string_is_empty(known_by))
+	{
+		if ((out->len > 0) && ('\n' != out->str[out->len - 1]))
+			g_string_append_c(out, '\n');
+
+		g_string_append_printf(out, "%s%s", BLIZZARD_KNOWN_BY, known_by);
+	}
+
+	return g_string_free(out, FALSE);
+}
+
+/* The recipe filed under @ref, deleted ones included. */
+static gboolean
+blizzard_find_reference(
+	BlizzardImport	 *import,
+	const gchar	 *ref,
+	VentureEntity	**out,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+
+	*out = NULL;
+	query = venture_query_new(VENTURE_TYPE_RECIPE);
+	venture_query_set_organization(query, import->organization_id);
+	venture_query_set_include_deleted(query, TRUE);
+
+	if (!venture_query_add_filter_string(query, "external-ref", VENTURE_FILTER_OP_EQ, ref, error))
+		return FALSE;
+
+	found = venture_database_find(import->database, query, error);
+
+	if (NULL == found)
+		return FALSE;
+
+	if (found->len > 0)
+		*out = g_object_ref(g_ptr_array_index(found, 0));
+
+	return TRUE;
+}
+
+/* One supplied recipe as records: a BlizzardRecipeFunc. */
+static gboolean
+blizzard_supplied_recipe(
+	BlizzardImport		 *import,
+	gpointer		  data,
+	BlizzardRecipeOutcome	 *out_outcome,
+	gchar			**out_reason,
+	GError			**error
+){
+	BlizzardSupplied *supplied = data;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GArray) lines = NULL;
+	g_autofree gchar *ref = NULL;
+	gint64 output_id;
+	gint64 category_id;
+	gboolean changed = FALSE;
+	guint i;
+
+	*out_outcome = BLIZZARD_RECIPE_SKIPPED;
+
+	if (!blizzard_item_product(import, supplied->item, supplied->item_name, &output_id, out_reason, error))
+		return FALSE;
+
+	if (0 == output_id)
+		return TRUE;
+
+	lines = g_array_new(FALSE, FALSE, sizeof(BlizzardLine));
+
+	for (i = 0; i < supplied->reagents->len; i++)
+	{
+		BlizzardReagent *reagent = &g_array_index(supplied->reagents, BlizzardReagent, i);
+		gint64 product_id;
+
+		if (!blizzard_item_product(import, reagent->item, reagent->name, &product_id, out_reason, error))
+			return FALSE;
+
+		if (0 == product_id)
+			return TRUE;
+
+		blizzard_lines_add(lines, product_id, reagent->quantity);
+	}
+
+	/* The recipe: by its spell, else as the walk finds one -- what it
+	 * makes and what it is called -- when nothing else claimed it. */
+	ref = g_strdup_printf(BLIZZARD_SPELL_NAMESPACE ":%" G_GINT64_FORMAT, supplied->spell_id);
+
+	if (!blizzard_find_reference(import, ref, &record, error))
+		return FALSE;
+
+	if (NULL == record)
+	{
+		g_autoptr(VentureEntity) named = NULL;
+		g_autofree gchar *held = NULL;
+
+		if (!blizzard_find_one(import, VENTURE_TYPE_RECIPE, "output-product-id", output_id, "name",
+		                       supplied->name, 0, &named, error))
+			return FALSE;
+
+		if (NULL != named)
+			g_object_get(named, "external-ref", &held, NULL);
+
+		if ((NULL != named) && venture_string_is_empty(held))
+			record = g_steal_pointer(&named);
+	}
+
+	if ((NULL != record) && venture_entity_is_deleted(record))
+	{
+		*out_reason = g_strdup_printf("%s (spell %" G_GINT64_FORMAT ") was deleted here; restore it to "
+		                              "update it", supplied->name, supplied->spell_id);
+		return TRUE;
+	}
+
+	/* Profession / expansion / section, as the walk files profession /
+	 * skill tier / section; a level not given is left out. */
+	import->profession_name = supplied->profession;
+	import->tier_name = supplied->expansion;
+	import->category_name = supplied->category;
+
+	if (!blizzard_recipe_category(import, &category_id, error))
+		return FALSE;
+
+	if (NULL == record)
+	{
+		g_autofree gchar *origin = NULL;
+		g_autofree gchar *notes = NULL;
+
+		origin = g_strdup_printf("Imported from TradeSkillMaster: spell %" G_GINT64_FORMAT, supplied->spell_id);
+		notes = blizzard_notes_known_by(origin, supplied->known_by);
+		record = blizzard_new_record(import, "recipe", error);
+
+		if (NULL == record)
+			return FALSE;
+
+		g_object_set(record, "name", supplied->name, "output-product-id", output_id,
+		             "output-quantity", supplied->quantity, "active", TRUE, "notes", notes,
+		             "external-ref", ref, NULL);
+
+		if (!venture_string_is_empty(supplied->known_keys))
+			g_object_set(record, "known-by", supplied->known_keys, NULL);
+
+		if (import->venture_id > 0)
+			g_object_set(record, "venture-id", import->venture_id, NULL);
+
+		if (category_id > 0)
+			g_object_set(record, "category-id", category_id, NULL);
+
+		if (!venture_database_save(import->database, record, import->actor, error))
+			return FALSE;
+
+		*out_outcome = BLIZZARD_RECIPE_CREATED;
+	}
+	else
+	{
+		g_autofree gchar *held = NULL;
+		g_autofree gchar *notes = NULL;
+		g_autofree gchar *knowers = NULL;
+		gint64 stored;
+		gint64 makes;
+		gint64 filed;
+		gboolean moved = FALSE;
+
+		g_object_get(record, "output-quantity", &stored, "output-product-id", &makes, "category-id", &filed,
+		             "external-ref", &held, "notes", &notes, "known-by", &knowers, NULL);
+
+		if (stored != supplied->quantity)
+		{
+			g_object_set(record, "output-quantity", supplied->quantity, NULL);
+			moved = TRUE;
+		}
+
+		/* The spell is the recipe; what it makes is what the list says. */
+		if (makes != output_id)
+		{
+			g_object_set(record, "output-product-id", output_id, NULL);
+			moved = TRUE;
+		}
+
+		if (venture_string_is_empty(held))
+		{
+			g_object_set(record, "external-ref", ref, NULL);
+			moved = TRUE;
+		}
+
+		/* Filed only when nobody filed it, as the walk does. */
+		if ((0 == filed) && (category_id > 0))
+		{
+			g_object_set(record, "category-id", category_id, NULL);
+			moved = TRUE;
+		}
+
+		/* Who knows it is replaced whole: a character that no longer
+		 * knows it drops off. */
+		if ((NULL != supplied->known_keys) &&
+		    (0 != g_strcmp0(supplied->known_keys, (NULL != knowers) ? knowers : "")))
+		{
+			g_object_set(record, "known-by",
+			             venture_string_is_empty(supplied->known_keys) ? NULL : supplied->known_keys, NULL);
+			moved = TRUE;
+		}
+
+		if (NULL != supplied->known_by)
+		{
+			g_autofree gchar *told = blizzard_notes_known_by(notes, supplied->known_by);
+
+			if (0 != g_strcmp0(told, (NULL != notes) ? notes : ""))
+			{
+				g_object_set(record, "notes", told, NULL);
+				moved = TRUE;
+			}
+		}
+
+		if (moved)
+		{
+			if (!venture_database_save(import->database, record, import->actor, error))
+				return FALSE;
+
+			changed = TRUE;
+		}
+	}
+
+	/* The list is the whole recipe: a reagent it stopped naming goes. */
+	if (!blizzard_write_components(import, record, lines, TRUE, &changed, error))
+		return FALSE;
+
+	if (BLIZZARD_RECIPE_CREATED != *out_outcome)
+		*out_outcome = changed ? BLIZZARD_RECIPE_UPDATED : BLIZZARD_RECIPE_UNCHANGED;
+
+	return TRUE;
+}
+
+/*
+ * The `recipes` parameter as a JSON array: as sent, or parsed from the
+ * text a form or `venturectl act` posts. NULL with *@error when it is
+ * neither or too long.
+ */
+static JsonNode *
+blizzard_supplied_list(
+	JsonNode	 *node,
+	GError		**error
+){
+	g_autoptr(JsonNode) parsed = NULL;
+	const gchar *text;
+
+	text = blizzard_node_text(node);
+
+	if (NULL != text)
+	{
+		parsed = venture_json_parse(text, error);
+
+		if (NULL == parsed)
+			return NULL;
+
+		node = parsed;
+	}
+
+	if (!JSON_NODE_HOLDS_ARRAY(node))
+	{
+		venture_set_error_validation(error, "recipes", "must be a JSON array of recipes");
+		return NULL;
+	}
+
+	if (json_array_get_length(json_node_get_array(node)) > BLIZZARD_SUPPLIED_MAX)
+	{
+		venture_set_error_validation(error, "recipes", "holds at most %d recipes a call; send the rest in "
+		                             "another", BLIZZARD_SUPPLIED_MAX);
+		return NULL;
+	}
+
+	return (NULL != parsed) ? g_steal_pointer(&parsed) : json_node_ref(node);
+}
+
+/*
+ * Every element of @list, each in a transaction of its own. FALSE only
+ * for what stops the import (the database); a bad element is a skip.
+ */
+static gboolean
+blizzard_supplied_run(
+	BlizzardImport	 *import,
+	JsonArray	 *list,
+	GError		**error
+){
+	guint i;
+
+	for (i = 0; i < json_array_get_length(list); i++)
+	{
+		g_autofree gchar *reason = NULL;
+		g_autofree gchar *label = NULL;
+		BlizzardSupplied supplied;
+		gboolean ok;
+
+		memset(&supplied, 0, sizeof(supplied));
+		import->read++;
+
+		if (!blizzard_supplied_read(json_array_get_element(list, i), &supplied, &reason))
+		{
+			g_autofree gchar *skip = NULL;
+
+			skip = (supplied.spell_id > 0)
+				? g_strdup_printf("recipes[%u] (spell %" G_GINT64_FORMAT "): %s", i, supplied.spell_id, reason)
+				: g_strdup_printf("recipes[%u]: %s", i, reason);
+			blizzard_import_skip(import, skip);
+			blizzard_supplied_clear(&supplied);
+			continue;
+		}
+
+		label = g_strdup_printf("%s (spell %" G_GINT64_FORMAT ")", supplied.name, supplied.spell_id);
+		ok = blizzard_import_one(import, blizzard_supplied_recipe, &supplied, label, error);
+		blizzard_supplied_clear(&supplied);
+
+		if (!ok)
+			return FALSE;
+	}
+
+	return TRUE;
 }
 
 /* ==========================================================================
@@ -1137,6 +1909,113 @@ blizzard_param(
 	return ((NULL != node) && JSON_NODE_HOLDS_VALUE(node)) ? node : NULL;
 }
 
+/* Whether products may be made, and for which venture, since a product
+ * needs one: both paths read it the same way. */
+static gboolean
+blizzard_import_products(
+	GHashTable	 *params,
+	BlizzardImport	 *import,
+	GError		**error
+){
+	JsonNode *node;
+
+	node = blizzard_param(params, "create_products");
+	import->create_products = (NULL != node) && json_node_get_boolean(node);
+	node = blizzard_param(params, "venture_id");
+	import->venture_id = (NULL != node) ? json_node_get_int(node) : 0;
+
+	if (import->create_products && (import->venture_id <= 0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "create_products needs venture_id: a product belongs to a venture");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * import_recipes handed `recipes`: no request is opened, so Battle.net is
+ * never asked for anything, and the walk's parameters are refused rather
+ * than ignored -- a caller sending both meant something this cannot do.
+ */
+static VentureEntity *
+blizzard_supplied_invoke(
+	VentureContext		 *context,
+	VentureEntity		 *entity,
+	GHashTable		 *params,
+	JsonNode		 *recipes,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(JsonNode) list = NULL;
+	g_autoptr(GPtrArray) reasons = NULL;
+	g_autoptr(GHashTable) categories = NULL;
+	g_autoptr(GString) result = NULL;
+	g_autofree gchar *namespace_ = NULL;
+	BlizzardImport import;
+	JsonNode *node;
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(blizzard_walk_parameters); i++)
+	{
+		node = blizzard_param(params, blizzard_walk_parameters[i]);
+
+		/* A form posts every field; an empty one asks for nothing. */
+		if ((NULL != node) && !((G_TYPE_STRING == json_node_get_value_type(node)) &&
+		                        venture_string_is_empty(json_node_get_string(node))))
+		{
+			venture_set_error_validation(error, blizzard_walk_parameters[i],
+			                             "steers the walk of Battle.net's professions; with recipes "
+			                             "there is no walk, so leave it out");
+			return NULL;
+		}
+	}
+
+	list = blizzard_supplied_list(recipes, error);
+
+	if (NULL == list)
+		return NULL;
+
+	memset(&import, 0, sizeof(import));
+
+	if (!blizzard_import_products(params, &import, error))
+		return NULL;
+
+	g_object_get(entity, "instrument-namespace", &namespace_, NULL);
+	reasons = g_ptr_array_new_with_free_func(g_free);
+	categories = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+	import.context = context;
+	import.database = venture_context_get_database(context);
+	import.actor = actor;
+	import.organization_id = venture_entity_get_organization_id(entity);
+	import.source_id = venture_entity_get_id(entity);
+	import.namespace_ = venture_string_is_empty(namespace_) ? (gchar *)BLIZZARD_INSTRUMENT_NAMESPACE
+	                                                        : namespace_;
+	import.reasons = reasons;
+	import.categories = categories;
+
+	if (!blizzard_supplied_run(&import, json_node_get_array(list), error))
+	{
+		g_prefix_error(error, "After %u recipes read (%u created, %u updated): ", import.read, import.created,
+		               import.updated);
+		return NULL;
+	}
+
+	result = g_string_new(NULL);
+	g_string_append_printf(result, "Read %u recipes: %u created, %u updated, %u unchanged, %u skipped.",
+	                       import.read, import.created, import.updated, import.unchanged, import.skipped);
+
+	for (i = 0; i < reasons->len; i++)
+		g_string_append_printf(result, " Skipped: %s.", (const gchar *)g_ptr_array_index(reasons, i));
+
+	g_string_append(result, " Done: every recipe supplied has been read.");
+	g_object_set(entity, "result", result->str, NULL);
+
+	return g_object_ref(entity);
+}
+
 static VentureEntity *
 blizzard_import_invoke(
 	VentureAction		 *action,
@@ -1169,6 +2048,13 @@ blizzard_import_invoke(
 		                    "Market data feeds are off (feeds.enabled)");
 		return NULL;
 	}
+
+	/* The recipes themselves, handed in: nothing of Battle.net is read. */
+	node = (NULL != params) ? g_hash_table_lookup(params, "recipes") : NULL;
+
+	if ((NULL != node) && !JSON_NODE_HOLDS_NULL(node) &&
+	    !((NULL != blizzard_node_text(node)) && venture_string_is_empty(blizzard_node_text(node))))
+		return blizzard_supplied_invoke(context, entity, params, node, actor, error);
 
 	/* The parameters: how far, from where, and whether products may be
 	 * made (and for which venture, since a product needs one). */
@@ -1211,17 +2097,9 @@ blizzard_import_invoke(
 	}
 
 	memset(&import, 0, sizeof(import));
-	node = blizzard_param(params, "create_products");
-	import.create_products = (NULL != node) && json_node_get_boolean(node);
-	node = blizzard_param(params, "venture_id");
-	import.venture_id = (NULL != node) ? json_node_get_int(node) : 0;
 
-	if (import.create_products && (import.venture_id <= 0))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		                    "create_products needs venture_id: a product belongs to a venture");
+	if (!blizzard_import_products(params, &import, error))
 		return NULL;
-	}
 
 	/* The request a run would make, frozen now: credentials, allowlist,
 	 * deadline, cap. Nothing it does touches the store or the budget. */
@@ -1513,6 +2391,11 @@ blizzard_recipes_register(
 	field->help = g_strdup("The venture new products and recipes belong to; needed to make products");
 	field->reference_type = g_strdup("venture");
 	g_ptr_array_add(parameters, field);
+	field = venture_field_spec_new("recipes", "Recipes known", VENTURE_FIELD_KIND_JSON);
+	field->help = g_strdup("The recipes themselves, a JSON array of at most 2000 (tsmctl venture recipes "
+	                       "sends them): Battle.net is not read, and the five parameters above that steer "
+	                       "its walk are refused");
+	g_ptr_array_add(parameters, field);
 
 	/* A record action on the source, judged in its organization. Not
 	 * stageable: it reads another system, and approval would read it
@@ -1520,8 +2403,9 @@ blizzard_recipes_register(
 	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
 	                      "type-name", "data_source", "name", BLIZZARD_ACTION_NAME,
 	                      "label", "Import recipes",
-	                      "description", "Read Battle.net's profession recipes into recipe records, "
-	                                     "linked to this source's instruments and their products",
+	                      "description", "Read Battle.net's profession recipes, or the recipes handed "
+	                                     "in as recipes, into recipe records linked to this source's "
+	                                     "instruments and their products",
 	                      "parameters", parameters, "stageable", FALSE,
 	                      "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 

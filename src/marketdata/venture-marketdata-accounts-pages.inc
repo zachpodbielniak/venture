@@ -1029,6 +1029,93 @@ acw_login_cards(
 	g_string_append(html, "</div></section>");
 }
 
+/* A profession's ranks by expansion, folded: each a link to Crafting
+ * narrowed to the character, the profession and that expansion; an entry
+ * the source wrote in another shape is shown as it came. */
+static void
+acw_profession_tiers(
+	GString		*html,
+	JsonObject	*profession
+){
+	JsonArray *tiers;
+	guint i;
+
+	tiers = json_object_has_member(profession, "tiers") ? json_object_get_array_member(profession, "tiers") : NULL;
+
+	if ((NULL == tiers) || (0 == json_array_get_length(tiers)))
+		return;
+
+	g_string_append(html, " <details class=\"account-tiers\"><summary>by expansion</summary>");
+
+	for (i = 0; i < json_array_get_length(tiers); i++)
+	{
+		JsonObject *tier = json_array_get_object_element(tiers, i);
+		const gchar *url = mdw_text(tier, "crafting_url");
+
+		if (i > 0)
+			g_string_append(html, " \xc2\xb7 ");
+
+		if (NULL != url)
+		{
+			g_string_append(html, "<a href=\"");
+			venture_html_escape_append(html, url);
+			g_string_append(html, "\">");
+		}
+
+		venture_html_escape_append(html, mdw_text(tier, "text"));
+
+		if (NULL != url)
+			g_string_append(html, "</a>");
+	}
+
+	g_string_append(html, "</details>");
+}
+
+/* A character's professions, "Tailoring 65/100 · Cooking 1/100", each a
+ * link to Crafting narrowed to it and the character, after a link to
+ * Crafting narrowed to the character alone. Nothing for an account the
+ * source names no profession for. */
+static void
+acw_professions(
+	GString		*html,
+	JsonObject	*row
+){
+	JsonArray *professions;
+	guint i;
+
+	professions = json_object_has_member(row, "professions") ? json_object_get_array_member(row, "professions")
+	                                                         : NULL;
+
+	if ((NULL == professions) || (0 == json_array_get_length(professions)))
+		return;
+
+	g_string_append(html, "<div class=\"account-sub account-professions\"><a href=\"");
+	venture_html_escape_append(html, mdw_text(row, "crafting_url"));
+	g_string_append(html, "\">Crafting</a>: ");
+
+	for (i = 0; i < json_array_get_length(professions); i++)
+	{
+		JsonObject *profession = json_array_get_object_element(professions, i);
+
+		if (i > 0)
+			g_string_append(html, " \xc2\xb7 ");
+
+		g_string_append(html, "<a href=\"");
+		venture_html_escape_append(html, mdw_text(profession, "crafting_url"));
+		g_string_append(html, "\">");
+		venture_html_escape_append(html, mdw_text(profession, "name"));
+		g_string_append_printf(html, " %" G_GINT64_FORMAT, json_object_get_int_member(profession, "skill"));
+
+		if (JSON_NODE_HOLDS_VALUE(json_object_get_member(profession, "max")))
+			g_string_append_printf(html, "/%" G_GINT64_FORMAT, json_object_get_int_member(profession, "max"));
+
+		g_string_append(html, "</a>");
+		acw_profession_tiers(html, profession);
+	}
+
+	g_string_append(html, "</div>");
+}
+
 static HtmxResponse *
 venture_marketdata_web_accounts(
 	HtmxRequest	*request,
@@ -1270,6 +1357,7 @@ venture_marketdata_web_accounts(
 			g_string_append(html, "</div>");
 		}
 
+		acw_professions(html, row);
 		g_string_append(html, "</td>");
 
 		if (has_logins)

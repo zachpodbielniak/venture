@@ -16,6 +16,13 @@
  * in a game; nothing here knows which. Crafting one (the `craft` action in
  * venture-production.c) is what moves stock -- the record itself moves
  * nothing, so editing a recipe never rewrites what was made from it.
+ *
+ * `external-ref` is how an import that has an identity of its own for a
+ * recipe (a game's spell id) finds it again after a person renamed it or
+ * the item it makes moved; a recipe typed in by hand has none, and an
+ * empty one is never unique. `known-by` is the characters that know it,
+ * as the operator's market data account keys (a JSON list, sorted, each
+ * once): Crafting filters on it, and an import replaces it whole.
  * ========================================================================== */
 
 static const VentureFieldDecl venture_recipe_fields[] = {
@@ -32,6 +39,14 @@ static const VentureFieldDecl venture_recipe_fields[] = {
 	VENTURE_FIELD("active", "Active",
 	              "Can be crafted; an inactive recipe keeps its history",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("external-ref", "Reference",
+	              "Optional: what an import knows it by -- wow-spell:56029; unique in the organization",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("known-by", "Known by",
+	              "Optional: the characters that know it, as a JSON list of their market data account keys "
+	              "-- [\"Name-Realm\"]",
+	              VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 

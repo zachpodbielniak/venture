@@ -50,6 +50,13 @@ venturectl accounts help
   `attention`, `inventory` and `pnl` (and "My characters" on the market
   pages); each answer counts them (`summary.ignored` / `ignored`) and
   `show_ignored=true` includes them, marked `ignored` on the overview.
+- **Professions are account attrs by convention**: `profession:<Name>`
+  (skill), `profession_max:<Name>`, `profession_secondary:<Name>` (true),
+  `profession_tiers:<Name>` ("Classic 300/300; Khaz Algar 65/100", one
+  string). Overview rows carry `professions` (`{name, skill, max,
+  secondary, crafting_url, tiers: [{label, rank, max, text,
+  crafting_url}]}`; a malformed tier is `{text}` alone) and `crafting_url`;
+  the page links each into `/arbitrage/crafting?character=KEY&profession=P&expansion=E`.
   Ignore one with `venturectl create account_ignore name=Medivh kind=realm
   key=Medivh`, or the buttons on its account page.
 

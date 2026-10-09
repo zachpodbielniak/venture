@@ -1533,6 +1533,164 @@ arw_warnings(
 	}
 }
 
+/* Every value a query string gives @name, joined with commas: a <select
+ * multiple> sends one per choice, and the parsed parameters keep one. */
+static gchar *
+arw_query_all(
+	HtmxRequest	*request,
+	const gchar	*name
+){
+	g_auto(GStrv) pairs = NULL;
+	g_autoptr(GString) joined = NULL;
+	const gchar *query;
+	guint i;
+
+	query = htmx_request_get_query(request);
+
+	if (venture_string_is_empty(query))
+		return NULL;
+
+	pairs = g_strsplit(query, "&", -1);
+	joined = g_string_new(NULL);
+
+	for (i = 0; NULL != pairs[i]; i++)
+	{
+		g_auto(GStrv) pair = g_strsplit(pairs[i], "=", 2);
+		g_autofree gchar *field = NULL;
+		g_autofree gchar *text = NULL;
+
+		if ((NULL == pair[0]) || (NULL == pair[1]))
+			continue;
+
+		/* A form encodes a space as '+'. */
+		g_strdelimit(pair[0], "+", ' ');
+		g_strdelimit(pair[1], "+", ' ');
+		field = g_uri_unescape_string(pair[0], NULL);
+		text = g_uri_unescape_string(pair[1], NULL);
+
+		if ((0 != g_strcmp0(field, name)) || venture_string_is_empty(text))
+			continue;
+
+		if (joined->len > 0)
+			g_string_append_c(joined, ',');
+
+		g_string_append(joined, text);
+	}
+
+	return (joined->len > 0) ? g_string_free(g_steal_pointer(&joined), FALSE) : NULL;
+}
+
+/* Crafting narrowed to one character, keeping the realms asked. */
+static void
+arw_character_link(
+	GString		*html,
+	JsonObject	*question,
+	const gchar	*account_key
+){
+	g_autofree gchar *key = g_uri_escape_string(account_key, NULL, FALSE);
+	const gchar *const kept[] = { "buy_realm", "sell_realm", "venue_group", "expansion", NULL };
+	guint i;
+
+	g_string_append_printf(html, "<a href=\"/arbitrage/crafting?character=%s", key);
+
+	for (i = 0; NULL != kept[i]; i++)
+	{
+		const gchar *value = venture_json_object_get_string(question, kept[i], NULL);
+		g_autofree gchar *escaped = (NULL != value) ? g_uri_escape_string(value, NULL, FALSE) : NULL;
+
+		if (NULL != escaped)
+		{
+			g_string_append_printf(html, "&amp;%s=", kept[i]);
+			venture_html_escape_append(html, escaped);
+		}
+	}
+
+	g_string_append(html, "\">");
+	venture_html_escape_append(html, account_key);
+	g_string_append(html, "</a>");
+}
+
+/* The character picker: several may be chosen; each is an account key. */
+static void
+arw_character_picker(
+	GString		*html,
+	JsonObject	*root,
+	JsonObject	*question
+){
+	JsonArray *choices;
+	g_auto(GStrv) chosen = NULL;
+	guint i;
+
+	choices = json_object_has_member(root, "character_choices")
+		? json_object_get_array_member(root, "character_choices") : NULL;
+	chosen = g_strsplit(venture_json_object_get_string(question, "character", ""), ",", -1);
+	g_string_append(html, "<div class=\"field\"><label>Known by<select name=\"character\" multiple "
+	                      "data-no-picker size=\"4\">");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		const gchar *key = json_array_get_string_element(choices, i);
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, key);
+		g_string_append_printf(html, "\"%s>", g_strv_contains((const gchar *const *)chosen, key) ? " selected" : "");
+		venture_html_escape_append(html, key);
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/* A picker of names the answer offers in @member -- the professions (the
+ * top-level recipe categories), the expansions beneath them. */
+static void
+arw_name_picker(
+	GString		*html,
+	JsonObject	*root,
+	JsonObject	*question,
+	const gchar	*member,
+	const gchar	*label,
+	const gchar	*name,
+	const gchar	*empty
+){
+	JsonArray *choices;
+	const gchar *chosen;
+	gboolean found = FALSE;
+	guint i;
+
+	choices = json_object_has_member(root, member) ? json_object_get_array_member(root, member) : NULL;
+	chosen = venture_json_object_get_string(question, name, NULL);
+	g_string_append(html, "<div class=\"field\"><label>");
+	venture_html_escape_append(html, label);
+	g_string_append_printf(html, "<select name=\"%s\"><option value=\"\">", name);
+	venture_html_escape_append(html, empty);
+	g_string_append(html, "</option>");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		const gchar *offered = json_array_get_string_element(choices, i);
+		gboolean selected = (NULL != chosen) && (0 == g_utf8_collate(offered, chosen));
+
+		found = found || selected;
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, offered);
+		g_string_append_printf(html, "\"%s>", selected ? " selected" : "");
+		venture_html_escape_append(html, offered);
+		g_string_append(html, "</option>");
+	}
+
+	if (!found && !venture_string_is_empty(chosen))
+	{
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, chosen);
+		g_string_append(html, "\" selected>");
+		venture_html_escape_append(html, chosen);
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
 static void
 arw_craft_rows(
 	VentureWebServer	*self,
@@ -1541,16 +1699,19 @@ arw_craft_rows(
 	gboolean		 can_plan
 ){
 	JsonObject *options;
+	JsonObject *question;
 	JsonArray *rows;
 	guint i;
 
 	options = json_object_get_object_member(root, "options");
+	question = json_object_get_object_member(root, "question");
 	rows = json_object_get_array_member(root, "rows");
 
 	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Recipes</h2></div>"
 	                      "<div class=\"table-wrap\"><table class=\"data arbitrage-table crafting-table\">"
 	                      "<thead><tr><th scope=\"col\">Recipe</th><th scope=\"col\">Category</th>"
-	                      "<th scope=\"col\" class=\"num\">Reagents</th><th scope=\"col\">Sell at</th>"
+	                      "<th scope=\"col\">Expansion</th><th scope=\"col\">Known by</th>"
+	                      "<th scope=\"col\" class=\"num\">Cost to craft</th><th scope=\"col\">Sell at</th>"
 	                      "<th scope=\"col\" class=\"num\">Sells for</th><th scope=\"col\" class=\"num\">Gross</th>"
 	                      "<th scope=\"col\" class=\"num\">AH cut</th><th scope=\"col\" class=\"num\">Deposit</th>"
 	                      "<th scope=\"col\" class=\"num\">Profit</th><th scope=\"col\" class=\"num\">Margin</th>"
@@ -1589,6 +1750,9 @@ arw_craft_rows(
 		else
 			venture_html_escape_append(html, venture_json_object_get_string(row, "title", ""));
 
+		if (blanked)
+			g_string_append(html, " <span class=\"badge warning\">no price</span>");
+
 		arw_craft_inputs(self, html, row);
 		arw_missing(html, row);
 		arw_warnings(html, row);
@@ -1598,6 +1762,43 @@ arw_craft_rows(
 			venture_html_escape_append(html, venture_json_object_get_string(row, "recipe_category", ""));
 		else
 			mdw_dash(html);
+
+		g_string_append(html, "</td><td>");
+
+		if (NULL != venture_json_object_get_string(row, "expansion", NULL))
+			venture_html_escape_append(html, venture_json_object_get_string(row, "expansion", ""));
+		else
+			mdw_dash(html);
+
+		/* Who knows it, each a link to Crafting narrowed to them, with
+		 * their rank in the recipe's expansion where it is known. */
+		g_string_append(html, "</td><td>");
+		{
+			JsonArray *knowers = json_object_has_member(row, "knowers")
+				? json_object_get_array_member(row, "knowers") : NULL;
+			guint k;
+
+			for (k = 0; (NULL != knowers) && (k < json_array_get_length(knowers)); k++)
+			{
+				JsonObject *knower = json_array_get_object_element(knowers, k);
+				const gchar *rank = venture_json_object_get_string(knower, "rank", NULL);
+
+				if (k > 0)
+					g_string_append(html, ", ");
+
+				arw_character_link(html, question, venture_json_object_get_string(knower, "key", ""));
+
+				if (NULL != rank)
+				{
+					g_string_append(html, " <span class=\"muted\">(");
+					venture_html_escape_append(html, rank);
+					g_string_append(html, ")</span>");
+				}
+			}
+
+			if ((NULL == knowers) || (0 == json_array_get_length(knowers)))
+				mdw_dash(html);
+		}
 
 		/* The reagents' cost, aged by the oldest of their prices, as
 		 * Deals ages a buy. */
@@ -1644,7 +1845,7 @@ arw_craft_rows(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"13\" class=\"muted\">No recipe to price. Import your "
+		g_string_append(html, "<tr><td colspan=\"15\" class=\"muted\">No recipe to price. Import your "
 		                      "professions' recipes (see Crafting in the docs), or widen the question.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
@@ -1684,6 +1885,15 @@ venture_arbitrage_web_crafting(
 
 	asked = arw_options(htmx_request_get_query_params(request));
 	json_object_remove_member(asked, "organization_id");
+
+	/* Several characters: one parameter each, or one comma separated. */
+	{
+		g_autofree gchar *characters = arw_query_all(request, "character");
+
+		if (NULL != characters)
+			json_object_set_string_member(asked, "character", characters);
+	}
+
 	answer = venture_arbitrage_crafting(self->context, organization_id, asked, &error);
 
 	if (NULL == answer)
@@ -1709,7 +1919,22 @@ venture_arbitrage_web_crafting(
 
 	g_string_append(html, "<div class=\"card\"><form method=\"get\" action=\"/arbitrage/crafting\" "
 	                      "class=\"form-grid arbitrage-filters\" role=\"search\" aria-label=\"Crafting filters\">");
+	arw_character_picker(html, root, question);
+	arw_name_picker(html, root, question, "profession_choices", "Profession", "profession", "every profession");
+	arw_name_picker(html, root, question, "expansion_choices", "Expansion", "expansion", "every expansion");
 	arw_recipe_category_picker(html, root, venture_json_object_get_int(question, "recipe_category_id", 0));
+	{
+		gboolean only = (0 == g_strcmp0(venture_json_object_get_string(question, "only_known", "0"), "1"));
+
+		g_string_append_printf(html, "<div class=\"field\"><label>Recipes<select name=\"only_known\">"
+		                             "<option value=\"1\"%s>known by a character</option>"
+		                             "<option value=\"0\"%s>every recipe</option></select></label></div>",
+		                       only ? " selected" : "", only ? "" : " selected");
+	}
+	arw_input(html, question, "Least profit", "min_profit", "any; 50 is 50 of the craft's currency");
+	arw_input(html, question, "Least margin %", "min_margin", "any");
+	arw_input(html, question, "Most cost to craft", "max_cost", "any");
+	arw_input(html, question, "Least sold per day", "min_sold_per_day", "any");
 	arw_realm_picker(html, root, "Buy reagents at", "buy_realm",
 	                 venture_json_object_get_string(question, "buy_realm", NULL), "the cheapest realm");
 	arw_realm_picker(html, root, "Sell at", "sell_realm",

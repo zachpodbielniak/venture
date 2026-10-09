@@ -182,7 +182,19 @@ reads those professions' recipes, that expansion only, into `recipe`
 records filed under `recipe` categories (profession / tier / section); a
 `result` ending `cursor=P/T/O` means more remain -- pass it back as
 `cursor=...`; without `create_products` recipes whose items have no product
-are skipped and named. `act data_source ID set_venue_fees [cut_percent=5]
+are skipped and named. Or hand it the recipes themselves: `recipes` is a
+JSON array (at most 2000; `tsmctl venture recipes` sends what
+TradeSkillMaster says the characters know) of `{spell_id, name, profession,
+expansion?, category?, item, item_name?, quantity?, reagents: [{item,
+quantity, name?}], known_by?}` -- then Battle.net is not read, the walk's parameters
+(`max_recipes`, `profession_id`, `professions`, `skill_tier`, `cursor`) are
+refused, recipes are found by spell (`external_ref` `wow-spell:<id>`, else
+output + name), filed profession / expansion / section, a reagent no longer
+listed is deleted (reusable lines stay), `known_by` (account keys
+`Name-Realm`, the `account` line's key) is the recipe's `known_by` field,
+replaced whole, plus a `Known by:` notes line, and
+a bad element is a skip named `recipes[N]` in the `result`. From the CLI:
+`recipes="$(cat recipes.json)"`. `act data_source ID set_venue_fees [cut_percent=5]
 [duration_hours=48] [replace=true]` gives every venue of the store a record
 with the `wow_auction` fee model (kept where one is set), so scans and
 Crafting count the cut and deposit.

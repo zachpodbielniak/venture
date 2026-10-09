@@ -185,12 +185,55 @@ venturectl act data_source 3 import_recipes professions="Alchemy, Inscription" s
 | =cursor=          | what the last call said to continue with                                                         |
 | =create_products= | make a product for an item that has none                                                         |
 | =venture_id=      | the venture new products and recipes belong to; required with =create_products=                  |
+| =recipes=         | the recipes themselves, at most 2000, instead of Battle.net's tree (below)                       |
 
 Each recipe is filed under =recipe= categories that follow the professions' book -- /Alchemy / Khaz Algar Alchemy / Potions/; a tier named only for its profession (/Mining/ under Mining) is left out -- so Crafting filters by a profession, an expansion or one section of it. A recipe imported before recipes were filed gets its place the next time the import reads it; one a person refiled keeps theirs.
 
 Each item a recipe names becomes an =instrument= record under the source (promoted from the store when the auctions have seen it, made outright when not), and the recipe points at that instrument's product. Without =create_products=, a recipe whose items have no product is skipped and the result names the item -- link its instrument to a product, or run again with it. A recipe that makes no item (an enchant) is skipped. Two slots of one reagent become one line; a proc's range (=crafted_quantity= minimum and maximum) is read as its minimum. Running it again changes nothing it made: a recipe is found by its output product and name, a line by its recipe and product, and only a quantity that moved (or a recipe not yet filed) is written; a line someone added by hand is left alone.
 
 It runs on the main thread -- it writes records -- and blocks for the requests it makes, one per recipe, each within =feeds.request_timeout=, which is what =max_recipes= bounds. It needs an editor.
+
+** The recipes your characters know, from TradeSkillMaster
+
+Battle.net's tree is every recipe there is; what a crafter wants priced is the ones their characters know. TradeSkillMaster already has that list -- per craft its spell, name, profession, the item and how many it makes, the reagents, and who knows it -- and =tsmctl venture recipes= sends it to the same action as =recipes=, a JSON array. With =recipes= nothing of Battle.net is read (no token, no index, no recipe; Battle.net's recipe ids are not TSM's spell ids anyway), and =max_recipes=, =profession_id=, =professions=, =skill_tier= and =cursor= are refused rather than ignored (an empty one, as a form posts it, is no value). The call is
+
+#+begin_example
+POST /api/v1/data_source/3/actions/import_recipes
+{"create_products": true, "venture_id": 2, "recipes": [
+  {"spell_id": 56029, "name": "Spellweave Gloves", "profession": "Tailoring", "expansion": "Northrend", "category": "Gloves",
+   "item": 42113, "quantity": 1,
+   "reagents": [{"item": 41511, "quantity": 4}, {"item": 41593, "quantity": 1}],
+   "known_by": ["Havemércy-Thorium Brotherhood"]}]}
+#+end_example
+
+and the answer is the data source, its =result= the same sentence the walk writes:
+
+#+begin_example
+Read 1285 recipes: 1201 created, 0 updated, 0 unchanged, 84 skipped. Skipped: recipes[17] (spell 2963): reagents must be a list of 1 to 32 reagents. ... Done: every recipe supplied has been read.
+#+end_example
+
+| Member       | Required | Meaning                                                                                                   |
+|--------------+----------+-----------------------------------------------------------------------------------------------------------|
+| =spell_id=   | yes      | a positive whole number; the recipe's identity, kept as its =external_ref= =wow-spell:<id>=               |
+| =name=       | yes      | the recipe's name                                                                                         |
+| =profession= | yes      | the profession, its top =recipe= category                                                                 |
+| =expansion=  | no       | text or null: the profession's tier as the game labels it less the profession's word ("Khaz Algar"; the bare tier "Classic"), the category under the profession |
+| =category=   | no       | text or null: the section of the profession's book, the category under the expansion (or the profession) |
+| =item=       | yes      | the item id it makes -- an instrument key in the source's namespace (=wow-item=), as the store keys items |
+| =item_name=  | no       | what to call the item's instrument and product when the store has never seen it (else its id)            |
+| =quantity=   | no       | how many a craft makes, a number of at least 1, 1 when left out; a fraction (a proc's 1.5) is rounded down |
+| =reagents=   | yes      | 1 to 32 of ={"item": id, "quantity": whole number >= 1}=, each with an optional =name= like =item_name=   |
+| =known_by=   | no       | the characters that know it, at most 100, as market data account keys -- the =key= of the character's =account= push line, ="<Name>-<Realm>"= -- kept exactly, sorted and once each in the recipe's =known_by= field (Crafting filters on it), replaced whole by every import that says it, and on a =Known by:= line of its notes |
+
+A call takes at most 2000 recipes; more is refused whole, and so is a value that is not an array (a JSON string holding the array is read the same, which is what the action's form and =venturectl act data_source 3 import_recipes recipes="$(cat recipes.json)" create_products=true venture_id=2= send). An element of the wrong shape is skipped and named by its place (=recipes[17]=) in the result, which lists the first ten reasons; the others are made. Every element is a transaction of its own and the call blocks the server while it runs, so send a large list in parts of a few hundred.
+
+What it writes is what the walk writes -- instruments promoted or made, products with =create_products=, the "has no product" skip without it, one line per reagent -- with three differences:
+
+- *Found by its spell.* A recipe is found again by =external_ref= =wow-spell:<id>= (deleted ones included: a recipe a person deleted is skipped and says so), else by what it makes and its name when that recipe has no reference yet -- so a recipe the Battle.net walk made first is adopted, not doubled. The spell decides what it makes: a changed =item= or =quantity= is written.
+- *The list is the whole recipe.* A reagent's changed quantity is written, and a line whose product the list no longer names is deleted; a reusable line (a tool a person added) stays.
+- *Filed under profession / expansion / section*, a level not given left out; the profession is the same top category the walk files under, so one Crafting filter covers both (the walk's tier is Blizzard's name, "Khaz Algar Tailoring", where TSM's label is "Khaz Algar"). A recipe a person refiled keeps its place.
+
+=known_by= is the recipe's =known_by= field and a line of its notes: both replaced when the characters change (a character who no longer knows it drops off), left alone when the member is left out, emptied by an empty list; every other line of the notes is a person's and is kept. A second call with the same list -- its characters in any order -- changes nothing.
 
 * Fees: =wow_auction=
 

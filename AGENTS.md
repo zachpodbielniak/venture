@@ -2725,6 +2725,35 @@ and `docs/examples/wow-operations.org` have the rest.
 - **An exec program holds its own paths.** supplier-csv's `file` setting
   is an editor's to write, so the script itself refuses anything but a
   plain name and compares the realpath against its directory plus `/`.
+- **A recipe list handed to `import_recipes` is the whole recipe; the
+  walk's is not.** With `recipes` (TSM's list, from `tsmctl venture
+  recipes`) the action opens no Battle.net request at all and refuses the
+  walk's parameters rather than ignoring them. A recipe is found by
+  `external-ref` `wow-spell:<id>` first, else output product + name only
+  when that recipe holds no reference (so a walked recipe is adopted, and
+  one spell never takes over another's), and a consumed line the list no
+  longer names is deleted -- reusable lines stay. The walk prunes nothing:
+  Battle.net's recipe is not everything a person keeps on one. `known_by`
+  is the recipe's `known-by` field (a JSON list of market data account
+  keys, `Name-Realm`, sorted, replaced whole) plus a `Known by:` notes
+  line for people; it is never parsed back out of the notes.
+- **Crafting chooses its recipes; the scan's 200 by name are not its
+  bound.** `venture_arbitrage_crafting()` picks the recipe ids in one
+  bounded query (category, profession and expansion as category sets in
+  the query; past `CRAFT_RECIPES_MAX` it refuses), filters knowers in C,
+  and hands the set to `venture_arbitrage_scan_run_recipes()`: transform
+  prices exactly those and every row is kept past `top`. Its bounds
+  (`min_profit`, `max_cost`, `min_margin`, `min_sold_per_day`) are judged on
+  the priced rows, never added to the scan's option table -- so the five
+  doors are untouched. A profession is a top-level `recipe` category, an
+  expansion a second level with categories beneath it (a recipe filed
+  straight under such a name is in it too); do not add an expansion field.
+- **Professions are scalar attrs by convention.** `profession:<Name>`,
+  `profession_max:<Name>`, `profession_secondary:<Name>` and one string
+  `profession_tiers:<Name>` ("Classic 300/300; Khaz Algar 65/100" -- the
+  64-member attrs cap is why it is one string).
+  `venture_marketdata_profession_tiers()` is the one parser: an entry of
+  another shape is kept as text, never dropped or guessed.
 - **The tsmctl wrapper prints an export whole or not at all.** The
   account-operations lines replace state -- a snapshot removes what it
   does not restate -- so `export.sh` has tsmctl write to a private
