@@ -366,7 +366,7 @@ arw_filters(
 	GString			*html,
 	JsonObject		*options
 ){
-	static const gchar *const bases[] = { "min", "market", "sale_avg", "region_median", "bid", NULL };
+	static const gchar *const bases[] = { "min", "market", "sale_avg", "region_median", "region_market", "bid", NULL };
 	static const gchar *const sorts[] = { "profit", "roi", "roi_per_day", "annualized", "ev", "confidence", NULL };
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) sources = NULL;
@@ -1292,7 +1292,7 @@ venture_arbitrage_web_report_controls(
 	venture_web_goals_input(request, content, "Venue group", "venue_group", "characters or a group's id");
 	venture_web_goals_input(request, content, "Group", "group_key", "every group");
 	venture_web_goals_input(request, content, "Units", "units", "1");
-	venture_web_goals_input(request, content, "Sell at price", "sell_basis", "min, market, sale_avg, region_median, bid");
+	venture_web_goals_input(request, content, "Sell at price", "sell_basis", "min, market, sale_avg, region_median, region_market, bid");
 	venture_web_goals_input(request, content, "Newest within hours", "max_age_hours", "any age");
 
 	if (0 == g_strcmp0(name, "arbitrage_scan"))

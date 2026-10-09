@@ -434,6 +434,113 @@ test_bulk_cost(void)
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
 }
 
+/* --- Realisable profit ------------------------------------------------------------- */
+
+/*
+ * Units a venue is expected to sell: a rate times days, rounded down, and
+ * "unknown" kept apart from zero. What breaks if it regresses: half a
+ * probable sale counted as a whole one, or a venue with no estimate read
+ * as one that sells nothing (and every deal there worth nothing).
+ */
+static void
+test_expected_sales(void)
+{
+	g_assert_cmpint(venture_series_math_expected_sales(2.5, 7.0), ==, 17);
+	g_assert_cmpint(venture_series_math_expected_sales(0.1, 7.0), ==, 0);
+	g_assert_cmpint(venture_series_math_expected_sales(0.0, 7.0), ==, 0);
+	g_assert_cmpint(venture_series_math_expected_sales(1.0, 0.5), ==, 0);
+	g_assert_cmpint(venture_series_math_expected_sales(NAN, 7.0), ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(venture_series_math_expected_sales(-1.0, 7.0), ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(venture_series_math_expected_sales(INFINITY, 7.0), ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(venture_series_math_expected_sales(3.0, 0.0), ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(venture_series_math_expected_sales(3.0, NAN), ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(venture_series_math_expected_sales(1e300, 7.0), ==, G_MAXINT64);
+}
+
+/*
+ * The profitable part of a book, no more of it than will sell, each unit
+ * at its own margin. Selling at 30 net, a book of 5 at 10, 5 at 20 and 4
+ * at 30: the tier at 30 makes nothing and is never bought.
+ */
+static void
+test_realisable(void)
+{
+	static const gint64 pairs[] = { 10, 5, 20, 5, 30, 4 };
+	g_autoptr(GArray) tiers = tiers_of(pairs, 3);
+	VentureSeriesRealisable out;
+	g_autoptr(GError) error = NULL;
+
+	/* Plenty sells: every profitable unit, 5 x 20 + 5 x 10. */
+	g_assert_true(venture_series_math_realisable(TIERS(tiers), 30, 100, &out, &error));
+	g_assert_cmpint(out.units, ==, 10);
+	g_assert_cmpint(out.book_units, ==, 10);
+	g_assert_cmpint(out.cost, ==, 150);
+	g_assert_cmpint(out.profit, ==, 150);
+	g_assert_false(out.capped);
+
+	/* Seven sell: the five cheapest and two of the next, 5 x 20 + 2 x 10. */
+	g_assert_true(venture_series_math_realisable(TIERS(tiers), 30, 7, &out, &error));
+	g_assert_cmpint(out.units, ==, 7);
+	g_assert_cmpint(out.book_units, ==, 10);
+	g_assert_cmpint(out.cost, ==, 90);
+	g_assert_cmpint(out.profit, ==, 120);
+	g_assert_true(out.capped);
+
+	/* Nothing sells: nothing realised, though the book is profitable. */
+	g_assert_true(venture_series_math_realisable(TIERS(tiers), 30, 0, &out, &error));
+	g_assert_cmpint(out.units, ==, 0);
+	g_assert_cmpint(out.profit, ==, 0);
+	g_assert_cmpint(out.book_units, ==, 10);
+	g_assert_true(out.capped);
+
+	/* A sale under the cheapest unit makes nothing at all. */
+	g_assert_true(venture_series_math_realisable(TIERS(tiers), 10, 100, &out, &error));
+	g_assert_cmpint(out.units, ==, 0);
+	g_assert_cmpint(out.book_units, ==, 0);
+	g_assert_cmpint(out.profit, ==, 0);
+
+	g_assert_false(venture_series_math_realisable(TIERS(tiers), 30, -1, &out, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+
+	/* A margin past 64 bits is refused, not wrapped into a loss. */
+	{
+		static const gint64 huge[] = { 0, G_MAXINT64 / 2 };
+		g_autoptr(GArray) deep = tiers_of(huge, 1);
+
+		g_assert_false(venture_series_math_realisable(TIERS(deep), G_MAXINT64 / 2, G_MAXINT64, &out, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+}
+
+/*
+ * What decides the order Deals sorts by: a smaller margin on a fast
+ * seller beats a fat one on a slow seller once the horizon is counted.
+ * Margin 50 a unit selling 0.2 a day sells one unit a week (50); margin
+ * 10 selling 3 a day sells 21, all of the 20 in the book (200).
+ */
+static void
+test_realisable_order(void)
+{
+	static const gint64 fat_book[] = { 100, 20 };
+	static const gint64 thin_book[] = { 100, 20 };
+	g_autoptr(GArray) fat = tiers_of(fat_book, 1);
+	g_autoptr(GArray) thin = tiers_of(thin_book, 1);
+	VentureSeriesRealisable slow;
+	VentureSeriesRealisable fast;
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_series_math_realisable(TIERS(fat), 150,
+	                                             venture_series_math_expected_sales(0.2, 7.0), &slow, &error));
+	g_assert_true(venture_series_math_realisable(TIERS(thin), 110,
+	                                             venture_series_math_expected_sales(3.0, 7.0), &fast, &error));
+	g_assert_cmpint(slow.units, ==, 1);
+	g_assert_cmpint(slow.profit, ==, 50);
+	g_assert_cmpint(fast.units, ==, 20);
+	g_assert_cmpint(fast.profit, ==, 200);
+	g_assert_cmpint(fast.profit, >, slow.profit);
+}
+
 /* --- Sale estimate ------------------------------------------------------------------ */
 
 /*
@@ -577,6 +684,9 @@ main(
 	g_test_add_func("/series-math/mean", test_mean);
 	g_test_add_func("/series-math/deal-price", test_deal_price);
 	g_test_add_func("/series-math/bulk-cost", test_bulk_cost);
+	g_test_add_func("/series-math/expected-sales", test_expected_sales);
+	g_test_add_func("/series-math/realisable", test_realisable);
+	g_test_add_func("/series-math/realisable-order", test_realisable_order);
 	g_test_add_func("/series-math/sale-estimate", test_sale_estimate);
 	g_test_add_func("/series-math/heat", test_heat);
 	g_test_add_func("/series-math/learn-interval", test_learn_interval);

@@ -2821,7 +2821,7 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "buy_sources", "integer",
 		"arbitrage_scan spread: list the N cheapest buy venues per item (drop shipping), 1 to 10", FALSE);
 	ai_tool_add_parameter(report, "sell_basis", "string",
-		"arbitrage_scan, craft_arbitrage: what a unit sells for: min, market, sale_avg (the region's average sale price), region_median or bid", FALSE);
+		"arbitrage_scan, craft_arbitrage: what a unit sells for: min, market, sale_avg (the region's average sale price), region_median, region_market (the region market value another source sends, TSM's through tsmctl) or bid", FALSE);
 	ai_tool_add_parameter(report, "total_stake", "string",
 		"arbitrage_scan cover and back_lay: the stake, with its currency, e.g. 100.00 USD", FALSE);
 	ai_tool_add_parameter(report, "min_profit", "string",

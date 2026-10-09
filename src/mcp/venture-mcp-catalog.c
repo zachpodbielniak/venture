@@ -845,7 +845,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "recipe_id", "arbitrage_scan transform, craft_arbitrage: one recipe.");
 		venture_mcp_catalog_add_integer_property(builder, "units", "arbitrage_scan: units per opportunity; craft_arbitrage: batches. 1 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "buy_sources", "arbitrage_scan spread: the N cheapest buy venues per item, 1 to 10.");
-		venture_mcp_catalog_add_string_property(builder, "sell_basis", "arbitrage_scan, craft_arbitrage: min, market, sale_avg, region_median or bid.");
+		venture_mcp_catalog_add_string_property(builder, "sell_basis", "arbitrage_scan, craft_arbitrage: min, market, sale_avg, region_median, region_market (another source's region market value, TSM's through tsmctl) or bid.");
 		venture_mcp_catalog_add_string_property(builder, "total_stake", "arbitrage_scan cover and back_lay: the stake with its currency, e.g. 100.00 USD.");
 		venture_mcp_catalog_add_string_property(builder, "min_profit", "arbitrage_scan: least net profit with its currency, e.g. 10.00 GOLD.");
 		venture_mcp_catalog_add_string_property(builder, "min_roi", "arbitrage_scan: least ROI, a percent, e.g. 15.");

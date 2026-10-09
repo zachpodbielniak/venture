@@ -2239,6 +2239,20 @@ pages").
   back on the install's default currency; `venture_marketdata_parse_amount()`
   refuses an amount that reads differently under two defaults. Use it for
   any amount a market filter compares.
+- **Velocity is the store's column, read; never a per-request count.**
+  Deals' `sell_sold_per_day`, `sell_sale_rate` and the realisable profit
+  read `current.sold_per_day`/`sale_rate`, which the region recompute
+  writes on the worker. A new window (seven days, say) is a column the
+  recompute writes, not a `daily` scan on a page view. Unknown velocity
+  is null and sorts last; zero is "nothing sold", a real answer.
+- **Another source's figures join within one instrument namespace, and
+  absent is absent.** `md_ref_object()` matches the item key only between
+  sources whose `instrument-namespace` is the same and not empty, the
+  region by `venture_series_region_venue_key()`, realms through
+  `MdRealms`; the arbitrage `region_market` basis follows the same rule.
+  Never shorten a variant key to make TSM's and Blizzard's meet (a base
+  item's value is another item level's), and never write a `ref` of
+  zeros: no match is no `ref` member.
 - **Charts carry no colour.** `src/web/venture-web-chart.c` draws in
   `currentColor` with classes both stylesheets colour from tokens; a new
   chart class goes into both, in the market block at their end, and

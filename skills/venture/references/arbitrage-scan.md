@@ -23,7 +23,10 @@ deal price), `transform` (a recipe's inputs at their cheapest venues;
   whole across sources; a `buy_venues` outside it is set aside with a
   note; an unknown group is 404), `group_key`, `category_path`, `kind`,
   `instrument`, `units`, `sell_basis` (`min`, `market`, `sale_avg`,
-  `region_median`, `bid`), `min_profit`, `max_capital`, `total_stake`
+  `region_median`, `region_market`, `bid`; `region_market` is another
+  source's region market value -- TSM's, at venue `region-<group>` --
+  joined on the item key only within the same `instrument-namespace`, so
+  leave the TSM source in the scan), `min_profit`, `max_capital`, `total_stake`
   (**money names its currency**: `"10.00 GOLD"`; a bare amount is
   refused), `min_roi`, `min_sale_rate`, `max_buy_pct`, `share` (**percent
   strings**, `"15"` = 15%), `min_confidence` (0-1), `max_age_hours`, `sort`

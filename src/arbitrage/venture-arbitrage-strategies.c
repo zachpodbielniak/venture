@@ -61,6 +61,7 @@ typedef struct
 	gchar			**buy_venues;
 	GHashTable		*intervals;	/* "id\037venue" -> interval */
 	GHashTable		*references;	/* "id\037group\037key" -> VentureSeriesReference */
+	GHashTable		*regions;	/* "id\037group\037key\037currency" -> gint64, a region market value */
 	guint			 stale;
 	guint			 started;	/* events left out: under way or over */
 	guint			 undated;	/* events kept that name no start */
@@ -87,6 +88,7 @@ arb_walk_init(
 	walk->buy_venues = g_strdupv((gchar **)venture_arbitrage_scan_get_buy_venues(scan));
 	walk->intervals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	walk->references = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	walk->regions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 }
 
 static void
@@ -127,6 +129,7 @@ arb_walk_clear(ArbWalk *walk)
 	g_strfreev(walk->buy_venues);
 	g_clear_pointer(&walk->intervals, g_hash_table_unref);
 	g_clear_pointer(&walk->references, g_hash_table_unref);
+	g_clear_pointer(&walk->regions, g_hash_table_unref);
 }
 
 /* Whether a price seen at @taken_at is young enough; counts it if not. */
@@ -224,6 +227,96 @@ arb_reference(
 	return reference;
 }
 
+/* A source's instrument namespace, "" for none. Transfer full. */
+static gchar *
+arb_source_namespace(VentureEntity *source)
+{
+	gchar *ns = NULL;
+
+	g_object_get(source, "instrument-namespace", &ns, NULL);
+
+	return (NULL != ns) ? ns : g_strdup("");
+}
+
+/*
+ * The region's market value of @row's instrument, read once per scan:
+ * the market value at the group's region venue
+ * (venture_series_region_venue_key(), where tsmctl sends TSM's region
+ * figures) in @source_id's own store first, then in the scan's other
+ * sources -- only those of the same instrument namespace, because an item
+ * key means nothing across namespaces. Only in @row's currency; nothing
+ * found is VENTURE_SERIES_NONE, never zero.
+ */
+static gint64
+arb_region_market(
+	ArbWalk			*walk,
+	gint64			 source_id,
+	const VentureSeriesRow	*row
+){
+	g_autofree gchar *region_key = venture_series_region_venue_key(row->group_key);
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *own_ns = NULL;
+	GPtrArray *sources;
+	gint64 *cached;
+	gint64 found = VENTURE_SERIES_NONE;
+	guint pass;
+	guint i;
+
+	/* The region venue is where a source keeps the group's figures, not
+	 * a market anybody sells in: selling "at" it is no trade. */
+	if ((NULL == region_key) || (0 == g_strcmp0(row->venue_key, region_key)))
+		return VENTURE_SERIES_NONE;
+
+	key = g_strdup_printf("%" G_GINT64_FORMAT "\037%s\037%s\037%s", source_id, row->group_key,
+	                      row->instrument_key, row->currency);
+	cached = g_hash_table_lookup(walk->regions, key);
+
+	if (NULL != cached)
+		return *cached;
+
+	sources = venture_arbitrage_scan_get_sources(walk->scan);
+
+	for (i = 0; (NULL != sources) && (i < sources->len); i++)
+		if (venture_entity_get_id(g_ptr_array_index(sources, i)) == source_id)
+			own_ns = arb_source_namespace(g_ptr_array_index(sources, i));
+
+	for (pass = 0; (pass < 2) && (VENTURE_SERIES_NONE == found); pass++)
+	{
+		for (i = 0; (NULL != sources) && (i < sources->len) && (VENTURE_SERIES_NONE == found); i++)
+		{
+			VentureEntity *source = g_ptr_array_index(sources, i);
+			gint64 id = venture_entity_get_id(source);
+			g_autoptr(VentureSeriesRow) region = NULL;
+			VentureSeriesStore *store;
+
+			if ((0 == pass) != (id == source_id))
+				continue;
+
+			if (id != source_id)
+			{
+				g_autofree gchar *ns = arb_source_namespace(source);
+
+				if ((NULL == own_ns) || ('\0' == own_ns[0]) || (0 != g_strcmp0(own_ns, ns)))
+					continue;
+			}
+
+			store = venture_arbitrage_scan_open_store(walk->scan, id);
+
+			if ((NULL != store) &&
+			    venture_series_store_get_current(store, region_key, row->instrument_key, &region, NULL) &&
+			    (NULL != region) && (0 == g_strcmp0(region->currency, row->currency)) &&
+			    (VENTURE_SERIES_NONE != region->market_value))
+				found = region->market_value;
+		}
+	}
+
+	cached = g_new(gint64, 1);
+	*cached = found;
+	g_hash_table_insert(walk->regions, g_steal_pointer(&key), cached);
+
+	return found;
+}
+
 /* What one unit sells for at a row's venue, on the asked basis. */
 static VentureMoney *
 arb_sell_price(
@@ -257,6 +350,7 @@ arb_sell_price(
 	 */
 	price = (0 == g_strcmp0(walk->basis, "market")) ? row->market_value
 	      : (0 == g_strcmp0(walk->basis, "region_median")) ? row->region_median
+	      : (0 == g_strcmp0(walk->basis, "region_market")) ? arb_region_market(walk, source_id, row)
 	      : row->min_price;
 
 	if ((VENTURE_SERIES_NONE == price) || !venture_series_row_sell_plausible(row, price))

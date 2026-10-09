@@ -6998,6 +6998,21 @@ venture_series_row_sell_plausible(
 	return TRUE;
 }
 
+gchar *
+venture_series_region_venue_key(const gchar *group_key)
+{
+	g_autofree gchar *lower = NULL;
+
+	if ((NULL == group_key) || ('\0' == group_key[0]))
+		return NULL;
+
+	/* The same spelling the accounts' SQL builds ('region-' || lower(...)):
+	 * one convention, so the two never disagree on which venue it is. */
+	lower = g_ascii_strdown(group_key, -1);
+
+	return g_strconcat("region-", lower, NULL);
+}
+
 static const gchar series_sql_list_categories[] =
 	"SELECT category, count(*) FROM instruments"
 	" WHERE category IS NOT NULL AND category <> '' AND parent_key IS NULL"

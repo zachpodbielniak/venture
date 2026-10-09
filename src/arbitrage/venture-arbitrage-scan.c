@@ -327,7 +327,7 @@ typedef struct
 } ArbOption;
 
 static const gchar *const arb_sell_bases[] = {
-	"min", "market", "sale_avg", "region_median", "bid", NULL
+	"min", "market", "sale_avg", "region_median", "region_market", "bid", NULL
 };
 
 static const gchar *const arb_sorts[] = {

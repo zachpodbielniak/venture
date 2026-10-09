@@ -1654,6 +1654,28 @@ venture_marketdata_web_instrument(
 		mdw_stat_of(html, "Historical, 60 days", mdw_money, reference, "historical_60d");
 		g_string_append(html, "</div></div>");
 
+		/* Another source's view of the same item (TSM's AuctionDB, as
+		 * tsmctl pushes it): drawn only when it has one, so an item
+		 * it does not know shows nothing rather than a zero. */
+		if (json_object_has_member(root, "ref"))
+		{
+			JsonObject *ref = json_object_get_object_member(root, "ref");
+			g_autoptr(GString) head = g_string_new(NULL);
+
+			g_string_append(head, "<div class=\"card\"><div class=\"card-head\"><h2>From ");
+			venture_html_escape_append(head, mdw_text(ref, "source_name"));
+			g_string_append(head, "</h2></div><div class=\"stat-row market-stats\">");
+			g_string_append(html, head->str);
+			mdw_stat_of(html, "Region market value", mdw_money, ref, "region_market");
+			mdw_stat_of(html, "Lowest price against it", mdw_pct, ref, "buy_vs_region_pct");
+			mdw_stat_of(html, "Region historical", mdw_money, ref, "region_historical");
+			mdw_stat_of(html, "Region sold a day", mdw_decimal, ref, "region_sold_per_day");
+			mdw_stat_of(html, "Region sale rate", mdw_share, ref, "region_sale_rate");
+			mdw_stat_of(html, "This realm's market value", mdw_money, ref, "buy_realm_market");
+			mdw_stat_of(html, "Lowest price against the realm's", mdw_pct, ref, "buy_vs_realm_pct");
+			g_string_append(html, "</div></div>");
+		}
+
 		/* The pictures, each with its numbers in a table beside it. */
 		{
 			g_autofree gchar *chart = mdw_snapshots_chart(self, root, currency, name);
@@ -2125,7 +2147,7 @@ mdw_deals_header(
 ){
 	static const gchar *const kept[] = {
 		"source", "search", "venue_group", "venue", "sell_venue", "group", "category", "min_value", "max_pct", "top",
-		"cut", NULL
+		"cut", "min_sold_per_day", "horizon_days", NULL
 	};
 	g_autoptr(GString) link = g_string_new("/market/deals?");
 	gboolean active = (0 == g_strcmp0(current, key));
@@ -2163,6 +2185,53 @@ mdw_deals_header(
 	/* The arrow is drawn from aria-sort (CSS), so it follows the
 	 * client-side sorter as well as the server's order. */
 	g_string_append(html, "</a></th>");
+}
+
+/* A figure of the answer as a signed percent ("+12%", "-8%"), or a dash. */
+static void
+mdw_signed_pct(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*member
+){
+	gdouble value = mdw_double(object, member);
+
+	if (isnan(value))
+	{
+		mdw_dash(html);
+		return;
+	}
+
+	g_string_append_printf(html, "%s%.0f%%", (value >= 0.5) ? "+" : (value <= -0.5) ? "\xe2\x88\x92" : "",
+	                       fabs(value));
+}
+
+/* A query-string number that must be finite, or NAN when it is absent. */
+static gboolean
+mdw_real(
+	HtmxRequest	 *request,
+	const gchar	 *name,
+	const gchar	 *what,
+	gdouble		 *out,
+	GError		**error
+){
+	const gchar *text = mdw_param(request, name);
+	gchar *end = NULL;
+
+	*out = NAN;
+
+	if (NULL == text)
+		return TRUE;
+
+	*out = g_ascii_strtod(text, &end);
+
+	if ((NULL == end) || ('\0' != *end) || !isfinite(*out))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "%s is %s", name, what);
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 /*
@@ -2292,6 +2361,19 @@ venture_marketdata_web_deals(
 		}
 	}
 
+	{
+		gdouble horizon;
+
+		if (!mdw_real(request, "min_sold_per_day", "the fewest units the sell venue sells a day, e.g. 2",
+		              &query.min_sold_per_day, &error) ||
+		    !mdw_real(request, "horizon_days", "the days a realisable profit counts sales over, e.g. 7",
+		              &horizon, &error))
+			return venture_web_error_response(error);
+
+		if (!isnan(horizon))
+			query.horizon_days = horizon;
+	}
+
 	answer = venture_marketdata_deals(self->context, &query, &error);
 
 	if (NULL == answer)
@@ -2322,11 +2404,14 @@ venture_marketdata_web_deals(
 	mdw_input(html, request, "At most % of region", "max_pct", "e.g. 80");
 	mdw_input(html, request, "How many", "top", "50");
 	mdw_input(html, request, "Sale cut %", "cut", "5");
+	mdw_input(html, request, "Sells at least, a day", "min_sold_per_day", "e.g. 2");
+	mdw_input(html, request, "Over days", "horizon_days", "7");
 	{
 		const gchar *sort = query.sort;
 
 		static const gchar *const sorts[][2] = {
-			{ "deal", "best deal" }, { "profit", "most profit" }, { "roi", "best return" },
+			{ "deal", "best deal" }, { "realisable", "most realisable" }, { "profit", "most profit" },
+			{ "roi", "best return" }, { "sold", "sells fastest" },
 			{ "ilvl", "item level" }, { "name", "name" }, { "buy", "buy price" }, { "sell", "sell price" },
 			{ "region", "of region" }, { "rate", "sale rate" }, { "qty", "quantity" },
 			{ "buy_at", "buy realm" }, { "sell_at", "sell realm" },
@@ -2363,6 +2448,14 @@ venture_marketdata_web_deals(
 	mdw_deals_header(html, request, query.sort, query.dir, "profit", "Profit", TRUE);
 	mdw_deals_header(html, request, query.sort, query.dir, "region", "Of region", TRUE);
 	mdw_deals_header(html, request, query.sort, query.dir, "rate", "Sale rate", TRUE);
+	mdw_deals_header(html, request, query.sort, query.dir, "sold", "Sold a day", TRUE);
+	mdw_deals_header(html, request, query.sort, query.dir, "realisable", "Realisable", TRUE);
+	/* Another source's figure: sorted on the page only, by its own
+	 * share of the buy price. */
+	g_string_append(html, "<th scope=\"col\" class=\"num\" data-sort-type=\"num\" "
+	                      "title=\"The region's market value from another source of the same items "
+	                      "(TSM's AuctionDB, pushed by tsmctl), and the buy and sell prices against it\">"
+	                      "Ref. value</th>");
 	mdw_deals_header(html, request, query.sort, query.dir, "qty", "Qty", TRUE);
 	g_string_append(html, "</tr></thead><tbody>");
 
@@ -2442,7 +2535,77 @@ venture_marketdata_web_deals(
 		g_string_append(html, ">");
 		mdw_chip_open(html, mdw_tone(mdw_double(NULL != sell ? sell : row, "sale_rate"), 0.3, 0.1));
 		mdw_percent(html, NULL != sell ? sell : row, "sale_rate", 100.0);
-		g_string_append(html, "</span></td><td class=\"num\"");
+		g_string_append(html, "</span></td>");
+
+		/* How fast it sells where it is sold: the store's own estimate
+		 * over fourteen days, sold vanished listings less expired ones. */
+		g_string_append(html, "<td class=\"num\"");
+		mdw_sort_value(html, row, "sell_sold_per_day");
+		g_string_append(html, ">");
+
+		if (NULL != sell)
+		{
+			mdw_chip_open(html, mdw_tone(mdw_double(row, "sell_sold_per_day"), 5.0, 1.0));
+			if (!isnan(mdw_double(row, "sell_sold_per_day")))
+				g_string_append(html, "~");
+			mdw_decimal(html, row, "sell_sold_per_day");
+			g_string_append(html, "</span>");
+		}
+		else
+			mdw_dash(html);
+
+		/* What it can make over the horizon: the profitable units, no
+		 * more than are expected to sell. */
+		g_string_append(html, "</td><td class=\"num\"");
+		mdw_sort_value(html, row, "realisable_profit");
+		g_string_append(html, ">");
+
+		if ((NULL != sell) && json_object_has_member(row, "realisable_profit") &&
+		    !JSON_NODE_HOLDS_NULL(json_object_get_member(row, "realisable_profit")))
+		{
+			mdw_money(html, row, "realisable_profit");
+			g_string_append(html, "<div class=\"muted deal-sub\">");
+			mdw_int(html, row, "realisable_units");
+			g_string_append(html, " of ");
+			mdw_int(html, row, "expected_sales");
+			g_string_append(html, " sold</div>");
+		}
+		else
+			mdw_dash(html);
+
+		/* Another source's view (TSM): nothing at all when it has none. */
+		g_string_append(html, "</td><td class=\"num\"");
+
+		{
+			JsonObject *ref = json_object_has_member(row, "ref") ? json_object_get_object_member(row, "ref")
+			                                                     : NULL;
+			gboolean region = (NULL != ref) && json_object_has_member(ref, "region_market") &&
+			                  JSON_NODE_HOLDS_OBJECT(json_object_get_member(ref, "region_market"));
+
+			if (NULL != ref)
+				mdw_sort_value(html, ref, region ? "region_market" : "buy_realm_market");
+			g_string_append(html, ">");
+
+			if (NULL != ref)
+			{
+				g_string_append(html, "<span title=\"");
+				venture_html_escape_append(html, mdw_text(ref, "source_name"));
+				g_string_append(html, region ? ": region market value\">" : ": the buy realm's market value\">");
+				mdw_money(html, ref, region ? "region_market" : "buy_realm_market");
+				g_string_append(html, "</span><div class=\"muted deal-sub\">buy ");
+				mdw_signed_pct(html, ref, region ? "buy_vs_region_pct" : "buy_vs_realm_pct");
+
+				if (NULL != sell)
+				{
+					g_string_append(html, " \xc2\xb7 sell ");
+					mdw_signed_pct(html, ref, region ? "sell_vs_region_pct" : "sell_vs_realm_pct");
+				}
+
+				g_string_append(html, "</div>");
+			}
+		}
+
+		g_string_append(html, "</td><td class=\"num\"");
 		mdw_sort_value(html, row, "quantity");
 		g_string_append(html, ">");
 		mdw_int(html, row, "quantity");
@@ -2450,7 +2613,7 @@ venture_marketdata_web_deals(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"10\" class=\"muted\">No deals right now.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"13\" class=\"muted\">No deals right now.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -2466,6 +2629,14 @@ venture_marketdata_web_deals(
 		g_string_append_printf(html, "</div><div class=\"deal-total tone-good\"><span>Profit, one of each of %"
 		                       G_GINT64_FORMAT " deals</span>", json_object_get_int_member(totals, "rows"));
 		mdw_money(html, totals, "profit");
+
+		if (JSON_NODE_HOLDS_OBJECT(json_object_get_member(totals, "realisable_profit")))
+		{
+			g_string_append_printf(html, "</div><div class=\"deal-total tone-good\"><span>Realisable over %g "
+			                       "days</span>", json_object_get_double_member(root, "horizon_days"));
+			mdw_money(html, totals, "realisable_profit");
+		}
+
 		g_string_append(html, "</div></div>");
 	}
 

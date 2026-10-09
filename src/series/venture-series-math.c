@@ -965,6 +965,94 @@ venture_series_math_bulk_cost(
 	return TRUE;
 }
 
+/* --- Realisable profit --------------------------------------------------- */
+
+gint64
+venture_series_math_expected_sales(
+	gdouble	sold_per_day,
+	gdouble	days
+){
+	gdouble units;
+
+	if (isnan(sold_per_day) || !isfinite(sold_per_day) || (sold_per_day < 0.0) ||
+	    !isfinite(days) || (days <= 0.0))
+		return VENTURE_SERIES_NONE;
+
+	units = floor(sold_per_day * days);
+
+	/* 2^63 is the first double past G_MAXINT64; anything from it on is
+	 * held there rather than converted out of range. */
+	if (units >= 9223372036854775808.0)
+		return G_MAXINT64;
+
+	return (gint64)units;
+}
+
+gboolean
+venture_series_math_realisable(
+	const VentureSeriesTier		 *tiers,
+	gsize				  n_tiers,
+	gint64				  net_price,
+	gint64				  max_units,
+	VentureSeriesRealisable		 *out,
+	GError				**error
+){
+	gsize i;
+
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	memset(out, 0, sizeof(*out));
+
+	if (max_units < 0)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The units expected to sell are at least zero, not %" G_GINT64_FORMAT, max_units);
+		return FALSE;
+	}
+
+	/* Sorted cheapest first, so the first tier that makes nothing ends
+	 * the profitable part of the book. */
+	for (i = 0; (i < n_tiers) && (tiers[i].price < net_price); i++)
+	{
+		gint64 take;
+		gint64 line;
+		gint64 margin;
+
+		if (!venture_series_math_add(out->book_units, tiers[i].quantity, &out->book_units))
+		{
+			series_set_overflow(error, "The units offered at a profit");
+			return FALSE;
+		}
+
+		take = MIN(tiers[i].quantity, max_units - out->units);
+
+		if (take <= 0)
+		{
+			out->capped = TRUE;
+			continue;
+		}
+
+		if (take < tiers[i].quantity)
+			out->capped = TRUE;
+
+		/* net_price > price >= 0, so the margin is positive and fits. */
+		margin = net_price - tiers[i].price;
+
+		if (!venture_series_math_mul(take, tiers[i].price, &line) ||
+		    !venture_series_math_add(out->cost, line, &out->cost) ||
+		    !venture_series_math_mul(take, margin, &line) ||
+		    !venture_series_math_add(out->profit, line, &out->profit))
+		{
+			series_set_overflow(error, "The realisable profit");
+			return FALSE;
+		}
+
+		out->units += take;
+	}
+
+	return TRUE;
+}
+
 /* --- Sale estimate ------------------------------------------------------- */
 
 /*

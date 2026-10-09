@@ -95,6 +95,28 @@ venturectl market help                               # every verb, options, exam
   `stale_after_seconds`. The pages show "12m"/"3h" under the realm and grey
   a stale price with a "stale" flag. Check it before trusting a "cheapest
   realm": a realm whose feed stopped looks exactly like a cheap one.
+- **How fast a deal sells, and what it can really make.** With a sell
+  side a Deals row carries `sell_sold_per_day` and `sell_sale_rate` (the
+  sell venue's 14-day store estimate: sold ÷ days, and sold ÷ (sold +
+  expired) -- a listing that could have run out is expired, never sold;
+  a cancellation still reads as a sale), `expected_sales` (sold a day ×
+  `horizon_days`, default 7, rounded down) and `realisable_profit` /
+  `realisable_units` / `realisable_cost` / `book_units`: the buy venue's
+  book walked cheapest first while a unit costs less than the net sale,
+  no more units than `expected_sales`. Null when there is no velocity,
+  never 0. `min_sold_per_day=N` sells only where at least N go a day
+  (else the deal is dropped); `sort=realisable` or `sort=sold`.
+  `totals.realisable_profit` sums them.
+  `venturectl market deals sort=realisable min_sold_per_day=2 horizon_days=3`.
+- **TSM beside the live price.** A Deals row (and an item's page) carries
+  `ref` when another source of the organization with the **same
+  `instrument-namespace`** knows the item: `region_market`,
+  `region_historical`, `region_sale_rate`, `region_sold_per_day` (the
+  `region-<group>` venue tsmctl fills), `buy_vs_region_pct`,
+  `sell_vs_region_pct`, and `buy_realm_market`/`sell_realm_market` with
+  their `_vs_realm_pct` (the connected realm's TSM value). No `ref` at
+  all when nothing matches -- absent, not zero. Keys join exactly: gear
+  variants (Blizzard's `:m...` modifiers) usually have none.
 - `market instrument SOURCE_ID KEY`: KEY is the store key (`herb`,
   `2589:b1234`), not an instrument record id; a key with `/` is fine.
 - Tables show money with its currency and leave a missing figure blank,

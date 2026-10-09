@@ -56,6 +56,25 @@ G_BEGIN_DECLS
 #define VENTURE_MARKETDATA_DEALS_MAX (500)
 
 /**
+ * VENTURE_MARKETDATA_DEALS_HORIZON_DAYS:
+ *
+ * The days a deal's realisable profit counts expected sales over unless
+ * asked otherwise: a week, about how long a flipper holds stock before
+ * calling it stuck, and half the fourteen days the sale estimate is taken
+ * over.
+ */
+#define VENTURE_MARKETDATA_DEALS_HORIZON_DAYS (7.0)
+
+/**
+ * VENTURE_MARKETDATA_DEALS_MAX_HORIZON_DAYS:
+ *
+ * The longest horizon a deal's realisable profit may be asked over: past
+ * the sale estimate's own fourteen days the rate is an extrapolation of
+ * an extrapolation, and a quarter is already generous.
+ */
+#define VENTURE_MARKETDATA_DEALS_MAX_HORIZON_DAYS (90.0)
+
+/**
  * VENTURE_MARKETDATA_BULK_MAX_UNITS:
  *
  * The most units the bulk calculator prices in one question.
@@ -179,7 +198,13 @@ typedef struct
  * seven days by weekday and hour in the configured zone, lowest price and
  * quantity), daily (60 days), bulk, tiers, watchlists, record_id,
  * stale_after_seconds}. base and each venue carry age_seconds and stale
- * beside taken_at, as a deal's sides do.
+ * beside taken_at, as a deal's sides do. Where another source of the
+ * organization has the item (as on Deals), ref: {data_source_id,
+ * source_name, region_venue, region_market, region_historical,
+ * region_sale_rate, region_sold_per_day, region_taken_at,
+ * region_age_seconds, region_stale, buy_vs_region_pct, buy_realm_market,
+ * buy_vs_realm_pct}, "buy" being the charted venue's lowest price; absent
+ * when no source has anything.
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
  *   (NOT_FOUND for another organization's source, a store that has
@@ -354,8 +379,9 @@ venture_marketdata_venue_group_venue_keys(
  *   sell side when a deal's profit is reckoned (an auction house's is 5)
  * @sort: (nullable): "deal" (the default: cheapest against the region
  *   first), or a column: "name", "ilvl", "buy_at", "buy", "sell_at",
- *   "sell", "profit", "roi", "region", "rate" (the sell venue's sale rate)
- *   or "qty". A column sort reads a wide pool of deals and keeps the
+ *   "sell", "profit", "roi", "region", "rate" (the sell venue's sale rate),
+ *   "sold" (the sell venue's units sold a day), "realisable" (the
+ *   realisable profit) or "qty". A column sort reads a wide pool of deals and keeps the
  *   first @count; a row with no value for it (nowhere to sell, no item
  *   level) is last either way.
  * @dir: (nullable): "asc" or "desc"; %NULL for the column's natural
@@ -364,6 +390,11 @@ venture_marketdata_venue_group_venue_keys(
  *   plausible price there is left out. With @venue_group it must be one
  *   of the group's, like @venue.
  * @now: the time "now" is, for each price's age; 0 for the wall clock
+ * @min_sold_per_day: sell only where the store estimates at least this
+ *   many units sold a day (current.sold_per_day, fourteen days); a venue
+ *   with no estimate never qualifies. NAN for no bound
+ * @horizon_days: the days a realisable profit counts sales over, above
+ *   zero; 7 by default
  *
  * What the deals page asks. A deal is an instrument in stock at a venue
  * whose lowest price is at or under its group's deal price: the median of
@@ -387,6 +418,8 @@ typedef struct
 	const gchar		*dir;
 	const gchar		*sell_venue;
 	gint64			 now;
+	gdouble			 min_sold_per_day;
+	gdouble			 horizon_days;
 } VentureMarketdataDealsQuery;
 
 /**
@@ -425,6 +458,28 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query);
  * sell_taken_at, sell_age_seconds and sell_stale (the sell object carries
  * them unprefixed too); the root carries stale_after_seconds
  * (venture_marketdata_stale_seconds()).
+ *
+ * How fast it sells: with a sell side, a row carries sell_sold_per_day
+ * and sell_sale_rate (the sell venue's current.sold_per_day and
+ * sale_rate), expected_sales (units the sell venue is expected to sell
+ * over horizon_days, rounded down; null with no estimate) and the
+ * realisable profit -- realisable_profit, realisable_units,
+ * realisable_cost and book_units (venture_series_math_realisable(): the
+ * buy venue's tiers under the net sell price, no more units than
+ * expected_sales). The root carries horizon_days, min_sold_per_day (null
+ * for none) and totals.realisable_profit.
+ *
+ * Another source's view of the same item: where one of the
+ * organization's sources with the same instrument namespace keeps the
+ * region venue (venture_series_region_venue_key()) or the buy or sell
+ * venue's connected realm -- what tsmctl pushes of TSM's AuctionDB -- a
+ * row carries ref: {data_source_id, source_name, region_venue,
+ * region_market, region_historical, region_sale_rate,
+ * region_sold_per_day, region_taken_at, region_age_seconds, region_stale,
+ * buy_vs_region_pct, sell_vs_region_pct, buy_realm_market,
+ * buy_vs_realm_pct, sell_realm_market, sell_vs_realm_pct}, each figure
+ * null where that source has none. A row it has nothing for carries no
+ * ref at all: absent, never zero.
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
  */

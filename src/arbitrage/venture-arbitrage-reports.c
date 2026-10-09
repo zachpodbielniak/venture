@@ -1161,7 +1161,8 @@ venture_arbitrage_craft_report(
 	"\"buy_sources\":{\"type\":\"integer\",\"description\":\"spread: the N cheapest buy venues per " \
 	"item (drop shipping); 1 by default\"}," \
 	"\"sell_basis\":{\"type\":\"string\",\"enum\":[\"min\",\"market\",\"sale_avg\",\"region_median\"," \
-	"\"bid\"],\"description\":\"What a unit sells for; sale_avg is the region's average sale price\"}," \
+	"\"region_market\",\"bid\"],\"description\":\"What a unit sells for; sale_avg is the region's average " \
+	"sale price, region_market the region's market value another source sends (TSM's through tsmctl)\"}," \
 	"\"total_stake\":{\"type\":\"string\",\"description\":\"cover and back_lay: the stake, e.g. " \
 	"\\\"100.00 USD\\\"\"}," \
 	"\"min_profit\":{\"type\":\"string\",\"description\":\"Least net profit, e.g. \\\"10.00 GOLD\\\"\"}," \
@@ -1310,7 +1311,7 @@ venture_arbitrage_register_reports(VentureReportRegistry *registry)
 		"output only at a venue group's venues: characters, or a venue_group record's id\"},"
 		"\"group_key\":{\"type\":\"string\",\"description\":\"Only venues in this group\"},"
 		"\"sell_basis\":{\"type\":\"string\",\"enum\":[\"min\",\"market\",\"sale_avg\","
-		"\"region_median\",\"bid\"],\"description\":\"What the output sells for; min by "
+		"\"region_median\",\"region_market\",\"bid\"],\"description\":\"What the output sells for; min by "
 		"default\"},"
 		"\"max_age_hours\":{\"type\":\"integer\",\"description\":\"Leave out prices older "
 		"than this\"},"

@@ -1643,6 +1643,447 @@ test_deals_ignore_asking_prices(
 	}
 }
 
+/* --- Velocity, realisable profit and another source's view ----------------- */
+
+typedef struct
+{
+	const gchar	*instrument;
+	guint64		 id;
+	gint64		 price;
+	gint64		 quantity;
+	gint64		 expires;	/* expires_in_min: seconds, -1 for unknown */
+} Timed;
+
+static void
+snapshot_timed(
+	VentureSeriesStore	*store,
+	const gchar		*venue,
+	gint64			 taken_at,
+	const Timed		*offers,
+	guint			 n_offers
+){
+	g_autoptr(GError) error = NULL;
+	VentureSeriesSnapshot *snap;
+	VentureSeriesCommitResult result;
+	guint i;
+
+	snap = venture_series_store_begin_snapshot(store, venue, "USD", taken_at, taken_at + 30, TRUE, &error);
+	g_assert_no_error(error);
+
+	for (i = 0; i < n_offers; i++)
+	{
+		VentureSeriesListing listing;
+
+		memset(&listing, 0, sizeof(listing));
+		listing.instrument_key = offers[i].instrument;
+		listing.listing_id = offers[i].id;
+		listing.unit_price = offers[i].price;
+		listing.quantity = offers[i].quantity;
+		listing.side = VENTURE_SERIES_SIDE_SELL;
+		listing.expires_in_min = offers[i].expires;
+		g_assert_true(venture_series_snapshot_add_listing(snap, &listing, &error));
+		g_assert_no_error(error);
+	}
+
+	g_assert_true(venture_series_store_commit_snapshot(store, snap, &result, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * Three EU realms, two snapshots four minutes apart inside one UTC day,
+ * so every sale lands on one day of history:
+ *
+ *   9001  realm-cheap 1.00 x5 and 1.20 x5 (the book a buyer walks)
+ *         realm-fast  3.00 x3 stays; 14 more vanish with no expiry: sold
+ *         realm-slow  4.00 x2 stays; one vanishes with no expiry (sold),
+ *                     ten vanish with a minute left (may have expired)
+ *   9003  realm-cheap 1.00 x1; realm-slow 10.00 x1 stays, one sold
+ *
+ * So realm-slow sells 9001 one a day at a sale rate of 1/11 -- ten of
+ * the eleven listings that vanished could simply have run out -- and
+ * realm-fast fourteen a day at a rate of one.
+ */
+static void
+seed_velocity(Fixture *fixture)
+{
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	gint64 day = now - now % 86400;
+	gint64 t0;
+	gint64 t1;
+	static const Timed cheap[] = {
+		{ "9001", 100, 100, 5, -1 }, { "9001", 101, 120, 5, -1 }, { "9003", 102, 100, 1, -1 }
+	};
+	static const Timed fast0[] = { { "9001", 200, 300, 3, -1 }, { "9001", 201, 300, 14, -1 } };
+	static const Timed fast1[] = { { "9001", 200, 300, 3, -1 } };
+	static const Timed slow0[] = {
+		{ "9001", 300, 400, 2, -1 }, { "9001", 301, 400, 1, -1 },
+		{ "9001", 302, 400, 1, 60 }, { "9001", 303, 400, 1, 60 }, { "9001", 304, 400, 1, 60 },
+		{ "9001", 305, 400, 1, 60 }, { "9001", 306, 400, 1, 60 }, { "9001", 307, 400, 1, 60 },
+		{ "9001", 308, 400, 1, 60 }, { "9001", 309, 400, 1, 60 }, { "9001", 310, 400, 1, 60 },
+		{ "9001", 311, 400, 1, 60 },
+		{ "9003", 320, 1000, 1, -1 }, { "9003", 321, 1000, 1, -1 }
+	};
+	static const Timed slow1[] = { { "9001", 300, 400, 2, -1 }, { "9003", 320, 1000, 1, -1 } };
+
+	/* Two snapshots on one UTC day, whatever the hour: the day's first
+	 * ten minutes would put them in the past few seconds' day before. */
+	if (now - day < 600)
+		day -= 86400;
+	t0 = day + 60;
+	t1 = day + 300;
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+
+	add_venue(store, "realm-cheap", "eu", "USD", t0);
+	add_venue(store, "realm-fast", "eu", "USD", t0);
+	add_venue(store, "realm-slow", "eu", "USD", t0);
+	add_instrument(store, "9001", "Velvet Thread", "Trade Goods", t0);
+	add_instrument(store, "9003", "Gilded Clasp", "Trade Goods", t0);
+
+	snapshot_timed(store, "realm-fast", t0, fast0, G_N_ELEMENTS(fast0));
+	snapshot_timed(store, "realm-slow", t0, slow0, G_N_ELEMENTS(slow0));
+	snapshot_timed(store, "realm-cheap", t1, cheap, G_N_ELEMENTS(cheap));
+	snapshot_timed(store, "realm-fast", t1, fast1, G_N_ELEMENTS(fast1));
+	snapshot_timed(store, "realm-slow", t1, slow1, G_N_ELEMENTS(slow1));
+
+	g_assert_true(venture_series_store_recompute_region(store, NULL, now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+}
+
+/* The row of @rows bought at @venue for @key, or NULL. */
+static JsonObject *
+deal_row(
+	JsonArray	*rows,
+	const gchar	*key,
+	const gchar	*venue
+){
+	guint i;
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		if ((0 == g_strcmp0(json_object_get_string_member(row, "instrument_key"), key)) &&
+		    (0 == g_strcmp0(json_object_get_string_member(row, "venue_key"), venue)))
+			return row;
+	}
+
+	return NULL;
+}
+
+static const gchar *
+sell_venue_of(JsonObject *row)
+{
+	return json_object_get_string_member(json_object_get_object_member(row, "sell"), "venue_key");
+}
+
+/*
+ * How fast a deal sells where it is sold, and what that leaves of its
+ * profit. Vanished listings that could have run out are expiries, not
+ * sales, so realm-slow's sale rate is 1/11 and it sells one a day; the
+ * realisable profit walks the buy realm's book only as far as realm-slow
+ * will sell in a week (7 units: 5 x 2.80 + 2 x 2.60 = 19.20). The floor
+ * on units a day moves the sale to realm-fast, which sells all ten the
+ * book has at a profit (5 x 1.85 + 5 x 1.65 = 17.50), and leaves out the
+ * deals that sell nowhere that fast. What breaks if it regresses: an
+ * expiry counted as a sale -- the bias that made every slow realm look
+ * liquid -- or a profit counted on units nobody will buy.
+ */
+static void
+test_deals_velocity(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(VentureSeriesRow) slow = NULL;
+	g_autoptr(VentureSeriesRow) fast = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *page = NULL;
+	JsonArray *rows;
+	JsonObject *row;
+	JsonObject *totals;
+
+	(void)user_data;
+	seed_velocity(fixture);
+
+	/* The store's own estimate first: sold and expired kept apart. */
+	store = reader(fixture);
+	g_assert_true(venture_series_store_get_current(store, "realm-slow", "9001", &slow, NULL));
+	g_assert_true(venture_series_store_get_current(store, "realm-fast", "9001", &fast, NULL));
+	g_assert_cmpfloat_with_epsilon(slow->sale_rate, 1.0 / 11.0, 1e-9);
+	g_assert_cmpfloat_with_epsilon(slow->sold_per_day, 1.0, 1e-9);
+	g_assert_cmpfloat_with_epsilon(fast->sale_rate, 1.0, 1e-9);
+	g_assert_cmpfloat_with_epsilon(fast->sold_per_day, 14.0, 1e-9);
+
+	answer = get_json(fixture, "/api/v1/market/deals", 200);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(root_of(answer), "horizon_days"), 7.0, 1e-9);
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(root_of(answer), "min_sold_per_day")));
+	row = deal_row(json_object_get_array_member(root_of(answer), "rows"), "9001", "realm-cheap");
+	g_assert_nonnull(row);
+	g_assert_cmpstr(sell_venue_of(row), ==, "realm-slow");
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(row, "sell_sold_per_day"), 1.0, 1e-9);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(row, "sell_sale_rate"), 1.0 / 11.0, 1e-9);
+	g_assert_cmpint(json_object_get_int_member(row, "expected_sales"), ==, 7);
+	g_assert_cmpint(json_object_get_int_member(row, "realisable_units"), ==, 7);
+	g_assert_cmpint(json_object_get_int_member(row, "book_units"), ==, 10);
+	g_assert_cmpint(money_amount(row, "realisable_profit"), ==, 1920);
+	g_assert_cmpint(money_amount(row, "realisable_cost"), ==, 740);
+	g_assert_cmpint(money_amount(row, "profit"), ==, 280);
+	totals = json_object_get_object_member(root_of(answer), "totals");
+	g_assert_cmpint(money_amount(totals, "realisable_profit"), ==, 1920 + 850 + 240);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* A day's horizon: one unit, the cheapest. */
+	answer = get_json(fixture, "/api/v1/market/deals?horizon_days=1", 200);
+	row = deal_row(json_object_get_array_member(root_of(answer), "rows"), "9001", "realm-cheap");
+	g_assert_cmpint(json_object_get_int_member(row, "realisable_units"), ==, 1);
+	g_assert_cmpint(money_amount(row, "realisable_profit"), ==, 280);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* At least three a day: only realm-fast qualifies, so the deal is
+	 * sold there, and what sells nowhere that fast is not a deal. */
+	answer = get_json(fixture, "/api/v1/market/deals?min_sold_per_day=3", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 1);
+	row = deal_row(rows, "9001", "realm-cheap");
+	g_assert_nonnull(row);
+	g_assert_cmpstr(sell_venue_of(row), ==, "realm-fast");
+	g_assert_cmpint(json_object_get_int_member(row, "expected_sales"), ==, 98);
+	g_assert_cmpint(json_object_get_int_member(row, "realisable_units"), ==, 10);
+	g_assert_cmpint(money_amount(row, "realisable_profit"), ==, 1750);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(root_of(answer), "min_sold_per_day"), 3.0,
+	                               1e-9);
+	g_clear_pointer(&answer, json_node_unref);
+
+	answer = get_json(fixture, "/api/v1/market/deals?min_sold_per_day=1000", 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "rows")), ==, 0);
+	g_clear_pointer(&answer, json_node_unref);
+
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?min_sold_per_day=-1", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?min_sold_per_day=lots", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?horizon_days=0", NULL, NULL, NULL), ==, 400);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?horizon_days=1000", NULL, NULL, NULL), ==, 400);
+
+	page = get_page(fixture, "/market/deals?sort=realisable&min_sold_per_day=3");
+	g_assert_nonnull(strstr(page, "Sold a day"));
+	g_assert_nonnull(strstr(page, "Realisable"));
+	g_assert_nonnull(strstr(page, "name=\"min_sold_per_day\""));
+	g_assert_nonnull(strstr(page, "<option value=\"realisable\" selected>"));
+	/* A heading's sort link keeps the floor. */
+	g_assert_nonnull(strstr(page, "min_sold_per_day=3&amp;sort=profit"));
+	assert_buttons_named(page, "/market/deals");
+}
+
+/*
+ * Sorting by realisable profit is not sorting by profit: a fat margin on
+ * one unit (9003: 8.50 a unit, one in the book) loses to a thinner one on
+ * seven that will sell (9001: 2.80 a unit, 19.20 in all), and a row with
+ * nothing to realise goes last either way. What breaks if it regresses:
+ * the top of the page is a one-off nobody can repeat.
+ */
+static void
+test_deals_realisable_order(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) by_profit = NULL;
+	g_autoptr(JsonNode) by_realisable = NULL;
+	JsonArray *rows;
+	gint64 previous = G_MAXINT64;
+	guint i;
+
+	(void)user_data;
+	seed_velocity(fixture);
+
+	by_profit = get_json(fixture, "/api/v1/market/deals?sort=profit", 200);
+	rows = json_object_get_array_member(root_of(by_profit), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "instrument_key"), ==,
+	                "9003");
+
+	by_realisable = get_json(fixture, "/api/v1/market/deals?sort=realisable", 200);
+	rows = json_object_get_array_member(root_of(by_realisable), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "instrument_key"), ==,
+	                "9001");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(rows, 0), "venue_key"), ==,
+	                "realm-cheap");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		gint64 amount = money_amount(json_array_get_object_element(rows, i), "realisable_profit");
+
+		g_assert_cmpint(amount, <=, previous);
+		previous = amount;
+	}
+
+	g_assert_cmpint(money_amount(json_array_get_object_element(rows, 1), "realisable_profit"), ==, 850);
+	g_assert_cmpint(money_amount(json_array_get_object_element(rows, 2), "realisable_profit"), ==, 240);
+}
+
+/* Figures a source computed itself, as tsmctl pushes TSM's. */
+static void
+stats_snapshot(
+	VentureSeriesStore	*store,
+	const gchar		*venue,
+	gint64			 taken_at,
+	const gchar		*key,
+	gint64			 market,
+	gint64			 historical,
+	gdouble			 sale_rate,
+	gdouble			 sold_per_day
+){
+	g_autoptr(GError) error = NULL;
+	VentureSeriesSnapshot *snap;
+	VentureSeriesCommitResult result;
+	VentureSeriesStats stats;
+
+	venture_series_stats_init(&stats);
+	stats.instrument_key = key;
+	stats.market_value = market;
+	stats.historical = historical;
+	stats.sale_rate = sale_rate;
+	stats.sold_per_day = sold_per_day;
+	snap = venture_series_store_begin_snapshot(store, venue, "USD", taken_at, taken_at + 30, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_series_snapshot_add_stats(snap, &stats, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_series_store_commit_snapshot(store, snap, &result, &error));
+	g_assert_no_error(error);
+}
+
+/* A second source of the organization, its store open for writing. */
+static VentureSeriesStore *
+second_source(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*instrument_namespace
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	VentureSeriesStore *store;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", name, "provider", "file_jsonl", "settings", "file: t.jsonl",
+	             "schedule", "manual", "currency", "USD", "instrument-namespace", instrument_namespace,
+	             "venue-namespace", "realm", NULL);
+	save(fixture, source);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(VENTURE_ENTITY(source)));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+
+	return store;
+}
+
+/*
+ * Another source's view, joined on the item key only within one
+ * instrument namespace: "Pushes" (wow-item, TSM's way) keeps the EU
+ * region at 2.00 for 9001 and realm-cheap at 1.50, so the deal there
+ * reads 50% under the region and a third under its realm; "Elsewhere"
+ * keeps a region figure for 9003 under another namespace, which must not
+ * be read as the same item. Absent is absent: no ref, never a zero. The
+ * instrument page carries the same object. What breaks if it regresses:
+ * a TSM value from a different item shown as this one's, or "0.00"
+ * where TSM has nothing to say.
+ */
+static void
+test_deals_reference_source(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureSeriesStore) pushes = NULL;
+	g_autoptr(VentureSeriesStore) elsewhere = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	gint64 t = g_get_real_time() / G_USEC_PER_SEC - 600;
+	JsonArray *rows;
+	JsonObject *row;
+	JsonObject *ref;
+
+	(void)user_data;
+	seed_velocity(fixture);
+
+	pushes = second_source(fixture, "Pushes", "wow-item");
+	add_venue(pushes, "region-eu", "eu", "USD", t);
+	add_venue(pushes, "realm-cheap", "eu", "USD", t);
+	add_instrument(pushes, "9001", "Velvet Thread", "Trade Goods", t);
+	stats_snapshot(pushes, "region-eu", t, "9001", 200, 210, 0.5, 12.0);
+	stats_snapshot(pushes, "realm-cheap", t, "9001", 150, VENTURE_SERIES_NONE, NAN, NAN);
+
+	elsewhere = second_source(fixture, "Elsewhere", "other-item");
+	add_venue(elsewhere, "region-eu", "eu", "USD", t);
+	add_instrument(elsewhere, "9003", "Not a clasp", "Things", t);
+	stats_snapshot(elsewhere, "region-eu", t, "9003", 777, VENTURE_SERIES_NONE, NAN, NAN);
+
+	answer = get_json(fixture, "/api/v1/market/deals", 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	row = deal_row(rows, "9001", "realm-cheap");
+	g_assert_nonnull(row);
+	g_assert_true(json_object_has_member(row, "ref"));
+	ref = json_object_get_object_member(row, "ref");
+	g_assert_cmpstr(json_object_get_string_member(ref, "source_name"), ==, "Pushes");
+	g_assert_cmpstr(json_object_get_string_member(ref, "region_venue"), ==, "region-eu");
+	g_assert_cmpint(money_amount(ref, "region_market"), ==, 200);
+	g_assert_cmpint(money_amount(ref, "region_historical"), ==, 210);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ref, "region_sold_per_day"), 12.0, 1e-9);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ref, "region_sale_rate"), 0.5, 1e-9);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ref, "buy_vs_region_pct"), -50.0, 1e-9);
+	/* Sold at realm-slow for 4.00: double the region's 2.00. */
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ref, "sell_vs_region_pct"), 100.0, 1e-9);
+	g_assert_cmpint(money_amount(ref, "buy_realm_market"), ==, 150);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(ref, "buy_vs_realm_pct"), 100.0 * (100 - 150) / 150.0,
+	                               1e-9);
+	/* Pushes keeps no realm-slow: null, not zero. */
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(ref, "sell_realm_market")));
+
+	/* 9003: only another namespace's key of the same spelling. */
+	row = deal_row(rows, "9003", "realm-cheap");
+	g_assert_nonnull(row);
+	g_assert_false(json_object_has_member(row, "ref"));
+	g_clear_pointer(&answer, json_node_unref);
+
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/9001?venue=realm-cheap", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	ref = json_object_get_object_member(root_of(answer), "ref");
+	g_assert_nonnull(ref);
+	g_assert_cmpint(money_amount(ref, "region_market"), ==, 200);
+	g_assert_cmpint(money_amount(ref, "buy_realm_market"), ==, 150);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/9003", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	g_assert_false(json_object_has_member(root_of(answer), "ref"));
+	g_clear_pointer(&path, g_free);
+
+	page = get_page(fixture, "/market/deals");
+	g_assert_nonnull(strstr(page, "Ref. value"));
+	g_assert_nonnull(strstr(page, "\xe2\x88\x92" "50%"));
+	g_clear_pointer(&page, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/9001?venue=realm-cheap", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "From Pushes"));
+	g_assert_nonnull(strstr(page, "Region market value"));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/9003", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_null(strstr(page, "Region market value"));
+}
+
 /*
  * The venue index is the store's own per-venue figures, with shares that
  * add up, and the upload timer it learned. What breaks if this
@@ -2916,6 +3357,9 @@ main(
 	ADD("deals-freshness", test_deals_freshness);
 	ADD("deals-connected-realms", test_deals_connected_realms);
 	ADD("deals-ignore-asking-prices", test_deals_ignore_asking_prices);
+	ADD("deals-velocity", test_deals_velocity);
+	ADD("deals-realisable-order", test_deals_realisable_order);
+	ADD("deals-reference-source", test_deals_reference_source);
 	ADD("venue-index", test_venue_index);
 	ADD("watchlist-and-actions", test_watchlist_and_actions);
 	ADD("alerts", test_alerts);
