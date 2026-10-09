@@ -1071,3 +1071,18 @@ asserts zero payment requests after cancellation on day thirteen. The prepaid
 installment fixture proves that cancellation after publication preserves the
 already committed second payment. Provider interactions are deterministic
 fixtures; no live credentials are used.
+
+* Public booking, form links and quote delivery
+
+The booking browser-origin regression on the current baseline failed with 403
+instead of creating a meeting. The owner form-link regression failed because
+its configured public address was absent. Their restored fixes preserve the
+hosted authority gate and use the configured public address for hosted,
+fragment, script and schema links; an unconfigured local instance retains its
+bound-address fallback.
+
+Quote mail delivery is already present in the baseline. Its delivery and
+missing-recipient rollback cases pass. Additional coverage checks that a repeat
+send leaves one delivery and one outbox identity, and that rolling back the
+surrounding send transaction leaves the quote draft with no delivery, event or
+mail. The acceptance capability remains excluded from generic mail output.
