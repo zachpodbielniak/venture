@@ -449,6 +449,77 @@ tenant_restore_mfa_fixture(TenantFixture *f)
 	{ gboolean result = orm_connection_execute(venture_database_get_connection(f->database), sql, &error); g_assert_no_error(error); g_assert_true(result); }
 }
 
+static SoupMessage *
+booking_browser_request(SoupSession *session, VentureWebServer *server, const gchar *method, const gchar *origin, const gchar *form)
+{
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), "/book/browser-booking", NULL);
+	SoupMessage *message = soup_message_new(method, url);
+	TenantHttpResult result = { FALSE, NULL, NULL };
+	soup_message_headers_replace(soup_message_get_request_headers(message), "Host", "tenant.example.test");
+	soup_message_headers_replace(soup_message_get_request_headers(message), "Accept", "text/html");
+	if (origin) soup_message_headers_replace(soup_message_get_request_headers(message), "Origin", origin);
+	if (form) {
+		g_autoptr(GBytes) bytes = g_bytes_new(form, strlen(form));
+		soup_session_set_timeout(session, 15);
+		soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, tenant_http_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_clear_pointer(&result.body, g_bytes_unref);
+	return message;
+}
+
+/* A public page must let the browser preserve its origin on submission,
+ * while an unrelated origin remains unable to reserve a meeting. */
+static void
+test_tenant_booking_browser(TenantFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = soup_session_new();
+	g_autoptr(GInetAddress) loopback = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+	g_autofree gchar *bind_address = g_inet_address_to_string(loopback);
+	g_autoptr(SoupMessage) viewed = NULL, refused = NULL, booked = NULL;
+	g_autoptr(VentureEntity) page = NULL;
+	g_autoptr(VentureBookingService) service = venture_booking_service_new(f->database);
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(VentureQuery) meetings = venture_query_new(VENTURE_TYPE_ACTIVITY);
+	g_autofree gchar *state_dir = g_dir_make_tmp("venture-booking-origin-XXXXXX", &error), *start = NULL, *form = NULL;
+	const gchar *policy, *origin;
+	(void)data;
+	g_assert_no_error(error);
+	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", bind_address, "server-port", (gint64)0, NULL);
+	context = venture_context_new(f->config, f->database);
+	page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->organization_id,
+		"title", "Browser consultation", "slug", "browser-booking", "owner", "administrator",
+		"duration-minutes", (gint64)30, "timezone", "UTC", "horizon-days", (gint64)2, "active", TRUE,
+		"availability", "{\"mon\":\"09:00-17:00\",\"tue\":\"09:00-17:00\",\"wed\":\"09:00-17:00\","
+		"\"thu\":\"09:00-17:00\",\"fri\":\"09:00-17:00\",\"sat\":\"09:00-17:00\",\"sun\":\"09:00-17:00\"}", NULL);
+	g_assert_true(venture_database_save(f->database, page, NULL, &error)); g_assert_no_error(error);
+	slots = venture_booking_service_slots(service, page, NULL, &error); g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), >, 0);
+	start = g_uri_escape_string(json_object_get_string_member(json_array_get_object_element(json_node_get_array(slots), 0), "start"), NULL, FALSE);
+	form = g_strdup_printf("start=%s&name=Visitor&email=visitor%%40example.test", start);
+	server = venture_web_server_new(context, &error); g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	viewed = booking_browser_request(session, server, "GET", NULL, NULL);
+	g_assert_cmpuint(soup_message_get_status(viewed), ==, 200);
+	policy = soup_message_headers_get_one(soup_message_get_response_headers(viewed), "Referrer-Policy");
+	/* Browser form POST serializes an opaque origin under no-referrer. */
+	origin = !g_strcmp0(policy, "no-referrer") ? "null" : "https://tenant.example.test";
+	refused = booking_browser_request(session, server, "POST", "https://other.example.test", form);
+	g_assert_cmpuint(soup_message_get_status(refused), ==, 403);
+	booked = booking_browser_request(session, server, "POST", origin, form);
+	g_assert_cmpuint(soup_message_get_status(booked), ==, 201);
+	g_assert_cmpstr(policy, ==, "same-origin");
+	venture_query_set_organization(meetings, f->organization_id);
+	g_assert_cmpint(venture_database_count(f->database, meetings, &error), ==, 1); g_assert_no_error(error);
+	venture_web_server_stop(server); g_clear_object(&server); g_clear_object(&context);
+	venture_test_remove_tree(state_dir);
+}
+
 static HtmxResponse *
 tenant_suspend_during_response(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -826,6 +897,7 @@ main(int argc, char **argv)
 	g_test_add("/tenant/actions", TenantFixture, NULL, tenant_setup, test_tenant_actions, tenant_teardown);
 	g_test_add("/tenant/host-authority", TenantFixture, NULL, tenant_setup, test_tenant_host_authority, tenant_teardown);
 	g_test_add("/tenant/http", TenantFixture, NULL, tenant_setup, test_tenant_http, tenant_teardown);
+	g_test_add("/tenant/booking-browser-origin", TenantFixture, NULL, tenant_setup, test_tenant_booking_browser, tenant_teardown);
 	g_test_add("/tenant/http-admission", TenantFixture, NULL, tenant_setup, test_tenant_http_admission, tenant_teardown);
 	g_test_add("/tenant/http-nested-admission", TenantFixture, GINT_TO_POINTER(1), tenant_setup, test_tenant_http_admission, tenant_teardown);
 	g_test_add("/tenant/http-invalid-limits", TenantFixture, NULL, tenant_setup, test_tenant_http_invalid_limits, tenant_teardown);

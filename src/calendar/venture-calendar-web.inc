@@ -57,7 +57,9 @@ static HtmxResponse *venture_web_booking_plain(guint status, const gchar *text)
 	htmx_response_set_status(response, status);
 	htmx_response_set_content_type(response, "text/html; charset=utf-8");
 	htmx_response_add_header(response, "Cache-Control", "no-store");
-	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
+	/* Preserve the origin of local form posts without sending capability
+	 * URLs as referrers to another origin. */
+	htmx_response_add_header(response, "Referrer-Policy", "same-origin");
 	return response;
 }
 static gboolean venture_web_booking_wants_json(HtmxRequest *request)

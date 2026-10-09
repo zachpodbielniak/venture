@@ -2224,6 +2224,34 @@ test_http_ways_in(Fixture *f, gconstpointer data)
 	reply_clear(&reply);
 }
 
+static void
+test_owner_public_links(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = contact_form(f, "public-link-form");
+	g_autofree gchar *path = g_strdup_printf("/e/form/%" G_GINT64_FORMAT, venture_entity_get_id(form));
+	g_autofree gchar *internal = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	f->open = TRUE;
+	g_object_set(f->config, "server-base-url", "https://forms.example.test/", NULL);
+	start_http(f);
+	internal = g_strconcat(venture_web_server_get_base_url(f->server), "/pub/form/", NULL);
+	request(f, path, NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, "href=\"https://forms.example.test/pub/form/public-link-form\""));
+	g_assert_nonnull(strstr(reply.body, "https://forms.example.test/pub/form/public-link-form/fragment"));
+	g_assert_nonnull(strstr(reply.body, "https://forms.example.test/pub/forms.js"));
+	g_assert_nonnull(strstr(reply.body, "https://forms.example.test/pub/form/public-link-form/schema"));
+	g_assert_null(strstr(reply.body, internal));
+	reply_clear(&reply);
+	/* Unconfigured local development still uses the actual bound port. */
+	g_object_set(f->config, "server-base-url", "", NULL);
+	request(f, path, NULL, NULL, NULL, NULL, &reply);
+	g_assert_cmpuint(reply.status, ==, 200);
+	g_assert_nonnull(strstr(reply.body, internal));
+	reply_clear(&reply);
+}
+
 /* The embed codes the builder offers are generated from the same renderer
  * and name the real public addresses. */
 static void
@@ -5470,6 +5498,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/http-spam", Fixture, NULL, setup, test_http_spam, teardown);
 	g_test_add("/forms/http-origins", Fixture, NULL, setup, test_http_origins, teardown);
 	g_test_add("/forms/http-ways-in", Fixture, NULL, setup, test_http_ways_in, teardown);
+	g_test_add("/forms/owner-public-links", Fixture, NULL, setup, test_owner_public_links, teardown);
 	g_test_add("/forms/embed-codes", Fixture, NULL, setup, test_embed_codes, teardown);
 	g_test_add("/forms/builder-page", Fixture, NULL, setup, test_builder_page, teardown);
 	g_test_add("/forms/consent-recorded", Fixture, NULL, setup, test_consent_recorded, teardown);
