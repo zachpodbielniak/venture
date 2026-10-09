@@ -990,6 +990,8 @@ feeds_freeze(
 	gboolean enabled;
 	gint64 hourly_days;
 	gint64 daily_days;
+	gint64 idle_days;
+	gint64 upkeep_hour;
 	gint64 max_store_mb;
 	gint64 max_response_mb;
 	gint64 request_timeout;
@@ -1147,6 +1149,7 @@ feeds_freeze(
 
 	/* The limits, from the configuration now. */
 	g_object_get(config, "series-hourly-days", &hourly_days, "series-daily-days", &daily_days,
+	             "series-idle-days", &idle_days, "series-upkeep-hour", &upkeep_hour,
 	             "series-max-store-mb", &max_store_mb, "feeds-max-response-mb", &max_response_mb,
 	             "feeds-request-timeout", &request_timeout,
 	             "feeds-max-records-per-run", &max_records,
@@ -1154,6 +1157,8 @@ feeds_freeze(
 
 	spec->hourly_days = (guint)CLAMP(hourly_days, 0, G_MAXINT32);
 	spec->daily_days = (guint)CLAMP(daily_days, 0, G_MAXINT32);
+	spec->idle_days = (guint)CLAMP(idle_days, 0, G_MAXINT32);
+	spec->upkeep_hour = (gint)CLAMP(upkeep_hour, -1, 23);
 	spec->max_store_bytes = (guint64)MAX(max_store_mb, 0) * 1048576;
 	spec->max_response_bytes = (gsize)CLAMP(max_response_mb, 1, 4096) * 1048576;
 	spec->request_timeout = (guint)CLAMP(request_timeout, 1, 3600);
@@ -1898,6 +1903,8 @@ feeds_service_write_run(
 
 	g_clear_object(&internal);
 
+	venture_feeds_metrics_count_run(self->context, run);
+
 	if (NULL != run->push_id)
 		feeds_service_remember_push(self, run->push_id,
 		                            (NULL != record) ? venture_entity_get_id(VENTURE_ENTITY(record)) : 0);
@@ -2509,6 +2516,139 @@ venture_feeds_service_purge_history(
 	}
 
 	return venture_series_worker_delete_store(store_dir, error);
+}
+
+gboolean
+venture_feeds_service_upkeep(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	gboolean		  rebuild,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureFeedSource) spec = NULL;
+	VentureSeriesUpkeepFlags flags;
+
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), FALSE);
+
+	if (self->shut_down)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Market data feeds have stopped");
+		return FALSE;
+	}
+
+	record = feeds_get_source(self, data_source_id, error);
+
+	if (NULL == record)
+		return FALSE;
+
+	/* The retention comes from the configuration now, frozen like a
+	 * sync's; a source that cannot be frozen has no store dir to keep. */
+	spec = feeds_freeze(self->context, record, error);
+
+	if (NULL == spec)
+		return FALSE;
+
+	flags = VENTURE_SERIES_UPKEEP_SCHEDULED;
+
+	if (rebuild)
+		flags |= VENTURE_SERIES_UPKEEP_REBUILD;
+
+	venture_series_worker_upkeep(feeds_service_worker(self), spec, flags);
+
+	return TRUE;
+}
+
+JsonNode *
+venture_feeds_service_dup_upkeep(
+	VentureFeedsService	 *self,
+	gint64			  data_source_id,
+	GError			**error
+){
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(JsonNode) status = NULL;
+	g_autofree gchar *store_dir = NULL;
+	g_autofree gchar *last = NULL;
+	JsonObject *root;
+	JsonNode *node;
+	JsonNode *running;
+	VentureSeriesFileSize size;
+
+	g_return_val_if_fail(VENTURE_IS_FEEDS_SERVICE(self), NULL);
+
+	record = feeds_get_source(self, data_source_id, error);
+
+	if (NULL == record)
+		return NULL;
+
+	root = json_object_new();
+	json_object_set_int_member(root, "data_source_id", data_source_id);
+
+	/* What the worker is doing now, from its published status. */
+	running = NULL;
+
+	if (NULL != self->worker)
+	{
+		JsonArray *sources;
+		guint i;
+
+		status = venture_series_worker_dup_status(self->worker);
+		sources = json_object_get_array_member(json_node_get_object(status), "sources");
+
+		for (i = 0; (NULL != sources) && (i < json_array_get_length(sources)); i++)
+		{
+			JsonObject *entry = json_array_get_object_element(sources, i);
+
+			if (json_object_get_int_member_with_default(entry, "id", 0) == data_source_id)
+				running = json_object_get_member(entry, "upkeep");
+		}
+	}
+
+	if ((NULL != running) && JSON_NODE_HOLDS_OBJECT(running))
+		json_object_set_member(root, "running", json_node_copy(running));
+	else
+		json_object_set_null_member(root, "running");
+
+	/* What the last one did, and the store as it is: from a reader of
+	 * our own, never the worker's writer. */
+	store_dir = venture_feeds_store_dir(venture_context_get_config(self->context),
+	                                    venture_entity_get_uuid(record));
+	reader = venture_series_store_open_reader(store_dir, NULL);
+
+	if (NULL != reader)
+		last = venture_series_store_get_meta(reader, VENTURE_SERIES_META_UPKEEP, NULL);
+
+	node = (NULL != last) ? json_from_string(last, NULL) : NULL;
+
+	if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+		json_object_set_member(root, "last", node);
+	else
+	{
+		g_clear_pointer(&node, json_node_unref);
+		json_object_set_null_member(root, "last");
+	}
+
+	if ((NULL != reader) && venture_series_store_get_file_size(reader, &size, NULL))
+	{
+		JsonObject *now = json_object_new();
+
+		json_object_set_int_member(now, "file_bytes", (gint64)size.file_bytes);
+		json_object_set_int_member(now, "free_bytes", (gint64)size.free_bytes);
+		json_object_set_int_member(now, "wal_bytes", (gint64)size.wal_bytes);
+		json_object_set_string_member(now, "auto_vacuum",
+		                              (2 == size.auto_vacuum) ? "incremental"
+		                              : (1 == size.auto_vacuum) ? "full" : "none");
+		json_object_set_object_member(root, "size", now);
+	}
+	else
+		json_object_set_null_member(root, "size");
+
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(node, root);
+
+	return node;
 }
 
 JsonNode *
@@ -3776,6 +3916,8 @@ venture_feeds_install(VentureContext *context)
 		                                              "series-stores", feeds_backup_companion,
 		                                              database, NULL);
 	}
+
+	venture_feeds_metrics_install(context);
 
 	g_signal_connect_object(database, "entity-saved", G_CALLBACK(feeds_on_saved), context, 0);
 	g_signal_connect_object(database, "entity-deleted", G_CALLBACK(feeds_on_deleted), context, 0);

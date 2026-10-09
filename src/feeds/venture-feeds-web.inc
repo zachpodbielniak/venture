@@ -1391,6 +1391,102 @@ venture_feeds_web_push(
 	return venture_web_json_response(node, 200);
 }
 
+/*
+ * GET  /api/v1/feeds/:id/upkeep: the store's upkeep -- under way, the last
+ *      one's result with its sizes before and after, and the store now.
+ * POST /api/v1/feeds/:id/upkeep[?rebuild=1]: queues one now (202). A
+ *      rebuild rewrites the file whole and pauses every source's passes
+ *      while it runs, so like purge_history it is the administrators'.
+ */
+static HtmxResponse *
+venture_feeds_web_upkeep(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	VentureFeedsService *service;
+	HtmxResponse *gate;
+	const gchar *rebuild_text;
+	gboolean post;
+	gboolean rebuild;
+	gint64 organization_id;
+
+	post = (HTMX_METHOD_POST == htmx_request_get_method(request));
+	gate = venture_web_api_require(self, request, post ? VENTURE_USER_ROLE_ADMIN : VENTURE_USER_ROLE_VIEWER);
+
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_require_module_api(self, "feeds");
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	source = venture_feeds_web_source(self, organization_id, g_hash_table_lookup(params, "id"), &error);
+
+	if (NULL == source)
+		return venture_web_error_response(error);
+
+	service = venture_context_get_feeds_service(self->context);
+
+	if (NULL == service)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Market data feeds are off (feeds.enabled)");
+		return venture_web_error_response(error);
+	}
+
+	if (!post)
+	{
+		node = venture_feeds_service_dup_upkeep(service, venture_entity_get_id(source), &error);
+
+		if (NULL == node)
+			return venture_web_error_response(error);
+
+		return venture_web_json_response(node, 200);
+	}
+
+	rebuild_text = htmx_request_get_query_param(request, "rebuild");
+
+	if ((NULL == rebuild_text) || (0 == g_strcmp0(rebuild_text, "0")) ||
+	    (0 == g_strcmp0(rebuild_text, "false")))
+		rebuild = FALSE;
+	else if ((0 == g_strcmp0(rebuild_text, "1")) || (0 == g_strcmp0(rebuild_text, "true")))
+		rebuild = TRUE;
+	else
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "rebuild is 1 or 0");
+		return venture_web_error_response(error);
+	}
+
+	if (!venture_feeds_service_upkeep(service, venture_entity_get_id(source), rebuild, &error))
+		return venture_web_error_response(error);
+
+	{
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "status");
+		json_builder_add_string_value(builder, "queued");
+		json_builder_set_member_name(builder, "data_source_id");
+		json_builder_add_int_value(builder, venture_entity_get_id(source));
+		json_builder_set_member_name(builder, "rebuild");
+		json_builder_add_boolean_value(builder, rebuild);
+		json_builder_end_object(builder);
+		node = json_builder_get_root(builder);
+	}
+
+	return venture_web_json_response(node, 202);
+}
+
 static void
 venture_feeds_web_register(VentureWebServer *self)
 {
@@ -1414,4 +1510,8 @@ venture_feeds_web_register(VentureWebServer *self)
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_sync, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/feeds/:id/push", VENTURE_DATA_CLASS_TENANT,
 	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_push, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/feeds/:id/upkeep", VENTURE_DATA_CLASS_TENANT,
+	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_upkeep, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/feeds/:id/upkeep", VENTURE_DATA_CLASS_TENANT,
+	                                        VENTURE_HOSTED_ROUTE_NONE, venture_feeds_web_upkeep, self);
 }

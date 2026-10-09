@@ -3654,6 +3654,78 @@ test_feeds_push_cap_is_validated(void)
 	g_assert_nonnull(strstr(error->message, "max_push_mb"));
 }
 
+/* --- Upkeep ------------------------------------------------------------------------ */
+
+/*
+ * An upkeep asked for -- with the rebuild -- runs on the worker, keeps
+ * its result where the API reads it, leaves the store incremental, and a
+ * sync queued behind it still runs once it is done.
+ *
+ * What breaks if this regresses: the operator's one-time rebuild either
+ * never runs, runs on the main thread (the server stops answering for
+ * the whole copy), or leaves the passes paused for good.
+ */
+static void
+test_feeds_upkeep_on_request(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(JsonNode) state = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	JsonObject *root;
+	JsonObject *last;
+	gint64 id;
+
+	(void)user_data;
+
+	path = write_root_file(fixture, "realm.jsonl",
+		"{\"type\":\"venue\",\"key\":\"argent\",\"name\":\"Argent Dawn\",\"currency\":\"GOLD\"}\n"
+		"{\"type\":\"snapshot\",\"venue\":\"argent\",\"taken_at\":\"2026-10-03T12:00:00Z\",\"complete\":true}\n"
+		"{\"type\":\"listing\",\"venue\":\"argent\",\"instrument\":\"ore\",\"price\":\"1.25\",\"quantity\":20,\"id\":\"a1\"}\n");
+	id = create_source(fixture, "Lines", "file_jsonl", "file: realm.jsonl\n", "manual");
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+
+	/* Never asked for, a store has no running upkeep; its size is read. */
+	state = venture_feeds_service_dup_upkeep(service_of(fixture), id, &error);
+	g_assert_no_error(error);
+	root = json_node_get_object(state);
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(root, "running")));
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(root, "size"), "auto_vacuum"),
+	                ==, "incremental");
+	g_clear_pointer(&state, json_node_unref);
+
+	g_assert_true(venture_feeds_service_upkeep(service_of(fixture), id, TRUE, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_feeds_service_sync(service_of(fixture), id,
+	                                         VENTURE_DATA_SOURCE_RUN_TRIGGER_MANUAL, &error));
+	g_assert_no_error(error);
+	settle(fixture);
+
+	g_assert_cmpint(count_runs(fixture, id), ==, 2);
+
+	state = venture_feeds_service_dup_upkeep(service_of(fixture), id, &error);
+	g_assert_no_error(error);
+	root = json_node_get_object(state);
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(root, "running")));
+	last = json_object_get_object_member(root, "last");
+	g_assert_nonnull(last);
+	g_assert_false(json_object_has_member(last, "error"));
+	g_assert_true(json_object_get_boolean_member(last, "rebuild"));
+	g_assert_true(json_object_get_boolean_member(last, "rebuilt"));
+	g_assert_cmpint(json_object_get_int_member(last, "finished_at"), >=,
+	                json_object_get_int_member(last, "started_at"));
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(last, "after"), "auto_vacuum"),
+	                ==, "incremental");
+	g_assert_true(json_object_has_member(last, "reclaimed_bytes"));
+
+	/* A source that does not exist is refused, not queued. */
+	g_assert_false(venture_feeds_service_upkeep(service_of(fixture), id + 1000, FALSE, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
 int
 main(
 	int	 argc,
@@ -3737,6 +3809,8 @@ main(
 	           test_feeds_attribution_is_one_line, fixture_tear_down);
 	g_test_add("/feeds/runs-reach-the-default-context", Fixture, NULL, fixture_set_up,
 	           test_feeds_runs_reach_the_default_context, fixture_tear_down);
+	g_test_add("/feeds/upkeep-on-request", Fixture, NULL, fixture_set_up,
+	           test_feeds_upkeep_on_request, fixture_tear_down);
 
 	return g_test_run();
 }

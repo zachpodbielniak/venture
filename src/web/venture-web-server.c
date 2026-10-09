@@ -155,6 +155,10 @@ struct _VentureWebServer
 	guint workspace_http_concurrency;
 	guint workspace_http_retry_after;
 
+	/* Requests being answered now: more than one only when a handler
+	 * runs a nested loop. Main thread. */
+	guint metrics_in_flight;
+
 	/*
 	 * Every GET pattern registered through
 	 * venture_web_server_add_classified_route(), core and extension
@@ -15565,6 +15569,242 @@ venture_web_api_health(
 	node = json_builder_get_root(builder);
 
 	return venture_web_json_response(node, 200);
+}
+
+/* --- Metrics ------------------------------------------------------------- */
+
+/*
+ * The class a request is counted under. A handful of fixed names, never
+ * the path: a path carries ids, and every distinct label set is a series
+ * the scraper keeps for weeks.
+ */
+static const gchar *
+venture_web_metrics_class(const gchar *path)
+{
+	if (NULL == path)
+		return "page";
+
+	if (0 == g_strcmp0(path, "/metrics"))
+		return "metrics";
+
+	if (0 == g_strcmp0(path, "/api/v1/health"))
+		return "health";
+
+	if (g_str_has_prefix(path, "/api/"))
+		return "api";
+
+	if (g_str_has_prefix(path, "/hooks/"))
+		return "hooks";
+
+	if (g_str_has_prefix(path, "/ui/"))
+		return "static";
+
+	/* The doors that answer people who have no account: forms, quotes,
+	 * the customer and supplier portals, published pages. */
+	if (g_str_has_prefix(path, "/pub/") || g_str_has_prefix(path, "/portal/") ||
+	    g_str_has_prefix(path, "/supplier/") || g_str_has_prefix(path, "/q/") ||
+	    g_str_has_prefix(path, "/t/") || g_str_has_prefix(path, "/forms/"))
+		return "public";
+
+	return "page";
+}
+
+static void
+venture_web_metrics_describe(VentureMetrics *metrics)
+{
+	venture_metrics_describe(metrics, "venture_http_requests_total", VENTURE_METRICS_COUNTER,
+	                         "HTTP requests answered, by route class and status code");
+	venture_metrics_describe(metrics, "venture_http_request_duration_seconds", VENTURE_METRICS_HISTOGRAM,
+	                         "Time to build an answer, by route class");
+	venture_metrics_describe(metrics, "venture_http_requests_in_flight", VENTURE_METRICS_GAUGE,
+	                         "Requests being answered now; more than one means a handler re-entered the loop");
+}
+
+/*
+ * Outermost of the middleware: times every request the router sees, the
+ * catch-all 404 included. Requests the transport refuses before routing
+ * (a body past the cap, a connection past the limit) are not here.
+ */
+static void
+venture_web_metrics_middleware(
+	HtmxContext		*context,
+	HtmxMiddlewareNext	 next,
+	gpointer		 next_data,
+	gpointer		 user_data
+){
+	VentureWebServer *self = user_data;
+	VentureMetrics *metrics;
+	HtmxResponse *response;
+	g_autofree gchar *class_labels = NULL;
+	g_autofree gchar *status_labels = NULL;
+	g_autofree gchar *status = NULL;
+	const gchar *klass;
+	gint64 started;
+
+	metrics = venture_metrics_for_context(self->context);
+	klass = venture_web_metrics_class(htmx_request_get_path(htmx_context_get_request(context)));
+	started = g_get_monotonic_time();
+
+	self->metrics_in_flight++;
+	venture_metrics_set(metrics, "venture_http_requests_in_flight", NULL, (gdouble)self->metrics_in_flight);
+
+	next(context, next_data);
+
+	self->metrics_in_flight--;
+	venture_metrics_set(metrics, "venture_http_requests_in_flight", NULL, (gdouble)self->metrics_in_flight);
+
+	response = htmx_context_get_response(context);
+	status = g_strdup_printf("%u", (NULL != response) ? htmx_response_get_status(response) : 0u);
+	class_labels = venture_metrics_labels("class", klass, NULL);
+	status_labels = venture_metrics_labels("class", klass, "status", status, NULL);
+
+	venture_metrics_add(metrics, "venture_http_requests_total", status_labels, 1);
+	venture_metrics_observe(metrics, "venture_http_request_duration_seconds", class_labels,
+	                        (gdouble)(g_get_monotonic_time() - started) / G_USEC_PER_SEC);
+}
+
+/*
+ * Whether the request came straight from this machine: a loopback peer,
+ * and no forwarding header. A tunnel or reverse proxy on the same host
+ * connects from loopback too -- cloudflared does -- and says whom it is
+ * forwarding for; such a request is somebody else's and is refused, or
+ * "loopback only" would mean "anyone the tunnel lets in".
+ */
+static gboolean
+venture_web_metrics_from_loopback(HtmxRequest *request)
+{
+	static const gchar *const forwarding[] = {
+		"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP",
+		"CF-Connecting-IP", "True-Client-IP", NULL
+	};
+	SoupServerMessage *message;
+	SoupMessageHeaders *headers;
+	GSocketAddress *peer;
+	guint i;
+
+	message = htmx_request_get_message(request);
+
+	if (NULL == message)
+		return FALSE;
+
+	headers = soup_server_message_get_request_headers(message);
+
+	for (i = 0; NULL != forwarding[i]; i++)
+	{
+		if ((NULL != headers) && (NULL != soup_message_headers_get_one(headers, forwarding[i])))
+			return FALSE;
+	}
+
+	peer = soup_server_message_get_remote_address(message);
+
+	return G_IS_INET_SOCKET_ADDRESS(peer) &&
+	       g_inet_address_get_is_loopback(
+	           g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(peer)));
+}
+
+/* Whether a token's comma-separated scopes name "metrics". */
+static gboolean
+venture_web_metrics_token_scoped(
+	VentureWebServer	*self,
+	gint64			 token_id
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autofree gchar *scopes = NULL;
+	g_auto(GStrv) names = NULL;
+	VentureDatabase *database;
+	guint i;
+
+	if (token_id <= 0)
+		return FALSE;
+
+	database = venture_context_get_database(self->context);
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	token = venture_database_get(database, VENTURE_TYPE_API_TOKEN, token_id, NULL);
+
+	if (NULL == token)
+		return FALSE;
+
+	g_object_get(token, "scopes", &scopes, NULL);
+	names = g_strsplit((NULL != scopes) ? scopes : "", ",", -1);
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		if (0 == g_strcmp0(g_strstrip(names[i]), "metrics"))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/*
+ * GET /metrics: the Prometheus text exposition of the registry.
+ *
+ * Off unless metrics.access says otherwise, and answering 404 while off
+ * or refused by the loopback rule -- a probe from outside learns nothing,
+ * not even that the route exists. With a token rule it is the API's
+ * usual 401 and 403: an API token whose scopes include "metrics" (any
+ * role: it reads nothing else), or the owner. Never public: what it says
+ * -- request rates, every feed's runs and every venue's age -- is what
+ * this install is doing, which /api/v1/health deliberately does not say.
+ */
+static HtmxResponse *
+venture_web_metrics(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autofree gchar *access = NULL;
+	g_autofree gchar *text = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *response;
+	gboolean loopback;
+	gboolean token;
+
+	/* Anything but these three is off: "off" itself, and the "false" the
+	 * YAML reader makes of it. */
+	g_object_get(venture_context_get_config(self->context), "metrics-access", &access, NULL);
+
+	loopback = (0 == g_strcmp0(access, "loopback")) || (0 == g_strcmp0(access, "loopback_or_token"));
+	token = (0 == g_strcmp0(access, "token")) || (0 == g_strcmp0(access, "loopback_or_token"));
+
+	if (!(loopback && venture_web_metrics_from_loopback(request)))
+	{
+		g_autoptr(VentureAuthPrincipal) principal = NULL;
+
+		if (!token)
+		{
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No route %s",
+			            htmx_request_get_path(request));
+			return venture_web_error_response(error);
+		}
+
+		principal = venture_auth_authenticate(self->auth, request);
+
+		if (!principal->authenticated)
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED,
+			                    "/metrics needs an API token with the metrics scope");
+			return venture_web_error_response(error);
+		}
+
+		if ((VENTURE_USER_ROLE_OWNER != principal->role) &&
+		    !venture_web_metrics_token_scoped(self, principal->token_id))
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+			                    "/metrics needs an API token whose scopes include \"metrics\", "
+			                    "or the owner");
+			return venture_web_error_response(error);
+		}
+	}
+
+	text = venture_metrics_render(venture_metrics_for_context(self->context));
+	response = htmx_response_new_with_content(text);
+	htmx_response_set_content_type(response, VENTURE_METRICS_CONTENT_TYPE);
+	htmx_response_set_status(response, 200);
+
+	return response;
 }
 
 /* --- Chat ---------------------------------------------------------------- */
@@ -32528,6 +32768,10 @@ venture_web_server_new(
 	self->classified_routes = htmx_router_new();
 	router = htmx_server_get_router(self->server);
 
+	/* Timing first, so it wraps everything -- the 404 included. */
+	venture_web_metrics_describe(venture_metrics_for_context(context));
+	htmx_server_use(self->server, venture_web_metrics_middleware, self, NULL);
+
 	/* The catch-all 404, wrapped around every route below. */
 	htmx_server_use(self->server, venture_web_not_found_middleware, self,
 	                NULL);
@@ -32783,6 +33027,7 @@ venture_web_server_new(
 
 	/* API */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/metrics", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_metrics, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);
 	/* The forms door: no session, a capability token, and the form's own
 	 * origin list. See src/forms/venture-forms-web.inc. */

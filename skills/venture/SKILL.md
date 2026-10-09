@@ -151,14 +151,14 @@ and `~/.agents/skills/venture` by `make install-skill`.
 - [`references/factory.md`](references/factory.md) -- milestones to incidents, releases, forges and rules, coding runs, budgets, the harness
 - [`references/market-production.md`](references/market-production.md) -- price observations, listings, recipes and crafting
 - [`references/sessions-goals.md`](references/sessions-goals.md) -- sessions of effort and their yields, goals and their shopping list
-- [`references/feeds.md`](references/feeds.md) -- data sources, sync and push, the series store, the position mirror, cross-cutting market traps
+- [`references/feeds.md`](references/feeds.md) -- data sources, sync and push, the series store and its upkeep, the position mirror, cross-cutting market traps
 - [`references/market-data.md`](references/market-data.md) -- venues, instruments, the price oracle, the Trading pages, alert rules
 - [`references/accounts.md`](references/accounts.md) -- the operator's accounts: where to log in, inventory, trading P&L, posting to the books
 - [`references/arbitrage-scan.md`](references/arbitrage-scan.md) -- the scan, presets, fee models, calculators, exports
 - [`references/arbitrage.md`](references/arbitrage.md) -- trades, legs, execution, close/reopen/abandon, performance
 - [`references/plugins.md`](references/plugins.md) -- what is loaded, the five ways to extend, manifests, exec plugins, adding a type
 - [`references/platform.md`](references/platform.md) -- users, tokens, membership, MFA, OIDC, AI providers, the server and its configuration, docs, printers
-- [`references/operations.md`](references/operations.md) -- backups and drills, retention, federation, hosted workspaces, key maintenance, HTTP limits
+- [`references/operations.md`](references/operations.md) -- backups and drills, retention, federation, hosted workspaces, key maintenance, HTTP limits, `/metrics`
 
 ## Critical rules
 
@@ -359,6 +359,8 @@ ids, notes) in words.
 | "Add a user / token / membership" | `create user ... password=`, `/account/tokens`, `organization_membership` | [platform.md](references/platform.md) |
 | "Turn a module on/off / what is configured?" | `modules:` in config; `GET /api/v1/settings` | [platform.md](references/platform.md) |
 | "Back up / verify a restore" | `backup run\|verify\|restore-drill` | [operations.md](references/operations.md) |
+| "Why is the market store so big / shrink it" | `feeds upkeep-status ID`, `feeds upkeep ID [rebuild=1] --wait` | [feeds.md](references/feeds.md) |
+| "Scrape it with Prometheus" | `metrics.access`, a token with `scopes=metrics`, `GET /metrics` | [operations.md](references/operations.md) |
 | "Share records with another server" | `federation '{"action":...}'` | [operations.md](references/operations.md) |
 | "Add a venture type / provider / plugin" | YAML type, `*.plugin.yaml`, `plugins list` | [plugins.md](references/plugins.md) |
 | "Print a receipt" | `print payment\|invoice ID [PRINTER]` | [platform.md](references/platform.md) |

@@ -244,6 +244,7 @@
 #include "core/venture-confirmation-store.h"
 
 #include "core/venture-context.h"
+#include "core/venture-metrics.h"
 #include "core/venture-integration.h"
 #include "core/venture-process-lease.h"
 #include "core/venture-connector.h"

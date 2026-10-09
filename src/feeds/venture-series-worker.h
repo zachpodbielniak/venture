@@ -386,6 +386,25 @@ venture_series_worker_backup(
 );
 
 /**
+ * venture_series_worker_upkeep:
+ * @self: the worker
+ * @source: the source, frozen
+ * @flags: what the upkeep does; %VENTURE_SERIES_UPKEEP_SCHEDULED, plus
+ *   %VENTURE_SERIES_UPKEEP_REBUILD to rewrite the file
+ *
+ * Asks for the source's store's upkeep now, rather than at its daily
+ * time. Queued behind an upkeep already under way; a second request
+ * before it starts joins the first. Counted as live work until the result
+ * is kept in the store's meta (%VENTURE_SERIES_META_UPKEEP).
+ */
+void
+venture_series_worker_upkeep(
+	VentureSeriesWorker		*self,
+	VentureFeedSource		*source,
+	VentureSeriesUpkeepFlags	 flags
+);
+
+/**
  * venture_series_worker_dup_status:
  * @self: a worker
  *

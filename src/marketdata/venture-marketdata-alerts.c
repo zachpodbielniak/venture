@@ -3705,6 +3705,36 @@ alerts_position_listing(
 	return (NULL != listing) ? venture_entity_get_id(listing) : 0;
 }
 
+/*
+ * Counts a hit written, by kind, or a candidate that was not, by why --
+ * for /metrics. Kinds and reasons are a handful each; the rule, the
+ * venue and the instrument stay out of the labels.
+ */
+static void
+alerts_metric(
+	AlertsWrite	*w,
+	VentureAlertKind kind,
+	const gchar	*suppressed
+){
+	VentureMetrics *metrics = venture_metrics_for_context(w->context);
+	g_autofree gchar *labels = NULL;
+
+	if (NULL == suppressed)
+	{
+		venture_metrics_describe(metrics, "venture_alert_hits_total", VENTURE_METRICS_COUNTER,
+		                         "Alert hits written, by the rule's kind");
+		labels = venture_metrics_labels("kind", venture_enum_to_nick(VENTURE_TYPE_ALERT_KIND,
+		                                                             (gint)kind), NULL);
+		venture_metrics_add(metrics, "venture_alert_hits_total", labels, 1);
+		return;
+	}
+
+	venture_metrics_describe(metrics, "venture_alert_hits_suppressed_total", VENTURE_METRICS_COUNTER,
+	                         "Alert candidates not written: cooldown, cap (the per-run limit) or failed");
+	labels = venture_metrics_labels("reason", suppressed, NULL);
+	venture_metrics_add(metrics, "venture_alert_hits_suppressed_total", labels, 1);
+}
+
 /* One hit, saved as the system, then told to its recipient. */
 static gboolean
 alerts_write_hit(
@@ -3771,6 +3801,7 @@ alerts_write_hit(
 		return FALSE;
 
 	w->written++;
+	alerts_metric(w, (VentureAlertKind)json_object_get_int_member(candidate, "kind"), NULL);
 	json_array_add_int_element(w->hits, venture_entity_get_id(VENTURE_ENTITY(hit)));
 
 	/* The inbox. A failure here is logged, not the hit's: the hit is
@@ -3856,18 +3887,21 @@ alerts_write_candidates(
 		if (alerts_write_cooling(w, rule, subject, observed_at))
 		{
 			w->cooled++;
+			alerts_metric(w, 0, "cooldown");
 			continue;
 		}
 
 		if (w->written >= VENTURE_ALERTS_MAX_HITS_PER_RUN)
 		{
 			w->over_cap++;
+			alerts_metric(w, 0, "cap");
 			continue;
 		}
 
 		if (!alerts_write_hit(w, rule, candidate, message, &error))
 		{
 			w->failed++;
+			alerts_metric(w, 0, "failed");
 			g_message("alerts: a hit of rule %" G_GINT64_FORMAT " was not written: %s",
 			          venture_entity_get_id(rule),
 			          (NULL != error) ? error->message : "refused");

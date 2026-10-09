@@ -196,6 +196,18 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Days of hourly market history kept; 0 keeps it forever"),
 	VC_INT ("series-daily-days", "series", "daily_days", 0,
 	        "Days of daily market history kept; 0 keeps it forever"),
+	/*
+	 * How long a venue may go without listing an instrument before its
+	 * row there goes, and an instrument nothing else refers to before it
+	 * does. Off by default: an absent instrument's row is what says "out
+	 * of stock", and the stock alerts read it.
+	 */
+	VC_INT ("series-idle-days", "series", "idle_days", 0,
+	        "Days an instrument a venue stopped listing keeps its row there; 0 keeps it forever"),
+	/* The UTC hour the daily upkeep waits for; -1 runs it a day after the
+	 * last, whenever that falls. */
+	VC_INT ("series-upkeep-hour", "series", "upkeep_hour", -1,
+	        "UTC hour (0-23) of each store's daily upkeep; -1 for a day after the last"),
 	VC_INT ("series-max-store-mb", "series", "max_store_mb", 0,
 	        "Size in MiB past which a store refuses new instruments; "
 	        "0 for no cap"),
@@ -212,6 +224,14 @@ static const VentureConfigSetting venture_config_settings[] = {
 	 * store's history exists nowhere else and cannot be fetched again. */
 	VC_BOOL("series-include-in-backup", "series", "include_in_backup", TRUE,
 	        "Copy every series store with each installation backup"),
+
+	/*
+	 * Who may read GET /metrics. Off by default: it says what the install
+	 * is doing -- request rates, every feed's runs, every venue's age --
+	 * and a port behind a public tunnel must not say that to anyone.
+	 */
+	VC_STR ("metrics-access", "metrics", "access", "off",
+	        "Who may scrape /metrics: off, loopback, token or loopback_or_token"),
 
 	VC_STR ("locale-default-currency", "locale", "default_currency", "USD",
 	        "Currency assumed when an amount does not name one"),
@@ -1772,13 +1792,48 @@ venture_config_validate(
 		gint64 daily_days;
 		gint64 max_store_mb;
 		gint64 stale_minutes;
+		gint64 idle_days;
+		gint64 upkeep_hour;
+		g_autofree gchar *metrics_access = NULL;
 
 		g_object_get(self,
 		             "series-hourly-days", &hourly_days,
 		             "series-daily-days", &daily_days,
 		             "series-max-store-mb", &max_store_mb,
 		             "series-stale-minutes", &stale_minutes,
+		             "series-idle-days", &idle_days,
+		             "series-upkeep-hour", &upkeep_hour,
+		             "metrics-access", &metrics_access,
 		             NULL);
+
+		if ((idle_days < 0) || (idle_days > G_MAXINT32))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "series.idle_days must be zero or more");
+			return FALSE;
+		}
+
+		if ((upkeep_hour < -1) || (upkeep_hour > 23))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			                    "series.upkeep_hour must be -1 or an hour from 0 to 23 (UTC)");
+			return FALSE;
+		}
+
+		/* A misspelt value must not quietly mean "off" -- nor "on". The
+		 * YAML reader turns an unquoted, and even a quoted, off into
+		 * false; both mean off, which is the safe reading of either. */
+		if ((0 != g_strcmp0(metrics_access, "off")) &&
+		    (0 != g_strcmp0(metrics_access, "false")) &&
+		    (0 != g_strcmp0(metrics_access, "loopback")) &&
+		    (0 != g_strcmp0(metrics_access, "token")) &&
+		    (0 != g_strcmp0(metrics_access, "loopback_or_token")))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "metrics.access must be off, loopback, token or "
+			            "loopback_or_token, not \"%s\"", metrics_access);
+			return FALSE;
+		}
 
 		/*
 		 * The store takes these as unsigned counts; a negative one would

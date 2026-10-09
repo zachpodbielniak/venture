@@ -31,9 +31,12 @@ an error -- and evaluating an alert rule is refused. Operator settings
 (`docs/configuration.org`): `feeds.allowed_origins` (exact, deny by
 default), `feeds.file_roots`, `feeds.max_response_mb`, `max_push_mb` (32),
 `request_timeout`, `max_records_per_run` (500), `run_window_minutes` (15),
-`series.hourly_days` (14), `daily_days` (0 = forever), `max_store_mb`,
-`include_in_backup`, `stale_minutes` (120: when the Trading pages call a
-price stale), and `plugins.allow_exec` (false).
+`series.hourly_days` (14), `daily_days` (0 = forever), `idle_days` (0 =
+forever: a venue's row for an instrument it stopped listing, then an
+instrument nothing refers to), `upkeep_hour` (-1, or a UTC hour),
+`max_store_mb`, `include_in_backup`, `stale_minutes` (120: when the Trading
+pages call a price stale), `metrics.access` (`off`; who may read
+`/metrics`), and `plugins.allow_exec` (false).
 
 ## A data source
 
@@ -130,6 +133,30 @@ is fine and sticks; an outcome you set makes the listing yours. Settings:
 characters), `mirror_max_writes` (500; every record a pass writes, promoted
 instruments and venues included), `mirror_grace_hours`. Automatic promotion
 never restores something a person deleted.
+
+## Store upkeep
+
+Once a day each store gets an upkeep on the feeds worker: retention
+(`hourly_days`, `daily_days`, `idle_days`) in 20 000-row steps, free pages
+handed back (incremental vacuum), `PRAGMA optimize`, the log truncated.
+Each step is its own transaction and yields to every fetch. The result
+(rows deleted per table, sizes before and after, `reclaimed_bytes`,
+`error`) is kept in the store's meta.
+
+```bash
+venturectl feeds upkeep-status 1        # running, last (the result), size (file/free/wal/auto_vacuum)
+venturectl feeds upkeep 1 --wait        # run one now (admin); prints the result; exit 1 on error
+venturectl feeds upkeep 1 rebuild=1 --wait   # also VACUUM: switches an old store to incremental
+```
+
+A store made before 2026-10-09 has `auto_vacuum` `none` (`size.auto_vacuum`,
+or `venture_series_store_incremental_vacuum` 0 in `/metrics`): it can never
+shrink until rebuilt once. **The rebuild pauses every feed** while it
+rewrites the file (no pass starts; pages keep answering from the old
+snapshot), needs about twice the store's size free (`SQLITE_TMPDIR` plus the
+log), and takes about a minute per few GB on SSD, much longer on HDD. With
+`idle_days` set, an instrument that comes back is a first sighting -- no
+"back in stock" alert.
 
 ## Backups of the stores
 

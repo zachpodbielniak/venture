@@ -2669,6 +2669,345 @@ test_variant_names(
 	g_assert_cmpstr(own, ==, "Thunderfury (heroic)");
 }
 
+/* --- Upkeep ---------------------------------------------------------------------- */
+
+/*
+ * A new store hands free pages back.
+ *
+ * What breaks if this regresses: every store made before this was made
+ * with no vacuum mode at all -- the pragma was asked for after WAL had
+ * written the header, which SQLite ignores without a word -- so each
+ * daily purge's incremental_vacuum did nothing and a store only grew.
+ */
+static void
+test_new_store_is_incremental(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GError) error = NULL;
+	VentureSeriesFileSize size;
+
+	(void)data;
+
+	g_assert_true(venture_series_store_get_file_size(fixture->store, &size, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(size.auto_vacuum, ==, 2);
+	g_assert_cmpuint(size.file_bytes, >, 0);
+}
+
+/* Every row of every table the upkeep deletes from, summed. */
+static gint64
+upkeep_deleted(const VentureSeriesUpkeepResult *result)
+{
+	return result->purged.hourly + result->purged.daily + result->purged.quotes +
+	       result->purged.snapshots + result->purged.entries + result->purged.balances +
+	       result->purged.txns + result->current + result->instruments;
+}
+
+/*
+ * Retention in batches: never more than a batch a step, every step its
+ * own transaction, and in the end exactly what the one-shot purge keeps.
+ *
+ * What breaks if this regresses: the daily retention of a store of
+ * several gigabytes is one transaction holding the feeds worker -- every
+ * source's ingestion -- for as long as it takes to delete a day of a
+ * hundred venues.
+ */
+static void
+test_upkeep_retention_in_batches(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	static const gchar *const items[] = { "herb", "ore", "gem" };
+	g_autoptr(VentureSeriesUpkeep) upkeep = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureSeriesUpkeepResult *result;
+	gint64 previous;
+	gint64 now;
+	guint i;
+	guint k;
+
+	(void)data;
+
+	for (i = 0; i < 20; i++)
+	{
+		for (k = 0; k < G_N_ELEMENTS(items); k++)
+			put_price(fixture->store, "realm", items[k], T0 + (gint64)i * DAY + (gint64)k * HOUR, 10, 1);
+	}
+
+	now = T0 + 19 * DAY + 5 * HOUR;
+	upkeep = venture_series_upkeep_new(now, 14, 5, 0, VENTURE_SERIES_UPKEEP_SCHEDULED);
+	g_assert_cmpstr(venture_series_upkeep_get_stage(upkeep), ==, "begin");
+	previous = 0;
+
+	while (!venture_series_upkeep_is_done(upkeep))
+	{
+		g_assert_true(venture_series_store_upkeep_step(fixture->store, upkeep, 4, NULL, &error));
+		g_assert_no_error(error);
+
+		/* A step is one short transaction: none is left open. */
+		g_assert_true(venture_series_store_checkpoint(fixture->store, 0, NULL, &error));
+		g_assert_no_error(error);
+
+		result = venture_series_upkeep_get_result(upkeep);
+		g_assert_cmpint(upkeep_deleted(result) - previous, <=, 4);
+		previous = upkeep_deleted(result);
+	}
+
+	result = venture_series_upkeep_get_result(upkeep);
+	g_assert_cmpint(result->purged.hourly, ==, 6 * 3);
+	g_assert_cmpint(result->purged.snapshots, ==, 6 * 3);
+	g_assert_cmpint(result->purged.daily, ==, 15 * 3);
+	g_assert_cmpuint(result->batches, >=, (guint)((6 * 3 + 6 * 3 + 15 * 3) / 4));
+	g_assert_true(result->optimized);
+	g_assert_true(result->checkpointed);
+	g_assert_cmpuint(result->before.file_bytes, >, 0);
+	g_assert_cmpuint(result->after.file_bytes, >, 0);
+	g_assert_cmpint(result->after.auto_vacuum, ==, 2);
+	g_assert_cmpstr(venture_series_upkeep_get_stage(upkeep), ==, "done");
+
+	for (k = 0; k < G_N_ELEMENTS(items); k++)
+	{
+		g_autoptr(GArray) hourly = venture_series_store_hourly(fixture->store, "realm", items[k], T0, &error);
+		g_autoptr(GArray) daily = venture_series_store_daily(fixture->store, "realm", items[k], T0, &error);
+
+		g_assert_cmpuint(hourly->len, ==, 14);
+		g_assert_cmpuint(daily->len, ==, 5);
+	}
+
+	/* The result as the store keeps it, which the API and /metrics read. */
+	{
+		g_autofree gchar *json = venture_series_upkeep_result_to_json(result, now, now + 3,
+		                                                                VENTURE_SERIES_UPKEEP_SCHEDULED);
+		g_autoptr(JsonNode) node = json_from_string(json, &error);
+		JsonObject *object;
+
+		g_assert_no_error(error);
+		object = json_node_get_object(node);
+		g_assert_cmpint(json_object_get_int_member(object, "finished_at"), ==, now + 3);
+		g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(object, "deleted"), "daily"),
+		                ==, 45);
+		g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(object, "after"),
+		                                              "auto_vacuum"), ==, "incremental");
+		g_assert_true(json_object_has_member(object, "reclaimed_bytes"));
+	}
+}
+
+/* A complete snapshot of @venue at @at listing each of @items once. */
+static void
+put_complete(
+	VentureSeriesStore	*store,
+	const gchar		*venue,
+	gint64			 at,
+	const gchar *const	*items
+){
+	VentureSeriesSnapshot *snapshot;
+	guint i;
+
+	snapshot = begin(store, venue, at, TRUE);
+
+	for (i = 0; NULL != items[i]; i++)
+		add_listing(snapshot, items[i], (guint64)(at / HOUR) * 100 + i + 1, 10, 5, 7200);
+
+	commit(store, snapshot);
+}
+
+/*
+ * The idle retention: a venue's row for an instrument it stopped listing
+ * goes after N days, a listing set older than that is dropped, and an
+ * instrument goes only once nothing at all refers to it -- a variant
+ * keeps its parent, history keeps its instrument. One seen again is new.
+ *
+ * What breaks if this regresses: the rows of every item variant that was
+ * listed once -- a hundred thousand a day on a WoW region -- pile up in
+ * the two largest tables forever; or, the other way, an instrument is
+ * deleted under history that still names its id.
+ */
+static void
+test_upkeep_idle(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	static const gchar *const both[] = { "herb", "ore", NULL };
+	static const gchar *const herb[] = { "herb", NULL };
+	static const gchar *const gem[] = { "gem", NULL };
+	g_autoptr(VentureSeriesUpkeep) first = NULL;
+	g_autoptr(VentureSeriesUpkeep) second = NULL;
+	g_autoptr(VentureSeriesInstrumentRow) instrument = NULL;
+	g_autoptr(VentureSeriesRow) row = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureSeriesUpkeepResult *result;
+	gint64 now;
+	guint day;
+
+	(void)data;
+
+	put_complete(fixture->store, "realm", T0, both);
+	put_complete(fixture->store, "quiet", T0, gem);
+
+	for (day = 10; day <= 12; day++)
+		put_complete(fixture->store, "realm", T0 + (gint64)day * DAY, herb);
+
+	/* A variant nobody has listed, whose parent is "ore". */
+	put_instrument(fixture->store, "ore:b1", NULL, "ore");
+
+	now = T0 + 12 * DAY + HOUR;
+	first = venture_series_upkeep_new(now, 14, 0, 3, VENTURE_SERIES_UPKEEP_SCHEDULED);
+	g_assert_true(venture_series_store_upkeep(fixture->store, first, 1, &error));
+	g_assert_no_error(error);
+	result = venture_series_upkeep_get_result(first);
+
+	/* realm's ore (out of stock since day 10) and quiet's gem. */
+	g_assert_cmpint(result->current, ==, 2);
+	g_assert_cmpint(result->listing_sets, ==, 1);
+	/* Only the variant: ore and gem still have history. */
+	g_assert_cmpint(result->instruments, ==, 1);
+
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_null(row);
+	row = current_of(fixture->store, "realm", "herb");
+	g_assert_nonnull(row);
+	g_clear_pointer(&row, venture_series_row_free);
+
+	g_assert_true(venture_series_store_get_instrument(fixture->store, "ore:b1", &instrument, &error));
+	g_assert_null(instrument);
+	g_assert_true(venture_series_store_get_instrument(fixture->store, "ore", &instrument, &error));
+	g_assert_nonnull(instrument);
+	g_clear_pointer(&instrument, venture_series_instrument_row_free);
+
+	/* Once their history is past its own retention, nothing holds them. */
+	second = venture_series_upkeep_new(now, 2, 2, 3, VENTURE_SERIES_UPKEEP_SCHEDULED);
+	g_assert_true(venture_series_store_upkeep(fixture->store, second, 1000, &error));
+	g_assert_no_error(error);
+	result = venture_series_upkeep_get_result(second);
+	g_assert_cmpint(result->instruments, ==, 2);
+	g_assert_cmpint(result->current, ==, 0);
+
+	g_assert_true(venture_series_store_get_instrument(fixture->store, "ore", &instrument, &error));
+	g_assert_null(instrument);
+	g_assert_true(venture_series_store_get_instrument(fixture->store, "herb", &instrument, &error));
+	g_assert_nonnull(instrument);
+	g_clear_pointer(&instrument, venture_series_instrument_row_free);
+
+	/* Seen again, it is a first sighting: no "back in stock". */
+	put_complete(fixture->store, "realm", now + HOUR, both);
+	row = current_of(fixture->store, "realm", "ore");
+	g_assert_nonnull(row);
+	g_assert_cmpint(row->quantity, ==, 5);
+	g_assert_cmpint(row->stock_changed_at, ==, VENTURE_SERIES_NONE);
+}
+
+/* A raw count from the file, through a connection of the test's own. */
+static gint64
+file_int(
+	const gchar	*dir,
+	const gchar	*sql
+){
+	g_autofree gchar *path = g_build_filename(dir, "store.db", NULL);
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	gint64 value;
+
+	g_assert_cmpint(sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, sql, -1, &stmt, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_step(stmt), ==, SQLITE_ROW);
+	value = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+
+	return value;
+}
+
+/*
+ * A store made with no vacuum mode is rebuilt into one with it, a
+ * cancelled rebuild leaves it as it was, and afterwards a purge gives the
+ * disk its space back.
+ *
+ * What breaks if this regresses: the one-time operator step that turns a
+ * 4.6 GB store which can only grow into one that can shrink -- without a
+ * test it is first run on the production store.
+ */
+static void
+test_upkeep_rebuild(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesUpkeep) cancelled = NULL;
+	g_autoptr(VentureSeriesUpkeep) rebuild = NULL;
+	g_autoptr(VentureSeriesUpkeep) purge = NULL;
+	g_autoptr(GCancellable) cancellable = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+	const VentureSeriesUpkeepResult *result;
+	VentureSeriesFileSize size;
+	sqlite3 *db;
+	guint day;
+	guint item;
+
+	(void)data;
+
+	/* As an older build left it: no vacuum mode. */
+	g_clear_object(&fixture->store);
+	path = g_build_filename(fixture->dir, "store.db", NULL);
+	g_assert_cmpint(sqlite3_open(path, &db), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_exec(db, "PRAGMA auto_vacuum = NONE; VACUUM;", NULL, NULL, NULL), ==, SQLITE_OK);
+	sqlite3_close(db);
+	fixture->store = venture_series_store_open(fixture->dir, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_series_store_get_file_size(fixture->store, &size, &error));
+	g_assert_cmpint(size.auto_vacuum, ==, 0);
+
+	for (day = 0; day < 6; day++)
+	{
+		VentureSeriesSnapshot *snapshot = begin(fixture->store, "realm", T0 + (gint64)day * DAY, FALSE);
+
+		for (item = 0; item < 400; item++)
+		{
+			g_autofree gchar *key = g_strdup_printf("item-%u", item);
+
+			add_listing(snapshot, key, 0, 10 + item, 1, -1);
+		}
+
+		commit(fixture->store, snapshot);
+	}
+
+	/* Cancelled before it starts: an error, and the file untouched. */
+	cancellable = g_cancellable_new();
+	g_cancellable_cancel(cancellable);
+	cancelled = venture_series_upkeep_new(T0, 0, 0, 0, VENTURE_SERIES_UPKEEP_REBUILD);
+	g_assert_true(venture_series_store_upkeep_step(fixture->store, cancelled, 10, cancellable, &error));
+	g_assert_cmpstr(venture_series_upkeep_get_stage(cancelled), ==, "rebuild");
+	g_assert_false(venture_series_store_upkeep_step(fixture->store, cancelled, 10, cancellable, &error));
+	g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+	g_clear_error(&error);
+	g_assert_true(venture_series_store_get_file_size(fixture->store, &size, &error));
+	g_assert_cmpint(size.auto_vacuum, ==, 0);
+
+	rebuild = venture_series_upkeep_new(T0, 0, 0, 0, VENTURE_SERIES_UPKEEP_REBUILD);
+	g_assert_true(venture_series_store_upkeep(fixture->store, rebuild, 100, &error));
+	g_assert_no_error(error);
+	result = venture_series_upkeep_get_result(rebuild);
+	g_assert_true(result->rebuilt);
+	g_assert_cmpint(result->before.auto_vacuum, ==, 0);
+	g_assert_cmpint(result->after.auto_vacuum, ==, 2);
+	/* The rebuild runs through the log; its checkpoint empties it. */
+	g_assert_true(result->checkpointed);
+	g_assert_cmpuint(result->after.wal_bytes, ==, 0);
+	g_assert_cmpint(file_int(fixture->dir, "PRAGMA auto_vacuum"), ==, 2);
+
+	/* Five of the six days go, and the file shrinks by their pages. */
+	purge = venture_series_upkeep_new(T0 + 5 * DAY + HOUR, 1, 1, 0,
+	                                  VENTURE_SERIES_UPKEEP_RETENTION | VENTURE_SERIES_UPKEEP_VACUUM);
+	g_assert_true(venture_series_store_upkeep(fixture->store, purge, 50, &error));
+	g_assert_no_error(error);
+	result = venture_series_upkeep_get_result(purge);
+	g_assert_cmpint(result->purged.daily, ==, 5 * 400);
+	g_assert_cmpint(result->pages_vacuumed, >, 0);
+	g_assert_cmpuint(result->after.file_bytes, <, result->before.file_bytes);
+	g_assert_cmpuint(result->after.free_bytes, ==, 0);
+	g_assert_false(result->optimized);
+}
+
 #define ADD(path, func) \
 	g_test_add("/series-store/" path, Fixture, NULL, fixture_set_up, func, \
 	           fixture_tear_down)
@@ -2712,6 +3051,10 @@ main(
 	ADD("reference", test_reference);
 	ADD("venue-state", test_venue_state);
 	ADD("purge", test_purge);
+	ADD("new-store-is-incremental", test_new_store_is_incremental);
+	ADD("upkeep-retention-in-batches", test_upkeep_retention_in_batches);
+	ADD("upkeep-idle", test_upkeep_idle);
+	ADD("upkeep-rebuild", test_upkeep_rebuild);
 	ADD("cap", test_cap);
 	ADD("listing-overflow", test_listing_overflow);
 	ADD("quotes", test_quotes);

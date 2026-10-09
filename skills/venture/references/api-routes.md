@@ -13,6 +13,7 @@ in the repository lists today's.
 | Route | Purpose | venturectl |
 |---|---|---|
 | `GET /health` (no auth) | build capabilities | `health` |
+| `GET /metrics` -- at the root, not under `/api/v1` | Prometheus text: process, HTTP, feeds, stores, upkeep, alert hits. Off by default (404); `metrics.access` = `loopback` (no forwarding headers), `token` (API token with scope `metrics`, or owner) or `loopback_or_token` | -- |
 | `GET /schema`, `/schema/:type` | types, fields, actions | `types`, `describe` |
 | `GET /modules` | modules, state, reasons | `modules` |
 | `GET /settings` | resolved configuration, secrets redacted | -- |
@@ -106,7 +107,7 @@ in the repository lists today's.
 
 | Route | venturectl |
 |---|---|
-| `GET /feeds`, `GET /feeds/due`, `GET /feeds/:id/runs`, `GET /feeds/:id/venues` (`?stale_after=`), `POST /feeds/:id/sync`, `POST /feeds/:id/push` (`application/x-ndjson`, `?wait=1`) | `feeds ...` |
+| `GET /feeds`, `GET /feeds/due`, `GET /feeds/:id/runs`, `GET /feeds/:id/venues` (`?stale_after=`), `POST /feeds/:id/sync`, `POST /feeds/:id/push` (`application/x-ndjson`, `?wait=1`), `GET /feeds/:id/upkeep` (running, last result, sizes), `POST /feeds/:id/upkeep` (`?rebuild=1`; admin; 202) | `feeds ...` |
 | `GET /market/quote`, `POST /market/promote`, `GET /market/browse\|find\|deals\|venues`, `GET /market/i/:source/*`, `GET /market/watchlists[/:id]`, `GET /market/alerts`, `POST /market/alerts/:id/evaluate` | `market ...` |
 | `GET /accounts`, `GET /accounts/inventory`, `GET /accounts/pnl`, `GET /accounts/:source/*` (each takes `show_ignored`) | `accounts ...` |
 | `GET /arbitrage/scan\|registries\|export\|calc`, `POST /arbitrage/record` | `arbitrage ...` |

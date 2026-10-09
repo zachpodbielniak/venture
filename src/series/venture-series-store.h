@@ -1560,6 +1560,273 @@ venture_series_store_purge(
 	GError				**error
 );
 
+/* --- Upkeep ---------------------------------------------------------------------- */
+
+/**
+ * VentureSeriesFileSize:
+ * @file_bytes: the database file, every page of it
+ * @free_bytes: pages on the free list: in the file, holding nothing
+ * @wal_bytes: the write-ahead log file on disk
+ * @auto_vacuum: the file's vacuum mode: 0 none, 1 full, 2 incremental
+ *
+ * How much disk a store takes, and how much of it is empty.
+ */
+typedef struct
+{
+	guint64	file_bytes;
+	guint64	free_bytes;
+	guint64	wal_bytes;
+	gint	auto_vacuum;
+} VentureSeriesFileSize;
+
+/**
+ * venture_series_store_get_file_size:
+ * @self: a #VentureSeriesStore
+ * @out: (out caller-allocates): the sizes
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Measures the file, its free pages and its log. Cheap: three pragmas
+ * and a stat().
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_series_store_get_file_size(
+	VentureSeriesStore	 *self,
+	VentureSeriesFileSize	 *out,
+	GError			**error
+);
+
+/**
+ * VentureSeriesUpkeepFlags:
+ * @VENTURE_SERIES_UPKEEP_RETENTION: delete what is past its retention
+ * @VENTURE_SERIES_UPKEEP_VACUUM: hand free pages back to the file system
+ *   (incremental: a no-op on a store whose vacuum mode is not)
+ * @VENTURE_SERIES_UPKEEP_OPTIMIZE: let SQLite refresh its planner
+ *   statistics (`PRAGMA optimize`, bounded)
+ * @VENTURE_SERIES_UPKEEP_CHECKPOINT: copy the log back and truncate it
+ * @VENTURE_SERIES_UPKEEP_REBUILD: rewrite the whole file with `VACUUM`,
+ *   switching it to incremental vacuum on the way. The one step that is
+ *   not batched: it holds the writer for as long as the copy takes
+ *
+ * What one upkeep does.
+ */
+typedef enum
+{
+	VENTURE_SERIES_UPKEEP_RETENTION  = 1 << 0,
+	VENTURE_SERIES_UPKEEP_VACUUM     = 1 << 1,
+	VENTURE_SERIES_UPKEEP_OPTIMIZE   = 1 << 2,
+	VENTURE_SERIES_UPKEEP_CHECKPOINT = 1 << 3,
+	VENTURE_SERIES_UPKEEP_REBUILD    = 1 << 4
+} VentureSeriesUpkeepFlags;
+
+/**
+ * VENTURE_SERIES_UPKEEP_SCHEDULED:
+ *
+ * What the daily upkeep does: everything but the rebuild, which only an
+ * operator asks for.
+ */
+#define VENTURE_SERIES_UPKEEP_SCHEDULED \
+	(VENTURE_SERIES_UPKEEP_RETENTION | VENTURE_SERIES_UPKEEP_VACUUM | \
+	 VENTURE_SERIES_UPKEEP_OPTIMIZE | VENTURE_SERIES_UPKEEP_CHECKPOINT)
+
+/**
+ * VENTURE_SERIES_UPKEEP_BATCH:
+ *
+ * Rows one upkeep step deletes or examines at most; a vacuum step hands
+ * back a quarter as many free pages. A step is one short transaction; the feeds
+ * worker runs the next only when nothing else is waiting on its loop.
+ */
+#define VENTURE_SERIES_UPKEEP_BATCH (20000)
+
+/**
+ * VentureSeriesUpkeepResult:
+ * @purged: history deleted past its retention
+ * @current: venue-instrument rows deleted because the venue had not
+ *   listed the instrument for the idle retention
+ * @instruments: instruments deleted because nothing referred to them and
+ *   nobody had listed them for the idle retention
+ * @listing_sets: venues' kept listing sets dropped for being older than
+ *   the idle retention
+ * @pages_vacuumed: free pages handed back to the file system
+ * @batches: steps taken
+ * @optimized: the planner statistics were refreshed
+ * @checkpointed: the log was emptied
+ * @rebuilt: the file was rewritten whole
+ * @before: the sizes when the upkeep began
+ * @after: the sizes when it ended
+ *
+ * What an upkeep did.
+ */
+typedef struct
+{
+	VentureSeriesPurgeResult	purged;
+	gint64				current;
+	gint64				instruments;
+	gint64				listing_sets;
+	gint64				pages_vacuumed;
+	guint				batches;
+	gboolean			optimized;
+	gboolean			checkpointed;
+	gboolean			rebuilt;
+	VentureSeriesFileSize		before;
+	VentureSeriesFileSize		after;
+} VentureSeriesUpkeepResult;
+
+/**
+ * VentureSeriesUpkeep:
+ *
+ * One upkeep in progress: where it has got to and what it has done.
+ * Plain data, owned by whoever runs it, and used on one thread.
+ */
+typedef struct _VentureSeriesUpkeep VentureSeriesUpkeep;
+
+/**
+ * venture_series_upkeep_new:
+ * @now: the time retention counts back from
+ * @hourly_days: as venture_series_store_purge()
+ * @daily_days: as venture_series_store_purge()
+ * @idle_days: days a venue may go without listing an instrument before
+ *   its row there goes, and an instrument nothing refers to before it
+ *   goes; 0 keeps them forever
+ * @flags: what to do
+ *
+ * Returns: (transfer full): a new upkeep, not yet begun
+ */
+VentureSeriesUpkeep *
+venture_series_upkeep_new(
+	gint64				 now,
+	guint				 hourly_days,
+	guint				 daily_days,
+	guint				 idle_days,
+	VentureSeriesUpkeepFlags	 flags
+);
+
+/**
+ * venture_series_upkeep_free:
+ * @upkeep: (nullable): an upkeep
+ */
+void
+venture_series_upkeep_free(VentureSeriesUpkeep *upkeep);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesUpkeep, venture_series_upkeep_free)
+
+/**
+ * venture_series_upkeep_get_result:
+ * @upkeep: an upkeep
+ *
+ * Returns: (transfer none): what it has done so far
+ */
+const VentureSeriesUpkeepResult *
+venture_series_upkeep_get_result(VentureSeriesUpkeep *upkeep);
+
+/**
+ * venture_series_upkeep_is_done:
+ * @upkeep: an upkeep
+ *
+ * Returns: %TRUE once its last step has run
+ */
+gboolean
+venture_series_upkeep_is_done(VentureSeriesUpkeep *upkeep);
+
+/**
+ * venture_series_upkeep_get_flags:
+ * @upkeep: an upkeep
+ *
+ * Returns: what it was asked to do
+ */
+VentureSeriesUpkeepFlags
+venture_series_upkeep_get_flags(VentureSeriesUpkeep *upkeep);
+
+/**
+ * venture_series_upkeep_get_stage:
+ * @upkeep: an upkeep
+ *
+ * The stage its next step takes -- "hourly", "daily", "idle_instruments",
+ * "rebuild", "vacuum", ... -- or "done". A caller that must prepare for
+ * the rebuild (by letting the writer's other work finish first) asks
+ * this before stepping.
+ *
+ * Returns: (transfer none): the stage's name
+ */
+const gchar *
+venture_series_upkeep_get_stage(VentureSeriesUpkeep *upkeep);
+
+/**
+ * venture_series_store_upkeep_step:
+ * @self: the writer handle
+ * @upkeep: the upkeep to advance
+ * @batch_rows: rows one step may delete or examine (1 or more)
+ * @cancellable: (nullable): cancels a rebuild in progress, which then
+ *   rolls back and leaves the file as it was
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Takes one bounded step: a batch of one retention, a slice of the free
+ * pages, the planner statistics, the checkpoint -- each its own short
+ * transaction, so a caller that runs other work between steps never
+ * waits long for the writer. The rebuild is the exception and says so.
+ * Check venture_series_upkeep_is_done() afterwards. A failed step leaves
+ * the upkeep where it was; the caller decides whether to go on.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_series_store_upkeep_step(
+	VentureSeriesStore	 *self,
+	VentureSeriesUpkeep	 *upkeep,
+	guint			  batch_rows,
+	GCancellable		 *cancellable,
+	GError			**error
+);
+
+/**
+ * venture_series_store_upkeep:
+ * @self: the writer handle
+ * @upkeep: the upkeep to run
+ * @batch_rows: rows one step may delete or examine
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Runs every remaining step of @upkeep at once, for tests and tools that
+ * have nothing else to do meanwhile.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_series_store_upkeep(
+	VentureSeriesStore	 *self,
+	VentureSeriesUpkeep	 *upkeep,
+	guint			  batch_rows,
+	GError			**error
+);
+
+/**
+ * venture_series_upkeep_result_to_json:
+ * @result: what an upkeep did
+ * @started_at: when it began, Unix seconds
+ * @finished_at: when it ended
+ * @flags: what it was asked to do
+ *
+ * The result as the store keeps it in its meta (`upkeep:last`), and as
+ * the API and the metrics read it back.
+ *
+ * Returns: (transfer full): a JSON object, as text
+ */
+gchar *
+venture_series_upkeep_result_to_json(
+	const VentureSeriesUpkeepResult	*result,
+	gint64				 started_at,
+	gint64				 finished_at,
+	VentureSeriesUpkeepFlags	 flags
+);
+
+/**
+ * VENTURE_SERIES_META_UPKEEP:
+ *
+ * The meta key the last finished upkeep's result is kept under, as
+ * venture_series_upkeep_result_to_json() wrote it.
+ */
+#define VENTURE_SERIES_META_UPKEEP "upkeep:last"
+
 /* --- Reading ------------------------------------------------------------------ */
 
 /**

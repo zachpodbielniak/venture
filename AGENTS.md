@@ -82,6 +82,13 @@ order the data flows.
   thread each.** Every cached statement goes back reset
   (`SeriesCachedStmt`): a SELECT left mid-step pins a reader's WAL
   snapshot and the page shows the same prices forever.
+- **The vacuum mode is chosen before WAL, on an empty file.** Setting
+  `journal_mode = WAL` writes the header, after which `PRAGMA auto_vacuum`
+  is ignored without a word; it used to be asked for in the first schema
+  step, after WAL, so every store made before 2026-10-09 has none and its
+  incremental vacuum did nothing. Such a store changes mode only by a
+  rebuild (`VACUUM`), which is an operator's upkeep (`feeds upkeep ID
+  rebuild=1`), never a migration step: it rewrites gigabytes.
 - **The schema steps are append-only**, like `migrations/`: never edit a
   shipped one; add a step and bump nothing else -- `user_version` is the
   count. A newer file is refused, and a foreign SQLite file is refused
@@ -136,6 +143,17 @@ order the data flows.
   Miss one and the audit writer dereferences an uninitialised stack pointer,
   which is a segfault a long way from the edit. Adding `approved_by` did
   exactly that to `tests/test-database.c`.
+- **`/metrics` is never public, and loopback is not a credential.** It
+  says what the install is doing, so it is off (404) unless
+  `metrics.access` says otherwise, and its own rule replaces the
+  role check: `loopback` admits 127.0.0.1/::1 *only without a forwarding
+  header* -- cloudflared and any same-host proxy connect from loopback --
+  and `token` wants an API token whose `scopes` include `metrics`, or the
+  owner. It is exempt from the no-membership redirect to `/account` in
+  `venture_orgaccess_web_dispatch()`, because a scraper's token has no
+  organization. Labels come from bounded sets (route class, status,
+  source id, venue key, table); never a path, an instrument or a user --
+  every label set is a series kept for weeks.
 - **`/api/v1/health` needs no credentials, alongside the
   webhook and opt-in federation identity discovery**, because a container healthcheck runs before anybody has
   credentials. It may say what this *build* can do — the version, the
@@ -1863,6 +1881,31 @@ stores. `docs/market-data.org` has the whole of it; these are the traps.
 - **Later modules hook in, they do not edit the worker.**
   `venture_feeds_add_hook()` gives a main-thread freeze, a worker-side
   after-commit with the store's writer, and a main-thread after-run.
+- **A store's upkeep runs on the worker in steps, and says what it did in
+  the store.** Retention, the incremental vacuum, `PRAGMA optimize` and the
+  checkpoint are `venture_series_store_upkeep_step()`s -- each a short
+  transaction of at most `VENTURE_SERIES_UPKEEP_BATCH` rows -- stepped
+  from a `G_PRIORITY_LOW` idle, so a fetch's completion always goes
+  first. Do not fold them back into one purge transaction after the pass:
+  that held every source's ingestion for a day's deletes. The result goes
+  in the store's meta (`upkeep:last`) and the main thread reads it with a
+  reader handle; nothing is handed back. An operator's request is live
+  work until its result is kept. The idle sweeps walk by id because
+  `seen_at`/`last_seen` move every snapshot and must stay unindexed.
+- **A rebuild pauses every source.** `VACUUM` holds the writer for the
+  whole copy, so it waits for every pass in flight and `worker_tick()`
+  starts none while `rebuilds` is non-zero (the reschedule uses a
+  timeout then, never an idle, or the tick would starve the low-priority
+  step). It switches `temp_store` to FILE for the copy -- MEMORY would
+  build the whole store in RAM -- and is cancelled by the worker's
+  cancellable through a progress handler.
+- **An instrument is deleted only when nothing names it.** The idle sweep
+  checks current, every history, quotes, region, a variant's parent and
+  the operator's rows, and drops venues' listing sets older than the
+  bound first (they hold instrument ids). Browsing's inner joins rely on
+  "no `current` row without its instrument". Hourly, daily and quote
+  history are keyed venue first: probe them per venue (`venues CROSS
+  JOIN ...`), or SQLite scans the table once per instrument.
 - **Tests drain the worker.** `venture_feeds_service_count_pending()` to
   zero, bounded, iterating the default context; the worker is joined when
   the context is disposed, so a test that drops its context leaves no

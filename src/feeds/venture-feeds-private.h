@@ -244,6 +244,8 @@ struct _VentureFeedSource
 	guint64			 max_store_bytes;
 	guint			 hourly_days;
 	guint			 daily_days;
+	guint			 idle_days;
+	gint			 upkeep_hour;	/* UTC; -1: a day after the last */
 	gsize			 max_response_bytes;
 	guint			 request_timeout;
 	gchar		       **allowed_origins;
@@ -365,6 +367,20 @@ gchar *
 venture_feed_source_redact(
 	VentureFeedSource	*source,
 	const gchar		*text
+);
+
+/* --- Metrics ---------------------------------------------------------------- */
+
+/* Adds the feeds' collector to the context's registry (venture-feeds-metrics.c). */
+void
+venture_feeds_metrics_install(VentureContext *context);
+
+/* Counts a run as it is written: by status, and its units, rows and bytes.
+ * Main thread. */
+void
+venture_feeds_metrics_count_run(
+	VentureContext	*context,
+	VentureFeedRun	*run
 );
 
 /* --- Built-in providers ----------------------------------------------------- */

@@ -4196,7 +4196,7 @@ main(
 		{ "prerelease", 0, 0, G_OPTION_ARG_NONE, &release_prerelease,
 		  "release publish: publish as a pre-release", NULL },
 		{ "wait", 0, 0, G_OPTION_ARG_NONE, &feeds_wait,
-		  "feeds sync, feeds push: wait for the run and print it", NULL },
+		  "feeds sync, feeds push: wait for the run and print it; feeds upkeep: for its result", NULL },
 		{ "dry-run", 0, 0, G_OPTION_ARG_NONE, &dry_run,
 		  "post backfill, billing or market alerts evaluate: validate without retaining writes", NULL },
 		{ "stake", 0, 0, G_OPTION_ARG_STRING, &arbitrage_stake,
@@ -4325,6 +4325,11 @@ main(
 		"                               - reads standard input\n"
 		"  feeds runs ID                a data source's runs, newest first\n"
 		"  feeds due                    every unit and when it is checked next\n"
+		"  feeds upkeep ID [rebuild=1] [--wait]\n"
+		"                               run a source's store upkeep now (retention,\n"
+		"                               vacuum, statistics, log); rebuild=1 rewrites\n"
+		"                               the file and pauses every feed while it does\n"
+		"  feeds upkeep-status ID       the store's sizes and its last upkeep\n"
 		"  market quote ID [basis=B] [venue=KEY|GROUP] [at=DATE] [currency=C]\n"
 		"                               the price oracle for an instrument (or\n"
 		"                               product=ID); fallback=true reads observations\n"
@@ -4527,7 +4532,7 @@ main(
 
 	if (feeds_wait && (0 != g_strcmp0(args[0], "feeds")))
 	{
-		g_printerr("venturectl: --wait belongs to feeds sync and feeds push\n");
+		g_printerr("venturectl: --wait belongs to feeds sync, feeds push and feeds upkeep\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 
