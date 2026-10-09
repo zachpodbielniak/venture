@@ -3177,7 +3177,7 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query)
 
 	memset(query, 0, sizeof(*query));
 	query->max_pct = NAN;
-	query->cut_pct = 5.0;
+	query->cut_pct = VENTURE_MARKETDATA_DEALS_CUT_PCT;
 }
 
 #ifdef VENTURE_HAVE_SQLITE
@@ -3276,36 +3276,51 @@ md_deal_text(const MdDeal *deal, const gchar *sort)
 }
 
 /*
- * Where @deal is best sold: the dearest venue offering its instrument, in
+ * Where @buy is best sold: the dearest venue offering its instrument, in
  * @group_keys when given and else in the buy venue's group, other than
  * the buy venue, with stock (a market with nothing in it has no price to
- * sell at), where it has been selling, and whose price is not an outlier.
- * Sets deal->sell, profit and roi; leaves sell NULL when there is nowhere.
+ * sell at), where it has been selling, whose price is not an outlier, and
+ * -- when @fresh_after is set -- whose snapshot is no older than that.
+ * The one reckoning of a deal's sell side: Deals and the deal alert
+ * (venture-marketdata-alerts.c, on the feeds worker) both call it, so a
+ * deal the page lists and a deal an alert reports are the same deal. It
+ * reads @reader and nothing else.
  */
-static void
-md_deal_sell_side(
-	MdDeal			*deal,
+VentureSeriesRow *
+venture_marketdata_deal_sell_side(
 	VentureSeriesStore	*reader,
+	const VentureSeriesRow	*buy,
 	const gchar *const	*group_keys,
-	gdouble			 cut_pct
+	gdouble			 cut_pct,
+	gint64			 fresh_after,
+	gint64			*out_profit,
+	gdouble			*out_roi
 ){
 	g_autoptr(GPtrArray) venues = NULL;
+	VentureSeriesRow *sell;
 	gint64 cut;
 	gint64 net;
+	gint64 profit;
 	guint best = G_MAXUINT;
 	guint i;
 
-	venues = venture_series_store_other_venues(reader, deal->row->instrument_key,
-	                                           (NULL != group_keys) ? NULL : deal->row->group_key, NULL);
+	*out_profit = 0;
+	*out_roi = 0.0;
+	venues = venture_series_store_other_venues(reader, buy->instrument_key,
+	                                           (NULL != group_keys) ? NULL : buy->group_key, NULL);
 
 	for (i = 0; (NULL != venues) && (i < venues->len); i++)
 	{
 		VentureSeriesRow *candidate = g_ptr_array_index(venues, i);
 
-		if ((0 == g_strcmp0(candidate->venue_key, deal->row->venue_key)) ||
+		if ((0 == g_strcmp0(candidate->venue_key, buy->venue_key)) ||
 		    (VENTURE_SERIES_NONE == candidate->min_price) || (0 == candidate->quantity) ||
-		    (0 != g_strcmp0(candidate->currency, deal->row->currency)) ||
+		    (0 != g_strcmp0(candidate->currency, buy->currency)) ||
 		    ((NULL != group_keys) && !g_strv_contains(group_keys, candidate->venue_key)))
+			continue;
+
+		/* A realm whose feed stopped reads exactly like a dear realm. */
+		if ((fresh_after > 0) && (candidate->taken_at < fresh_after))
 			continue;
 
 		if (!venture_series_row_sell_plausible(candidate, candidate->min_price))
@@ -3313,8 +3328,8 @@ md_deal_sell_side(
 
 		/* Over twenty times the buy price is a troll's listing, however
 		 * "sold" it looks (VENTURE_SERIES_SELL_MAX_MARKUP). */
-		if ((deal->row->min_price > 0) &&
-		    (candidate->min_price > VENTURE_SERIES_SELL_MAX_MARKUP * deal->row->min_price))
+		if ((buy->min_price > 0) &&
+		    (candidate->min_price > VENTURE_SERIES_SELL_MAX_MARKUP * buy->min_price))
 			continue;
 
 		if ((G_MAXUINT == best) ||
@@ -3323,17 +3338,32 @@ md_deal_sell_side(
 	}
 
 	if (G_MAXUINT == best)
-		return;
+		return NULL;
 
 	g_ptr_array_set_free_func(venues, (GDestroyNotify)venture_series_row_free);
-	deal->sell = g_ptr_array_steal_index(venues, best);
+	sell = g_ptr_array_steal_index(venues, best);
 
 	/* The cut is taken from the sale, in whole minor units, rounded the
 	 * seller's way (down): a profit is never overstated by a fraction. */
-	cut = (gint64)ceil((gdouble)deal->sell->min_price * CLAMP(cut_pct, 0.0, 100.0) / 100.0);
-	net = deal->sell->min_price - cut;
-	deal->profit = net - deal->row->min_price;
-	deal->roi = (deal->row->min_price > 0) ? (100.0 * (gdouble)deal->profit / (gdouble)deal->row->min_price) : 0.0;
+	cut = (gint64)ceil((gdouble)sell->min_price * CLAMP(cut_pct, 0.0, 100.0) / 100.0);
+	net = sell->min_price - cut;
+	profit = net - buy->min_price;
+	*out_profit = profit;
+	*out_roi = (buy->min_price > 0) ? (100.0 * (gdouble)profit / (gdouble)buy->min_price) : 0.0;
+
+	return sell;
+}
+
+/* Sets deal->sell, profit and roi; leaves sell NULL when there is nowhere. */
+static void
+md_deal_sell_side(
+	MdDeal			*deal,
+	VentureSeriesStore	*reader,
+	const gchar *const	*group_keys,
+	gdouble			 cut_pct
+){
+	deal->sell = venture_marketdata_deal_sell_side(reader, deal->row, group_keys, cut_pct, 0,
+	                                               &deal->profit, &deal->roi);
 }
 
 /* The deals pickers' venues, one per connected realm, in label order. */

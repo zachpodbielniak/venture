@@ -56,6 +56,15 @@ G_BEGIN_DECLS
 #define VENTURE_MARKETDATA_DEALS_MAX (500)
 
 /**
+ * VENTURE_MARKETDATA_DEALS_CUT_PCT:
+ *
+ * The marketplace's cut of a sale, in percent, that Deals takes from the
+ * sell side unless asked otherwise -- an auction house's 5% -- and the one
+ * a deal alert reckons its profit with.
+ */
+#define VENTURE_MARKETDATA_DEALS_CUT_PCT (5.0)
+
+/**
  * VENTURE_MARKETDATA_BULK_MAX_UNITS:
  *
  * The most units the bulk calculator prices in one question.

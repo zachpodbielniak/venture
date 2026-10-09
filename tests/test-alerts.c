@@ -668,6 +668,15 @@ test_alerts_rule_validation(
 		{ "collect watches accounts", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 0, NULL, 0, 0, 60, TRUE, "watches accounts" },
 		{ "collect reads no window", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 0, NULL, 0, 6, 60, FALSE, "does not apply" },
 		{ "collect is fine", VENTURE_ALERT_KIND_COLLECT_READY, NULL, 0, NULL, 0, 0, 60, FALSE, NULL },
+		{ "a deal needs a margin", VENTURE_ALERT_KIND_DEAL, NULL, 0, NULL, 0, 0, 60, TRUE, "least return" },
+		{ "a deal's profit is above nothing", VENTURE_ALERT_KIND_DEAL, "0.00 USD", 0, NULL, 0, 0, 60, TRUE, "above nothing" },
+		{ "a deal's return is bounded", VENTURE_ALERT_KIND_DEAL, NULL, 100001, NULL, 0, 0, 60, TRUE, "100000" },
+		{ "a deal's return is not negative", VENTURE_ALERT_KIND_DEAL, NULL, -5, NULL, 0, 0, 60, TRUE, "100000" },
+		{ "a deal watches something", VENTURE_ALERT_KIND_DEAL, NULL, 20, NULL, 0, 0, 60, FALSE, "watches something" },
+		{ "a deal reads no window", VENTURE_ALERT_KIND_DEAL, NULL, 20, NULL, 0, 6, 60, TRUE, "does not apply" },
+		{ "a deal by return", VENTURE_ALERT_KIND_DEAL, NULL, 20, NULL, 0, 0, 60, TRUE, NULL },
+		{ "a deal by profit", VENTURE_ALERT_KIND_DEAL, "1.00 USD", 0, NULL, 0, 0, 60, TRUE, NULL },
+		{ "a deal by both", VENTURE_ALERT_KIND_DEAL, "1.00 USD", 20, NULL, 0, 0, 60, TRUE, NULL },
 	};
 
 	(void)user_data;
@@ -1995,6 +2004,391 @@ test_alerts_not_inside_automation(
 	}
 }
 
+/* --- Price and deal alerts on any realm ------------------------------------------ */
+
+/*
+ * A second store, for the realm-wide alerts. Four EU realms in USD:
+ * realm-b is named ("Silver Hand"), as a Blizzard connected realm is, and
+ * realm-e's only snapshot is two days old -- stale past
+ * series.stale_minutes. A star ruby ("gem") is 1.00 at a, 2.00 at b, 1.30
+ * at d an hour ago, and 2.50 at e two days ago: the dearest place to sell
+ * it is the stale one. Arcane dust ("dust") is 3.00 at a and was 1.00 at
+ * stale e. At b, d and e a ruby listing vanished between two snapshots,
+ * and at a a dust listing did, so the store has seen them sell there:
+ * each is a plausible place to sell what sold.
+ */
+static void
+seed_gems(Fixture *fixture)
+{
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	static const Offer a1[] = { { "gem", 1, 100, 3 }, { "dust", 2, 300, 1 }, { "dust", 12, 310, 1 } };
+	static const Offer a2[] = { { "gem", 1, 100, 3 }, { "dust", 2, 300, 1 } };
+	static const Offer b1[] = { { "gem", 3, 200, 2 }, { "gem", 8, 210, 1 } };
+	static const Offer b2[] = { { "gem", 3, 200, 2 } };
+	static const Offer d1[] = { { "gem", 4, 130, 1 }, { "gem", 9, 140, 1 } };
+	static const Offer d2[] = { { "gem", 4, 130, 1 } };
+	static const Offer e_before[] = { { "gem", 5, 250, 4 }, { "gem", 10, 260, 1 }, { "dust", 6, 100, 9 },
+	                                  { "dust", 11, 110, 1 } };
+	static const Offer e0[] = { { "gem", 5, 250, 4 }, { "dust", 6, 100, 9 } };
+	VentureSeriesVenue named;
+
+	store = writer(fixture);
+	add_venue(store, "realm-a", "eu", "USD", fixture->t0);
+	memset(&named, 0, sizeof(named));
+	named.key = "realm-b";
+	named.namespace_ = "realm";
+	named.name = "Silver Hand";
+	named.kind = "auction_house";
+	named.group_key = "eu";
+	named.currency = "USD";
+	g_assert_true(venture_series_store_upsert_venue(store, &named, fixture->t0, &error));
+	g_assert_no_error(error);
+	add_venue(store, "realm-d", "eu", "USD", fixture->t0);
+	add_venue(store, "realm-e", "eu", "USD", fixture->t0);
+	add_instrument(store, "gem", "Star Ruby", "Gems", fixture->t0);
+	add_instrument(store, "dust", "Arcane Dust", "Enchanting", fixture->t0);
+
+	/* A listing gone between two snapshots is a sale: every realm but a
+	 * is somewhere the ruby sells, so a sale there is plausible. */
+	snapshot(store, "realm-e", "USD", fixture->t0 - 3600, e_before, G_N_ELEMENTS(e_before));
+	snapshot(store, "realm-e", "USD", fixture->t0, e0, G_N_ELEMENTS(e0));
+	snapshot(store, "realm-a", "USD", fixture->t1, a1, G_N_ELEMENTS(a1));
+	snapshot(store, "realm-a", "USD", fixture->t2, a2, G_N_ELEMENTS(a2));
+	snapshot(store, "realm-b", "USD", fixture->t1, b1, G_N_ELEMENTS(b1));
+	snapshot(store, "realm-b", "USD", fixture->t2, b2, G_N_ELEMENTS(b2));
+	snapshot(store, "realm-d", "USD", fixture->t1, d1, G_N_ELEMENTS(d1));
+	snapshot(store, "realm-d", "USD", fixture->t2, d2, G_N_ELEMENTS(d2));
+
+	g_assert_true(venture_series_store_recompute_region(store, NULL, fixture->now,
+	                                                    VENTURE_SERIES_NONE, NULL, NULL, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * A price ceiling on an item, with no venue and no group, is a ceiling on
+ * every realm of the source: each realm at or under it is its own hit,
+ * kept apart by the cooldown, and each says which realm by the name a
+ * person knows it by, and at what price.
+ *
+ * What breaks if this regresses: "tell me when it is cheap anywhere"
+ * needs a rule per realm, or a hit says "3676" where the player reads
+ * "Silver Hand".
+ */
+static void
+test_alerts_any_realm(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(VentureMoney) threshold = money_of("2.00 USD");
+	g_autoptr(JsonObject) report = NULL;
+
+	(void)user_data;
+
+	seed_gems(fixture);
+	rule = rule_on(fixture, VENTURE_ALERT_KIND_BELOW, "gem");
+	g_object_set(rule, "name", "cheap rubies", "threshold", threshold, NULL);
+	save(fixture, rule);
+
+	report = evaluate(fixture, rule, TRUE);
+	g_assert_cmpint(report_int(report, "candidates"), ==, 3);
+	g_assert_cmpint(report_int(report, "written"), ==, 3);
+	g_assert_true(report_has(report, "realm-a|gem"));
+	g_assert_true(report_has(report, "realm-b|gem"));
+	g_assert_true(report_has(report, "realm-d|gem"));
+	g_assert_cmpstr(report_says(report, "realm-b|gem"), ==,
+	                "Star Ruby at Silver Hand: 2.00 USD, at or below 2.00 USD");
+
+	/* The hit carries the realm's key and the price seen. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ALERT_HIT);
+		g_autoptr(VentureEntity) hit = NULL;
+		g_autoptr(VentureMoney) observed = NULL;
+		g_autofree gchar *observed_text = NULL;
+		g_autofree gchar *message = NULL;
+
+		g_assert_true(venture_query_add_filter_string(query, "venue-key", VENTURE_FILTER_OP_EQ,
+		                                              "realm-b", NULL));
+		hit = venture_database_find_one(fixture->database, query, NULL);
+		g_assert_nonnull(hit);
+		g_object_get(hit, "observed", &observed, "message", &message, NULL);
+		observed_text = venture_money_to_string(observed);
+		g_assert_cmpstr(observed_text, ==, "2.00 USD");
+		g_assert_nonnull(strstr(message, "Silver Hand"));
+	}
+}
+
+/*
+ * A deal rule fires where Deals would send a buyer: the cheapest unit at
+ * a realm, sold at the dearest other fresh realm of its group less the
+ * 5% cut, when the profit and the return reach what the rule asks -- and
+ * never on a stale realm, on either side. The cooldown holds per realm
+ * and item.
+ *
+ * What breaks if this regresses: an alert says to sell at a realm whose
+ * feed stopped two days ago (exactly the trap the Deals page's stale
+ * marks exist for), or buys there; the margin is reckoned by a second
+ * formula that disagrees with the page; or every feed run repeats it.
+ */
+static void
+test_alerts_deal(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(JsonObject) report = NULL;
+
+	(void)user_data;
+
+	seed_gems(fixture);
+
+	/* A fifth over the price paid. a: 1.00 sold at b's 2.00 less 0.10 is
+	 * 0.90 (90%); d: 1.30 sold at b is 0.60 (46.2%). b and e sell nowhere
+	 * dearer that is fresh, and e is stale itself. Were e's two-day-old
+	 * 2.50 counted, a would be told to sell there. */
+	rule = rule_on(fixture, VENTURE_ALERT_KIND_DEAL, "gem");
+	g_object_set(rule, "name", "ruby flips", "threshold-number", 20.0, NULL);
+	save(fixture, rule);
+	report = evaluate(fixture, rule, FALSE);
+	g_assert_cmpint(report_int(report, "candidates"), ==, 2);
+	g_assert_true(report_has(report, "realm-a|gem"));
+	g_assert_true(report_has(report, "realm-d|gem"));
+	g_assert_cmpstr(report_says(report, "realm-a|gem"), ==,
+	                "Star Ruby: buy at realm-a for 1.00 USD, sell at Silver Hand for 2.00 USD, "
+	                "0.90 USD profit (90.0%)");
+	g_assert_nonnull(strstr(report_says(report, "realm-d|gem"), "0.60 USD profit (46.2%)"));
+
+	/* A higher return: only a. */
+	g_object_set(rule, "threshold-number", 50.0, NULL);
+	save(fixture, rule);
+	g_clear_pointer(&report, json_object_unref);
+	report = evaluate(fixture, rule, FALSE);
+	g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+	g_assert_true(report_has(report, "realm-a|gem"));
+
+	/* A least profit instead: 0.70 is a only, 0.50 both. */
+	{
+		g_autoptr(VentureMoney) seventy = money_of("0.70 USD");
+		g_autoptr(VentureMoney) fifty = money_of("0.50 USD");
+
+		g_object_set(rule, "threshold-number", 0.0, "threshold", seventy, NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate(fixture, rule, FALSE);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+
+		g_object_set(rule, "threshold", fifty, NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate(fixture, rule, FALSE);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 2);
+
+		/* Both asked: both must hold. */
+		g_object_set(rule, "threshold-number", 50.0, NULL);
+		save(fixture, rule);
+		g_clear_pointer(&report, json_object_unref);
+		report = evaluate(fixture, rule, FALSE);
+		g_assert_cmpint(report_int(report, "candidates"), ==, 1);
+	}
+
+	/* Stale is no deal: dust was 1.00 at e two days ago and is 3.00 at a
+	 * now, where it sells. Bought at e it would be a 185% flip; that price
+	 * is not there to buy. Nor is e somewhere to sell a's. */
+	{
+		g_autoptr(VentureEntity) dust = rule_on(fixture, VENTURE_ALERT_KIND_DEAL, "dust");
+		g_autoptr(JsonObject) dust_report = NULL;
+
+		g_object_set(dust, "threshold-number", 1.0, NULL);
+		save(fixture, dust);
+		dust_report = evaluate(fixture, dust, FALSE);
+		g_assert_cmpint(report_int(dust_report, "candidates"), ==, 0);
+	}
+
+	/* Recorded, then quiet for the cooldown, then told again with none. */
+	{
+		g_autoptr(JsonObject) first = NULL;
+		g_autoptr(JsonObject) again = NULL;
+		g_autoptr(JsonObject) later = NULL;
+		g_autoptr(JsonObject) uncooled = NULL;
+		g_autoptr(VentureEntity) hit = NULL;
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(VentureMoney) observed = NULL;
+		g_autoptr(VentureMoney) reference = NULL;
+		g_autofree gchar *observed_text = NULL;
+		g_autofree gchar *reference_text = NULL;
+		VentureAlertKind kind;
+		gdouble roi;
+
+		g_object_set(rule, "threshold", NULL, "threshold-number", 20.0, "cooldown-minutes", (gint64)60,
+		             NULL);
+		save(fixture, rule);
+		first = evaluate(fixture, rule, TRUE);
+		g_assert_cmpint(report_int(first, "written"), ==, 2);
+
+		query = venture_query_new(VENTURE_TYPE_ALERT_HIT);
+		g_assert_true(venture_query_add_filter_string(query, "venue-key", VENTURE_FILTER_OP_EQ,
+		                                              "realm-a", NULL));
+		hit = venture_database_find_one(fixture->database, query, NULL);
+		g_assert_nonnull(hit);
+		g_object_get(hit, "kind", &kind, "observed", &observed, "reference", &reference,
+		             "observed-number", &roi, NULL);
+		g_assert_cmpint(kind, ==, VENTURE_ALERT_KIND_DEAL);
+		observed_text = venture_money_to_string(observed);
+		reference_text = venture_money_to_string(reference);
+		g_assert_cmpstr(observed_text, ==, "1.00 USD");
+		g_assert_cmpstr(reference_text, ==, "2.00 USD");
+		g_assert_cmpfloat(fabs(roi - 90.0), <, 0.001);
+
+		again = evaluate(fixture, rule, TRUE);
+		g_assert_cmpint(report_int(again, "written"), ==, 0);
+		g_assert_cmpint(report_int(again, "cooled"), ==, 2);
+
+		/* A newer, cheaper snapshot at a half an hour on: still quiet. */
+		{
+			g_autoptr(VentureSeriesStore) store = writer(fixture);
+			static const Offer a3[] = { { "gem", 7, 95, 3 }, { "dust", 2, 300, 1 } };
+
+			snapshot(store, "realm-a", "USD", fixture->now - 1800, a3, G_N_ELEMENTS(a3));
+		}
+
+		later = evaluate(fixture, rule, TRUE);
+		g_assert_cmpint(report_int(later, "written"), ==, 0);
+		g_assert_cmpint(report_int(later, "cooled"), ==, 2);
+
+		g_object_set(rule, "cooldown-minutes", (gint64)0, NULL);
+		save(fixture, rule);
+		uncooled = evaluate(fixture, rule, TRUE);
+		g_assert_cmpint(report_int(uncooled, "written"), ==, 1);
+		g_assert_cmpint(count_of(fixture, VENTURE_TYPE_ALERT_HIT, "rule-id", ID(rule)), ==, 3);
+	}
+}
+
+typedef struct
+{
+	guint	 received;
+	gchar	*path;
+	gchar	*key;
+	gchar	*body;
+} Push;
+
+static void
+gotify_handler(
+	SoupServer		*server,
+	SoupServerMessage	*message,
+	const gchar		*path,
+	GHashTable		*query,
+	gpointer		 user_data
+){
+	Push *push = user_data;
+	SoupMessageBody *body;
+
+	(void)server;
+	(void)query;
+
+	body = soup_server_message_get_request_body(message);
+	push->received++;
+	g_free(push->path);
+	push->path = g_strdup(path);
+	g_free(push->key);
+	push->key = g_strdup(soup_message_headers_get_one(
+		soup_server_message_get_request_headers(message), "X-Gotify-Key"));
+	g_free(push->body);
+	push->body = g_strndup(body->data, (gsize)body->length);
+	soup_server_message_set_status(message, SOUP_STATUS_OK, NULL);
+	soup_server_message_set_response(message, "application/json", SOUP_MEMORY_COPY, "{}", 2);
+}
+
+/*
+ * The whole way to a phone: a deal rule's hit is published as
+ * alert_hit.created, and a gotify webhook on that event pushes the hit's
+ * sentence -- the item, both realms, both prices, the profit -- to the
+ * server's /message with its sealed application token.
+ *
+ * What breaks if this regresses: a price alert fires and is written, and
+ * nobody is told until they open the inbox.
+ */
+static void
+test_alerts_deal_to_gotify(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const guint8 raw[32] = {
+		3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3,
+		2, 3, 8, 4, 6, 2, 6, 4, 3, 3, 8, 3, 2, 7, 9, 5
+	};
+	g_autoptr(GBytes) key = g_bytes_new_static(raw, sizeof(raw));
+	g_autoptr(SoupServer) endpoint = NULL;
+	g_autoptr(GSList) uris = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(JsonObject) report = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *origin = NULL;
+	Push push = { 0, NULL, NULL, NULL };
+	JsonObject *object;
+	gint64 waited;
+
+	(void)user_data;
+
+	seed_gems(fixture);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database),
+	                                                  key, &error));
+	g_assert_no_error(error);
+
+	endpoint = soup_server_new(NULL, NULL);
+	soup_server_add_handler(endpoint, "/", gotify_handler, &push, NULL);
+	g_assert_true(soup_server_listen_local(endpoint, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error));
+	g_assert_no_error(error);
+	uris = soup_server_get_uris(endpoint);
+	url = g_uri_to_string(uris->data);
+	g_slist_free_full(g_steal_pointer(&uris), (GDestroyNotify)g_uri_unref);
+	origin = g_strndup(url, strlen(url) - (g_str_has_suffix(url, "/") ? 1 : 0));
+	g_object_set(fixture->config, "webhooks-allowed-origins", origin, NULL);
+
+	webhook = VENTURE_ENTITY(venture_webhook_new());
+	venture_entity_set_organization_id(webhook, fixture->org);
+	g_object_set(webhook, "name", "Phone", "url", url, "events", "alert_hit.created",
+	             "format", VENTURE_WEBHOOK_FORMAT_GOTIFY, "active", TRUE, NULL);
+	save(fixture, webhook);
+	g_assert_true(venture_webhook_set_token(fixture->context, webhook, "AppToken.1", NULL, &error));
+	g_assert_no_error(error);
+
+	rule = rule_on(fixture, VENTURE_ALERT_KIND_DEAL, "gem");
+	g_object_set(rule, "name", "ruby flips", "threshold-number", 50.0, NULL);
+	save(fixture, rule);
+	report = evaluate(fixture, rule, TRUE);
+	g_assert_cmpint(report_int(report, "written"), ==, 1);
+
+	for (waited = 0; (waited < 5000) && (0 == push.received); waited += 10)
+	{
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(10 * 1000);
+	}
+
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+
+	g_assert_cmpuint(push.received, ==, 1);
+	g_assert_cmpstr(push.path, ==, "/message");
+	g_assert_cmpstr(push.key, ==, "AppToken.1");
+	body = venture_json_parse(push.body, NULL);
+	g_assert_nonnull(body);
+	object = json_node_get_object(body);
+	g_assert_cmpstr(venture_json_object_get_string(object, "title", ""), ==, "Alert hit");
+	g_assert_nonnull(strstr(venture_json_object_get_string(object, "message", ""), "Star Ruby"));
+	g_assert_nonnull(strstr(venture_json_object_get_string(object, "message", ""), "Silver Hand"));
+	g_assert_nonnull(strstr(venture_json_object_get_string(object, "message", ""), "0.90 USD profit"));
+	g_assert_cmpint(venture_json_object_get_int(object, "priority", 0), ==, 5);
+
+	soup_server_disconnect(endpoint);
+	g_free(push.path);
+	g_free(push.key);
+	g_free(push.body);
+}
+
 /* --- The worker ------------------------------------------------------------------ */
 
 static gchar *
@@ -2368,6 +2762,9 @@ main(
 	ADD("/alerts/cooldown", test_alerts_cooldown);
 	ADD("/alerts/cap", test_alerts_cap);
 	ADD("/alerts/delivery", test_alerts_delivery);
+	ADD("/alerts/any-realm", test_alerts_any_realm);
+	ADD("/alerts/deal", test_alerts_deal);
+	ADD("/alerts/deal-to-gotify", test_alerts_deal_to_gotify);
 	ADD("/alerts/not-inside-automation", test_alerts_not_inside_automation);
 	ADD("/alerts/worker-path", test_alerts_worker_path);
 	ADD("/alerts/accounts-worker-path", test_alerts_accounts_worker_path);

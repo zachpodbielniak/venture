@@ -61,6 +61,27 @@ venture_marketdata_source_in(
 );
 
 /*
+ * venture_marketdata_deal_sell_side:
+ * Where @buy is best sold, as Deals reckons it: the dearest other venue
+ * with it in stock in @group_keys (else the buy venue's group), in the
+ * same currency, where it sells, at no troll's price, and -- with
+ * @fresh_after above 0 -- taken no earlier than that. Sets @out_profit
+ * (its lowest price less @cut_pct, rounded the seller's way, less the
+ * buy) and @out_roi (profit over the buy price, percent). Reads only the
+ * store, so the feeds worker may call it. NULL when nowhere qualifies.
+ */
+VentureSeriesRow *
+venture_marketdata_deal_sell_side(
+	VentureSeriesStore	*reader,
+	const VentureSeriesRow	*buy,
+	const gchar *const	*group_keys,
+	gdouble			 cut_pct,
+	gint64			 fresh_after,
+	gint64			*out_profit,
+	gdouble			*out_roi
+);
+
+/*
  * venture_marketdata_reader:
  * A main-thread read handle on the source's store; CONFIG with the feeds
  * module off, NOT_FOUND before the source has stored anything.

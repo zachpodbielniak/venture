@@ -19,6 +19,18 @@
  * endpoint should not pile requests up behind it. */
 #define VENTURE_WEBHOOK_TIMEOUT (15)
 
+/* The sealed member beside a push token that records the origin it was
+ * set for. Never shown and never sent anywhere. */
+#define VENTURE_WEBHOOK_BOUND_ORIGIN "x-bound-origin"
+
+/* The longest push token taken: Gotify's are 15 characters and ntfy's 32;
+ * anything near this is not a token. */
+#define VENTURE_WEBHOOK_MAX_TOKEN (512)
+
+/* What a push says when somebody presses Test. */
+#define VENTURE_WEBHOOK_TEST_TITLE "VENTURE"
+#define VENTURE_WEBHOOK_TEST_MESSAGE "A test from VENTURE: this webhook reaches you."
+
 /*
  * The types no webhook hears about.
  *
@@ -120,6 +132,22 @@ venture_webhook_matches(
 
 /* --- The body -------------------------------------------------------------- */
 
+/* The record's address on this install: a comment's is its permalink,
+ * which lands on its record's page at the comment for whoever may read
+ * it. NULL for no record. */
+static gchar *
+venture_webhook_record_path(
+	const gchar	*target_type,
+	gint64		 target_id
+){
+	if (venture_string_is_empty(target_type) || (0 == target_id))
+		return NULL;
+
+	return (0 == g_strcmp0(target_type, "comment"))
+		? venture_comment_permalink(target_id)
+		: g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, target_type, target_id);
+}
+
 /*
  * What goes over the wire. The envelope is always the same shape -- the
  * event, a delivery id the far end can deduplicate on, when, which
@@ -192,12 +220,7 @@ venture_webhook_build_body(
 	{
 		g_autofree gchar *url = NULL;
 
-		/* A comment's address is its permalink, which lands on its
-		 * record's page at the comment for whoever may read it. */
-		url = (0 == g_strcmp0(target_type, "comment"))
-			? venture_comment_permalink(target_id)
-			: g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, target_type,
-			                  target_id);
+		url = venture_webhook_record_path(target_type, target_id);
 		json_builder_add_string_value(builder, url);
 	}
 	else
@@ -246,6 +269,487 @@ venture_webhook_build_body(
 	return venture_json_to_string(node, TRUE);
 }
 
+/* --- Push formats: gotify and ntfy ------------------------------------------- */
+
+/*
+ * @url's origin -- scheme, host and a port other than the scheme's own --
+ * in lower case, or NULL when it is not an http(s) address without
+ * credentials. @strict also refuses a path, query or fragment: what an
+ * allowlist entry must look like, so an entry that could never match is
+ * not mistaken for one that does.
+ */
+static gchar *
+venture_webhook_origin(
+	const gchar	*url,
+	gboolean	 strict
+){
+	g_autoptr(GUri) uri = NULL;
+	g_autofree gchar *scheme = NULL;
+	g_autofree gchar *host = NULL;
+	g_autofree gchar *port_text = NULL;
+	gboolean literal;
+	const gchar *path;
+	gint port;
+
+	if (venture_string_is_empty(url))
+		return NULL;
+
+	uri = g_uri_parse(url, G_URI_FLAGS_NONE, NULL);
+
+	if ((NULL == uri) || (NULL == g_uri_get_scheme(uri)) || venture_string_is_empty(g_uri_get_host(uri)) ||
+	    (NULL != g_uri_get_userinfo(uri)))
+		return NULL;
+
+	scheme = g_ascii_strdown(g_uri_get_scheme(uri), -1);
+
+	if ((0 != g_strcmp0(scheme, "http")) && (0 != g_strcmp0(scheme, "https")))
+		return NULL;
+
+	path = g_uri_get_path(uri);
+
+	if (strict && ((!venture_string_is_empty(path) && (0 != g_strcmp0(path, "/"))) ||
+	               (NULL != g_uri_get_query(uri)) || (NULL != g_uri_get_fragment(uri))))
+		return NULL;
+
+	host = g_ascii_strdown(g_uri_get_host(uri), -1);
+	port = g_uri_get_port(uri);
+	literal = (NULL != strchr(host, ':'));
+
+	if ((port > 0) && !((0 == g_strcmp0(scheme, "http")) && (80 == port)) &&
+	    !((0 == g_strcmp0(scheme, "https")) && (443 == port)))
+		port_text = g_strdup_printf(":%d", port);
+
+	/* An IPv6 literal comes back from GUri without its brackets. */
+	return g_strdup_printf("%s://%s%s%s%s", scheme, literal ? "[" : "", host, literal ? "]" : "",
+	                       (NULL != port_text) ? port_text : "");
+}
+
+/* Whether @origin is one of webhooks.allowed_origins. Deny by default:
+ * an empty list allows nothing. */
+static gboolean
+venture_webhook_origin_allowed(
+	VentureContext	*context,
+	const gchar	*origin
+){
+	g_autofree gchar *configured = NULL;
+	g_auto(GStrv) entries = NULL;
+	guint i;
+
+	g_object_get(venture_context_get_config(context), "webhooks-allowed-origins", &configured, NULL);
+	entries = g_strsplit((NULL != configured) ? configured : "", ",", -1);
+
+	for (i = 0; NULL != entries[i]; i++)
+	{
+		g_autofree gchar *entry = venture_webhook_origin(g_strstrip(entries[i]), TRUE);
+
+		if ((NULL != entry) && (0 == g_strcmp0(entry, origin)))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/* The credential store's name for a webhook's token. */
+static gchar *
+venture_webhook_token_key(VentureEntity *webhook)
+{
+	return g_strconcat("webhook-", venture_entity_get_uuid(webhook), NULL);
+}
+
+/*
+ * The webhook's sealed token and the origin it was set for, or FALSE with
+ * neither set when it has none (or the store has no key to open it with:
+ * absent configuration fails closed, as everywhere). Read as the system:
+ * this is the trusted adapter boundary, and a delivery runs under whoever
+ * happened to write the record that fired it.
+ */
+static gboolean
+venture_webhook_token(
+	VentureContext	 *context,
+	VentureEntity	 *webhook,
+	gchar		**out_token,
+	gchar		**out_origin,
+	GError		**error
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(GError) lookup_error = NULL;
+	g_autoptr(JsonNode) values = NULL;
+	g_autofree gchar *key = NULL;
+	VentureIntegrationService *integrations;
+	VentureDatabase *database;
+	JsonObject *object;
+
+	*out_token = NULL;
+	*out_origin = NULL;
+	database = venture_context_get_database(context);
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	integrations = venture_integration_service_get(database);
+	key = venture_webhook_token_key(webhook);
+	binding = venture_integration_service_find(integrations, venture_entity_get_organization_id(webhook),
+	                                           key, &lookup_error);
+
+	if (NULL == binding)
+	{
+		if ((NULL != lookup_error) && !g_error_matches(lookup_error, VENTURE_ERROR, VENTURE_ERROR_CONFIG))
+		{
+			g_propagate_error(error, g_steal_pointer(&lookup_error));
+			return FALSE;
+		}
+
+		return TRUE;
+	}
+
+	values = venture_integration_service_resolve_version(integrations,
+		venture_entity_get_organization_id(webhook), venture_entity_get_id(VENTURE_ENTITY(binding)),
+		venture_entity_get_version(VENTURE_ENTITY(binding)), FALSE, error);
+
+	if (NULL == values)
+		return FALSE;
+
+	if (!JSON_NODE_HOLDS_OBJECT(values))
+		return TRUE;
+
+	object = json_node_get_object(values);
+	*out_token = g_strdup(venture_json_object_get_string(object, "token", NULL));
+	*out_origin = g_strdup(venture_json_object_get_string(object, VENTURE_WEBHOOK_BOUND_ORIGIN, NULL));
+
+	return TRUE;
+}
+
+/* @text with every occurrence of @secret masked: a far end may echo the
+ * header it was sent in an error page, and the excerpt is kept. */
+static gchar *
+venture_webhook_redact(
+	const gchar	*text,
+	const gchar	*secret
+){
+	g_auto(GStrv) parts = NULL;
+
+	if ((NULL == text) || venture_string_is_empty(secret))
+		return g_strdup(text);
+
+	parts = g_strsplit(text, secret, -1);
+
+	return g_strjoinv("[redacted]", parts);
+}
+
+/* What a person calls what happened: "Alert hit", "Ticket updated". */
+static gchar *
+venture_webhook_push_title(
+	VentureContext	*context,
+	const gchar	*event,
+	const gchar	*target_type
+){
+	g_autofree gchar *label = NULL;
+	GType type;
+
+	if (0 == g_strcmp0(event, "webhook.test"))
+		return g_strdup(VENTURE_WEBHOOK_TEST_TITLE);
+
+	type = venture_entity_registry_lookup_any(venture_context_get_entity_registry(context), target_type);
+	label = (G_TYPE_INVALID != type) ? venture_entity_type_dup_label(type, FALSE) : g_strdup(target_type);
+
+	if (g_str_has_suffix(event, ".updated"))
+		return g_strconcat(label, " updated", NULL);
+
+	if (g_str_has_suffix(event, ".deleted"))
+		return g_strconcat(label, " deleted", NULL);
+
+	return g_steal_pointer(&label);
+}
+
+/* The record's full address, when server.base_url says where this install
+ * is; NULL otherwise -- a path alone opens nothing on a phone. */
+static gchar *
+venture_webhook_push_link(
+	VentureContext	*context,
+	const gchar	*target_type,
+	gint64		 target_id
+){
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *path = NULL;
+
+	g_object_get(venture_context_get_config(context), "server-base-url", &base, NULL);
+	path = venture_webhook_record_path(target_type, target_id);
+
+	if (venture_string_is_empty(base) || (NULL == path) ||
+	    !(g_str_has_prefix(base, "https://") || g_str_has_prefix(base, "http://")))
+		return NULL;
+
+	while (g_str_has_suffix(base, "/"))
+		base[strlen(base) - 1] = '\0';
+
+	return g_strconcat(base, path, NULL);
+}
+
+/*
+ * A push's request: the address (gotify's /message under the server's
+ * URL, ntfy's topic as written), the body, the token as the service wants
+ * it, and no redirect followed -- a 302 would carry the token to a host
+ * the response chose. The origin is held to webhooks.allowed_origins and
+ * to the one the token was set for, so whoever edits the URL afterwards
+ * cannot point the token somewhere else.
+ */
+static SoupMessage *
+venture_webhook_push_message(
+	VentureContext		 *context,
+	VentureEntity		 *webhook,
+	VentureWebhookFormat	  format,
+	const gchar		 *url,
+	const gchar		 *event,
+	const gchar		 *target_type,
+	gint64			  target_id,
+	const gchar		 *target_label,
+	gchar			**out_body,
+	gchar			**out_token,
+	GError			**error
+){
+	g_autofree gchar *origin = NULL;
+	g_autofree gchar *token = NULL;
+	g_autofree gchar *bound = NULL;
+	g_autofree gchar *title = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *link = NULL;
+	g_autofree gchar *address = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	SoupMessage *message;
+	SoupMessageHeaders *headers;
+	gint64 priority = 0;
+
+	origin = venture_webhook_origin(url, FALSE);
+
+	if (NULL == origin)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "\"%s\" is not an http(s) address a push can be sent to", url);
+		return NULL;
+	}
+
+	if (!venture_webhook_origin_allowed(context, origin))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "%s is not on webhooks.allowed_origins (VENTURE_WEBHOOKS_ALLOWED_ORIGINS), so "
+		            "no push goes there", origin);
+		return NULL;
+	}
+
+	if (!venture_webhook_token(context, webhook, &token, &bound, error))
+		return NULL;
+
+	if (venture_string_is_empty(token) && (VENTURE_WEBHOOK_FORMAT_GOTIFY == format))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "A gotify webhook needs its application token: set it on the Webhooks "
+		                    "page or with venturectl webhook token ID");
+		return NULL;
+	}
+
+	if (!venture_string_is_empty(token) && (0 != g_strcmp0(bound, origin)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "The token was set for %s and the webhook now posts to %s: set the token "
+		            "again to send it there", !venture_string_is_empty(bound) ? bound : "no address",
+		            origin);
+		return NULL;
+	}
+
+	g_object_get(webhook, "priority", &priority, NULL);
+	title = venture_webhook_push_title(context, event, target_type);
+	link = venture_webhook_push_link(context, target_type, target_id);
+
+	if (0 == g_strcmp0(event, "webhook.test"))
+		text = g_strdup(VENTURE_WEBHOOK_TEST_MESSAGE);
+	else if (!venture_string_is_empty(target_label))
+		text = g_strdup(target_label);
+	else
+		text = g_strdup_printf("%s #%" G_GINT64_FORMAT, title, target_id);
+
+	if (VENTURE_WEBHOOK_FORMAT_GOTIFY == format)
+	{
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+		g_autoptr(JsonNode) node = NULL;
+		g_autofree gchar *base = g_strdup(url);
+
+		while (g_str_has_suffix(base, "/"))
+			base[strlen(base) - 1] = '\0';
+
+		address = g_str_has_suffix(base, "/message") ? g_strdup(base) : g_strconcat(base, "/message", NULL);
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "title");
+		json_builder_add_string_value(builder, title);
+		json_builder_set_member_name(builder, "message");
+
+		if (NULL != link)
+		{
+			g_autofree gchar *with_link = g_strdup_printf("%s\n%s", text, link);
+
+			json_builder_add_string_value(builder, with_link);
+		}
+		else
+		{
+			json_builder_add_string_value(builder, text);
+		}
+
+		json_builder_set_member_name(builder, "priority");
+		json_builder_add_int_value(builder, (priority > 0) ? CLAMP(priority, 1, 10) : 5);
+
+		/* A tap on the notification opens the record. */
+		if (NULL != link)
+		{
+			json_builder_set_member_name(builder, "extras");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "client::notification");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "click");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "url");
+			json_builder_add_string_value(builder, link);
+			json_builder_end_object(builder);
+			json_builder_end_object(builder);
+			json_builder_end_object(builder);
+		}
+
+		json_builder_end_object(builder);
+		node = json_builder_get_root(builder);
+		body = venture_json_to_string(node, FALSE);
+	}
+	else
+	{
+		address = g_strdup(url);
+		body = g_strdup(text);
+	}
+
+	message = soup_message_new(SOUP_METHOD_POST, address);
+
+	if (NULL == message)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "\"%s\" is not a URL anything can be posted to", address);
+		return NULL;
+	}
+
+	soup_message_add_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	headers = soup_message_get_request_headers(message);
+	bytes = g_bytes_new(body, strlen(body));
+
+	if (VENTURE_WEBHOOK_FORMAT_GOTIFY == format)
+	{
+		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+		soup_message_headers_append(headers, "X-Gotify-Key", token);
+	}
+	else
+	{
+		g_autofree gchar *level = g_strdup_printf("%" G_GINT64_FORMAT,
+		                                          (priority > 0) ? CLAMP((priority + 1) / 2, 1, 5) : 3);
+
+		soup_message_set_request_body_from_bytes(message, "text/plain; charset=utf-8", bytes);
+		soup_message_headers_append(headers, "Title", title);
+		soup_message_headers_append(headers, "Priority", level);
+
+		if (NULL != link)
+			soup_message_headers_append(headers, "Click", link);
+
+		if (!venture_string_is_empty(token))
+		{
+			g_autofree gchar *bearer = g_strconcat("Bearer ", token, NULL);
+
+			soup_message_headers_append(headers, "Authorization", bearer);
+		}
+	}
+
+	*out_body = g_steal_pointer(&body);
+	*out_token = g_steal_pointer(&token);
+
+	return message;
+}
+
+/*
+ * The request a delivery makes, in the webhook's format: VENTURE's
+ * envelope signed with the webhook's secret, or a push. @out_body is what
+ * the delivery record keeps (never a token); @out_token, for a push, is
+ * what to mask in whatever comes back. One function for a delivery and
+ * for Test, so Test tries exactly what a delivery would send.
+ */
+static SoupMessage *
+venture_webhook_build_message(
+	VentureContext	 *context,
+	VentureEntity	 *webhook,
+	const gchar	 *event,
+	const gchar	 *delivery_id,
+	const gchar	 *target_type,
+	gint64		  target_id,
+	const gchar	 *target_label,
+	const gchar	 *actor,
+	gchar		**out_body,
+	gchar		**out_token,
+	GError		**error
+){
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	SoupMessageHeaders *headers;
+	SoupMessage *message;
+	VentureWebhookFormat format = VENTURE_WEBHOOK_FORMAT_VENTURE;
+
+	*out_body = NULL;
+	*out_token = NULL;
+	g_object_get(webhook, "url", &url, "secret", &secret, "format", &format, NULL);
+
+	if (venture_string_is_empty(url))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "That webhook names no URL");
+		return NULL;
+	}
+
+	if (VENTURE_WEBHOOK_FORMAT_VENTURE != format)
+		message = venture_webhook_push_message(context, webhook, format, url, event, target_type, target_id,
+		                                       target_label, out_body, out_token, error);
+	else
+	{
+		body = venture_webhook_build_body(context, webhook, event, delivery_id, target_type, target_id,
+		                                  target_label, actor);
+		message = soup_message_new(SOUP_METHOD_POST, url);
+
+		if (NULL == message)
+		{
+			*out_body = g_steal_pointer(&body);
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "\"%s\" is not a URL anything can be posted to", url);
+			return NULL;
+		}
+
+		bytes = g_bytes_new(body, strlen(body));
+		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+		headers = soup_message_get_request_headers(message);
+
+		if (!venture_string_is_empty(secret))
+		{
+			g_autofree gchar *hex = NULL;
+			g_autofree gchar *signature = NULL;
+
+			hex = g_compute_hmac_for_data(G_CHECKSUM_SHA256, (const guchar *)secret, strlen(secret),
+			                              (const guchar *)body, strlen(body));
+			signature = g_strconcat("sha256=", hex, NULL);
+			soup_message_headers_append(headers, "X-Venture-Signature", signature);
+		}
+
+		*out_body = g_steal_pointer(&body);
+	}
+
+	if (NULL == message)
+		return NULL;
+
+	headers = soup_message_get_request_headers(message);
+	soup_message_headers_append(headers, "X-Venture-Event", event);
+	soup_message_headers_append(headers, "X-Venture-Delivery", delivery_id);
+
+	return message;
+}
+
 /* --- Sending --------------------------------------------------------------- */
 
 typedef struct
@@ -261,6 +765,7 @@ typedef struct
 	gint64		 target_id;
 	gchar		*target_label;
 	gchar		*body;
+	gchar		*token;		/* a push's, to mask in what comes back */
 	gint64		 started;
 } VentureWebhookJob;
 
@@ -278,6 +783,7 @@ venture_webhook_job_free(VentureWebhookJob *job)
 	g_free(job->target_type);
 	g_free(job->target_label);
 	g_free(job->body);
+	g_free(job->token);
 	g_free(job);
 }
 
@@ -412,19 +918,25 @@ venture_webhook_sent(
 			                           (gsize)VENTURE_WEBHOOK_EXCERPT * 2));
 	}
 
-	venture_webhook_record_delivery(job->context, job->webhook_id, job->organization_id, job->event,
-		job->target_type, job->target_id, job->target_label, job->body,
-		status, text,
-		(NULL != error) ? error->message : NULL, duration);
+	{
+		g_autofree gchar *masked = venture_webhook_redact(text, job->token);
+		g_autofree gchar *failure = venture_webhook_redact((NULL != error) ? error->message : NULL,
+		                                                   job->token);
+
+		venture_webhook_record_delivery(job->context, job->webhook_id, job->organization_id, job->event,
+			job->target_type, job->target_id, job->target_label, job->body,
+			status, masked, failure, duration);
+	}
 
 	venture_webhook_job_free(job);
 }
 
 /*
- * Signs and posts. The signature is an HMAC-SHA256 over the exact bytes
- * of the body, hex, prefixed `sha256=` -- the same shape VENTURE
- * verifies on the way in, so an operator who has wired one up already
- * knows how to check the other.
+ * Builds the webhook's request (venture_webhook_build_message()) and
+ * posts it. A request that cannot be built -- a URL nothing can be posted
+ * to, a push to an origin the operator did not allow, a gotify webhook
+ * with no token -- is recorded as a failed delivery, so it counts towards
+ * switching the webhook off and the reason is where somebody will look.
  */
 static void
 venture_webhook_send(
@@ -438,15 +950,12 @@ venture_webhook_send(
 ){
 	VentureWebhookJob *job;
 	g_autofree gchar *url = NULL;
-	g_autofree gchar *secret = NULL;
-	g_autofree gchar *signature = NULL;
-	g_autoptr(GBytes) bytes = NULL;
-	SoupMessageHeaders *headers;
+	g_autoptr(GError) error = NULL;
 
 	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
 	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, NULL)) return;
 
-	g_object_get(webhook, "url", &url, "secret", &secret, NULL);
+	g_object_get(webhook, "url", &url, NULL);
 
 	if (venture_string_is_empty(url))
 		return;
@@ -460,40 +969,17 @@ venture_webhook_send(
 	job->target_type = g_strdup(target_type);
 	job->target_id = target_id;
 	job->target_label = g_strdup(target_label);
-	job->body = venture_webhook_build_body(context, webhook, event,
-	                                       job->delivery_id, target_type,
-	                                       target_id, target_label, actor);
-
-	job->message = soup_message_new(SOUP_METHOD_POST, url);
+	job->message = venture_webhook_build_message(context, webhook, event, job->delivery_id, target_type,
+	                                             target_id, target_label, actor, &job->body, &job->token,
+	                                             &error);
 
 	if (NULL == job->message)
 	{
 		venture_webhook_record_delivery(context, job->webhook_id, job->organization_id, event,
-			target_type, target_id, target_label, job->body, 0, NULL,
-			"That is not a URL anything can be posted to", 0);
+			target_type, target_id, target_label, (NULL != job->body) ? job->body : "", 0, NULL,
+			error->message, 0);
 		venture_webhook_job_free(job);
 		return;
-	}
-
-	bytes = g_bytes_new(job->body, strlen(job->body));
-	soup_message_set_request_body_from_bytes(job->message, "application/json",
-	                                         bytes);
-
-	headers = soup_message_get_request_headers(job->message);
-	soup_message_headers_append(headers, "X-Venture-Event", event);
-	soup_message_headers_append(headers, "X-Venture-Delivery",
-	                            job->delivery_id);
-
-	if (!venture_string_is_empty(secret))
-	{
-		g_autofree gchar *hex = NULL;
-
-		hex = g_compute_hmac_for_data(G_CHECKSUM_SHA256,
-		                              (const guchar *)secret, strlen(secret),
-		                              (const guchar *)job->body,
-		                              strlen(job->body));
-		signature = g_strconcat("sha256=", hex, NULL);
-		soup_message_headers_append(headers, "X-Venture-Signature", signature);
 	}
 
 	job->session = soup_session_new();
@@ -639,6 +1125,111 @@ venture_webhook_set_secret(
 	return g_strdup(value);
 }
 
+gboolean
+venture_webhook_set_token(
+	VentureContext		 *context,
+	VentureEntity		 *webhook,
+	const gchar		 *token,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(VentureIntegrationConnection) saved = NULL;
+	g_autoptr(GError) lookup_error = NULL;
+	g_autoptr(JsonObject) sealed = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *origin = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *trimmed = NULL;
+	VentureIntegrationService *integrations;
+	VentureWebhookFormat format = VENTURE_WEBHOOK_FORMAT_VENTURE;
+	const gchar *p;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(VENTURE_IS_WEBHOOK(webhook), FALSE);
+
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
+	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, error))
+		return FALSE;
+
+	g_object_get(webhook, "url", &url, "format", &format, NULL);
+
+	if (VENTURE_WEBHOOK_FORMAT_VENTURE == format)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "A venture webhook is signed with its secret, not a token; set the format "
+		                    "to gotify or ntfy first");
+		return FALSE;
+	}
+
+	trimmed = g_strstrip(g_strdup((NULL != token) ? token : ""));
+
+	if (venture_string_is_empty(trimmed) || (strlen(trimmed) > VENTURE_WEBHOOK_MAX_TOKEN) ||
+	    !g_utf8_validate(trimmed, -1, NULL))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "A token is text of 1 to %d characters", VENTURE_WEBHOOK_MAX_TOKEN);
+		return FALSE;
+	}
+
+	/* It goes into a header: nothing that would end one. */
+	for (p = trimmed; '\0' != *p; p++)
+	{
+		if (g_ascii_iscntrl(*p) || (' ' == *p))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "A token holds no spaces or control characters");
+			return FALSE;
+		}
+	}
+
+	/* Bound now, to where the webhook posts now, and only somewhere the
+	 * operator allows: a token sealed for an origin it can never reach
+	 * would be a token waiting for the allowlist to change. */
+	origin = venture_webhook_origin(url, FALSE);
+
+	if (NULL == origin)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "The webhook's URL is not an http(s) address a push can be sent to");
+		return FALSE;
+	}
+
+	if (!venture_webhook_origin_allowed(context, origin))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		            "%s is not on webhooks.allowed_origins (VENTURE_WEBHOOKS_ALLOWED_ORIGINS); "
+		            "allow it before setting a token for it", origin);
+		return FALSE;
+	}
+
+	integrations = venture_integration_service_get(venture_context_get_database(context));
+	key = venture_webhook_token_key(webhook);
+	binding = venture_integration_service_find(integrations, venture_entity_get_organization_id(webhook), key,
+	                                           &lookup_error);
+
+	if ((NULL == binding) && (NULL != lookup_error) &&
+	    !g_error_matches(lookup_error, VENTURE_ERROR, VENTURE_ERROR_CONFIG))
+	{
+		g_propagate_error(error, g_steal_pointer(&lookup_error));
+		return FALSE;
+	}
+
+	sealed = json_object_new();
+	json_object_set_string_member(sealed, "token", trimmed);
+	json_object_set_string_member(sealed, VENTURE_WEBHOOK_BOUND_ORIGIN, origin);
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, sealed);
+
+	/* Replacing one rotates the same binding. */
+	saved = venture_integration_service_configure(integrations, venture_entity_get_organization_id(webhook),
+		key, venture_entity_get_uuid(webhook), "live", node,
+		(NULL != binding) ? venture_entity_get_version(VENTURE_ENTITY(binding)) : 0, actor, error);
+
+	return NULL != saved;
+}
+
 typedef struct
 {
 	GMainLoop	*loop;
@@ -683,15 +1274,14 @@ venture_webhook_test(
 	g_autoptr(SoupSession) session = NULL;
 	g_autoptr(SoupMessage) message = NULL;
 	g_autoptr(GMainLoop) loop = NULL;
-	g_autofree gchar *url = NULL;
-	g_autofree gchar *secret = NULL;
 	g_autofree gchar *delivery_id = NULL;
 	g_autofree gchar *body = NULL;
+	g_autofree gchar *token = NULL;
 	g_autofree gchar *text = NULL;
+	g_autofree gchar *masked = NULL;
+	g_autofree gchar *failure = NULL;
 	g_autofree gchar *label = NULL;
-	g_autoptr(GBytes) bytes = NULL;
 	VentureWebhookWait wait;
-	SoupMessageHeaders *headers;
 	VentureEntity *delivery;
 	gint64 started;
 	guint status = 0;
@@ -703,49 +1293,14 @@ venture_webhook_test(
 	if (!venture_tenant_service_check_resource(venture_tenant_service_get(
 	        venture_context_get_database(context)), G_OBJECT(webhook), TRUE, error)) return NULL;
 
-	g_object_get(webhook, "url", &url, "secret", &secret, NULL);
-
-	if (venture_string_is_empty(url))
-	{
-		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		                    "That webhook names no URL");
-		return NULL;
-	}
-
 	label = venture_entity_get_display_name(webhook);
 	delivery_id = g_uuid_string_random();
-	body = venture_webhook_build_body(context, webhook, "webhook.test",
-	                                  delivery_id, "webhook",
-	                                  venture_entity_get_id(webhook), label,
-	                                  NULL);
-
-	message = soup_message_new(SOUP_METHOD_POST, url);
+	message = venture_webhook_build_message(context, webhook, "webhook.test", delivery_id, "webhook",
+	                                        venture_entity_get_id(webhook), label, NULL, &body, &token,
+	                                        error);
 
 	if (NULL == message)
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		            "\"%s\" is not a URL anything can be posted to", url);
 		return NULL;
-	}
-
-	bytes = g_bytes_new(body, strlen(body));
-	soup_message_set_request_body_from_bytes(message, "application/json",
-	                                         bytes);
-	headers = soup_message_get_request_headers(message);
-	soup_message_headers_append(headers, "X-Venture-Event", "webhook.test");
-	soup_message_headers_append(headers, "X-Venture-Delivery", delivery_id);
-
-	if (!venture_string_is_empty(secret))
-	{
-		g_autofree gchar *hex = NULL;
-		g_autofree gchar *signature = NULL;
-
-		hex = g_compute_hmac_for_data(G_CHECKSUM_SHA256,
-		                              (const guchar *)secret, strlen(secret),
-		                              (const guchar *)body, strlen(body));
-		signature = g_strconcat("sha256=", hex, NULL);
-		soup_message_headers_append(headers, "X-Venture-Signature", signature);
-	}
 
 	session = soup_session_new();
 	soup_session_set_timeout(session, VENTURE_WEBHOOK_TIMEOUT);
@@ -799,11 +1354,13 @@ venture_webhook_test(
 			                           (gsize)VENTURE_WEBHOOK_EXCERPT * 2));
 	}
 
+	masked = venture_webhook_redact(text, token);
+	failure = venture_webhook_redact((NULL != wait.error) ? wait.error->message
+	                                                      : (wait.finished ? NULL : "It did not answer"),
+	                                 token);
 	delivery = venture_webhook_record_delivery(context,
 		venture_entity_get_id(webhook), venture_entity_get_organization_id(webhook), "webhook.test", "webhook",
-		venture_entity_get_id(webhook), label, body, status, text,
-		(NULL != wait.error) ? wait.error->message
-		                     : (wait.finished ? NULL : "It did not answer"),
+		venture_entity_get_id(webhook), label, body, status, masked, failure,
 		(g_get_monotonic_time() - started) / 1000);
 
 	g_clear_pointer(&wait.response, g_bytes_unref);
@@ -854,7 +1411,11 @@ venture_webhook_describe(
 		g_autofree gchar *events = NULL;
 		g_autofree gchar *secret = NULL;
 		g_autoptr(GDateTime) last = NULL;
+		g_autofree gchar *token = NULL;
+		g_autofree gchar *bound = NULL;
+		VentureWebhookFormat format = VENTURE_WEBHOOK_FORMAT_VENTURE;
 		gint64 failures = 0;
+		gint64 priority = 0;
 		gboolean active = FALSE;
 		gboolean include = FALSE;
 		guint j;
@@ -863,7 +1424,7 @@ venture_webhook_describe(
 		g_object_get(webhook, "name", &name, "url", &url, "events", &events,
 		             "secret", &secret, "active", &active,
 		             "include-record", &include, "failure-count", &failures,
-		             "last-delivery-at", &last, NULL);
+		             "last-delivery-at", &last, "format", &format, "priority", &priority, NULL);
 
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "id");
@@ -886,6 +1447,28 @@ venture_webhook_describe(
 		json_builder_set_member_name(builder, "signed");
 		json_builder_add_boolean_value(builder,
 		                               !venture_string_is_empty(secret));
+		json_builder_set_member_name(builder, "format");
+		json_builder_add_string_value(builder,
+			venture_enum_to_nick(VENTURE_TYPE_WEBHOOK_FORMAT, (gint)format));
+		json_builder_set_member_name(builder, "priority");
+		json_builder_add_int_value(builder, priority);
+
+		/* A push says whether its token is set, and where it may go;
+		 * never the token. A store that cannot be read says unset. */
+		if (VENTURE_WEBHOOK_FORMAT_VENTURE != format)
+		{
+			g_autofree gchar *origin = NULL;
+
+			if (!venture_webhook_token(context, webhook, &token, &bound, NULL))
+				g_clear_pointer(&token, g_free);
+
+			origin = venture_webhook_origin(url, FALSE);
+			json_builder_set_member_name(builder, "token_set");
+			json_builder_add_boolean_value(builder, !venture_string_is_empty(token));
+			json_builder_set_member_name(builder, "origin_allowed");
+			json_builder_add_boolean_value(builder,
+				(NULL != origin) && venture_webhook_origin_allowed(context, origin));
+		}
 
 		json_builder_set_member_name(builder, "last_delivery_at");
 

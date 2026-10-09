@@ -45,7 +45,7 @@ take `organization_id=N` to work outside the default organization.
 | `environment ID rollback [REASON]`, `milestone ID forecast`, `build ID ticket\|triage`, `incident ID ticket\|postmortem` | factory records | [factory.md](factory.md) |
 | `runs [--state S]`, `budgets` | coding runs with cost; agent budgets | [factory.md](factory.md) |
 | `forge settings ID` (JSON stdin), `forge verify ID`; `forge set-token\|set-secret` retired | forge credentials | [factory.md](factory.md) |
-| `webhooks`, `webhook test ID`, `webhook secret ID` | outbound webhooks (owner) | [automation.md](automation.md) |
+| `webhooks`, `webhook test ID`, `webhook secret ID`, `webhook token ID` (stdin) | outbound webhooks (owner); token: a gotify/ntfy push's | [automation.md](automation.md) |
 | `dashboards`, `dashboard SLUG\|export SLUG\|import FILE\|create TEMPLATE\|templates\|kinds` | dashboards | [dashboards.md](dashboards.md) |
 
 ## Money in

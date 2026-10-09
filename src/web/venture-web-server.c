@@ -31575,11 +31575,36 @@ venture_web_ui_webhooks(
 		g_string_append(content, "</code></dd><dt>Events</dt><dd><code>");
 		venture_html_escape_append(content,
 			venture_json_object_get_string(webhook, "events", "*"));
-		g_string_append_printf(content, "</code></dd><dt>Body</dt><dd>%s</dd>"
-		                                "</dl>",
-			venture_json_object_get_bool(webhook, "include_record", FALSE)
-				? "the envelope and the whole record"
-				: "the envelope only");
+
+		if (0 == g_strcmp0(venture_json_object_get_string(webhook, "format", "venture"), "venture"))
+		{
+			g_string_append_printf(content, "</code></dd><dt>Body</dt><dd>%s</dd>"
+			                                "</dl>",
+				venture_json_object_get_bool(webhook, "include_record", FALSE)
+					? "the envelope and the whole record"
+					: "the envelope only");
+		}
+		else
+		{
+			/* A push: its token is sealed, so the page says only
+			 * whether one is set and takes a new one write-only. */
+			g_string_append(content, "</code></dd><dt>Format</dt><dd>");
+			venture_html_escape_append(content,
+				venture_json_object_get_string(webhook, "format", ""));
+			g_string_append_printf(content, " push</dd><dt>Token</dt><dd>%s</dd>"
+			                                "<dt>Origin</dt><dd>%s</dd></dl>",
+				venture_json_object_get_bool(webhook, "token_set", FALSE)
+					? "<span class=\"badge positive\">set</span>"
+					: "<span class=\"badge warning\">not set</span>",
+				venture_json_object_get_bool(webhook, "origin_allowed", FALSE)
+					? "on webhooks.allowed_origins"
+					: "<span class=\"badge negative\">not on webhooks.allowed_origins</span>");
+			g_string_append_printf(content,
+				"<form method=\"post\" action=\"/webhooks/%" G_GINT64_FORMAT
+				"/token\" class=\"form-inline\"><label>Token <input type=\"password\" "
+				"name=\"token\" autocomplete=\"off\" required></label> "
+				"<button class=\"btn btn-sm\" type=\"submit\">Set token</button></form>", id);
+		}
 
 		if (0 == json_array_get_length(deliveries))
 		{
@@ -31771,7 +31796,39 @@ venture_web_ui_webhook_secret(
 }
 
 /*
- * GET /api/v1/webhooks, POST /api/v1/webhooks/:id/test and /secret.
+ * POST /webhooks/:id/token - seal a gotify or ntfy token. The form posts
+ * it once; it is never put back on a page.
+ */
+static HtmxResponse *
+venture_web_ui_webhook_token(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_webhook_load(self, request, params, FALSE, &principal,
+	                                &webhook);
+
+	if (NULL != gate)
+		return gate;
+
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_webhook_set_token(self->context, webhook,
+	                               htmx_request_get_form_value(request, "token"), &actor, &error))
+		return venture_web_error_response(error);
+
+	return venture_web_redirect_to("/webhooks");
+}
+
+/*
+ * GET /api/v1/webhooks, POST /api/v1/webhooks/:id/test, /secret and /token.
  */
 static HtmxResponse *
 venture_web_api_webhooks(
@@ -31877,6 +31934,56 @@ venture_web_api_webhook_secret(
 	json_builder_add_string_value(builder,
 		"This is the only time the secret is shown. Deliveries carry it as "
 		"an HMAC-SHA256 of the body in X-Venture-Signature.");
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
+/*
+ * POST /api/v1/webhooks/:id/token {"token": "..."}: answers whether it was
+ * sealed, never the token.
+ */
+static HtmxResponse *
+venture_web_api_webhook_token(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_webhook_load(self, request, params, TRUE, &principal,
+	                                &webhook);
+
+	if (NULL != gate)
+		return gate;
+
+	body = htmx_request_get_json(request, NULL);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_webhook_set_token(self->context, webhook,
+		((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+			? venture_json_object_get_string(json_node_get_object(body), "token", NULL)
+			: NULL,
+		&actor, &error))
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "token_set");
+	json_builder_add_boolean_value(builder, TRUE);
+	json_builder_set_member_name(builder, "note");
+	json_builder_add_string_value(builder,
+		"Sealed in the credential store and bound to the webhook's origin; it is "
+		"never shown again. Set it again after moving the webhook's URL.");
 	json_builder_end_object(builder);
 	node = json_builder_get_root(builder);
 
@@ -32582,6 +32689,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/webhooks", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhooks, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/test", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_test, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tickets/:id/assist", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_assist, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_triage, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/satisfaction", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_satisfaction, self);
@@ -32847,6 +32955,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/webhooks", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhooks, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/test", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_test, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_triage, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/summary", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_summary, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/draft", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_draft, self);

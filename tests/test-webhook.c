@@ -33,6 +33,12 @@ typedef struct
 	gchar		*last_body;
 	gchar		*last_signature;
 	gchar		*last_event;
+	gchar		*last_path;
+	gchar		*last_gotify_key;
+	gchar		*last_authorization;
+	gchar		*last_title;
+	gchar		*last_priority;
+	gchar		*answer_body;	/* what the far end says; NULL for "ok" */
 	guint		 answer_with;
 } Fixture;
 
@@ -58,7 +64,6 @@ endpoint_handler(
 	SoupMessageBody *body;
 
 	(void)server;
-	(void)path;
 	(void)query;
 
 	headers = soup_server_message_get_request_headers(message);
@@ -73,10 +78,29 @@ endpoint_handler(
 		soup_message_headers_get_one(headers, "X-Venture-Event"));
 	g_free(fixture->last_body);
 	fixture->last_body = g_strndup(body->data, (gsize)body->length);
+	g_free(fixture->last_path);
+	fixture->last_path = g_strdup(path);
+	g_free(fixture->last_gotify_key);
+	fixture->last_gotify_key = g_strdup(
+		soup_message_headers_get_one(headers, "X-Gotify-Key"));
+	g_free(fixture->last_authorization);
+	fixture->last_authorization = g_strdup(
+		soup_message_headers_get_one(headers, "Authorization"));
+	g_free(fixture->last_title);
+	fixture->last_title = g_strdup(soup_message_headers_get_one(headers, "Title"));
+	g_free(fixture->last_priority);
+	fixture->last_priority = g_strdup(
+		soup_message_headers_get_one(headers, "Priority"));
 
 	soup_server_message_set_status(message, fixture->answer_with, NULL);
-	soup_server_message_set_response(message, "text/plain", SOUP_MEMORY_COPY,
-	                                 "ok", 2);
+
+	if (NULL != fixture->answer_body)
+		soup_server_message_set_response(message, "text/plain", SOUP_MEMORY_COPY,
+		                                 fixture->answer_body,
+		                                 strlen(fixture->answer_body));
+	else
+		soup_server_message_set_response(message, "text/plain", SOUP_MEMORY_COPY,
+		                                 "ok", 2);
 }
 
 static void
@@ -131,6 +155,12 @@ fixture_tear_down(
 	g_clear_pointer(&fixture->last_body, g_free);
 	g_clear_pointer(&fixture->last_signature, g_free);
 	g_clear_pointer(&fixture->last_event, g_free);
+	g_clear_pointer(&fixture->last_path, g_free);
+	g_clear_pointer(&fixture->last_gotify_key, g_free);
+	g_clear_pointer(&fixture->last_authorization, g_free);
+	g_clear_pointer(&fixture->last_title, g_free);
+	g_clear_pointer(&fixture->last_priority, g_free);
+	g_clear_pointer(&fixture->answer_body, g_free);
 
 	g_clear_object(&fixture->context);
 	g_clear_object(&fixture->database);
@@ -544,6 +574,285 @@ test_webhook_module_off_sends_nothing(
 	g_assert_cmpuint(fixture->received, ==, 0);
 	g_assert_null(venture_webhook_describe(fixture->context, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
+/* --- Push formats ---------------------------------------------------------- */
+
+/* The fixture's far end as an origin: what the operator allows. */
+static gchar *
+endpoint_origin(Fixture *fixture)
+{
+	g_autofree gchar *origin = g_strdup(fixture->endpoint_url);
+
+	while (g_str_has_suffix(origin, "/"))
+		origin[strlen(origin) - 1] = '\0';
+
+	return g_steal_pointer(&origin);
+}
+
+/* The credential store's key, as the server's VENTURE_INTEGRATION_KEY. */
+static void
+seal_with_a_key(Fixture *fixture)
+{
+	static const guint8 raw[32] = {
+		7, 1, 4, 9, 2, 6, 5, 3, 8, 0, 11, 13, 17, 19, 23, 29,
+		31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101
+	};
+	g_autoptr(GBytes) key = g_bytes_new_static(raw, sizeof(raw));
+	g_autoptr(GError) error = NULL;
+
+	g_assert_true(venture_integration_service_set_key(
+		venture_integration_service_get(fixture->database), key, &error));
+	g_assert_no_error(error);
+}
+
+static VentureEntity *
+create_push(
+	Fixture			*fixture,
+	VentureWebhookFormat	 format,
+	const gchar		*url,
+	gint64			 priority
+){
+	VentureWebhook *webhook;
+
+	webhook = venture_webhook_new();
+	g_object_set(webhook, "name", "Phone", "url", url, "events", "ticket.created",
+	             "format", format, "priority", priority, "active", TRUE, NULL);
+	file_under_default(fixture, webhook);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(webhook), NULL, NULL));
+
+	return VENTURE_ENTITY(webhook);
+}
+
+/* The newest delivery's failure reason and state. */
+static gchar *
+last_failure(
+	Fixture			*fixture,
+	VentureDeliveryState	*out_state
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) delivery = NULL;
+	gchar *failure = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_WEBHOOK_DELIVERY);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 1);
+	delivery = venture_database_find_one(fixture->database, query, NULL);
+	g_assert_nonnull(delivery);
+	g_object_get(delivery, "failure-reason", &failure, "state", out_state, NULL);
+
+	return failure;
+}
+
+/*
+ * A gotify webhook pushes {title, message, priority} to the server's
+ * /message with its application token in X-Gotify-Key -- and only to an
+ * origin the operator allowed, only with a token sealed in the credential
+ * store, and only to the origin the token was set for. The token is never
+ * in the record, the delivery or what the far end echoes back.
+ *
+ * What breaks if this regresses: alerts never reach the phone (the wrong
+ * path or header), or the token goes wherever the URL is edited to point,
+ * or sits in plain text in a delivery record anybody with the log reads.
+ */
+static void
+test_webhook_gotify_push(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) delivery = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *origin = NULL;
+	g_autofree gchar *failure = NULL;
+	g_autofree gchar *serialized = NULL;
+	const gchar *token = "AbCdEfGh.12345";
+	VentureDeliveryState state;
+	JsonObject *object;
+
+	(void)user_data;
+
+	seal_with_a_key(fixture);
+	origin = endpoint_origin(fixture);
+	webhook = create_push(fixture, VENTURE_WEBHOOK_FORMAT_GOTIFY, fixture->endpoint_url, 8);
+
+	/* Not on the allowlist: no token is sealed for it, and nothing goes. */
+	g_assert_false(venture_webhook_set_token(fixture->context, webhook, token, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+	g_assert_nonnull(strstr(error->message, "webhooks.allowed_origins"));
+	g_clear_error(&error);
+
+	ticket = create_ticket(fixture, "Not yet");
+	settle(fixture, 1);
+	g_assert_cmpuint(fixture->received, ==, 0);
+	failure = last_failure(fixture, &state);
+	g_assert_cmpint(state, ==, VENTURE_DELIVERY_STATE_FAILED);
+	g_assert_nonnull(strstr(failure, "webhooks.allowed_origins"));
+	g_clear_pointer(&failure, g_free);
+	g_clear_object(&ticket);
+
+	/* Allowed, but no token yet: a gotify push needs one. */
+	g_object_set(fixture->config, "webhooks-allowed-origins", origin, NULL);
+	ticket = create_ticket(fixture, "Still not");
+	settle(fixture, 2);
+	g_assert_cmpuint(fixture->received, ==, 0);
+	failure = last_failure(fixture, &state);
+	g_assert_nonnull(strstr(failure, "application token"));
+	g_clear_pointer(&failure, g_free);
+	g_clear_object(&ticket);
+
+	/* Sealed: the push goes, in gotify's shape. */
+	g_assert_true(venture_webhook_set_token(fixture->context, webhook, token, NULL, &error));
+	g_assert_no_error(error);
+	ticket = create_ticket(fixture, "Copper ore is cheap");
+	settle(fixture, 3);
+
+	g_assert_cmpuint(fixture->received, ==, 1);
+	g_assert_cmpstr(fixture->last_path, ==, "/message");
+	g_assert_cmpstr(fixture->last_gotify_key, ==, token);
+	body = venture_json_parse(fixture->last_body, NULL);
+	g_assert_nonnull(body);
+	object = json_node_get_object(body);
+	g_assert_cmpstr(venture_json_object_get_string(object, "title", ""), ==, "Ticket");
+	g_assert_cmpstr(venture_json_object_get_string(object, "message", ""), ==, "Copper ore is cheap");
+	g_assert_cmpint(venture_json_object_get_int(object, "priority", 0), ==, 8);
+
+	/* The record holds no token, nor does what was recorded of it. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_WEBHOOK_DELIVERY);
+		g_autoptr(GPtrArray) deliveries = NULL;
+		g_autoptr(VentureEntity) fresh = NULL;
+		guint i;
+
+		deliveries = venture_database_find(fixture->database, query, NULL);
+
+		for (i = 0; i < deliveries->len; i++)
+		{
+			g_autoptr(JsonNode) node = venture_serializable_to_json(
+				VENTURE_SERIALIZABLE(g_ptr_array_index(deliveries, i)), TRUE);
+			g_autofree gchar *text = venture_json_to_string(node, FALSE);
+
+			g_assert_null(strstr(text, token));
+		}
+
+		fresh = venture_database_get(fixture->database, VENTURE_TYPE_WEBHOOK,
+		                             venture_entity_get_id(webhook), NULL);
+		{
+			g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(fresh), TRUE);
+
+			serialized = venture_json_to_string(node, FALSE);
+			g_assert_null(strstr(serialized, token));
+		}
+
+		/* The page's answer says it is set, never what it is. */
+		{
+			g_autoptr(JsonNode) described = venture_webhook_describe(fixture->context, &error);
+			g_autofree gchar *text = NULL;
+
+			g_assert_no_error(error);
+			text = venture_json_to_string(described, FALSE);
+			g_assert_nonnull(strstr(text, "\"token_set\":true"));
+			g_assert_nonnull(strstr(text, "\"format\":\"gotify\""));
+			g_assert_null(strstr(text, token));
+		}
+	}
+
+	/* A far end that echoes the header back has it masked in the log. */
+	fixture->answer_with = SOUP_STATUS_UNAUTHORIZED;
+	fixture->answer_body = g_strdup_printf("{\"error\":\"bad key %s\"}", token);
+	{
+		g_autoptr(VentureEntity) fresh = venture_database_get(fixture->database, VENTURE_TYPE_WEBHOOK,
+		                                                      venture_entity_get_id(webhook), NULL);
+		g_autofree gchar *excerpt = NULL;
+
+		delivery = venture_webhook_test(fixture->context, fresh, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(delivery);
+		g_object_get(delivery, "state", &state, "response-excerpt", &excerpt, NULL);
+		g_assert_cmpint(state, ==, VENTURE_DELIVERY_STATE_FAILED);
+		g_assert_nonnull(strstr(excerpt, "[redacted]"));
+		g_assert_null(strstr(excerpt, token));
+		g_assert_cmpstr(fixture->last_path, ==, "/message");
+	}
+
+	/* Pointed somewhere else -- even an allowed origin -- the token stays
+	 * home until it is set again for the new place. */
+	{
+		g_autoptr(VentureEntity) fresh = venture_database_get(fixture->database, VENTURE_TYPE_WEBHOOK,
+		                                                      venture_entity_get_id(webhook), NULL);
+		g_autoptr(VentureEntity) moved_ticket = NULL;
+		g_autofree gchar *both = g_strdup_printf("%s,http://gotify.invalid:8280", origin);
+		guint was = fixture->received;
+		gint64 deliveries;
+
+		g_object_set(fixture->config, "webhooks-allowed-origins", both, NULL);
+		g_object_set(fresh, "url", "http://gotify.invalid:8280", NULL);
+		g_assert_true(venture_database_save(fixture->database, fresh, NULL, NULL));
+		deliveries = count_of(fixture, VENTURE_TYPE_WEBHOOK_DELIVERY);
+		moved_ticket = create_ticket(fixture, "Elsewhere");
+		settle(fixture, deliveries + 1);
+		g_assert_cmpuint(fixture->received, ==, was);
+		g_clear_pointer(&failure, g_free);
+		failure = last_failure(fixture, &state);
+		g_assert_nonnull(strstr(failure, "set the token again"));
+		g_assert_null(strstr(failure, token));
+	}
+}
+
+/*
+ * An ntfy webhook posts the message as the body to its topic, with Title
+ * and Priority headers and its token, when it has one, as a bearer; with
+ * none it posts anyway -- a public topic needs no token.
+ *
+ * What breaks if this regresses: ntfy gets VENTURE's JSON envelope as the
+ * notification's text, or nothing at all for a topic without a token.
+ */
+static void
+test_webhook_ntfy_push(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *origin = NULL;
+	g_autofree gchar *topic = NULL;
+
+	(void)user_data;
+
+	seal_with_a_key(fixture);
+	origin = endpoint_origin(fixture);
+	topic = g_strconcat(origin, "/trading", NULL);
+	g_object_set(fixture->config, "webhooks-allowed-origins", origin, NULL);
+	webhook = create_push(fixture, VENTURE_WEBHOOK_FORMAT_NTFY, topic, 0);
+
+	ticket = create_ticket(fixture, "Peacebloom is back");
+	settle(fixture, 1);
+	g_assert_cmpuint(fixture->received, ==, 1);
+	g_assert_cmpstr(fixture->last_path, ==, "/trading");
+	g_assert_cmpstr(fixture->last_body, ==, "Peacebloom is back");
+	g_assert_cmpstr(fixture->last_title, ==, "Ticket");
+	g_assert_cmpstr(fixture->last_priority, ==, "3");
+	g_assert_null(fixture->last_authorization);
+
+	g_assert_true(venture_webhook_set_token(fixture->context, webhook, "tk_secretvalue", NULL, &error));
+	g_assert_no_error(error);
+	second = create_ticket(fixture, "With a token");
+	settle(fixture, 2);
+	g_assert_cmpuint(fixture->received, ==, 2);
+	g_assert_cmpstr(fixture->last_authorization, ==, "Bearer tk_secretvalue");
+
+	/* A venture webhook takes no token: it is signed with its secret. */
+	{
+		g_autoptr(VentureEntity) plain = create_webhook(fixture, "invoice.*", NULL);
+
+		g_assert_false(venture_webhook_set_token(fixture->context, plain, "x", NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	}
 }
 
 /* --- Routing --------------------------------------------------------------- */
@@ -1031,6 +1340,8 @@ main(
 	ADD("/webhook/test-and-secret", test_webhook_test_and_secret);
 	ADD("/webhook/module-off-sends-nothing",
 	    test_webhook_module_off_sends_nothing);
+	ADD("/webhook/gotify-push", test_webhook_gotify_push);
+	ADD("/webhook/ntfy-push", test_webhook_ntfy_push);
 	ADD("/routing/assigns-new-tickets", test_routing_assigns_new_tickets);
 	ADD("/routing/least-busy-and-empty", test_routing_least_busy_and_empty);
 	ADD("/support/report-scores-ratings", test_support_report_scores_ratings);

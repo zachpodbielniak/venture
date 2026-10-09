@@ -252,7 +252,7 @@ static const VentureFieldDecl venture_alert_rule_fields[] = {
 	VENTURE_FIELD_ENUM("kind", "Kind",
 	                   "below, above, pct_vs_reference, spread, out_of_stock, back_in_stock, "
 	                   "shortage, spike, undercut, entry_match, position_expiring, "
-	                   "inbound_expiring, account_stale or collect_ready",
+	                   "inbound_expiring, account_stale, collect_ready or deal",
 	                   venture_alert_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("enabled", "Enabled",
 	              "Evaluated after every feed run; switched off, it keeps its hits and fires no more",
@@ -275,11 +275,13 @@ static const VentureFieldDecl venture_alert_rule_fields[] = {
 	              "Optional: only at venues in this group -- a region; an account kind: accounts in this group",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("threshold", "Threshold price",
-	                    "below and above: the line the cheapest unit crosses; spread: the least gap worth hearing about"),
+	                    "below and above: the line the cheapest unit crosses; spread: the least gap worth hearing about; "
+	                    "deal: the least profit after the cut (optional with a threshold number)"),
 	VENTURE_FIELD("threshold-number", "Threshold number",
 	              "pct_vs_reference: a percent of the reference (80 is 20% under it); shortage: units; "
 	              "spike: a percent change, negative for a drop; position_expiring and "
-	              "inbound_expiring: hours ahead, up to 720; account_stale: days unseen, up to 365",
+	              "inbound_expiring: hours ahead, up to 720; account_stale: days unseen, up to 365; "
+	              "deal: the least return, a percent of the buy price (optional with a threshold price)",
 	              VENTURE_FIELD_KIND_DOUBLE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("pattern", "Pattern",
 	              "entry_match: text an entry's title or summary contains, ignoring case",

@@ -316,8 +316,28 @@ alerts_validate_rule(
 		}
 	}
 
-	/* The price threshold. */
-	if (alerts_kind_reads_price(kind))
+	/* The price threshold. A deal reads a least profit, a least return or
+	 * both, and at least one: a deal rule with neither fires on every
+	 * cheap unit there is. */
+	if (VENTURE_ALERT_KIND_DEAL == kind)
+	{
+		if ((NULL == threshold) && (0.0 == number))
+		{
+			venture_set_error_validation(error, "Threshold number",
+				"a deal rule needs a least return (threshold number, a percent of the buy "
+				"price), a least profit (threshold price), or both");
+			return FALSE;
+		}
+
+		if ((NULL != threshold) &&
+		    (venture_money_is_negative(threshold) || venture_money_is_zero(threshold)))
+		{
+			venture_set_error_validation(error, "Threshold price",
+				"is the least profit worth hearing about, above nothing");
+			return FALSE;
+		}
+	}
+	else if (alerts_kind_reads_price(kind))
 	{
 		if (NULL == threshold)
 		{
@@ -388,6 +408,15 @@ alerts_validate_rule(
 			venture_set_error_validation(error, "Threshold number",
 				"must be the days an account may go unseen, above 0 and at most %d",
 				VENTURE_ALERTS_MAX_STALE_DAYS);
+			return FALSE;
+		}
+		break;
+	case VENTURE_ALERT_KIND_DEAL:
+		if ((number < 0.0) || (number > 100000.0))
+		{
+			venture_set_error_validation(error, "Threshold number",
+				"must be the least return in percent of the buy price, 0 (none) to 100000: "
+				"20 fires when the sale after the cut makes a fifth over the price paid");
 			return FALSE;
 		}
 		break;
@@ -645,6 +674,7 @@ typedef struct
 	GHashTable	*venue_listings;	/* venue key -> GPtrArray of borrowed AlertsListing */
 	gboolean	 listings_capped;	/* more open listings than were frozen */
 	VentureMarketdataIgnores *ignores;	/* the accounts the account rules pass over */
+	gint64		 stale_after;		/* seconds: series.stale_minutes, for deal rules */
 } AlertsFrozen;
 
 static void
@@ -1323,6 +1353,10 @@ alerts_freeze(
 	 * character's listings, mail and absence are nobody's business. */
 	frozen->ignores = venture_marketdata_ignores_load(context, frozen->organization_id);
 
+	/* The age past which Deals calls a price stale, read where the
+	 * configuration may be read; a deal rule judges neither side older. */
+	frozen->stale_after = venture_marketdata_stale_seconds(context);
+
 	return frozen;
 }
 
@@ -1405,6 +1439,26 @@ alerts_candidate_new(
 	json_object_set_string_member(candidate, "instrument_name",
 	                              (NULL != instrument_name) ? instrument_name : "");
 	json_object_set_int_member(candidate, "observed_at", observed_at);
+
+	return candidate;
+}
+
+/* A candidate about one store row: its venue's name rides along, so the
+ * message names the realm as a person knows it ("Silver Hand"), not by
+ * the store's key ("3676"). */
+static JsonObject *
+alerts_row_candidate_new(
+	const AlertsRule	*rule,
+	const gchar		*subject,
+	const VentureSeriesRow	*row
+){
+	JsonObject *candidate;
+
+	candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
+	                                 row->instrument_name, row->taken_at);
+
+	if (!venture_string_is_empty(row->venue_name))
+		json_object_set_string_member(candidate, "venue_name", row->venue_name);
 
 	return candidate;
 }
@@ -1545,6 +1599,7 @@ alerts_check_spread(
 	VentureSeriesRow *buy;
 	const gchar *group;
 	const gchar *sell_venue;
+	const gchar *sell_name;
 	JsonObject *candidate;
 	gint64 best;
 	gint64 spread;
@@ -1576,6 +1631,7 @@ alerts_check_spread(
 
 	best = VENTURE_SERIES_NONE;
 	sell_venue = NULL;
+	sell_name = NULL;
 
 	for (i = 0; i < rows->len; i++)
 	{
@@ -1593,6 +1649,7 @@ alerts_check_spread(
 		{
 			best = value;
 			sell_venue = other->venue_key;
+			sell_name = other->venue_name;
 		}
 	}
 
@@ -1601,13 +1658,17 @@ alerts_check_spread(
 		return TRUE;
 
 	subject = alerts_row_subject(buy);
-	candidate = alerts_candidate_new(rule, subject, buy->venue_key, buy->instrument_key,
-	                                 buy->instrument_name, row->taken_at);
+	candidate = alerts_row_candidate_new(rule, subject, buy);
+	json_object_set_int_member(candidate, "observed_at", row->taken_at);
 	alerts_set_price(candidate, "observed", buy->min_price, buy->currency);
 	alerts_set_price(candidate, "reference", best, buy->currency);
 	alerts_set_price(candidate, "spread", spread, buy->currency);
 	alerts_set_price(candidate, "threshold", rule->threshold, rule->currency);
 	json_object_set_string_member(candidate, "other_venue_key", sell_venue);
+
+	if (!venture_string_is_empty(sell_name))
+		json_object_set_string_member(candidate, "other_venue_name", sell_name);
+
 	alerts_sink_add(sink, rule, candidate);
 
 	return TRUE;
@@ -1691,8 +1752,7 @@ alerts_check_spike(
 		return TRUE;
 
 	subject = alerts_row_subject(row);
-	candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
-	                                 row->instrument_name, row->taken_at);
+	candidate = alerts_row_candidate_new(rule, subject, row);
 
 	if (quantity)
 	{
@@ -1714,10 +1774,79 @@ alerts_check_spike(
 	return TRUE;
 }
 
+/*
+ * deal: buy the venue's cheapest unit, sell where Deals would sell it --
+ * venture_marketdata_deal_sell_side(), the page's own reckoning, never a
+ * second formula -- and fire when the profit after the cut and the return
+ * on the buy price reach what the rule asks. Nothing stale is a deal:
+ * the buy side's snapshot and every sell venue's must be newer than
+ * series.stale_minutes, because a realm whose feed stopped reads exactly
+ * like a cheap one (and a dear one). The candidate is about the buy
+ * venue, so the cooldown is kept per realm and item.
+ */
+static gboolean
+alerts_check_deal(
+	VentureSeriesStore	 *store,
+	const AlertsFrozen	 *frozen,
+	const AlertsRule	 *rule,
+	const VentureSeriesRow	 *row,
+	gint64			  now,
+	AlertsSink		 *sink,
+	GError			**error
+){
+	g_autoptr(VentureSeriesRow) sell = NULL;
+	g_autofree gchar *subject = NULL;
+	JsonObject *candidate;
+	gint64 fresh_after;
+	gint64 profit;
+	gdouble roi;
+
+	(void)error;
+
+	if ((VENTURE_SERIES_NONE == row->min_price) || (row->quantity <= 0) || (row->min_price <= 0))
+		return TRUE;
+
+	/* A threshold in another currency says nothing about this row. */
+	if ((VENTURE_SERIES_NONE != rule->threshold) && (0 != g_ascii_strcasecmp(row->currency, rule->currency)))
+		return TRUE;
+
+	fresh_after = now - frozen->stale_after;
+
+	if (row->taken_at < fresh_after)
+		return TRUE;
+
+	sell = venture_marketdata_deal_sell_side(store, row, NULL, VENTURE_MARKETDATA_DEALS_CUT_PCT,
+	                                         fresh_after, &profit, &roi);
+
+	if ((NULL == sell) || (profit <= 0) ||
+	    ((VENTURE_SERIES_NONE != rule->threshold) && (profit < rule->threshold)) ||
+	    ((rule->number > 0.0) && (roi < rule->number)))
+		return TRUE;
+
+	subject = alerts_row_subject(row);
+	candidate = alerts_row_candidate_new(rule, subject, row);
+	alerts_set_price(candidate, "observed", row->min_price, row->currency);
+	alerts_set_price(candidate, "reference", sell->min_price, sell->currency);
+	alerts_set_price(candidate, "profit", profit, row->currency);
+	json_object_set_double_member(candidate, "observed_number", roi);
+	json_object_set_double_member(candidate, "reference_number", rule->number);
+	json_object_set_double_member(candidate, "cut_pct", VENTURE_MARKETDATA_DEALS_CUT_PCT);
+	json_object_set_string_member(candidate, "other_venue_key", sell->venue_key);
+	json_object_set_int_member(candidate, "other_taken_at", sell->taken_at);
+
+	if (!venture_string_is_empty(sell->venue_name))
+		json_object_set_string_member(candidate, "other_venue_name", sell->venue_name);
+
+	alerts_sink_add(sink, rule, candidate);
+
+	return TRUE;
+}
+
 /* Every kind that is about one row of the newest snapshot at a venue. */
 static gboolean
 alerts_check_row(
 	VentureSeriesStore	 *store,
+	const AlertsFrozen	 *frozen,
 	const AlertsRule	 *rule,
 	const VentureSeriesRow	 *row,
 	gint64			  now,
@@ -1738,8 +1867,7 @@ alerts_check_row(
 			return TRUE;
 
 		subject = alerts_row_subject(row);
-		candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
-		                                 row->instrument_name, row->taken_at);
+		candidate = alerts_row_candidate_new(rule, subject, row);
 		alerts_set_price(candidate, "observed", row->min_price, row->currency);
 		alerts_set_price(candidate, "reference", rule->threshold, rule->currency);
 		alerts_sink_add(sink, rule, candidate);
@@ -1765,8 +1893,7 @@ alerts_check_row(
 			return TRUE;
 
 		subject = alerts_row_subject(row);
-		candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
-		                                 row->instrument_name, row->taken_at);
+		candidate = alerts_row_candidate_new(rule, subject, row);
 		alerts_set_price(candidate, "observed", row->min_price, row->currency);
 		alerts_set_price(candidate, "reference", reference, row->currency);
 		json_object_set_double_member(candidate, "observed_number", percent);
@@ -1780,8 +1907,7 @@ alerts_check_row(
 			return TRUE;
 
 		subject = alerts_row_subject(row);
-		candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
-		                                 row->instrument_name, row->taken_at);
+		candidate = alerts_row_candidate_new(rule, subject, row);
 		json_object_set_int_member(candidate, "quantity", row->quantity);
 		json_object_set_double_member(candidate, "observed_number", (gdouble)row->quantity);
 		json_object_set_double_member(candidate, "reference_number", rule->number);
@@ -1802,8 +1928,7 @@ alerts_check_row(
 			return TRUE;
 
 		subject = alerts_row_subject(row);
-		candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
-		                                 row->instrument_name, row->taken_at);
+		candidate = alerts_row_candidate_new(rule, subject, row);
 		json_object_set_int_member(candidate, "quantity", row->quantity);
 		json_object_set_double_member(candidate, "observed_number", (gdouble)row->quantity);
 
@@ -1819,6 +1944,9 @@ alerts_check_row(
 
 	case VENTURE_ALERT_KIND_SPREAD:
 		return alerts_check_spread(store, rule, row, now, sink, error);
+
+	case VENTURE_ALERT_KIND_DEAL:
+		return alerts_check_deal(store, frozen, rule, row, now, sink, error);
 
 	case VENTURE_ALERT_KIND_UNDERCUT:
 	case VENTURE_ALERT_KIND_ENTRY_MATCH:
@@ -1910,8 +2038,7 @@ alerts_evaluate_undercut(
 
 			subject = g_strdup_printf("%s|%s|listing:%" G_GINT64_FORMAT, row->venue_key,
 			                          row->instrument_key, listing->id);
-			candidate = alerts_candidate_new(rule, subject, row->venue_key, row->instrument_key,
-			                                 row->instrument_name, row->taken_at);
+			candidate = alerts_row_candidate_new(rule, subject, row);
 			alerts_set_price(candidate, "observed", row->min_price, row->currency);
 			alerts_set_price(candidate, "reference", listing->price, listing->currency);
 			json_object_set_int_member(candidate, "listing_id", listing->id);
@@ -1976,7 +2103,7 @@ alerts_evaluate_venue(
 				return FALSE;
 
 			if ((NULL != row) && (row->taken_at == taken_at) &&
-			    !alerts_check_row(store, rule, row, now, sink, error))
+			    !alerts_check_row(store, frozen, rule, row, now, sink, error))
 				return FALSE;
 		}
 	}
@@ -2022,7 +2149,7 @@ alerts_evaluate_venue(
 
 				examined++;
 
-				if (!alerts_check_row(store, rule, row, now, sink, error))
+				if (!alerts_check_row(store, frozen, rule, row, now, sink, error))
 					return FALSE;
 			}
 
@@ -3568,7 +3695,11 @@ alerts_describe(JsonObject *candidate)
 	name = json_object_get_string_member_with_default(candidate, "instrument_name", "");
 	what = !venture_string_is_empty(name) ? name
 	     : json_object_get_string_member_with_default(candidate, "instrument_key", "");
-	venue = json_object_get_string_member_with_default(candidate, "venue_key", "");
+	/* The realm as a person knows it, its key when the store has no name. */
+	venue = json_object_get_string_member_with_default(candidate, "venue_name", "");
+
+	if (venture_string_is_empty(venue))
+		venue = json_object_get_string_member_with_default(candidate, "venue_key", "");
 
 	switch (kind)
 	{
@@ -3589,12 +3720,35 @@ alerts_describe(JsonObject *candidate)
 		g_autofree gchar *spread = alerts_price_text(candidate, "spread");
 		g_autofree gchar *threshold = alerts_price_text(candidate, "threshold");
 
+		const gchar *other;
+
+		other = json_object_get_string_member_with_default(candidate, "other_venue_name", NULL);
+
+		if (venture_string_is_empty(other))
+			other = json_object_get_string_member_with_default(candidate, "other_venue_key",
+			                                                   "the group");
+
 		return g_strdup_printf("%s: buy at %s for %s, sell at %s for %s (%s): %s apart, at "
-		                       "least %s", what, venue, observed,
-		                       json_object_get_string_member_with_default(candidate,
-		                                                                  "other_venue_key",
-		                                                                  "the group"),
-		                       reference, alerts_basis_nick(basis), spread, threshold);
+		                       "least %s", what, venue, observed, other, reference,
+		                       alerts_basis_nick(basis), spread, threshold);
+	}
+
+	case VENTURE_ALERT_KIND_DEAL:
+	{
+		g_autofree gchar *profit = alerts_price_text(candidate, "profit");
+		const gchar *other;
+
+		other = json_object_get_string_member_with_default(candidate, "other_venue_name", NULL);
+
+		if (venture_string_is_empty(other))
+			other = json_object_get_string_member_with_default(candidate, "other_venue_key", "");
+
+		/* Short, because its first line is the label a webhook's push
+		 * carries; the cut is the Deals page's, said in the docs. */
+		return g_strdup_printf("%s: buy at %s for %s, sell at %s for %s, %s profit (%.1f%%)",
+		                       what, venue, observed, other, reference,
+		                       (NULL != profit) ? profit : "?",
+		                       json_object_get_double_member(candidate, "observed_number"));
 	}
 
 	case VENTURE_ALERT_KIND_OUT_OF_STOCK:

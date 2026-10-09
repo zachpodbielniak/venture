@@ -881,6 +881,7 @@ static const GEnumValue venture_alert_kind_values[] = {
 	VE(VENTURE_ALERT_KIND_INBOUND_EXPIRING, "inbound_expiring"),
 	VE(VENTURE_ALERT_KIND_ACCOUNT_STALE,    "account_stale"),
 	VE(VENTURE_ALERT_KIND_COLLECT_READY,    "collect_ready"),
+	VE(VENTURE_ALERT_KIND_DEAL,             "deal"),
 	VE_END
 };
 
@@ -1339,6 +1340,17 @@ static const GEnumValue venture_delivery_state_values[] = {
 VENTURE_DEFINE_ENUM_TYPE(venture_delivery_state_get_type,
                          "VentureDeliveryState",
                          venture_delivery_state_values)
+
+static const GEnumValue venture_webhook_format_values[] = {
+	VE(VENTURE_WEBHOOK_FORMAT_VENTURE, "venture"),
+	VE(VENTURE_WEBHOOK_FORMAT_GOTIFY,  "gotify"),
+	VE(VENTURE_WEBHOOK_FORMAT_NTFY,    "ntfy"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_webhook_format_get_type,
+                         "VentureWebhookFormat",
+                         venture_webhook_format_values)
 
 static const GEnumValue venture_routing_strategy_values[] = {
 	VE(VENTURE_ROUTING_STRATEGY_ROUND_ROBIN, "round_robin"),
