@@ -92,7 +92,7 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`8955f90bfeebbc78cbd0206c106364ae0069dd8a` (2026-10-08, server version
+`0923a4a5a78135cbb25004892656d61fd069f8d7` (2026-10-09, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
