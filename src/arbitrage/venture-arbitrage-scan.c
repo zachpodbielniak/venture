@@ -832,6 +832,7 @@ struct _VentureArbitrageScan
 	GHashTable			*attrs;		/* "id\037key" -> JsonObject, or NULL */
 	GHashTable			*region_wide;	/* source id -> GHashTable of keys, or NULL */
 	guint				 never_sells;
+	GArray				*recipe_ids;	/* Crafting's recipes (gint64), or NULL */
 };
 
 static void
@@ -891,6 +892,7 @@ arb_scan_free(VentureArbitrageScan *scan)
 	g_clear_pointer(&scan->no_rate, g_hash_table_unref);
 	g_clear_pointer(&scan->attrs, g_hash_table_unref);
 	g_clear_pointer(&scan->region_wide, g_hash_table_unref);
+	g_clear_pointer(&scan->recipe_ids, g_array_unref);
 	g_free(scan);
 }
 
@@ -910,6 +912,14 @@ venture_arbitrage_scan_get_organization_id(VentureArbitrageScan *scan)
 	g_return_val_if_fail(NULL != scan, 0);
 
 	return scan->organization_id;
+}
+
+const GArray *
+venture_arbitrage_scan_get_recipe_ids(VentureArbitrageScan *scan)
+{
+	g_return_val_if_fail(NULL != scan, NULL);
+
+	return scan->recipe_ids;
 }
 
 JsonObject *
@@ -2245,12 +2255,18 @@ arb_rate_notes(VentureArbitrageScan *scan)
 	}
 }
 
-JsonNode *
-venture_arbitrage_scan_run_full(
+/*
+ * The scan. @recipe_ids, when given, is the set of recipes `transform`
+ * prices -- every one, past the scan's own bound of recipes -- and every
+ * row judged is kept, past `top`: Crafting's whole answer.
+ */
+static JsonNode *
+arb_scan_run(
 	VentureContext	 *context,
 	gint64		  organization_id,
 	JsonObject	 *options,
 	gboolean	  keep_all,
+	const GArray	 *recipe_ids,
 	GError		**error
 ){
 	g_autoptr(VentureArbitrageScan) scan = NULL;
@@ -2314,6 +2330,12 @@ venture_arbitrage_scan_run_full(
 	scan->no_rate = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	scan->attrs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, arb_unref_attrs);
 	scan->region_wide = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, arb_unref_keys);
+
+	if (NULL != recipe_ids)
+	{
+		scan->recipe_ids = g_array_sized_new(FALSE, FALSE, sizeof(gint64), recipe_ids->len);
+		g_array_append_vals(scan->recipe_ids, recipe_ids->data, recipe_ids->len);
+	}
 
 	available = TRUE;
 
@@ -2427,7 +2449,7 @@ venture_arbitrage_scan_run_full(
 	order.book = book;
 	g_ptr_array_sort_with_data(kept, arb_compare_rows, &order);
 
-	top = (guint)venture_json_object_get_int(normalised, "top", 50);
+	top = (NULL != recipe_ids) ? G_MAXUINT : (guint)venture_json_object_get_int(normalised, "top", 50);
 
 	/* --- The answer --- */
 
@@ -2471,6 +2493,31 @@ venture_arbitrage_scan_run_full(
 	json_node_take_object(node, root);
 
 	return node;
+}
+
+JsonNode *
+venture_arbitrage_scan_run_full(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	JsonObject	 *options,
+	gboolean	  keep_all,
+	GError		**error
+){
+	return arb_scan_run(context, organization_id, options, keep_all, NULL, error);
+}
+
+JsonNode *
+venture_arbitrage_scan_run_recipes(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	JsonObject	 *options,
+	gboolean	  keep_all,
+	const GArray	 *recipe_ids,
+	GError		**error
+){
+	g_return_val_if_fail(NULL != recipe_ids, NULL);
+
+	return arb_scan_run(context, organization_id, options, keep_all, recipe_ids, error);
 }
 
 JsonNode *

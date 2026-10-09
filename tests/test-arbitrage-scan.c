@@ -2887,6 +2887,277 @@ test_crafting_unpriced_fees(
 	g_assert_true(noted(answer, "no fee model"));
 }
 
+/* Says which characters know recipe @id: @keys is the known-by JSON. */
+static void
+set_known_by(
+	Fixture		*fixture,
+	gint64		 id,
+	const gchar	*keys
+){
+	g_autoptr(VentureEntity) recipe = venture_database_get(fixture->database, VENTURE_TYPE_RECIPE, id, NULL);
+
+	g_assert_nonnull(recipe);
+	g_object_set(recipe, "known-by", keys, NULL);
+	save(fixture, recipe);
+}
+
+/* How many rows the bounds left out for @reason. */
+static gint64
+excluded_for(
+	JsonNode	*answer,
+	const gchar	*reason
+){
+	JsonObject *excluded = json_object_get_object_member(json_node_get_object(answer), "excluded");
+
+	return json_object_get_int_member_with_default(excluded, reason, 0);
+}
+
+/*
+ * Crafting's filters, each a GET parameter and all combinable: the
+ * characters that know a recipe (account keys, several at once, comma
+ * separated), its profession (the top-level recipe category, any case),
+ * only what somebody knows (on by default once anybody knows anything),
+ * and bounds on profit, margin and cost to craft -- which leave out a
+ * recipe with no price and count it, where with no bound it is kept,
+ * flagged. Every row carries who knows it.
+ *
+ * What breaks if this regresses: a character's own crafts cannot be
+ * picked out of a thousand recipes, or an unpriced recipe disappears
+ * without a word.
+ */
+static void
+test_crafting_filters(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) all = NULL;
+	g_autoptr(JsonNode) alice = NULL;
+	g_autoptr(JsonNode) both = NULL;
+	g_autoptr(JsonNode) alchemy = NULL;
+	g_autoptr(JsonNode) nowhere = NULL;
+	g_autoptr(JsonNode) profit = NULL;
+	g_autoptr(JsonNode) too_much = NULL;
+	g_autoptr(JsonNode) cost_ok = NULL;
+	g_autoptr(JsonNode) cost_over = NULL;
+	g_autoptr(JsonNode) margin = NULL;
+	g_autoptr(JsonNode) known = NULL;
+	g_autoptr(JsonNode) every = NULL;
+	g_autoptr(JsonNode) khaz_only = NULL;
+	g_autoptr(JsonNode) no_such = NULL;
+	JsonObject *row;
+	JsonArray *choices;
+	gint64 alchemy_id = 0;
+	gint64 quick;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_market(fixture);
+	venue_record(fixture, "realm-a", "none", NULL, NULL);
+	venue_record(fixture, "realm-b", "percent", "cut_percent: 5\ndeposit_percent: 10", NULL);
+	venue_record(fixture, "market", "none", NULL, NULL);
+	seed_recipe(fixture);
+	quick = seed_quick_brew(fixture, &alchemy_id);
+	set_known_by(fixture, quick, "[\"Alice-Realm A\"]");
+
+	/* Quick brew is a Khaz Algar flask: profession / expansion / section. */
+	{
+		gint64 khaz = recipe_category(fixture, "Khaz Algar", alchemy_id);
+		g_autoptr(VentureEntity) recipe = venture_database_get(fixture->database, VENTURE_TYPE_RECIPE, quick,
+		                                                       NULL);
+
+		g_object_set(recipe, "category-id", recipe_category(fixture, "Flasks", khaz), NULL);
+		save(fixture, recipe);
+	}
+	set_known_by(fixture, fixture->recipe, "[\"Bob-Realm A\",\"Alice-Realm A\"]");
+
+	/* Alice's account, as a push leaves it: her Alchemy by expansion. */
+	{
+		g_autoptr(VentureEntity) source = NULL;
+		g_autoptr(VentureSeriesStore) store = NULL;
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *dir = NULL;
+		VentureSeriesAccountBatch batch;
+		VentureSeriesAccountResult result;
+		VentureSeriesAccount alice_account;
+
+		source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+		dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+		store = venture_series_store_open(dir, &error);
+		g_assert_no_error(error);
+		memset(&alice_account, 0, sizeof(alice_account));
+		alice_account.key = "Alice-Realm A";
+		alice_account.name = "Alice";
+		alice_account.kind = "character";
+		alice_account.attrs_json = "{\"profession:Alchemy\":70,\"profession_max:Alchemy\":100,"
+		                           "\"profession_tiers:Alchemy\":\"Classic 300/300; Khaz Algar 42/100\"}";
+		alice_account.last_seen = VENTURE_SERIES_NONE;
+		memset(&batch, 0, sizeof(batch));
+		memset(&result, 0, sizeof(result));
+		batch.currency = "USD";
+		batch.accounts = &alice_account;
+		batch.n_accounts = 1;
+		g_assert_true(venture_series_store_apply_accounts(store, &batch, fixture->now, &result, &error));
+		g_assert_no_error(error);
+	}
+
+#define REALMS "\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\",\"units\":\"3\""
+
+	/* Both known: both rows, Brew (its mortar unquoted on realm-a)
+	 * kept, last and flagged; the pickers offer both characters. */
+	all = crafting(fixture, "{" REALMS "}");
+	g_assert_cmpuint(json_array_get_length(rows_of(all)), ==, 2);
+	row = json_array_get_object_element(rows_of(all), 0);
+	g_assert_cmpint(json_object_get_int_member(row, "recipe_id"), ==, quick);
+	g_assert_false(json_object_get_boolean_member(row, "unpriced"));
+	g_assert_cmpstr(json_array_get_string_element(json_object_get_array_member(row, "known_by"), 0), ==,
+	                "Alice-Realm A");
+	g_assert_cmpstr(json_object_get_string_member(row, "expansion"), ==, "Khaz Algar");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(json_object_get_array_member(
+	                row, "knowers"), 0), "key"), ==, "Alice-Realm A");
+
+	/* Her rank in the recipe's expansion, from her account. Brew is
+	 * filed nowhere, so no profession says which rank: none, for her or
+	 * for Bob (who has no account at all). */
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(json_object_get_array_member(
+	                row, "knowers"), 0), "rank"), ==, "Khaz Algar 42/100");
+	{
+		JsonArray *brew = json_object_get_array_member(json_array_get_object_element(rows_of(all), 1),
+		                                               "knowers");
+
+		g_assert_cmpuint(json_array_get_length(brew), ==, 2);
+		g_assert_true(json_object_get_null_member(json_array_get_object_element(brew, 0), "rank"));
+		g_assert_true(json_object_get_null_member(json_array_get_object_element(brew, 1), "rank"));
+	}
+	g_assert_true(json_object_get_null_member(json_array_get_object_element(rows_of(all), 1), "expansion"));
+	choices = json_object_get_array_member(json_node_get_object(all), "expansion_choices");
+	g_assert_cmpuint(json_array_get_length(choices), ==, 1);
+	g_assert_cmpstr(json_array_get_string_element(choices, 0), ==, "Khaz Algar");
+	g_assert_true(json_object_get_boolean_member(json_array_get_object_element(rows_of(all), 1), "unpriced"));
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_node_get_object(all),
+	                                                                              "question"), "only_known"),
+	                ==, "1");
+	choices = json_object_get_array_member(json_node_get_object(all), "character_choices");
+	g_assert_cmpuint(json_array_get_length(choices), ==, 2);
+	g_assert_cmpstr(json_array_get_string_element(choices, 0), ==, "Alice-Realm A");
+	g_assert_cmpstr(json_array_get_string_element(choices, 1), ==, "Bob-Realm A");
+	choices = json_object_get_array_member(json_node_get_object(all), "profession_choices");
+	g_assert_cmpuint(json_array_get_length(choices), ==, 1);
+	g_assert_cmpstr(json_array_get_string_element(choices, 0), ==, "Alchemy");
+
+	/* One character, then two. */
+	alice = crafting(fixture, "{" REALMS ",\"character\":\"Bob-Realm A\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(alice)), ==, 1);
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(rows_of(alice), 0), "recipe_id"),
+	                ==, fixture->recipe);
+	both = crafting(fixture, "{" REALMS ",\"character\":\"Bob-Realm A, Alice-Realm A\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(both)), ==, 2);
+
+	/* A profession, in any case; one nobody has is no recipe and says so. */
+	alchemy = crafting(fixture, "{" REALMS ",\"profession\":\"alchemy\",\"character\":\"Bob-Realm A,Alice-Realm A\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(alchemy)), ==, 1);
+	nowhere = crafting(fixture, "{" REALMS ",\"profession\":\"Jewelcrafting\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(nowhere)), ==, 0);
+	g_assert_true(noted(nowhere, "No recipe category is a profession called Jewelcrafting"));
+
+	/* An expansion, in any case, with the profession or alone. */
+	khaz_only = crafting(fixture, "{" REALMS ",\"expansion\":\"khaz algar\",\"profession\":\"Alchemy\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(khaz_only)), ==, 1);
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(rows_of(khaz_only), 0),
+	                                           "recipe_id"), ==, quick);
+	no_such = crafting(fixture, "{" REALMS ",\"expansion\":\"Midnight\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(no_such)), ==, 0);
+	g_assert_true(noted(no_such, "No recipe category is an expansion called Midnight"));
+
+	/* Profit: a bare number is in the craft's own currency; the blank
+	 * Brew is left out and counted. */
+	profit = crafting(fixture, "{" REALMS ",\"min_profit\":\"1\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(profit)), ==, 1);
+	g_assert_cmpint(excluded_for(profit, "unpriced"), ==, 1);
+	g_assert_true(noted(profit, "1 recipe with no price was left out"));
+	too_much = crafting(fixture, "{" REALMS ",\"min_profit\":\"100000 USD\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(too_much)), ==, 0);
+	g_assert_cmpint(excluded_for(too_much, "min_profit"), ==, 1);
+
+	/* Cost to craft: 64.50 is Quick brew's, three batches. */
+	cost_ok = crafting(fixture, "{" REALMS ",\"max_cost\":\"64.50\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(cost_ok)), ==, 1);
+	cost_over = crafting(fixture, "{" REALMS ",\"max_cost\":\"64.49\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(cost_over)), ==, 0);
+	g_assert_cmpint(excluded_for(cost_over, "max_cost"), ==, 1);
+
+	/* Margin, a percent. */
+	margin = crafting(fixture, "{" REALMS ",\"min_margin\":\"99\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(margin)), ==, 0);
+	g_assert_cmpint(excluded_for(margin, "min_margin"), ==, 1);
+
+	/* Nobody knows Brew any more: only what is known, unless asked. */
+	set_known_by(fixture, fixture->recipe, NULL);
+	known = crafting(fixture, "{" REALMS "}");
+	g_assert_cmpuint(json_array_get_length(rows_of(known)), ==, 1);
+	every = crafting(fixture, "{" REALMS ",\"only_known\":\"0\"}");
+	g_assert_cmpuint(json_array_get_length(rows_of(every)), ==, 2);
+
+	for (i = 0; i < json_array_get_length(rows_of(every)); i++)
+		g_assert_true(json_object_has_member(json_array_get_object_element(rows_of(every), i), "known_by"));
+
+#undef REALMS
+}
+
+/*
+ * Crafting prices every recipe, past the scan's own 200 by name: with 252
+ * recipes, the most profitable one -- named last -- leads the answer, and
+ * every recipe has its row.
+ *
+ * What breaks if this regresses: a crafter with a thousand recipes is
+ * shown the first two hundred alphabetically, and the best craft is
+ * never seen.
+ */
+static void
+test_crafting_past_the_cap(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	gint64 best = 0;
+	gint64 started;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_recipe(fixture);
+
+	for (i = 0; i <= 250; i++)
+	{
+		g_autoptr(VentureEntity) recipe = record(fixture, "recipe");
+		g_autoptr(VentureEntity) component = record(fixture, "recipe_component");
+		g_autofree gchar *name = (i < 250) ? g_strdup_printf("Cheap %03u", i) : g_strdup("Zz best");
+
+		g_object_set(recipe, "name", name, "output-product-id", fixture->potion_product,
+		             "output-quantity", (gint64)((i < 250) ? 1 : 4), "active", TRUE, NULL);
+		save(fixture, recipe);
+		g_object_set(component, "recipe-id", ID(recipe), "product-id", fixture->herb_product,
+		             "quantity", (gint64)((i < 250) ? 2 : 1), NULL);
+		save(fixture, component);
+
+		if (250 == i)
+			best = ID(recipe);
+	}
+
+	started = g_get_monotonic_time();
+	answer = crafting(fixture, "{}");
+	g_test_message("252 recipes priced in %" G_GINT64_FORMAT " ms",
+	               (g_get_monotonic_time() - started) / 1000);
+	g_assert_cmpuint(json_array_get_length(rows_of(answer)), ==, 252);
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(rows_of(answer), 0), "recipe_id"), ==,
+	                best);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(answer), "recipes"), ==, 252);
+	g_assert_false(noted(answer, "Only the first 200 recipes"));
+	g_assert_false(json_object_get_boolean_member(json_node_get_object(answer), "truncated"));
+}
+
 /* The plan's totals in @currency. */
 static JsonObject *
 plan_total(
@@ -3291,6 +3562,38 @@ test_crafting_pages(
 	g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/crafting?min_rio=5", NULL, &api, NULL, NULL), ==,
 	                 400);
 
+	/* Who knows a recipe: a column of links narrowing to each, and a
+	 * <select multiple> of characters, one parameter per choice. */
+	g_assert_nonnull(strstr(page, ">Cost to craft</th>"));
+	g_assert_nonnull(strstr(page, ">Known by</th>"));
+	{
+		g_autofree gchar *known = NULL;
+		g_autofree gchar *both = NULL;
+		g_autoptr(JsonNode) narrowed = NULL;
+
+		set_known_by(fixture, fixture->recipe, "[\"Bob-Realm A\"]");
+		known = get_page(fixture, "/arbitrage/crafting?buy_realm=realm-a&sell_realm=realm-b");
+		g_assert_nonnull(strstr(known, "<a href=\"/arbitrage/crafting?character=Bob-Realm%20A&amp;"
+		                               "buy_realm=realm-a&amp;sell_realm=realm-b\">Bob-Realm A</a>"));
+		g_assert_nonnull(strstr(known, "<option value=\"Bob-Realm A\">Bob-Realm A</option>"));
+		g_assert_null(strstr(known, "Quick brew: Healing Potion"));
+
+		g_clear_pointer(&api, g_free);
+		set_known_by(fixture, fixture->recipe, "[\"Bob-Realm A\",\"Cy-Realm B\"]");
+		g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/crafting?character=Bob-Realm+A&character="
+		                      "Cy-Realm%20B&only_known=0", NULL, &api, NULL, NULL), ==, 200);
+		narrowed = json_from_string(api, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(json_array_get_length(rows_of(narrowed)), ==, 1);
+		g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_node_get_object(narrowed),
+		                                                                              "question"), "character"),
+		                ==, "Bob-Realm A,Cy-Realm B");
+		both = get_page(fixture, "/arbitrage/crafting?character=Bob-Realm+A&character=Cy-Realm+B");
+		g_assert_nonnull(strstr(both, "<option value=\"Bob-Realm A\" selected>"));
+		g_assert_nonnull(strstr(both, "<option value=\"Cy-Realm B\" selected>"));
+		set_known_by(fixture, fixture->recipe, NULL);
+	}
+
 	/* Deals: a deal goes on the plan as its spread. */
 	deals = get_page(fixture, "/market/deals");
 	assert_buttons_named(deals, "/market/deals");
@@ -3378,6 +3681,8 @@ main(
 	ADD("attribution", test_attribution);
 	ADD("crafting", test_crafting);
 	ADD("crafting-unpriced-fees", test_crafting_unpriced_fees);
+	ADD("crafting-filters", test_crafting_filters);
+	ADD("crafting-past-the-cap", test_crafting_past_the_cap);
 	ADD("crafting-pages", test_crafting_pages);
 	ADD("planner-build", test_planner_build);
 	ADD("planner", test_planner);

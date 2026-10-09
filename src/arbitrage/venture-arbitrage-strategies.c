@@ -1885,6 +1885,7 @@ arb_transform_scan(
 	g_autoptr(GPtrArray) keep = NULL;
 	g_autoptr(GPtrArray) recipes = NULL;
 	g_autoptr(VentureQuery) query = NULL;
+	const GArray *chosen;
 	VentureContext *context;
 	ArbWalk walk;
 	gint64 recipe_id;
@@ -1907,10 +1908,29 @@ arb_transform_scan(
 	keep = g_ptr_array_new_with_free_func((GDestroyNotify)g_ptr_array_unref);
 	recipe_id = venture_json_object_get_int(walk.options, "recipe_id", 0);
 	category_id = venture_json_object_get_int(walk.options, "recipe_category_id", 0);
+	chosen = venture_arbitrage_scan_get_recipe_ids(scan);
 	query = venture_query_new(VENTURE_TYPE_RECIPE);
 	venture_query_set_organization(query, venture_arbitrage_scan_get_organization_id(scan));
-	venture_query_set_limit(query, ARB_SCAN_RECIPES + 1);
+	venture_query_set_limit(query, (NULL != chosen) ? chosen->len + 1 : (guint)(ARB_SCAN_RECIPES + 1));
 	ok = venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, error);
+
+	/* Crafting chose its recipes (and bounded them) itself: exactly
+	 * those, every one, however many past the scan's own bound. */
+	if (ok && (NULL != chosen))
+	{
+		g_autoptr(GPtrArray) operands = g_ptr_array_new_with_free_func(g_free);
+
+		if (0 == chosen->len)
+		{
+			arb_walk_clear(&walk);
+			return TRUE;
+		}
+
+		for (i = 0; i < chosen->len; i++)
+			g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT, g_array_index(chosen, gint64, i)));
+
+		ok = venture_query_add_filter(query, "id", VENTURE_FILTER_OP_IN, operands, error);
+	}
 
 	if (ok && (recipe_id > 0))
 		ok = venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, recipe_id, error);
@@ -1947,7 +1967,7 @@ arb_transform_scan(
 		ok = FALSE;
 	}
 
-	if (ok && (recipes->len > ARB_SCAN_RECIPES))
+	if (ok && (NULL == chosen) && (recipes->len > ARB_SCAN_RECIPES))
 	{
 		g_ptr_array_set_size(recipes, ARB_SCAN_RECIPES);
 		venture_arbitrage_scan_add_note(scan, "Only the first 200 recipes by name were priced; "

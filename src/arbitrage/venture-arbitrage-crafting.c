@@ -30,14 +30,22 @@
 
 static const gchar *const craft_options[] = {
 	"data_source_id", "recipe_category_id", "recipe_id", "buy_realm", "sell_realm", "venue_group",
-	"units", "sell_basis", "max_age_hours", "share", NULL
+	"units", "sell_basis", "max_age_hours", "share", "character", "profession", "expansion", "only_known",
+	"min_profit", "min_margin", "max_cost", "min_sold_per_day", NULL
 };
 
-/* The options the scan reads as they are given; the realms are read here. */
+/* The options the scan reads as they are given. The realms are read here,
+ * and so is which recipes: Crafting chooses them itself (below) and hands
+ * the scan the set. */
 static const gchar *const craft_passed[] = {
-	"data_source_id", "recipe_category_id", "recipe_id", "venue_group", "units", "sell_basis",
-	"max_age_hours", "share", NULL
+	"data_source_id", "venue_group", "units", "sell_basis", "max_age_hours", "share", NULL
 };
+
+/* The most recipes one Crafting question prices. Every one of them is
+ * priced -- the scan's own bound of 200 by name is not Crafting's, or the
+ * most profitable craft of a thousand known would never be seen -- so
+ * past this the question must be narrowed, by profession or category. */
+#define CRAFT_RECIPES_MAX (5000)
 
 const gchar *const *
 venture_arbitrage_crafting_option_names(void)
@@ -73,6 +81,797 @@ craft_realm(
 	joined = g_strjoinv(",", keys);
 	json_object_set_string_member(scan_options, scan_option, joined);
 	json_object_set_string_member(question, option, label);
+
+	return TRUE;
+}
+
+/* A yes/no option: TRUE for 1/true/yes/on, FALSE for 0/false/no/off,
+ * @fallback when not given; anything else is refused. */
+static gboolean
+craft_flag(
+	JsonObject	 *question,
+	const gchar	 *option,
+	gboolean	  fallback,
+	gboolean	 *out,
+	GError		**error
+){
+	const gchar *text = venture_json_object_get_string(question, option, NULL);
+
+	*out = fallback;
+
+	if (NULL == text)
+		return TRUE;
+
+	if ((0 == g_ascii_strcasecmp(text, "1")) || (0 == g_ascii_strcasecmp(text, "true")) ||
+	    (0 == g_ascii_strcasecmp(text, "yes")) || (0 == g_ascii_strcasecmp(text, "on")))
+		*out = TRUE;
+	else if ((0 == g_ascii_strcasecmp(text, "0")) || (0 == g_ascii_strcasecmp(text, "false")) ||
+	         (0 == g_ascii_strcasecmp(text, "no")) || (0 == g_ascii_strcasecmp(text, "off")))
+		*out = FALSE;
+	else
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "%s is 1 or 0", option);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* A whole-number option, 0 when not given; anything else is refused. */
+static gboolean
+craft_id(
+	JsonObject	 *question,
+	const gchar	 *option,
+	gint64		 *out,
+	GError		**error
+){
+	const gchar *text = venture_json_object_get_string(question, option, NULL);
+
+	*out = 0;
+
+	if ((NULL != text) && !g_ascii_string_to_signed(text, 10, 1, G_MAXINT64, out, NULL))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "%s is a record's id", option);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* A recipe's knowers, from its known-by field: account keys, or an empty
+ * list for a recipe nobody was said to know (or one written by hand that
+ * is not a list of text). */
+static JsonArray *
+craft_knowers(VentureEntity *recipe)
+{
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonArray *keys;
+	guint i;
+
+	keys = json_array_new();
+	g_object_get(recipe, "known-by", &text, NULL);
+	node = venture_string_is_empty(text) ? NULL : venture_json_parse(text, NULL);
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_ARRAY(node))
+		return keys;
+
+	for (i = 0; i < json_array_get_length(json_node_get_array(node)); i++)
+	{
+		JsonNode *element = json_array_get_element(json_node_get_array(node), i);
+
+		if (JSON_NODE_HOLDS_VALUE(element) && (G_TYPE_STRING == json_node_get_value_type(element)) &&
+		    !venture_string_is_empty(json_node_get_string(element)))
+			json_array_add_string_element(keys, json_node_get_string(element));
+	}
+
+	return keys;
+}
+
+/* The organization's `recipe` categories: id -> parent id, and id -> name. */
+typedef struct
+{
+	GHashTable	*parents;	/* gint64 id -> gint64 parent */
+	GHashTable	*names;		/* gint64 id -> gchar* name */
+} CraftTree;
+
+static void
+craft_tree_clear(CraftTree *tree)
+{
+	g_clear_pointer(&tree->parents, g_hash_table_unref);
+	g_clear_pointer(&tree->names, g_hash_table_unref);
+}
+
+static gboolean
+craft_tree_load(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	CraftTree	 *tree,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	guint i;
+
+	tree->parents = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	tree->names = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+	query = venture_query_new(VENTURE_TYPE_CATEGORY);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 2000);
+
+	if (!venture_query_add_filter_string(query, "applies-to", VENTURE_FILTER_OP_EQ, "recipe", error))
+		return FALSE;
+
+	found = venture_database_find(database, query, error);
+
+	if (NULL == found)
+		return FALSE;
+
+	for (i = 0; i < found->len; i++)
+	{
+		VentureEntity *category = g_ptr_array_index(found, i);
+		gint64 id = venture_entity_get_id(category);
+		gint64 parent = 0;
+		gchar *name = NULL;
+
+		g_object_get(category, "name", &name, "parent-id", &parent, NULL);
+		g_hash_table_insert(tree->parents, g_memdup2(&id, sizeof(id)), g_memdup2(&parent, sizeof(parent)));
+		g_hash_table_insert(tree->names, g_memdup2(&id, sizeof(id)), name);
+	}
+
+	return TRUE;
+}
+
+/* How deep @id is (1 for a profession), and its ancestor at @level; 0
+ * when it is not in the tree. The walk is bounded, as every tree walk. */
+static guint
+craft_tree_depth(
+	CraftTree	*tree,
+	gint64		 id,
+	guint		 level,
+	gint64		*out_ancestor
+){
+	gint64 chain[VENTURE_CATEGORY_MAX_DEPTH + 1];
+	guint depth = 0;
+	gint64 at = id;
+
+	*out_ancestor = 0;
+
+	while ((at > 0) && (depth <= VENTURE_CATEGORY_MAX_DEPTH))
+	{
+		gint64 *parent = g_hash_table_lookup(tree->parents, &at);
+		guint seen;
+
+		if (NULL == parent)
+			return 0;
+
+		for (seen = 0; seen < depth; seen++)
+			if (chain[seen] == at)
+				return 0;
+
+		chain[depth++] = at;
+		at = *parent;
+	}
+
+	if ((level > 0) && (level <= depth))
+		*out_ancestor = chain[depth - level];
+
+	return depth;
+}
+
+/*
+ * The names that are expansions: a category one under a profession that
+ * has categories of its own beneath it (profession / expansion / section,
+ * as both imports file them). A recipe filed straight under one is in
+ * that expansion too; one filed straight under any other second level is
+ * in a section of a profession with no expansion given.
+ */
+static GHashTable *
+craft_expansion_names(CraftTree *tree)
+{
+	GHashTable *names;
+	GHashTableIter iter;
+	gpointer key;
+
+	names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_hash_table_iter_init(&iter, tree->parents);
+
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+	{
+		gint64 expansion = 0;
+
+		if (craft_tree_depth(tree, *(gint64 *)key, 2, &expansion) >= 3)
+			g_hash_table_add(names, g_strdup(g_hash_table_lookup(tree->names, &expansion)));
+	}
+
+	return names;
+}
+
+/* The expansion recipe category @id is in, or NULL. */
+static const gchar *
+craft_expansion_of(
+	CraftTree	*tree,
+	GHashTable	*expansions,
+	gint64		 id
+){
+	gint64 expansion = 0;
+	guint depth;
+	const gchar *name;
+
+	depth = craft_tree_depth(tree, id, 2, &expansion);
+	name = (expansion > 0) ? g_hash_table_lookup(tree->names, &expansion) : NULL;
+
+	if ((NULL == name) || (depth < 2) || ((2 == depth) && !g_hash_table_contains(expansions, name)))
+		return NULL;
+
+	return name;
+}
+
+/* Every category beneath (and at) a category at @level -- 1 a profession,
+ * 2 an expansion -- called @name, case folded; an empty set for none. */
+static GHashTable *
+craft_level_categories(
+	VentureDatabase	 *database,
+	CraftTree	 *tree,
+	guint		  level,
+	const gchar	 *name,
+	GError		**error
+){
+	g_autofree gchar *wanted = NULL;
+	GHashTable *set;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	set = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	wanted = g_utf8_casefold(name, -1);
+	g_hash_table_iter_init(&iter, tree->names);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		g_autofree gchar *folded = (NULL != value) ? g_utf8_casefold(value, -1) : NULL;
+		g_autoptr(GArray) beneath = NULL;
+		gint64 ancestor = 0;
+		guint j;
+
+		if ((0 != g_strcmp0(folded, wanted)) || (craft_tree_depth(tree, *(gint64 *)key, 0, &ancestor) != level))
+			continue;
+
+		beneath = venture_category_descendants(database, VENTURE_TYPE_CATEGORY, *(gint64 *)key, TRUE, error);
+
+		if (NULL == beneath)
+		{
+			g_hash_table_unref(set);
+			return NULL;
+		}
+
+		for (j = 0; j < beneath->len; j++)
+			g_hash_table_add(set, g_memdup2(&g_array_index(beneath, gint64, j), sizeof(gint64)));
+	}
+
+	return set;
+}
+
+/* Narrows @categories (NULL: not narrowed yet) to @under. */
+static void
+craft_narrow(
+	GHashTable	**categories,
+	GHashTable	 *under
+){
+	GHashTableIter iter;
+	gpointer key;
+
+	if (NULL == *categories)
+	{
+		*categories = g_hash_table_ref(under);
+		return;
+	}
+
+	g_hash_table_iter_init(&iter, *categories);
+
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		if (!g_hash_table_contains(under, key))
+			g_hash_table_iter_remove(&iter);
+}
+
+G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(CraftTree, craft_tree_clear)
+
+/* Each of @keys' account attributes (account key -> JsonObject), from the
+ * first of the organization's data sources whose store has the account;
+ * empty with feeds off or no store. Only to show ranks: never an error. */
+static GHashTable *
+craft_knower_attrs(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonArray	*keys
+){
+	GHashTable *attrs;
+
+	attrs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_object_unref);
+
+#ifdef VENTURE_HAVE_SQLITE
+	if ((NULL != keys) && (json_array_get_length(keys) > 0) && venture_context_module_enabled(context, "feeds") &&
+	    (NULL != venture_context_get_feeds_service(context)))
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DATA_SOURCE);
+		g_autoptr(GPtrArray) sources = NULL;
+		gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+		guint i;
+
+		venture_query_set_organization(query, organization_id);
+		venture_query_set_limit(query, VENTURE_ARBITRAGE_SCAN_SOURCES);
+		sources = venture_database_find(venture_context_get_database(context), query, NULL);
+
+		for (i = 0; (NULL != sources) && (i < sources->len); i++)
+		{
+			g_autoptr(VentureSeriesStore) store = NULL;
+			guint j;
+
+			store = venture_feeds_service_open_reader(venture_context_get_feeds_service(context),
+			                                          venture_entity_get_id(g_ptr_array_index(sources, i)),
+			                                          NULL);
+
+			for (j = 0; (NULL != store) && (j < json_array_get_length(keys)); j++)
+			{
+				const gchar *key = json_array_get_string_element(keys, j);
+				g_autoptr(VentureSeriesAccountRow) account = NULL;
+				g_autoptr(JsonNode) node = NULL;
+
+				if (g_hash_table_contains(attrs, key) ||
+				    !venture_series_store_get_account(store, key, now, &account, NULL) || (NULL == account) ||
+				    venture_string_is_empty(account->attrs_json))
+					continue;
+
+				node = venture_json_parse(account->attrs_json, NULL);
+
+				if ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node))
+					g_hash_table_insert(attrs, g_strdup(key), json_object_ref(json_node_get_object(node)));
+			}
+		}
+	}
+#else
+	(void)context;
+	(void)organization_id;
+	(void)keys;
+#endif
+
+	return attrs;
+}
+
+/*
+ * A knower's rank for a recipe: "Khaz Algar 65/100" from the account's
+ * "profession_tiers:<profession>" entry for @expansion, else (no
+ * expansion known) its overall "profession:<profession>" skill and cap.
+ * NULL when the account says neither.
+ */
+static gchar *
+craft_knower_rank(
+	JsonObject	*attrs,
+	const gchar	*profession,
+	const gchar	*expansion
+){
+	g_autofree gchar *member = NULL;
+	g_autofree gchar *cap_member = NULL;
+	JsonNode *node;
+
+	if ((NULL == attrs) || venture_string_is_empty(profession))
+		return NULL;
+
+	if (!venture_string_is_empty(expansion))
+	{
+		g_autoptr(JsonArray) tiers = NULL;
+		guint i;
+
+		member = g_strconcat("profession_tiers:", profession, NULL);
+		node = json_object_has_member(attrs, member) ? json_object_get_member(attrs, member) : NULL;
+		tiers = venture_marketdata_profession_tiers(((NULL != node) && JSON_NODE_HOLDS_VALUE(node) &&
+		                                              (G_TYPE_STRING == json_node_get_value_type(node)))
+		                                            ? json_node_get_string(node) : NULL, NULL, NULL);
+
+		for (i = 0; i < json_array_get_length(tiers); i++)
+		{
+			JsonObject *tier = json_array_get_object_element(tiers, i);
+
+			if (0 == g_strcmp0(venture_json_object_get_string(tier, "label", NULL), expansion))
+				return g_strdup(venture_json_object_get_string(tier, "text", NULL));
+		}
+
+		return NULL;
+	}
+
+	g_clear_pointer(&member, g_free);
+	member = g_strconcat("profession:", profession, NULL);
+	cap_member = g_strconcat("profession_max:", profession, NULL);
+	node = json_object_has_member(attrs, member) ? json_object_get_member(attrs, member) : NULL;
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node) || (G_TYPE_INT64 != json_node_get_value_type(node)))
+		return NULL;
+
+	if (json_object_has_member(attrs, cap_member) &&
+	    JSON_NODE_HOLDS_VALUE(json_object_get_member(attrs, cap_member)) &&
+	    (G_TYPE_INT64 == json_node_get_value_type(json_object_get_member(attrs, cap_member))))
+		return g_strdup_printf("%s %" G_GINT64_FORMAT "/%" G_GINT64_FORMAT, profession,
+		                       json_node_get_int(node), json_object_get_int_member(attrs, cap_member));
+
+	return g_strdup_printf("%s %" G_GINT64_FORMAT, profession, json_node_get_int(node));
+}
+
+/* Orders text for the pickers. */
+static gint
+craft_compare_text(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	return g_utf8_collate(*(const gchar *const *)a, *(const gchar *const *)b);
+}
+
+/*
+ * The recipes this question prices, chosen in the query that bounds them:
+ * one by recipe_id, else those filed under recipe_category_id and under
+ * the profession (both, when both are given), at most CRAFT_RECIPES_MAX
+ * or a refusal. Then, from those, the ones a character asked for knows,
+ * and -- with only_known, on by default whenever any of them is known by
+ * somebody -- the ones somebody knows. *@out_known maps each kept recipe's
+ * id to its knowers; *@out_characters is every knower of the fetched
+ * recipes, for the picker.
+ */
+static gboolean
+craft_choose_recipes(
+	VentureDatabase	 *database,
+	gint64		  organization_id,
+	CraftTree	 *tree,
+	JsonObject	 *question,
+	JsonArray	 *notes,
+	GArray		**out_ids,
+	GHashTable	**out_known,
+	JsonArray	**out_characters,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) recipes = NULL;
+	g_autoptr(GHashTable) categories = NULL;
+	g_autoptr(GHashTable) wanted = NULL;
+	g_autoptr(GHashTable) everyone = NULL;
+	g_autoptr(GPtrArray) names = NULL;
+	g_autoptr(GArray) ids = NULL;
+	g_autoptr(GHashTable) known = NULL;
+	const gchar *profession;
+	const gchar *expansion;
+	const gchar *characters;
+	gboolean any_known = FALSE;
+	gboolean only_known;
+	gint64 recipe_id;
+	gint64 category_id;
+	GHashTableIter iter;
+	gpointer key;
+	guint i;
+
+	if (!craft_id(question, "recipe_id", &recipe_id, error) ||
+	    !craft_id(question, "recipe_category_id", &category_id, error))
+		return FALSE;
+
+	profession = venture_json_object_get_string(question, "profession", NULL);
+	expansion = venture_json_object_get_string(question, "expansion", NULL);
+	characters = venture_json_object_get_string(question, "character", NULL);
+	query = venture_query_new(VENTURE_TYPE_RECIPE);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, CRAFT_RECIPES_MAX + 1);
+
+	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+		return FALSE;
+
+	if ((recipe_id > 0) && !venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, recipe_id, error))
+		return FALSE;
+
+	/* A category and a profession narrow in the query, so the bound
+	 * counts only what they keep. */
+	if (category_id > 0)
+	{
+		g_autoptr(GArray) beneath = venture_category_descendants(database, VENTURE_TYPE_CATEGORY, category_id,
+		                                                         TRUE, error);
+
+		if (NULL == beneath)
+			return FALSE;
+
+		categories = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+
+		for (i = 0; i < beneath->len; i++)
+			g_hash_table_add(categories, g_memdup2(&g_array_index(beneath, gint64, i), sizeof(gint64)));
+	}
+
+	/* A profession is a top-level recipe category, an expansion one
+	 * under a profession; both, with a category, narrow to what all of
+	 * them hold. */
+	{
+		const gchar *levels[2];
+		const gchar *labels[2] = { "a profession", "an expansion" };
+		guint level;
+
+		levels[0] = profession;
+		levels[1] = expansion;
+
+		for (level = 0; level < 2; level++)
+		{
+			g_autoptr(GHashTable) under = NULL;
+
+			if (venture_string_is_empty(levels[level]))
+				continue;
+
+			under = craft_level_categories(database, tree, level + 1, levels[level], error);
+
+			if (NULL == under)
+				return FALSE;
+
+			if (0 == g_hash_table_size(under))
+			{
+				g_autofree gchar *note = g_strdup_printf("No recipe category is %s called %s.", labels[level],
+				                                         levels[level]);
+
+				json_array_add_string_element(notes, note);
+			}
+
+			craft_narrow(&categories, under);
+		}
+	}
+
+	if (NULL != categories)
+	{
+		g_autoptr(GPtrArray) operands = g_ptr_array_new_with_free_func(g_free);
+
+		g_hash_table_iter_init(&iter, categories);
+
+		while (g_hash_table_iter_next(&iter, &key, NULL))
+			g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT, *(gint64 *)key));
+
+		if ((operands->len > 0) &&
+		    !venture_query_add_filter(query, "category-id", VENTURE_FILTER_OP_IN, operands, error))
+			return FALSE;
+	}
+
+	/* Nothing filed where it was asked: no recipe, without asking. */
+	if ((NULL != categories) && (0 == g_hash_table_size(categories)))
+		recipes = g_ptr_array_new_with_free_func(g_object_unref);
+	else
+		recipes = venture_database_find(database, query, error);
+
+	if (NULL == recipes)
+		return FALSE;
+
+	if (recipes->len > CRAFT_RECIPES_MAX)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "More than %d recipes answer this question; narrow it to a profession or a recipe "
+		            "category", CRAFT_RECIPES_MAX);
+		return FALSE;
+	}
+
+	/* The characters asked for, comma separated (a key holds none). */
+	wanted = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+	if (!venture_string_is_empty(characters))
+	{
+		g_auto(GStrv) parts = g_strsplit(characters, ",", -1);
+
+		for (i = 0; NULL != parts[i]; i++)
+		{
+			g_strstrip(parts[i]);
+
+			if ('\0' != parts[i][0])
+				g_hash_table_add(wanted, g_strdup(parts[i]));
+		}
+	}
+
+	everyone = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	known = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)json_array_unref);
+	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; i < recipes->len; i++)
+	{
+		JsonArray *keys = craft_knowers(g_ptr_array_index(recipes, i));
+		gint64 id = venture_entity_get_id(g_ptr_array_index(recipes, i));
+		guint j;
+
+		any_known = any_known || (json_array_get_length(keys) > 0);
+
+		for (j = 0; j < json_array_get_length(keys); j++)
+			g_hash_table_add(everyone, g_strdup(json_array_get_string_element(keys, j)));
+
+		g_hash_table_insert(known, g_memdup2(&id, sizeof(id)), keys);
+	}
+
+	/* Only what somebody knows, unless asked otherwise -- and never
+	 * where nobody knows anything, which would be an empty page for an
+	 * organization that imported recipes from Battle.net alone. */
+	if (!craft_flag(question, "only_known", any_known, &only_known, error))
+		return FALSE;
+
+	json_object_set_string_member(question, "only_known", only_known ? "1" : "0");
+
+	for (i = 0; i < recipes->len; i++)
+	{
+		gint64 id = venture_entity_get_id(g_ptr_array_index(recipes, i));
+		JsonArray *keys = g_hash_table_lookup(known, &id);
+		gboolean keep = !only_known || (json_array_get_length(keys) > 0);
+		guint j;
+
+		if (keep && (g_hash_table_size(wanted) > 0))
+		{
+			keep = FALSE;
+
+			for (j = 0; !keep && (j < json_array_get_length(keys)); j++)
+				keep = g_hash_table_contains(wanted, json_array_get_string_element(keys, j));
+		}
+
+		if (keep)
+			g_array_append_val(ids, id);
+		else
+			g_hash_table_remove(known, &id);
+	}
+
+	names = g_ptr_array_new();
+	g_hash_table_iter_init(&iter, everyone);
+
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		g_ptr_array_add(names, key);
+
+	g_ptr_array_sort(names, craft_compare_text);
+	*out_characters = json_array_new();
+
+	for (i = 0; i < names->len; i++)
+		json_array_add_string_element(*out_characters, g_ptr_array_index(names, i));
+
+	*out_ids = g_steal_pointer(&ids);
+	*out_known = g_steal_pointer(&known);
+
+	return TRUE;
+}
+
+/*
+ * A money bound, in @currency: an amount that names its currency ("50
+ * GOLD", "50g") is that, and a bare number is in the row's own currency
+ * -- what a person typing "50" on a page of gold crafts means. NULL with
+ * *@error when the text is no amount; NULL with no error when it names
+ * another currency than the row's.
+ */
+static VentureMoney *
+craft_bound(
+	const gchar	 *text,
+	const gchar	 *currency,
+	GError		**error
+){
+	g_autoptr(VentureMoney) named = NULL;
+	g_autoptr(VentureMoney) bare = NULL;
+
+	named = venture_marketdata_parse_amount(text, NULL);
+
+	if (NULL != named)
+		return (0 == g_strcmp0(venture_money_get_currency(named), currency)) ? g_steal_pointer(&named) : NULL;
+
+	bare = venture_money_from_string(text, currency, error);
+
+	return g_steal_pointer(&bare);
+}
+
+/* How a row stands against the question's bounds: NULL when it is kept,
+ * else why it is not. A bound that is not an amount is an error. */
+static gboolean
+craft_judge(
+	JsonObject	 *question,
+	JsonObject	 *row,
+	const gchar	**out_reason,
+	GError		**error
+){
+	static const gchar *const money_bounds[] = { "min_profit", "max_cost", NULL };
+	const gchar *currency;
+	gboolean blanked;
+	guint i;
+
+	*out_reason = NULL;
+	blanked = json_object_has_member(row, "missing") &&
+	          (json_array_get_length(json_object_get_array_member(row, "missing")) > 0);
+	currency = venture_json_object_get_string(row, "currency", NULL);
+
+	for (i = 0; NULL != money_bounds[i]; i++)
+	{
+		const gchar *text = venture_json_object_get_string(question, money_bounds[i], NULL);
+		g_autoptr(VentureMoney) bound = NULL;
+		g_autoptr(VentureMoney) figure = NULL;
+		g_autoptr(GError) local_error = NULL;
+
+		if (NULL == text)
+			continue;
+
+		if (blanked || (NULL == currency))
+		{
+			*out_reason = "unpriced";
+			return TRUE;
+		}
+
+		bound = craft_bound(text, currency, &local_error);
+
+		if (NULL != local_error)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "%s is an amount: %s",
+			            money_bounds[i], local_error->message);
+			return FALSE;
+		}
+
+		if (NULL == bound)
+		{
+			*out_reason = "other_currency";
+			return TRUE;
+		}
+
+		figure = venture_arbitrage_get_money(row, (0 == i) ? "net" : "cost");
+
+		if ((NULL == figure) ||
+		    (0 != g_strcmp0(venture_money_get_currency(figure), venture_money_get_currency(bound))))
+		{
+			*out_reason = "unpriced";
+			return TRUE;
+		}
+
+		if ((0 == i) ? (venture_money_compare(figure, bound) < 0) : (venture_money_compare(figure, bound) > 0))
+		{
+			*out_reason = money_bounds[i];
+			return TRUE;
+		}
+	}
+
+	/* The margin, a percent; sold per day, a number of units. */
+	{
+		const gchar *text = venture_json_object_get_string(question, "min_margin", NULL);
+
+		if (NULL != text)
+		{
+			gint64 ppm;
+			gdouble margin;
+
+			if (!venture_arbitrage_parse_percent(text, TRUE, &ppm, error))
+			{
+				g_prefix_error(error, "min_margin: ");
+				return FALSE;
+			}
+
+			margin = venture_arbitrage_get_ratio(row, "margin");
+
+			if (blanked || isnan(margin))
+			{
+				*out_reason = "unpriced";
+				return TRUE;
+			}
+
+			if (margin < ((gdouble)ppm / 1000000.0))
+			{
+				*out_reason = "min_margin";
+				return TRUE;
+			}
+		}
+
+		text = venture_json_object_get_string(question, "min_sold_per_day", NULL);
+
+		if (NULL != text)
+		{
+			gchar *end = NULL;
+			gdouble least = g_ascii_strtod(text, &end);
+			gdouble sold;
+
+			if ((NULL == end) || ('\0' != *end) || !isfinite(least))
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				                    "min_sold_per_day is a number of units");
+				return FALSE;
+			}
+
+			sold = venture_arbitrage_get_ratio(row, "sold_per_day");
+
+			if (isnan(sold) || (sold < least))
+			{
+				*out_reason = isnan(sold) ? "no_velocity" : "min_sold_per_day";
+				return TRUE;
+			}
+		}
+	}
 
 	return TRUE;
 }
@@ -151,13 +950,26 @@ venture_arbitrage_crafting(
 	g_autoptr(JsonNode) groups = NULL;
 	g_autoptr(GHashTable) paths = NULL;
 	g_autoptr(GHashTable) unpriced = NULL;
+	g_autoptr(GHashTable) known = NULL;
+	g_autoptr(GHashTable) dropped = NULL;
+	g_autoptr(GArray) recipe_ids = NULL;
 	g_autoptr(GList) members = NULL;
+	g_autoptr(JsonArray) notes = NULL;
+	g_autoptr(JsonArray) characters = NULL;
+	g_autoptr(GHashTable) expansions = NULL;
+	g_autoptr(GHashTable) knower_attrs = NULL;
+	g_auto(CraftTree) tree = { NULL, NULL };
 	VentureDatabase *database;
 	JsonObject *root;
 	JsonArray *rows;
 	JsonArray *realms;
 	JsonArray *kept;
+	JsonArray *shown;
+	JsonArray *professions;
 	GList *member;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -178,10 +990,10 @@ venture_arbitrage_crafting(
 
 		if (!g_strv_contains(craft_options, member->data))
 		{
-			g_autofree gchar *known = g_strjoinv(", ", (gchar **)craft_options);
+			g_autofree gchar *names = g_strjoinv(", ", (gchar **)craft_options);
 
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "Crafting takes %s; %s is not one of them", known, (const gchar *)member->data);
+			            "Crafting takes %s; %s is not one of them", names, (const gchar *)member->data);
 			return NULL;
 		}
 
@@ -199,8 +1011,20 @@ venture_arbitrage_crafting(
 			json_object_set_string_member(scan_options, member->data, text);
 	}
 
-	/* Every recipe priced, at most a page of the scan's top: the losses
+	/* Which recipes: chosen here, every one of them priced -- the losses
 	 * too, since a craft that loses money is an answer as well. */
+	notes = json_array_new();
+
+	if (!craft_tree_load(database, organization_id, &tree, error) ||
+	    !craft_choose_recipes(database, organization_id, &tree, question, notes, &recipe_ids, &known, &characters,
+	                          error))
+	{
+		craft_tree_clear(&tree);
+		return NULL;
+	}
+
+	expansions = craft_expansion_names(&tree);
+
 	json_object_set_string_member(scan_options, "strategy", "transform");
 	json_object_set_int_member(scan_options, "top", VENTURE_ARBITRAGE_SCAN_TOP_MAX);
 
@@ -212,7 +1036,7 @@ venture_arbitrage_crafting(
 	                 question, error))
 		return NULL;
 
-	answer = venture_arbitrage_scan_run_full(context, organization_id, scan_options, TRUE, error);
+	answer = venture_arbitrage_scan_run_recipes(context, organization_id, scan_options, TRUE, recipe_ids, error);
 
 	if (NULL == answer)
 		return NULL;
@@ -222,15 +1046,48 @@ venture_arbitrage_crafting(
 	paths = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
 	unpriced = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	json_object_set_array_member(root, "categories", craft_categories(database, organization_id, paths));
+	dropped = g_hash_table_new(g_str_hash, g_str_equal);
+	shown = json_array_new();
 
-	/* Each row as the strategy wrote it, its recipe's category path
-	 * beside it for the filter column. */
+	for (i = 0; i < json_array_get_length(notes); i++)
+		json_array_add_string_element(json_object_get_array_member(root, "notes"),
+		                              json_array_get_string_element(notes, i));
+
+	/* Each row as the strategy wrote it, its recipe's category path and
+	 * who knows it beside it, judged against the question's bounds --
+	 * which leave out a recipe with no price, as the scan's do; with no
+	 * bound it is kept, last, and says what is unpriced. */
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
 	{
 		JsonObject *row = json_array_get_object_element(rows, i);
 		gint64 category_id = venture_json_object_get_int(row, "recipe_category_id", 0);
+		gint64 recipe_id = venture_json_object_get_int(row, "recipe_id", 0);
+		JsonArray *knowers = g_hash_table_lookup(known, &recipe_id);
+		const gchar *reason = NULL;
 		JsonArray *warnings;
 		guint j;
+
+		if (!craft_judge(question, row, &reason, error))
+			return NULL;
+
+		if (NULL != reason)
+		{
+			g_hash_table_insert(dropped, (gpointer)reason,
+			                    GUINT_TO_POINTER(GPOINTER_TO_UINT(g_hash_table_lookup(dropped, reason)) + 1));
+			continue;
+		}
+
+		json_object_set_array_member(row, "known_by", (NULL != knowers) ? json_array_ref(knowers)
+		                                                                : json_array_new());
+
+		if ((category_id > 0) && (NULL != craft_expansion_of(&tree, expansions, category_id)))
+			json_object_set_string_member(row, "expansion", craft_expansion_of(&tree, expansions, category_id));
+		else
+			json_object_set_null_member(row, "expansion");
+
+		json_object_set_boolean_member(row, "unpriced", json_object_has_member(row, "missing") &&
+		                               (json_array_get_length(json_object_get_array_member(row, "missing")) > 0));
+		json_array_add_object_element(shown, json_object_ref(row));
 
 		if (category_id > 0)
 		{
@@ -259,6 +1116,75 @@ venture_arbitrage_crafting(
 			    JSON_NODE_HOLDS_OBJECT(sell))
 				g_hash_table_add(unpriced, g_strdup(venture_json_object_get_string(json_node_get_object(sell),
 				                                                                   "venue_name", "")));
+		}
+	}
+
+	/* Each knower's rank in the row's profession and expansion, from
+	 * their account's attributes, where the source says one. */
+	knower_attrs = craft_knower_attrs(context, organization_id, characters);
+
+	for (i = 0; i < json_array_get_length(shown); i++)
+	{
+		JsonObject *row = json_array_get_object_element(shown, i);
+		JsonArray *keys = json_object_get_array_member(row, "known_by");
+		JsonArray *knowers = json_array_new();
+		g_autofree gchar *profession = NULL;
+		const gchar *path = venture_json_object_get_string(row, "recipe_category", NULL);
+		guint j;
+
+		if (NULL != path)
+		{
+			const gchar *cut = strstr(path, " / ");
+
+			profession = (NULL != cut) ? g_strndup(path, (gsize)(cut - path)) : g_strdup(path);
+		}
+
+		for (j = 0; j < json_array_get_length(keys); j++)
+		{
+			const gchar *knower = json_array_get_string_element(keys, j);
+			JsonObject *object = json_object_new();
+			g_autofree gchar *rank = craft_knower_rank(g_hash_table_lookup(knower_attrs, knower), profession,
+			                                           venture_json_object_get_string(row, "expansion", NULL));
+
+			json_object_set_string_member(object, "key", knower);
+
+			if (NULL != rank)
+				json_object_set_string_member(object, "rank", rank);
+			else
+				json_object_set_null_member(object, "rank");
+
+			json_array_add_object_element(knowers, object);
+		}
+
+		json_object_set_array_member(row, "knowers", knowers);
+	}
+
+	json_object_set_array_member(root, "rows", shown);
+	json_object_set_int_member(root, "recipes", recipe_ids->len);
+
+	/* What the bounds left out, by reason, as the scan's `excluded`. */
+	{
+		JsonObject *excluded = json_object_get_object_member(root, "excluded");
+
+		g_hash_table_iter_init(&iter, dropped);
+
+		while (g_hash_table_iter_next(&iter, &key, &value))
+			json_object_set_int_member(excluded, key, GPOINTER_TO_UINT(value));
+
+		if (g_hash_table_contains(dropped, "unpriced"))
+		{
+			g_autofree gchar *note = g_strdup_printf("%u recipe%s with no price %s left out by the "
+			                                         "bounds asked.",
+			                                         GPOINTER_TO_UINT(g_hash_table_lookup(dropped,
+			                                                                              "unpriced")),
+			                                         (1 == GPOINTER_TO_UINT(g_hash_table_lookup(dropped,
+			                                                                                    "unpriced")))
+			                                         ? "" : "s",
+			                                         (1 == GPOINTER_TO_UINT(g_hash_table_lookup(dropped,
+			                                                                                    "unpriced")))
+			                                         ? "was" : "were");
+
+			json_array_add_string_element(json_object_get_array_member(root, "notes"), note);
 		}
 	}
 
@@ -299,6 +1225,46 @@ venture_arbitrage_crafting(
 	json_object_set_array_member(root, "venue_groups", json_array_ref(json_node_get_array(groups)));
 	json_object_set_object_member(root, "question", json_object_ref(question));
 	json_object_set_int_member(root, "stale_after_seconds", venture_marketdata_stale_seconds(context));
+
+	/* The character and profession pickers: everybody who knows one of
+	 * the recipes the question could reach, and the top-level recipe
+	 * categories (the professions). */
+	json_object_set_array_member(root, "character_choices", json_array_ref(characters));
+	professions = json_array_new();
+
+	{
+		JsonArray *categories = json_object_get_array_member(root, "categories");
+
+		for (i = 0; i < json_array_get_length(categories); i++)
+		{
+			const gchar *path = json_object_get_string_member(json_array_get_object_element(categories, i),
+			                                                  "path");
+
+			if ((NULL != path) && (NULL == strstr(path, " / ")))
+				json_array_add_string_element(professions, path);
+		}
+	}
+
+	json_object_set_array_member(root, "profession_choices", professions);
+
+	{
+		g_autoptr(GPtrArray) sorted = g_ptr_array_new();
+		JsonArray *offered = json_array_new();
+		GHashTableIter names;
+		gpointer name;
+
+		g_hash_table_iter_init(&names, expansions);
+
+		while (g_hash_table_iter_next(&names, &name, NULL))
+			g_ptr_array_add(sorted, name);
+
+		g_ptr_array_sort(sorted, craft_compare_text);
+
+		for (i = 0; i < sorted->len; i++)
+			json_array_add_string_element(offered, g_ptr_array_index(sorted, i));
+
+		json_object_set_array_member(root, "expansion_choices", offered);
+	}
 
 	return g_steal_pointer(&answer);
 }
