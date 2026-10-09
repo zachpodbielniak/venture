@@ -373,6 +373,9 @@ markup.
 A form's page in VENTURE shows its questions, how many responses it has,
 a live preview and a copy button for each of these. Set =server.base_url=
 so the codes carry this install's full address.
+The hosted link and every embed variant use that configured public address,
+including behind a reverse proxy. Only unconfigured local development falls
+back to the server's listening address and actual bound port.
 
 ** The class-name contract
 
