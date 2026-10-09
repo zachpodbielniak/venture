@@ -14,7 +14,9 @@ Report `arbitrage_scan` -- opportunities **now** (the period is ignored)
 by one `strategy`: `spread` (default; cross-venue flips, `buy_sources=N`
 lists the N cheapest suppliers per item, 1-10), `deal` (under the group's
 deal price), `transform` (a recipe's inputs at their cheapest venues;
-`recipe_id`, `units` = batches), `cover` (surebets; `total_stake`),
+`recipe_id`, `recipe_category_id` = a category and beneath it, `units` =
+batches; a venue the store marks `region_wide` -- a commodity market -- is
+open whatever `buy_venues`/`sell_venues` say), `cover` (surebets; `total_stake`),
 `back_lay`, or a plugin's.
 
 - Filters: `preset_id`, `data_source_id`, `buy_venues`, `sell_venues`
@@ -48,7 +50,34 @@ deal price), `transform` (a recipe's inputs at their cheapest venues;
   `max_age_hours`.
 - Each row's `buy`/`sell` side carries `taken_at`, `age_seconds` and
   `stale` (older than `series.stale_minutes`); the CLI table shows
-  `buy stale`/`sell stale`.
+  `buy stale`/`sell stale`. A `transform` row has them per input, on its
+  `sell`, and flat as `buy_*` (the oldest input) and `sell_*`, plus
+  `margin` (net / gross) and a warning when the sell venue has no fee model.
+
+## Crafting and the flip planner
+
+- `GET /api/v1/arbitrage/crafting` / `venturectl arbitrage crafting
+  [option=value ...]` -- every recipe priced by `transform`, losses kept:
+  `recipe_category_id`, `buy_realm` (empty: cheapest realm per reagent),
+  `sell_realm` (empty: the best), `venue_group`, `units`, `sell_basis`,
+  `max_age_hours`, `share`, `recipe_id`, `data_source_id`; anything else is
+  refused (exit 2). Realms are named as Deals names them; an unknown one is
+  NOT_FOUND. Rows add `recipe_category`; the answer has `realm_choices`,
+  `categories`, `options` (the scan question "Add to plan" sends back).
+  **It computes nothing itself** -- quote its figures, they are the
+  strategy's.
+- **The plan is planned `arbitrage_trade`s**, not a record type: "Add to
+  plan" (Deals, Arbitrage, Crafting; `POST /arbitrage/plan/add`) is the
+  record path. `GET /api/v1/arbitrage/plan` / `arbitrage plan` regroups
+  their planned legs: `buy` (per venue, an item once, the dearest price as
+  the most to pay), `sell` (per venue, item and price), `fees`, `totals`
+  per currency (`outlay`, `gross`, `cut`, `deposit`, `listing_loss`,
+  `revenue`, `profit` -- never across currencies). Past 500 planned trades
+  it refuses (CONFLICT). `reprice=1` re-asks each trade's stored
+  `expected.question`: `ok`, `stale`, `unprofitable`, `unquoted`, `gone`,
+  `unknown` (recorded before questions were kept). `arbitrage plan export
+  csv|tsm [-o FILE]`, `arbitrage plan remove TRADE_ID` (only a trade
+  nothing executed).
 - **Presets** are `arbitrage_strategy` records (`name`, `strategy`,
   `data_source_id`, `buy_venues`, `sell_venues`, `options` as YAML of the
   other filters); the save refuses a misspelt filter.
@@ -70,6 +99,9 @@ venturectl arbitrage record 1 spread group_key=eu min_profit="10.00 GOLD" min_ro
 venturectl --stage arbitrage record name="Peacebloom flip" strategy=spread legs=@legs.json organization_id=1
 venturectl arbitrage calc surebet 2.10 2.05 --stake "100.00 USD"
 venturectl arbitrage export shopping_list transform recipe_id=4 units=10 -o list.txt
+venturectl arbitrage crafting buy_realm=Thrall sell_realm=Thrall recipe_category_id=12
+venturectl arbitrage plan reprice=1
+venturectl arbitrage plan export tsm -o shopping.txt
 venturectl arbitrage registries       # strategies, fee models, export formats, scan option names
 venturectl arbitrage help
 ```

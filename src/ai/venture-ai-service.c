@@ -2816,6 +2816,8 @@ venture_ai_service_register_tools(VentureAiService *self)
 		"arbitrage_scan: one instrument (or, for cover, one event) by its key; external_pnl: one item's ledger rows", FALSE);
 	ai_tool_add_parameter(report, "recipe_id", "integer",
 		"arbitrage_scan with strategy transform, craft_arbitrage: one recipe", FALSE);
+	ai_tool_add_parameter(report, "recipe_category_id", "integer",
+		"arbitrage_scan with strategy transform, craft_arbitrage: only recipes filed in this category or beneath it", FALSE);
 	ai_tool_add_parameter(report, "units", "integer",
 		"arbitrage_scan: units to price each opportunity for; craft_arbitrage: batches. 1 by default", FALSE);
 	ai_tool_add_parameter(report, "buy_sources", "integer",

@@ -99,10 +99,10 @@ that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
 to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
-<!-- skill-baseline:start -- reviewed 2026-10-08 against 8955f90 -->
+<!-- skill-baseline:start -- reviewed 2026-10-09 against 06c22aa -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=8955f90bfeebbc78cbd0206c106364ae0069dd8a
+base=06c22aa8635d1e3f20bd4d7b4c051b47f20dcca2
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -351,6 +351,8 @@ ids, notes) in words.
 | "Push my price/deal alerts to my phone (gotify)" | `create alert_rule kind=deal ...`; `create webhook format=gotify events=alert_hit.created ...`, `webhook token ID < file` | [market-data.md](references/market-data.md), [automation.md](references/automation.md) |
 | "Where do I log in next / what do my accounts hold?" | `accounts attention`, `accounts inventory`, `accounts pnl` | [accounts.md](references/accounts.md) |
 | "Find and record an arbitrage" | `arbitrage scan`, `arbitrage record N ...`, `arbitrage close` | [arbitrage-scan.md](references/arbitrage-scan.md) |
+| "What do my crafts make? / plan my flips" | `arbitrage crafting buy_realm=... sell_realm=...`; `arbitrage plan [reprice=1]`, `arbitrage plan export tsm` | [arbitrage-scan.md](references/arbitrage-scan.md) |
+| "Import my professions' recipes" (WoW) | `act data_source ID import_recipes professions="..." skill_tier="..." max_recipes=500 create_products=true venture_id=N`; `act data_source ID set_venue_fees` | [feeds.md](references/feeds.md) |
 | "Craft from a recipe / what is a recipe's margin?" | `act recipe ID craft times=N`; `report recipe_margin` | [market-production.md](references/market-production.md) |
 | "Log a farming session / track a goal" | `session` + `session_yield`, `act session ID post`; `goal`, `report goal_progress` | [sessions-goals.md](references/sessions-goals.md) |
 | "Run X every day / when Y changes" | a pod in `automations.pod` or cron calling the sweep | [automation.md](references/automation.md) |
@@ -431,5 +433,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `8955f90`; when the live server disagrees,
+- This skill describes baseline `06c22aa`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.

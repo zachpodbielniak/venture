@@ -1675,6 +1675,33 @@ import(
 	return result;
 }
 
+/* set_venue_fees with @params_json, its result. */
+static gchar *
+fees(
+	Fixture		*fixture,
+	gint64		 id,
+	const gchar	*params_json
+){
+	g_autoptr(JsonNode) node = json_from_string(params_json, NULL);
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(VentureEntity) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	gchar *result = NULL;
+
+	params = venture_action_parameters_from_json(node, &error);
+	g_assert_no_error(error);
+	answer = venture_action_registry_perform(venture_database_get_action_registry(fixture->database),
+	                                         "data_source", id, "set_venue_fees", params, NULL,
+	                                         VENTURE_USER_ROLE_OWNER, &error);
+
+	if (NULL == answer)
+		g_error("set_venue_fees %s: %s", params_json, error->message);
+
+	g_object_get(answer, "result", &result, NULL);
+
+	return result;
+}
+
 static VentureEntity *
 recipe_named(
 	Fixture		*fixture,
@@ -1833,6 +1860,176 @@ test_import_recipes(
 		g_clear_error(&error);
 	}
 
+}
+
+/* A recipe's category path, or NULL when it is filed nowhere. */
+static gchar *
+recipe_category_of(
+	Fixture		*fixture,
+	const gchar	*name
+){
+	g_autoptr(VentureEntity) recipe = recipe_named(fixture, name);
+	gint64 category = 0;
+
+	g_object_get(recipe, "category-id", &category, NULL);
+
+	return (category > 0) ? venture_category_path(fixture->database, VENTURE_TYPE_CATEGORY, category, NULL)
+	                      : NULL;
+}
+
+/*
+ * One command for a person's professions: `professions` names them (by
+ * name or id), `skill_tier` keeps one expansion's tiers, and each recipe
+ * is filed under profession / tier / section as `recipe` categories --
+ * the tier left out where it is only the profession's name again -- so
+ * Crafting can filter by profession or section. A recipe a person filed
+ * keeps its place; one imported before filing gets one.
+ *
+ * What breaks if this regresses: importing a crafter's professions takes
+ * a cursor loop through every profession and expansion, and Crafting has
+ * nothing to filter on.
+ */
+static void
+test_import_recipes_filed(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) venture = record(fixture, "venture");
+	g_autoptr(VentureEntity) belt = NULL;
+	g_autofree gchar *none = NULL;
+	g_autofree gchar *mining = NULL;
+	g_autofree gchar *smithing = NULL;
+	g_autofree gchar *params = NULL;
+	g_autofree gchar *path = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	serve_battle_net(fixture);
+	id = create_source(fixture, "connected_realm_ids: [11]\n", client_secret, "manual");
+	g_object_set(venture, "name", "Crafting", NULL);
+	save(fixture, venture);
+
+	/* An expansion nobody has: nothing is read. */
+	params = g_strdup_printf("{\"skill_tier\":\"Khaz Algar\",\"create_products\":true,\"venture_id\":%"
+	                         G_GINT64_FORMAT "}", venture_entity_get_id(venture));
+	none = import(fixture, id, params);
+	g_assert_nonnull(strstr(none, "Read 0 recipes"));
+	g_assert_nonnull(strstr(none, "Done"));
+
+	/* Mining by name, in any case: its two recipes and no others. */
+	g_free(params);
+	params = g_strdup_printf("{\"professions\":\"mining\",\"skill_tier\":\"MINING\",\"create_products\":true,"
+	                         "\"venture_id\":%" G_GINT64_FORMAT "}", venture_entity_get_id(venture));
+	mining = import(fixture, id, params);
+	g_assert_nonnull(strstr(mining, "Read 2 recipes: 1 created"));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_RECIPE), ==, 1);
+	path = recipe_category_of(fixture, "Smelt Copper");
+	g_assert_cmpstr(path, ==, "Mining / Smelting");
+	g_clear_pointer(&path, g_free);
+
+	/* Blacksmithing by id; a person refiles the belt, and a second run
+	 * leaves it where they put it. */
+	g_free(params);
+	params = g_strdup_printf("{\"professions\":\"164\",\"create_products\":true,\"venture_id\":%"
+	                         G_GINT64_FORMAT "}", venture_entity_get_id(venture));
+	smithing = import(fixture, id, params);
+	g_assert_nonnull(strstr(smithing, "Read 2 recipes: 2 created"));
+	path = recipe_category_of(fixture, "Copper Chain Belt");
+	g_assert_cmpstr(path, ==, "Blacksmithing / Materials");
+	g_clear_pointer(&path, g_free);
+
+	{
+		g_autoptr(VentureEntity) mine = record(fixture, "category");
+		g_autofree gchar *again = NULL;
+
+		g_object_set(mine, "name", "Belts I sell", "applies-to", "recipe", NULL);
+		save(fixture, mine);
+		belt = recipe_named(fixture, "Copper Chain Belt");
+		g_object_set(belt, "category-id", venture_entity_get_id(mine), NULL);
+		save(fixture, belt);
+
+		again = import(fixture, id, params);
+		g_assert_nonnull(strstr(again, "0 created, 0 updated, 2 unchanged"));
+		path = recipe_category_of(fixture, "Copper Chain Belt");
+		g_assert_cmpstr(path, ==, "Belts I sell");
+	}
+}
+
+/*
+ * The commodity market is marked region-wide in the store, and
+ * set_venue_fees gives every venue the store knows a record with the
+ * wow_auction fee model: what crafting and every scan need to count the
+ * auction house's cut and deposit. A venue that already names a model
+ * keeps it unless replace is asked.
+ */
+static void
+test_venue_fees(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureSeriesStore) reader = NULL;
+	g_autoptr(GPtrArray) venues = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *first = NULL;
+	g_autofree gchar *again = NULL;
+	g_autofree gchar *replaced = NULL;
+	gboolean wide = FALSE;
+	gint64 id;
+	guint i;
+
+	(void)user_data;
+
+	serve_battle_net(fixture);
+	id = create_source(fixture, "connected_realm_ids: [11]\ninclude_commodities: true\n", client_secret,
+	                   "manual");
+	run = sync_and_wait(fixture, id);
+	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
+
+	reader = reader_of(fixture, id);
+	venues = venture_series_store_list_venues(reader, &error);
+	g_assert_no_error(error);
+
+	for (i = 0; i < venues->len; i++)
+	{
+		VentureSeriesVenueRow *venue = g_ptr_array_index(venues, i);
+
+		if (0 == g_strcmp0(venue->key, "commodities"))
+			wide = (NULL != strstr(venue->attrs_json, "\"region_wide\":true"));
+		else
+			g_assert_null(strstr(venue->attrs_json, "region_wide"));
+	}
+
+	g_assert_true(wide);
+
+	first = fees(fixture, id, "{}");
+	g_assert_nonnull(strstr(first, "2 venues given wow_auction"));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_VENUE), ==, 2);
+
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_VENUE);
+		g_autoptr(GPtrArray) found = venture_database_find(fixture->database, query, &error);
+
+		g_assert_no_error(error);
+
+		for (i = 0; i < found->len; i++)
+		{
+			g_autofree gchar *model = NULL;
+			g_autofree gchar *params = NULL;
+
+			g_object_get(g_ptr_array_index(found, i), "fee-model", &model, "fee-params", &params, NULL);
+			g_assert_cmpstr(model, ==, "wow_auction");
+			g_assert_nonnull(strstr(params, "cut_percent: 5"));
+		}
+	}
+
+	again = fees(fixture, id, "{\"cut_percent\":3}");
+	g_assert_nonnull(strstr(again, "0 venues given"));
+	g_assert_nonnull(strstr(again, "2 kept"));
+
+	replaced = fees(fixture, id, "{\"cut_percent\":3,\"replace\":true}");
+	g_assert_nonnull(strstr(replaced, "2 venues given wow_auction (cut_percent: 3"));
 }
 
 /* One GET on this thread's main context, which the server answering it
@@ -2045,6 +2242,8 @@ main(
 	ADD("fee-model", test_fee_model);
 	ADD("tsm-export", test_tsm_export);
 	ADD("import-recipes", test_import_recipes);
+	ADD("import-recipes-filed", test_import_recipes_filed);
+	ADD("venue-fees", test_venue_fees);
 	ADD("attribution", test_attribution);
 #undef ADD
 #endif

@@ -2424,6 +2424,58 @@ mdw_sort_text(
 	g_string_append(html, "\"");
 }
 
+/*
+ * "Add to plan" for one deal: the arbitrage scan's spread question that
+ * finds exactly this flip -- its item, bought at its realm and sold at the
+ * deal's sell realm, at the lowest listing -- and the spread's key, posted
+ * to the arbitrage module's plan. The scan prices it again with each
+ * venue's own fee model (where Deals took a flat cut), so what is planned
+ * is what the books will see; a flip those fees turn into a loss is
+ * refused as no longer there.
+ */
+static void
+mdw_deal_plan_form(
+	GString		*html,
+	JsonObject	*row,
+	JsonObject	*sell
+){
+	g_autofree gchar *key = NULL;
+	gint64 source = json_object_get_int_member_with_default(row, "data_source_id", 0);
+	gint64 available = json_object_get_int_member_with_default(row, "quantity", 0);
+	const gchar *const fields[][2] = {
+		{ "strategy", "spread" },
+		{ "sell_basis", "min" },
+		{ "instrument", mdw_text(row, "instrument_key") },
+		{ "buy_venues", mdw_text(row, "venue_key") },
+		{ "sell_venues", mdw_text(sell, "venue_key") },
+	};
+	guint i;
+
+	key = g_strdup_printf("spread:%" G_GINT64_FORMAT ":%s>%" G_GINT64_FORMAT ":%s:%s", source,
+	                      mdw_text(row, "venue_key"), source, mdw_text(sell, "venue_key"),
+	                      mdw_text(row, "instrument_key"));
+	g_string_append_printf(html, "<form method=\"post\" action=\"/arbitrage/plan/add\" class=\"deal-plan\">"
+	                       "<input type=\"hidden\" name=\"data_source_id\" value=\"%" G_GINT64_FORMAT "\">",
+	                       source);
+
+	for (i = 0; i < G_N_ELEMENTS(fields); i++)
+	{
+		g_string_append_printf(html, "<input type=\"hidden\" name=\"%s\" value=\"", fields[i][0]);
+		venture_html_escape_append(html, (NULL != fields[i][1]) ? fields[i][1] : "");
+		g_string_append(html, "\">");
+	}
+
+	g_string_append(html, "<input type=\"hidden\" name=\"key\" value=\"");
+	venture_html_escape_append(html, key);
+	g_string_append(html, "\"><input type=\"number\" name=\"units\" value=\"1\" min=\"1\"");
+
+	if (available > 0)
+		g_string_append_printf(html, " max=\"%" G_GINT64_FORMAT "\"", available);
+
+	g_string_append(html, " aria-label=\"Units to plan\"><button class=\"btn\" type=\"submit\">Add to plan</button>"
+	                      "</form>");
+}
+
 /* Whether a deals column reads most-first unless asked otherwise (names,
  * realms, a buy price and a share of the region read smallest first). */
 static gboolean
@@ -2589,6 +2641,7 @@ venture_marketdata_web_deals(
 	JsonObject *root;
 	JsonArray *rows;
 	gboolean api;
+	gboolean can_plan;
 	gint64 value;
 	HtmxResponse *gate;
 	gint64 organization_id;
@@ -2604,6 +2657,17 @@ venture_marketdata_web_deals(
 
 	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
 		return venture_web_error_response(error);
+
+	/* A deal goes on the flip planner as a planned arbitrage trade: the
+	 * column is offered only where the arbitrage module is on and the
+	 * person may write trades. */
+	{
+		g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+
+		can_plan = !api && venture_context_module_enabled(self->context, "arbitrage") &&
+		           venture_web_require_for_type(self, principal, VENTURE_TYPE_ARBITRAGE_TRADE,
+		                                        VENTURE_USER_ROLE_EDITOR, NULL);
+	}
 
 	venture_marketdata_deals_query_init(&query);
 	query.organization_id = organization_id;
@@ -2762,8 +2826,12 @@ venture_marketdata_web_deals(
 	                      "(TSM's AuctionDB, pushed by tsmctl), and the buy and sell prices against it\">"
 	                      "Ref. value</th>");
 	mdw_deals_header(html, request, query.sort, query.dir, "qty", "Qty", TRUE);
-	g_string_append(html, "<th scope=\"col\"><span class=\"visually-hidden\">Alert</span></th>"
-	                      "</tr></thead><tbody>");
+	g_string_append(html, "<th scope=\"col\"><span class=\"visually-hidden\">Alert</span></th>");
+
+	if (can_plan)
+		g_string_append(html, "<th scope=\"col\">Plan</th>");
+
+	g_string_append(html, "</tr></thead><tbody>");
 
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
 	{
@@ -2937,11 +3005,26 @@ venture_marketdata_web_deals(
 			                      "is a deal on any realm\">Alert</button></form>");
 		}
 
-		g_string_append(html, "</td></tr>");
+		g_string_append(html, "</td>");
+
+		if (can_plan)
+		{
+			g_string_append(html, "<td>");
+
+			if (NULL != sell)
+				mdw_deal_plan_form(html, row, sell);
+			else
+				mdw_dash(html);
+
+			g_string_append(html, "</td>");
+		}
+
+		g_string_append(html, "</tr>");
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"16\" class=\"muted\">No deals right now.</td></tr>");
+		g_string_append_printf(html, "<tr><td colspan=\"%d\" class=\"muted\">No deals right now.</td></tr>",
+		                       can_plan ? 17 : 16);
 
 	g_string_append(html, "</tbody></table></div>");
 

@@ -30,6 +30,7 @@ G_BEGIN_DECLS
 #define BLIZZARD_FEE_MODEL_NAME		"wow_auction"
 #define BLIZZARD_EXPORT_NAME		"tsm"
 #define BLIZZARD_ACTION_NAME		"import_recipes"
+#define BLIZZARD_FEES_ACTION_NAME	"set_venue_fees"
 
 /* The line shown wherever this provider's data is: Blizzard's API terms
  * (section 2.13) want Blizzard named as the source, without the page
@@ -415,9 +416,10 @@ blizzard_provider_new(void);
  * @context: the context the plugin is loading into
  * @error: (out) (optional): return location for a #GError
  *
- * Registers the `import_recipes` action on data sources, once per
- * database, and points it at @context (the last context over a database
- * wins, as every per-database registration here does).
+ * Registers the `import_recipes` and `set_venue_fees` actions on data
+ * sources, once per database, and points them at @context (the last
+ * context over a database wins, as every per-database registration here
+ * does).
  *
  * Returns: %TRUE on success
  */

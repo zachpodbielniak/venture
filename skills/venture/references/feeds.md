@@ -148,12 +148,17 @@ registered `GOLD` at exponent 4 and `client_secret` on the credentials
 page), `odds_api` (`units` are sport keys, `api_key` on the credentials
 page), `supplier_csv` and `tsmctl` (exec) -- see [plugins.md](plugins.md).
 Read a source's provider with `get data_source ID` before guessing its
-settings. A `blizzard_auctions` source has one more action: `act
-data_source ID import_recipes max_recipes=50 create_products=true
-venture_id=N` reads Battle.net's professions into `recipe` records; a
+settings. A `blizzard_auctions` source has two more actions. `act
+data_source ID import_recipes professions="Alchemy, Inscription"
+skill_tier="Khaz Algar" max_recipes=500 create_products=true venture_id=N`
+reads those professions' recipes, that expansion only, into `recipe`
+records filed under `recipe` categories (profession / tier / section); a
 `result` ending `cursor=P/T/O` means more remain -- pass it back as
 `cursor=...`; without `create_products` recipes whose items have no product
-are skipped and named.
+are skipped and named. `act data_source ID set_venue_fees [cut_percent=5]
+[duration_hours=48] [replace=true]` gives every venue of the store a record
+with the `wow_auction` fee model (kept where one is set), so scans and
+Crafting count the cut and deposit.
 
 ## Traps across feeds, market and arbitrage, in the order they bite
 

@@ -99,4 +99,4 @@ take `organization_id=N` to work outside the default organization.
 | `feeds sync ID [--wait]`, `feeds push ID FILE\|- [--wait]`, `feeds runs ID`, `feeds due` | data sources | [feeds.md](feeds.md) |
 | `market quote\|promote\|browse\|deals\|venues\|instrument\|watchlist\|alerts [evaluate RULE_ID [--dry-run]]`, `market help` | the price oracle and the Trading pages | [market-data.md](market-data.md) |
 | `accounts [list\|attention]\|show\|inventory\|pnl\|post\|record-flips`, `accounts help` | the operator's accounts and their books | [accounts.md](accounts.md) |
-| `arbitrage scan\|record\|export\|calc\|registries\|close\|reopen\|abandon\|execute`, `arbitrage help` | opportunities and trades | [arbitrage-scan.md](arbitrage-scan.md), [arbitrage.md](arbitrage.md) |
+| `arbitrage scan\|record\|crafting\|plan\|export\|calc\|registries\|close\|reopen\|abandon\|execute`, `arbitrage help` | opportunities and trades | [arbitrage-scan.md](arbitrage-scan.md), [arbitrage.md](arbitrage.md) |

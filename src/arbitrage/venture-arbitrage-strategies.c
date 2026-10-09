@@ -1033,6 +1033,24 @@ arb_input_free(gpointer data)
 }
 
 /*
+ * Whether a craft may buy (or sell) at a venue: the question's set for
+ * that side, or a region-wide venue (a commodity market) whatever the set
+ * says. A person buying reagents on one realm buys its commodities from
+ * the region's market without leaving it, so narrowing to the realm must
+ * not leave every commodity reagent unquoted.
+ */
+static gboolean
+arb_transform_allowed(
+	ArbWalk		*walk,
+	gboolean	 buy,
+	gint64		 source_id,
+	const gchar	*venue_key
+){
+	return venture_arbitrage_scan_venue_allowed(walk->scan, buy, venue_key) ||
+	       venture_arbitrage_scan_venue_region_wide(walk->scan, source_id, venue_key);
+}
+
+/*
  * Prices one input: across every instrument the product is quoted as, at
  * every allowed buy venue, the cost of the units needed by walking that
  * venue's book; the cheapest after conversion into @currency wins. A
@@ -1082,7 +1100,7 @@ arb_price_input(
 			ArbBuy bought;
 
 			if ((row->quantity <= 0) || (VENTURE_SERIES_NONE == row->min_price) ||
-			    !venture_arbitrage_scan_venue_allowed(walk->scan, TRUE, row->venue_key) ||
+			    !arb_transform_allowed(walk, TRUE, source_id, row->venue_key) ||
 			    !arb_fresh(walk, row->taken_at))
 				continue;
 
@@ -1206,7 +1224,7 @@ arb_price_output(
 			if ((row->quantity > 0) && (VENTURE_SERIES_NONE != row->min_price))
 				out->venues++;
 
-			if (!venture_arbitrage_scan_venue_allowed(walk->scan, FALSE, row->venue_key) ||
+			if (!arb_transform_allowed(walk, FALSE, source_id, row->venue_key) ||
 			    !arb_fresh(walk, row->taken_at))
 				continue;
 
@@ -1327,14 +1345,17 @@ arb_transform_recipe(
 	gboolean refundable;
 	gint64 output_id;
 	gint64 output_quantity;
+	gint64 category_id;
 	gint64 batches;
 	gint64 oldest;
+	gint64 buy_taken;
 	gint64 hours;
 	gdouble depth;
 	guint i;
 
 	database = venture_context_get_database(venture_arbitrage_scan_get_context(walk->scan));
 	batches = walk->units;
+	buy_taken = 0;
 	g_object_get(recipe, "output-product-id", &output_id, "output-quantity", &output_quantity, NULL);
 	output_quantity = MAX((gint64)1, output_quantity);
 	recipe_name = venture_entity_get_display_name(recipe);
@@ -1564,6 +1585,11 @@ arb_transform_recipe(
 	json_object_set_string_member(opportunity, "key", key);
 	json_object_set_string_member(opportunity, "title", title);
 	json_object_set_int_member(opportunity, "recipe_id", venture_entity_get_id(recipe));
+	g_object_get(recipe, "category-id", &category_id, NULL);
+
+	if (category_id > 0)
+		json_object_set_int_member(opportunity, "recipe_category_id", category_id);
+
 	json_object_set_int_member(opportunity, "units", batches);
 	json_object_set_int_member(opportunity, "output_units", output_quantity * batches);
 
@@ -1605,6 +1631,10 @@ arb_transform_recipe(
 			json_object_set_string_member(line, "instrument_key", input->instrument_key);
 			json_object_set_string_member(line, "venue_key", input->venue_key);
 			json_object_set_string_member(line, "venue_name", input->venue_name);
+			venture_arbitrage_scan_set_age(walk->scan, line, NULL, input->taken_at);
+
+			if ((0 == buy_taken) || (input->taken_at < buy_taken))
+				buy_taken = input->taken_at;
 		}
 
 		venture_arbitrage_set_money(line, "unit_price", input->unit_price);
@@ -1620,6 +1650,10 @@ arb_transform_recipe(
 
 	json_object_set_array_member(opportunity, "inputs", array);
 
+	/* How old the reagents' prices are, as Deals says of a buy: the
+	 * oldest of them, so one realm whose feed stopped greys the row. */
+	venture_arbitrage_scan_set_age(walk->scan, opportunity, "buy_", buy_taken);
+
 	if (NULL != output.row)
 	{
 		JsonObject *sell = json_object_new();
@@ -1633,10 +1667,14 @@ arb_transform_recipe(
 		venture_arbitrage_set_money(sell, "amount", gross_native);
 		venture_arbitrage_set_money(sell, "fees", sell_fees_native);
 		venture_arbitrage_set_money(sell, "deposit", deposit);
+		venture_arbitrage_scan_set_age(walk->scan, sell, NULL, output.row->taken_at);
 		json_object_set_object_member(opportunity, "sell", sell);
+		venture_arbitrage_scan_set_age(walk->scan, opportunity, "sell_", output.row->taken_at);
 		venture_arbitrage_set_ratio(opportunity, "sale_rate", output.row->sale_rate);
 		venture_arbitrage_set_ratio(opportunity, "sold_per_day", output.row->sold_per_day);
 	}
+	else
+		venture_arbitrage_scan_set_age(walk->scan, opportunity, "sell_", 0);
 
 	json_object_set_int_member(opportunity, "age_seconds", MAX((gint64)0, walk->now - oldest));
 
@@ -1747,6 +1785,13 @@ arb_transform_recipe(
 
 		if ((NULL != cost) && venture_arbitrage_flip(&input, &flip, &local_error))
 		{
+			/* What is left of each unit of sales: the net over the
+			 * gross, the crafter's margin. */
+			if (venture_money_get_amount(gross_native) > 0)
+				venture_arbitrage_set_ratio(opportunity, "margin",
+				                            (gdouble)venture_money_get_amount(flip.net) /
+				                            (gdouble)venture_money_get_amount(gross_native));
+
 			venture_arbitrage_set_money(opportunity, "net", flip.net);
 			venture_arbitrage_set_money(opportunity, "capital", flip.capital);
 			venture_arbitrage_set_money(opportunity, "listing_loss", flip.listing_loss);
@@ -1793,7 +1838,30 @@ arb_transform_recipe(
 	evidence.dispersion = (NULL != output.row) ? arb_dispersion(output.row) : NAN;
 	evidence.depth = depth;
 	venture_arbitrage_set_ratio(opportunity, "confidence", venture_arbitrage_confidence(&evidence));
-	json_object_set_array_member(opportunity, "warnings", json_array_new());
+
+	/* Where the output sells is where the cut and the deposit are taken:
+	 * a venue nobody gave a fee model reads as one that charges nothing,
+	 * and the craft looks better than it is. Say so beside it ("none" is
+	 * a model too: a venue that really is free names it). */
+	array = json_array_new();
+
+	if (NULL != output.row)
+	{
+		const VentureArbitrageVenue *venue = venture_arbitrage_scan_venue(walk->scan, output.source_id,
+		                                                                  output.row->venue_key);
+		g_autofree gchar *warning = NULL;
+
+		if (0 == venue->record_id)
+			warning = g_strdup_printf("%s has no venue record: no fees counted there",
+			                          output.row->venue_key);
+		else if (NULL == venue->fee_model)
+			warning = g_strdup_printf("%s has no fee model: no fees counted there", venue->name);
+
+		if (NULL != warning)
+			json_array_add_string_element(array, warning);
+	}
+
+	json_object_set_array_member(opportunity, "warnings", array);
 	venture_arbitrage_scan_add(walk->scan, opportunity);
 
 	g_clear_pointer(&output.price, venture_money_free);
@@ -1820,6 +1888,7 @@ arb_transform_scan(
 	VentureContext *context;
 	ArbWalk walk;
 	gint64 recipe_id;
+	gint64 category_id;
 	gboolean ok;
 	guint i;
 
@@ -1837,6 +1906,7 @@ arb_transform_scan(
 	arb_walk_init(&walk, scan, "min");
 	keep = g_ptr_array_new_with_free_func((GDestroyNotify)g_ptr_array_unref);
 	recipe_id = venture_json_object_get_int(walk.options, "recipe_id", 0);
+	category_id = venture_json_object_get_int(walk.options, "recipe_category_id", 0);
 	query = venture_query_new(VENTURE_TYPE_RECIPE);
 	venture_query_set_organization(query, venture_arbitrage_scan_get_organization_id(scan));
 	venture_query_set_limit(query, ARB_SCAN_RECIPES + 1);
@@ -1844,6 +1914,28 @@ arb_transform_scan(
 
 	if (ok && (recipe_id > 0))
 		ok = venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, recipe_id, error);
+
+	/* A recipe category (a profession, one of its expansions, a section
+	 * of its book) and everything filed beneath it, in the query: the
+	 * bound counts what was fetched, so a filter applied after it would
+	 * leave a narrow question refused for an organization past it. */
+	if (ok && (category_id > 0))
+	{
+		g_autoptr(GArray) categories = NULL;
+		g_autoptr(GPtrArray) operands = NULL;
+
+		categories = venture_category_descendants(venture_context_get_database(context),
+		                                          VENTURE_TYPE_CATEGORY, category_id, TRUE, error);
+		ok = (NULL != categories);
+		operands = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; ok && (i < categories->len); i++)
+			g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT,
+			                                          g_array_index(categories, gint64, i)));
+
+		if (ok)
+			ok = venture_query_add_filter(query, "category-id", VENTURE_FILTER_OP_IN, operands, error);
+	}
 
 	recipes = ok ? venture_database_find(venture_context_get_database(context), query, error) : NULL;
 	ok = (NULL != recipes);
@@ -1859,7 +1951,8 @@ arb_transform_scan(
 	{
 		g_ptr_array_set_size(recipes, ARB_SCAN_RECIPES);
 		venture_arbitrage_scan_add_note(scan, "Only the first 200 recipes by name were priced; "
-		                                      "name one with recipe_id.");
+		                                      "narrow to a recipe category with recipe_category_id, "
+		                                      "or name one with recipe_id.");
 	}
 
 	for (i = 0; ok && (i < recipes->len); i++)

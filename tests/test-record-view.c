@@ -1202,6 +1202,7 @@ test_accessible_shell(Fixture *f, gconstpointer data)
 		"/tickets", "/invoices/compose", "/quotes/compose", "/bills/compose",
 		"/e/ticket/new", "/e/contact", "/overview", "/market/browse", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc",
+		"/arbitrage/crafting", "/arbitrage/plan",
 		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
 	g_autofree gchar *page = NULL;

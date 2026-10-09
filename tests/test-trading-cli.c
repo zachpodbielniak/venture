@@ -943,6 +943,76 @@ test_record(
 }
 
 /*
+ * Crafting and the flip planner through the CLI: crafting with no recipe
+ * says so (an unknown option is refused by the server, exit 2); a flip
+ * recorded by key is on the plan, its profit the scan's 16.50; the plan
+ * exports as CSV and takes the trade off again. -o belongs only to an
+ * export.
+ */
+static void
+test_crafting_and_plan(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	const gchar *const crafting[] = { "arbitrage", "crafting", "units=2", NULL };
+	const gchar *const crafting_bad[] = { "arbitrage", "crafting", "min_rio=5", NULL };
+	const gchar *const plan[] = { "arbitrage", "plan", NULL };
+	const gchar *const repriced[] = { "arbitrage", "plan", "reprice=1", NULL };
+	const gchar *const export_csv[] = { "arbitrage", "plan", "export", "csv", NULL };
+	const gchar *const plan_out[] = { "-o", "x.csv", "arbitrage", "plan", NULL };
+	g_autofree gchar *key = herb_key(fixture);
+	g_autofree gchar *out = NULL;
+	g_autofree gchar *trade_id = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	JsonObject *root;
+
+	(void)user_data;
+
+	out = cli_ok(fixture, "table", crafting);
+	g_assert_nonnull(strstr(out, "No recipe to price"));
+	cli_refused(fixture, crafting_bad, 2, "min_rio");
+
+	{
+		const gchar *const by_key[] = { "arbitrage", "record", key, "units=2", "category_path=Herbs", NULL };
+
+		g_clear_pointer(&out, g_free);
+		out = cli_ok(fixture, "json", by_key);
+		answer = json_of(out);
+		trade_id = g_strdup_printf("%" G_GINT64_FORMAT,
+		                           json_object_get_int_member(json_node_get_object(answer), "id"));
+		g_clear_pointer(&answer, json_node_unref);
+	}
+
+	g_clear_pointer(&out, g_free);
+	out = cli_ok(fixture, "json", plan);
+	answer = json_of(out);
+	root = json_node_get_object(answer);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "trades")), ==, 1);
+	g_assert_cmpint(amount_of(json_array_get_object_element(json_object_get_array_member(root, "totals"), 0),
+	                          "profit"), ==, 1650);
+
+	g_clear_pointer(&out, g_free);
+	out = cli_ok(fixture, "table", repriced);
+	g_assert_nonnull(strstr(out, "16.50 USD"));
+	g_assert_nonnull(strstr(out, "ok"));
+
+	g_clear_pointer(&out, g_free);
+	out = cli_ok(fixture, "table", export_csv);
+	g_assert_true(g_str_has_prefix(out, "section,venue,instrument,key,quantity,unit_price,amount,fees"));
+
+	cli_refused(fixture, plan_out, 2, "-o belongs");
+
+	{
+		const gchar *const remove[] = { "arbitrage", "plan", "remove", trade_id, NULL };
+
+		g_clear_pointer(&out, g_free);
+		out = cli_ok(fixture, "table", remove);
+		g_assert_nonnull(strstr(out, "Removed trade"));
+		cli_refused(fixture, remove, 3, NULL);
+	}
+}
+
+/*
  * The action conveniences: execute a planned leg, close, reopen, stage a
  * close, abandon. Each goes through the action with typed parameters;
  * the trade's status moves exactly as the actions move it.
@@ -1660,6 +1730,7 @@ main(
 	ADD("market-lists-and-alerts", test_market_lists_and_alerts);
 	ADD("scan", test_scan);
 	ADD("record", test_record);
+	ADD("crafting-and-plan", test_crafting_and_plan);
 	ADD("actions", test_actions);
 	ADD("calc", test_calc);
 	ADD("export-and-registries", test_export_and_registries);

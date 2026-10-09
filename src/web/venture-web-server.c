@@ -1799,6 +1799,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/market/watchlists", "Watchlists", VENTURE_ICON("<path d=\"M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>"), NULL, "marketdata" },
 	{ "/market/alerts", "Alerts", VENTURE_ICON("<path d=\"M6 16V11a6 6 0 0 1 12 0v5l2 2H4z\"/><path d=\"M10 21h4\"/>"), NULL, "marketdata" },
 	{ "/arbitrage", "Arbitrage", VENTURE_ICON("<path d=\"M3 17l6-6 4 4 8-8\"/><path d=\"M15 7h6v6\"/>"), NULL, "arbitrage" },
+	{ "/arbitrage/crafting", "Crafting", VENTURE_ICON("<path d=\"M14 4l6 6-9 9H5v-6z\"/><path d=\"M12 6l6 6\"/>"), NULL, "arbitrage" },
+	{ "/arbitrage/plan", "Flip planner", VENTURE_ICON("<path d=\"M9 4h6v3H9z\"/><path d=\"M6 6h3M15 6h3v15H6V6\"/><path d=\"M9 12h6M9 16h4\"/>"), NULL, "arbitrage" },
 	{ "/arbitrage/calc", "Calculators", VENTURE_ICON("<rect x=\"5\" y=\"3\" width=\"14\" height=\"18\"/><path d=\"M8 7h8M8 12h2M14 12h2M8 16h2M14 16h2\"/>"), NULL, "arbitrage" },
 	{ "/e/arbitrage_trade", "Trades", VENTURE_ICON("<path d=\"M4 8h13l-3-3\"/><path d=\"M20 16H7l3 3\"/>"), NULL, "arbitrage" },
 	{ "/budgets", "Budgets", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), NULL, "budgets" },
@@ -1910,7 +1912,8 @@ static const gchar *const venture_web_nav_trading_accounts[] = {
  * no data sources rather than vanish. */
 static const gchar *const venture_web_nav_trading[] = {
 	"/market/browse", "/market/find", "/market/deals", "/market/venues", "/e/venue_group",
-	"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds",
+	"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting", "/arbitrage/plan",
+	"/arbitrage/calc", "/e/arbitrage_trade", "/feeds",
 	NULL
 };
 
@@ -3850,7 +3853,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", "language", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7896,7 +7899,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", "language", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7948,7 +7951,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -8012,7 +8015,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)

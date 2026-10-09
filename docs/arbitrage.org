@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-04]
-#+updated: [2026-10-04]
+#+updated: [2026-10-09]
 #+version: 0.3.0
 
 * How it fits together
@@ -391,6 +391,7 @@ Every door takes the same names: the =arbitrage_scan= report's options, the quer
 | =kind=           | text               | only instruments of this kind                                                                               |
 | =instrument=     | key                | one instrument; for =cover=, one event                                                                      |
 | =recipe_id=      | integer            | =transform=: one recipe; every active recipe (at most 200) otherwise                                        |
+| =recipe_category_id= | integer        | =transform=: only recipes filed in this =category= or beneath it -- a profession, an expansion, a section of its book |
 | =units=          | integer, 1-1000000 | units each opportunity is priced for, 1 by default; batches for =transform=                                 |
 | =buy_sources=    | integer, 1-10      | =spread=: the N cheapest buy venues per item in each currency -- the drop shipper's supplier list           |
 | =sell_basis=     | choice             | what a unit sells for: =min= (the venue's lowest listing, the default), =market=, =sale_avg=, =region_median= (the default for =deal=), =region_market= (another source's region market value: TSM's, below), =bid= |
@@ -451,7 +452,10 @@ Undermine's deal: a venue's price at or under its group's deal price -- the medi
 Crafting arbitrage (TSM's crafting cost). For each recipe, the output's best venue on =sell_basis= fixes the currency; each input is priced at every allowed buy venue of every instrument its product is quoted as (instrument records with =product_id=), by walking that venue's book for the units needed, converted into the output's currency; the cheapest wins. A reusable component (a tool) is needed once, at its quantity, however many batches -- never multiplied, the =goal_materials= rule. A venue whose book cannot fill the units, or whose currency has no rate, is passed over; none left leaves the input unquoted and the row blank, naming it. The cost is the sum of the inputs, the output's gross is its price times =output_quantity= times the batches, and moving the lots costs each input venue's transfer cost and the output venue's once. The opportunity carries =inputs= -- each line's venue, units, unit price and cost -- which =craft_arbitrage= prints as a shopping list.
 
 - It needs the =production= module: with it off the scan answers no rows and a note says so. An inactive recipe is skipped unless =recipe_id= names it.
-- Options that shape it: =recipe_id= (one recipe, else every active one, at most 200 by name), =units= (batches), =buy_venues= (where inputs may be bought), =sell_venues= (where the output may be sold), =group_key=, =sell_basis=, =max_age_hours=.
+- Options that shape it: =recipe_id= (one recipe, else every active one, at most 200 by name), =recipe_category_id= (the recipes filed in a category and beneath it, narrowed in the recipe query itself, so the 200 counts only them), =units= (batches), =buy_venues= (where inputs may be bought), =sell_venues= (where the output may be sold), =group_key=, =sell_basis=, =max_age_hours=.
+- /A region-wide venue is open from every venue./ A venue whose store attributes carry ="region_wide": true= -- a game's commodity market, which every realm of a region trades on -- may be bought from and sold to whatever =buy_venues= and =sell_venues= say (=venture_arbitrage_scan_venue_region_wide()=). Narrowing the reagents to one realm must not leave every commodity reagent unquoted: the person on that realm buys them from the region's market without leaving it. Only =transform= reads it; =spread= and =deal= keep their sets exactly (a commodity market is its own group's only venue, so every commodity there would read as a deal).
+- /How old each price is./ Each input carries =taken_at=, =age_seconds= and =stale= beside its venue, the =sell= object the same, and the row =buy_taken_at=, =buy_age_seconds=, =buy_stale= (the oldest input: one realm whose feed stopped greys the craft) and =sell_taken_at=, =sell_age_seconds=, =sell_stale= -- the members Deals carries, judged against =series.stale_minutes= the same way.
+- /Margin and fees./ A priced row carries =margin=, the net over the gross (what is left of each unit of sales), and =recipe_category_id= when its recipe is filed. Its =warnings= name the venue the output sells at when that venue has no record or a record with no fee model: its cut and deposit are not counted, and the craft reads better than it is (the =none= model is a model: a venue that really is free names it).
 - Key: =transform:<recipe id>:<output source>:<output venue>=, or =transform:<recipe id>:0= when no venue quotes the output.
 - Legs it plans: a buy per input at its venue, then the output's sell, then a =fee= leg for each venue a lot moves from and for the output venue, at its =transfer_cost= in its own currency (the net subtracted them, so a recorded craft pays them too). Every transfer cost, the output venue's included, is converted into the row's currency for the net; one with no rate is named in =missing=. The craft itself is not a leg: it is the recipe's =craft= action, performed between them (see [[file:examples/arbitrage-crafting.org][the crafting example]]).
 
@@ -612,7 +616,7 @@ An =arbitrage_strategy= record is a saved question: =name=, =strategy=, =data_so
 
 ** Recording an opportunity
 
-Each opportunity carries a =key= (unique within its strategy's answer), a =narrow= mapping (the options that find it again cheaply: its instrument, recipe or event) and =legs= in store terms: kind, source, venue key, instrument key, quantity, unit price, amount, fees. "Record attempt" -- the page's button, =POST /api/v1/arbitrage/record= with the question and the key, or =venture_arbitrage_record_opportunity()= -- runs the question again with =top= at its most, finds the key, and asks the strategy's plan for the =record= request. The default plan (=venture_arbitrage_plan_legs()=) promotes each leg's venue and instrument to records (idempotent; a deleted one is restored), writes every leg =planned= in its venue's currency, and fills =expected= with the profit (as a money string the performance report reads), capital, ROI, confidence, data age and key. The request goes through the =record= action, so the organization's roles, a second actor's approval and the action's consent operation apply as they do by hand. A blank opportunity cannot be planned.
+Each opportunity carries a =key= (unique within its strategy's answer), a =narrow= mapping (the options that find it again cheaply: its instrument, recipe or event) and =legs= in store terms: kind, source, venue key, instrument key, quantity, unit price, amount, fees. "Record attempt" -- the page's button, =POST /api/v1/arbitrage/record= with the question and the key, or =venture_arbitrage_record_opportunity()= -- runs the question again with =top= at its most, finds the key, and asks the strategy's plan for the =record= request. The default plan (=venture_arbitrage_plan_legs()=) promotes each leg's venue and instrument to records (idempotent; a deleted one is restored), writes every leg =planned= in its venue's currency, and fills =expected= with the profit (as a money string the performance report reads), capital, ROI, confidence, data age and key, and -- for the flip planner -- the sell side's =deposit=, the =listing_loss= relisting is expected to cost, and the =question= that found it: the scan's normalised options less =top= and =preset_id= (a preset edited since must not change what was planned), with the row's =narrow= over them. The request goes through the =record= action, so the organization's roles, a second actor's approval and the action's consent operation apply as they do by hand. A blank opportunity cannot be planned.
 
 =POST /api/v1/arbitrage/record?stage=1= (and =venture_arbitrage_stage_opportunity()=) plans the same way and stages the =record= action with the plan instead of performing it: the answer is =202= with the pending confirmation, exactly as the generic action route answers a staged action, and approval performs the same parameters. Planning still promotes the venues and instruments the legs name -- a leg must name a record, and promotion is idempotent -- but the trade and its legs wait for the approval.
 
@@ -636,6 +640,49 @@ Each opportunity carries a =key= (unique within its strategy's answer), a =narro
 An export function (=VentureExportFunc=) is handed the rows and the options and returns =GBytes=; it runs on the main thread after the scan, and reads nothing else. The download is those bytes exactly, zero bytes included, so a binary format works. The content type goes into a response header verbatim, so one holding a control character is refused at registration.
 
 The CSV's defusing puts an apostrophe ahead of any field that starts with =\==, =+=, =-=, =@=, a tab or a carriage return, except a field that is a whole negative figure (=-1.50 USD=). Starting with a minus and a digit is not enough: =-2+3+cmd|...= does too, and a spreadsheet runs it.
+
+** Crafting
+
+=/arbitrage/crafting= (=GET /api/v1/arbitrage/crafting=, =venture_arbitrage_crafting()=) is the crafter's view of the =transform= strategy: every recipe at once, losses and blanks kept, at the realms a person picks. It computes nothing of its own -- every figure is the strategy's row -- and adds only what a page needs to read it.
+
+| Option               | For                                                                                                 |
+|----------------------+-----------------------------------------------------------------------------------------------------|
+| =recipe_category_id= | a profession, an expansion or a section: the recipes filed there and beneath it                     |
+| =buy_realm=          | where reagents are bought: a realm as Deals' picker names it (a label, a member realm's name, a source's key); empty is the cheapest realm per reagent |
+| =sell_realm=         | where the craft is sold, the same way; empty is the realm that pays most                             |
+| =venue_group=        | the realms a venue group stands for (/My characters/): both sides, as on Deals                      |
+| =units=              | batches                                                                                             |
+| =sell_basis=, =max_age_hours=, =share= | as the question's                                                                 |
+| =recipe_id=, =data_source_id= | one recipe, one source                                                                     |
+
+A picked realm becomes the scan's =buy_venues= / =sell_venues=: every source's keys for that connected realm (=venture_marketdata_realm_venue_keys()=, Deals' own reading of a realm), and a name no source has is NOT_FOUND. Commodities come from the region's market whichever realm is picked (a region-wide venue, above). An unknown option is refused by name. The question runs through =venture_arbitrage_scan_run_full()= with =top= at its most and nothing left out for being a loss.
+
+Each row is the strategy's (=inputs=, =sell= with its =fees= -- the cut -- and =deposit=, =cost=, =gross=, =net=, =margin=, =roi=, =sale_rate=, the ages, =warnings=, =missing=) plus =recipe_category=, its recipe's category path. The answer adds =realm_choices= (=venture_marketdata_realm_choices()=, one per connected realm, region-wide markets left out), =categories= (the organization's =recipe= categories by path), =venue_groups=, the crafting =question= as read, and =options=, the scan's question -- which "Add to plan" sends back with a row's key. A note counts the venues sold at that have no fee model.
+
+The page: pickers for the category, the two realms and the venue group; one row per recipe with its reagents folded under its name (each with its venue, unit price and age), the category, the reagents' cost aged by the oldest, where it sells (aged), what a unit sells for, the gross, the cut, the deposit, the profit, the margin, the ROI and the sale rate; every money cell carries its amount as =data-sort-value=, so the table sorts in the browser like every other. "Add to plan" is offered on a craft that pays (a plan is asked again with losses left out, so a losing one would be refused).
+
+Recipes come from the Blizzard plugin's =import_recipes= -- by profession, by expansion, filed under profession / expansion / section -- and the auction house's fees from its =set_venue_fees=; see [[file:examples/wow-auction-house-feed.org::*Recipes][the World of Warcraft example]].
+
+** The flip planner
+
+=/arbitrage/plan= (=GET /api/v1/arbitrage/plan=, =venture_arbitrage_planner()=) is everything planned, as a shopping list. A plan is not a second record type: a planned =arbitrage_trade= /is/ a line of the plan -- what "Record attempt" and "Add to plan" (=POST /arbitrage/plan/add=, the same record, which answers with the planner) write from Deals, Arbitrage and Crafting -- and executing its legs is how it is carried out. Deals' "Add to plan" posts the =spread= question that finds exactly that flip (its item, bought at its realm, sold at the deal's sell realm, at the lowest listing) with the spread's key, so the flip is priced again with each venue's own fee model where Deals took a flat cut; one those fees turn into a loss is refused as no longer there.
+
+The planner reads every trade still =planned= in the organization, newest first, with its legs -- all of them or a refusal: past 500 (=VENTURE_ARBITRAGE_PLANNER_MAX_TRADES=) it answers CONFLICT rather than total part of a plan -- and regroups the planned legs (=venture_arbitrage_planner_build()=, plain data in and out):
+
+| Section  | What                                                                                                                |
+|----------+---------------------------------------------------------------------------------------------------------------------|
+| =buy=    | one group per venue the buy (and stake) legs name, by name; each instrument once, its units added, =unit_price= the dearest planned -- the most a unit may cost -- and the amount and fees added |
+| =sell=   | one group per venue of the sell (and payout) legs; each instrument /and price/ once -- what to post is a price as well as a count |
+| =fees=   | the fee and transfer legs (moving a lot), per venue                                                                 |
+| =totals= | one block per currency, never added across two: =trades=, =outlay= (every buy, its buy fees and every fee leg), =gross= (the sales), =cut= (the sell legs' fees), =deposit= (what posting ties up, refunded on a sale; from each trade's =expected=), =listing_loss= (the deposits relisting is expected to lose), =revenue= (gross less cut less listing loss) and =profit= (revenue less outlay) |
+
+Only planned legs count: an executed one is the books' now, a cancelled or failed one is not happening. Because the totals add the same legs, cut and expected lost deposits the scan's flip subtracted, a plan's profit is exactly the sum of what its trades promised.
+
+=?reprice=1= asks each trade's own question again (its =expected.question=; at most 100 trades, =VENTURE_ARBITRAGE_PLANNER_MAX_REPRICE=, one scan per distinct question) with losses kept, finds its key and says how it stands in =reprice=: =ok=, =stale= (still there, a buy or sell price is old), =unprofitable= (still there, now a loss), =unquoted= (a price or fee is missing now), =gone= (the question no longer finds it) or =unknown= (recorded before questions were kept, or by hand) -- with the =net= now beside the =planned_net=.
+
+=GET /arbitrage/plan/export?format=csv= is the list as CSV -- =section= (buy, fees, sell), venue, instrument, key, quantity, unit price, amount, fees, then a =total= line per currency and figure -- defused as the scan's CSV is; =format= may also name a registered export format other than the scan's =csv= and =shopping_list=, which is handed the buy lines as rows ({=instrument_key=, =instrument_name=, =data_source_id=}, each item once): with the Blizzard plugin, =format=tsm= is a TradeSkillMaster group-import string of what to buy. =POST /arbitrage/plan/remove= (=trade_id=; JSON on the API twin) takes a trade off the plan -- its legs and the trade deleted in one transaction (=venture_arbitrage_planner_remove()=), refused for a trade under way or finished (close or abandon it instead) and for an executed leg. A planned trade posted nothing, so deleting it removes nothing from the books.
+
+The page: links to Deals, Crafting and Arbitrage; "Price again" and the exports; the totals per currency; Buy (a heading per realm over its lines and its total, in =<tfoot>=), Moving lots, Post; and the planned trades with their planned profit, their standing when priced again, and Remove.
 
 ** Calculators
 
@@ -661,15 +708,24 @@ The CSV's defusing puts an apostrophe ahead of any field that starts with =\==, 
 | =POST /arbitrage/record=               | the question and =key= as a form; 303 to the trade                                         |
 | =GET /arbitrage/export=                | =format= and the question; a download                                                      |
 | =GET /arbitrage/calc=                  | the three calculators                                                                      |
+| =GET /arbitrage/crafting=              | every recipe at the picked realms, sortable, with "Add to plan" per craft that pays         |
+| =GET /arbitrage/plan=                  | the flip planner: buy and post lists, totals, the planned trades; =?reprice=1= asks each again |
+| =POST /arbitrage/plan/add=             | as =/arbitrage/record=, then 303 to the planner (Deals, Arbitrage and Crafting post here)    |
+| =POST /arbitrage/plan/remove=          | =trade_id=; 302 to the planner                                                             |
+| =GET /arbitrage/plan/export=           | =format= =csv= (default) or a plugin's (=tsm=); a download                                |
 | =GET /api/v1/arbitrage/scan=           | the scan's JSON                                                                            |
 | =POST /api/v1/arbitrage/record=        | ={...question, "key": "..."}=; 201 with the trade; =?stage=1=: 202 with the confirmation    |
 | =GET /api/v1/arbitrage/export=         | as the page                                                                                |
 | =GET /api/v1/arbitrage/calc=           | =calc= and the fields; the calculator's JSON                                              |
 | =GET /api/v1/arbitrage/registries=     | the registered strategies, fee models, export formats and option names                     |
+| =GET /api/v1/arbitrage/crafting=       | the crafting answer                                                                        |
+| =GET /api/v1/arbitrage/plan=           | the planner's answer (=?reprice=1=)                                                        |
+| =POST /api/v1/arbitrage/plan/remove=   | ={"trade_id": N}=; 200 ={"removed": N}=                                                    |
+| =GET /api/v1/arbitrage/plan/export=    | as the page                                                                                |
 
-Every route checks its own session or token and the =arbitrage= module. The scan and the export read data sources (=data_source= at viewer); recording writes trades (=arbitrage_trade= at editor, and the action's own organization roles); the calculators and the registries need a viewer of presets. The =/api/v1/arbitrage= routes are registered before the generic =/api/v1/:type= routes, which would otherwise read =arbitrage= as a type.
+Every route checks its own session or token and the =arbitrage= module. The scan, crafting and the export read data sources (=data_source= at viewer); the planner and its export read trades (=arbitrage_trade= at viewer), and removing from it writes them (editor); recording writes trades (=arbitrage_trade= at editor, and the action's own organization roles); the calculators and the registries need a viewer of presets. The =/api/v1/arbitrage= routes are registered before the generic =/api/v1/:type= routes, which would otherwise read =arbitrage= as a type.
 
-In the sidebar the module adds three rows under /Trading/, between the market's alerts and =/feeds=: /Arbitrage/ (=/arbitrage=), /Calculators/ (=/arbitrage/calc=) and /Trades/ (=/e/arbitrage_trade=, the generic list of trades, whose detail page carries the trade's own block). Presets are ordinary =arbitrage_strategy= records at =/e/arbitrage_strategy=.
+In the sidebar the module adds five rows under /Trading/, between the market's alerts and =/feeds=: /Arbitrage/ (=/arbitrage=), /Crafting/ (=/arbitrage/crafting=), /Flip planner/ (=/arbitrage/plan=), /Calculators/ (=/arbitrage/calc=) and /Trades/ (=/e/arbitrage_trade=, the generic list of trades, whose detail page carries the trade's own block). Presets are ordinary =arbitrage_strategy= records at =/e/arbitrage_strategy=.
 
 ** From the command line
 
@@ -698,7 +754,7 @@ Every =/api/v1/arbitrage= route answers for the organization its =organization_i
 | Report            | Options                                                                                                  |
 |-------------------+----------------------------------------------------------------------------------------------------------|
 | =arbitrage_scan=  | every option of the question (above), and =organization_id=                                              |
-| =craft_arbitrage= | =recipe_id=, =units= (batches), =data_source_id=, =buy_venues=, =sell_venues=, =venue_group=, =group_key=, =sell_basis=, =max_age_hours=, =organization_id= |
+| =craft_arbitrage= | =recipe_id=, =recipe_category_id=, =units= (batches), =data_source_id=, =buy_venues=, =sell_venues=, =venue_group=, =group_key=, =sell_basis=, =max_age_hours=, =organization_id= |
 
 =arbitrage_scan= is the scan's rows: strategy, opportunity, buy and sell venue, units, currency, capital, net, ROI, ROI a day, annualised, confidence, sale rate, data age and what is unquoted, with the scan's notes and what was left out and why. =craft_arbitrage= is the =transform= strategy with nothing left out for being a loss: per recipe, each input at its cheapest venue, ordered by venue so it reads as a shopping list (a reusable input says it is bought once), the output and its venue, and the profit -- blank and named when an input is unquoted. Both read the latest prices; the period is not used.
 
@@ -928,6 +984,17 @@ GBytes *venture_export_format_registry_export(VentureExportFormatRegistry *self,
     JsonArray *opportunities, JsonObject *options, GError **error);
 void venture_arbitrage_add_trends(VentureContext *context, JsonArray *rows);
 
+/* Crafting and the flip planner. */
+JsonNode *venture_arbitrage_crafting(VentureContext *context, gint64 organization_id,
+    JsonObject *asked, GError **error);
+JsonObject *venture_arbitrage_planner_build(JsonArray *trades, GError **error);
+JsonNode *venture_arbitrage_planner(VentureContext *context, gint64 organization_id,
+    gboolean reprice, GError **error);
+GBytes *venture_arbitrage_planner_csv(JsonObject *answer);
+JsonArray *venture_arbitrage_planner_export_rows(JsonObject *answer);
+gboolean venture_arbitrage_planner_remove(VentureContext *context, gint64 organization_id,
+    gint64 trade_id, const VentureActor *actor, GError **error);
+
 /* What a strategy's scan function is handed. */
 VentureContext *venture_arbitrage_scan_get_context(VentureArbitrageScan *scan);
 gint64 venture_arbitrage_scan_get_organization_id(VentureArbitrageScan *scan);
@@ -939,6 +1006,10 @@ VentureSeriesStore *venture_arbitrage_scan_open_store(VentureArbitrageScan *scan
     gint64 data_source_id);
 gboolean venture_arbitrage_scan_venue_allowed(VentureArbitrageScan *scan, gboolean buy,
     const gchar *venue_key);
+gboolean venture_arbitrage_scan_venue_region_wide(VentureArbitrageScan *scan,
+    gint64 data_source_id, const gchar *venue_key);
+void venture_arbitrage_scan_set_age(VentureArbitrageScan *scan, JsonObject *object,
+    const gchar *prefix, gint64 taken_at);
 const VentureArbitrageVenue *venture_arbitrage_scan_venue(VentureArbitrageScan *scan,
     gint64 data_source_id, const gchar *venue_key);
 gboolean venture_arbitrage_scan_fees(VentureArbitrageScan *scan, gint64 data_source_id,
@@ -981,6 +1052,8 @@ gdouble venture_arbitrage_confidence(const VentureArbitrageEvidence *evidence);
 - *Every scan option is a report option.* A new one goes into the option table in =venture-arbitrage-scan.c=, the =arbitrage_scan= schema, and all five doors in the same commit.
 - *A fee model or strategy name is judged when written, never when kept,* and only while the module is on.
 - *Bound every read a strategy makes.* Choose candidates by an indexed query with a limit; never walk a region's rows.
+- *Crafting and the planner compute nothing of their own.* Crafting is the =transform= row; the planner adds up the planned legs and the =expected= deposit and listing loss the scan wrote. A margin, a fee or a profit computed in either, or in a page, is a second formula that will disagree with the trade the plan records.
+- *A plan is planned trades, not a record type of its own.* "Add to plan" is the =record= path; a parallel plan type would be a second way into the books that skips the plan and the action.
 - *A recorded flip's =expected= is what the next run subtracts.* Never record a flip without it, never match again from the raw ledger (a sale merged larger later would book its lots a second time), and never let it be written by hand: the trade validator refuses a change to it on any trade with a =data_source_id=, outside the module's permit.
 - *Flip totals are checked, never wrapped.* A sale's units, cost and proceeds, its profit, what recorded trades took from a row and the call's totals all add through =books_add()=; a sum past 64 bits refuses the call, and nothing is written.
 - *A source books one way.* =record_flips= leaves out a flip touching a day posted a day at a time, and =post_ledger= a day whose flips are recorded; keep both checks on the data, not only on the =books= setting, which can change.

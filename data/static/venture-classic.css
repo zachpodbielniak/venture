@@ -4852,6 +4852,25 @@ input:not([type="hidden"]):focus-visible {
 .arbitrage-calc .stat-row { margin-top: var(--space-3); }
 .arbitrage-answer .figure { font-variant-numeric: tabular-nums; }
 
+/*
+ * Crafting and the flip planner. A craft's reagents fold under its name;
+ * a warning (a venue whose fees are not counted) reads in the muted
+ * register like an unquoted input. The planner is one heading per venue
+ * over its own short table, its total in the foot.
+ */
+.arbitrage-warning { margin-top: var(--space-1); font-size: 12px; color: var(--text-muted); }
+.craft-inputs { margin-top: var(--space-1); font-size: 12.5px; }
+.craft-inputs summary { cursor: pointer; color: var(--text-muted); }
+.craft-inputs ul { margin: var(--space-1) 0 0; padding-left: var(--space-4); }
+.craft-inputs li.is-stale { color: var(--text-muted); }
+.plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.plan-venue h3 { margin: 0; }
+.plan-totals { margin-bottom: var(--space-3); }
+.plan-table td, .plan-trades td { vertical-align: top; }
+.plan-trades form, .deal-plan { margin: 0; }
+.deal-plan { display: flex; gap: var(--space-1); align-items: center; }
+.deal-plan input[type="number"] { width: 5em; }
+
 /* ==========================================================================
    Source attribution: who a page's market data came from
    ========================================================================== */

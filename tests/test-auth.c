@@ -1352,6 +1352,16 @@ test_auth_pages_refuse_anonymous_requests(
 	/* The arbitrage scan, recording, export and the calculators. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/calc"), ==, SOUP_STATUS_FOUND);
+	/* Crafting and the flip planner, with theirs. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/crafting"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/plan"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/plan/export?format=csv"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/plan/add", NULL, "key=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/plan/remove", NULL, "trade_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/crafting"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/plan"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/plan/export?format=csv"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/arbitrage/plan/remove", NULL, "{\"trade_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/export?format=csv"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/record", NULL, "key=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/scan"), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -5522,6 +5532,11 @@ test_auth_sidebar_asks_the_five_questions(
 		g_assert_nonnull(scan);
 		g_assert_nonnull(calc);
 		g_assert_true((scan > alerts) && (calc > scan) && (trades > calc));
+		/* Crafting and the flip planner sit between the scan and the
+		 * calculators. */
+		g_assert_true((strstr(page, "href=\"/arbitrage/crafting\"") > scan) &&
+		              (strstr(page, "href=\"/arbitrage/plan\"") > scan) &&
+		              (strstr(page, "href=\"/arbitrage/plan\"") < calc));
 		g_assert_null(strstr(page, "href=\"/feeds\""));
 	}
 
@@ -6406,6 +6421,14 @@ test_auth_trading_organization(
 	                              "&organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
 	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/arbitrage/export?format=csv"
 	                              "&organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/arbitrage/crafting"
+	                              "?organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/arbitrage/crafting"
+	                              "?organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/arbitrage/plan"
+	                              "?organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/arbitrage/plan"
+	                              "?organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
 
 	/* A member's record reaches the scan (which has nothing to record);
 	 * a stranger's stops at the organization. */

@@ -1303,6 +1303,7 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "share")) &&
 				 (0 != g_strcmp0(parts[0], "preset_id")) &&
 				 (0 != g_strcmp0(parts[0], "recipe_id")) &&
+				 (0 != g_strcmp0(parts[0], "recipe_category_id")) &&
 				 (0 != g_strcmp0(parts[0], "units")) &&
 				 (0 != g_strcmp0(parts[0], "buy_sources")) &&
 				 (0 != g_strcmp0(parts[0], "max_age_hours")) &&
@@ -1315,7 +1316,7 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "login"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login, form_id, language");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, recipe_category_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login, form_id, language");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -4280,10 +4281,12 @@ main(
 		"                               arbitrage_performance takes group_by, strategy, venture_id;\n"
 		"                               arbitrage_scan takes strategy, preset_id, data_source_id,\n"
 		"                               buy_venues, sell_venues, group_key, category_path, kind,\n"
-		"                               instrument, recipe_id, units, buy_sources, sell_basis,\n"
+		"                               instrument, recipe_id, recipe_category_id, units,\n"
+		"                               buy_sources, sell_basis,\n"
 		"                               total_stake, min_profit, min_roi, min_sale_rate, max_capital,\n"
 		"                               max_buy_pct, min_confidence, max_age_hours, share, sort, top;\n"
-		"                               craft_arbitrage takes recipe_id, units, data_source_id,\n"
+		"                               craft_arbitrage takes recipe_id, recipe_category_id, units,\n"
+		"                               data_source_id,\n"
 		"                               buy_venues, sell_venues, group_key, sell_basis, max_age_hours;\n"
 		"                               form_summary takes form_id and optional language\n"
 		"  kb search QUERY              search the knowledge bases by\n"
@@ -4391,6 +4394,9 @@ main(
 		"  arbitrage record name=N legs=JSON|@FILE  a trade from explicit legs; --stage\n"
 		"  arbitrage calc surebet|back-lay|flip ...  the calculators; --stake AMOUNT\n"
 		"  arbitrage export FORMAT [option=value ...] [-o FILE]\n"
+		"  arbitrage crafting [option=value ...]  every recipe at the picked realms\n"
+		"  arbitrage plan [reprice=1]   the flip planner; plan export csv|tsm [-o FILE],\n"
+		"                               plan remove TRADE_ID\n"
 		"  arbitrage close|reopen|abandon TRADE_ID, arbitrage execute LEG_ID; --stage\n"
 		"  arbitrage registries         strategies, fee models, export formats\n"
 		"  arbitrage help               every arbitrage verb, its options and examples\n"
@@ -4567,7 +4573,7 @@ main(
 	/* Refused rather than ignored, like --wait: each belongs to one verb. */
 	if (((NULL != arbitrage_stake) || (NULL != export_output)) && (0 != g_strcmp0(args[0], "arbitrage")))
 	{
-		g_printerr("venturectl: --stake belongs to arbitrage calc and -o to arbitrage export\n");
+		g_printerr("venturectl: --stake belongs to arbitrage calc and -o to arbitrage export or plan export\n");
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
 	}
 

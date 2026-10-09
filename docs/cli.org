@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-05]
+#+updated: [2026-10-09]
 #+version: 0.7.0
 
 
@@ -123,7 +123,7 @@ venturectl report packs deliver ID       # re-send a pack's last retained output
 venturectl feeds sync|push|runs|due ...  # market data sources; see Market data, arbitrage and plugins
 venturectl market VERB ...               # the price oracle and the Trading pages; market help
 venturectl accounts VERB ...             # the operator's accounts: attention, inventory, P&L; accounts help
-venturectl arbitrage VERB ...            # scan, record, calculate, export; arbitrage help
+venturectl arbitrage VERB ...            # scan, record, crafting, plan, calculate, export; arbitrage help
 venturectl plugins [list]                # what the server loaded; owner only
 #+end_src
 
@@ -700,6 +700,10 @@ venturectl arbitrage calc surebet odds="+150 -120" format=american --stake "100.
 venturectl arbitrage calc back-lay 3.0 2.9 --stake "50.00 USD" commission=5
 venturectl arbitrage calc flip "1.25 GOLD" "2.10 GOLD" units=20 cut=5 sale_rate=40
 venturectl arbitrage export csv spread group_key=eu -o opportunities.csv
+venturectl arbitrage crafting buy_realm=Thrall sell_realm=Thrall recipe_category_id=12 units=5
+venturectl arbitrage plan reprice=1                   # the flip planner: totals, trades, standing now
+venturectl arbitrage plan export tsm -o shopping.txt  # or csv; -o here and on export only
+venturectl arbitrage plan remove 31
 venturectl arbitrage execute 12 occurred_at=2026-03-05T10:00:00Z
 venturectl arbitrage close 4
 venturectl arbitrage abandon 4 goods=write_off
