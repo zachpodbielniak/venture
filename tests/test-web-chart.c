@@ -120,6 +120,111 @@ test_line(void)
 	g_assert_null(strstr(d, ","));
 }
 
+/* The y of every point of @svg's path of class chart-line-@n, in order. */
+static GArray *
+path_ys(
+	const gchar	*svg,
+	guint		 n
+){
+	g_autofree gchar *mark = g_strdup_printf("class=\"chart-line chart-line-%u\"", n);
+	g_auto(GStrv) words = NULL;
+	g_autofree gchar *d = NULL;
+	const gchar *path;
+	const gchar *end;
+	GArray *ys;
+	guint i;
+
+	path = strstr(svg, mark);
+	g_assert_nonnull(path);
+	path = strstr(path, " d=\"");
+	end = strchr(path + 4, '"');
+	d = g_strndup(path + 4, end - (path + 4));
+	words = g_strsplit(g_strstrip(d), " ", -1);
+	ys = g_array_new(FALSE, FALSE, sizeof(gdouble));
+
+	/* "M64.0 120.5 L..." : a command and x, then y. */
+	for (i = 0; (NULL != words[i]) && (NULL != words[i + 1]); i += 2)
+	{
+		gdouble y = g_ascii_strtod(words[i + 1], NULL);
+
+		g_array_append_val(ys, y);
+	}
+
+	return ys;
+}
+
+/*
+ * Series on one side share that side's scale: a price and a median of
+ * prices read against one axis, so a flat median at the price's high is
+ * drawn at the price's high -- not, scaled alone, across the middle,
+ * where it would look like half the price. Four series draw, each with
+ * its own mark; a fifth has no mark and is refused.
+ *
+ * What breaks if this regresses: the price history's region line sits
+ * wherever its own range puts it, and a price above the region reads as
+ * below it.
+ */
+static void
+test_line_shared_scale(void)
+{
+	static const gdouble low[] = { 100.0, 200.0, 150.0 };
+	static const gdouble flat[] = { 200.0, 200.0, 200.0 };
+	static const gdouble third[] = { 120.0, 130.0, 140.0 };
+	static const gdouble count[] = { 5.0, 9.0, 1.0 };
+	static const gchar *const labels[] = { "a", "b", "c", NULL };
+	VentureWebChartSeries series[5];
+	VentureWebChart chart;
+	g_autofree gchar *svg = NULL;
+	g_autofree gchar *refused = NULL;
+	g_autoptr(GArray) first = NULL;
+	g_autoptr(GArray) second = NULL;
+	g_autoptr(GArray) quantity = NULL;
+
+	memset(series, 0, sizeof(series));
+	series[0].name = "Lowest price";
+	series[0].values = low;
+	series[1].name = "Quantity";
+	series[1].values = count;
+	series[1].secondary = TRUE;
+	series[2].name = "Market value";
+	series[2].values = third;
+	series[3].name = "Region median";
+	series[3].values = flat;
+	series[4].name = "One too many";
+	series[4].values = flat;
+	memset(&chart, 0, sizeof(chart));
+	chart.title = hostile;
+	chart.labels = labels;
+	chart.n_points = 3;
+	chart.series = series;
+	chart.n_series = 4;
+
+	svg = venture_web_chart_line(&chart);
+	assert_clean(svg);
+	g_assert_nonnull(strstr(svg, "class=\"chart-line chart-line-3\""));
+	g_assert_nonnull(strstr(svg, "class=\"chart-line chart-line-4\""));
+	g_assert_nonnull(strstr(svg, "<span class=\"chart-key chart-key-4\">Region median</span>"));
+
+	first = path_ys(svg, 1);
+	second = path_ys(svg, 4);
+	quantity = path_ys(svg, 2);
+	g_assert_cmpuint(first->len, ==, 3);
+	g_assert_cmpuint(second->len, ==, 3);
+
+	/* The flat 200 is level with the price's 200, on the shared axis. */
+	g_assert_cmpfloat_with_epsilon(g_array_index(second, gdouble, 0), g_array_index(first, gdouble, 1), 0.05);
+	g_assert_cmpfloat_with_epsilon(g_array_index(second, gdouble, 2), g_array_index(first, gdouble, 1), 0.05);
+
+	/* The quantity keeps an axis of its own: its 9 is as high as the
+	 * price's 200, a different unit at the same height. */
+	g_assert_cmpfloat_with_epsilon(g_array_index(quantity, gdouble, 1), g_array_index(first, gdouble, 1), 0.05);
+
+	chart.n_series = 5;
+	refused = venture_web_chart_line(&chart);
+	g_assert_null(strstr(refused, "<svg"));
+	g_assert_nonnull(strstr(refused, "nothing to draw"));
+}
+
 /*
  * Nothing to draw, or too much, is an empty state saying so, not an empty
  * picture or a megabyte of path.
@@ -306,6 +411,7 @@ main(
 	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/web-chart/line", test_line);
+	g_test_add_func("/web-chart/line-shared-scale", test_line_shared_scale);
 	g_test_add_func("/web-chart/empty-and-bounds", test_empty_and_bounds);
 	g_test_add_func("/web-chart/bar", test_bar);
 	g_test_add_func("/web-chart/heat", test_heat);

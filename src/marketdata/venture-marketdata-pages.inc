@@ -100,7 +100,8 @@ mdw_path_id(
 }
 
 /*
- * The key a path names: everything after "/i/<source>/". The server hands
+ * The key a path names: everything after "/i/<source>/" (or, for the
+ * price history's route, "/history/<source>/"). The server hands
  * a handler the path with its escapes already undone, so a key holding a
  * slash ("evil/key", escaped as %2F in every link) arrives as two
  * segments; the route therefore matches the rest of the path, and the key
@@ -117,8 +118,15 @@ mdw_path_key(
 	const gchar *key;
 
 	path = htmx_request_get_path(request);
-	at = (NULL != path) ? strstr(path, "/market/i/") : NULL;
-	key = (NULL != at) ? strchr(at + strlen("/market/i/"), '/') : NULL;
+
+	/* By the route's own prefix: a key may hold "/market/i/" itself. */
+	if ((NULL != path) && g_str_has_prefix(path, "/api/v1/market/history/"))
+		key = strchr(path + strlen("/api/v1/market/history/"), '/');
+	else
+	{
+		at = (NULL != path) ? strstr(path, "/market/i/") : NULL;
+		key = (NULL != at) ? strchr(at + strlen("/market/i/"), '/') : NULL;
+	}
 
 	if ((NULL == key) || ('\0' == key[1]) || !g_utf8_validate(key + 1, -1, NULL))
 	{
@@ -823,6 +831,85 @@ mdw_age(
 
 /* --- /market/browse ------------------------------------------------------- */
 
+/* --- A row's last seven days ------------------------------------------------- */
+
+static gdouble mdw_double (JsonObject *object, const gchar *member);
+static const gchar *mdw_tone (gdouble value, gdouble good_at, gdouble bad_at);
+static void mdw_chip_open (GString *html, const gchar *tone);
+static void mdw_sort_value (GString *html, JsonObject *object, const gchar *member);
+
+/* The headings of the two cells mdw_recent_cells() draws. A sparkline
+ * has nothing to sort by, so its heading opts out; so does the figure's
+ * in a table paged on the server (@server_sorted), where sorting the rows
+ * on screen would pass for an order of every page. */
+static void
+mdw_recent_headings(
+	GString		*html,
+	gboolean	 server_sorted
+){
+	g_string_append_printf(html, "<th scope=\"col\" data-no-sort>7 days</th>"
+	                             "<th scope=\"col\" class=\"num\" %s "
+	                             "title=\"The price against the median of the last seven days' hourly "
+	                             "lowest prices at this venue\">vs 7-day median</th>",
+	                       server_sorted ? "data-no-sort" : "data-sort-type=\"num\" data-sort-default=\"asc\"");
+}
+
+/*
+ * A row's last seven days, as two cells: its lowest price in four-hour
+ * blocks as a sparkline, and its price against the seven-day median -- a
+ * dip is well under it, a new normal is at it. The figure is the
+ * answer's (venture_marketdata_deals(), _browse()); the page only draws.
+ */
+static void
+mdw_recent_cells(
+	GString		*html,
+	JsonObject	*row
+){
+	g_autoptr(GArray) values = NULL;
+	g_autofree gchar *spark = NULL;
+	JsonArray *trend;
+	gdouble vs;
+	guint i;
+
+	trend = json_object_has_member(row, "trend_7d") ? json_object_get_array_member(row, "trend_7d") : NULL;
+	values = g_array_new(FALSE, FALSE, sizeof(gdouble));
+
+	for (i = 0; (NULL != trend) && (i < json_array_get_length(trend)); i++)
+	{
+		JsonNode *node = json_array_get_element(trend, i);
+		gdouble value = ((NULL != node) && JSON_NODE_HOLDS_VALUE(node)) ? (gdouble)json_node_get_int(node) : NAN;
+
+		g_array_append_val(values, value);
+	}
+
+	spark = venture_web_chart_sparkline("Lowest price every four hours, last 7 days",
+	                                    (const gdouble *)(gpointer)values->data, values->len);
+	g_string_append(html, "<td class=\"market-trend\">");
+	g_string_append(html, spark);
+	g_string_append(html, "</td><td class=\"num\"");
+	mdw_sort_value(html, row, "vs_median_7d_pct");
+	g_string_append(html, ">");
+	vs = mdw_double(row, "vs_median_7d_pct");
+
+	if (isnan(vs))
+		g_string_append(html, "<span class=\"muted\" title=\"Fewer than twelve hours of prices "
+		                      "in the last seven days\">too new</span>");
+	else
+	{
+		gchar number[G_ASCII_DTOSTR_BUF_SIZE];
+
+		/* Under the median by 15% or more reads as a dip; at or over it
+		 * is no dip at all. */
+		mdw_chip_open(html, mdw_tone(vs, -15.0, 0.0));
+		g_string_append(html, g_ascii_formatd(number, sizeof(number), "%+.1f", vs));
+		g_string_append(html, "%</span><div class=\"deal-sub muted\">median ");
+		mdw_money(html, row, "median_7d");
+		g_string_append(html, "</div>");
+	}
+
+	g_string_append(html, "</td>");
+}
+
 static gboolean
 mdw_browse_query(
 	VentureWebServer		 *self,
@@ -1050,6 +1137,7 @@ venture_marketdata_web_browse(
 	mdw_sort_header(html, request, echo, "market_value", "Market value", TRUE);
 	mdw_sort_header(html, request, echo, "region_median", "Region median", TRUE);
 	mdw_sort_header(html, request, echo, "pct_vs_region", "Of region", TRUE);
+	mdw_recent_headings(html, TRUE);
 	mdw_sort_header(html, request, echo, "sale_rate", "Sale rate", TRUE);
 	mdw_sort_header(html, request, echo, "updated", "Updated", FALSE);
 	g_string_append(html, "</tr></thead><tbody>");
@@ -1083,7 +1171,9 @@ venture_marketdata_web_browse(
 		mdw_money(html, row, "region_median");
 		g_string_append(html, "</td><td class=\"num\">");
 		mdw_percent(html, row, "pct_vs_region", 1.0);
-		g_string_append(html, "</td><td class=\"num\">");
+		g_string_append(html, "</td>");
+		mdw_recent_cells(html, row);
+		g_string_append(html, "<td class=\"num\">");
 		mdw_percent(html, row, "sale_rate", 100.0);
 		g_string_append(html, "</td><td>");
 		mdw_when(html, row, "taken_at");
@@ -1091,7 +1181,7 @@ venture_marketdata_web_browse(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"9\" class=\"muted\">Nothing matches.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"11\" class=\"muted\">Nothing matches.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -1140,55 +1230,231 @@ venture_marketdata_web_browse(
 
 /* --- /market/i/:source/:key ------------------------------------------------ */
 
-/* The labels and two series of the snapshots chart, from the hourly points. */
+/* What a history's range is called on the page. */
+static const gchar *
+mdw_range_label(const gchar *range)
+{
+	if (0 == g_strcmp0(range, "24h"))
+		return "24 hours";
+	if (0 == g_strcmp0(range, "7d"))
+		return "7 days";
+	if (0 == g_strcmp0(range, "14d"))
+		return "14 days";
+	if (0 == g_strcmp0(range, "90d"))
+		return "90 days";
+	if (0 == g_strcmp0(range, "all"))
+		return "everything stored";
+
+	return range;
+}
+
+/* A link to the instrument's page at @venue with @range and @compare. */
 static gchar *
-mdw_snapshots_chart(
+mdw_history_link(
+	const gchar	*self_path,
+	const gchar	*venue,
+	const gchar	*range,
+	const gchar	*compare
+){
+	GString *link;
+
+	link = g_string_new(self_path);
+	g_string_append(link, "?range=");
+	g_string_append_uri_escaped(link, range, NULL, FALSE);
+
+	if (NULL != venue)
+	{
+		g_string_append(link, "&venue=");
+		g_string_append_uri_escaped(link, venue, NULL, FALSE);
+	}
+
+	if (NULL != compare)
+	{
+		g_string_append(link, "&compare=");
+		g_string_append_uri_escaped(link, compare, NULL, FALSE);
+	}
+
+	return g_string_free(link, FALSE);
+}
+
+/* A figure of a history point, or NAN for null or absent. */
+static gdouble
+mdw_point_figure(
+	JsonObject	*point,
+	const gchar	*member
+){
+	JsonNode *node = json_object_get_member(point, member);
+
+	return ((NULL != node) && JSON_NODE_HOLDS_VALUE(node)) ? (gdouble)json_node_get_int(node) : NAN;
+}
+
+/*
+ * The price history card: the charted venue's lowest price and market
+ * value over the range asked for, its quantity against the right-hand
+ * axis, and a second line to compare with when one was asked for (the
+ * region's median, or another venue's lowest). The ranges are links and
+ * the comparison a form, so it all works without script. The figures are
+ * the answer's history (venture_marketdata_history()); the page draws.
+ */
+static void
+mdw_history_card(
 	VentureWebServer	*self,
+	GString			*html,
 	JsonObject		*root,
-	const gchar		*currency,
+	const gchar		*self_path,
 	const gchar		*name
 ){
 	g_autoptr(GPtrArray) labels = NULL;
 	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) markets = NULL;
 	g_autoptr(GArray) quantities = NULL;
+	g_autoptr(GArray) others = NULL;
+	g_autoptr(GHashTable) compared = NULL;
 	g_autofree gchar *title = NULL;
-	VentureWebChartSeries series[2];
+	g_autofree gchar *other_name = NULL;
+	g_autofree gchar *chart_html = NULL;
+	VentureWebChartSeries series[4];
 	VentureWebChart chart;
+	JsonNode *node;
+	JsonObject *history;
+	JsonObject *compare;
 	JsonArray *points;
+	JsonArray *ranges;
+	JsonArray *venues;
+	const gchar *range;
+	const gchar *currency;
+	const gchar *venue;
+	const gchar *compare_key;
+	gboolean hourly;
+	gsize n_series;
 	guint i;
 
-	points = json_object_get_array_member(root, "hourly");
+	node = json_object_get_member(root, "history");
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+		return;
+
+	history = json_node_get_object(node);
+	range = mdw_text(history, "range");
+	currency = mdw_text(history, "currency");
+	venue = mdw_text(root, "venue");
+	hourly = (0 == g_strcmp0(mdw_text(history, "resolution"), "hour"));
+	points = json_object_get_array_member(history, "points");
+	ranges = json_object_get_array_member(history, "ranges");
+	node = json_object_get_member(history, "compare");
+	compare = ((NULL != node) && JSON_NODE_HOLDS_OBJECT(node)) ? json_node_get_object(node) : NULL;
+	compare_key = (NULL == compare) ? NULL
+		: (0 == g_strcmp0(mdw_text(compare, "kind"), "region")) ? "region" : mdw_text(compare, "venue");
+
+	g_string_append(html, "<div class=\"card market-history\"><div class=\"card-head\"><h2>Price history</h2>"
+	                      "</div><div class=\"card-body\"><nav class=\"market-ranges\" aria-label=\"Range\">");
+
+	for (i = 0; (NULL != ranges) && (i < json_array_get_length(ranges)); i++)
+	{
+		const gchar *one = json_array_get_string_element(ranges, i);
+		g_autofree gchar *link = mdw_history_link(self_path, venue, one, compare_key);
+
+		g_string_append(html, "<a class=\"market-range\" href=\"");
+		venture_html_escape_append(html, link);
+		g_string_append_printf(html, "\"%s>", (0 == g_strcmp0(one, range)) ? " aria-current=\"page\"" : "");
+		venture_html_escape_append(html, one);
+		g_string_append(html, "</a>");
+	}
+
+	/* The comparison: the region, or any other venue that lists it. */
+	g_string_append(html, "<form method=\"get\" action=\"");
+	venture_html_escape_append(html, self_path);
+	g_string_append(html, "\" class=\"form-inline\"><input type=\"hidden\" name=\"range\" value=\"");
+	venture_html_escape_append(html, range);
+	g_string_append(html, "\">");
+
+	if (NULL != venue)
+	{
+		g_string_append(html, "<input type=\"hidden\" name=\"venue\" value=\"");
+		venture_html_escape_append(html, venue);
+		g_string_append(html, "\">");
+	}
+
+	g_string_append_printf(html, "<label>Compare with <select name=\"compare\"><option value=\"\">nothing"
+	                             "</option><option value=\"region\"%s>the region's median</option>",
+	                       (0 == g_strcmp0(compare_key, "region")) ? " selected" : "");
+	venues = json_object_get_array_member(root, "venues");
+
+	for (i = 0; (NULL != venues) && (i < json_array_get_length(venues)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(venues, i);
+		const gchar *key = mdw_text(row, "venue_key");
+
+		if (0 == g_strcmp0(key, venue))
+			continue;
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, key);
+		g_string_append_printf(html, "\"%s>", (0 == g_strcmp0(key, compare_key)) ? " selected" : "");
+		mdw_name(html, row, "venue_name", "venue_key");
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label> <button class=\"btn btn-sm\" type=\"submit\">Compare</button>"
+	                      "</form></nav>");
+
 	labels = g_ptr_array_new_with_free_func(g_free);
 	prices = g_array_new(FALSE, FALSE, sizeof(gdouble));
+	markets = g_array_new(FALSE, FALSE, sizeof(gdouble));
 	quantities = g_array_new(FALSE, FALSE, sizeof(gdouble));
+	others = g_array_new(FALSE, FALSE, sizeof(gdouble));
+
+	/* The comparison by slot, so a line is never drawn a slot out. */
+	if (NULL != compare)
+	{
+		JsonArray *other_points = json_object_get_array_member(compare, "points");
+
+		compared = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
+
+		for (i = 0; (NULL != other_points) && (i < json_array_get_length(other_points)); i++)
+		{
+			JsonObject *point = json_array_get_object_element(other_points, i);
+			gdouble *value = g_new(gdouble, 1);
+
+			*value = mdw_point_figure(point, "min_price");
+
+			if (NULL != mdw_text(point, "at"))
+				g_hash_table_insert(compared, (gpointer)mdw_text(point, "at"), value);
+			else
+				g_free(value);
+		}
+
+		other_name = (0 == g_strcmp0(compare_key, "region"))
+			? g_strdup("Region median")
+			: g_strdup_printf("Lowest at %s", (NULL != mdw_text(compare, "venue_name"))
+			                                  ? mdw_text(compare, "venue_name") : compare_key);
+	}
 
 	for (i = 0; (NULL != points) && (i < json_array_get_length(points)); i++)
 	{
 		JsonObject *point = json_array_get_object_element(points, i);
-		JsonNode *node;
-		gdouble price = NAN;
-		gdouble quantity = NAN;
+		gdouble value;
 
-		g_ptr_array_add(labels, mdw_time_label(self, mdw_text(point, "at"), "%b %d %H:00"));
-		node = json_object_get_member(point, "min_price");
+		g_ptr_array_add(labels, mdw_time_label(self, mdw_text(point, "at"), hourly ? "%b %d %H:00" : "%b %d"));
+		value = mdw_point_figure(point, "min_price");
+		g_array_append_val(prices, value);
+		value = mdw_point_figure(point, "quantity");
+		g_array_append_val(quantities, value);
+		value = mdw_point_figure(point, "market_value");
+		g_array_append_val(markets, value);
 
-		/* A point in another currency is a gap on this axis, not a
-		 * number in the wrong unit. */
-		if ((NULL != node) && JSON_NODE_HOLDS_VALUE(node) &&
-		    (0 == g_strcmp0(mdw_text(point, "currency"), currency)))
-			price = (gdouble)json_node_get_int(node);
+		if (NULL != compared)
+		{
+			const gdouble *other = (NULL != mdw_text(point, "at"))
+				? g_hash_table_lookup(compared, mdw_text(point, "at")) : NULL;
 
-		node = json_object_get_member(point, "quantity");
-
-		if ((NULL != node) && JSON_NODE_HOLDS_VALUE(node))
-			quantity = (gdouble)json_node_get_int(node);
-
-		g_array_append_val(prices, price);
-		g_array_append_val(quantities, quantity);
+			value = (NULL != other) ? *other : NAN;
+			g_array_append_val(others, value);
+		}
 	}
 
 	g_ptr_array_add(labels, NULL);
-	title = g_strdup_printf("%s: lowest price and quantity every hour, 14 days", name);
+	title = g_strdup_printf("%s: lowest price, market value and quantity, %s", name, mdw_range_label(range));
 	memset(series, 0, sizeof(series));
 	series[0].name = "Lowest price";
 	series[0].values = (const gdouble *)(gpointer)prices->data;
@@ -1197,15 +1463,34 @@ mdw_snapshots_chart(
 	series[1].name = "Quantity";
 	series[1].values = (const gdouble *)(gpointer)quantities->data;
 	series[1].secondary = TRUE;
+	series[2].name = "Market value";
+	series[2].values = (const gdouble *)(gpointer)markets->data;
+	series[2].format = venture_web_chart_format_minor;
+	series[2].format_data = (gpointer)currency;
+	n_series = 3;
+
+	if (NULL != compared)
+	{
+		series[3].name = other_name;
+		series[3].values = (const gdouble *)(gpointer)others->data;
+		series[3].format = venture_web_chart_format_minor;
+		series[3].format_data = (gpointer)currency;
+		n_series = 4;
+	}
+
 	memset(&chart, 0, sizeof(chart));
 	chart.title = title;
-	chart.summary = "The last snapshot of each hour at this venue.";
+	chart.summary = hourly
+		? "The last snapshot of each hour at this venue. An hour nothing was stored for is a gap."
+		: "Each day's lowest price at this venue, and the market value and quantity of its fullest "
+		  "snapshot. A day nothing was stored for is a gap.";
 	chart.labels = (const gchar *const *)labels->pdata;
 	chart.n_points = prices->len;
 	chart.series = series;
-	chart.n_series = 2;
-
-	return venture_web_chart_line(&chart);
+	chart.n_series = n_series;
+	chart_html = venture_web_chart_line(&chart);
+	g_string_append(html, chart_html);
+	g_string_append(html, "</div></div>");
 }
 
 /* One heat map from the answer's matrix called @member. */
@@ -1411,6 +1696,8 @@ mdw_instrument_query(
 	query->venue = mdw_param(request, "venue");
 	query->venue_group = mdw_param(request, "venue_group");
 	query->venues_descending = (0 == g_strcmp0(mdw_param(request, "venues_dir"), "desc"));
+	query->range = mdw_param(request, "range");
+	query->compare = mdw_param(request, "compare");
 
 	return mdw_number(request, "units", 0, VENTURE_MARKETDATA_BULK_MAX_UNITS, &query->units, error);
 }
@@ -1677,14 +1964,7 @@ venture_marketdata_web_instrument(
 		}
 
 		/* The pictures, each with its numbers in a table beside it. */
-		{
-			g_autofree gchar *chart = mdw_snapshots_chart(self, root, currency, name);
-
-			g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Snapshots</h2></div>"
-			                      "<div class=\"card-body\">");
-			g_string_append(html, chart);
-			g_string_append(html, "</div></div>");
-		}
+		mdw_history_card(self, html, root, self_path, name);
 
 		if (json_object_has_member(root, "heat"))
 		{
@@ -2443,6 +2723,7 @@ venture_marketdata_web_deals(
 	mdw_deals_header(html, request, query.sort, query.dir, "ilvl", "ilvl", TRUE);
 	mdw_deals_header(html, request, query.sort, query.dir, "buy_at", "Buy at", FALSE);
 	mdw_deals_header(html, request, query.sort, query.dir, "buy", "Buy price", TRUE);
+	mdw_recent_headings(html, FALSE);
 	mdw_deals_header(html, request, query.sort, query.dir, "sell_at", "Sell at", FALSE);
 	mdw_deals_header(html, request, query.sort, query.dir, "sell", "Sell price", TRUE);
 	mdw_deals_header(html, request, query.sort, query.dir, "profit", "Profit", TRUE);
@@ -2497,7 +2778,9 @@ venture_marketdata_web_deals(
 		mdw_sort_value(html, row, "min_price");
 		g_string_append(html, ">");
 		mdw_money(html, row, "min_price");
-		g_string_append(html, "</td><td");
+		g_string_append(html, "</td>");
+		mdw_recent_cells(html, row);
+		g_string_append(html, "<td");
 
 		if (NULL != sell)
 		{
@@ -2613,7 +2896,7 @@ venture_marketdata_web_deals(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"13\" class=\"muted\">No deals right now.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"15\" class=\"muted\">No deals right now.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -3609,6 +3892,43 @@ venture_marketdata_web_find(
 	                                                  html->str), 200);
 }
 
+/* --- /api/v1/market/history/:source/KEY ------------------------------------ */
+
+/*
+ * An instrument's price history alone, as JSON: the chart on its page,
+ * for a client that draws its own. ?venue= (the page's default without
+ * it), ?range= (24h, 7d, 14d, 90d, all) and ?compare= (region, or a
+ * venue's key). API only: the page that draws it is the instrument's.
+ */
+static HtmxResponse *
+venture_marketdata_web_history(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *key = NULL;
+	VentureMarketdataInstrumentQuery query;
+	HtmxResponse *gate;
+
+	gate = mdw_gate(self, request, TRUE, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_DATA_SOURCE);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!mdw_instrument_query(self, request, params, &query, &key, &error))
+		return venture_web_error_response(error);
+
+	answer = venture_marketdata_history(self->context, &query, &error);
+
+	if (NULL == answer)
+		return venture_web_error_response(error);
+
+	return venture_web_json_response(answer, 200);
+}
+
 static void
 venture_marketdata_pages_register(VentureWebServer *self)
 {
@@ -3639,6 +3959,9 @@ venture_marketdata_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_GET, "/api/v1/market/alerts", venture_marketdata_web_alerts },
 		{ HTMX_METHOD_POST, "/api/v1/market/alerts/:id/evaluate", venture_marketdata_web_evaluate },
 		{ HTMX_METHOD_GET, "/api/v1/market/i/:source/*", venture_marketdata_web_instrument },
+		/* The price history alone: no page of its own, the instrument's
+		 * page draws it. */
+		{ HTMX_METHOD_GET, "/api/v1/market/history/:source/*", venture_marketdata_web_history },
 	};
 	gsize i;
 

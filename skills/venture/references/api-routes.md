@@ -107,7 +107,7 @@ in the repository lists today's.
 | Route | venturectl |
 |---|---|
 | `GET /feeds`, `GET /feeds/due`, `GET /feeds/:id/runs`, `GET /feeds/:id/venues` (`?stale_after=`), `POST /feeds/:id/sync`, `POST /feeds/:id/push` (`application/x-ndjson`, `?wait=1`) | `feeds ...` |
-| `GET /market/quote`, `POST /market/promote`, `GET /market/browse\|find\|deals\|venues`, `GET /market/i/:source/*`, `GET /market/watchlists[/:id]`, `GET /market/alerts`, `POST /market/alerts/:id/evaluate` | `market ...` |
+| `GET /market/quote`, `POST /market/promote`, `GET /market/browse\|find\|deals\|venues`, `GET /market/i/:source/*`, `GET /market/history/:source/*` (`?venue=&range=24h\|7d\|14d\|90d\|all&compare=region\|VENUE`; the instrument page's price history alone), `GET /market/watchlists[/:id]`, `GET /market/alerts`, `POST /market/alerts/:id/evaluate` | `market ...` |
 | `GET /accounts`, `GET /accounts/inventory`, `GET /accounts/pnl`, `GET /accounts/:source/*` (each takes `show_ignored`) | `accounts ...` |
 | `GET /arbitrage/scan\|registries\|export\|calc`, `POST /arbitrage/record` | `arbitrage ...` |
 

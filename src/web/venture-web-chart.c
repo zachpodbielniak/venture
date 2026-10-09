@@ -342,11 +342,14 @@ venture_web_chart_line(const VentureWebChart *chart)
 	gdouble bottom;
 	gdouble step;
 	gboolean has_secondary;
+	gboolean sides[2];
+	gdouble lows[2];
+	gdouble highs[2];
 	gsize s;
 
 	out = g_string_new(NULL);
 
-	if (!chart_is_drawable(chart, 2))
+	if (!chart_is_drawable(chart, VENTURE_WEB_CHART_MAX_SERIES))
 	{
 		chart_empty(out, (NULL != chart) && (NULL != chart->title) ? chart->title : "Chart");
 		return g_string_free(g_steal_pointer(&out), FALSE);
@@ -368,26 +371,74 @@ venture_web_chart_line(const VentureWebChart *chart)
 	chart_open(out, "line", chart->title, chart->summary, width, height);
 
 	/*
-	 * Each axis is scaled to its own series: a price and a quantity share
-	 * a picture, not a unit. The primary axis draws the rules.
+	 * Each side is scaled to the series drawn against it: a price and a
+	 * quantity share a picture, not a unit, but two prices share a unit
+	 * and must share an axis. Side 0 is the left, 1 the right.
 	 */
+	sides[0] = FALSE;
+	sides[1] = FALSE;
+	lows[0] = lows[1] = 0.0;
+	highs[0] = highs[1] = 0.0;
+
+	for (s = 0; s < chart->n_series; s++)
+	{
+		gsize side = chart->series[s].secondary ? 1 : 0;
+		gdouble low = 0.0;
+		gdouble high = 0.0;
+
+		if (!chart_range(chart->series[s].values, chart->n_points, &low, &high))
+			continue;
+
+		if (!sides[side] || (low < lows[side]))
+			lows[side] = low;
+		if (!sides[side] || (high > highs[side]))
+			highs[side] = high;
+		sides[side] = TRUE;
+	}
+
+	if (sides[0])
+		chart_widen(&lows[0], &highs[0]);
+	if (sides[1])
+		chart_widen(&lows[1], &highs[1]);
+
 	for (s = 0; s < chart->n_series; s++)
 	{
 		const VentureWebChartSeries *series;
-		gdouble low = 0.0;
-		gdouble high = 0.0;
+		gdouble low;
+		gdouble high;
 		gboolean pen_down;
+		gsize side;
 		gsize i;
+		gsize k;
+		gboolean first_of_side;
 
 		series = &chart->series[s];
+		side = series->secondary ? 1 : 0;
+		low = 0.0;
+		high = 0.0;
 
+		/* A series with nothing to draw draws nothing, not an axis. */
 		if (!chart_range(series->values, chart->n_points, &low, &high))
 			continue;
 
-		chart_widen(&low, &high);
+		low = lows[side];
+		high = highs[side];
 
-		/* Only the first series of each side draws that side's axis. */
-		if ((0 == s) || (series->secondary != chart->series[0].secondary))
+		/* The first drawable series of each side draws that side's axis,
+		 * in its own format; the left side draws the rules. */
+		first_of_side = TRUE;
+
+		for (k = 0; k < s; k++)
+		{
+			gdouble a = 0.0;
+			gdouble b = 0.0;
+
+			if ((chart->series[k].secondary == series->secondary) &&
+			    chart_range(chart->series[k].values, chart->n_points, &a, &b))
+				first_of_side = FALSE;
+		}
+
+		if (first_of_side)
 			chart_y_axis(out, low, high, top, bottom, left, right, series->secondary,
 			             !series->secondary, series->format, series->format_data);
 

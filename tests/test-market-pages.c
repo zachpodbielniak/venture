@@ -2871,9 +2871,10 @@ test_doors_and_looks(
 		"watchlist_id", NULL
 	};
 	static const gchar *const classes[] = {
-		".chart-line-1", ".chart-line-2", ".chart-heat-cell", ".chart-grid", ".chart-axis",
-		".sparkline", ".market-action-row", ".form-inline", ".chart-legend", ".chart-caption",
-		".source-attribution", ".source-attribution-label", NULL
+		".chart-line-1", ".chart-line-2", ".chart-line-3", ".chart-line-4", ".chart-key-3",
+		".chart-key-4", ".chart-heat-cell", ".chart-grid", ".chart-axis", ".sparkline",
+		".market-action-row", ".form-inline", ".chart-legend", ".chart-caption", ".market-ranges",
+		".market-range", ".market-trend", ".source-attribution", ".source-attribution-label", NULL
 	};
 	g_autoptr(VentureMcpCatalog) catalog = NULL;
 	g_autoptr(JsonNode) schema = NULL;
@@ -3336,6 +3337,363 @@ test_reader_upgrades_store(
 	g_assert_cmpint(version, ==, (gint)venture_series_store_schema_version());
 }
 
+/* --- Price history and the last seven days ------------------------------------ */
+
+/* An answer's ISO time as Unix seconds. */
+static gint64
+iso_unix(
+	JsonObject	*object,
+	const gchar	*member
+){
+	g_autoptr(GDateTime) moment = NULL;
+
+	moment = g_date_time_new_from_iso8601(json_object_get_string_member(object, member), NULL);
+	g_assert_nonnull(moment);
+
+	return g_date_time_to_unix(moment);
+}
+
+/* The point of @points at @at, or NULL. */
+static JsonObject *
+point_at(
+	JsonArray	*points,
+	gint64		 at
+){
+	guint i;
+
+	for (i = 0; i < json_array_get_length(points); i++)
+		if (iso_unix(json_array_get_object_element(points, i), "at") == at)
+			return json_array_get_object_element(points, i);
+
+	return NULL;
+}
+
+/*
+ * Silk cloth, hour by hour: at realm-x 1000 for 29 hours (one missing)
+ * and 700 in the current hour -- a dip; at realm-y 1000; at realm-z, in
+ * another group, 50 once. Returns the start of the current hour, the
+ * newest snapshot's time.
+ */
+static gint64
+seed_history(Fixture *fixture)
+{
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	gint64 now;
+	gint64 base;
+	gint k;
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+
+	now = g_get_real_time() / G_USEC_PER_SEC;
+	base = now - now % 3600;
+
+	add_venue(store, "realm-x", "eu", "USD", base - 30 * 3600);
+	add_venue(store, "realm-y", "eu", "USD", base - 30 * 3600);
+	add_venue(store, "realm-z", "us", "USD", base - 30 * 3600);
+	add_instrument(store, "4306", "Silk Cloth", "Tradeskill/Cloth", base - 30 * 3600);
+
+	for (k = 29; k >= 0; k--)
+	{
+		Offer offer;
+
+		if (5 == k)
+			continue;
+
+		offer.instrument = "4306";
+		offer.id = 100 + (guint64)k;
+		offer.price = (0 == k) ? 700 : 1000;
+		offer.quantity = (0 == k) ? 3 : 10;
+		snapshot(store, "realm-x", "USD", base - (gint64)k * 3600, &offer, 1);
+
+		if (k <= 1)
+		{
+			offer.id = 200 + (guint64)k;
+			offer.price = 1000;
+			offer.quantity = 8;
+			snapshot(store, "realm-y", "USD", base - (gint64)k * 3600, &offer, 1);
+		}
+	}
+
+	{
+		Offer offer = { "4306", 300, 50, 1 };
+
+		snapshot(store, "realm-z", "USD", base, &offer, 1);
+	}
+
+	g_assert_true(venture_series_store_recompute_region(store, NULL, now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+
+	return base;
+}
+
+/*
+ * The price history: one slot an hour within the hourly window, one a
+ * day beyond it (and beyond a shorter window when series.hourly_days is
+ * shorter), a missing hour a gap where it fell, and a second line on the
+ * same slots -- the region's median as it stood then, or another venue.
+ * The instrument page draws it with its ranges and comparison; the API
+ * route answers it alone; bad ranges and comparisons are refused.
+ *
+ * What breaks if this regresses: the chart that tells a dip from the new
+ * normal joins an outage's neighbours, draws hours and days on one line,
+ * or compares a venue with a region it is not in.
+ */
+static void
+test_price_history(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	JsonObject *history;
+	JsonObject *compare;
+	JsonObject *point;
+	JsonArray *points;
+	gint64 base;
+
+	(void)user_data;
+
+	base = seed_history(fixture);
+
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=24h",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	g_assert_cmpstr(json_object_get_string_member(root_of(answer), "venue"), ==, "realm-x");
+	g_assert_cmpstr(json_object_get_string_member(root_of(answer), "name"), ==, "Silk Cloth");
+	history = json_object_get_object_member(root_of(answer), "history");
+	g_assert_cmpstr(json_object_get_string_member(history, "range"), ==, "24h");
+	g_assert_cmpstr(json_object_get_string_member(history, "resolution"), ==, "hour");
+	g_assert_cmpstr(json_object_get_string_member(history, "currency"), ==, "USD");
+	g_assert_false(json_object_get_boolean_member(history, "truncated"));
+	g_assert_true(json_object_get_null_member(history, "compare"));
+	points = json_object_get_array_member(history, "points");
+	g_assert_cmpuint(json_array_get_length(points), ==, 24);
+	g_assert_cmpint(iso_unix(history, "until"), ==, base);
+	g_assert_cmpint(iso_unix(history, "since"), ==, base - 23 * 3600);
+
+	point = point_at(points, base);
+	g_assert_cmpint(json_object_get_int_member(point, "min_price"), ==, 700);
+	g_assert_cmpint(json_object_get_int_member(point, "quantity"), ==, 3);
+	point = point_at(points, base - 3600);
+	g_assert_cmpint(json_object_get_int_member(point, "min_price"), ==, 1000);
+
+	/* The missing hour is a gap where it fell. */
+	point = point_at(points, base - 5 * 3600);
+	g_assert_true(json_object_get_null_member(point, "min_price"));
+	g_assert_true(json_object_get_null_member(point, "quantity"));
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* The region: realm-x and realm-y, never realm-z's 50 from the US. */
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=24h"
+	                       "&compare=region", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	compare = json_object_get_object_member(json_object_get_object_member(root_of(answer), "history"),
+	                                        "compare");
+	g_assert_cmpstr(json_object_get_string_member(compare, "kind"), ==, "region");
+	g_assert_cmpstr(json_object_get_string_member(compare, "group_key"), ==, "eu");
+	points = json_object_get_array_member(compare, "points");
+	g_assert_cmpuint(json_array_get_length(points), ==, 24);
+	point = point_at(points, base);
+	g_assert_cmpint(json_object_get_int_member(point, "min_price"), ==, 850);
+	g_assert_cmpint(json_object_get_int_member(point, "venues"), ==, 2);
+	point = point_at(points, base - 2 * 3600);
+	g_assert_cmpint(json_object_get_int_member(point, "min_price"), ==, 1000);
+	g_assert_cmpint(json_object_get_int_member(point, "venues"), ==, 1);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Another venue, over the default range: the hourly window. */
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?venue=realm-x&compare=realm-y",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	history = json_object_get_object_member(root_of(answer), "history");
+	g_assert_cmpstr(json_object_get_string_member(history, "range"), ==, "14d");
+	g_assert_cmpstr(json_object_get_string_member(history, "resolution"), ==, "hour");
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(history, "points")), ==, 14 * 24);
+	compare = json_object_get_object_member(history, "compare");
+	g_assert_cmpstr(json_object_get_string_member(compare, "kind"), ==, "venue");
+	g_assert_cmpstr(json_object_get_string_member(compare, "venue"), ==, "realm-y");
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(compare, "points")), ==, 14 * 24);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Beyond the hourly window: by the day, the day's lowest. */
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=90d",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	history = json_object_get_object_member(root_of(answer), "history");
+	g_assert_cmpstr(json_object_get_string_member(history, "resolution"), ==, "day");
+	points = json_object_get_array_member(history, "points");
+	g_assert_cmpuint(json_array_get_length(points), ==, 90);
+	point = point_at(points, base - base % 86400);
+	g_assert_cmpint(json_object_get_int_member(point, "min_price"), ==, 700);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Everything: from the first day stored. */
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=all",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	history = json_object_get_object_member(root_of(answer), "history");
+	g_assert_cmpstr(json_object_get_string_member(history, "resolution"), ==, "day");
+	g_assert_cmpint(iso_unix(history, "since"), ==, (base - 29 * 3600) - (base - 29 * 3600) % 86400);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* With no venue named, the page's own choice: the cheapest in stock. */
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	g_assert_cmpstr(json_object_get_string_member(root_of(answer), "venue"), ==, "realm-z");
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* A shorter hourly window moves the boundary: 14 days by the day. */
+	g_object_set(fixture->config, "series-hourly-days", (gint64)7, NULL);
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=14d",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	history = json_object_get_object_member(root_of(answer), "history");
+	g_assert_cmpstr(json_object_get_string_member(history, "resolution"), ==, "day");
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(history, "points")), ==, 14);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	g_object_set(fixture->config, "series-hourly-days", (gint64)14, NULL);
+
+	/* The instrument's answer carries the same history. */
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=7d",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	history = json_object_get_object_member(root_of(answer), "history");
+	g_assert_cmpstr(json_object_get_string_member(history, "range"), ==, "7d");
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(history, "points")), ==, 7 * 24);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Refusals: a range that is not one, a venue that never listed it, an
+	 * instrument nobody knows -- on both doors. */
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?range=3w", fixture->source_id);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 400);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/4306?range=3w", fixture->source_id);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 400);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/4306?compare=realm-q",
+	                       fixture->source_id);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 404);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/history/%" G_GINT64_FORMAT "/nope", fixture->source_id);
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 404);
+	g_clear_pointer(&path, g_free);
+
+	/* The page: the ranges as links, the one drawn marked; four lines. */
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/4306?venue=realm-x&range=7d&compare=region",
+	                       fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "<h2>Price history</h2>"));
+	g_assert_nonnull(strstr(page, "aria-current=\"page\">7d</a>"));
+	g_assert_nonnull(strstr(page, "range=24h&amp;venue=realm-x&amp;compare=region"));
+	g_assert_nonnull(strstr(page, "<option value=\"region\" selected>"));
+	g_assert_nonnull(strstr(page, "class=\"chart-line chart-line-4\""));
+	g_assert_nonnull(strstr(page, ">Region median</span>"));
+	g_assert_nonnull(strstr(page, "Silk Cloth: lowest price, market value and quantity, 7 days"));
+	assert_buttons_named(page, path);
+}
+
+/*
+ * Deals and Browse say whether a price is a dip or the new normal: each
+ * row's hourly lowest prices at its venue over seven days, as a
+ * sparkline and a median, read for the whole page in one statement. The
+ * dip at realm-x is 30% under its median of 1000; realm-z, seen once, is
+ * too new to have a median.
+ *
+ * What breaks if this regresses: a price that has been the price all week
+ * looks like a bargain because the region is dearer, and the buyer finds
+ * out after buying.
+ */
+static void
+test_deals_vs_median(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	JsonObject *dip = NULL;
+	JsonObject *fresh = NULL;
+	JsonArray *rows;
+	JsonArray *trend;
+	guint i;
+
+	(void)user_data;
+
+	seed_history(fixture);
+
+	path = g_strdup_printf("/api/v1/market/deals?source=%" G_GINT64_FORMAT, fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(row, "venue_key"), "realm-x"))
+			dip = row;
+		if (0 == g_strcmp0(json_object_get_string_member(row, "venue_key"), "realm-z"))
+			fresh = row;
+	}
+
+	g_assert_nonnull(dip);
+	g_assert_nonnull(fresh);
+	g_assert_cmpint(money_amount(dip, "median_7d"), ==, 1000);
+	g_assert_cmpint(json_object_get_int_member(dip, "median_7d_hours"), ==, 29);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(dip, "vs_median_7d_pct"), -30.0, 1e-9);
+	trend = json_object_get_array_member(dip, "trend_7d");
+	g_assert_cmpuint(json_array_get_length(trend), ==, 42);
+	g_assert_cmpint(json_array_get_int_element(trend, 41), ==, 700);
+	g_assert_true(json_array_get_null_element(trend, 0));
+
+	g_assert_true(json_object_get_null_member(fresh, "median_7d"));
+	g_assert_true(json_object_get_null_member(fresh, "vs_median_7d_pct"));
+	g_assert_cmpint(json_object_get_int_member(fresh, "median_7d_hours"), ==, 1);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	/* Browse rows carry the same figures. */
+	path = g_strdup_printf("/api/v1/market/browse?source=%" G_GINT64_FORMAT "&venue=realm-x",
+	                       fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(answer), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 1);
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(json_array_get_object_element(rows, 0),
+	                                                             "vs_median_7d_pct"), -30.0, 1e-9);
+	g_clear_pointer(&path, g_free);
+
+	/* The pages: a sparkline and the figure, sortable on Deals. */
+	path = g_strdup_printf("/market/deals?source=%" G_GINT64_FORMAT, fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, ">vs 7-day median</th>"));
+	g_assert_nonnull(strstr(page, "<svg class=\"sparkline\""));
+	g_assert_nonnull(strstr(page, "data-sort-value=\"-30\""));
+	g_assert_nonnull(strstr(page, ">-30.0%</span>"));
+	g_assert_nonnull(strstr(page, ">too new</span>"));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/market/browse?source=%" G_GINT64_FORMAT, fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "data-no-sort title=\"The price against"));
+	g_assert_nonnull(strstr(page, ">-30.0%</span>"));
+}
+
 #define ADD(path, func) \
 	g_test_add("/market-pages/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -3353,6 +3711,8 @@ main(
 	ADD("instrument-escaping", test_instrument_escaping);
 	ADD("other-organization", test_other_organization);
 	ADD("deals", test_deals);
+	ADD("price-history", test_price_history);
+	ADD("deals-vs-median", test_deals_vs_median);
 	ADD("deals-buy-sell-venues", test_deals_buy_sell_venues);
 	ADD("deals-freshness", test_deals_freshness);
 	ADD("deals-connected-realms", test_deals_connected_realms);
