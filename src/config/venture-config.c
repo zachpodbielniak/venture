@@ -405,6 +405,15 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR ("state-dir", NULL, NULL, "", "Directory holding runtime state"),
 	VC_STR("imap-allowed-endpoints", "imap", "allowed_endpoints", "", "Operator-allowed IMAP host:port pairs, comma-separated; empty denies all"),
 	VC_STR("calendar-allowed-origins", "calendar", "allowed_origins", "", "Operator-allowed CalDAV HTTPS origins, comma-separated; empty denies all"),
+	/*
+	 * Where a push webhook (gotify, ntfy) may post. A push carries a
+	 * token, so it goes only to an origin the operator named, deny by
+	 * default; the signed VENTURE envelope carries none and is not held
+	 * to this list.
+	 */
+	VC_STR("webhooks-allowed-origins", "webhooks", "allowed_origins", "",
+	       "Origins a gotify or ntfy webhook may post to, comma-separated, such as "
+	       "http://host.containers.internal:8280; empty denies every push"),
 	VC_BOOL("connectors-allow-plaintext-loopback", "connectors", "allow_plaintext_loopback", FALSE, "Allow explicitly configured loopback IMAP fixtures without TLS; never permits remote plaintext"),
 	VC_STR("mail-plaintext-endpoints", "mail", "plaintext_endpoints", "", "Explicit staging SMTP host:port exceptions; also require allowed_endpoints and auth none"),
 	VC_STR("mail-allowed-endpoints", "mail", "allowed_endpoints", "", "Operator-allowed organization SMTP host:port pairs, comma-separated; empty denies all"),

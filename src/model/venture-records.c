@@ -2417,9 +2417,20 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSprint, venture_sprint, venture_sprint_fi
 
 static const VentureFieldDecl venture_webhook_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "e.g. Ops chat, Billing sync"),
-	VENTURE_FIELD("url", "URL", "Where the POST goes",
+	VENTURE_FIELD("url", "URL",
+	              "Where the POST goes; for gotify the server's address, for ntfy the topic's",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NOT_NULL),
+	/*
+	 * What the far end expects: VENTURE's signed envelope (the zero
+	 * value, what every older row is), or a push to a phone through
+	 * Gotify or ntfy. A push's token is not a field: it is sealed in the
+	 * credential store (POST /webhooks/:id/token) and sent only to an
+	 * origin on webhooks.allowed_origins.
+	 */
+	VENTURE_FIELD_ENUM("format", "Format",
+	                   "venture (a signed JSON envelope), gotify or ntfy (a push notification)",
+	                   venture_webhook_format_get_type, VENTURE_COLUMN_FLAG_NONE),
 	/*
 	 * Which events, as a comma-separated list of "type.action" patterns:
 	 * "ticket.created", "invoice.*", or "*" for everything. A list
@@ -2438,6 +2449,10 @@ static const VentureFieldDecl venture_webhook_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("secret-set-at", "Secret set", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("priority", "Push priority",
+	              "gotify and ntfy: 1 to 10 on gotify's scale (ntfy gets half, rounded up); "
+	              "0 for the service's default",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("include-record", "Send the record",
 	              "Include the whole record in the body, not just its "
 	              "type, id and label",

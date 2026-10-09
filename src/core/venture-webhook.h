@@ -106,12 +106,40 @@ venture_webhook_set_secret(
 );
 
 /**
+ * venture_webhook_set_token:
+ * @context: the wiring
+ * @webhook: a gotify or ntfy webhook
+ * @token: the service's token: a Gotify application token, an ntfy access
+ *   token
+ * @actor: (nullable): who is setting it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Seals a push webhook's token in the credential store (it needs
+ * VENTURE_INTEGRATION_KEY), bound to the origin the webhook posts to now.
+ * The origin must be on webhooks.allowed_origins. A delivery sends the
+ * token only while the webhook still posts to that origin; after the URL
+ * moves it must be set again. Never stored in the record, never shown,
+ * never logged; a second call replaces it.
+ *
+ * Returns: %TRUE when it was sealed
+ */
+gboolean
+venture_webhook_set_token(
+	VentureContext		 *context,
+	VentureEntity		 *webhook,
+	const gchar		 *token,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
  * venture_webhook_test:
  * @context: the wiring
  * @webhook: the webhook
  * @error: (out) (optional): return location for a #GError
  *
- * Sends a `webhook.test` delivery and waits for the answer, so pressing
+ * Sends a `webhook.test` delivery (for a push, a test notification) and
+ * waits for the answer, so pressing
  * Test says whether the far end is there rather than promising to find
  * out. Recorded like any other delivery. Blocking, because it is an
  * explicit request by a person who is waiting for the answer.

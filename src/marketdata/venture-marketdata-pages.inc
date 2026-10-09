@@ -1911,6 +1911,22 @@ venture_marketdata_web_instrument(
 		}
 
 		g_string_append(html, "<button class=\"btn btn-sm\" type=\"submit\">Create an alert</button></form>");
+
+		/* A deal alert: told when this sells somewhere for enough more
+		 * than it costs somewhere else, as Deals reckons it. */
+		g_string_append(html, "<form method=\"post\" action=\"");
+		venture_html_escape_append(html, self_path);
+		g_string_append(html, "\" class=\"form-inline\"><input type=\"hidden\" name=\"action\" value=\"alert\">"
+		                      "<input type=\"hidden\" name=\"kind\" value=\"deal\">");
+
+		if (NULL != venue)
+		{
+			g_string_append(html, "<input type=\"hidden\" name=\"venue\" value=\"");
+			venture_html_escape_append(html, venue);
+			g_string_append(html, "\">");
+		}
+
+		g_string_append(html, "<button class=\"btn btn-sm\" type=\"submit\">Create a deal alert</button></form>");
 		g_string_append(html, "</div></div>");
 	}
 
@@ -2247,14 +2263,22 @@ venture_marketdata_web_instrument_post(
 	else if (0 == g_strcmp0(action, "alert"))
 	{
 		const gchar *venue = htmx_request_get_form_value(request, "venue");
+		const gchar *kind = htmx_request_get_form_value(request, "kind");
 		g_autoptr(GString) link = g_string_new(NULL);
 
 		/* The rule's scope is the instrument; its venue's group is the
 		 * likeliest narrowing, and the kind a buyer wants first is
-		 * "below". All of it stays editable on the form. */
-		g_string_append_printf(link, "/e/alert_rule/new?instrument_id=%" G_GINT64_FORMAT
-		                       "&data_source_id=%" G_GINT64_FORMAT "&kind=below",
-		                       venture_entity_get_id(instrument), source_id);
+		 * "below" -- or "deal", from a Deals row, with a fifth over the
+		 * price paid as the return to start from. All of it stays
+		 * editable on the form. */
+		if (0 == g_strcmp0(kind, "deal"))
+			g_string_append_printf(link, "/e/alert_rule/new?instrument_id=%" G_GINT64_FORMAT
+			                       "&data_source_id=%" G_GINT64_FORMAT "&kind=deal&threshold_number=20",
+			                       venture_entity_get_id(instrument), source_id);
+		else
+			g_string_append_printf(link, "/e/alert_rule/new?instrument_id=%" G_GINT64_FORMAT
+			                       "&data_source_id=%" G_GINT64_FORMAT "&kind=below",
+			                       venture_entity_get_id(instrument), source_id);
 
 		if (!venture_string_is_empty(venue))
 		{
@@ -2738,7 +2762,8 @@ venture_marketdata_web_deals(
 	                      "(TSM's AuctionDB, pushed by tsmctl), and the buy and sell prices against it\">"
 	                      "Ref. value</th>");
 	mdw_deals_header(html, request, query.sort, query.dir, "qty", "Qty", TRUE);
-	g_string_append(html, "</tr></thead><tbody>");
+	g_string_append(html, "<th scope=\"col\"><span class=\"visually-hidden\">Alert</span></th>"
+	                      "</tr></thead><tbody>");
 
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
 	{
@@ -2892,11 +2917,31 @@ venture_marketdata_web_deals(
 		mdw_sort_value(html, row, "quantity");
 		g_string_append(html, ">");
 		mdw_int(html, row, "quantity");
+		g_string_append(html, "</td><td>");
+
+		/* Told the next time this is a deal, on any realm: the item page's
+		 * own "alert" action, which promotes the item and opens a deal
+		 * rule on it. A post, because promoting is a write. */
+		if (json_object_has_member(row, "data_source_id") && (NULL != mdw_text(row, "instrument_key")))
+		{
+			g_autofree gchar *item_path = venture_marketdata_instrument_path(
+				json_object_get_int_member(row, "data_source_id"), mdw_text(row, "instrument_key"), NULL);
+
+			g_string_append(html, "<form method=\"post\" action=\"");
+			venture_html_escape_append(html, item_path);
+			g_string_append(html, "\" class=\"form-inline\"><input type=\"hidden\" name=\"action\" "
+			                      "value=\"alert\"><input type=\"hidden\" name=\"kind\" value=\"deal\">"
+			                      "<input type=\"hidden\" name=\"venue\" value=\"");
+			venture_html_escape_append(html, mdw_text(row, "venue_key"));
+			g_string_append(html, "\"><button class=\"btn btn-sm\" type=\"submit\" title=\"Tell me when this "
+			                      "is a deal on any realm\">Alert</button></form>");
+		}
+
 		g_string_append(html, "</td></tr>");
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"15\" class=\"muted\">No deals right now.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"16\" class=\"muted\">No deals right now.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -3351,7 +3396,10 @@ mdw_alerts_page(
 	                    "</div><h1>Alerts</h1><p class=\"muted\">What the rules caught, newest first, and "
 	                    "the rules themselves. Every feed run evaluates them; a rule can be evaluated "
 	                    "now from here.</p></div><div class=\"page-actions\"><a class=\"btn btn-primary\" "
-	                    "href=\"/e/alert_rule/new\">New rule</a></div></div>");
+	                    "href=\"/e/alert_rule/new\">New rule</a><a class=\"btn\" "
+	                    "href=\"/e/alert_rule/new?kind=below\">New price alert</a><a class=\"btn\" "
+	                    "href=\"/e/alert_rule/new?kind=deal&amp;threshold_number=20\">New deal alert</a>"
+	                    "</div></div>");
 
 	if (NULL != evaluated)
 	{

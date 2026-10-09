@@ -118,6 +118,17 @@ tool.
   `X-Venture-Signature: sha256=<hex HMAC-SHA256 of the exact body bytes>`.
   Verify over the raw body in constant time. A webhook with no secret is
   sent unsigned (the page says so).
+- **Formats**: `format` is `venture` (the signed envelope; default),
+  `gotify` (POST `{url}/message`, `X-Gotify-Key`, `{title,message,priority}`)
+  or `ntfy` (POST `{url}` = the topic, text body, `Title`/`Priority`,
+  optional bearer). A push's token is **not a field**: `venturectl webhook
+  token ID < file` / `POST /api/v1/webhooks/:id/token` seals it
+  (`VENTURE_INTEGRATION_KEY`), bound to the URL's origin -- move the URL
+  and set it again. Pushes go only to origins on `webhooks.allowed_origins`
+  (`VENTURE_WEBHOOKS_ALLOWED_ORIGINS`, deny by default; plain http
+  allowed); a refused push is a failed delivery naming why. `priority` is
+  1-10 (gotify's scale; ntfy gets half), 0 = default. With
+  `server.base_url` set the push links the record.
 - **Failures**: ten consecutive failures switch it off and tell owners and
   admins; there is no retry (the delivery id lets a receiver decide; the
   delivery log shows what was missed). Re-enable with `update webhook ID
@@ -128,6 +139,12 @@ venturectl create webhook name="Ops chat" url=https://hooks.example.com/venture 
 venturectl webhook secret 3        # shown once
 venturectl webhook test 3          # sends webhook.test and waits for the answer
 venturectl webhooks                # active, signed, failures, last deliveries
+
+# a phone, through gotify (VENTURE_WEBHOOKS_ALLOWED_ORIGINS must list the origin)
+venturectl create webhook name=Phone url=http://host.containers.internal:8280 format=gotify \
+    events=alert_hit.created priority=8 active=true organization_id=N
+venturectl webhook token 4 < gotify-app-token.txt
+venturectl webhook test 4
 ```
 
 A test against this very install works (the test waits in a nested main

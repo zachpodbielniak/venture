@@ -163,6 +163,18 @@ and the others must be left empty or the save is refused:
   `threshold_number`; `spike` also needs `window_hours` (1-336);
   `entry_match` takes `pattern` (plain text, not a regex); `out_of_stock`,
   `back_in_stock`, `undercut` and `collect_ready` take none.
+- `deal` is the Deals page's trade as an alert: the venue's cheapest unit,
+  sold at the dearest other *fresh*, plausible venue of its group less the
+  5% cut (the page's own `venture_marketdata_deal_sell_side()`). It takes
+  `threshold_number` (least return, percent of the buy price) and/or
+  `threshold` (least profit, money above nothing) -- at least one, both
+  must hold when both are set -- and needs a scope. Neither side may be
+  older than `series.stale_minutes`. The hit's message names both realms
+  and prices; `observed` is the buy, `reference` the sell,
+  `observed_number` the return.
+- A price kind with no `venue_id`/`group_key` watches **every realm** of
+  every source it covers; each realm is its own hit (cooldown per realm
+  and item), and the message names the realm by the store's name for it.
 - The operator's-account kinds read a store's accounts, positions and
   mail: `position_expiring` and `inbound_expiring` take `threshold_number`
   = **hours** ahead (0 < n <= 720; 2 fires on what lapses within two
@@ -187,6 +199,13 @@ and the others must be left empty or the save is refused:
   rule_id=N`.
 - A firing is `alert_hit.created` to webhooks and `on_created` to
   automations -- there is no separate alert event ([automation.md](automation.md)).
+  To reach a phone, a `webhook` with `format=gotify` (or `ntfy`) and
+  `events=alert_hit.created` in the rule's organization, its token sealed
+  with `venturectl webhook token ID < file`, its origin on
+  `webhooks.allowed_origins`.
+- From the UI: an item page's *Create an alert* (below) and *Create a deal
+  alert*, each Deals row's *Alert*, and *New price alert* / *New deal
+  alert* on `/market/alerts` -- all open the generic rule form prefilled.
   Overflow past the per-run cap is a note on the run, never dropped silently.
 
 Dashboard kinds `watchlist`, `market_alerts`, `source_health`

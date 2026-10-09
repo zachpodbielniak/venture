@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
-#+updated: [2026-10-04]
-#+version: 0.5.0
+#+updated: [2026-10-09]
+#+version: 0.5.1
 
 * Market data
 
@@ -970,7 +970,7 @@ series:<basis>[@<venue key or group>]
 
 * Alerts
 
-An =alert_rule= says what somebody wants to hear about the market data -- a price under a line, a venue running out, a listing of theirs undercut, a news entry naming an item, one of their own positions about to lapse, a character with mail waiting -- and an =alert_hit= is one time it fired. Both belong to the =marketdata= module and are tenant records. The evaluation follows the feeds module's threading exactly: rules are frozen on the main thread, candidates are found on the worker against the store it just wrote, and hits are written back on the main thread by the system.
+An =alert_rule= says what somebody wants to hear about the market data -- a price under a line on any realm, a deal worth flying for, a venue running out, a listing of theirs undercut, a news entry naming an item, one of their own positions about to lapse, a character with mail waiting -- and an =alert_hit= is one time it fired. Both belong to the =marketdata= module and are tenant records. The evaluation follows the feeds module's threading exactly: rules are frozen on the main thread, candidates are found on the worker against the store it just wrote, and hits are written back on the main thread by the system.
 
 ** Rules
 
@@ -982,8 +982,8 @@ An =alert_rule= says what somebody wants to hear about the market data -- a pric
 | =watchlist_id=, =instrument_id=, =category_id= | what it watches: the watchlist's instruments, one instrument, or every instrument filed under the category or beneath it. Any of them; together they are a union. Required for every kind but =undercut=, =entry_match=, =position_expiring= and =inbound_expiring=, which they only narrow; refused on =account_stale= and =collect_ready=, which are about an account as a whole |
 | =data_source_id= | optional: only this source's data; empty is every source of the organization |
 | =venue_id= or =group_key= | optional, not both: only at that venue, or at venues in that group. A watchlist's own group applies when the rule names neither. For the account kinds the venue is the position's own (=position_expiring=) or the account's, and the group is always the account's -- a realm, where a venue's group is a region -- so a watchlist's group is not inherited there |
-| =threshold= | a price, not negative, for =below=, =above= and =spread= |
-| =threshold_number= | a number, for =pct_vs_reference= (a percent of the reference, above 0 and at most 1000), =shortage= (units, at least 1), =spike= (a percent change other than 0, at most 100000 either way), =position_expiring= and =inbound_expiring= (hours ahead, above 0 and at most 720; fractions allowed) and =account_stale= (days unseen, above 0 and at most 365); 0 for every other kind |
+| =threshold= | a price, not negative, for =below=, =above= and =spread=; for =deal=, the least profit after the cut, above nothing (optional beside =threshold_number=) |
+| =threshold_number= | a number, for =pct_vs_reference= (a percent of the reference, above 0 and at most 1000), =shortage= (units, at least 1), =spike= (a percent change other than 0, at most 100000 either way), =position_expiring= and =inbound_expiring= (hours ahead, above 0 and at most 720; fractions allowed) and =account_stale= (days unseen, above 0 and at most 365) and =deal= (the least return, a percent of the buy price, at most 100000; 0 for none, when =threshold= says the least profit instead); 0 for every other kind |
 | =pattern= | plain text, for =entry_match= |
 | =basis= | the reference price for =pct_vs_reference= and =spread=; the series a =spike= reads |
 | =window_hours= | =spike= only: 1 to 336 |
@@ -1015,8 +1015,11 @@ Every market kind but =spread= and =entry_match= is judged per instrument per ve
 | =inbound_expiring= | an inbound row (a mail) is lost after now and at most =threshold_number= hours after it | the money attached / | the hours left / the threshold |
 | =account_stale= | an account (not a shared or guild one) was last seen -- by the source, else first heard of by the store -- more than =threshold_number= days before now | | the days unseen / the threshold |
 | =collect_ready= | an account has mail with money or goods that has not been lost, or positions whose expiry has passed while the store still holds them ("expired, awaiting login") | the first currency's money waiting / | the mails and expired positions together |
+| =deal= | the venue's cheapest unit can be sold at another venue of its group, as the Deals page reckons it, for at least =threshold= profit and/or =threshold_number= percent return; neither side stale | the buy price / the sell price | the return / the threshold |
 
 - *Reference prices.* =pct_vs_reference= reads =market= (the venue's market value), =market_14d=, =historical_60d=, =sale_avg= (the venue's daily history) or a region figure of the venue's group, in the row's currency; =min= is refused, being the figure itself. =spread= reads the same bases for each other venue; a region basis is the group's one figure.
+- *Any realm.* A price kind with no =venue_id= and no =group_key= (and no watchlist group) is judged at every venue of every source it covers: =below= on an item is a ceiling on every realm, and each realm at or under it is a hit of its own, kept apart by the cooldown (the subject is the venue and the instrument). The message names the realm by the name the store has for it -- a Blizzard connected realm's member realms, "Silver Hand, Thorium Brotherhood, Farstriders", a TSM realm's own name -- and its key only when the store has none, and says the price: "Star Ruby at Silver Hand: 41.2000 GOLD, at or below 45.0000 GOLD". The hit keeps =venue_key=, =venue_id= when the realm is promoted, and =observed=.
+- *Deal* is the Deals page's own trade, not a second formula: the buy side is the venue's cheapest unit in stock, and the sell side comes from =venture_marketdata_deal_sell_side()= -- the function the page calls -- the dearest other venue of the buy venue's group with it in stock, in the same currency, where it sells (units estimated sold, or a sale rate of 2% or more), at no more than twice the region's median or its market value and no more than twenty times the buy price. Its profit is that venue's lowest price less the marketplace's cut (=VENTURE_MARKETDATA_DEALS_CUT_PCT=, 5%, rounded the seller's way) less the buy price, and the return is the profit over the buy price -- the page's =profit= and =roi_pct=. Unlike the page, which shows a stale price muted, a deal rule ignores one on either side: the buy venue's snapshot and every sell venue's must be newer than =series.stale_minutes= (120 by default), read with the rule at freeze, because a realm whose feed stopped reads exactly like a cheap realm, and like a dear one. Both thresholds, when set, must hold; one is required. The rule must watch something (a watchlist, an instrument or a category): "every item on every realm" is the Deals page, not an alert. =group_key= or =venue_id= narrows where to buy; where to sell is always the buy venue's group. The hit says both realms, both prices, the profit and the return: "Star Ruby: buy at Silver Hand for 41.2000 GOLD, sell at Area 52 for 58.0000 GOLD, 13.9000 GOLD profit (33.7%)"; =observed= is the buy price, =reference= the sell price, =observed_number= the return. The subject is the buy venue and the instrument, so the cooldown is per realm and item.
 - *Spread* is net of nothing: fees and transfers belong to the arbitrage engine. The buy side is the cheapest in-stock venue in the threshold's currency, the sell side the best figure among the *other* venues, and the hit is about the buy venue.
 - *Stock* is read from =stock_changed_at=, which the store writes in the statement that makes the change, so the worker never has to remember the previous snapshot.
 - *Undercut.* Your own listing is among the units on offer, so a cheapest unit below it is somebody else's. The organization's open listings that name a =venue_id= are frozen with the source, newest first, a page of 500 at a time, up to =VENTURE_ALERTS_MAX_LISTINGS= (20000): the venue's key when its prices are in this source, and what the listing sells as store keys -- for a listing the mirror wrote for this source (=data_source_id= is the source and =mirror_state= is set) the =instrument= its mirror state names, with no query; for any other, the instrument records naming its product, asked once per distinct product. Reaching the bound leaves the oldest out and says so in the run's notes (and an evaluation's), never silently. The freeze used to read the oldest thousand by id with one instrument query each, so an operator with a large book never heard about the listing they had just posted.
@@ -1047,7 +1050,9 @@ A hit is evidence: =venture_web_type_accepts_writes()= refuses creating or editi
 - *Automation* hears =on_created= with =event->type= ="alert_hit"= (see [[file:automation.org][Automation]]).
 - *The inbox* gets one notification of kind =alert=, titled with the rule's name and the message.
 
-Forwarding to a phone or a chat is an automation rule, with podomation's =ntfy= or =discord= module configured:
+Forwarding to a phone needs no automation: a webhook with =format= =gotify= or =ntfy= subscribed to =alert_hit.created= pushes each hit's sentence there, its token sealed in the credential store and its origin held to =webhooks.allowed_origins= (see [[file:webhooks.org::*Pushes to a phone: gotify and ntfy][Webhooks: pushes]], which has the setup for a gotify at =http://host.containers.internal:8280=). The hit's own webhook is the one event; nothing is sent twice.
+
+An automation rule does it too, with podomation's =ntfy= or =discord= module configured:
 
 #+begin_src
 pod alerts = venture->new();
@@ -1069,6 +1074,7 @@ alerts->on_created where event->type == "alert_hit"
 ** Surfaces
 
 - The records through the generic routes and =venturectl list|get|create|update|delete alert_rule= (and =list|get alert_hit=); =venturectl act alert_rule ID evaluate [record=true]=.
+- From an item: its page (=/market/i/SOURCE/KEY=) has /Create an alert/ (a =below= rule on the item, in its source and the shown realm's group) and /Create a deal alert/ (a =deal= rule starting at a 20% return), and every Deals row has an /Alert/ button that opens the same deal rule for its item. Each promotes the item to an instrument record first (a rule names a record) and opens the rule's form, where every field stays editable -- clear the group to watch the whole source. =/market/alerts= has /New price alert/ and /New deal alert/ beside /New rule/.
 - =/market/alerts= lists the recent hits and the rules, with an /Evaluate now/ button per rule (=POST /market/alerts/ID/evaluate=, editors; it records, as a run would); its twins are =GET /api/v1/market/alerts= and =POST /api/v1/market/alerts/ID/evaluate= (=?record=false= for a dry run). The =market_alerts= dashboard widget shows the latest hits.
 - =venturectl market alerts [count=N]= (the rules and the hits) and =venturectl market alerts evaluate RULE_ID [--dry-run]= (=--dry-run= sends =record=false=; without it the hits are written under the cooldown).
 

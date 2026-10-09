@@ -348,6 +348,7 @@ ids, notes) in words.
 | "Set up a price feed / push account data" | `create data_source`, `feeds sync\|push --wait` | [feeds.md](references/feeds.md) |
 | "What is X worth / where is it cheapest?" | `market quote`, `market deals\|browse\|instrument` | [market-data.md](references/market-data.md) |
 | "Alert me when a price drops" | `create alert_rule ...`, `market alerts evaluate --dry-run` | [market-data.md](references/market-data.md) |
+| "Push my price/deal alerts to my phone (gotify)" | `create alert_rule kind=deal ...`; `create webhook format=gotify events=alert_hit.created ...`, `webhook token ID < file` | [market-data.md](references/market-data.md), [automation.md](references/automation.md) |
 | "Where do I log in next / what do my accounts hold?" | `accounts attention`, `accounts inventory`, `accounts pnl` | [accounts.md](references/accounts.md) |
 | "Find and record an arbitrage" | `arbitrage scan`, `arbitrage record N ...`, `arbitrage close` | [arbitrage-scan.md](references/arbitrage-scan.md) |
 | "Craft from a recipe / what is a recipe's margin?" | `act recipe ID craft times=N`; `report recipe_margin` | [market-production.md](references/market-production.md) |

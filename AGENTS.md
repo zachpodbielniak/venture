@@ -1146,6 +1146,15 @@ than one that fails.
   prefixed `sha256=`, in `X-Venture-Signature` -- deliberately the same
   shape VENTURE verifies inbound from a forge. Do not change one without
   the other.
+- **A push webhook's token is sealed, bound and allowlisted.** `format`
+  gotify/ntfy (appended enum, zero value `venture`) builds its request in
+  `venture_webhook_build_message()`, the one builder for a delivery and
+  Test. The token lives only in the credential store (`webhook-<uuid>`,
+  `venture_webhook_set_token()`, with the origin it was set for), goes
+  only to an origin on `webhooks.allowed_origins` and to the one it was
+  sealed for, never through a redirect, and is masked out of every
+  excerpt and failure recorded. The signed `venture` format is not held
+  to the list -- changing that would cut off every existing webhook.
 - **Ten consecutive failures switch a webhook off** and tell the admins.
   There is no retry: a retry that is not idempotent at the far end is
   worse than a gap, and the delivery id is what lets a receiver decide.
@@ -2089,6 +2098,18 @@ in the marketdata module. `docs/market-data.org` ("Alerts").
   the account's last sighting, so one absence is told once -- observing
   it "now" would nag hourly for a month. An account's group is a realm,
   not a venue's region: a watchlist's group is never inherited by them.
+- **A deal rule is the Deals page's trade, and stale is no deal.** Its
+  sell side is `venture_marketdata_deal_sell_side()` (browse.c, declared
+  in `venture-marketdata-private.h`), the function the page calls; never
+  reckon a deal's sell venue, cut or return a second time. It reads only
+  the store, so the worker may call it. The alert passes `fresh_after`
+  (now less `series.stale_minutes`, frozen with the rules) and skips a
+  stale buy row; the page passes 0 and draws stale prices muted instead.
+  The cut is `VENTURE_MARKETDATA_DEALS_CUT_PCT`, the page's default.
+- **A hit names a realm by the store's venue name.** Row-based candidates
+  are made with `alerts_row_candidate_new()`, which carries `venue_name`;
+  the message falls back to the key only when the store has no name.
+  Tests whose venue name is its key still read "at realm-b".
 - **Undercut freezes listings newest first and never one query each.**
   Pages of `ALERTS_PAGE` up to `VENTURE_ALERTS_MAX_LISTINGS` (20000),
   a mirrored listing's instrument from its `mirror-state`, anyone

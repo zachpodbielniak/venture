@@ -1768,6 +1768,11 @@ venture_marketdata_basis_get_type(void) G_GNUC_CONST;
  * @VENTURE_ALERT_KIND_COLLECT_READY: an account has money or goods waiting
  *   in its inbound, or positions already expired and still to be
  *   collected at its next login
+ * @VENTURE_ALERT_KIND_DEAL: an instrument's cheapest unit at a venue can
+ *   be sold at another venue of its group, as the Deals page reckons it
+ *   (the dearest fresh, plausible venue, less the marketplace's cut), for
+ *   at least the threshold profit and/or the threshold return in percent;
+ *   neither side may be stale
  *
  * What an alert rule watches for (docs/market-data.org, "Alerts").
  * Appended only: the kind is stored by number.
@@ -1787,7 +1792,8 @@ typedef enum
 	VENTURE_ALERT_KIND_POSITION_EXPIRING,
 	VENTURE_ALERT_KIND_INBOUND_EXPIRING,
 	VENTURE_ALERT_KIND_ACCOUNT_STALE,
-	VENTURE_ALERT_KIND_COLLECT_READY
+	VENTURE_ALERT_KIND_COLLECT_READY,
+	VENTURE_ALERT_KIND_DEAL
 } VentureAlertKind;
 
 #define VENTURE_TYPE_ALERT_KIND (venture_alert_kind_get_type())
@@ -2128,6 +2134,35 @@ typedef enum
 
 GType
 venture_delivery_state_get_type(void) G_GNUC_CONST;
+
+/**
+ * VentureWebhookFormat:
+ * @VENTURE_WEBHOOK_FORMAT_VENTURE: VENTURE's own signed JSON envelope, to
+ *   any URL; the zero value, so every webhook written before the formats
+ *   existed reads back as what it always was
+ * @VENTURE_WEBHOOK_FORMAT_GOTIFY: a push to a Gotify server: POST
+ *   {url}/message with the application token in X-Gotify-Key and
+ *   {title, message, priority}
+ * @VENTURE_WEBHOOK_FORMAT_NTFY: a push to an ntfy topic: POST {url} with
+ *   the message as the body, Title and Priority headers, and the access
+ *   token, when one is set, as a bearer
+ *
+ * What a webhook's delivery looks like at the far end. The push formats
+ * carry a credential, so they reach only an origin on
+ * webhooks.allowed_origins, with the token sealed in the credential store.
+ * Appended only: the format is stored by number.
+ */
+typedef enum
+{
+	VENTURE_WEBHOOK_FORMAT_VENTURE = 0,
+	VENTURE_WEBHOOK_FORMAT_GOTIFY,
+	VENTURE_WEBHOOK_FORMAT_NTFY
+} VentureWebhookFormat;
+
+#define VENTURE_TYPE_WEBHOOK_FORMAT (venture_webhook_format_get_type())
+
+GType
+venture_webhook_format_get_type(void) G_GNUC_CONST;
 
 /**
  * VentureRoutingStrategy:

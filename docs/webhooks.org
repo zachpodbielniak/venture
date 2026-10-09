@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-10-04]
-#+version: 0.6.1
+#+updated: [2026-10-09]
+#+version: 0.6.2
 
 * What this is
 
@@ -83,6 +83,38 @@ Consecutive failures are counted on the webhook. A success resets the count; ten
 
 There is no retry. A retry that is not idempotent on the far end is worse than a gap, and a delivery id is exactly what a receiver needs to make its own decision; the delivery log is how you find what was missed.
 
+* Pushes to a phone: gotify and ntfy
+
+A webhook's =format= says what the far end expects. =venture= (the zero value, what every webhook made before the formats existed reads back as) is the signed envelope above. =gotify= and =ntfy= turn the same event into a push notification, which is how a price alert reaches a phone:
+
+| Format   | Request                                                                                         | Token                              |
+|----------+-------------------------------------------------------------------------------------------------+------------------------------------|
+| =gotify= | =POST {url}/message= (the URL is the server's, e.g. =http://host.containers.internal:8280=), JSON ={"title", "message", "priority"}= | =X-Gotify-Key=: an application token; required |
+| =ntfy=   | =POST {url}= (the URL is the topic's, e.g. =https://ntfy.example.com/trading=), the message as a plain-text body, =Title= and =Priority= headers | =Authorization: Bearer=: an access token; optional, a public topic needs none |
+
+The title is what happened, in words: the record type's name ("Alert hit", "Ticket"), with "updated" or "deleted" when it was not a creation, or "VENTURE" for *Test*. The message is the record's label -- for an alert hit, its sentence, cut to 120 characters ("Star Ruby: buy at Silver Hand for 41.2000 GOLD, sell at Area 52 for 58.0000 GOLD, 13.9000 GOLD profit (33.7%)"). With =server.base_url= set the message ends with the record's address, and the push opens it when tapped (gotify's =client::notification= extra, ntfy's =Click= header). =priority= on the webhook is 1 to 10 on gotify's scale (ntfy gets half of it, rounded up, 1 to 5); 0 leaves each service its default (5 and 3). =events= works as for any webhook: =alert_hit.created= for market alerts and nothing else. =include_record= and the signing secret mean nothing to a push.
+
+Three rules keep the token where it belongs:
+
+- *The token is never a field.* It is sealed in the credential store, under =webhook-<uuid>=, with the installation's =VENTURE_INTEGRATION_KEY= (without the key it cannot be set at all). Set it on the Webhooks page (a write-only box beside each push webhook), with =POST /api/v1/webhooks/:id/token= ={"token": "..."}= or with =venturectl webhook token ID < token-file= -- standard input, never an argument, because argv is readable by every process on the host. Nothing shows it again: the page and =GET /api/v1/webhooks= say =token_set=, and a far end that echoes the header back in an error has it masked in the delivery's excerpt.
+- *A push goes only to an origin the operator allowed.* =webhooks.allowed_origins= (=VENTURE_WEBHOOKS_ALLOWED_ORIGINS=) is a comma-separated list of exact origins -- scheme, host and a port other than the scheme's own, no path -- deny by default. Plain =http= is accepted, because a gotify on the same host or LAN is the usual case, and it means the token crosses that network in the clear: list an =http= origin only for a network you trust. A push to any other origin is refused before anything is sent and recorded as a failed delivery naming the setting. The signed =venture= envelope carries no credential and is not held to the list.
+- *A token goes only where it was sent when it was set.* Sealing it records the webhook's origin then; a delivery after the URL moves -- even to another allowed origin -- is refused with "set the token again". Redirects are never followed, so a 302 cannot carry the token to a host the response chose.
+
+A push that cannot be built (no token on a gotify webhook, an origin not on the list) is a failed delivery like a refusal from the far end, and counts towards the ten that switch a webhook off. *Test* sends a push saying so ("A test from VENTURE: this webhook reaches you.") and waits for the answer.
+
+For the gotify on this deployment:
+
+#+begin_src sh
+# the server's environment (compose env file), then restart it
+VENTURE_INTEGRATION_KEY=<base64 of 32 random bytes>   # already set if any credential is sealed
+VENTURE_WEBHOOKS_ALLOWED_ORIGINS=http://host.containers.internal:8280
+
+venturectl create webhook name="Phone" url=http://host.containers.internal:8280 \
+    format=gotify events=alert_hit.created priority=8 active=true organization_id=N
+venturectl webhook token ID < gotify-app-token.txt   # an application token made in gotify's UI
+venturectl webhook test ID
+#+end_src
+
 * Testing one
 
 *Test* on the Webhooks page sends a =webhook.test= delivery and waits for the answer, so pressing it tells you whether the far end is there rather than promising to find out. The same thing is =venturectl webhook test ID= and =POST /api/v1/webhooks/:id/test=.
@@ -96,6 +128,7 @@ Pointing a webhook at your own install to see what a body looks like works, whic
 | what is listening     | =GET /api/v1/webhooks=                 | =webhooks=               |
 | is the far end there  | =POST /api/v1/webhooks/:id/test=       | =webhook test ID=        |
 | a fresh secret        | =POST /api/v1/webhooks/:id/secret=     | =webhook secret ID=      |
+| a push's token        | =POST /api/v1/webhooks/:id/token=      | =webhook token ID < file= |
 | make or change one    | the generic routes on =webhook=        | =create/update webhook=  |
 
 Webhooks are owner-only everywhere — the page, the generic routes, the API — for the same reason a forge is: the row names the host this install's business data is posted to and holds the secret that signs it, and an editor who could change the URL could point every change in the books at a server they control, with the staged diff showing nothing but a URL moving.

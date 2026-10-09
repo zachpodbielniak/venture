@@ -3697,7 +3697,10 @@ venture_cli_command_factory_record(
 }
 
 /*
- * venturectl webhooks | webhook test ID | webhook secret ID
+ * venturectl webhooks | webhook test ID | webhook secret ID | webhook token ID
+ *
+ * A push webhook's token is read from standard input, never argv: argv is
+ * readable by every process on the host and lands in shell history.
  */
 static gint
 venture_cli_command_webhooks(
@@ -3718,13 +3721,42 @@ venture_cli_command_webhooks(
 
 		if ((NULL == verb) || (NULL == args[2]) ||
 		    ((0 != g_strcmp0(verb, "test")) &&
-		     (0 != g_strcmp0(verb, "secret"))))
+		     (0 != g_strcmp0(verb, "secret")) &&
+		     (0 != g_strcmp0(verb, "token"))))
 		{
 			g_set_error_literal(error, VENTURE_ERROR,
 			                    VENTURE_ERROR_INVALID_ARGUMENT,
 			                    "usage: venturectl webhook test ID | "
-			                    "webhook secret ID");
+			                    "webhook secret ID | webhook token ID < token-file");
 			return -1;
+		}
+
+		if (0 == g_strcmp0(verb, "token"))
+		{
+			g_autofree gchar *token = NULL;
+			g_autoptr(JsonBuilder) builder = NULL;
+			g_autoptr(JsonNode) body = NULL;
+
+			token = venture_cli_read_secret(error);
+
+			if (NULL == token)
+				return -1;
+
+			builder = json_builder_new();
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "token");
+			json_builder_add_string_value(builder, token);
+			json_builder_end_object(builder);
+			body = json_builder_get_root(builder);
+			path = g_strdup_printf("/api/v1/webhooks/%s/token", args[2]);
+			node = venture_cli_request(cli, "POST", path, body, error);
+
+			if (NULL == node)
+				return -1;
+
+			venture_cli_output(cli, node);
+
+			return 0;
 		}
 
 		path = g_strdup_printf("/api/v1/webhooks/%s/%s", args[2],
@@ -4408,6 +4440,7 @@ main(
 		"  webhooks                     outbound webhooks and their health\n"
 		"  webhook test ID              send a ping and wait for the answer\n"
 		"  webhook secret ID            generate a new signing secret\n"
+		"  webhook token ID             seal a gotify/ntfy token read from stdin\n"
 		"  act TYPE ID ACTION [key=value ...]  perform a discovered action; --stage\n"
 		"  health                       check the server is up\n"
 		"  billing start|change|cancel   manage customer subscription terms\n"

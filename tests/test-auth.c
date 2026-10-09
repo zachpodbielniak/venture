@@ -1254,6 +1254,8 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/webhooks/1/secret", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/webhooks/1/token", NULL, "token=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/tickets/1/triage", NULL, "priority=high", NULL, NULL),
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
@@ -1866,6 +1868,9 @@ test_auth_api_refuses_anonymous_requests(
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/webhooks/1/secret", NULL, "{}", NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/webhooks/1/token", NULL, "{\"token\":\"x\"}", NULL, NULL),
 		==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/tickets/1/triage", NULL, "{}", NULL, NULL),

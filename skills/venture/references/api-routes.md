@@ -30,7 +30,7 @@ in the repository lists today's.
 | `GET /comments?subject_type=&subject_id=`, `GET /comments/:id`, `POST /comments`, `PATCH\|PUT\|DELETE /comments/:id`, `GET /comments/mentions`, `POST /comments/preview` | discussions | `comments ...` |
 | `GET /reports`, `GET /reports/:name` (`?format=csv`) | reports | `report` |
 | `GET /dashboards`, `/dashboards/:slug`, `/dashboards/:slug/export`, `POST /dashboards/import`, `POST /dashboards/from-template`, `GET /widget-kinds`, `GET /dashboard-templates` | dashboards | `dashboards`, `dashboard ...` |
-| `GET /webhooks`, `POST /webhooks/:id/test`, `POST /webhooks/:id/secret` | webhooks out (owner) | `webhooks`, `webhook ...` |
+| `GET /webhooks`, `POST /webhooks/:id/test`, `POST /webhooks/:id/secret`, `POST /webhooks/:id/token` (`{"token"}`, gotify/ntfy) | webhooks out (owner) | `webhooks`, `webhook ...` |
 | `GET /printers`, `GET /printers/:name/status`, `POST /printers/:name/test`, `POST /print/:type/:id` | receipt printers | `printers`, `print` |
 | `POST /federation` | federation operations (owner) | `federation JSON` |
 | `GET /account-identity/:id` | hosted organization identity check | -- |
