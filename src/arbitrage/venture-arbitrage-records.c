@@ -256,3 +256,41 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExternalPosting, venture_external_posting
 	venture_external_posting_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_external_posting_display_name;
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "External ledger day", NULL);)
+
+/* ==========================================================================
+ * Recipe lists
+ *
+ * A named set of recipes somebody keeps coming back to -- favourites, the
+ * crafts for this week's bags -- that Crafting narrows to. A recipe is not
+ * an instrument, so this is not a watchlist; like one it is shared in the
+ * organization rather than owned, and holds nothing but its name: the
+ * prices are Crafting's, asked again every time the list is opened.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_recipe_list_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What the list is for: favourites, bag crafts, this week's flips"),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRecipeList, venture_recipe_list, venture_recipe_list_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Recipe list", NULL);)
+
+/* ==========================================================================
+ * Recipe list entries
+ *
+ * One recipe on one list, once (the save validator in
+ * venture-arbitrage-crafting.c holds it to that and to the list's
+ * organization), with a note of why.
+ * ========================================================================== */
+
+static const VentureFieldDecl venture_recipe_list_entry_fields[] = {
+	VENTURE_FIELD_REF("recipe-list-id", "Recipe list", "The list it is on",
+	                  "recipe_list", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("recipe-id", "Recipe", "The recipe",
+	                  "recipe", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("notes", "Note", "Optional: why it is on the list")
+};
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRecipeListEntry, venture_recipe_list_entry,
+	venture_recipe_list_entry_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Recipe list entry", NULL);)

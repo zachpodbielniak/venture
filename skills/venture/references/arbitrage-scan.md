@@ -65,7 +65,10 @@ open whatever `buy_venues`/`sell_venues` say), `cover` (surebets; `total_stake`)
   parameter each), `profession`, `expansion` (category names, any case),
   `only_known` (1/0; default 1 once any recipe has a knower), `min_profit`
   and `max_cost` (a bare number is in the craft's currency), `min_margin`
-  (percent), `min_sold_per_day`; anything else is refused (exit 2). Every
+  (percent), `min_sold_per_day`, `recipe_list` (recipe list ids, comma
+  separated or one parameter each: their union; turns `only_known`'s
+  default off; an unknown id is 400, another organization's 404);
+  anything else is refused (exit 2). Every
   chosen recipe is priced -- not the scan's 200 by name; past 5000 it
   refuses and says narrow -- profit first, unpriced last (`unpriced`), and
   a bound leaves an unpriced recipe out and counts it in
@@ -74,7 +77,19 @@ open whatever `buy_venues`/`sell_venues` say), `cover` (surebets; `total_stake`)
   `knowers` (`{key, rank}`, rank like "Khaz Algar 65/100" from the
   account's attrs); the answer has `realm_choices`, `categories`,
   `character_choices`, `profession_choices`, `expansion_choices`,
-  `recipes`, `options` (the scan question "Add to plan" sends back).
+  `recipes`, `options` (the scan question "Add to plan" sends back),
+  `recipe_list_choices` (`{id, name, entries}`) and, asked,
+  `recipe_list_filter`; every row has `recipe_lists` (`[{id, name,
+  entry_id}]`, the lists it is on).
+- **Recipe lists** (`recipe_list` + `recipe_list_entry`, arbitrage
+  module; "favourites", "bag crafts"): put a recipe on one with
+  `POST /api/v1/arbitrage/recipe-lists/add` `{"recipe_id": N, "list":
+  "Name"}` (a name found ignoring case, else made; a second add is a 200
+  that writes nothing) or `create recipe_list_entry recipe_list_id=..
+  recipe_id=..` (once per list, validated); take it off with
+  `.../remove {"entry_id": N}` or `delete recipe_list_entry ID`.
+  `GET /api/v1/arbitrage/recipe-lists[/ID]` lists them / prices one (the
+  Crafting answer), and `arbitrage crafting recipe_list=ID` is the same.
   **It computes nothing itself** -- quote its figures, they are the
   strategy's.
 - **The plan is planned `arbitrage_trade`s**, not a record type: "Add to

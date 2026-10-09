@@ -56,7 +56,9 @@ G_BEGIN_DECLS
  *
  * The names the crafting question takes: data_source_id,
  * recipe_category_id, recipe_id, buy_realm, sell_realm, venue_group,
- * units, sell_basis, max_age_hours, share.
+ * units, sell_basis, max_age_hours, share, character, profession,
+ * expansion, only_known, min_profit, min_margin, max_cost,
+ * min_sold_per_day and recipe_list.
  *
  * Returns: (transfer none) (array zero-terminated=1): the names
  */
@@ -81,6 +83,13 @@ venture_arbitrage_crafting_option_names(void);
  * recipe categories, by path) and `venue_groups`; `options` is the scan's
  * question, which "Add to plan" sends back with a row's key.
  *
+ * `recipe_list` (list ids, comma separated) narrows to the recipes on
+ * any of them, in the query that bounds the recipes, and turns
+ * only_known's default off (a list is what a person chose). Every row
+ * carries `recipe_lists`, the lists it is on ([{id, name, entry_id}]);
+ * the answer carries recipe_list_choices ([{id, name, entries}]) and,
+ * with a list asked, recipe_list_filter ([{id, name}]).
+ *
  * Returns: (transfer full) (nullable): the answer, or %NULL with @error
  *   set (INVALID_ARGUMENT for an unknown option or a bad value, NOT_FOUND
  *   for a realm no source has)
@@ -91,6 +100,78 @@ venture_arbitrage_crafting(
 	gint64		  organization_id,
 	JsonObject	 *asked,
 	GError		**error
+);
+
+/**
+ * venture_arbitrage_recipe_list_kind:
+ *
+ * Recipe lists as a #VentureMarketdataListKind: `recipe_list` and its
+ * `recipe_list_entry` rows.
+ *
+ * Returns: (transfer none): the kind
+ */
+const VentureMarketdataListKind *
+venture_arbitrage_recipe_list_kind(void);
+
+/**
+ * venture_arbitrage_recipe_lists_install:
+ * @database: a #VentureDatabase
+ *
+ * The recipe list entry's save validator: a list and a recipe of its own
+ * organization, once per list. Called once per database by
+ * venture_arbitrage_install().
+ */
+void
+venture_arbitrage_recipe_lists_install(VentureDatabase *database);
+
+/**
+ * venture_arbitrage_recipe_list_add:
+ * @context: a #VentureContext
+ * @organization_id: whose list and recipe; 0 for the default
+ * @list_id: the list, or 0 to name it by @list_name
+ * @list_name: (nullable): with no @list_id, the list of this name
+ *   (ignoring case), made when there is none
+ * @recipe_id: the recipe
+ * @actor: (nullable): who adds it
+ * @out_entry: (out) (optional) (transfer full): the entry, new or found
+ * @out_created_list: (out) (optional): whether the list was made here
+ * @out_created_entry: (out) (optional): whether the entry was made here
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Puts a recipe on a recipe list (venture_marketdata_list_put()): a
+ * second press is a success that writes nothing.
+ *
+ * Returns: %TRUE on success (NOT_FOUND for another organization's recipe
+ *   or list)
+ */
+gboolean
+venture_arbitrage_recipe_list_add(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  list_id,
+	const gchar		 *list_name,
+	gint64			  recipe_id,
+	const VentureActor	 *actor,
+	VentureEntity		**out_entry,
+	gboolean		 *out_created_list,
+	gboolean		 *out_created_entry,
+	GError			**error
+);
+
+/**
+ * venture_arbitrage_recipe_lists:
+ * @context: a #VentureContext
+ * @organization_id: whose lists; 0 for the default
+ *
+ * The organization's recipe lists, by name, with how many recipes each
+ * holds: {recipe_lists: [{id, name, entries}]}.
+ *
+ * Returns: (transfer full): the answer
+ */
+JsonNode *
+venture_arbitrage_recipe_lists(
+	VentureContext	*context,
+	gint64		 organization_id
 );
 
 /**

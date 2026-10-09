@@ -573,6 +573,7 @@ static const VentureCliOption venture_cli_market_deals_options[] = {
 	{ "venue", "venue", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "sell_venue", "sell_venue", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "venue_group", "venue_group", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "watchlist", "watchlist", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "group", "group", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "group_key", "group", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "category", "category", VENTURE_CLI_OPTION_TEXT, NULL },
@@ -755,7 +756,7 @@ static const gchar venture_cli_market_usage[] =
 	"  promote SOURCE_ID instrument|venue|account KEY [organization_id=N]\n"
 	"  browse [source=N] [search=TEXT] [category=PATH] [venue=KEY] [group=G]\n"
 	"         [stock=true] [sort=COLUMN] [dir=asc|desc] [page=N] [per_page=N]\n"
-	"  deals [source=N] [venue=KEY] [group=G] [category=PATH]\n"
+	"  deals [source=N] [venue=KEY] [group=G] [category=PATH] [watchlist=ID[,ID...]]\n"
 	"        [min_value=\"10.00 GOLD\"] [max_pct=80] [top=N]\n"
 	"        [min_sold_per_day=N] [horizon_days=7] [sort=realisable|profit|sold|...]\n"
 	"  venues [source=N] [group=G]\n"
@@ -772,6 +773,7 @@ static const gchar venture_cli_market_usage[] =
 	"  venturectl market venues source=1\n"
 	"  venturectl market instrument 1 2589 units=200\n"
 	"  venturectl market watchlist 3\n"
+	"  venturectl market deals watchlist=3,5 sort=profit\n"
 	"  venturectl market alerts evaluate 7 --dry-run\n"
 	"  venturectl market quote 12 basis=region_median venue=eu\n"
 	"  venturectl market promote 1 instrument 2589\n"

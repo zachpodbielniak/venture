@@ -1804,6 +1804,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/market/alerts", "Alerts", VENTURE_ICON("<path d=\"M6 16V11a6 6 0 0 1 12 0v5l2 2H4z\"/><path d=\"M10 21h4\"/>"), NULL, "marketdata" },
 	{ "/arbitrage", "Arbitrage", VENTURE_ICON("<path d=\"M3 17l6-6 4 4 8-8\"/><path d=\"M15 7h6v6\"/>"), NULL, "arbitrage" },
 	{ "/arbitrage/crafting", "Crafting", VENTURE_ICON("<path d=\"M14 4l6 6-9 9H5v-6z\"/><path d=\"M12 6l6 6\"/>"), NULL, "arbitrage" },
+	{ "/arbitrage/recipe-lists", "Recipe lists", VENTURE_ICON("<path d=\"M9 6h11M9 12h11M9 18h11\"/><path d=\"M4 6h1M4 12h1M4 18h1\"/>"), NULL, "arbitrage" },
 	{ "/arbitrage/plan", "Flip planner", VENTURE_ICON("<path d=\"M9 4h6v3H9z\"/><path d=\"M6 6h3M15 6h3v15H6V6\"/><path d=\"M9 12h6M9 16h4\"/>"), NULL, "arbitrage" },
 	{ "/arbitrage/calc", "Calculators", VENTURE_ICON("<rect x=\"5\" y=\"3\" width=\"14\" height=\"18\"/><path d=\"M8 7h8M8 12h2M14 12h2M8 16h2M14 16h2\"/>"), NULL, "arbitrage" },
 	{ "/e/arbitrage_trade", "Trades", VENTURE_ICON("<path d=\"M4 8h13l-3-3\"/><path d=\"M20 16H7l3 3\"/>"), NULL, "arbitrage" },
@@ -1916,8 +1917,8 @@ static const gchar *const venture_web_nav_trading_accounts[] = {
  * no data sources rather than vanish. */
 static const gchar *const venture_web_nav_trading[] = {
 	"/market/browse", "/market/find", "/market/deals", "/market/venues", "/e/venue_group",
-	"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting", "/arbitrage/plan",
-	"/arbitrage/calc", "/e/arbitrage_trade", "/feeds",
+	"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting", "/arbitrage/recipe-lists",
+	"/arbitrage/plan", "/arbitrage/calc", "/e/arbitrage_trade", "/feeds",
 	NULL
 };
 

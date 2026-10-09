@@ -160,7 +160,9 @@ venture_marketdata_browse_sorts(void);
  * One page of the catalogue: {available, notes, sources, data_source_id,
  * venues, groups, query, sorts, page, per_page, total, pages, rows}. Each
  * row carries its last seven days (see venture_marketdata_deals()):
- * trend_7d, median_7d, median_7d_hours and vs_median_7d_pct.
+ * trend_7d, median_7d, median_7d_hours and vs_median_7d_pct, and the
+ * watchlists its instrument is on (venture_marketdata_watchlist_memberships());
+ * watchlist_choices is venture_marketdata_list_choices() for watchlists.
  *
  * Returns: (transfer full) (nullable): the answer, or %NULL on error
  *   (NOT_FOUND for a source that is not the organization's,
@@ -270,7 +272,9 @@ venture_marketdata_history(
  * venue's current row, cheapest first), hourly (14 days), heat (the last
  * seven days by weekday and hour in the configured zone, lowest price and
  * quantity), daily (60 days), history (the price history over @range,
- * as venture_marketdata_history() answers it), bulk, tiers, watchlists,
+ * as venture_marketdata_history() answers it), bulk, tiers, watchlists
+ * (every list, for the picker), listed_on (the lists it is on: [{id,
+ * name, entry_id}]),
  * record_id, stale_after_seconds}. base and each venue carry age_seconds and stale
  * beside taken_at, as a deal's sides do. Where another source of the
  * organization has the item (as on Deals), ref: {data_source_id,
@@ -527,6 +531,9 @@ venture_marketdata_venue_group_venue_keys(
  *   with no estimate never qualifies. NAN for no bound
  * @horizon_days: the days a realisable profit counts sales over, above
  *   zero; 7 by default
+ * @watchlists: (nullable): only instruments on these watchlists, ids
+ *   separated by commas, their union; read before any store is, so a
+ *   list narrows the deal index to its own keys
  *
  * What the deals page asks. A deal is an instrument in stock at a venue
  * whose lowest price is at or under its group's deal price: the median of
@@ -552,6 +559,7 @@ typedef struct
 	gint64			 now;
 	gdouble			 min_sold_per_day;
 	gdouble			 horizon_days;
+	const gchar		*watchlists;
 } VentureMarketdataDealsQuery;
 
 /**
@@ -621,7 +629,13 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query);
  * median_7d_hours (how many there were) and vs_median_7d_pct (the price
  * against that median, in percent: -20 is a fifth under it).
  *
+ * Lists: every row carries `watchlists`, the lists its instrument is on
+ * ([{id, name, entry_id}]); the root carries watchlist_choices ([{id,
+ * name, entries}], for the picker) and, with @watchlists asked,
+ * watchlist_filter ([{id, name}]).
+ *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
+ *   (NOT_FOUND for a watchlist that is not the organization's)
  */
 JsonNode *
 venture_marketdata_deals(
@@ -699,6 +713,264 @@ JsonNode *
 venture_marketdata_watchlists(
 	VentureContext	 *context,
 	gint64		  organization_id,
+	GError		**error
+);
+
+/**
+ * VENTURE_MARKETDATA_LIST_NAME_MAX:
+ *
+ * The longest list name typed on a row: a list is named by a person in a
+ * box beside a price, and a page of tags must stay a page.
+ */
+#define VENTURE_MARKETDATA_LIST_NAME_MAX (80)
+
+/**
+ * VentureMarketdataListKind:
+ * @list_type: the list's record type: a name and nothing it needs
+ * @list_label: what a list is called in a refusal: "watchlist"
+ * @entry_type: the entry's record type, naming the list and one item
+ * @list_field: the entry's reference to its list: "watchlist-id"
+ * @item_field: the entry's reference to its item: "instrument-id"
+ *
+ * A named list of things -- instruments on a watchlist, recipes on a
+ * recipe list -- as the "Add to list" control on a row sees it. Both
+ * kinds are ordinary records; this is only which fields are which, so
+ * one function puts a thing on either and a second press is a no-op on
+ * both.
+ */
+typedef struct
+{
+	GType		 list_type;
+	const gchar	*list_label;
+	GType		 entry_type;
+	const gchar	*list_field;
+	const gchar	*item_field;
+} VentureMarketdataListKind;
+
+/**
+ * venture_marketdata_list_put:
+ * @context: a #VentureContext
+ * @kind: which kind of list
+ * @organization_id: whose list
+ * @list_id: the list, or 0 to name it by @list_name
+ * @list_name: (nullable): with no @list_id, the list of this name
+ *   (ignoring case), made when there is none
+ * @item_id: the item's record, which must exist (the entry's save checks
+ *   that it is the organization's)
+ * @actor: (nullable): who adds it
+ * @out_entry: (out) (optional) (transfer full): the entry, new or found
+ * @out_created_list: (out) (optional): whether the list was made here
+ * @out_created_entry: (out) (optional): whether the entry was made here
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Finds or makes the list and adds the item unless the list holds it
+ * already, in one transaction; every write an ordinary save.
+ *
+ * Returns: %TRUE on success (NOT_FOUND for another organization's list,
+ *   INVALID_ARGUMENT for no list named or a name past
+ *   %VENTURE_MARKETDATA_LIST_NAME_MAX characters)
+ */
+gboolean
+venture_marketdata_list_put(
+	VentureContext				 *context,
+	const VentureMarketdataListKind		 *kind,
+	gint64					  organization_id,
+	gint64					  list_id,
+	const gchar				 *list_name,
+	gint64					  item_id,
+	const VentureActor			 *actor,
+	VentureEntity				**out_entry,
+	gboolean				 *out_created_list,
+	gboolean				 *out_created_entry,
+	GError					**error
+);
+
+/**
+ * venture_marketdata_list_take:
+ * @context: a #VentureContext
+ * @kind: which kind of list
+ * @organization_id: whose list
+ * @entry_id: the entry
+ * @actor: (nullable): who removes it
+ * @out_list_id: (out) (optional): the list it was on
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Takes an item off its list by deleting the entry. The item stays.
+ *
+ * Returns: %TRUE on success (NOT_FOUND for another organization's entry
+ *   or none)
+ */
+gboolean
+venture_marketdata_list_take(
+	VentureContext			 *context,
+	const VentureMarketdataListKind	 *kind,
+	gint64				  organization_id,
+	gint64				  entry_id,
+	const VentureActor		 *actor,
+	gint64				 *out_list_id,
+	GError				**error
+);
+
+/**
+ * venture_marketdata_list_memberships:
+ * @context: a #VentureContext
+ * @kind: which kind of list
+ * @organization_id: whose lists
+ * @item_ids: (element-type gint64): the items asked about
+ *
+ * Which lists hold each item: item id (a #gint64 key) to a #JsonArray of
+ * {id, name, entry_id}, by name. An item on none is absent. Two reads
+ * however many items are asked about.
+ *
+ * Returns: (transfer full): the memberships
+ */
+GHashTable *
+venture_marketdata_list_memberships(
+	VentureContext			*context,
+	const VentureMarketdataListKind	*kind,
+	gint64				 organization_id,
+	GArray				*item_ids
+);
+
+/**
+ * venture_marketdata_list_choices:
+ * @context: a #VentureContext
+ * @kind: which kind of list
+ * @organization_id: whose lists
+ *
+ * The organization's lists for a picker, by name: [{id, name, entries}].
+ *
+ * Returns: (transfer full): the lists
+ */
+JsonArray *
+venture_marketdata_list_choices(
+	VentureContext			*context,
+	const VentureMarketdataListKind	*kind,
+	gint64				 organization_id
+);
+
+/**
+ * venture_marketdata_list_ids:
+ * @context: a #VentureContext
+ * @kind: which kind of list
+ * @organization_id: whose lists
+ * @text: list ids separated by commas or spaces ("3,5")
+ * @out_items: (out) (transfer full) (element-type gint64): the items on
+ *   any of them, each once
+ * @out_lists: (out) (transfer full): [{id, name}] of the lists, as asked
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The union of the lists @text names, as item ids: what a page narrows
+ * to when asked for a list.
+ *
+ * Returns: %TRUE on success (INVALID_ARGUMENT for text that is not ids,
+ *   NOT_FOUND for another organization's list or none)
+ */
+gboolean
+venture_marketdata_list_ids(
+	VentureContext			 *context,
+	const VentureMarketdataListKind	 *kind,
+	gint64				  organization_id,
+	const gchar			 *text,
+	GArray				**out_items,
+	JsonArray			**out_lists,
+	GError				**error
+);
+
+/**
+ * venture_marketdata_watchlist_kind:
+ *
+ * Watchlists as a #VentureMarketdataListKind.
+ *
+ * Returns: (transfer none): the kind
+ */
+const VentureMarketdataListKind *
+venture_marketdata_watchlist_kind(void);
+
+/**
+ * venture_marketdata_watchlist_add:
+ * @context: a #VentureContext
+ * @organization_id: whose list and instrument
+ * @watchlist_id: the list, or 0 to name it by @watchlist_name
+ * @watchlist_name: (nullable): with no @watchlist_id, the list of this
+ *   name (ignoring case) -- made when there is none
+ * @data_source_id: the source whose store has the instrument
+ * @key: the instrument's key in that store
+ * @actor: (nullable): who adds it
+ * @out_entry: (out) (optional) (transfer full): the entry, new or found
+ * @out_created_list: (out) (optional): whether the list was made here
+ * @out_created_entry: (out) (optional): whether the entry was made here
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Puts an instrument on a watchlist in one step: promotes it (an
+ * existing record is found, a deleted one restored), finds or makes the
+ * list, and adds the entry unless the list already holds it -- so a
+ * second press of "Add" is a success that writes nothing. Every write is
+ * an ordinary save, under the validators and the audit log, in one
+ * transaction.
+ *
+ * Returns: %TRUE on success (NOT_FOUND for another organization's list or
+ *   source, INVALID_ARGUMENT for no list named)
+ */
+gboolean
+venture_marketdata_watchlist_add(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  watchlist_id,
+	const gchar		 *watchlist_name,
+	gint64			  data_source_id,
+	const gchar		 *key,
+	const VentureActor	 *actor,
+	VentureEntity		**out_entry,
+	gboolean		 *out_created_list,
+	gboolean		 *out_created_entry,
+	GError			**error
+);
+
+/**
+ * venture_marketdata_watchlist_memberships:
+ * @context: a #VentureContext
+ * @organization_id: whose lists
+ * @rows: store rows as the pages answer them, each with data_source_id
+ *   (or @data_source_id) and instrument_key
+ * @data_source_id: the source of rows that carry none, or 0
+ *
+ * Says on each row which watchlists hold its instrument: `watchlists`,
+ * [{id, name, entry_id}], by name -- an empty list for none. An
+ * instrument record with no data source is the key's in every source.
+ * Two indexed reads for the whole page, whatever its length.
+ */
+void
+venture_marketdata_watchlist_memberships(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonArray	*rows,
+	gint64		 data_source_id
+);
+
+/**
+ * venture_marketdata_watchlist_keys:
+ * @context: a #VentureContext
+ * @organization_id: whose lists
+ * @watchlists: the lists, ids separated by commas ("3,5")
+ * @out_keys: (out) (transfer full): data source id (a #gint64 key, 0 for
+ *   every source) to a #GPtrArray of instrument keys
+ * @out_lists: (out) (transfer full): [{id, name}] of the lists, in order
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The instruments of a union of watchlists, as the keys a store filter
+ * compares: what Deals narrows to when asked for a list.
+ *
+ * Returns: %TRUE on success (INVALID_ARGUMENT for text that is not ids,
+ *   NOT_FOUND for another organization's list or none)
+ */
+gboolean
+venture_marketdata_watchlist_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *watchlists,
+	GHashTable	**out_keys,
+	JsonArray	**out_lists,
 	GError		**error
 );
 

@@ -760,6 +760,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_arbitrage_leg_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_arbitrage_strategy_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_external_posting_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_recipe_list_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_recipe_list_entry_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_field_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_form_rule_get_type, VENTURE_DATA_CLASS_TENANT },

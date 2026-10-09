@@ -6288,6 +6288,37 @@ series_filter_where(
 		series_bind_add_text(bindings, filter->instrument_key);
 	}
 
+	/* A list's instruments, as one set: the deal index is then read
+	 * through current_instrument for these alone, not walked whole. */
+	if (NULL != filter->instrument_keys)
+	{
+		guint n;
+		guint i;
+
+		n = g_strv_length((gchar **)filter->instrument_keys);
+
+		if (n > VENTURE_SERIES_MAX_FILTER_INSTRUMENTS)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "A filter may name at most %d instruments",
+			            VENTURE_SERIES_MAX_FILTER_INSTRUMENTS);
+			return FALSE;
+		}
+
+		if (0 == n)
+			g_string_append(sql, " AND 0");
+		else
+		{
+			g_string_append(sql, " AND c.instrument_id IN (SELECT id FROM instruments WHERE key IN (");
+			for (i = 0; i < n; i++)
+			{
+				g_string_append(sql, (0 == i) ? "?" : ", ?");
+				series_bind_add_text(bindings, filter->instrument_keys[i]);
+			}
+			g_string_append(sql, "))");
+		}
+	}
+
 	if ((NULL != filter->search) && ('\0' != filter->search[0]))
 	{
 		g_autofree gchar *fold = NULL;
@@ -6456,7 +6487,7 @@ static gboolean
 series_filter_is_current_only(const VentureSeriesFilter *filter)
 {
 	return (NULL == filter->venue_keys) && (NULL == filter->group_key) &&
-	       (NULL == filter->instrument_key) &&
+	       (NULL == filter->instrument_key) && (NULL == filter->instrument_keys) &&
 	       ((NULL == filter->search) || ('\0' == filter->search[0])) &&
 	       ((NULL == filter->category_prefix) || ('\0' == filter->category_prefix[0]));
 }

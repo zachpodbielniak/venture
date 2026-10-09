@@ -2330,6 +2330,24 @@ pages").
   seconds instead of milliseconds. A table's per-row history is one
   statement per source for the rows shown (`venture_series_store_hourly_many()`,
   the pairs bound as JSON to `json_each()`), never a query a row.
+- **A row's lists are records, put there by one function.** Deals, Browse
+  and an item's page put instruments on `watchlist`s; Crafting puts
+  recipes on `recipe_list`s (a recipe is not an instrument, so not a
+  watchlist). Both go through `venture_marketdata_list_put()` with a
+  `VentureMarketdataListKind` -- a name found ignoring case or made, the
+  entry added once, ordinary saves in one transaction -- and the entry
+  validators still hold "once per list" for every other writer. Do not
+  add a third list type for another page; add a kind. A list filter is
+  narrowed before anything is priced or read: Deals hands the store the
+  list's keys (`VentureSeriesFilter.instrument_keys`, read through
+  `current_instrument`), Crafting an `id IN` set in the recipe query.
+- **A list's notice is not a question.** After an add or a remove the
+  page gets `list_added`/`list_removed`/`list_new` in its query string;
+  `mdw_here()` and `mdw_list_back()` strip them from every link and
+  `return`, and Crafting removes them before reading its question, which
+  refuses an unknown name. A new page with "Add to list" that parses its
+  query strictly must drop `mdw_list_notice_names` the same way. A
+  `return` is followed only to a `/market/` or `/arbitrage/` path.
 - **Charts carry no colour.** `src/web/venture-web-chart.c` draws in
   `currentColor` with classes both stylesheets colour from tokens; a new
   chart class goes into both, in the market block at their end, and

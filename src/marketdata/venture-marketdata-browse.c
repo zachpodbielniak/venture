@@ -2609,6 +2609,14 @@ venture_marketdata_browse(
 	json_object_set_int_member(root, "per_page", per_page);
 	json_object_set_int_member(root, "total", total);
 	json_object_set_int_member(root, "pages", (total + per_page - 1) / per_page);
+
+	/* Which lists each row's instrument is on, and the lists a row can
+	 * be put on: the page's tags and its "Add to list". */
+	venture_marketdata_watchlist_memberships(context, query->organization_id, rows,
+	                                         json_object_get_int_member_with_default(root, "data_source_id", 0));
+	json_object_set_array_member(root, "watchlist_choices",
+	                             venture_marketdata_list_choices(context, venture_marketdata_watchlist_kind(),
+	                                                             query->organization_id));
 	json_object_set_array_member(root, "rows", rows);
 	json_object_set_array_member(root, "notes", notes);
 	md_attribute_source(context, query->organization_id, root);
@@ -3821,6 +3829,20 @@ venture_marketdata_instrument(
 
 		json_object_set_array_member(root, "watchlists",
 		                             md_watchlists_brief(context, query->organization_id));
+
+		/* The lists it is on already, as a Deals row says them. */
+		{
+			JsonArray *one = json_array_new();
+			JsonObject *asked = json_object_new();
+
+			json_object_set_int_member(asked, "data_source_id", query->data_source_id);
+			json_object_set_string_member(asked, "instrument_key", query->key);
+			json_array_add_object_element(one, asked);
+			venture_marketdata_watchlist_memberships(context, query->organization_id, one, 0);
+			json_object_set_array_member(root, "listed_on",
+			                             json_array_ref(json_object_get_array_member(asked, "watchlists")));
+			json_array_unref(one);
+		}
 #endif
 	}
 
@@ -4645,12 +4667,58 @@ md_deal_compare(
 
 #endif
 
+#ifdef VENTURE_HAVE_SQLITE
+
+/*
+ * The keys of @listed (source id -> GPtrArray of keys, 0 for every
+ * source) that store @source_id is asked about: its own and every
+ * source's, each once. NULL when there are none.
+ */
+static GStrv
+md_listed_keys_for(
+	GHashTable	*listed,
+	gint64		 source_id
+){
+	g_autoptr(GStrvBuilder) builder = g_strv_builder_new();
+	g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+	const gint64 buckets[2] = { source_id, 0 };
+	guint added = 0;
+	guint b;
+
+	for (b = 0; b < G_N_ELEMENTS(buckets); b++)
+	{
+		GPtrArray *keys = g_hash_table_lookup(listed, &buckets[b]);
+		guint i;
+
+		for (i = 0; (NULL != keys) && (i < keys->len); i++)
+		{
+			const gchar *key = g_ptr_array_index(keys, i);
+
+			if (g_hash_table_contains(seen, key))
+				continue;
+
+			g_hash_table_add(seen, (gpointer)key);
+			g_strv_builder_add(builder, key);
+			added++;
+		}
+
+		if (0 == source_id)
+			break;
+	}
+
+	return (added > 0) ? g_strv_builder_end(builder) : NULL;
+}
+
+#endif
+
 JsonNode *
 venture_marketdata_deals(
 	VentureContext				 *context,
 	const VentureMarketdataDealsQuery	 *query,
 	GError					**error
 ){
+	g_autoptr(GHashTable) listed_keys = NULL;
+	g_autoptr(JsonArray) listed = NULL;
 	JsonObject *root;
 	JsonArray *notes;
 	JsonArray *rows;
@@ -4722,10 +4790,24 @@ venture_marketdata_deals(
 		return NULL;
 	}
 
+	/* A list is read before any store: its instruments are the keys
+	 * each store is asked about, so the deal index is read for them
+	 * alone. Another organization's list is not found, store or none. */
+	if (!venture_string_is_empty(query->watchlists) &&
+	    !venture_marketdata_watchlist_keys(context, query->organization_id, query->watchlists, &listed_keys,
+	                                       &listed, error))
+		return NULL;
+
 	root = json_object_new();
 	notes = json_array_new();
 	rows = json_array_new();
 	json_object_set_boolean_member(root, "available", FALSE);
+	json_object_set_array_member(root, "watchlist_choices",
+	                             venture_marketdata_list_choices(context, venture_marketdata_watchlist_kind(),
+	                                                             query->organization_id));
+
+	if (NULL != listed)
+		json_object_set_array_member(root, "watchlist_filter", json_array_ref(listed));
 	json_object_set_boolean_member(root, "truncated", FALSE);
 	json_object_set_int_member(root, "stale_after_seconds", stale_after);
 
@@ -4767,6 +4849,7 @@ venture_marketdata_deals(
 		gint64 totals_rows = 0;
 		gboolean totals_mixed = FALSE;
 		gboolean truncated;
+		gboolean listed_any = FALSE;
 		guint i;
 
 
@@ -4856,6 +4939,7 @@ venture_marketdata_deals(
 			g_auto(GStrv) group_keys = NULL;
 			g_auto(GStrv) buy_keys = NULL;
 			g_auto(GStrv) sell_keys = NULL;
+			g_auto(GStrv) list_keys = NULL;
 			VentureSeriesFilter filter;
 			guint j;
 
@@ -4886,6 +4970,18 @@ venture_marketdata_deals(
 
 				if (NULL != realm)
 					g_hash_table_add(choices, realm);
+			}
+
+			/* The lists' instruments in this store; a store holding
+			 * none of them has no deal to offer. */
+			if (NULL != listed_keys)
+			{
+				list_keys = md_listed_keys_for(listed_keys, source_id);
+
+				if (NULL == list_keys)
+					continue;
+
+				listed_any = TRUE;
 			}
 
 			/* The picked realms in this store's keys -- several when a
@@ -4929,6 +5025,7 @@ venture_marketdata_deals(
 			sell_used = sell_used || (NULL != sell_keys);
 
 			filter.group_key = venture_string_is_empty(query->group_key) ? NULL : query->group_key;
+			filter.instrument_keys = (const gchar *const *)list_keys;
 			filter.category_prefix = venture_string_is_empty(query->category) ? NULL : query->category;
 
 			if (NULL != query->min_value)
@@ -5124,6 +5221,13 @@ venture_marketdata_deals(
 			                    (JsonObject **)objects->pdata, store_rows->len, now, error))
 				goto fail;
 		}
+
+		/* Which lists each row is already on, for its tags. */
+		venture_marketdata_watchlist_memberships(context, query->organization_id, rows, 0);
+
+		if ((NULL != listed_keys) && !listed_any)
+			md_note(notes, "Nothing on the list is in a data source's store: add items to it from a "
+			               "Deals or Browse row, or from the item's page.");
 
 		json_object_set_double_member(root, "cut_pct", query->cut_pct);
 		json_object_set_double_member(root, "horizon_days", query->horizon_days);
@@ -5457,6 +5561,831 @@ venture_marketdata_watchlists(
 	venture_marketdata_attribution_set(root, NULL);
 
 	return md_node(root);
+}
+
+/* --- Putting things on lists and taking them off ------------------------------ */
+
+const VentureMarketdataListKind *
+venture_marketdata_watchlist_kind(void)
+{
+	static VentureMarketdataListKind kind;
+	static gsize ready = 0;
+
+	/* The types are registered at run time, so the table is finished
+	 * on first use. */
+	if (g_once_init_enter(&ready))
+	{
+		kind.list_type = VENTURE_TYPE_WATCHLIST;
+		kind.list_label = "watchlist";
+		kind.entry_type = VENTURE_TYPE_WATCHLIST_ENTRY;
+		kind.list_field = "watchlist-id";
+		kind.item_field = "instrument-id";
+		g_once_init_leave(&ready, 1);
+	}
+
+	return &kind;
+}
+
+/*
+ * A list name typed on a row: trimmed, UTF-8, at most
+ * VENTURE_MARKETDATA_LIST_NAME_MAX characters. NULL with *@error when it
+ * is none of that.
+ */
+static gchar *
+md_list_name(
+	const gchar	 *text,
+	GError		**error
+){
+	g_autofree gchar *name = NULL;
+
+	name = g_strdup((NULL != text) ? text : "");
+	g_strstrip(name);
+
+	if ('\0' == name[0])
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Name the list: pick one or type a new name");
+		return NULL;
+	}
+
+	if (!g_utf8_validate(name, -1, NULL) || (g_utf8_strlen(name, -1) > VENTURE_MARKETDATA_LIST_NAME_MAX))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A list's name is text of at most %d characters", VENTURE_MARKETDATA_LIST_NAME_MAX);
+		return NULL;
+	}
+
+	return g_steal_pointer(&name);
+}
+
+/* The organization's lists of @kind, by name then id; NULL on error. */
+static GPtrArray *
+md_lists_of(
+	VentureContext			 *context,
+	const VentureMarketdataListKind	 *kind,
+	gint64				  organization_id,
+	GError				**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(kind->list_type);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, MD_MAX_SOURCES);
+
+	return venture_database_find(venture_context_get_database(context), query, error);
+}
+
+/*
+ * The list a row's "Add" names: @id when given (the organization's, or
+ * NOT_FOUND), else the one called @name ignoring case, made when there is
+ * none. A list made here is an ordinary save in the caller's transaction.
+ */
+static VentureEntity *
+md_list_for(
+	VentureContext			 *context,
+	const VentureMarketdataListKind	 *kind,
+	gint64				  organization_id,
+	gint64				  id,
+	const gchar			 *name,
+	const VentureActor		 *actor,
+	gboolean			 *out_created,
+	GError				**error
+){
+	g_autoptr(GPtrArray) lists = NULL;
+	g_autoptr(VentureEntity) list = NULL;
+	g_autofree gchar *clean = NULL;
+	g_autofree gchar *wanted = NULL;
+	guint i;
+
+	*out_created = FALSE;
+
+	if (id > 0)
+		return md_record(context, kind->list_type, organization_id, id, kind->list_label, error);
+
+	clean = md_list_name(name, error);
+
+	if (NULL == clean)
+		return NULL;
+
+	lists = md_lists_of(context, kind, organization_id, error);
+
+	if (NULL == lists)
+		return NULL;
+
+	wanted = g_utf8_casefold(clean, -1);
+
+	for (i = 0; i < lists->len; i++)
+	{
+		VentureEntity *candidate = g_ptr_array_index(lists, i);
+		g_autofree gchar *its = NULL;
+		g_autofree gchar *folded = NULL;
+
+		g_object_get(candidate, "name", &its, NULL);
+		folded = g_utf8_casefold((NULL != its) ? its : "", -1);
+
+		if (0 == g_strcmp0(folded, wanted))
+			return g_object_ref(candidate);
+	}
+
+	list = g_object_new(kind->list_type, NULL);
+	venture_entity_set_organization_id(list, organization_id);
+	g_object_set(list, "name", clean, NULL);
+
+	if (!venture_database_save(venture_context_get_database(context), list, actor, error))
+		return NULL;
+
+	*out_created = TRUE;
+
+	return g_steal_pointer(&list);
+}
+
+gboolean
+venture_marketdata_list_put(
+	VentureContext				 *context,
+	const VentureMarketdataListKind		 *kind,
+	gint64					  organization_id,
+	gint64					  list_id,
+	const gchar				 *list_name,
+	gint64					  item_id,
+	const VentureActor			 *actor,
+	VentureEntity				**out_entry,
+	gboolean				 *out_created_list,
+	gboolean				 *out_created_entry,
+	GError					**error
+){
+	g_autoptr(VentureEntity) list = NULL;
+	g_autoptr(VentureEntity) entry = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	VentureDatabase *database;
+	gboolean created_list = FALSE;
+	gboolean created_entry = FALSE;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != kind, FALSE);
+
+	if (NULL != out_entry)
+		*out_entry = NULL;
+
+	database = venture_context_get_database(context);
+
+	if (!venture_database_begin(database, error))
+		return FALSE;
+
+	list = md_list_for(context, kind, organization_id, list_id, list_name, actor, &created_list, error);
+
+	if (NULL == list)
+		goto fail;
+
+	/* Once per list: the entry it already has is the answer. */
+	query = venture_query_new(kind->entry_type);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 1);
+
+	if (!venture_query_add_filter_int(query, kind->list_field, VENTURE_FILTER_OP_EQ,
+	                                  venture_entity_get_id(list), error) ||
+	    !venture_query_add_filter_int(query, kind->item_field, VENTURE_FILTER_OP_EQ, item_id, error))
+		goto fail;
+
+	found = venture_database_find(database, query, error);
+
+	if (NULL == found)
+		goto fail;
+
+	if (found->len > 0)
+		entry = g_object_ref(g_ptr_array_index(found, 0));
+	else
+	{
+		entry = g_object_new(kind->entry_type, NULL);
+		venture_entity_set_organization_id(entry, organization_id);
+		g_object_set(entry, kind->list_field, venture_entity_get_id(list), kind->item_field, item_id, NULL);
+
+		if (!venture_database_save(database, entry, actor, error))
+			goto fail;
+
+		created_entry = TRUE;
+	}
+
+	if (!venture_database_commit(database, error))
+		return FALSE;
+
+	if (NULL != out_entry)
+		*out_entry = g_steal_pointer(&entry);
+	if (NULL != out_created_list)
+		*out_created_list = created_list;
+	if (NULL != out_created_entry)
+		*out_created_entry = created_entry;
+
+	return TRUE;
+
+fail:
+	venture_database_rollback(database);
+	return FALSE;
+}
+
+gboolean
+venture_marketdata_list_take(
+	VentureContext			 *context,
+	const VentureMarketdataListKind	 *kind,
+	gint64				  organization_id,
+	gint64				  entry_id,
+	const VentureActor		 *actor,
+	gint64				 *out_list_id,
+	GError				**error
+){
+	g_autoptr(VentureEntity) entry = NULL;
+	g_autofree gchar *label = NULL;
+	gint64 list_id = 0;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != kind, FALSE);
+
+	label = g_strdup_printf("%s entry", kind->list_label);
+	entry = md_record(context, kind->entry_type, organization_id, entry_id, label, error);
+
+	if (NULL == entry)
+		return FALSE;
+
+	g_object_get(entry, kind->list_field, &list_id, NULL);
+
+	if (!venture_database_delete(venture_context_get_database(context), entry, actor, error))
+		return FALSE;
+
+	if (NULL != out_list_id)
+		*out_list_id = list_id;
+
+	return TRUE;
+}
+
+/* Ids as query operands. */
+static GPtrArray *
+md_id_operands(GArray *ids)
+{
+	GPtrArray *operands = g_ptr_array_new_with_free_func(g_free);
+	guint i;
+
+	for (i = 0; i < ids->len; i++)
+		g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT, g_array_index(ids, gint64, i)));
+
+	return operands;
+}
+
+/* Two memberships by list name, then id. */
+static gint
+md_compare_memberships(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	JsonObject *x = *(JsonObject *const *)a;
+	JsonObject *y = *(JsonObject *const *)b;
+	gint order;
+
+	order = g_utf8_collate(json_object_get_string_member(x, "name"), json_object_get_string_member(y, "name"));
+
+	if (0 != order)
+		return order;
+
+	return (json_object_get_int_member(x, "id") < json_object_get_int_member(y, "id")) ? -1 : 1;
+}
+
+GHashTable *
+venture_marketdata_list_memberships(
+	VentureContext			*context,
+	const VentureMarketdataListKind	*kind,
+	gint64				 organization_id,
+	GArray				*item_ids
+){
+	g_autoptr(GHashTable) memberships = NULL;
+	g_autoptr(GHashTable) gathered = NULL;
+	g_autoptr(GHashTable) names = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(GPtrArray) lists = NULL;
+	g_autoptr(GPtrArray) operands = NULL;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(NULL != kind, NULL);
+
+	memberships = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)json_array_unref);
+
+	if ((NULL == item_ids) || (0 == item_ids->len))
+		return g_steal_pointer(&memberships);
+
+	/* The lists first, so each entry can say its list's name; an entry
+	 * on a deleted list is on no list anybody sees. */
+	lists = md_lists_of(context, kind, organization_id, NULL);
+
+	if ((NULL == lists) || (0 == lists->len))
+		return g_steal_pointer(&memberships);
+
+	names = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+
+	for (i = 0; i < lists->len; i++)
+	{
+		VentureEntity *list = g_ptr_array_index(lists, i);
+		gint64 id = venture_entity_get_id(list);
+		gchar *name = NULL;
+
+		g_object_get(list, "name", &name, NULL);
+		g_hash_table_insert(names, g_memdup2(&id, sizeof(id)), (NULL != name) ? name : g_strdup(""));
+	}
+
+	query = venture_query_new(kind->entry_type);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 0);
+	operands = md_id_operands(item_ids);
+
+	if (venture_query_add_filter(query, kind->item_field, VENTURE_FILTER_OP_IN, operands, NULL))
+		entries = venture_database_find(venture_context_get_database(context), query, NULL);
+
+	gathered = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
+
+	for (i = 0; (NULL != entries) && (i < entries->len); i++)
+	{
+		VentureEntity *entry = g_ptr_array_index(entries, i);
+		gint64 list_id = 0;
+		gint64 item_id = 0;
+		const gchar *name;
+		GPtrArray *found;
+		JsonObject *object;
+
+		g_object_get(entry, kind->list_field, &list_id, kind->item_field, &item_id, NULL);
+		name = g_hash_table_lookup(names, &list_id);
+
+		if (NULL == name)
+			continue;
+
+		found = g_hash_table_lookup(gathered, &item_id);
+
+		if (NULL == found)
+		{
+			found = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
+			g_hash_table_insert(gathered, g_memdup2(&item_id, sizeof(item_id)), found);
+		}
+
+		object = json_object_new();
+		json_object_set_int_member(object, "id", list_id);
+		json_object_set_string_member(object, "name", name);
+		json_object_set_int_member(object, "entry_id", venture_entity_get_id(entry));
+		g_ptr_array_add(found, object);
+	}
+
+	/* Each item's lists by name, so the tags on a row read in order. */
+	g_hash_table_iter_init(&iter, gathered);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		GPtrArray *found = value;
+		JsonArray *array = json_array_new();
+
+		g_ptr_array_sort(found, md_compare_memberships);
+
+		for (i = 0; i < found->len; i++)
+			json_array_add_object_element(array, json_object_ref(g_ptr_array_index(found, i)));
+
+		g_hash_table_insert(memberships, g_memdup2(key, sizeof(gint64)), array);
+	}
+
+	return g_steal_pointer(&memberships);
+}
+
+JsonArray *
+venture_marketdata_list_choices(
+	VentureContext			*context,
+	const VentureMarketdataListKind	*kind,
+	gint64				 organization_id
+){
+	g_autoptr(GPtrArray) lists = NULL;
+	g_autoptr(GArray) ids = NULL;
+	g_autoptr(GHashTable) counts = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	JsonArray *array;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(NULL != kind, NULL);
+
+	array = json_array_new();
+	lists = md_lists_of(context, kind, organization_id, NULL);
+
+	if ((NULL == lists) || (0 == lists->len))
+		return array;
+
+	/* Every entry of every list in one read, counted here: a count a
+	 * list was one query a list. */
+	counts = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; i < lists->len; i++)
+	{
+		gint64 id = venture_entity_get_id(g_ptr_array_index(lists, i));
+
+		g_array_append_val(ids, id);
+	}
+
+	query = venture_query_new(kind->entry_type);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 0);
+
+	{
+		g_autoptr(GPtrArray) operands = md_id_operands(ids);
+
+		if (venture_query_add_filter(query, kind->list_field, VENTURE_FILTER_OP_IN, operands, NULL))
+			entries = venture_database_find(venture_context_get_database(context), query, NULL);
+	}
+
+	for (i = 0; (NULL != entries) && (i < entries->len); i++)
+	{
+		gint64 list_id = 0;
+
+		g_object_get(g_ptr_array_index(entries, i), kind->list_field, &list_id, NULL);
+
+		if (!g_hash_table_contains(counts, &list_id))
+			g_hash_table_insert(counts, g_memdup2(&list_id, sizeof(list_id)), GUINT_TO_POINTER(0));
+
+		g_hash_table_insert(counts, g_memdup2(&list_id, sizeof(list_id)),
+		                    GUINT_TO_POINTER(GPOINTER_TO_UINT(g_hash_table_lookup(counts, &list_id)) + 1));
+	}
+
+	for (i = 0; i < lists->len; i++)
+	{
+		VentureEntity *list = g_ptr_array_index(lists, i);
+		gint64 id = venture_entity_get_id(list);
+		g_autofree gchar *name = NULL;
+		JsonObject *object;
+
+		g_object_get(list, "name", &name, NULL);
+		object = json_object_new();
+		json_object_set_int_member(object, "id", id);
+		json_object_set_string_member(object, "name", (NULL != name) ? name : "");
+		json_object_set_int_member(object, "entries", GPOINTER_TO_UINT(g_hash_table_lookup(counts, &id)));
+		json_array_add_object_element(array, object);
+	}
+
+	return array;
+}
+
+gboolean
+venture_marketdata_list_ids(
+	VentureContext			 *context,
+	const VentureMarketdataListKind	 *kind,
+	gint64				  organization_id,
+	const gchar			 *text,
+	GArray				**out_items,
+	JsonArray			**out_lists,
+	GError				**error
+){
+	g_auto(GStrv) parts = NULL;
+	g_autoptr(GArray) list_ids = NULL;
+	g_autoptr(GArray) items = NULL;
+	g_autoptr(GHashTable) seen = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(GPtrArray) operands = NULL;
+	g_autoptr(JsonArray) lists = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != kind, FALSE);
+
+	*out_items = NULL;
+	*out_lists = NULL;
+	parts = g_strsplit_set((NULL != text) ? text : "", ", ", -1);
+	list_ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+	lists = json_array_new();
+	seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+
+	for (i = 0; NULL != parts[i]; i++)
+	{
+		g_autoptr(VentureEntity) list = NULL;
+		g_autofree gchar *name = NULL;
+		JsonObject *object;
+		gint64 id;
+
+		if ('\0' == parts[i][0])
+			continue;
+
+		if (!g_ascii_string_to_signed(parts[i], 10, 1, G_MAXINT64, &id, NULL))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "A %s is named by its record's id, not \"%s\"", kind->list_label, parts[i]);
+			return FALSE;
+		}
+
+		if (g_hash_table_contains(seen, &id))
+			continue;
+
+		list = md_record(context, kind->list_type, organization_id, id, kind->list_label, error);
+
+		if (NULL == list)
+			return FALSE;
+
+		g_hash_table_add(seen, g_memdup2(&id, sizeof(id)));
+		g_array_append_val(list_ids, id);
+		g_object_get(list, "name", &name, NULL);
+		object = json_object_new();
+		json_object_set_int_member(object, "id", id);
+		json_object_set_string_member(object, "name", (NULL != name) ? name : "");
+		json_array_add_object_element(lists, object);
+	}
+
+	if (0 == list_ids->len)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Name a %s by its record's id", kind->list_label);
+		return FALSE;
+	}
+
+	query = venture_query_new(kind->entry_type);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 0);
+	operands = md_id_operands(list_ids);
+
+	if (!venture_query_add_filter(query, kind->list_field, VENTURE_FILTER_OP_IN, operands, error))
+		return FALSE;
+
+	entries = venture_database_find(venture_context_get_database(context), query, error);
+
+	if (NULL == entries)
+		return FALSE;
+
+	items = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_hash_table_remove_all(seen);
+
+	for (i = 0; i < entries->len; i++)
+	{
+		gint64 item_id = 0;
+
+		g_object_get(g_ptr_array_index(entries, i), kind->item_field, &item_id, NULL);
+
+		if ((item_id > 0) && !g_hash_table_contains(seen, &item_id))
+		{
+			g_hash_table_add(seen, g_memdup2(&item_id, sizeof(item_id)));
+			g_array_append_val(items, item_id);
+		}
+	}
+
+	*out_items = g_steal_pointer(&items);
+	*out_lists = g_steal_pointer(&lists);
+
+	return TRUE;
+}
+
+/* --- Watchlists, by store key ------------------------------------------------ */
+
+/* An instrument record of a key: which record, and its source (0: the
+ * key in every source). */
+typedef struct
+{
+	gint64	 id;
+	gint64	 source_id;
+} MdListedKey;
+
+gboolean
+venture_marketdata_watchlist_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *watchlists,
+	GHashTable	**out_keys,
+	JsonArray	**out_lists,
+	GError		**error
+){
+	g_autoptr(GArray) instrument_ids = NULL;
+	g_autoptr(JsonArray) lists = NULL;
+	g_autoptr(GHashTable) keys = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) instruments = NULL;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+
+	*out_keys = NULL;
+	*out_lists = NULL;
+
+	if (!venture_marketdata_list_ids(context, venture_marketdata_watchlist_kind(), organization_id, watchlists,
+	                                 &instrument_ids, &lists, error))
+		return FALSE;
+
+	keys = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
+
+	if (instrument_ids->len > 0)
+	{
+		g_autoptr(GPtrArray) operands = md_id_operands(instrument_ids);
+
+		query = venture_query_new(VENTURE_TYPE_INSTRUMENT);
+		venture_query_set_organization(query, organization_id);
+		venture_query_set_limit(query, 0);
+
+		if (!venture_query_add_filter(query, "id", VENTURE_FILTER_OP_IN, operands, error))
+			return FALSE;
+
+		instruments = venture_database_find(venture_context_get_database(context), query, error);
+
+		if (NULL == instruments)
+			return FALSE;
+	}
+
+	for (i = 0; (NULL != instruments) && (i < instruments->len); i++)
+	{
+		g_autofree gchar *key = NULL;
+		gint64 source_id = 0;
+		GPtrArray *bucket;
+
+		g_object_get(g_ptr_array_index(instruments, i), "key", &key, "data-source-id", &source_id, NULL);
+
+		/* An instrument typed in with no key is in no store. */
+		if (venture_string_is_empty(key))
+			continue;
+
+		bucket = g_hash_table_lookup(keys, &source_id);
+
+		if (NULL == bucket)
+		{
+			bucket = g_ptr_array_new_with_free_func(g_free);
+			g_hash_table_insert(keys, g_memdup2(&source_id, sizeof(source_id)), bucket);
+		}
+
+		g_ptr_array_add(bucket, g_steal_pointer(&key));
+	}
+
+	*out_keys = g_steal_pointer(&keys);
+	*out_lists = g_steal_pointer(&lists);
+
+	return TRUE;
+}
+
+void
+venture_marketdata_watchlist_memberships(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonArray	*rows,
+	gint64		 data_source_id
+){
+	g_autoptr(GHashTable) by_key = NULL;
+	g_autoptr(GHashTable) memberships = NULL;
+	g_autoptr(GPtrArray) operands = NULL;
+	g_autoptr(GPtrArray) instruments = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GArray) ids = NULL;
+	guint i;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(context));
+
+	if (NULL == rows)
+		return;
+
+	/* key -> the instrument records holding it (GArray of MdListedKey). */
+	by_key = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_array_unref);
+	operands = g_ptr_array_new_with_free_func(g_free);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		const gchar *key = venture_json_object_get_string(json_array_get_object_element(rows, i),
+		                                                  "instrument_key", NULL);
+
+		if ((NULL != key) && !g_hash_table_contains(by_key, key))
+		{
+			g_hash_table_insert(by_key, g_strdup(key), g_array_new(FALSE, FALSE, sizeof(MdListedKey)));
+			g_ptr_array_add(operands, g_strdup(key));
+		}
+	}
+
+	/* Every live instrument record of the organization holding one of
+	 * the page's keys, then the entries naming them: two reads. */
+	if (operands->len > 0)
+	{
+		query = venture_query_new(VENTURE_TYPE_INSTRUMENT);
+		venture_query_set_organization(query, organization_id);
+		venture_query_set_limit(query, 0);
+
+		if (venture_query_add_filter(query, "key", VENTURE_FILTER_OP_IN, operands, NULL))
+			instruments = venture_database_find(venture_context_get_database(context), query, NULL);
+	}
+
+	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; (NULL != instruments) && (i < instruments->len); i++)
+	{
+		VentureEntity *instrument = g_ptr_array_index(instruments, i);
+		g_autofree gchar *key = NULL;
+		MdListedKey listed;
+		GArray *holders;
+
+		listed.id = venture_entity_get_id(instrument);
+		listed.source_id = 0;
+		g_object_get(instrument, "key", &key, "data-source-id", &listed.source_id, NULL);
+		holders = (NULL != key) ? g_hash_table_lookup(by_key, key) : NULL;
+
+		if (NULL == holders)
+			continue;
+
+		g_array_append_val(holders, listed);
+		g_array_append_val(ids, listed.id);
+	}
+
+	memberships = venture_marketdata_list_memberships(context, venture_marketdata_watchlist_kind(),
+	                                                  organization_id, ids);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		const gchar *key = venture_json_object_get_string(row, "instrument_key", NULL);
+		gint64 source_id = json_object_get_int_member_with_default(row, "data_source_id", data_source_id);
+		GArray *holders = (NULL != key) ? g_hash_table_lookup(by_key, key) : NULL;
+		JsonArray *on = json_array_new();
+		g_autoptr(GHashTable) seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+		guint j;
+
+		/* Each record of the key that is this source's or every
+		 * source's, and each list it is on, once. */
+		for (j = 0; (NULL != holders) && (j < holders->len); j++)
+		{
+			MdListedKey *listed = &g_array_index(holders, MdListedKey, j);
+			JsonArray *lists;
+			guint k;
+
+			if ((0 != listed->source_id) && (listed->source_id != source_id))
+				continue;
+
+			lists = g_hash_table_lookup(memberships, &listed->id);
+
+			for (k = 0; (NULL != lists) && (k < json_array_get_length(lists)); k++)
+			{
+				JsonObject *membership = json_array_get_object_element(lists, k);
+				gint64 list_id = json_object_get_int_member(membership, "id");
+
+				if (g_hash_table_contains(seen, &list_id))
+					continue;
+
+				g_hash_table_add(seen, g_memdup2(&list_id, sizeof(list_id)));
+				json_array_add_object_element(on, json_object_ref(membership));
+			}
+		}
+
+		json_object_set_array_member(row, "watchlists", on);
+	}
+}
+
+gboolean
+venture_marketdata_watchlist_add(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  watchlist_id,
+	const gchar		 *watchlist_name,
+	gint64			  data_source_id,
+	const gchar		 *key,
+	const VentureActor	 *actor,
+	VentureEntity		**out_entry,
+	gboolean		 *out_created_list,
+	gboolean		 *out_created_entry,
+	GError			**error
+){
+	g_autoptr(VentureEntity) instrument = NULL;
+	VentureDatabase *database;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+
+	if (NULL != out_entry)
+		*out_entry = NULL;
+
+	if (!md_require_module(context, error))
+		return FALSE;
+
+	/* Nothing named is refused before anything is promoted. */
+	if (watchlist_id <= 0)
+	{
+		g_autofree gchar *name = md_list_name(watchlist_name, error);
+
+		if (NULL == name)
+			return FALSE;
+	}
+
+	database = venture_context_get_database(context);
+
+	if (!venture_database_begin(database, error))
+		return FALSE;
+
+	/* The instrument a row shows is the store's; the list holds a
+	 * record, so it is promoted first -- found when it exists. */
+	if (!venture_marketdata_promote_instrument(context, organization_id, data_source_id, key, actor,
+	                                           &instrument, error) ||
+	    !venture_marketdata_list_put(context, venture_marketdata_watchlist_kind(), organization_id, watchlist_id,
+	                                 watchlist_name, venture_entity_get_id(instrument), actor, out_entry,
+	                                 out_created_list, out_created_entry, error))
+	{
+		venture_database_rollback(database);
+		return FALSE;
+	}
+
+	return venture_database_commit(database, error);
 }
 
 #ifdef VENTURE_HAVE_SQLITE

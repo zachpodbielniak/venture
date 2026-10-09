@@ -833,6 +833,451 @@ mdw_age(
 
 /* --- A row's last seven days ------------------------------------------------- */
 
+/* --- Lists on a row: tags, "Add to list", the notice after ----------------- */
+
+/*
+ * The query-string names a list's notice travels in. A page carries them
+ * only on the GET after an add or a remove, and every link and form that
+ * keeps the question leaves them out (mdw_here()), so a notice is said
+ * once.
+ */
+static const gchar *const mdw_list_notice_names[] = { "list_added", "list_removed", "list_new", NULL };
+
+/* Every value a query string gives @name, joined with commas: a <select
+ * multiple> sends one per choice, and the parsed parameters keep one. */
+static gchar *
+mdw_query_all(
+	HtmxRequest	*request,
+	const gchar	*name
+){
+	g_auto(GStrv) pairs = NULL;
+	g_autoptr(GString) joined = NULL;
+	const gchar *query;
+	guint i;
+
+	query = htmx_request_get_query(request);
+
+	if (venture_string_is_empty(query))
+		return NULL;
+
+	pairs = g_strsplit(query, "&", -1);
+	joined = g_string_new(NULL);
+
+	for (i = 0; NULL != pairs[i]; i++)
+	{
+		g_auto(GStrv) pair = g_strsplit(pairs[i], "=", 2);
+		g_autofree gchar *field = NULL;
+		g_autofree gchar *text = NULL;
+
+		if ((NULL == pair[0]) || (NULL == pair[1]))
+			continue;
+
+		/* A form encodes a space as '+'. */
+		g_strdelimit(pair[0], "+", ' ');
+		g_strdelimit(pair[1], "+", ' ');
+		field = g_uri_unescape_string(pair[0], NULL);
+		text = g_uri_unescape_string(pair[1], NULL);
+
+		if ((0 != g_strcmp0(field, name)) || venture_string_is_empty(text))
+			continue;
+
+		if (joined->len > 0)
+			g_string_append_c(joined, ',');
+
+		g_string_append(joined, text);
+	}
+
+	return (joined->len > 0) ? g_string_free(g_steal_pointer(&joined), FALSE) : NULL;
+}
+
+/* @path and @query without the list notices' parameters. */
+static gchar *
+mdw_without_notice(
+	const gchar	*path,
+	const gchar	*query
+){
+	g_autoptr(GString) out = g_string_new(path);
+	g_auto(GStrv) pairs = NULL;
+	gboolean first = TRUE;
+	guint i;
+
+	if (venture_string_is_empty(query))
+		return g_string_free(g_steal_pointer(&out), FALSE);
+
+	pairs = g_strsplit(query, "&", -1);
+
+	for (i = 0; NULL != pairs[i]; i++)
+	{
+		g_auto(GStrv) pair = g_strsplit(pairs[i], "=", 2);
+
+		if (('\0' == pairs[i][0]) || g_strv_contains(mdw_list_notice_names, pair[0]))
+			continue;
+
+		g_string_append_c(out, first ? '?' : '&');
+		g_string_append(out, pairs[i]);
+		first = FALSE;
+	}
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/* Where this page is, as a list form sends the person back to it. */
+static gchar *
+mdw_here(HtmxRequest *request)
+{
+	return mdw_without_notice(htmx_request_get_path(request), htmx_request_get_query(request));
+}
+
+/*
+ * Where a list form goes back to: the page it was posted from when that
+ * is one of the Trading pages, else @fallback -- never another site, and
+ * never a path the form made up. The notice is appended.
+ */
+static gchar *
+mdw_list_back(
+	const gchar	*asked,
+	const gchar	*fallback,
+	const gchar	*notice,
+	gint64		 list_id,
+	gboolean	 created
+){
+	g_autofree gchar *base = NULL;
+	const gchar *target = fallback;
+
+	if ((NULL != asked) && (g_str_has_prefix(asked, "/market/") || g_str_has_prefix(asked, "/arbitrage/")) &&
+	    (NULL == strstr(asked, "//")) && (NULL == strchr(asked, '\\')) && (NULL == strpbrk(asked, "\r\n")))
+		target = asked;
+
+	{
+		const gchar *mark = strchr(target, '?');
+		g_autofree gchar *path = (NULL != mark) ? g_strndup(target, mark - target) : g_strdup(target);
+
+		base = mdw_without_notice(path, (NULL != mark) ? mark + 1 : NULL);
+	}
+
+	return g_strdup_printf("%s%c%s=%" G_GINT64_FORMAT "%s", base, (NULL != strchr(base, '?')) ? '&' : '?',
+	                       notice, list_id, created ? "&list_new=1" : "");
+}
+
+/* A 303 to @location: a form's POST answered with the page to GET. */
+static HtmxResponse *
+mdw_see_other(const gchar *location)
+{
+	HtmxResponse *redirect = htmx_response_new();
+
+	htmx_response_set_status(redirect, 303);
+	htmx_response_add_header(redirect, "Location", location);
+
+	return redirect;
+}
+
+/*
+ * After an add or a remove, what happened, named from @choices (the
+ * answer's lists): "Added to Bag flips." A list nobody can name (deleted
+ * since) is "the list".
+ */
+static void
+mdw_list_notice(
+	GString		*html,
+	HtmxRequest	*request,
+	JsonArray	*choices
+){
+	const gchar *added = mdw_param(request, "list_added");
+	const gchar *removed = mdw_param(request, "list_removed");
+	const gchar *which = (NULL != added) ? added : removed;
+	const gchar *name = NULL;
+	gint64 id = 0;
+	guint i;
+
+	if ((NULL == which) || !g_ascii_string_to_signed(which, 10, 1, G_MAXINT64, &id, NULL))
+		return;
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+
+		if (json_object_get_int_member_with_default(choice, "id", 0) == id)
+			name = mdw_text(choice, "name");
+	}
+
+	g_string_append(html, "<div class=\"notice positive\" role=\"status\">");
+
+	if (NULL != added)
+		g_string_append(html, (NULL != mdw_param(request, "list_new")) ? "Made the list " : "Added to ");
+	else
+		g_string_append(html, "Removed from ");
+
+	if (NULL != name)
+	{
+		g_string_append(html, "<strong>");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</strong>");
+	}
+	else
+		g_string_append(html, "the list");
+
+	g_string_append(html, ((NULL != added) && (NULL != mdw_param(request, "list_new"))) ? " and added it.</div>"
+	                                                                                     : ".</div>");
+}
+
+/* The names a row's "Add to list" box offers: every list, by name. */
+static void
+mdw_list_datalist(
+	GString		*html,
+	const gchar	*id,
+	JsonArray	*choices
+){
+	guint i;
+
+	g_string_append_printf(html, "<datalist id=\"%s\">", id);
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, mdw_text(json_array_get_object_element(choices, i), "name"));
+		g_string_append(html, "\">");
+	}
+
+	g_string_append(html, "</datalist>");
+}
+
+/*
+ * A row's lists, each a tag linking to the list (@link_prefix and its
+ * id) with a remove button that posts to @remove_action, and the "Add to
+ * list" box posting to @add_action with @identity (the row's hidden
+ * fields). One text box: a name the list offers is that list, a new name
+ * makes one. A person who may not write sees the tags alone.
+ */
+static void
+mdw_list_cell(
+	GString		*html,
+	JsonArray	*memberships,
+	const gchar	*link_prefix,
+	const gchar	*remove_action,
+	const gchar	*add_action,
+	const gchar	*identity,
+	const gchar	*here,
+	const gchar	*datalist_id,
+	const gchar	*item_label,
+	gboolean	 can_write
+){
+	guint i;
+
+	g_string_append(html, "<div class=\"list-tags\">");
+
+	for (i = 0; (NULL != memberships) && (i < json_array_get_length(memberships)); i++)
+	{
+		JsonObject *on = json_array_get_object_element(memberships, i);
+
+		g_string_append_printf(html, "<span class=\"list-tag\"><a href=\"%s%" G_GINT64_FORMAT "\">", link_prefix,
+		                       json_object_get_int_member_with_default(on, "id", 0));
+		venture_html_escape_append(html, mdw_text(on, "name"));
+		g_string_append(html, "</a>");
+
+		if (can_write)
+		{
+			g_string_append_printf(html, "<form method=\"post\" action=\"%s\" class=\"list-tag-remove\">"
+			                             "<input type=\"hidden\" name=\"entry_id\" value=\"%" G_GINT64_FORMAT "\">"
+			                             "<input type=\"hidden\" name=\"return\" value=\"", remove_action,
+			                       json_object_get_int_member_with_default(on, "entry_id", 0));
+			venture_html_escape_append(html, here);
+			g_string_append(html, "\"><button class=\"btn btn-sm btn-ghost\" type=\"submit\" aria-label=\"Remove ");
+			venture_html_escape_append(html, (NULL != item_label) ? item_label : "it");
+			g_string_append(html, " from ");
+			venture_html_escape_append(html, mdw_text(on, "name"));
+			g_string_append(html, "\">\xc3\x97</button></form>");
+		}
+
+		g_string_append(html, "</span>");
+	}
+
+	g_string_append(html, "</div>");
+
+	if (!can_write)
+		return;
+
+	g_string_append_printf(html, "<form method=\"post\" action=\"%s\" class=\"list-add\">%s"
+	                             "<input type=\"hidden\" name=\"return\" value=\"", add_action, identity);
+	venture_html_escape_append(html, here);
+	g_string_append_printf(html, "\"><input type=\"text\" name=\"list\" list=\"%s\" required maxlength=\"%d\" "
+	                             "placeholder=\"list\" aria-label=\"Add ", datalist_id,
+	                       VENTURE_MARKETDATA_LIST_NAME_MAX);
+	venture_html_escape_append(html, (NULL != item_label) ? item_label : "it");
+	g_string_append(html, " to a list: pick one or type a new name\"><button class=\"btn btn-sm\" type=\"submit\">"
+	                      "Add</button></form>");
+}
+
+/* The Deals "List" picker: several may be chosen, their union shown. */
+static void
+mdw_watchlist_picker(
+	GString		*html,
+	JsonObject	*root,
+	const gchar	*chosen_text
+){
+	JsonArray *choices = json_object_has_member(root, "watchlist_choices")
+		? json_object_get_array_member(root, "watchlist_choices") : NULL;
+	g_auto(GStrv) chosen = g_strsplit((NULL != chosen_text) ? chosen_text : "", ",", -1);
+	guint i;
+
+	g_string_append(html, "<div class=\"field\"><label>List<select name=\"watchlist\" multiple "
+	                      "data-no-picker size=\"3\">");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT,
+		                                       json_object_get_int_member_with_default(choice, "id", 0));
+
+		g_string_append_printf(html, "<option value=\"%s\"%s>", id,
+		                       g_strv_contains((const gchar *const *)chosen, id) ? " selected" : "");
+		venture_html_escape_append(html, mdw_text(choice, "name"));
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/* A store row's lists and its "Add to list", as Deals and Browse draw
+ * them: the instrument named by its source and key. */
+static void
+mdw_row_list_cell(
+	GString		*html,
+	JsonObject	*row,
+	const gchar	*here,
+	gboolean	 can_write
+){
+	g_autoptr(GString) identity = g_string_new(NULL);
+	const gchar *key = mdw_text(row, "instrument_key");
+	const gchar *label = (NULL != mdw_text(row, "instrument_name")) ? mdw_text(row, "instrument_name") : key;
+
+	if (NULL == key)
+	{
+		mdw_dash(html);
+		return;
+	}
+
+	g_string_append_printf(identity, "<input type=\"hidden\" name=\"data_source_id\" value=\"%" G_GINT64_FORMAT
+	                                 "\"><input type=\"hidden\" name=\"key\" value=\"",
+	                       json_object_get_int_member_with_default(row, "data_source_id", 0));
+	venture_html_escape_append(identity, key);
+	g_string_append(identity, "\">");
+	mdw_list_cell(html, json_object_has_member(row, "watchlists") ? json_object_get_array_member(row, "watchlists")
+	                                                              : NULL,
+	              "/market/watchlists/", "/market/watchlists/remove", "/market/watchlists/add", identity->str, here,
+	              "watchlist-names", label, can_write);
+}
+
+/* A field of a form, or of a JSON body, as text; NULL when absent. */
+static gchar *
+mdw_body_field(
+	HtmxRequest	*request,
+	JsonObject	*body,
+	const gchar	*name
+){
+	if (NULL != body)
+	{
+		JsonNode *node = json_object_get_member(body, name);
+
+		if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node))
+			return NULL;
+
+		if (G_TYPE_STRING == json_node_get_value_type(node))
+			return g_strdup(json_node_get_string(node));
+
+		if (G_TYPE_INT64 == json_node_get_value_type(node))
+			return g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(node));
+
+		return NULL;
+	}
+
+	return venture_string_is_empty(htmx_request_get_form_value(request, name))
+		? NULL : g_strdup(htmx_request_get_form_value(request, name));
+}
+
+/* The first of @names a form or JSON body gives, as an id; 0 for none. */
+static gboolean
+mdw_body_id(
+	HtmxRequest	 *request,
+	JsonObject	 *body,
+	const gchar *const *names,
+	gint64		 *out,
+	GError		**error
+){
+	guint i;
+
+	*out = 0;
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		g_autofree gchar *text = mdw_body_field(request, body, names[i]);
+
+		if (NULL == text)
+			continue;
+
+		if (!g_ascii_string_to_signed(text, 10, 1, G_MAXINT64, out, NULL))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "%s is a record's id", names[i]);
+			return FALSE;
+		}
+
+		return TRUE;
+	}
+
+	return TRUE;
+}
+
+/* A JSON body when the request is not a form: the API's door. */
+static JsonObject *
+mdw_json_body(
+	HtmxRequest	 *request,
+	GError		**error
+){
+	g_autoptr(JsonNode) node = NULL;
+
+	if (g_str_has_prefix((NULL != htmx_request_get_content_type(request))
+	                     ? htmx_request_get_content_type(request) : "",
+	                     "application/x-www-form-urlencoded"))
+		return NULL;
+
+	node = htmx_request_get_json(request, NULL);
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Send a JSON object, or a form");
+		return NULL;
+	}
+
+	return json_object_ref(json_node_get_object(node));
+}
+
+/* What a list add or remove answers an API caller. */
+static HtmxResponse *
+mdw_list_answer(
+	VentureEntity	*entry,
+	gint64		 list_id,
+	gboolean	 created_list,
+	gboolean	 created_entry,
+	gint64		 removed
+){
+	g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
+	JsonObject *object = json_object_new();
+
+	json_object_set_int_member(object, "list_id", list_id);
+
+	if (NULL != entry)
+	{
+		json_object_set_member(object, "entry", venture_serializable_to_json(VENTURE_SERIALIZABLE(entry), FALSE));
+		json_object_set_boolean_member(object, "created_list", created_list);
+		json_object_set_boolean_member(object, "created_entry", created_entry);
+	}
+	else
+		json_object_set_int_member(object, "removed", removed);
+
+	json_node_take_object(node, object);
+
+	return venture_web_json_response(node, ((NULL != entry) && created_entry) ? 201 : 200);
+}
+
 static gdouble mdw_double (JsonObject *object, const gchar *member);
 static const gchar *mdw_tone (gdouble value, gdouble good_at, gdouble bad_at);
 static void mdw_chip_open (GString *html, const gchar *tone);
@@ -1040,6 +1485,8 @@ venture_marketdata_web_browse(
 	gint64 page;
 	gint64 pages;
 	gint64 source_id;
+	g_autofree gchar *here = NULL;
+	gboolean can_list;
 	HtmxResponse *gate;
 	guint i;
 
@@ -1124,7 +1571,17 @@ venture_marketdata_web_browse(
 	}
 
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></div>");
+	mdw_list_notice(html, request, json_object_get_array_member(root, "watchlist_choices"));
 	mdw_notes(html, root);
+	here = mdw_here(request);
+	mdw_list_datalist(html, "watchlist-names", json_object_get_array_member(root, "watchlist_choices"));
+
+	{
+		g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+
+		can_list = venture_web_require_for_type(self, principal, VENTURE_TYPE_WATCHLIST_ENTRY,
+		                                        VENTURE_USER_ROLE_EDITOR, NULL);
+	}
 
 	/* Paged on the server: a heading sorts every page there, not this one
 	 * here (data-server-sort keeps the client-side sorter off it). */
@@ -1140,7 +1597,7 @@ venture_marketdata_web_browse(
 	mdw_recent_headings(html, TRUE);
 	mdw_sort_header(html, request, echo, "sale_rate", "Sale rate", TRUE);
 	mdw_sort_header(html, request, echo, "updated", "Updated", FALSE);
-	g_string_append(html, "</tr></thead><tbody>");
+	g_string_append(html, "<th scope=\"col\">Lists</th></tr></thead><tbody>");
 
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
 	{
@@ -1177,11 +1634,18 @@ venture_marketdata_web_browse(
 		mdw_percent(html, row, "sale_rate", 100.0);
 		g_string_append(html, "</td><td>");
 		mdw_when(html, row, "taken_at");
+		g_string_append(html, "</td><td class=\"list-cell\">");
+
+		/* One source a page: its rows name it here. */
+		if (!json_object_has_member(row, "data_source_id"))
+			json_object_set_int_member(row, "data_source_id", source_id);
+
+		mdw_row_list_cell(html, row, here, can_list);
 		g_string_append(html, "</td></tr>");
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"11\" class=\"muted\">Nothing matches.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"12\" class=\"muted\">Nothing matches.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -1840,6 +2304,7 @@ venture_marketdata_web_instrument(
 	/* At the top: the whole page is the source's data, and a line at the
 	 * foot of the charts would be anything but conspicuous. */
 	mdw_attribution(html, root);
+	mdw_list_notice(html, request, json_object_get_array_member(root, "watchlists"));
 	mdw_notes(html, root);
 
 	/* Where to look at it, and what to do with it. */
@@ -1881,24 +2346,23 @@ venture_marketdata_web_instrument(
 			g_string_append_printf(html, "<a class=\"btn btn-sm\" href=\"/e/instrument/%" G_GINT64_FORMAT
 			                       "\">Instrument record</a>", record_id);
 
-		g_string_append(html, "<form method=\"post\" action=\"");
-		venture_html_escape_append(html, self_path);
-		g_string_append(html, "\" class=\"form-inline\"><input type=\"hidden\" name=\"action\" value=\"watch\">"
-		                      "<label>Watch on <select name=\"watchlist_id\">"
-		                      "<option value=\"\">choose on the next page</option>");
-
-		for (i = 0; (NULL != lists) && (i < json_array_get_length(lists)); i++)
+		/* Its lists, and straight onto another: a name the box
+		 * offers is that list, a new name makes one. */
 		{
-			JsonObject *list = json_array_get_object_element(lists, i);
+			g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+			JsonArray *on = json_object_has_member(root, "listed_on")
+				? json_object_get_array_member(root, "listed_on") : NULL;
+			gboolean can_write = venture_web_require_for_type(self, principal, VENTURE_TYPE_WATCHLIST_ENTRY,
+			                                                  VENTURE_USER_ROLE_EDITOR, NULL);
+			g_autofree gchar *here = mdw_here(request);
 
-			g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\">",
-			                       json_object_get_int_member(list, "id"));
-			venture_html_escape_append(html, mdw_text(list, "name"));
-			g_string_append(html, "</option>");
+			g_string_append(html, "<div class=\"market-lists\"><span class=\"muted\">Lists</span>");
+			mdw_list_datalist(html, "watchlist-names", lists);
+			mdw_list_cell(html, on, "/market/watchlists/", "/market/watchlists/remove", self_path,
+			              "<input type=\"hidden\" name=\"action\" value=\"watch\">", here, "watchlist-names",
+			              name, can_write);
+			g_string_append(html, "</div>");
 		}
-
-		g_string_append(html, "</select></label> <button class=\"btn btn-sm\" type=\"submit\">"
-		                      "Add to watchlist</button></form>");
 		g_string_append(html, "<form method=\"post\" action=\"");
 		venture_html_escape_append(html, self_path);
 		g_string_append(html, "\" class=\"form-inline\"><input type=\"hidden\" name=\"action\" value=\"alert\">");
@@ -2184,7 +2648,8 @@ venture_marketdata_web_instrument(
  * POST to an instrument page, with action=promote, watch or alert. Each
  * promotes the instrument (idempotent: an existing record is found, a
  * deleted one restored) and then goes where the person asked: back to the
- * page, to the generic watchlist-entry form, or to the generic alert-rule
+ * page; onto a watchlist (watchlist_id, or `list` -- a name found or
+ * made) and back to the page with a notice; or to the generic alert-rule
  * form, prefilled through the query string with the records just found.
  * The action is a form field rather than a path segment because the key
  * is the whole rest of the path and may itself end in "/watch".
@@ -2245,20 +2710,29 @@ venture_marketdata_web_instrument_post(
 
 	if (0 == g_strcmp0(action, "watch"))
 	{
+		/* Straight onto the list -- one named by id, or by a name
+		 * found or made -- and back to the page with a notice; the
+		 * targets are the list page's to set, entry by entry. */
 		const gchar *list = htmx_request_get_form_value(request, "watchlist_id");
+		const gchar *name = htmx_request_get_form_value(request, "list");
+		g_autoptr(VentureEntity) entry = NULL;
+		g_autofree gchar *here = NULL;
+		gboolean created_list = FALSE;
 		gint64 list_id = 0;
+		gint64 entry_list = 0;
 
 		if (!venture_string_is_empty(list) &&
 		    !g_ascii_string_to_signed(list, 10, 1, G_MAXINT64, &list_id, NULL))
 			list_id = 0;
 
-		if (list_id > 0)
-			target = g_strdup_printf("/e/watchlist_entry/new?instrument_id=%" G_GINT64_FORMAT
-			                         "&watchlist_id=%" G_GINT64_FORMAT,
-			                         venture_entity_get_id(instrument), list_id);
-		else
-			target = g_strdup_printf("/e/watchlist_entry/new?instrument_id=%" G_GINT64_FORMAT,
-			                         venture_entity_get_id(instrument));
+		if (!venture_marketdata_list_put(self->context, venture_marketdata_watchlist_kind(), organization_id,
+		                                 list_id, name, venture_entity_get_id(instrument), &actor, &entry,
+		                                 &created_list, NULL, &error))
+			return venture_web_error_response(error);
+
+		g_object_get(entry, "watchlist-id", &entry_list, NULL);
+		here = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/%s", source_id, escaped_key);
+		target = mdw_list_back(here, here, "list_added", entry_list, created_list);
 	}
 	else if (0 == g_strcmp0(action, "alert"))
 	{
@@ -2506,6 +2980,7 @@ mdw_deals_header(
 		"cut", "min_sold_per_day", "horizon_days", NULL
 	};
 	g_autoptr(GString) link = g_string_new("/market/deals?");
+	g_autofree gchar *watchlists = mdw_query_all(request, "watchlist");
 	gboolean active = (0 == g_strcmp0(current, key));
 	gboolean descending = active
 		? ((NULL != current_dir) ? (0 == g_strcmp0(current_dir, "desc")) : mdw_deals_descends(key))
@@ -2521,6 +2996,14 @@ mdw_deals_header(
 
 		g_string_append_printf(link, "%s=", kept[i]);
 		g_string_append_uri_escaped(link, value, NULL, FALSE);
+		g_string_append_c(link, '&');
+	}
+
+	/* The lists, joined: every value the page was given. */
+	if (NULL != watchlists)
+	{
+		g_string_append(link, "watchlist=");
+		g_string_append_uri_escaped(link, watchlists, ",", FALSE);
 		g_string_append_c(link, '&');
 	}
 
@@ -2640,8 +3123,11 @@ venture_marketdata_web_deals(
 	const gchar *text;
 	JsonObject *root;
 	JsonArray *rows;
+	g_autofree gchar *watchlists = NULL;
+	g_autofree gchar *here = NULL;
 	gboolean api;
 	gboolean can_plan;
+	gboolean can_list = FALSE;
 	gint64 value;
 	HtmxResponse *gate;
 	gint64 organization_id;
@@ -2667,6 +3153,10 @@ venture_marketdata_web_deals(
 		can_plan = !api && venture_context_module_enabled(self->context, "arbitrage") &&
 		           venture_web_require_for_type(self, principal, VENTURE_TYPE_ARBITRAGE_TRADE,
 		                                        VENTURE_USER_ROLE_EDITOR, NULL);
+
+		/* And onto a list, where the person may write entries. */
+		can_list = !api && venture_web_require_for_type(self, principal, VENTURE_TYPE_WATCHLIST_ENTRY,
+		                                                VENTURE_USER_ROLE_EDITOR, NULL);
 	}
 
 	venture_marketdata_deals_query_init(&query);
@@ -2682,6 +3172,10 @@ venture_marketdata_web_deals(
 	query.group_key = mdw_param(request, "group");
 	query.venue_group = mdw_param(request, "venue_group");
 	query.search = mdw_param(request, "search");
+
+	/* Lists: one parameter each, or one comma separated -- their union. */
+	watchlists = mdw_query_all(request, "watchlist");
+	query.watchlists = watchlists;
 	query.category = mdw_param(request, "category");
 	query.sort = mdw_param(request, "sort");
 	query.dir = mdw_param(request, "dir");
@@ -2764,6 +3258,7 @@ venture_marketdata_web_deals(
 	mdw_source_picker(html, root, query.data_source_id, TRUE);
 	mdw_input(html, request, "Search", "search", "name or key");
 	mdw_venue_group_picker(html, root, query.venue_group);
+	mdw_watchlist_picker(html, root, watchlists);
 	mdw_deal_venue_picker(html, root, "Buy at", "venue", mdw_text(root, "buy_venue"));
 	mdw_deal_venue_picker(html, root, "Sell at", "sell_venue", mdw_text(root, "sell_venue"));
 	mdw_input(html, request, "Group", "group", "a group, e.g. eu");
@@ -2803,7 +3298,10 @@ venture_marketdata_web_deals(
 		}
 	}
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Show</button></form></div>");
+	mdw_list_notice(html, request, json_object_get_array_member(root, "watchlist_choices"));
 	mdw_notes(html, root);
+	here = mdw_here(request);
+	mdw_list_datalist(html, "watchlist-names", json_object_get_array_member(root, "watchlist_choices"));
 
 	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table deals-table\" data-client-sort>"
 	                      "<thead><tr>");
@@ -2826,7 +3324,8 @@ venture_marketdata_web_deals(
 	                      "(TSM's AuctionDB, pushed by tsmctl), and the buy and sell prices against it\">"
 	                      "Ref. value</th>");
 	mdw_deals_header(html, request, query.sort, query.dir, "qty", "Qty", TRUE);
-	g_string_append(html, "<th scope=\"col\"><span class=\"visually-hidden\">Alert</span></th>");
+	g_string_append(html, "<th scope=\"col\"><span class=\"visually-hidden\">Alert</span></th>"
+	                      "<th scope=\"col\">Lists</th>");
 
 	if (can_plan)
 		g_string_append(html, "<th scope=\"col\">Plan</th>");
@@ -3005,6 +3504,9 @@ venture_marketdata_web_deals(
 			                      "is a deal on any realm\">Alert</button></form>");
 		}
 
+		/* The lists it is on, and "Add to list". */
+		g_string_append(html, "</td><td class=\"list-cell\">");
+		mdw_row_list_cell(html, row, here, can_list);
 		g_string_append(html, "</td>");
 
 		if (can_plan)
@@ -3023,8 +3525,9 @@ venture_marketdata_web_deals(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append_printf(html, "<tr><td colspan=\"%d\" class=\"muted\">No deals right now.</td></tr>",
-		                       can_plan ? 17 : 16);
+		g_string_append_printf(html, "<tr><td colspan=\"%d\" class=\"muted\">%s</td></tr>",
+		                       can_plan ? 18 : 17,
+		                       (NULL != watchlists) ? "Nothing on the list is a deal right now." : "No deals right now.");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -3266,6 +3769,7 @@ venture_marketdata_web_watchlists(
 	                    "New watchlist</a></div></div>");
 	g_string_append(html, "<div class=\"card\"><table class=\"data\"><thead><tr><th scope=\"col\">Name</th>"
 	                      "<th scope=\"col\">Group</th><th scope=\"col\" class=\"num\">Instruments</th>"
+	                      "<th scope=\"col\"><span class=\"visually-hidden\">Deals</span></th>"
 	                      "</tr></thead><tbody>");
 
 	for (i = 0; (NULL != lists) && (i < json_array_get_length(lists)); i++)
@@ -3285,11 +3789,13 @@ venture_marketdata_web_watchlists(
 
 		g_string_append(html, "</td><td class=\"num\">");
 		mdw_int(html, list, "entries");
-		g_string_append(html, "</td></tr>");
+		g_string_append_printf(html, "</td><td><a href=\"/market/deals?watchlist=%" G_GINT64_FORMAT "\">"
+		                       "Open in Deals</a></td></tr>", json_object_get_int_member(list, "id"));
 	}
 
 	if ((NULL == lists) || (0 == json_array_get_length(lists)))
-		g_string_append(html, "<tr><td colspan=\"3\" class=\"muted\">No watchlists yet.</td></tr>");
+		g_string_append(html, "<tr><td colspan=\"4\" class=\"muted\">No watchlists yet. Add an item to "
+		                      "a new list from a Deals or Browse row, or from the item's page.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div>");
 
@@ -3310,9 +3816,11 @@ venture_marketdata_web_watchlist(
 	JsonObject *root;
 	JsonObject *list;
 	JsonArray *entries;
+	g_autofree gchar *here = NULL;
 	const gchar *group;
 	gint64 id;
 	gboolean api;
+	gboolean can_write = FALSE;
 	HtmxResponse *gate;
 	gint64 organization_id;
 	guint i;
@@ -3355,17 +3863,34 @@ venture_marketdata_web_watchlist(
 		g_string_append(html, " group.");
 	}
 
-	g_string_append_printf(html, "</p></div><div class=\"page-actions\"><a class=\"btn\" href=\"/e/watchlist/%"
-	                       G_GINT64_FORMAT "\">Edit list</a><a class=\"btn btn-primary\" href=\"/e/watchlist_entry/new?"
-	                       "watchlist_id=%" G_GINT64_FORMAT "\">Add an instrument</a></div></div>", id, id);
+	g_string_append_printf(html, "</p></div><div class=\"page-actions\"><a class=\"btn btn-primary\" "
+	                       "href=\"/market/deals?watchlist=%" G_GINT64_FORMAT "\">Open in Deals</a>"
+	                       "<a class=\"btn\" href=\"/e/watchlist/%" G_GINT64_FORMAT "\">Edit list</a>"
+	                       "<a class=\"btn\" href=\"/e/watchlist_entry/new?watchlist_id=%" G_GINT64_FORMAT "\">"
+	                       "Add an instrument</a></div></div>", id, id, id);
+	mdw_list_notice(html, request, NULL);
 	mdw_notes(html, root);
+
+	{
+		g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+
+		can_write = venture_web_require_for_type(self, principal, VENTURE_TYPE_WATCHLIST_ENTRY,
+		                                         VENTURE_USER_ROLE_EDITOR, NULL);
+	}
+
+	here = mdw_here(request);
 
 	g_string_append(html, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data market-table\">"
 	                      "<thead><tr><th scope=\"col\">Instrument</th><th scope=\"col\">Cheapest at</th>"
 	                      "<th scope=\"col\" class=\"num\">Lowest</th><th scope=\"col\" class=\"num\">Quantity</th>"
 	                      "<th scope=\"col\" class=\"num\">Buy at</th><th scope=\"col\" class=\"num\">Against buy</th>"
 	                      "<th scope=\"col\" class=\"num\">Sell at</th><th scope=\"col\" class=\"num\">Against sell</th>"
-	                      "<th scope=\"col\">14 days</th><th scope=\"col\">Now</th></tr></thead><tbody>");
+	                      "<th scope=\"col\">14 days</th><th scope=\"col\">Now</th>");
+
+	if (can_write)
+		g_string_append(html, "<th scope=\"col\"><span class=\"visually-hidden\">Remove</span></th>");
+
+	g_string_append(html, "</tr></thead><tbody>");
 
 	for (i = 0; (NULL != entries) && (i < json_array_get_length(entries)); i++)
 	{
@@ -3444,17 +3969,177 @@ venture_marketdata_web_watchlist(
 		else if (json_object_get_boolean_member(entry, "sell_now"))
 			g_string_append(html, "<span class=\"badge info\">sell</span>");
 
-		g_string_append(html, "</td></tr>");
+		g_string_append(html, "</td>");
+
+		/* Off the list: the entry goes, the instrument record stays. */
+		if (can_write)
+		{
+			g_string_append_printf(html, "<td><form method=\"post\" action=\"/market/watchlists/remove\" "
+			                             "class=\"list-tag-remove\"><input type=\"hidden\" name=\"entry_id\" "
+			                             "value=\"%" G_GINT64_FORMAT "\"><input type=\"hidden\" name=\"return\" "
+			                             "value=\"", json_object_get_int_member(entry, "id"));
+			venture_html_escape_append(html, here);
+			g_string_append(html, "\"><button class=\"btn btn-sm\" type=\"submit\" aria-label=\"Remove ");
+			venture_html_escape_append(html, (NULL != name) ? name : "it");
+			g_string_append(html, " from this list\">Remove</button></form></td>");
+		}
+
+		g_string_append(html, "</tr>");
 	}
 
 	if ((NULL == entries) || (0 == json_array_get_length(entries)))
-		g_string_append(html, "<tr><td colspan=\"10\" class=\"muted\">Nothing on this list yet.</td></tr>");
+		g_string_append_printf(html, "<tr><td colspan=\"%d\" class=\"muted\">Nothing on this list yet: add "
+		                       "items from a Deals or Browse row, or from the item's page.</td></tr>",
+		                       can_write ? 11 : 10);
 
 	g_string_append(html, "</tbody></table></div></div>");
 	mdw_attribution(html, root);
 
 	return venture_web_html_response(venture_web_page(self, request, "/market/watchlists",
 	                                                  mdw_text(list, "name"), html->str), 200);
+}
+
+/*
+ * POST /market/watchlists/add: an instrument onto a list, from a row's
+ * "Add to list" -- data_source_id and key name the store's instrument,
+ * list_id (or watchlist_id) a list, or `list` a name, found ignoring
+ * case or made. Back to `return` (the page it came from, its filters
+ * kept) with a notice; the API twin answers the entry.
+ */
+static HtmxResponse *
+venture_marketdata_web_watchlist_add(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	static const gchar *const list_ids[] = { "list_id", "watchlist_id", NULL };
+	static const gchar *const source_ids[] = { "data_source_id", "source", NULL };
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) body = NULL;
+	g_autoptr(VentureEntity) entry = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *back = NULL;
+	g_autofree gchar *asked = NULL;
+	g_autofree gchar *fallback = NULL;
+	VentureActor actor;
+	gboolean api;
+	gboolean created_list = FALSE;
+	gboolean created_entry = FALSE;
+	gint64 organization_id;
+	gint64 list_id;
+	gint64 source_id;
+	gint64 entry_list = 0;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = mdw_gate(self, request, api, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_WATCHLIST_ENTRY);
+
+	if (NULL != gate)
+		return gate;
+
+	body = mdw_json_body(request, &error);
+
+	if (NULL != error)
+		return venture_web_error_response(error);
+
+	if (!venture_web_request_organization(self, request, body, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	if (!mdw_body_id(request, body, list_ids, &list_id, &error) ||
+	    !mdw_body_id(request, body, source_ids, &source_id, &error))
+		return venture_web_error_response(error);
+
+	key = mdw_body_field(request, body, "key");
+	name = mdw_body_field(request, body, "list");
+
+	if (NULL == name)
+		name = mdw_body_field(request, body, "watchlist_name");
+
+	if ((source_id <= 0) || venture_string_is_empty(key))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Name the instrument: data_source_id and its key");
+		return venture_web_error_response(error);
+	}
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_marketdata_watchlist_add(self->context, organization_id, list_id, name, source_id, key, &actor,
+	                                      &entry, &created_list, &created_entry, &error))
+		return venture_web_error_response(error);
+
+	g_object_get(entry, "watchlist-id", &entry_list, NULL);
+
+	if (api)
+		return mdw_list_answer(entry, entry_list, created_list, created_entry, 0);
+
+	asked = mdw_body_field(request, body, "return");
+	fallback = venture_marketdata_instrument_path(source_id, key, NULL);
+	back = mdw_list_back(asked, fallback, "list_added", entry_list, created_list);
+
+	return mdw_see_other(back);
+}
+
+/* POST /market/watchlists/remove: entry_id off its list, back to `return`. */
+static HtmxResponse *
+venture_marketdata_web_watchlist_remove(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	static const gchar *const entry_ids[] = { "entry_id", NULL };
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) body = NULL;
+	g_autofree gchar *asked = NULL;
+	g_autofree gchar *back = NULL;
+	g_autofree gchar *fallback = NULL;
+	VentureActor actor;
+	gboolean api;
+	gint64 organization_id;
+	gint64 entry_id;
+	gint64 list_id = 0;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = mdw_gate(self, request, api, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_WATCHLIST_ENTRY);
+
+	if (NULL != gate)
+		return gate;
+
+	body = mdw_json_body(request, &error);
+
+	if (NULL != error)
+		return venture_web_error_response(error);
+
+	if (!venture_web_request_organization(self, request, body, &organization_id, &error) ||
+	    !mdw_body_id(request, body, entry_ids, &entry_id, &error))
+		return venture_web_error_response(error);
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_marketdata_list_take(self->context, venture_marketdata_watchlist_kind(), organization_id, entry_id,
+	                                  &actor, &list_id, &error))
+		return venture_web_error_response(error);
+
+	if (api)
+		return mdw_list_answer(NULL, list_id, FALSE, FALSE, entry_id);
+
+	asked = mdw_body_field(request, body, "return");
+	fallback = g_strdup_printf("/market/watchlists/%" G_GINT64_FORMAT, list_id);
+	back = mdw_list_back(asked, fallback, "list_removed", list_id, FALSE);
+
+	return mdw_see_other(back);
 }
 
 /* --- /market/alerts ---------------------------------------------------------- */
@@ -4075,6 +4760,8 @@ venture_marketdata_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_GET, "/market/venues", venture_marketdata_web_venues },
 		{ HTMX_METHOD_GET, "/market/watchlists", venture_marketdata_web_watchlists },
 		{ HTMX_METHOD_GET, "/market/watchlists/:id", venture_marketdata_web_watchlist },
+		{ HTMX_METHOD_POST, "/market/watchlists/add", venture_marketdata_web_watchlist_add },
+		{ HTMX_METHOD_POST, "/market/watchlists/remove", venture_marketdata_web_watchlist_remove },
 		{ HTMX_METHOD_GET, "/market/alerts", venture_marketdata_web_alerts },
 		{ HTMX_METHOD_POST, "/market/alerts/:id/evaluate", venture_marketdata_web_evaluate },
 		/* The key is the rest of the path: it may hold a slash. */
@@ -4087,6 +4774,8 @@ venture_marketdata_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_GET, "/api/v1/market/venues", venture_marketdata_web_venues },
 		{ HTMX_METHOD_GET, "/api/v1/market/watchlists", venture_marketdata_web_watchlists },
 		{ HTMX_METHOD_GET, "/api/v1/market/watchlists/:id", venture_marketdata_web_watchlist },
+		{ HTMX_METHOD_POST, "/api/v1/market/watchlists/add", venture_marketdata_web_watchlist_add },
+		{ HTMX_METHOD_POST, "/api/v1/market/watchlists/remove", venture_marketdata_web_watchlist_remove },
 		{ HTMX_METHOD_GET, "/api/v1/market/alerts", venture_marketdata_web_alerts },
 		{ HTMX_METHOD_POST, "/api/v1/market/alerts/:id/evaluate", venture_marketdata_web_evaluate },
 		{ HTMX_METHOD_GET, "/api/v1/market/i/:source/*", venture_marketdata_web_instrument },

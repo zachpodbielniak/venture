@@ -802,7 +802,9 @@ test_instrument(
 	g_assert_nonnull(strstr(page, "chart-data"));
 	g_assert_nonnull(strstr(page, "Bulk pricing"));
 	g_assert_nonnull(strstr(page, "Promote to a record"));
-	g_assert_nonnull(strstr(page, "Add to watchlist"));
+	/* Onto a list in one step: a list named or a new name, here. */
+	g_assert_nonnull(strstr(page, "class=\"list-add\"><input type=\"hidden\" name=\"action\" value=\"watch\">"));
+	g_assert_nonnull(strstr(page, "list=\"watchlist-names\""));
 	g_assert_nonnull(strstr(page, "Create an alert"));
 	g_assert_nonnull(strstr(page, "Every venue"));
 	assert_buttons_named(page, path);
@@ -2196,7 +2198,8 @@ test_watchlist_and_actions(
 	g_assert_nonnull(record);
 	instrument_id = ID(record);
 
-	/* Watch: promotes, then the generic entry form, prefilled. */
+	/* Watch: promotes, puts it straight on the list, and comes back to
+	 * the page saying so -- no detour through the generic entry form. */
 	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
 	{
@@ -2204,10 +2207,12 @@ test_watchlist_and_actions(
 
 		g_assert_cmpuint(http(fixture, "POST", path, form, NULL, &location), ==, 302);
 	}
-	expected = g_strdup_printf("/e/watchlist_entry/new?instrument_id=%" G_GINT64_FORMAT
-	                           "&watchlist_id=%" G_GINT64_FORMAT, instrument_id, ID(list));
+	expected = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770?list_added=%" G_GINT64_FORMAT,
+	                           fixture->source_id, ID(list));
 	g_assert_cmpstr(location, ==, expected);
 	page = get_page(fixture, location);
+	g_assert_nonnull(strstr(page, "<div class=\"notice positive\" role=\"status\">Added to <strong>"));
+	g_assert_nonnull(strstr(page, "class=\"list-tag\""));
 	g_clear_pointer(&page, g_free);
 	g_clear_pointer(&location, g_free);
 	again = venture_marketdata_find_by_ref(fixture->database, VENTURE_TYPE_INSTRUMENT, fixture->org,
@@ -2229,10 +2234,16 @@ test_watchlist_and_actions(
 	 * (1.10 at realm-b) and a sell target in euros. */
 	buy = money_of("1.15 USD");
 	sell = money_of("2.00 EUR");
-	entry = VENTURE_ENTITY(venture_watchlist_entry_new());
-	venture_entity_set_organization_id(entry, fixture->org);
-	g_object_set(entry, "watchlist-id", ID(list), "instrument-id", instrument_id, "target-buy", buy,
-	             NULL);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_WATCHLIST_ENTRY);
+		g_autoptr(GPtrArray) found = NULL;
+
+		g_assert_true(venture_query_add_filter_int(query, "watchlist-id", VENTURE_FILTER_OP_EQ, ID(list), NULL));
+		found = venture_database_find(fixture->database, query, NULL);
+		g_assert_cmpuint(found->len, ==, 1);
+		entry = g_object_ref(g_ptr_array_index(found, 0));
+	}
+	g_object_set(entry, "target-buy", buy, NULL);
 	save(fixture, entry);
 
 	g_clear_pointer(&path, g_free);
@@ -3694,6 +3705,260 @@ test_deals_vs_median(
 	g_assert_nonnull(strstr(page, ">-30.0%</span>"));
 }
 
+/* The entries of watchlist @list_id, as records. */
+static GPtrArray *
+list_entries(
+	Fixture	*fixture,
+	gint64	 list_id
+){
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_WATCHLIST_ENTRY);
+	GPtrArray *found;
+
+	g_assert_true(venture_query_add_filter_int(query, "watchlist-id", VENTURE_FILTER_OP_EQ, list_id, NULL));
+	found = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(found);
+
+	return found;
+}
+
+/* The id a Location's @name parameter carries, or 0. */
+static gint64
+location_id(
+	const gchar	*location,
+	const gchar	*name
+){
+	g_autofree gchar *needle = g_strdup_printf("%s=", name);
+	const gchar *at = strstr(location, needle);
+
+	return (NULL != at) ? g_ascii_strtoll(at + strlen(needle), NULL, 10) : 0;
+}
+
+/*
+ * Lists on the Deals and Browse rows. "Add to list" puts a row's item on
+ * a list named by id or by name -- a new name makes the list, a known
+ * one (any case) is that list, a second press writes nothing -- and goes
+ * back to the page it came from, its filters kept, saying so. Deals
+ * filtered by a list (or two: their union) shows only their items; each
+ * row says which lists it is on, and a tag's remove button takes it off.
+ * Another organization's list is not found by any door.
+ *
+ * What breaks if this regresses: "bag flips" cannot be checked without
+ * scrolling the whole deal list, a double click makes two lists, or a
+ * list id from another organization reads its items into this one's page.
+ */
+static void
+test_deals_watchlists(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) all = NULL;
+	g_autoptr(JsonNode) filtered = NULL;
+	g_autoptr(JsonNode) both = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *form = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *other_key = NULL;
+	JsonArray *rows;
+	guint expected;
+	gint64 list_id;
+	gint64 second_id;
+	gint64 entry_id = 0;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture);
+
+	/* Every row says its lists (none yet), and the answer the lists. */
+	all = get_json(fixture, "/api/v1/market/deals", 200);
+	rows = json_object_get_array_member(root_of(all), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), >, 1);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(all), "watchlist_choices")), ==, 0);
+	key = g_strdup(json_object_get_string_member(json_array_get_object_element(rows, 0), "instrument_key"));
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(row, "watchlists")), ==, 0);
+
+		if ((NULL == other_key) && (0 != g_strcmp0(json_object_get_string_member(row, "instrument_key"), key)))
+			other_key = g_strdup(json_object_get_string_member(row, "instrument_key"));
+	}
+
+	g_assert_nonnull(other_key);
+
+	/* A new name makes the list; back to the same filtered page. */
+	form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&key=%s&list=Bag+flips"
+	                       "&return=%%2Fmarket%%2Fdeals%%3Fgroup%%3Deu%%26list_added%%3D9",
+	                       fixture->source_id, key);
+	g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, &location), ==, 303);
+	g_assert_true(g_str_has_prefix(location, "/market/deals?group=eu&list_added="));
+	g_assert_nonnull(strstr(location, "&list_new=1"));
+	list_id = location_id(location, "list_added");
+	g_assert_cmpint(list_id, >, 0);
+	page = get_page(fixture, location);
+	g_assert_nonnull(strstr(page, "Made the list <strong>Bag flips</strong> and added it."));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&location, g_free);
+
+	/* Again, and by the name in another case: the same list, one entry. */
+	g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, &location), ==, 303);
+	g_assert_null(strstr(location, "list_new"));
+	g_clear_pointer(&location, g_free);
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&key=%s&list=bag+FLIPS", fixture->source_id, key);
+	g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, &location), ==, 303);
+	g_assert_cmpint(location_id(location, "list_added"), ==, list_id);
+	g_clear_pointer(&location, g_free);
+	entries = list_entries(fixture, list_id);
+	g_assert_cmpuint(entries->len, ==, 1);
+	g_clear_pointer(&entries, g_ptr_array_unref);
+
+	/* Deals for the list: exactly the unfiltered rows of its item. */
+	expected = 0;
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+		if (0 == g_strcmp0(json_object_get_string_member(json_array_get_object_element(rows, i), "instrument_key"),
+		                   key))
+			expected++;
+
+	path = g_strdup_printf("/api/v1/market/deals?watchlist=%" G_GINT64_FORMAT, list_id);
+	filtered = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(filtered), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, expected);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(
+		json_object_get_array_member(root_of(filtered), "watchlist_filter"), 0), "name"), ==, "Bag flips");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		JsonArray *on = json_object_get_array_member(row, "watchlists");
+
+		g_assert_cmpstr(json_object_get_string_member(row, "instrument_key"), ==, key);
+		g_assert_cmpuint(json_array_get_length(on), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(on, 0), "id"), ==, list_id);
+		entry_id = json_object_get_int_member(json_array_get_object_element(on, 0), "entry_id");
+	}
+
+	g_assert_cmpint(entry_id, >, 0);
+
+	/* A second list, by the API twin, and the union of the two. */
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&key=%s&list=Favourites", fixture->source_id,
+	                       other_key);
+	g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, &location), ==, 303);
+	second_id = location_id(location, "list_added");
+	g_assert_cmpint(second_id, >, 0);
+	g_assert_cmpint(second_id, !=, list_id);
+	g_clear_pointer(&location, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/deals?watchlist=%" G_GINT64_FORMAT "&watchlist=%" G_GINT64_FORMAT,
+	                       list_id, second_id);
+	both = get_json(fixture, path, 200);
+	rows = json_object_get_array_member(root_of(both), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), >, expected);
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		const gchar *its = json_object_get_string_member(json_array_get_object_element(rows, i), "instrument_key");
+
+		g_assert_true((0 == g_strcmp0(its, key)) || (0 == g_strcmp0(its, other_key)));
+	}
+
+	/* The page: the List picker, the row's tag and "Add to list". */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/deals?watchlist=%" G_GINT64_FORMAT, list_id);
+	page = get_page(fixture, path);
+	assert_buttons_named(page, path);
+	g_assert_nonnull(strstr(page, "<select name=\"watchlist\" multiple"));
+	g_assert_nonnull(strstr(page, " selected>Bag flips</option>"));
+	g_assert_nonnull(strstr(page, "<datalist id=\"watchlist-names\">"));
+	g_assert_nonnull(strstr(page, "class=\"list-tag\""));
+	g_assert_nonnull(strstr(page, "action=\"/market/watchlists/add\" class=\"list-add\""));
+	g_assert_nonnull(strstr(page, "action=\"/market/watchlists/remove\""));
+	g_clear_pointer(&page, g_free);
+
+	/* Browse rows have the same control, and the watchlist pages open
+	 * the list in Deals. */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/browse?source=%" G_GINT64_FORMAT, fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "action=\"/market/watchlists/add\" class=\"list-add\""));
+	g_assert_nonnull(strstr(page, ">Bag flips</a>"));
+	g_clear_pointer(&page, g_free);
+	page = get_page(fixture, "/market/watchlists");
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("href=\"/market/deals?watchlist=%" G_GINT64_FORMAT "\"", list_id);
+	g_assert_nonnull(strstr(page, path));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/watchlists/%" G_GINT64_FORMAT, list_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "Open in Deals"));
+	g_assert_nonnull(strstr(page, "action=\"/market/watchlists/remove\""));
+	g_clear_pointer(&page, g_free);
+
+	/* Off the list from its tag: back to the page, saying so. */
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("entry_id=%" G_GINT64_FORMAT "&return=%%2Fmarket%%2Fdeals%%3Fwatchlist%%3D%" G_GINT64_FORMAT,
+	                       entry_id, list_id);
+	g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/remove", form, NULL, &location), ==, 303);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/deals?watchlist=%" G_GINT64_FORMAT "&list_removed=%" G_GINT64_FORMAT,
+	                       list_id, list_id);
+	g_assert_cmpstr(location, ==, path);
+	page = get_page(fixture, location);
+	g_assert_nonnull(strstr(page, "Removed from <strong>Bag flips</strong>."));
+	g_assert_nonnull(strstr(page, "Nothing on the list is a deal right now."));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&location, g_free);
+	entries = list_entries(fixture, list_id);
+	g_assert_cmpuint(entries->len, ==, 0);
+	g_clear_pointer(&entries, g_ptr_array_unref);
+
+	/* Not a list, not this organization's list. */
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/market/deals?watchlist=bags", NULL, NULL, NULL), ==, 400);
+	{
+		g_autoptr(VentureEntity) organization = VENTURE_ENTITY(venture_organization_new());
+		g_autoptr(VentureEntity) theirs = VENTURE_ENTITY(venture_watchlist_new());
+		gint64 their_source = foreign_source(fixture);
+
+		g_object_set(organization, "name", "Third", "slug", "third", NULL);
+		save(fixture, organization);
+		venture_entity_set_organization_id(theirs, ID(organization));
+		g_object_set(theirs, "name", "Their bags", NULL);
+		save(fixture, theirs);
+
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/api/v1/market/deals?watchlist=%" G_GINT64_FORMAT, ID(theirs));
+		g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 404);
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/api/v1/market/deals?watchlist=%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT,
+		                       list_id, ID(theirs));
+		g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL), ==, 404);
+		g_clear_pointer(&form, g_free);
+		form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&key=%s&list_id=%" G_GINT64_FORMAT,
+		                       fixture->source_id, key, ID(theirs));
+		g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, NULL), ==, 404);
+		g_clear_pointer(&form, g_free);
+		form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&key=%s&list=Bag+flips", their_source, key);
+		g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, NULL), ==, 404);
+		entries = list_entries(fixture, ID(theirs));
+		g_assert_cmpuint(entries->len, ==, 0);
+	}
+
+	/* A return that is not one of the Trading pages is not followed. */
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&key=%s&list=Bag+flips"
+	                       "&return=https%%3A%%2F%%2Fevil.example%%2Fmarket%%2F", fixture->source_id, key);
+	g_assert_cmpuint(http(fixture, "POST", "/market/watchlists/add", form, NULL, &location), ==, 303);
+	g_assert_true(g_str_has_prefix(location, "/market/i/"));
+}
+
 #define ADD(path, func) \
 	g_test_add("/market-pages/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -3722,6 +3987,7 @@ main(
 	ADD("deals-reference-source", test_deals_reference_source);
 	ADD("venue-index", test_venue_index);
 	ADD("watchlist-and-actions", test_watchlist_and_actions);
+	ADD("deals-watchlists", test_deals_watchlists);
 	ADD("alerts", test_alerts);
 	ADD("widgets", test_widgets);
 	ADD("attribution", test_attribution);

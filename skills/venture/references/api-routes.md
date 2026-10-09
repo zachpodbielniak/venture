@@ -108,10 +108,11 @@ in the repository lists today's.
 | Route | venturectl |
 |---|---|
 | `GET /feeds`, `GET /feeds/due`, `GET /feeds/:id/runs`, `GET /feeds/:id/venues` (`?stale_after=`), `POST /feeds/:id/sync`, `POST /feeds/:id/push` (`application/x-ndjson`, `?wait=1`), `GET /feeds/:id/upkeep` (running, last result, sizes), `POST /feeds/:id/upkeep` (`?rebuild=1`; admin; 202) | `feeds ...` |
-| `GET /market/quote`, `POST /market/promote`, `GET /market/browse\|find\|deals\|venues`, `GET /market/i/:source/*`, `GET /market/history/:source/*` (`?venue=&range=24h\|7d\|14d\|90d\|all&compare=region\|VENUE`; the instrument page's price history alone), `GET /market/watchlists[/:id]`, `GET /market/alerts`, `POST /market/alerts/:id/evaluate` | `market ...` |
+| `GET /market/quote`, `POST /market/promote`, `GET /market/browse\|find\|deals\|venues`, `GET /market/i/:source/*`, `GET /market/history/:source/*` (`?venue=&range=24h\|7d\|14d\|90d\|all&compare=region\|VENUE`; the instrument page's price history alone), `GET /market/watchlists[/:id]`, `POST /market/watchlists/add` (`{"data_source_id", "key", "list": NAME \| "list_id"}`: promotes, finds or makes the list, adds once; 201/200 `{list_id, entry, created_list, created_entry}`), `POST /market/watchlists/remove` (`{"entry_id"}`), `GET /market/alerts`, `POST /market/alerts/:id/evaluate` | `market ...`; lists also `create watchlist_entry` |
 | `GET /accounts`, `GET /accounts/inventory`, `GET /accounts/pnl`, `GET /accounts/:source/*` (each takes `show_ignored`) | `accounts ...` |
 | `GET /arbitrage/scan\|registries\|export\|calc`, `POST /arbitrage/record` | `arbitrage ...` |
-| `GET /arbitrage/crafting` (crafting question: `recipe_category_id`, `buy_realm`, `sell_realm`, `venue_group`, `units`, ...) | `arbitrage crafting` |
+| `GET /arbitrage/crafting` (crafting question: `recipe_category_id`, `buy_realm`, `sell_realm`, `venue_group`, `units`, `recipe_list`, ...) | `arbitrage crafting` |
+| `GET /arbitrage/recipe-lists` (`{recipe_lists: [{id, name, entries}]}`), `GET /arbitrage/recipe-lists/:id` (the crafting answer for that list), `POST /arbitrage/recipe-lists/add` (`{"recipe_id", "list": NAME \| "list_id"}`), `POST /arbitrage/recipe-lists/remove` (`{"entry_id"}`) | `arbitrage crafting recipe_list=ID`; `list\|create recipe_list\|recipe_list_entry` |
 | `GET /arbitrage/plan` (`?reprice=1`), `GET /arbitrage/plan/export?format=csv\|tsm`, `POST /arbitrage/plan/remove` (`{"trade_id": N}`) | `arbitrage plan [export\|remove]` |
 
 ## Public routes (no session; their own guard)

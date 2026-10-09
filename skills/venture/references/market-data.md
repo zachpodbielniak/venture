@@ -69,10 +69,21 @@ venturectl market venues [source=N] [group=G]
 venturectl market instrument 1 2589 units=200        # SOURCE_ID KEY; units= prices a bulk buy
 venturectl --format json market instrument 1 2589 range=90d compare=region  # the price history in .history
 venturectl market watchlist [ID] organization_id=2   # 'watchlists' is the same verb
+venturectl market deals watchlist=3,5 sort=profit    # Deals narrowed to the items on lists 3 and 5
 venturectl market alerts [count=N]                   # rules and recent hits
 venturectl market help                               # every verb, options, examples
 ```
 
+- **Lists on rows.** Every Deals/Browse row (and the instrument answer's
+  `listed_on`) carries `watchlists` -- `[{id, name, entry_id}]`, the lists
+  its instrument is on -- and the answer `watchlist_choices`. Put an item
+  on a list with `POST /api/v1/market/watchlists/add` `{"data_source_id":
+  N, "key": "...", "list": "Bag flips"}` (promotes the item; a name is
+  found ignoring case or made; a second add writes nothing) and take it off
+  with `POST /api/v1/market/watchlists/remove {"entry_id": N}`. Deals'
+  `watchlist=ID[,ID]` (repeatable) is their union, narrowed in the store
+  query (only those keys are read) -- an item on the list that is not a
+  deal now is not a row; `market watchlist ID` prices every entry.
 - The verbs take the **page's** query names (`source`, `group`,
   `category`) and also the report spellings (`data_source_id`,
   `group_key`, `category_path`). Each option is typed before anything is

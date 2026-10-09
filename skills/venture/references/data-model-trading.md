@@ -84,7 +84,9 @@ usage is in [market-production.md](market-production.md),
   `product_id` (what lets reports price a product from feeds),
   `parent_id` (an outcome's event), `category_id`, `attrs`.
 - `watchlist` (`group_key`), `watchlist_entry` (`instrument_id`,
-  `target_buy`, `target_sell`).
+  `target_buy`, `target_sell`; once per list). Also the "favourites / bag
+  flips" lists of the Trading pages: `POST /api/v1/market/watchlists/add`
+  puts a store item on one by name, and Deals takes `watchlist=ID`.
 - `venue_group` -- **name**, `venues` (venue keys or names, comma
   separated; a name matches one part of a connected realm's name),
   `notes`. Picked as `venue_group=ID` on browse, find, deals and the
@@ -120,6 +122,10 @@ usage is in [market-production.md](market-production.md),
   *action* `execute (s)`.
 - `arbitrage_strategy` -- a scan preset: `strategy`, `data_source_id`,
   `buy_venues`, `sell_venues`, `options` (YAML of other filters).
+- `recipe_list` -- **name**, `notes`: a named set of recipes Crafting
+  narrows to (`arbitrage crafting recipe_list=ID`, `/arbitrage/recipe-lists/ID`);
+  shared in the organization. `recipe_list_entry` -- **recipe_list_id**,
+  **recipe_id** (same organization, once per list), `notes`.
 - `external_posting` -- the books' memory of an external ledger day
   (server-written, never deleted): `kind` [day|opening], `day`, sales,
   purchases, income, expenses, `capital`, `fingerprint`, `journal_id`.
