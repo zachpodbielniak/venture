@@ -91,6 +91,11 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 
 ## Skill baseline -- maintained
 
+The recurring-collection guidance was additionally checked against
+`22429ce8369b105884acf09f82cba7b229604e60` and the invoice-snapshot compatibility
+fix: the connection API stays pinned while newer signed snapshots trigger an
+authenticated read before settlement.
+
 This skill was reviewed against VENTURE commit
 `a0809d24db2a7247e67098de9160d0ce06689bf4` (2026-10-09, server version
 0.6.0): every verb, route, record type, module and report it names was read

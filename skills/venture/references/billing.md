@@ -153,7 +153,9 @@ many documents all-or-nothing. A non-admin must name the organization.
 - **Recurring collection**: read `describe stripe_authorization` and the
   subscription's actions first. `act customer_subscription ID
   authorize_payment limit='100 USD'` returns a copy-once hosted Setup URL
-  (connection and webhook pinned to Stripe API `2024-06-20`). Customer
+  (connection pinned to Stripe API `2024-06-20`). Signed invoice snapshots
+  may use a newer version; settlement still requires the pinned authenticated
+  invoice/payment read and all reservation checks. Customer
   completion plus verified Setup/mandate evidence activates permission;
   `act stripe_authorization ID verify` recovers a missed callback;
   `revoke_authorization` stops future charges without discarding settlement

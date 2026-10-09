@@ -279,8 +279,12 @@ engine. No internal entitlement consumer or Lightsite provisioning is implemente
 ** Operator workflow and automatic scheduling
 
 1. Configure the organization's verified Stripe connection and enable the billing
-   and Stripe modules. For automatic collection use API and webhook version
-   =2024-06-20=. In addition to the hosted events above, subscribe to
+   and Stripe modules. For automatic collection use connection API version
+   =2024-06-20=. Signed invoice snapshots may use a newer version and omit the
+   legacy payment-intent field: settlement always reads the invoice and expanded
+   payment through the pinned authenticated API, checking the reserved customer,
+   method, currency, amount and correlation before posting money. A supplied
+   snapshot intent must still match. In addition to the hosted events above, subscribe to
    =setup_intent.succeeded=, =setup_intent.setup_failed=,
    =payment_method.detached=, =mandate.updated=, =invoice.payment_succeeded=,
    =invoice.paid= and =invoice.payment_failed=.
@@ -409,3 +413,8 @@ Injected transports must obey the supplied deadline and cancellable; arbitrary
 in-process callbacks cannot be forcibly preempted safely. Ordinary transport
 failures remain non-retryable inside stripe-glib. Use the retained durable key
 when the caller explicitly retries an uncertain mutation.
+
+A declined intent can have no current payment method. For a verified failure,
+the pinned invoice read must instead retain the authorized attempted method in
+=last_payment_error.payment_method=. The invoice's configured method and every
+other reservation check still apply; this fallback cannot prove a payment.

@@ -880,7 +880,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "ea69a1c326a7bb555dc8b6ed5ee2f5c4d2fd9a9d");
+		g_assert_cmpstr(g_strstrip(out), ==, "750738372ba02428b6948edf6aca082ad605cdd6");
 	}
 }
 
@@ -1118,6 +1118,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/automatic-authorization-callback", Fixture, "callback", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-collection", Fixture, "collection", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-settlement", Fixture, "settlement", set_up, test_automatic_authorization, tear_down);
+	g_test_add("/stripe/automatic-new-webhook", Fixture, "new-webhook", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-failure-recovery", Fixture, "failure-recovery", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-paused-recovery", Fixture, "paused-recovery", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/automatic-pay-restart", Fixture, "pay-retry", set_up, test_automatic_authorization, tear_down);
