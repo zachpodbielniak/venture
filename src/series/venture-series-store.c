@@ -6133,6 +6133,531 @@ venture_series_store_daily(
 	return g_steal_pointer(&days);
 }
 
+/* --- Reading: histories ------------------------------------------------------------------ */
+
+void
+venture_series_history_free(VentureSeriesHistory *history)
+{
+	if (NULL == history)
+		return;
+
+	if (NULL != history->points)
+		g_array_unref(history->points);
+
+	g_free(history);
+}
+
+/* One stored figure on its way into a slot. */
+typedef struct
+{
+	gint64	at;
+	gchar	currency[VENTURE_MONEY_CURRENCY_LEN];
+	gint64	min_price;
+	gint64	market_value;
+	gint64	quantity;
+	gint64	listings;
+} SeriesSample;
+
+/*
+ * Both histories are one statement: the instrument by its key, then each
+ * venue -- the one named, or the group's -- then that venue's rows for the
+ * instrument, by the unique index. CROSS JOIN fixes that order: with no
+ * statistics SQLite drove the join from hourly's day index, and reading
+ * every row of a fortnight to find one instrument's took three seconds on
+ * a US auction house store, where this order takes milliseconds.
+ */
+static const gchar series_sql_history_hourly[] =
+	"SELECT h.day, h.currency, h.points"
+	" FROM instruments i CROSS JOIN venues v CROSS JOIN hourly h"
+	"   ON h.venue_id = v.id AND h.instrument_id = i.id AND h.day >= ?3 AND h.day <= ?4"
+	" WHERE i.key = ?1 AND (?2 IS NULL OR v.key = ?2) AND (?5 IS NULL OR v.group_key = ?5)";
+
+static const gchar series_sql_history_daily[] =
+	"SELECT d.day, d.currency, d.min_price, d.market_value, d.max_quantity, d.listings"
+	" FROM instruments i CROSS JOIN venues v CROSS JOIN daily d"
+	"   ON d.venue_id = v.id AND d.instrument_id = i.id AND d.day >= ?3 AND d.day <= ?4"
+	" WHERE i.key = ?1 AND (?2 IS NULL OR v.key = ?2) AND (?5 IS NULL OR v.group_key = ?5)";
+
+/* The start of the slot of @step seconds holding @at. */
+static gint64
+series_slot_of(
+	gint64	at,
+	gint64	step
+){
+	gint64 slot;
+
+	slot = at / step;
+
+	if ((at % step != 0) && (at < 0))
+		slot--;
+
+	return slot * step;
+}
+
+static gint
+series_sample_compare(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	const SeriesSample *x = a;
+	const SeriesSample *y = b;
+
+	if (x->at != y->at)
+		return (x->at < y->at) ? -1 : 1;
+
+	return 0;
+}
+
+/* Reads every stored figure from @read_from to @last into @samples. */
+static gboolean
+series_history_samples(
+	VentureSeriesStore	 *self,
+	const gchar		 *venue_key,
+	const gchar		 *group_key,
+	const gchar		 *instrument_key,
+	gboolean		  hourly,
+	gint64			  read_from,
+	gint64			  last,
+	GArray			 *samples,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	gint rc;
+
+	stmt = series_stmt(self, hourly ? series_sql_history_hourly : series_sql_history_daily, error);
+	if (NULL == stmt)
+		return FALSE;
+
+	series_bind_text(stmt, 1, instrument_key);
+	series_bind_text(stmt, 2, venue_key);
+	sqlite3_bind_int64(stmt, 3, series_day_of(read_from));
+	sqlite3_bind_int64(stmt, 4, series_day_of(last));
+	series_bind_text(stmt, 5, group_key);
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		SeriesSample sample;
+		gint64 day;
+
+		day = sqlite3_column_int64(stmt, 0);
+		series_column_currency(stmt, 1, sample.currency);
+
+		if (hourly)
+		{
+			SeriesHour hours[24];
+			SeriesReader reader;
+			guint hour;
+
+			series_reader_init(&reader, stmt, 2);
+
+			if (!series_decode_points(&reader, hours))
+			{
+				series_set_corrupt(self, "hourly series", error);
+				return FALSE;
+			}
+
+			for (hour = 0; hour < 24; hour++)
+			{
+				if (!hours[hour].present)
+					continue;
+
+				sample.at = day * 86400 + (gint64)hour * 3600;
+
+				if ((sample.at < read_from) || (sample.at > last))
+					continue;
+
+				sample.min_price = hours[hour].min_price;
+				sample.market_value = hours[hour].market_value;
+				sample.quantity = hours[hour].quantity;
+				sample.listings = hours[hour].listings;
+				g_array_append_val(samples, sample);
+			}
+		}
+		else
+		{
+			sample.at = day * 86400;
+			sample.min_price = series_column_figure(stmt, 2);
+			sample.market_value = series_column_figure(stmt, 3);
+			sample.quantity = sqlite3_column_int64(stmt, 4);
+			sample.listings = sqlite3_column_int64(stmt, 5);
+			g_array_append_val(samples, sample);
+		}
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		series_set_sqlite_error(self, rc, "reading a history", error);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * One slot from the samples taken in it: the median of the lowest prices
+ * and of the market values, the sum of the quantities and listings. For
+ * one venue that is its own figures, so both histories share it.
+ */
+static void
+series_history_fold(
+	const SeriesSample		*samples,
+	guint				 n,
+	GArray				*mins,
+	GArray				*markets,
+	VentureSeriesHistoryPoint	*point
+){
+	gboolean any_quantity = FALSE;
+	guint i;
+
+	g_array_set_size(mins, 0);
+	g_array_set_size(markets, 0);
+	point->quantity = 0;
+	point->listings = 0;
+	point->venues = n;
+
+	for (i = 0; i < n; i++)
+	{
+		g_array_append_val(mins, samples[i].min_price);
+		g_array_append_val(markets, samples[i].market_value);
+
+		if (VENTURE_SERIES_NONE != samples[i].quantity)
+		{
+			/* Units, not money; a sum past 2^63 is pinned, not wrapped. */
+			if (!venture_series_math_add(point->quantity, samples[i].quantity, &point->quantity))
+				point->quantity = G_MAXINT64;
+			any_quantity = TRUE;
+		}
+
+		if (!venture_series_math_add(point->listings, samples[i].listings, &point->listings))
+			point->listings = G_MAXINT64;
+	}
+
+	point->min_price = venture_series_math_median((const gint64 *)(gpointer)mins->data, mins->len);
+	point->market_value = venture_series_math_median((const gint64 *)(gpointer)markets->data,
+	                                                 markets->len);
+
+	if (!any_quantity)
+		point->quantity = VENTURE_SERIES_NONE;
+}
+
+static VentureSeriesHistory *
+series_history(
+	VentureSeriesStore	 *self,
+	const gchar		 *venue_key,
+	const gchar		 *group_key,
+	const gchar		 *instrument_key,
+	VentureSeriesResolution	  resolution,
+	gint64			  since,
+	gint64			  until,
+	const gchar		 *currency,
+	GError			**error
+){
+	g_autoptr(VentureSeriesHistory) history = NULL;
+	g_autoptr(GArray) samples = NULL;
+	g_autoptr(GArray) kept = NULL;
+	g_autoptr(GArray) mins = NULL;
+	g_autoptr(GArray) markets = NULL;
+	gboolean hourly;
+	gint64 step;
+	gint64 last;
+	gint64 bound;
+	gint64 first;
+	gint64 read_from;
+	gint64 slot;
+	const gchar *wanted;
+	guint i;
+
+	hourly = (VENTURE_SERIES_RESOLUTION_HOUR == resolution);
+	step = hourly ? 3600 : 86400;
+
+	history = g_new0(VentureSeriesHistory, 1);
+	history->resolution = resolution;
+	history->points = g_array_new(FALSE, TRUE, sizeof(VentureSeriesHistoryPoint));
+
+	/*
+	 * The newest slot holds @until; the oldest the bound allows is
+	 * MAX_POINTS - 1 before it. Asked for everything, one slot more is
+	 * read, so a figure older than the bound says the window was cut.
+	 */
+	last = series_slot_of(until, step);
+	bound = last - (gint64)(VENTURE_SERIES_HISTORY_MAX_POINTS - 1) * step;
+
+	if (since > 0)
+	{
+		first = series_slot_of(since, step);
+
+		if (first < bound)
+		{
+			first = bound;
+			history->truncated = TRUE;
+		}
+
+		read_from = first;
+	}
+	else
+	{
+		first = G_MININT64;
+		read_from = bound - step;
+	}
+
+	history->since = last;
+	history->until = last;
+
+	if ((since > 0) && (first > last))
+		return g_steal_pointer(&history);
+
+	samples = g_array_new(FALSE, FALSE, sizeof(SeriesSample));
+
+	if (!series_history_samples(self, venue_key, group_key, instrument_key, hourly, read_from, last,
+	                            samples, error))
+		return NULL;
+
+	g_array_sort(samples, series_sample_compare);
+
+	/* The currency: the one asked for, else the newest figure's. */
+	wanted = currency;
+
+	if ((NULL == wanted) && (samples->len > 0))
+		wanted = g_array_index(samples, SeriesSample, samples->len - 1).currency;
+
+	if (NULL == wanted)
+		return g_steal_pointer(&history);
+
+	g_strlcpy(history->currency, wanted, VENTURE_MONEY_CURRENCY_LEN);
+	kept = g_array_new(FALSE, FALSE, sizeof(SeriesSample));
+
+	for (i = 0; i < samples->len; i++)
+	{
+		const SeriesSample *sample = &g_array_index(samples, SeriesSample, i);
+
+		if (0 != g_strcmp0(sample->currency, history->currency))
+			continue;
+
+		/* Only the extra slot read when asked for everything is older. */
+		if (sample->at < bound)
+		{
+			history->truncated = TRUE;
+			continue;
+		}
+
+		g_array_append_val(kept, *sample);
+	}
+
+	if (G_MININT64 == first)
+	{
+		if (0 == kept->len)
+		{
+			history->currency[0] = '\0';
+			return g_steal_pointer(&history);
+		}
+
+		first = history->truncated ? bound : g_array_index(kept, SeriesSample, 0).at;
+	}
+
+	history->since = first;
+	mins = g_array_new(FALSE, FALSE, sizeof(gint64));
+	markets = g_array_new(FALSE, FALSE, sizeof(gint64));
+	i = 0;
+
+	for (slot = first; slot <= last; slot += step)
+	{
+		VentureSeriesHistoryPoint point;
+		guint start;
+
+		while ((i < kept->len) && (g_array_index(kept, SeriesSample, i).at < slot))
+			i++;
+
+		start = i;
+
+		while ((i < kept->len) && (g_array_index(kept, SeriesSample, i).at == slot))
+			i++;
+
+		point.at = slot;
+
+		if (i == start)
+		{
+			point.min_price = VENTURE_SERIES_NONE;
+			point.market_value = VENTURE_SERIES_NONE;
+			point.quantity = VENTURE_SERIES_NONE;
+			point.listings = 0;
+			point.venues = 0;
+		}
+		else
+			series_history_fold(&g_array_index(kept, SeriesSample, start), i - start, mins, markets,
+			                    &point);
+
+		g_array_append_val(history->points, point);
+	}
+
+	return g_steal_pointer(&history);
+}
+
+VentureSeriesHistory *
+venture_series_store_history(
+	VentureSeriesStore	 *self,
+	const gchar		 *venue_key,
+	const gchar		 *instrument_key,
+	VentureSeriesResolution	  resolution,
+	gint64			  since,
+	gint64			  until,
+	const gchar		 *currency,
+	GError			**error
+){
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+	g_return_val_if_fail(NULL != venue_key, NULL);
+	g_return_val_if_fail(NULL != instrument_key, NULL);
+
+	return series_history(self, venue_key, NULL, instrument_key, resolution, since, until, currency,
+	                      error);
+}
+
+VentureSeriesHistory *
+venture_series_store_group_history(
+	VentureSeriesStore	 *self,
+	const gchar		 *group_key,
+	const gchar		 *instrument_key,
+	VentureSeriesResolution	  resolution,
+	gint64			  since,
+	gint64			  until,
+	const gchar		 *currency,
+	GError			**error
+){
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+	g_return_val_if_fail(NULL != instrument_key, NULL);
+
+	return series_history(self, NULL, group_key, instrument_key, resolution, since, until, currency,
+	                      error);
+}
+
+/*
+ * A page of pairs in one statement. The pairs arrive as one JSON array
+ * bound to json_each(), so the statement is cached like any other and no
+ * key is ever written into SQL; each pair's venue and instrument are found
+ * by their unique keys and its hourly rows by the unique index, in that
+ * order (CROSS JOIN, for the reason the histories give).
+ */
+static const gchar series_sql_hourly_many[] =
+	"SELECT w.key, h.day, h.currency, h.points"
+	" FROM json_each(?1) w"
+	" CROSS JOIN venues v ON v.key = json_extract(w.value, '$[0]')"
+	" CROSS JOIN instruments i ON i.key = json_extract(w.value, '$[1]')"
+	" CROSS JOIN hourly h ON h.venue_id = v.id AND h.instrument_id = i.id AND h.day >= ?2"
+	" ORDER BY w.key, h.day";
+
+GPtrArray *
+venture_series_store_hourly_many(
+	VentureSeriesStore	 *self,
+	const VentureSeriesPair	 *pairs,
+	gsize			  n_pairs,
+	gint64			  since,
+	GError			**error
+){
+	g_autoptr(SeriesCachedStmt) stmt = NULL;
+	g_autoptr(GPtrArray) answer = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonGenerator) generator = NULL;
+	g_autoptr(JsonNode) root = NULL;
+	g_autofree gchar *json = NULL;
+	gint rc;
+	gsize i;
+
+	g_return_val_if_fail(VENTURE_IS_SERIES_STORE(self), NULL);
+	g_return_val_if_fail((NULL != pairs) || (0 == n_pairs), NULL);
+
+	if (n_pairs > VENTURE_SERIES_MAX_PAGE)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A batch read takes at most %d pairs", VENTURE_SERIES_MAX_PAGE);
+		return NULL;
+	}
+
+	answer = g_ptr_array_new_full(n_pairs, (GDestroyNotify)g_array_unref);
+
+	for (i = 0; i < n_pairs; i++)
+		g_ptr_array_add(answer, g_array_new(FALSE, TRUE, sizeof(VentureSeriesPoint)));
+
+	if (0 == n_pairs)
+		return g_steal_pointer(&answer);
+
+	builder = json_builder_new();
+	json_builder_begin_array(builder);
+
+	for (i = 0; i < n_pairs; i++)
+	{
+		json_builder_begin_array(builder);
+		json_builder_add_string_value(builder, (NULL != pairs[i].venue_key) ? pairs[i].venue_key : "");
+		json_builder_add_string_value(builder,
+		                              (NULL != pairs[i].instrument_key) ? pairs[i].instrument_key : "");
+		json_builder_end_array(builder);
+	}
+
+	json_builder_end_array(builder);
+	root = json_builder_get_root(builder);
+	generator = json_generator_new();
+	json_generator_set_root(generator, root);
+	json = json_generator_to_data(generator, NULL);
+
+	stmt = series_stmt(self, series_sql_hourly_many, error);
+	if (NULL == stmt)
+		return NULL;
+
+	series_bind_text(stmt, 1, json);
+	sqlite3_bind_int64(stmt, 2, series_day_of(since));
+
+	while (SQLITE_ROW == (rc = sqlite3_step(stmt)))
+	{
+		SeriesHour hours[24];
+		SeriesReader reader;
+		GArray *points;
+		gint64 index;
+		gint64 day;
+		guint hour;
+
+		index = sqlite3_column_int64(stmt, 0);
+
+		if ((index < 0) || ((guint64)index >= n_pairs))
+			continue;
+
+		points = g_ptr_array_index(answer, (guint)index);
+		day = sqlite3_column_int64(stmt, 1);
+		series_reader_init(&reader, stmt, 3);
+
+		if (!series_decode_points(&reader, hours))
+		{
+			series_set_corrupt(self, "hourly series", error);
+			return NULL;
+		}
+
+		for (hour = 0; hour < 24; hour++)
+		{
+			VentureSeriesPoint point;
+
+			if (!hours[hour].present)
+				continue;
+
+			point.at = day * 86400 + (gint64)hour * 3600;
+
+			if (point.at + 3599 < since)
+				continue;
+
+			series_column_currency(stmt, 2, point.currency);
+			point.min_price = hours[hour].min_price;
+			point.quantity = hours[hour].quantity;
+			point.market_value = hours[hour].market_value;
+			point.listings = hours[hour].listings;
+			g_array_append_val(points, point);
+		}
+	}
+
+	if (SQLITE_DONE != rc)
+	{
+		series_set_sqlite_error(self, rc, "reading hourly series", error);
+		return NULL;
+	}
+
+	return g_steal_pointer(&answer);
+}
+
 gboolean
 venture_series_store_heat(
 	VentureSeriesStore	 *self,

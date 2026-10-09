@@ -1704,6 +1704,195 @@ venture_series_store_daily(
 );
 
 /**
+ * VENTURE_SERIES_HISTORY_MAX_POINTS:
+ *
+ * The most slots one history read returns: a chart past it would be a
+ * smear, and a request past it a walk. A longer window keeps its newest
+ * slots and says it was cut.
+ */
+#define VENTURE_SERIES_HISTORY_MAX_POINTS (2000)
+
+/**
+ * VentureSeriesResolution:
+ * @VENTURE_SERIES_RESOLUTION_HOUR: one slot an hour, read from the hourly
+ *   points (kept for series.hourly_days)
+ * @VENTURE_SERIES_RESOLUTION_DAY: one slot a day, read from the daily rows
+ *   (kept for series.daily_days)
+ *
+ * How finely a history is read.
+ */
+typedef enum
+{
+	VENTURE_SERIES_RESOLUTION_HOUR,
+	VENTURE_SERIES_RESOLUTION_DAY
+} VentureSeriesResolution;
+
+/**
+ * VentureSeriesHistoryPoint:
+ * @at: the start of the slot: the hour, or midnight UTC of the day
+ * @min_price: the lowest price: an hour's last snapshot's, a day's lowest
+ *   all day; across a group, the median of the venues' lowest.
+ *   %VENTURE_SERIES_NONE when nothing was offered or nothing was stored
+ * @market_value: the market value (a day's: its fullest snapshot's);
+ *   across a group, the median of the venues'. %VENTURE_SERIES_NONE when
+ *   unknown
+ * @quantity: units offered (a day's: the most in any one snapshot);
+ *   across a group, the sum. %VENTURE_SERIES_NONE when nothing was stored
+ *   for the slot: a gap. An hour the instrument was sold out is a gap
+ *   too -- a complete snapshot that leaves it out marks it out of stock in
+ *   current and stores no point
+ * @listings: listings (summed across a group), 0 in a gap
+ * @venues: the venues whose figures the slot holds: 0 in a gap, 1 for one
+ *   venue, how many in a group
+ *
+ * One slot of a history, in the history's currency.
+ */
+typedef struct
+{
+	gint64	at;
+	gint64	min_price;
+	gint64	market_value;
+	gint64	quantity;
+	gint64	listings;
+	gint64	venues;
+} VentureSeriesHistoryPoint;
+
+/**
+ * VentureSeriesHistory:
+ * @resolution: hours or days
+ * @since: the first slot's start
+ * @until: the last slot's start (the slot holding the time asked up to)
+ * @currency: the currency every figure is in; "" when nothing was stored
+ * @truncated: the window held more than
+ *   %VENTURE_SERIES_HISTORY_MAX_POINTS slots, or stored figures before
+ *   the first slot when asked for everything, and its oldest were left out
+ * @points: (element-type VentureSeriesHistoryPoint): one per slot from
+ *   @since to @until, oldest first, gaps included
+ *
+ * A regular series of slots, so a missing hour is a gap where it fell
+ * rather than two neighbours drawn as if adjacent.
+ */
+typedef struct
+{
+	VentureSeriesResolution	 resolution;
+	gint64			 since;
+	gint64			 until;
+	gchar			 currency[VENTURE_MONEY_CURRENCY_LEN];
+	gboolean		 truncated;
+	GArray			*points;
+} VentureSeriesHistory;
+
+/**
+ * venture_series_history_free:
+ * @history: (transfer full) (nullable): a history
+ */
+void
+venture_series_history_free(VentureSeriesHistory *history);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesHistory, venture_series_history_free)
+
+/**
+ * venture_series_store_history:
+ * @self: a #VentureSeriesStore
+ * @venue_key: the venue
+ * @instrument_key: the instrument
+ * @resolution: hours or days
+ * @since: the earliest time wanted; 0 or less for everything stored
+ * @until: the latest; the last slot is the one holding it
+ * @currency: (nullable): only figures in this currency; %NULL for the
+ *   currency of the newest figure in the window
+ * @error: (out) (optional): return location for a #GError
+ *
+ * One instrument at one venue as a regular series of hours or days. A
+ * slot nothing was stored for is a gap (@quantity %VENTURE_SERIES_NONE);
+ * a figure in another currency is a gap too, never a number in the wrong
+ * unit. One indexed read of the venue's hourly or daily rows.
+ *
+ * Returns: (transfer full) (nullable): the history, or %NULL on error
+ */
+VentureSeriesHistory *
+venture_series_store_history(
+	VentureSeriesStore	 *self,
+	const gchar		 *venue_key,
+	const gchar		 *instrument_key,
+	VentureSeriesResolution	  resolution,
+	gint64			  since,
+	gint64			  until,
+	const gchar		 *currency,
+	GError			**error
+);
+
+/**
+ * venture_series_store_group_history:
+ * @self: a #VentureSeriesStore
+ * @group_key: (nullable): the venues of this group ("" for those with
+ *   none); %NULL for every venue
+ * @instrument_key: the instrument
+ * @resolution: hours or days
+ * @since: the earliest time wanted; 0 or less for everything stored
+ * @until: the latest
+ * @currency: (nullable): only figures in this currency; %NULL for the
+ *   newest figure's
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The instrument across a group of venues, slot by slot: the median of
+ * the venues' lowest prices (the region median, as it stood then), the
+ * median of their market values, and their quantities and listings added
+ * up. One indexed read per venue of the group, in one statement.
+ *
+ * Returns: (transfer full) (nullable): the history, or %NULL on error
+ */
+VentureSeriesHistory *
+venture_series_store_group_history(
+	VentureSeriesStore	 *self,
+	const gchar		 *group_key,
+	const gchar		 *instrument_key,
+	VentureSeriesResolution	  resolution,
+	gint64			  since,
+	gint64			  until,
+	const gchar		 *currency,
+	GError			**error
+);
+
+/**
+ * VentureSeriesPair:
+ * @venue_key: a venue
+ * @instrument_key: an instrument
+ *
+ * One instrument at one venue, as a batch read names it.
+ */
+typedef struct
+{
+	const gchar	*venue_key;
+	const gchar	*instrument_key;
+} VentureSeriesPair;
+
+/**
+ * venture_series_store_hourly_many:
+ * @self: a #VentureSeriesStore
+ * @pairs: (array length=n_pairs): the venues and instruments
+ * @n_pairs: how many, at most %VENTURE_SERIES_MAX_PAGE
+ * @since: the earliest time wanted
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_series_store_hourly() for a page of rows in one statement: what
+ * a table that draws a line in every row reads, rather than one query a
+ * row. A pair the store does not know has no points.
+ *
+ * Returns: (transfer full) (element-type GArray) (nullable): one array of
+ *   #VentureSeriesPoint per pair, in the pairs' order, each oldest first;
+ *   %NULL on error
+ */
+GPtrArray *
+venture_series_store_hourly_many(
+	VentureSeriesStore	 *self,
+	const VentureSeriesPair	 *pairs,
+	gsize			  n_pairs,
+	gint64			  since,
+	GError			**error
+);
+
+/**
  * venture_series_store_heat:
  * @self: a #VentureSeriesStore
  * @venue_key: the venue

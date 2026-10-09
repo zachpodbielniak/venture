@@ -1985,6 +1985,142 @@ venture_marketdata_venue_group_venue_keys(
 	return TRUE;
 }
 
+/* --- A row's last seven days ----------------------------------------------- */
+
+#ifdef VENTURE_HAVE_SQLITE
+
+/*
+ * Whether a price is a dip or the new normal, beside each row of a table:
+ * the buy venue's hourly lowest prices over seven days, as a sparkline of
+ * four-hour blocks and a median to compare the price with. Twelve hours
+ * is the least a median is taken from: a row first seen this morning has
+ * no "normal" yet, and a median of three hours would call its first
+ * undercut a dip.
+ */
+#define MD_RECENT_BLOCK (4 * 3600)
+#define MD_RECENT_BLOCKS (42)
+#define MD_RECENT_MIN_HOURS (12)
+
+/* The start of the oldest four-hour block a row's last seven days hold. */
+static gint64
+md_recent_first(gint64 now)
+{
+	gint64 last;
+
+	last = now - (((now % MD_RECENT_BLOCK) + MD_RECENT_BLOCK) % MD_RECENT_BLOCK);
+
+	return last - (MD_RECENT_BLOCKS - 1) * (gint64)MD_RECENT_BLOCK;
+}
+
+/* Sets trend_7d, median_7d, median_7d_hours and vs_median_7d_pct on
+ * @object from @points, the row's hourly points from md_recent_first(). */
+static void
+md_recent_set(
+	JsonObject		*object,
+	GArray			*points,
+	const VentureSeriesRow	*row,
+	gint64			 now
+){
+	g_autoptr(GArray) prices = NULL;
+	gint64 lows[MD_RECENT_BLOCKS];
+	gint64 first;
+	gint64 median;
+	JsonArray *trend;
+	guint i;
+
+	first = md_recent_first(now);
+	prices = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	for (i = 0; i < MD_RECENT_BLOCKS; i++)
+		lows[i] = VENTURE_SERIES_NONE;
+
+	for (i = 0; (NULL != points) && (i < points->len); i++)
+	{
+		const VentureSeriesPoint *point = &g_array_index(points, VentureSeriesPoint, i);
+		guint block;
+
+		/* Another currency's price is not a price in this one. */
+		if ((VENTURE_SERIES_NONE == point->min_price) || (point->at < first) || (point->at > now) ||
+		    (0 != g_strcmp0(point->currency, row->currency)))
+			continue;
+
+		block = (guint)((point->at - first) / MD_RECENT_BLOCK);
+
+		if ((VENTURE_SERIES_NONE == lows[block]) || (point->min_price < lows[block]))
+			lows[block] = point->min_price;
+
+		g_array_append_val(prices, point->min_price);
+	}
+
+	trend = json_array_new();
+
+	for (i = 0; i < MD_RECENT_BLOCKS; i++)
+	{
+		if (VENTURE_SERIES_NONE == lows[i])
+			json_array_add_null_element(trend);
+		else
+			json_array_add_int_element(trend, lows[i]);
+	}
+
+	json_object_set_array_member(object, "trend_7d", trend);
+	json_object_set_int_member(object, "median_7d_hours", prices->len);
+
+	median = (prices->len >= MD_RECENT_MIN_HOURS)
+		? venture_series_math_median((const gint64 *)(gpointer)prices->data, prices->len)
+		: VENTURE_SERIES_NONE;
+
+	md_set_money(object, "median_7d", median, row->currency);
+
+	/* A ratio for reading, not money: the double is never added up. */
+	if ((VENTURE_SERIES_NONE != median) && (median > 0) && (VENTURE_SERIES_NONE != row->min_price))
+		md_set_ratio(object, "vs_median_7d_pct",
+		             100.0 * ((gdouble)row->min_price - (gdouble)median) / (gdouble)median);
+	else
+		json_object_set_null_member(object, "vs_median_7d_pct");
+}
+
+/*
+ * The last seven days of @n rows of one store, in one statement: a table
+ * of fifty rows is one read, not fifty. @objects[i] is the answer's object
+ * for @rows[i].
+ */
+static gboolean
+md_recent_rows(
+	VentureSeriesStore	 *reader,
+	VentureSeriesRow	**rows,
+	JsonObject		**objects,
+	guint			  n,
+	gint64			  now,
+	GError			**error
+){
+	g_autofree VentureSeriesPair *pairs = NULL;
+	g_autoptr(GPtrArray) points = NULL;
+	guint i;
+
+	if (0 == n)
+		return TRUE;
+
+	pairs = g_new0(VentureSeriesPair, n);
+
+	for (i = 0; i < n; i++)
+	{
+		pairs[i].venue_key = rows[i]->venue_key;
+		pairs[i].instrument_key = rows[i]->instrument_key;
+	}
+
+	points = venture_series_store_hourly_many(reader, pairs, n, md_recent_first(now), error);
+
+	if (NULL == points)
+		return FALSE;
+
+	for (i = 0; i < n; i++)
+		md_recent_set(objects[i], g_ptr_array_index(points, i), rows[i], now);
+
+	return TRUE;
+}
+
+#endif /* VENTURE_HAVE_SQLITE */
+
 /* --- Browse ---------------------------------------------------------------- */
 
 void
@@ -2201,13 +2337,29 @@ venture_marketdata_browse(
 
 			json_object_set_boolean_member(root, "available", TRUE);
 
-			for (i = 0; i < found->len; i++)
 			{
-				VentureSeriesRow *one = g_ptr_array_index(found, i);
-				JsonObject *object = md_row_object(one, venture_entity_get_id(chosen));
+				g_autofree JsonObject **objects = g_new0(JsonObject *, found->len + 1);
 
-				md_row_set_display(object, reader, one->instrument_key);
-				json_array_add_object_element(rows, object);
+				for (i = 0; i < found->len; i++)
+				{
+					VentureSeriesRow *one = g_ptr_array_index(found, i);
+					JsonObject *object = md_row_object(one, venture_entity_get_id(chosen));
+
+					md_row_set_display(object, reader, one->instrument_key);
+					json_array_add_object_element(rows, object);
+					objects[i] = object;
+				}
+
+				/* The page's rows' last seven days, in one read. */
+				if (!md_recent_rows(reader, (VentureSeriesRow **)found->pdata, objects, found->len,
+				                    md_now(query->now), error))
+				{
+					json_object_unref(root);
+					json_array_unref(notes);
+					json_array_unref(rows);
+					json_array_unref(groups);
+					return NULL;
+				}
 			}
 		}
 
@@ -2475,7 +2627,287 @@ md_watchlists_brief(
 	return array;
 }
 
+/* --- The price history ------------------------------------------------------ */
+
+/* The days of hourly history the store keeps (0: forever), as configured:
+ * a range within it is read hour by hour, a longer one day by day. */
+static gint64
+md_hourly_days(VentureContext *context)
+{
+	VentureConfig *config;
+	gint64 days = 14;
+
+	config = venture_context_get_config(context);
+
+	if (NULL != config)
+		g_object_get(config, "series-hourly-days", &days, NULL);
+
+	return MAX(days, (gint64)0);
+}
+
+/* A range's days, 0 for everything; -1 for a name that is not a range. */
+static gint64
+md_range_days(const gchar *range)
+{
+	if (0 == g_strcmp0(range, "24h"))
+		return 1;
+	if (0 == g_strcmp0(range, "7d"))
+		return 7;
+	if (0 == g_strcmp0(range, "14d"))
+		return 14;
+	if (0 == g_strcmp0(range, "90d"))
+		return 90;
+	if (0 == g_strcmp0(range, "all"))
+		return 0;
+
+	return -1;
+}
+
+/* The venue a chart is drawn for, as the instrument page chooses it: the
+ * one asked for, else the cheapest with stock, else the first. NULL with
+ * NOT_FOUND for a venue that never listed it; NULL and no error when no
+ * venue has. */
+static VentureSeriesRow *
+md_chart_row(
+	GPtrArray	 *venues,
+	const gchar	 *venue,
+	GError		**error
+){
+	VentureSeriesRow *row = NULL;
+	guint i;
+
+	for (i = 0; i < venues->len; i++)
+	{
+		VentureSeriesRow *candidate = g_ptr_array_index(venues, i);
+
+		if (!venture_string_is_empty(venue))
+		{
+			if (0 == g_strcmp0(candidate->venue_key, venue))
+				row = candidate;
+		}
+		else if ((NULL == row) && (VENTURE_SERIES_NONE != candidate->min_price) &&
+		         (0 != candidate->quantity))
+			row = candidate;
+	}
+
+	if (!venture_string_is_empty(venue) && (NULL == row))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "Venue \"%s\" has never listed this instrument", venue);
+		return NULL;
+	}
+
+	if ((NULL == row) && (venues->len > 0))
+		row = g_ptr_array_index(venues, 0);
+
+	return row;
+}
+
+static JsonArray *
+md_history_points(
+	const VentureSeriesHistory	*history,
+	gboolean			 full
+){
+	JsonArray *array;
+	guint i;
+
+	array = json_array_new();
+
+	for (i = 0; i < history->points->len; i++)
+	{
+		const VentureSeriesHistoryPoint *point = &g_array_index(history->points, VentureSeriesHistoryPoint, i);
+		JsonObject *object = json_object_new();
+
+		md_set_time(object, "at", point->at);
+		md_set_figure(object, "min_price", point->min_price);
+		md_set_figure(object, "quantity", point->quantity);
+
+		if (full)
+		{
+			md_set_figure(object, "market_value", point->market_value);
+			json_object_set_int_member(object, "listings", point->listings);
+		}
+		else
+			json_object_set_int_member(object, "venues", point->venues);
+
+		json_array_add_object_element(array, object);
+	}
+
+	return array;
+}
+
+/*
+ * The price history the instrument page charts and /api/v1/market/history
+ * answers: @row's venue over @range, hour by hour within the hourly
+ * window and day by day beyond it -- never both on one line, because an
+ * hour's figure is its last snapshot and a day's its lowest all day, and
+ * a line that changed measure partway would draw a step the market never
+ * took. @compare adds a second line on the same slots and in the same
+ * currency: another venue, or the region, the median of the group's
+ * venues' lowest prices as they stood at each slot.
+ */
+static JsonObject *
+md_history_object(
+	VentureContext		 *context,
+	VentureSeriesStore	 *reader,
+	const VentureSeriesRow	 *row,
+	GPtrArray		 *venues,
+	const gchar		 *key,
+	const gchar		 *range,
+	const gchar		 *compare,
+	gint64			  now,
+	JsonArray		 *notes,
+	GError			**error
+){
+	g_autoptr(VentureSeriesHistory) history = NULL;
+	g_autoptr(VentureSeriesHistory) other = NULL;
+	JsonObject *object;
+	JsonArray *ranges;
+	VentureSeriesResolution resolution;
+	gint64 hourly_days;
+	gint64 days;
+	gint64 step;
+	gint64 since;
+	guint i;
+
+	if (NULL == range)
+		range = VENTURE_MARKETDATA_HISTORY_DEFAULT_RANGE;
+
+	days = md_range_days(range);
+	hourly_days = md_hourly_days(context);
+	resolution = ((days > 0) && ((0 == hourly_days) || (days <= hourly_days)))
+		? VENTURE_SERIES_RESOLUTION_HOUR : VENTURE_SERIES_RESOLUTION_DAY;
+	step = (VENTURE_SERIES_RESOLUTION_HOUR == resolution) ? 3600 : MD_DAY;
+
+	/* 24 hours is 24 slots, the newest the one holding now. */
+	since = (days > 0) ? now - (days * MD_DAY / step - 1) * step : 0;
+
+	history = venture_series_store_history(reader, row->venue_key, key, resolution, since, now,
+	                                       row->currency, error);
+
+	if (NULL == history)
+		return NULL;
+
+	object = json_object_new();
+	json_object_set_string_member(object, "range", range);
+	ranges = json_array_new();
+
+	for (i = 0; NULL != venture_marketdata_history_ranges()[i]; i++)
+		json_array_add_string_element(ranges, venture_marketdata_history_ranges()[i]);
+
+	json_object_set_array_member(object, "ranges", ranges);
+	json_object_set_string_member(object, "resolution",
+	                              (VENTURE_SERIES_RESOLUTION_HOUR == resolution) ? "hour" : "day");
+	md_set_time(object, "since", history->since);
+	md_set_time(object, "until", history->until);
+	json_object_set_string_member(object, "currency", row->currency);
+	json_object_set_boolean_member(object, "truncated", history->truncated);
+	json_object_set_array_member(object, "points", md_history_points(history, TRUE));
+
+	if (history->truncated)
+		md_note(notes, "The price history holds more than a chart draws; its oldest part is left out.");
+
+	if (venture_string_is_empty(compare))
+	{
+		json_object_set_null_member(object, "compare");
+		return object;
+	}
+
+	/* The same slots as the first line, or the two would not line up. */
+	if (0 == history->points->len)
+	{
+		md_note(notes, "Nothing to compare with: this venue has no price history in the range.");
+		json_object_set_null_member(object, "compare");
+		return object;
+	}
+
+	if (0 == g_strcmp0(compare, "region"))
+	{
+		JsonObject *line;
+
+		other = venture_series_store_group_history(reader, row->group_key, key, resolution,
+		                                           history->since, now, row->currency, error);
+
+		if (NULL == other)
+		{
+			json_object_unref(object);
+			return NULL;
+		}
+
+		line = json_object_new();
+		json_object_set_string_member(line, "kind", "region");
+		json_object_set_null_member(line, "venue");
+		json_object_set_null_member(line, "venue_name");
+		json_object_set_string_member(line, "group_key", row->group_key);
+		json_object_set_array_member(line, "points", md_history_points(other, FALSE));
+		json_object_set_object_member(object, "compare", line);
+		return object;
+	}
+
+	{
+		VentureSeriesRow *with = NULL;
+		JsonObject *line;
+
+		for (i = 0; (NULL != venues) && (i < venues->len); i++)
+			if (0 == g_strcmp0(((VentureSeriesRow *)g_ptr_array_index(venues, i))->venue_key, compare))
+				with = g_ptr_array_index(venues, i);
+
+		if (NULL == with)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "Venue \"%s\" has never listed this instrument, so there is nothing to compare",
+			            compare);
+			json_object_unref(object);
+			return NULL;
+		}
+
+		other = venture_series_store_history(reader, with->venue_key, key, resolution, history->since,
+		                                     now, row->currency, error);
+
+		if (NULL == other)
+		{
+			json_object_unref(object);
+			return NULL;
+		}
+
+		line = json_object_new();
+		json_object_set_string_member(line, "kind", "venue");
+		json_object_set_string_member(line, "venue", with->venue_key);
+		md_set_text(line, "venue_name", with->venue_name);
+		json_object_set_string_member(line, "group_key", with->group_key);
+		json_object_set_array_member(line, "points", md_history_points(other, FALSE));
+		json_object_set_object_member(object, "compare", line);
+	}
+
+	return object;
+}
+
 #endif /* VENTURE_HAVE_SQLITE */
+
+static const gchar *const md_history_ranges[] = { "24h", "7d", "14d", "90d", "all", NULL };
+
+const gchar *const *
+venture_marketdata_history_ranges(void)
+{
+	return md_history_ranges;
+}
+
+/* Refuses a range that is not one of md_history_ranges. */
+static gboolean
+md_check_range(
+	const gchar	 *range,
+	GError		**error
+){
+	g_autofree gchar *names = NULL;
+
+	if ((NULL == range) || g_strv_contains(md_history_ranges, range))
+		return TRUE;
+
+	names = g_strjoinv(", ", (gchar **)md_history_ranges);
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	            "A price history's range is one of %s, not \"%s\"", names, range);
+	return FALSE;
+}
 
 JsonNode *
 venture_marketdata_instrument(
@@ -2507,6 +2939,9 @@ venture_marketdata_instrument(
 		            "The bulk calculator prices 1 to %d units", VENTURE_MARKETDATA_BULK_MAX_UNITS);
 		return NULL;
 	}
+
+	if (!md_check_range(query->range, error))
+		return NULL;
 
 	now = md_now(query->now);
 	stale_after = venture_marketdata_stale_seconds(context);
@@ -2587,31 +3022,17 @@ venture_marketdata_instrument(
 		if (NULL == venues)
 			goto fail;
 
-		row = NULL;
-
-		for (i = 0; i < venues->len; i++)
 		{
-			VentureSeriesRow *candidate = g_ptr_array_index(venues, i);
+			g_autoptr(GError) chart_error = NULL;
 
-			if (!venture_string_is_empty(query->venue))
+			row = md_chart_row(venues, query->venue, &chart_error);
+
+			if (NULL != chart_error)
 			{
-				if (0 == g_strcmp0(candidate->venue_key, query->venue))
-					row = candidate;
+				g_propagate_error(error, g_steal_pointer(&chart_error));
+				goto fail;
 			}
-			else if ((NULL == row) && (VENTURE_SERIES_NONE != candidate->min_price) &&
-			         (0 != candidate->quantity))
-				row = candidate;
 		}
-
-		if (!venture_string_is_empty(query->venue) && (NULL == row))
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-			            "Venue \"%s\" has never listed this instrument", query->venue);
-			goto fail;
-		}
-
-		if ((NULL == row) && (venues->len > 0))
-			row = g_ptr_array_index(venues, 0);
 
 		array = json_array_new();
 
@@ -2832,6 +3253,16 @@ venture_marketdata_instrument(
 
 			json_object_set_array_member(root, "daily", array);
 
+			/* The chart a person reads to tell a dip from the new
+			 * normal, over the range asked for. */
+			object = md_history_object(context, reader, row, venues, query->key, query->range,
+			                           query->compare, now, notes, error);
+
+			if (NULL == object)
+				goto fail;
+
+			json_object_set_object_member(root, "history", object);
+
 			/* The book, and what buying from it would cost. */
 			tiers = venture_series_store_get_tiers(reader, row->venue_key, query->key, error);
 
@@ -2876,6 +3307,137 @@ venture_marketdata_instrument(
 		                             md_watchlists_brief(context, query->organization_id));
 #endif
 	}
+
+	json_object_set_array_member(root, "notes", notes);
+	md_attribute_source(context, query->organization_id, root);
+
+	return md_node(root);
+
+#ifdef VENTURE_HAVE_SQLITE
+fail:
+	json_object_unref(root);
+	json_array_unref(notes);
+
+	return NULL;
+#endif
+}
+
+/* --- A price history alone -------------------------------------------------- */
+
+JsonNode *
+venture_marketdata_history(
+	VentureContext				 *context,
+	const VentureMarketdataInstrumentQuery	 *query,
+	GError					**error
+){
+	JsonObject *root;
+	JsonArray *notes;
+	gint64 now;
+	gint64 stale_after;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(NULL != query, NULL);
+
+	if (!md_require_module(context, error))
+		return NULL;
+
+	if (venture_string_is_empty(query->key))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "A price history needs the instrument's key");
+		return NULL;
+	}
+
+	if (!md_check_range(query->range, error))
+		return NULL;
+
+	now = md_now(query->now);
+	stale_after = venture_marketdata_stale_seconds(context);
+	(void)now;
+	root = json_object_new();
+	notes = json_array_new();
+	json_object_set_boolean_member(root, "available", FALSE);
+	json_object_set_int_member(root, "data_source_id", query->data_source_id);
+	json_object_set_string_member(root, "key", query->key);
+	json_object_set_int_member(root, "stale_after_seconds", stale_after);
+
+	if (md_series_ready(context, notes))
+	{
+#ifdef VENTURE_HAVE_SQLITE
+		g_autoptr(VentureEntity) source = NULL;
+		g_autoptr(VentureSeriesStore) reader = NULL;
+		g_autoptr(VentureSeriesInstrumentRow) instrument = NULL;
+		g_autoptr(GPtrArray) venues = NULL;
+		g_autoptr(GError) chart_error = NULL;
+		g_autofree gchar *source_name = NULL;
+		VentureSeriesRow *row;
+		JsonObject *history;
+
+		source = md_source(context, query->organization_id, query->data_source_id, error);
+
+		if (NULL == source)
+			goto fail;
+
+		reader = md_reader(context, source, NULL, error);
+
+		if (NULL == reader)
+			goto fail;
+
+		if (!venture_series_store_get_instrument(reader, query->key, &instrument, error))
+			goto fail;
+
+		if (NULL == instrument)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "Data source #%" G_GINT64_FORMAT " knows no instrument \"%s\"",
+			            query->data_source_id, query->key);
+			goto fail;
+		}
+
+		source_name = md_source_name(source);
+		json_object_set_boolean_member(root, "available", TRUE);
+		json_object_set_string_member(root, "source_name", source_name);
+		md_set_text(root, "name", instrument->name);
+
+		venues = venture_series_store_other_venues(reader, query->key, NULL, error);
+
+		if (NULL == venues)
+			goto fail;
+
+		row = md_chart_row(venues, query->venue, &chart_error);
+
+		if (NULL != chart_error)
+		{
+			g_propagate_error(error, g_steal_pointer(&chart_error));
+			goto fail;
+		}
+
+		if (NULL == row)
+		{
+			md_note(notes, "No venue has listed this instrument yet.");
+			json_object_set_null_member(root, "venue");
+			json_object_set_null_member(root, "history");
+		}
+		else
+		{
+			json_object_set_string_member(root, "venue", row->venue_key);
+			md_set_text(root, "venue_name", row->venue_name);
+			json_object_set_string_member(root, "group_key", row->group_key);
+			json_object_set_string_member(root, "currency", row->currency);
+
+			history = md_history_object(context, reader, row, venues, query->key, query->range,
+			                            query->compare, now, notes, error);
+
+			if (NULL == history)
+				goto fail;
+
+			json_object_set_object_member(root, "history", history);
+		}
+#endif
+	}
+
+	if (!json_object_has_member(root, "history"))
+		json_object_set_null_member(root, "history");
 
 	json_object_set_array_member(root, "notes", notes);
 	md_attribute_source(context, query->organization_id, root);
@@ -3186,6 +3748,7 @@ typedef struct
 {
 	VentureSeriesRow	*row;
 	gint64			 data_source_id;
+	guint			 source_index;	/* in the answer's readers */
 	gchar			*source_name;
 	JsonObject		*display;
 	VentureSeriesRow	*sell;		/* the dearest venue to sell at, or NULL */
@@ -3745,6 +4308,7 @@ venture_marketdata_deals(
 				deal = g_new0(MdDeal, 1);
 				deal->row = g_ptr_array_steal_index_fast(found, j - 1);
 				deal->data_source_id = source_id;
+				deal->source_index = i;
 				deal->source_name = md_source_name(source);
 
 				/* Read while this source's store is open: the merge
@@ -3840,6 +4404,32 @@ venture_marketdata_deals(
 			}
 
 			json_array_add_object_element(rows, object);
+		}
+
+		/* Each row's last seven days at its buy venue: one read per
+		 * source for every row it gave, after the merge, so only the
+		 * rows shown are read. */
+		for (i = 0; i < readers->len; i++)
+		{
+			g_autoptr(GPtrArray) store_rows = g_ptr_array_new();
+			g_autoptr(GPtrArray) objects = g_ptr_array_new();
+			guint j;
+
+			for (j = 0; j < deals->len; j++)
+			{
+				MdDeal *deal = g_ptr_array_index(deals, j);
+
+				if (deal->source_index != i)
+					continue;
+
+				g_ptr_array_add(store_rows, deal->row);
+				g_ptr_array_add(objects, json_array_get_object_element(rows, j));
+			}
+
+			if ((store_rows->len > 0) &&
+			    !md_recent_rows(g_ptr_array_index(readers, i), (VentureSeriesRow **)store_rows->pdata,
+			                    (JsonObject **)objects->pdata, store_rows->len, now, error))
+				goto fail;
 		}
 
 		json_object_set_double_member(root, "cut_pct", query->cut_pct);

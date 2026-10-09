@@ -81,6 +81,8 @@ G_BEGIN_DECLS
  * @page: the page, from 1; 0 means 1
  * @per_page: rows a page, 0 for 50, at most
  *   %VENTURE_MARKETDATA_BROWSE_MAX_PAGE
+ * @now: the time "now" is, for each row's last seven days; 0 for the
+ *   wall clock
  *
  * What the browse page asks.
  */
@@ -98,6 +100,7 @@ typedef struct
 	gboolean	 in_stock_only;
 	guint		 page;
 	guint		 per_page;
+	gint64		 now;
 } VentureMarketdataBrowseQuery;
 
 /**
@@ -127,7 +130,9 @@ venture_marketdata_browse_sorts(void);
  * @error: (out) (optional): return location for a #GError
  *
  * One page of the catalogue: {available, notes, sources, data_source_id,
- * venues, groups, query, sorts, page, per_page, total, pages, rows}.
+ * venues, groups, query, sorts, page, per_page, total, pages, rows}. Each
+ * row carries its last seven days (see venture_marketdata_deals()):
+ * trend_7d, median_7d, median_7d_hours and vs_median_7d_pct.
  *
  * Returns: (transfer full) (nullable): the answer, or %NULL on error
  *   (NOT_FOUND for a source that is not the organization's,
@@ -152,8 +157,15 @@ venture_marketdata_browse(
  * @venue_group: (nullable): only these venues in the venues table, as on
  *   browse; the charted venue is still chosen from every venue
  * @venues_descending: the venues table dearest first rather than cheapest
+ * @range: (nullable): how far back the price history reaches: one of
+ *   venture_marketdata_history_ranges(); %NULL for
+ *   %VENTURE_MARKETDATA_HISTORY_DEFAULT_RANGE. Anything else is refused.
+ * @compare: (nullable): a second line on the price history: "region" for
+ *   the median of the charted venue's group, or another venue's key;
+ *   %NULL for none
  *
- * What an instrument page asks.
+ * What an instrument page asks; its price history alone is the same
+ * question (venture_marketdata_history()).
  */
 typedef struct
 {
@@ -165,7 +177,59 @@ typedef struct
 	gint64		 now;
 	const gchar	*venue_group;
 	gboolean	 venues_descending;
+	const gchar	*range;
+	const gchar	*compare;
 } VentureMarketdataInstrumentQuery;
+
+/**
+ * VENTURE_MARKETDATA_HISTORY_DEFAULT_RANGE:
+ *
+ * The price history's range when none is asked for: the hourly window as
+ * shipped, which is what the instrument page charted before it had a
+ * choice.
+ */
+#define VENTURE_MARKETDATA_HISTORY_DEFAULT_RANGE "14d"
+
+/**
+ * venture_marketdata_history_ranges:
+ *
+ * The ranges a price history offers: 24h, 7d, 14d, 90d and all. A range
+ * within series.hourly_days is read hour by hour, a longer one day by
+ * day.
+ *
+ * Returns: (transfer none) (array zero-terminated=1): their names
+ */
+const gchar *const *
+venture_marketdata_history_ranges(void);
+
+/**
+ * venture_marketdata_history:
+ * @context: a #VentureContext
+ * @query: the instrument, venue, range and comparison; the bulk and
+ *   venue-table members are ignored
+ * @error: (out) (optional): return location for a #GError
+ *
+ * An instrument's price history at one venue, the chart on its page:
+ * {available, notes, data_source_id, source_name, key, name, venue,
+ * venue_name, group_key, currency, stale_after_seconds, history}. history
+ * is {range, ranges, resolution ("hour" or "day"), since, until,
+ * currency, truncated, points: [{at, min_price, market_value, quantity,
+ * listings}], compare}: one point per hour or day, a gap (quantity null)
+ * where nothing was stored, prices in minor units of currency. compare is
+ * null or {kind ("venue" or "region"), venue, venue_name, group_key,
+ * venues, points: [{at, min_price, quantity, venues}]} on the same slots.
+ * The venue is chosen as the instrument page chooses it.
+ *
+ * Returns: (transfer full) (nullable): the answer; %NULL on error
+ *   (NOT_FOUND for an unknown instrument or a venue that never listed it,
+ *   INVALID_ARGUMENT for an unknown range)
+ */
+JsonNode *
+venture_marketdata_history(
+	VentureContext				 *context,
+	const VentureMarketdataInstrumentQuery	 *query,
+	GError					**error
+);
 
 /**
  * venture_marketdata_instrument:
@@ -177,8 +241,9 @@ typedef struct
  * instrument, venue, venue_name, group_key, base, reference, venues (every
  * venue's current row, cheapest first), hourly (14 days), heat (the last
  * seven days by weekday and hour in the configured zone, lowest price and
- * quantity), daily (60 days), bulk, tiers, watchlists, record_id,
- * stale_after_seconds}. base and each venue carry age_seconds and stale
+ * quantity), daily (60 days), history (the price history over @range,
+ * as venture_marketdata_history() answers it), bulk, tiers, watchlists,
+ * record_id, stale_after_seconds}. base and each venue carry age_seconds and stale
  * beside taken_at, as a deal's sides do.
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
@@ -425,6 +490,14 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query);
  * sell_taken_at, sell_age_seconds and sell_stale (the sell object carries
  * them unprefixed too); the root carries stale_after_seconds
  * (venture_marketdata_stale_seconds()).
+ *
+ * Every row also says whether its price is a dip or the new normal, from
+ * the buy venue's hourly lowest prices over the last seven days, read for
+ * every row in one statement per source: trend_7d (42 four-hour blocks,
+ * oldest first, each block's lowest or null), median_7d (the median of
+ * the hourly lowest prices; null with fewer than 12 hours of them),
+ * median_7d_hours (how many there were) and vs_median_7d_pct (the price
+ * against that median, in percent: -20 is a fifth under it).
  *
  * Returns: (transfer full) (nullable): the answer; %NULL on error
  */

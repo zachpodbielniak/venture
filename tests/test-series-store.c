@@ -2669,6 +2669,328 @@ test_variant_names(
 	g_assert_cmpstr(own, ==, "Thunderfury (heroic)");
 }
 
+/* The slot of @history starting at @at, or NULL. */
+static const VentureSeriesHistoryPoint *
+history_at(
+	const VentureSeriesHistory	*history,
+	gint64				 at
+){
+	guint i;
+
+	for (i = 0; i < history->points->len; i++)
+		if (g_array_index(history->points, VentureSeriesHistoryPoint, i).at == at)
+			return &g_array_index(history->points, VentureSeriesHistoryPoint, i);
+
+	return NULL;
+}
+
+/*
+ * A history is a regular series of slots: a missing hour is a gap where
+ * it fell (quantity NONE) -- so is an hour it was sold out, which stores
+ * no point -- and a price in another currency is a gap too. Asked for everything it starts at the first
+ * figure stored; asked for more slots than a chart draws it keeps the
+ * newest and says it cut.
+ *
+ * What breaks if this regresses: a chart joins the hours either side of
+ * an outage as if they were adjacent and an hour's dip vanishes, or
+ * draws a sold-out hour as a gap, or plots silver as gold.
+ */
+static void
+test_history_gaps_and_range(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesHistory) history = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureSeriesHistoryPoint *point;
+	VentureSeriesSnapshot *snapshot;
+
+	put_price(fixture->store, "realm", "herb", T0 + HOUR, 100, 5);
+	put_price(fixture->store, "realm", "herb", T0 + 2 * HOUR + 600, 110, 4);
+	/* Nothing at T0 + 3h; at T0 + 4h a complete snapshot without herb. */
+	snapshot = begin(fixture->store, "realm", T0 + 4 * HOUR, TRUE);
+	add_listing(snapshot, "ore", 0, 50, 2, -1);
+	commit(fixture->store, snapshot);
+	put_price(fixture->store, "realm", "herb", T0 + 5 * HOUR, 90, 6);
+
+	history = venture_series_store_history(fixture->store, "realm", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, T0,
+	                                       T0 + 5 * HOUR + 1800, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(history);
+	g_assert_cmpstr(history->currency, ==, "GOLD");
+	g_assert_false(history->truncated);
+	g_assert_cmpint(history->since, ==, T0);
+	g_assert_cmpint(history->until, ==, T0 + 5 * HOUR);
+	g_assert_cmpuint(history->points->len, ==, 6);
+
+	/* Before the first snapshot and the missing hour: gaps. */
+	point = history_at(history, T0);
+	g_assert_cmpint(point->quantity, ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(point->min_price, ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(point->venues, ==, 0);
+	point = history_at(history, T0 + 3 * HOUR);
+	g_assert_cmpint(point->quantity, ==, VENTURE_SERIES_NONE);
+
+	point = history_at(history, T0 + HOUR);
+	g_assert_cmpint(point->min_price, ==, 100);
+	g_assert_cmpint(point->quantity, ==, 5);
+	g_assert_cmpint(point->venues, ==, 1);
+	point = history_at(history, T0 + 2 * HOUR);
+	g_assert_cmpint(point->min_price, ==, 110);
+
+	/* A complete snapshot that left it out marks it out of stock now and
+	 * stores no hour for it: the chart breaks there rather than drawing
+	 * a price nobody could buy at. */
+	point = history_at(history, T0 + 4 * HOUR);
+	g_assert_cmpint(point->min_price, ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(point->quantity, ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(point->venues, ==, 0);
+
+	point = history_at(history, T0 + 5 * HOUR);
+	g_assert_cmpint(point->min_price, ==, 90);
+	g_assert_cmpint(point->quantity, ==, 6);
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* A narrower range is those slots and no others. */
+	history = venture_series_store_history(fixture->store, "realm", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, T0 + 2 * HOUR,
+	                                       T0 + 4 * HOUR, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(history->points->len, ==, 3);
+	g_assert_cmpint(g_array_index(history->points, VentureSeriesHistoryPoint, 0).min_price, ==, 110);
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* Everything: from the first figure stored. */
+	history = venture_series_store_history(fixture->store, "realm", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, 0,
+	                                       T0 + 5 * HOUR, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(history->since, ==, T0 + HOUR);
+	g_assert_cmpuint(history->points->len, ==, 5);
+	g_assert_false(history->truncated);
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* More slots than a chart draws: the newest, and a flag. */
+	history = venture_series_store_history(fixture->store, "realm", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, T0 - 3000 * HOUR,
+	                                       T0 + 5 * HOUR, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(history->truncated);
+	g_assert_cmpuint(history->points->len, ==, VENTURE_SERIES_HISTORY_MAX_POINTS);
+	g_assert_cmpint(history->until, ==, T0 + 5 * HOUR);
+	g_assert_cmpint(history_at(history, T0 + HOUR)->min_price, ==, 100);
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* Asked for everything, a figure past the bound says it was cut. */
+	history = venture_series_store_history(fixture->store, "realm", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, 0,
+	                                       T0 + HOUR + VENTURE_SERIES_HISTORY_MAX_POINTS * HOUR,
+	                                       NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(history->truncated);
+	g_assert_cmpuint(history->points->len, ==, VENTURE_SERIES_HISTORY_MAX_POINTS);
+	g_assert_null(history_at(history, T0 + HOUR));
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* In another currency there is nothing to draw: gaps, never gold
+	 * read as silver. */
+	history = venture_series_store_history(fixture->store, "realm", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, T0,
+	                                       T0 + 5 * HOUR, "SILVER", &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(history->currency, ==, "SILVER");
+	g_assert_cmpuint(history->points->len, ==, 6);
+	g_assert_cmpint(history_at(history, T0 + HOUR)->quantity, ==, VENTURE_SERIES_NONE);
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* An unknown venue or instrument has no figures, not an error. */
+	history = venture_series_store_history(fixture->store, "nowhere", "herb",
+	                                       VENTURE_SERIES_RESOLUTION_HOUR, 0,
+	                                       T0 + 5 * HOUR, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(history->points->len, ==, 0);
+	g_assert_cmpstr(history->currency, ==, "");
+}
+
+/*
+ * Hours are kept for series.hourly_days and days for longer, so the two
+ * resolutions answer differently once the hours are purged: by the hour
+ * the purged days are gaps, by the day every day is still there, as the
+ * day's lowest -- which is why a long range is read by the day.
+ *
+ * What breaks if this regresses: a 90-day chart drawn from hourly points
+ * shows only the last fortnight, and calls a quiet market a dead one.
+ */
+static void
+test_history_hourly_daily_boundary(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesHistory) hours = NULL;
+	g_autoptr(VentureSeriesHistory) days = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureSeriesPurgeResult result;
+	gint64 now;
+	guint i;
+
+	/* Two snapshots a day for six days: 120 in the morning, then 100 + i. */
+	for (i = 0; i < 6; i++)
+	{
+		put_price(fixture->store, "realm", "herb", T0 + (gint64)i * DAY + 6 * HOUR, 120, 3);
+		put_price(fixture->store, "realm", "herb", T0 + (gint64)i * DAY + 18 * HOUR, 100 + i, 7);
+	}
+
+	now = T0 + 5 * DAY + 20 * HOUR;
+	g_assert_true(venture_series_store_purge(fixture->store, now, 2, 0, &result, &error));
+	g_assert_no_error(error);
+
+	hours = venture_series_store_history(fixture->store, "realm", "herb",
+	                                     VENTURE_SERIES_RESOLUTION_HOUR, T0, now, NULL, &error);
+	g_assert_no_error(error);
+	days = venture_series_store_history(fixture->store, "realm", "herb",
+	                                    VENTURE_SERIES_RESOLUTION_DAY, T0, now, NULL, &error);
+	g_assert_no_error(error);
+
+	/* By the hour: the purged days are gaps, the kept ones are there. */
+	g_assert_cmpint(hours->since, ==, T0);
+	g_assert_cmpint(history_at(hours, T0 + 6 * HOUR)->quantity, ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(history_at(hours, T0 + 3 * DAY + 18 * HOUR)->quantity, ==, VENTURE_SERIES_NONE);
+	g_assert_cmpint(history_at(hours, T0 + 4 * DAY + 6 * HOUR)->min_price, ==, 120);
+	g_assert_cmpint(history_at(hours, T0 + 5 * DAY + 18 * HOUR)->min_price, ==, 105);
+
+	/* By the day: all six, each the day's lowest and fullest quantity. */
+	g_assert_cmpuint(days->points->len, ==, 6);
+	g_assert_cmpint(days->since, ==, T0);
+	g_assert_cmpint(days->until, ==, T0 + 5 * DAY);
+
+	for (i = 0; i < 6; i++)
+	{
+		const VentureSeriesHistoryPoint *day = history_at(days, T0 + (gint64)i * DAY);
+
+		g_assert_nonnull(day);
+		g_assert_cmpint(day->min_price, ==, 100 + (gint64)i);
+		g_assert_cmpint(day->quantity, ==, 7);
+		g_assert_cmpint(day->venues, ==, 1);
+	}
+}
+
+/*
+ * The region, slot by slot: the median of the group's venues' lowest
+ * prices (what the region median was then), quantities added up, and a
+ * venue outside the group never counted.
+ */
+static void
+test_group_history(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(VentureSeriesHistory) history = NULL;
+	g_autoptr(GError) error = NULL;
+	const VentureSeriesHistoryPoint *point;
+
+	set_venue(fixture->store, "eu-1", "One", "eu");
+	set_venue(fixture->store, "eu-2", "Two", "eu");
+	set_venue(fixture->store, "eu-3", "Three", "eu");
+	set_venue(fixture->store, "us-1", "Far", "us");
+	put_price(fixture->store, "eu-1", "herb", T0 + HOUR, 100, 1);
+	put_price(fixture->store, "eu-2", "herb", T0 + HOUR, 200, 2);
+	put_price(fixture->store, "eu-3", "herb", T0 + HOUR, 400, 4);
+	put_price(fixture->store, "us-1", "herb", T0 + HOUR, 1, 100);
+	put_price(fixture->store, "eu-1", "herb", T0 + 2 * HOUR, 120, 1);
+	put_price(fixture->store, "eu-2", "herb", T0 + 2 * HOUR, 180, 3);
+
+	history = venture_series_store_group_history(fixture->store, "eu", "herb",
+	                                             VENTURE_SERIES_RESOLUTION_HOUR, T0 + HOUR,
+	                                             T0 + 3 * HOUR, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(history->points->len, ==, 3);
+
+	point = history_at(history, T0 + HOUR);
+	g_assert_cmpint(point->min_price, ==, 200);
+	g_assert_cmpint(point->quantity, ==, 7);
+	g_assert_cmpint(point->venues, ==, 3);
+
+	/* Two venues: the mean of the middle two, as the region's median. */
+	point = history_at(history, T0 + 2 * HOUR);
+	g_assert_cmpint(point->min_price, ==, 150);
+	g_assert_cmpint(point->quantity, ==, 4);
+	g_assert_cmpint(point->venues, ==, 2);
+
+	point = history_at(history, T0 + 3 * HOUR);
+	g_assert_cmpint(point->quantity, ==, VENTURE_SERIES_NONE);
+	g_clear_pointer(&history, venture_series_history_free);
+
+	/* Every venue, by the day. */
+	history = venture_series_store_group_history(fixture->store, NULL, "herb",
+	                                             VENTURE_SERIES_RESOLUTION_DAY, T0, T0 + HOUR,
+	                                             NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(history->points->len, ==, 1);
+	g_assert_cmpint(history_at(history, T0)->venues, ==, 4);
+	/* The day's lowest at each: 1, 100, 180, 400. */
+	g_assert_cmpint(history_at(history, T0)->min_price, ==, 140);
+}
+
+/*
+ * A page of rows' hourly points in one statement, each pair's in its own
+ * array in the order asked, an unknown pair empty -- and a batch past a
+ * page refused rather than read.
+ */
+static void
+test_hourly_many(
+	Fixture		*fixture,
+	gconstpointer	 data
+){
+	g_autoptr(GPtrArray) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree VentureSeriesPair *many = NULL;
+	VentureSeriesPair pairs[4];
+	GArray *points;
+
+	put_price(fixture->store, "realm", "herb", T0 + HOUR, 100, 1);
+	put_price(fixture->store, "realm", "herb", T0 + 2 * HOUR, 90, 1);
+	/* A second snapshot at the same time would be the same snapshot. */
+	put_price(fixture->store, "realm", "ore", T0 + 2 * HOUR + 60, 50, 1);
+	put_price(fixture->store, "other", "herb", T0 + DAY, 70, 1);
+
+	pairs[0].venue_key = "other";
+	pairs[0].instrument_key = "herb";
+	pairs[1].venue_key = "realm";
+	pairs[1].instrument_key = "nothing\"'[]";
+	pairs[2].venue_key = "realm";
+	pairs[2].instrument_key = "herb";
+	pairs[3].venue_key = "realm";
+	pairs[3].instrument_key = "ore";
+
+	answer = venture_series_store_hourly_many(fixture->store, pairs, G_N_ELEMENTS(pairs),
+	                                          T0 + 2 * HOUR, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(answer->len, ==, 4);
+
+	points = g_ptr_array_index(answer, 0);
+	g_assert_cmpuint(points->len, ==, 1);
+	g_assert_cmpint(g_array_index(points, VentureSeriesPoint, 0).min_price, ==, 70);
+	g_assert_cmpuint(((GArray *)g_ptr_array_index(answer, 1))->len, ==, 0);
+
+	/* From @since on: the hour before it is left out. */
+	points = g_ptr_array_index(answer, 2);
+	g_assert_cmpuint(points->len, ==, 1);
+	g_assert_cmpint(g_array_index(points, VentureSeriesPoint, 0).at, ==, T0 + 2 * HOUR);
+	g_assert_cmpint(g_array_index(points, VentureSeriesPoint, 0).min_price, ==, 90);
+	g_assert_cmpstr(g_array_index(points, VentureSeriesPoint, 0).currency, ==, "GOLD");
+	points = g_ptr_array_index(answer, 3);
+	g_assert_cmpuint(points->len, ==, 1);
+	g_assert_cmpint(g_array_index(points, VentureSeriesPoint, 0).min_price, ==, 50);
+	g_clear_pointer(&answer, g_ptr_array_unref);
+
+	many = g_new0(VentureSeriesPair, VENTURE_SERIES_MAX_PAGE + 1);
+	answer = venture_series_store_hourly_many(fixture->store, many, VENTURE_SERIES_MAX_PAGE + 1, T0,
+	                                          &error);
+	g_assert_null(answer);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 #define ADD(path, func) \
 	g_test_add("/series-store/" path, Fixture, NULL, fixture_set_up, func, \
 	           fixture_tear_down)
@@ -2709,6 +3031,10 @@ main(
 	ADD("upgrade-instrument-indexes", test_upgrade_instrument_indexes);
 	ADD("checkpoint", test_checkpoint);
 	ADD("heat", test_heat);
+	ADD("history-gaps-and-range", test_history_gaps_and_range);
+	ADD("history-hourly-daily-boundary", test_history_hourly_daily_boundary);
+	ADD("group-history", test_group_history);
+	ADD("hourly-many", test_hourly_many);
 	ADD("reference", test_reference);
 	ADD("venue-state", test_venue_state);
 	ADD("purge", test_purge);

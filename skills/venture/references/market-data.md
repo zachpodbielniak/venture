@@ -67,6 +67,7 @@ venturectl market deals venue_group=characters venue=3676 sell_venue=11  # buy a
 venturectl market deals venue=Farstriders     # any member realm's name picks its whole connected realm
 venturectl market venues [source=N] [group=G]
 venturectl market instrument 1 2589 units=200        # SOURCE_ID KEY; units= prices a bulk buy
+venturectl --format json market instrument 1 2589 range=90d compare=region  # the price history in .history
 venturectl market watchlist [ID] organization_id=2   # 'watchlists' is the same verb
 venturectl market alerts [count=N]                   # rules and recent hits
 venturectl market help                               # every verb, options, examples
@@ -87,6 +88,17 @@ venturectl market help                               # every verb, options, exam
   alone, e.g. `Cenarius (+ Cairne, Frostmane, ...)`. `venue`/`sell_venue`
   take the label, any member realm's name or any source's key; each row
   says its `realm`. A venue group is read as whole connected realms.
+- **A dip or the new normal.** The item page's *Price history* charts the
+  lowest price, market value and quantity over `range` (`24h`, `7d`, `14d`
+  default, `90d`, `all`; anything else is a 400): hour by hour within
+  `series.hourly_days`, day by day beyond, never both on one line. Gaps are
+  hours (or days) nothing was stored for. `compare=region` adds the group's
+  median as it stood then, `compare=VENUE_KEY` another venue (a 404 if it
+  never listed the item). `GET /api/v1/market/history/SOURCE/KEY` answers
+  the history alone. Deals and Browse rows carry `trend_7d` (42 four-hour
+  lows), `median_7d`, `median_7d_hours` and `vs_median_7d_pct` (-30 = 30%
+  under the week's median; null under 12 hours of prices); the CLI tables
+  show it as `vs 7d`.
 - **Every price says how old it is.** Deals rows: `buy_taken_at`,
   `buy_age_seconds`, `buy_stale`, and `sell_*` likewise (the `sell` object
   unprefixed); an item's `base` and `venues[]` and arbitrage `buy`/`sell`

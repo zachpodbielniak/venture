@@ -596,6 +596,8 @@ static const VentureCliOption venture_cli_market_venues_options[] = {
 static const VentureCliOption venture_cli_market_instrument_options[] = {
 	{ "venue", "venue", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "units", "units", VENTURE_CLI_OPTION_INT, NULL },
+	{ "range", "range", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "compare", "compare", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
 };
@@ -616,6 +618,7 @@ static const VentureCliColumn venture_cli_market_row_columns[] = {
 	{ "market_value", "market", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "region_median", "region", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "pct_vs_region", "vs region", VENTURE_CLI_CELL_PERCENT, FALSE },
+	{ "vs_median_7d_pct", "vs 7d", VENTURE_CLI_CELL_PERCENT, FALSE },
 	{ "sale_rate", "sale rate", VENTURE_CLI_CELL_FRACTION, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
@@ -629,6 +632,7 @@ static const VentureCliColumn venture_cli_market_deal_columns[] = {
 	{ "deal_price", "deal", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "discount", "discount", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "pct_vs_region", "vs region", VENTURE_CLI_CELL_PERCENT, FALSE },
+	{ "vs_median_7d_pct", "vs 7d", VENTURE_CLI_CELL_PERCENT, FALSE },
 	{ "quantity", "qty", VENTURE_CLI_CELL_NUMBER, FALSE },
 	{ "buy_age_seconds", "age s", VENTURE_CLI_CELL_NUMBER, FALSE },
 	{ "buy_stale", "stale", VENTURE_CLI_CELL_TEXT, FALSE },
@@ -745,7 +749,8 @@ static const gchar venture_cli_market_usage[] =
 	"  deals [source=N] [venue=KEY] [group=G] [category=PATH]\n"
 	"        [min_value=\"10.00 GOLD\"] [max_pct=80] [top=N]\n"
 	"  venues [source=N] [group=G]\n"
-	"  instrument SOURCE_ID KEY [venue=KEY] [units=N]\n"
+	"  instrument SOURCE_ID KEY [venue=KEY] [units=N] [range=24h|7d|14d|90d|all]\n"
+	"             [compare=region|VENUE] (the price history: --format json)\n"
 	"  watchlist [ID] [organization_id=N]\n"
 	"  alerts [count=N]\n"
 	"  alerts evaluate RULE_ID [--dry-run] [organization_id=N]\n"

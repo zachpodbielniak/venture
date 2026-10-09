@@ -2239,10 +2239,25 @@ pages").
   back on the install's default currency; `venture_marketdata_parse_amount()`
   refuses an amount that reads differently under two defaults. Use it for
   any amount a market filter compares.
+- **A price history is hours or days, never both on one line.** An
+  hour's figure is its last snapshot, a day's its lowest all day: a line
+  that switched partway would draw a step the market never took. The
+  range picks one (`md_history_object()`: within `series.hourly_days` by
+  the hour, else by the day), and the store returns a regular grid of
+  slots with gaps where nothing was stored, so an outage is not drawn as
+  two adjacent hours.
+- **A join into `hourly` or `daily` is a `CROSS JOIN`, instrument first.**
+  The store has no statistics, and SQLite drove a join of `hourly` from
+  `hourly_day`: one instrument's fortnight across 84 venues took three
+  seconds instead of milliseconds. A table's per-row history is one
+  statement per source for the rows shown (`venture_series_store_hourly_many()`,
+  the pairs bound as JSON to `json_each()`), never a query a row.
 - **Charts carry no colour.** `src/web/venture-web-chart.c` draws in
   `currentColor` with classes both stylesheets colour from tokens; a new
   chart class goes into both, in the market block at their end, and
-  `/market-pages/doors-and-looks` checks the page in both looks.
+  `/market-pages/doors-and-looks` checks the page in both looks. A line
+  chart's series on one side share that side's scale (two prices are one
+  unit); at most `VENTURE_WEB_CHART_MAX_SERIES`, one mark class each.
 
 ## The Accounts pages
 

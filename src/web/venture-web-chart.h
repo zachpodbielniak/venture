@@ -35,6 +35,15 @@ G_BEGIN_DECLS
 #define VENTURE_WEB_CHART_MAX_POINTS (2000)
 
 /**
+ * VENTURE_WEB_CHART_MAX_SERIES:
+ *
+ * The most series a line chart draws. Each has its own mark
+ * (chart-line-1 to chart-line-4) in both stylesheets; a fifth would have
+ * none, so it is refused rather than drawn in a style nobody chose.
+ */
+#define VENTURE_WEB_CHART_MAX_SERIES (4)
+
+/**
  * VentureWebChartFormat:
  * @value: a value, never NAN
  * @user_data: the data given beside the function
@@ -76,7 +85,8 @@ typedef struct
  *   bottom (thinned to fit) and down the data table
  * @n_points: how many points
  * @series: (array length=n_series): the series
- * @n_series: how many: one or two for a line, one for bars
+ * @n_series: how many: one to %VENTURE_WEB_CHART_MAX_SERIES for a line,
+ *   one for bars
  * @width: the drawing's width in user units, 0 for 640
  * @height: its height, 0 for 220
  *
@@ -129,9 +139,12 @@ typedef struct
  * venture_web_chart_line:
  * @chart: the chart
  *
- * Draws a line chart: one or two series, the second against its own axis
- * on the right when it says so, with a legend and the data table. A gap
- * (NAN) breaks the line; a point with gaps both sides is drawn as a dot.
+ * Draws a line chart: up to %VENTURE_WEB_CHART_MAX_SERIES series, those
+ * marked secondary against an axis of their own on the right, with a
+ * legend and the data table. The series on one side share that side's
+ * scale -- a price and a median of prices are read against one axis, or
+ * the gap between them would mean nothing. A gap (NAN) breaks the line; a
+ * point with gaps both sides is drawn as a dot.
  *
  * Returns: (transfer full): an HTML <figure>, or an empty-state paragraph
  *   when there is nothing to draw
