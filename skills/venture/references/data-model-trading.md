@@ -27,7 +27,10 @@ usage is in [market-production.md](market-production.md),
 
 - `recipe` -- **name**, **output_product_id**, `output_quantity` (batch,
   >= 1), `venture_id`, `category_id`, `active` (pass `true`; inactive
-  recipes cannot craft and leave `recipe_margin`). *action* `craft (s)`
+  recipes cannot craft and leave `recipe_margin`), `external_ref`
+  (technical, unique per organization incl. deleted: an import's identity,
+  `wow-spell:<id>` from TSM recipes), `known_by` (JSON list of account keys
+  `Name-Realm`; Crafting's `character` filter). *action* `craft (s)`
   (`times`, `location_id`, `occurred_at`).
 - `recipe_component` -- `recipe_id`, `product_id`, `quantity` (>= 1),
   `reusable` (a tool: needed on hand, not consumed; default consumed).

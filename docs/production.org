@@ -59,12 +59,23 @@ from). See [[file:modules.org][Modules]].
 | =output_quantity=   | integer   | units one batch makes; at least 1                                |
 | =category_id=       | reference | optional: where it is filed ([[file:taxonomy.org][Taxonomy]]); the category's =applies_to= must be empty or =recipe= |
 | =active=            | boolean   | can be crafted; an inactive recipe keeps its history             |
+| =known_by=          | JSON      | optional: the characters that know it, a JSON list of market data account keys (=["Havemércy-Thorium Brotherhood"]=); Crafting filters on it |
+| =external_ref=      | string    | optional, technical: what an import knows it by (=wow-spell:56029=); unique in the organization, deleted recipes included, an empty one never |
 | =notes=             | text      |                                                                  |
 
 =active= has no default an API call can supply: a recipe created through
 the API or =venturectl= without =active=true= is inactive, is not offered a
 Craft button, is refused by the action and is left out of =recipe_margin=.
 The form starts the box ticked, as it does for every =active= field.
+
+=external_ref= is how an import with an identity of its own for a recipe
+finds it again after it was renamed or the item it makes moved: the
+Blizzard plugin's =import_recipes=, handed TradeSkillMaster's list, files
+each recipe under its spell (see [[file:examples/wow-auction-house-feed.org::*The recipes your characters know, from TradeSkillMaster][the World of Warcraft example]]). A
+recipe typed in by hand has none. =known_by= is written by the same import
+-- sorted, each key once, replaced whole on every import that says it --
+and read by Crafting's =character= and =only_known= filters; a person may
+edit it like any field.
 
 ** What the save refuses
 

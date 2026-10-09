@@ -1956,6 +1956,339 @@ test_import_recipes_filed(
 	}
 }
 
+/* How many requests the fake Battle.net has answered, on any path. */
+static guint
+http_requests(Fixture *fixture)
+{
+	GHashTableIter iter;
+	gpointer value;
+	guint total = 0;
+
+	g_mutex_lock(&fixture->http.lock);
+	g_hash_table_iter_init(&iter, fixture->http.hits);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+		total += (guint)*(gint *)value;
+
+	g_mutex_unlock(&fixture->http.lock);
+
+	return total;
+}
+
+/* The live components of @recipe, as "product-id:quantity" ordered by
+ * product, joined with spaces. */
+static gchar *
+components_of(
+	Fixture		*fixture,
+	VentureEntity	*recipe
+){
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_RECIPE_COMPONENT);
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(GError) error = NULL;
+	GString *text = g_string_new(NULL);
+	guint i;
+
+	g_assert_true(venture_query_add_filter_int(query, "recipe-id", VENTURE_FILTER_OP_EQ,
+	                                           venture_entity_get_id(recipe), &error));
+	venture_query_add_order(query, "product-id", VENTURE_SORT_ASCENDING, NULL);
+	lines = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+
+	for (i = 0; i < lines->len; i++)
+	{
+		gint64 product;
+		gint64 quantity;
+
+		g_object_get(g_ptr_array_index(lines, i), "product-id", &product, "quantity", &quantity, NULL);
+		g_string_append_printf(text, "%s%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT, (i > 0) ? " " : "",
+		                       product, quantity);
+	}
+
+	return g_string_free(text, FALSE);
+}
+
+/* The product of the instrument keyed @key. */
+static gint64
+product_of_item(
+	Fixture		*fixture,
+	const gchar	*key
+){
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INSTRUMENT);
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 product = 0;
+
+	g_assert_true(venture_query_add_filter_string(query, "key", VENTURE_FILTER_OP_EQ, key, &error));
+	found = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(found->len, ==, 1);
+	g_object_get(g_ptr_array_index(found, 0), "product-id", &product, NULL);
+	g_assert_cmpint(product, >, 0);
+
+	return product;
+}
+
+/* What tsmctl sends for two crafts, @gloves_reagents being the gloves'
+ * reagent list and @known the first one's known_by, and two elements of
+ * the wrong shape. */
+static gchar *
+supplied_body(
+	gint64		 venture_id,
+	const gchar	*gloves_reagents,
+	const gchar	*known
+){
+	return g_strdup_printf(
+		"{\"create_products\":true,\"venture_id\":%" G_GINT64_FORMAT ",\"recipes\":["
+		"{\"spell_id\":56029,\"name\":\"Spellweave Gloves\",\"profession\":\"Tailoring\","
+		" \"expansion\":\"Northrend\",\"category\":\"Gloves\",\"item\":42113,\"quantity\":1,\"reagents\":%s,"
+		" \"known_by\":%s},"
+		"{\"spell_id\":2657,\"name\":\"Smelt Copper\",\"profession\":\"Mining\",\"category\":null,"
+		" \"item\":2840,\"item_name\":\"Copper Bar\",\"quantity\":1.5,"
+		" \"reagents\":[{\"item\":2770,\"quantity\":1}],\"known_by\":[\"Brisk - Evermoor\"]},"
+		"{\"spell_id\":3,\"name\":\"Broken\",\"profession\":\"Tailoring\",\"item\":5,\"reagents\":[]},"
+		"42]}",
+		venture_id, gloves_reagents, known);
+}
+
+/*
+ * import_recipes handed `recipes` -- what tsmctl reads out of
+ * TradeSkillMaster -- makes exactly those recipes without a single
+ * request to Battle.net: instruments and products for every item, the
+ * recipe filed under profession / expansion / section, its spell as its reference and
+ * who knows it in its notes, and an element of the wrong shape skipped
+ * with its reason. Again with the same list (who knows it in another
+ * order) changes nothing; a reagent's new quantity is written, a reagent
+ * the list stopped naming is deleted, and a tool a person added stays.
+ *
+ * What breaks if this regresses: importing a crafter's 1,285 recipes walks
+ * every profession on Battle.net (whose recipe ids are not TSM's spells);
+ * a re-import doubles components or never drops a reagent Blizzard took
+ * out, so a craft consumes what it no longer needs.
+ */
+static void
+test_import_recipes_supplied(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) venture = record(fixture, "venture");
+	g_autoptr(VentureEntity) gloves = NULL;
+	g_autoptr(VentureEntity) smelt = NULL;
+	g_autoptr(VentureEntity) tool = NULL;
+	g_autoptr(VentureEntity) hammer = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *first = NULL;
+	g_autofree gchar *again = NULL;
+	g_autofree gchar *changed = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *lines = NULL;
+	g_autofree gchar *expected = NULL;
+	g_autofree gchar *ref = NULL;
+	g_autofree gchar *notes = NULL;
+	gint64 components;
+	gint64 quantity;
+	gint64 output;
+	gint64 id;
+
+	(void)user_data;
+
+	serve_battle_net(fixture);
+	id = create_source(fixture, "connected_realm_ids: [11]\n", client_secret, "manual");
+	g_object_set(venture, "name", "Crafting", NULL);
+	save(fixture, venture);
+	g_assert_cmpuint(http_requests(fixture), ==, 0);
+
+	body = supplied_body(venture_entity_get_id(venture),
+	                     "[{\"item\":41511,\"quantity\":4},{\"item\":41593,\"quantity\":1}]",
+	                     "[\"Havemércy-Thorium Brotherhood\",\"Alt-Thorium Brotherhood\"]");
+	first = import(fixture, id, body);
+	g_assert_nonnull(strstr(first, "Read 4 recipes: 2 created, 0 updated, 0 unchanged, 2 skipped."));
+	g_assert_nonnull(strstr(first, "recipes[2] (spell 3): reagents must be a list"));
+	g_assert_nonnull(strstr(first, "recipes[3]: is not an object"));
+	g_assert_nonnull(strstr(first, "Done"));
+	g_assert_null(strstr(first, "cursor="));
+
+	/* Not one request: no token, no profession index, no recipe. */
+	g_assert_cmpuint(http_requests(fixture), ==, 0);
+
+	gloves = recipe_named(fixture, "Spellweave Gloves");
+	g_object_get(gloves, "external-ref", &ref, "notes", &notes, "output-quantity", &quantity,
+	             "output-product-id", &output, NULL);
+	g_assert_cmpstr(ref, ==, "wow-spell:56029");
+	g_assert_cmpint(quantity, ==, 1);
+	g_assert_cmpint(output, ==, product_of_item(fixture, "42113"));
+	g_assert_nonnull(strstr(notes, "spell 56029"));
+	g_assert_nonnull(strstr(notes, "\nKnown by: Alt-Thorium Brotherhood, Havemércy-Thorium Brotherhood"));
+	{
+		g_autofree gchar *knowers = NULL;
+
+		g_object_get(gloves, "known-by", &knowers, NULL);
+		g_assert_cmpstr(knowers, ==, "[\"Alt-Thorium Brotherhood\",\"Havemércy-Thorium Brotherhood\"]");
+	}
+	path = recipe_category_of(fixture, "Spellweave Gloves");
+	g_assert_cmpstr(path, ==, "Tailoring / Northrend / Gloves");
+	g_clear_pointer(&path, g_free);
+
+	expected = g_strdup_printf("%" G_GINT64_FORMAT ":4 %" G_GINT64_FORMAT ":1",
+	                           product_of_item(fixture, "41511"), product_of_item(fixture, "41593"));
+	lines = components_of(fixture, gloves);
+	g_assert_cmpstr(lines, ==, expected);
+	g_clear_pointer(&lines, g_free);
+	g_clear_pointer(&expected, g_free);
+
+	/* A proc's 1.5 made is a batch of one; no section is the profession
+	 * alone; the item's name names its product. */
+	smelt = recipe_named(fixture, "Smelt Copper");
+	g_object_get(smelt, "output-quantity", &quantity, "output-product-id", &output, NULL);
+	g_assert_cmpint(quantity, ==, 1);
+	path = recipe_category_of(fixture, "Smelt Copper");
+	g_assert_cmpstr(path, ==, "Mining");
+	g_clear_pointer(&path, g_free);
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureEntity) bar = venture_database_get(fixture->database, VENTURE_TYPE_PRODUCT, output,
+		                                                    &error);
+
+		g_assert_no_error(error);
+		g_assert_cmpstr(venture_entity_get_display_name(bar), ==, "Copper Bar");
+	}
+
+	/* The same list, its characters in another order: nothing moves. */
+	components = count_of(fixture, VENTURE_TYPE_RECIPE_COMPONENT);
+	g_free(body);
+	body = supplied_body(venture_entity_get_id(venture),
+	                     "[{\"item\":41593,\"quantity\":1},{\"item\":41511,\"quantity\":4}]",
+	                     "[\"Alt-Thorium Brotherhood\",\"Havemércy-Thorium Brotherhood\","
+	                     "\"Alt-Thorium Brotherhood\"]");
+	again = import(fixture, id, body);
+	g_assert_nonnull(strstr(again, "Read 4 recipes: 0 created, 0 updated, 2 unchanged, 2 skipped."));
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_RECIPE), ==, 2);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_RECIPE_COMPONENT), ==, components);
+
+	/* A person adds a tool to the gloves; then the list changes: five
+	 * of the first reagent, the second gone. */
+	hammer = record(fixture, "product");
+	g_object_set(hammer, "name", "Needle", "venture-id", venture_entity_get_id(venture), NULL);
+	save(fixture, hammer);
+	tool = record(fixture, "recipe_component");
+	g_object_set(tool, "recipe-id", venture_entity_get_id(gloves), "product-id", venture_entity_get_id(hammer),
+	             "quantity", (gint64)1, "reusable", TRUE, NULL);
+	save(fixture, tool);
+
+	g_free(body);
+	body = supplied_body(venture_entity_get_id(venture), "[{\"item\":41511,\"quantity\":5}]",
+	                     "[\"Havemércy-Thorium Brotherhood\"]");
+	changed = import(fixture, id, body);
+	g_assert_nonnull(strstr(changed, "Read 4 recipes: 0 created, 1 updated, 1 unchanged, 2 skipped."));
+
+	expected = g_strdup_printf("%" G_GINT64_FORMAT ":5 %" G_GINT64_FORMAT ":1",
+	                           product_of_item(fixture, "41511"), venture_entity_get_id(hammer));
+	lines = components_of(fixture, gloves);
+	g_assert_cmpstr(lines, ==, expected);
+
+	/* Who knows it is replaced whole -- the alt no longer does -- and
+	 * is one line of the notes, rewritten in place. */
+	g_clear_object(&gloves);
+	g_clear_pointer(&notes, g_free);
+	gloves = recipe_named(fixture, "Spellweave Gloves");
+	{
+		g_autofree gchar *knowers = NULL;
+
+		g_object_get(gloves, "known-by", &knowers, NULL);
+		g_assert_cmpstr(knowers, ==, "[\"Havemércy-Thorium Brotherhood\"]");
+	}
+	g_object_get(gloves, "notes", &notes, NULL);
+	g_assert_cmpstr(notes, ==, "Imported from TradeSkillMaster: spell 56029\n"
+	                           "Known by: Havemércy-Thorium Brotherhood");
+
+	/* Nobody knows it any more: the field and the line both go. */
+	{
+		g_autofree gchar *nobody = NULL;
+		g_autofree gchar *knowers = NULL;
+		g_autofree gchar *left = NULL;
+
+		g_free(body);
+		body = supplied_body(venture_entity_get_id(venture), "[{\"item\":41511,\"quantity\":5}]", "[]");
+		nobody = import(fixture, id, body);
+		g_assert_nonnull(strstr(nobody, "0 created, 1 updated, 1 unchanged"));
+		g_clear_object(&gloves);
+		gloves = recipe_named(fixture, "Spellweave Gloves");
+		g_object_get(gloves, "known-by", &knowers, "notes", &left, NULL);
+		g_assert_true(venture_string_is_empty(knowers));
+		g_assert_cmpstr(left, ==, "Imported from TradeSkillMaster: spell 56029");
+	}
+}
+
+/* import_recipes with @params_json refused, with @code. */
+static void
+import_refused(
+	Fixture		*fixture,
+	gint64		 id,
+	const gchar	*params_json,
+	gint		 code
+){
+	g_autoptr(JsonNode) node = json_from_string(params_json, NULL);
+	g_autoptr(GHashTable) params = NULL;
+	g_autoptr(VentureEntity) answer = NULL;
+	g_autoptr(GError) error = NULL;
+
+	g_assert_nonnull(node);
+	params = venture_action_parameters_from_json(node, &error);
+	g_assert_no_error(error);
+	answer = venture_action_registry_perform(venture_database_get_action_registry(fixture->database),
+	                                         "data_source", id, "import_recipes", params, NULL,
+	                                         VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_null(answer);
+	g_assert_error(error, VENTURE_ERROR, code);
+}
+
+/*
+ * What `recipes` refuses as a whole: more than 2000 in one call, a value
+ * that is not a list, and any of the walk's parameters beside it -- each
+ * before anything is written. The list as text (what a form and
+ * `venturectl act` post) is read like the array.
+ *
+ * What breaks if this regresses: a caller's max_recipes or cursor is
+ * silently ignored, or one request holds the server for an unbounded list.
+ */
+static void
+test_import_recipes_supplied_refused(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) venture = record(fixture, "venture");
+	g_autoptr(GString) many = g_string_new("{\"recipes\":[");
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *answer = NULL;
+	gint64 id;
+	guint i;
+
+	(void)user_data;
+
+	id = create_source(fixture, "connected_realm_ids: [11]\n", client_secret, "manual");
+	g_object_set(venture, "name", "Crafting", NULL);
+	save(fixture, venture);
+
+	for (i = 0; i < 2001; i++)
+		g_string_append_printf(many, "%s{}", (i > 0) ? "," : "");
+
+	g_string_append(many, "]}");
+	import_refused(fixture, id, many->str, VENTURE_ERROR_VALIDATION);
+	import_refused(fixture, id, "{\"recipes\":{\"spell_id\":1}}", VENTURE_ERROR_VALIDATION);
+	import_refused(fixture, id, "{\"recipes\":[],\"max_recipes\":10}", VENTURE_ERROR_VALIDATION);
+	import_refused(fixture, id, "{\"recipes\":[],\"cursor\":\"186/2572/0\"}", VENTURE_ERROR_VALIDATION);
+	import_refused(fixture, id, "{\"recipes\":[],\"create_products\":true}", VENTURE_ERROR_VALIDATION);
+	g_assert_cmpint(count_of(fixture, VENTURE_TYPE_INSTRUMENT), ==, 0);
+
+	/* Text holding the array; an empty field from a form asks nothing. */
+	text = g_strdup_printf(
+		"{\"create_products\":true,\"venture_id\":%" G_GINT64_FORMAT ",\"cursor\":\"\",\"recipes\":"
+		"\"[{\\\"spell_id\\\":2657,\\\"name\\\":\\\"Smelt Copper\\\",\\\"profession\\\":\\\"Mining\\\","
+		"\\\"item\\\":2840,\\\"reagents\\\":[{\\\"item\\\":2770,\\\"quantity\\\":1}]}]\"}",
+		venture_entity_get_id(venture));
+	answer = import(fixture, id, text);
+	g_assert_nonnull(strstr(answer, "Read 1 recipes: 1 created, 0 updated, 0 unchanged, 0 skipped."));
+}
+
 /*
  * The commodity market is marked region-wide in the store, and
  * set_venue_fees gives every venue the store knows a record with the
@@ -2243,6 +2576,8 @@ main(
 	ADD("tsm-export", test_tsm_export);
 	ADD("import-recipes", test_import_recipes);
 	ADD("import-recipes-filed", test_import_recipes_filed);
+	ADD("import-recipes-supplied", test_import_recipes_supplied);
+	ADD("import-recipes-supplied-refused", test_import_recipes_supplied_refused);
 	ADD("venue-fees", test_venue_fees);
 	ADD("attribution", test_attribution);
 #undef ADD
