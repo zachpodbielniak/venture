@@ -1533,53 +1533,6 @@ arw_warnings(
 	}
 }
 
-/* Every value a query string gives @name, joined with commas: a <select
- * multiple> sends one per choice, and the parsed parameters keep one. */
-static gchar *
-arw_query_all(
-	HtmxRequest	*request,
-	const gchar	*name
-){
-	g_auto(GStrv) pairs = NULL;
-	g_autoptr(GString) joined = NULL;
-	const gchar *query;
-	guint i;
-
-	query = htmx_request_get_query(request);
-
-	if (venture_string_is_empty(query))
-		return NULL;
-
-	pairs = g_strsplit(query, "&", -1);
-	joined = g_string_new(NULL);
-
-	for (i = 0; NULL != pairs[i]; i++)
-	{
-		g_auto(GStrv) pair = g_strsplit(pairs[i], "=", 2);
-		g_autofree gchar *field = NULL;
-		g_autofree gchar *text = NULL;
-
-		if ((NULL == pair[0]) || (NULL == pair[1]))
-			continue;
-
-		/* A form encodes a space as '+'. */
-		g_strdelimit(pair[0], "+", ' ');
-		g_strdelimit(pair[1], "+", ' ');
-		field = g_uri_unescape_string(pair[0], NULL);
-		text = g_uri_unescape_string(pair[1], NULL);
-
-		if ((0 != g_strcmp0(field, name)) || venture_string_is_empty(text))
-			continue;
-
-		if (joined->len > 0)
-			g_string_append_c(joined, ',');
-
-		g_string_append(joined, text);
-	}
-
-	return (joined->len > 0) ? g_string_free(g_steal_pointer(&joined), FALSE) : NULL;
-}
-
 /* Crafting narrowed to one character, keeping the realms asked. */
 static void
 arw_character_link(
@@ -1691,12 +1644,69 @@ arw_name_picker(
 	g_string_append(html, "</select></label></div>");
 }
 
+/* The Crafting "List" picker: several may be chosen, their union priced. */
+static void
+arw_recipe_list_picker(
+	GString		*html,
+	JsonObject	*root,
+	JsonObject	*question
+){
+	JsonArray *choices = json_object_has_member(root, "recipe_list_choices")
+		? json_object_get_array_member(root, "recipe_list_choices") : NULL;
+	g_auto(GStrv) chosen = g_strsplit(venture_json_object_get_string(question, "recipe_list", ""), ",", -1);
+	guint i;
+
+	g_string_append(html, "<div class=\"field\"><label>List<select name=\"recipe_list\" multiple "
+	                      "data-no-picker size=\"3\">");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_json_object_get_int(choice, "id", 0));
+
+		g_string_append_printf(html, "<option value=\"%s\"%s>", id,
+		                       g_strv_contains((const gchar *const *)chosen, id) ? " selected" : "");
+		venture_html_escape_append(html, venture_json_object_get_string(choice, "name", ""));
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/* A recipe's lists and its "Add to list". */
+static void
+arw_recipe_list_cell(
+	GString		*html,
+	JsonObject	*row,
+	const gchar	*here,
+	gboolean	 can_write
+){
+	g_autofree gchar *identity = NULL;
+	gint64 recipe_id = venture_json_object_get_int(row, "recipe_id", 0);
+
+	if (recipe_id <= 0)
+	{
+		mdw_dash(html);
+		return;
+	}
+
+	identity = g_strdup_printf("<input type=\"hidden\" name=\"recipe_id\" value=\"%" G_GINT64_FORMAT "\">",
+	                           recipe_id);
+	mdw_list_cell(html, json_object_has_member(row, "recipe_lists")
+	                    ? json_object_get_array_member(row, "recipe_lists") : NULL,
+	              "/arbitrage/recipe-lists/", "/arbitrage/recipe-lists/remove", "/arbitrage/recipe-lists/add",
+	              identity, here, "recipe-list-names", venture_json_object_get_string(row, "title", NULL),
+	              can_write);
+}
+
 static void
 arw_craft_rows(
 	VentureWebServer	*self,
 	GString			*html,
 	JsonObject		*root,
-	gboolean		 can_plan
+	gboolean		 can_plan,
+	const gchar		*here,
+	gboolean		 can_list
 ){
 	JsonObject *options;
 	JsonObject *question;
@@ -1707,6 +1717,7 @@ arw_craft_rows(
 	question = json_object_get_object_member(root, "question");
 	rows = json_object_get_array_member(root, "rows");
 
+	mdw_list_datalist(html, "recipe-list-names", json_object_get_array_member(root, "recipe_list_choices"));
 	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Recipes</h2></div>"
 	                      "<div class=\"table-wrap\"><table class=\"data arbitrage-table crafting-table\">"
 	                      "<thead><tr><th scope=\"col\">Recipe</th><th scope=\"col\">Category</th>"
@@ -1716,7 +1727,7 @@ arw_craft_rows(
 	                      "<th scope=\"col\" class=\"num\">AH cut</th><th scope=\"col\" class=\"num\">Deposit</th>"
 	                      "<th scope=\"col\" class=\"num\">Profit</th><th scope=\"col\" class=\"num\">Margin</th>"
 	                      "<th scope=\"col\" class=\"num\">ROI</th><th scope=\"col\" class=\"num\">Sale rate</th>"
-	                      "<th scope=\"col\">Plan</th></tr></thead><tbody>");
+	                      "<th scope=\"col\">Lists</th><th scope=\"col\">Plan</th></tr></thead><tbody>");
 
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
 	{
@@ -1829,6 +1840,8 @@ arw_craft_rows(
 		mdw_sort_value(html, row, "sale_rate");
 		g_string_append(html, ">");
 		mdw_percent(html, row, "sale_rate", 100.0);
+		g_string_append(html, "</td><td class=\"list-cell\">");
+		arw_recipe_list_cell(html, row, here, can_list);
 		g_string_append(html, "</td><td>");
 
 		/* Only a craft that pays can be planned: a plan is re-asked
@@ -1845,8 +1858,11 @@ arw_craft_rows(
 	}
 
 	if ((NULL == rows) || (0 == json_array_get_length(rows)))
-		g_string_append(html, "<tr><td colspan=\"15\" class=\"muted\">No recipe to price. Import your "
-		                      "professions' recipes (see Crafting in the docs), or widen the question.</td></tr>");
+		g_string_append(html, (NULL != json_object_get_member(root, "recipe_list_filter"))
+		                      ? "<tr><td colspan=\"16\" class=\"muted\">Nothing on the list answers the question. "
+		                        "Add recipes to it from a Crafting row, or widen the question.</td></tr>"
+		                      : "<tr><td colspan=\"16\" class=\"muted\">No recipe to price. Import your "
+		                        "professions' recipes (see Crafting in the docs), or widen the question.</td></tr>");
 
 	g_string_append(html, "</tbody></table></div></div>");
 	mdw_attribution(html, root);
@@ -1865,14 +1881,17 @@ venture_arbitrage_web_crafting(
 	g_autoptr(JsonObject) asked = NULL;
 	g_autoptr(JsonNode) answer = NULL;
 	g_autoptr(GString) html = NULL;
+	g_autofree gchar *here = NULL;
+	g_autofree gchar *action = NULL;
 	JsonObject *root;
 	JsonObject *question;
 	gboolean api;
 	gboolean can_plan;
+	gboolean can_list;
 	HtmxResponse *gate;
 	gint64 organization_id;
-
-	(void)params;
+	gint64 list_id = 0;
+	guint i;
 
 	api = mdw_is_api(request);
 	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_DATA_SOURCE);
@@ -1880,18 +1899,48 @@ venture_arbitrage_web_crafting(
 	if (NULL != gate)
 		return gate;
 
+	/* /arbitrage/recipe-lists/:id is this page narrowed to one list:
+	 * the same answer, the same table, read as the list's own page. */
+	if ((NULL != params) && g_hash_table_contains(params, "id"))
+	{
+		gate = arw_gate(self, request, api, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_RECIPE_LIST);
+
+		if (NULL != gate)
+			return gate;
+
+		if (!mdw_path_id(params, "id", &list_id, &error))
+			return venture_web_error_response(error);
+	}
+
 	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
 		return venture_web_error_response(error);
 
 	asked = arw_options(htmx_request_get_query_params(request));
 	json_object_remove_member(asked, "organization_id");
 
-	/* Several characters: one parameter each, or one comma separated. */
-	{
-		g_autofree gchar *characters = arw_query_all(request, "character");
+	/* A list's notice is the page's, not the question's. */
+	for (i = 0; NULL != mdw_list_notice_names[i]; i++)
+		json_object_remove_member(asked, mdw_list_notice_names[i]);
 
-		if (NULL != characters)
-			json_object_set_string_member(asked, "character", characters);
+	/* Several characters, or lists: one parameter each, or one comma
+	 * separated. */
+	{
+		static const gchar *const repeated[] = { "character", "recipe_list", NULL };
+
+		for (i = 0; NULL != repeated[i]; i++)
+		{
+			g_autofree gchar *joined = mdw_query_all(request, repeated[i]);
+
+			if (NULL != joined)
+				json_object_set_string_member(asked, repeated[i], joined);
+		}
+	}
+
+	if (list_id > 0)
+	{
+		g_autofree gchar *text = g_strdup_printf("%" G_GINT64_FORMAT, list_id);
+
+		json_object_set_string_member(asked, "recipe_list", text);
 	}
 
 	answer = venture_arbitrage_crafting(self->context, organization_id, asked, &error);
@@ -1907,18 +1956,49 @@ venture_arbitrage_web_crafting(
 	principal = venture_auth_authenticate(self->auth, request);
 	can_plan = venture_web_require_for_type(self, principal, VENTURE_TYPE_ARBITRAGE_TRADE,
 	                                        VENTURE_USER_ROLE_EDITOR, NULL);
+	can_list = venture_web_require_for_type(self, principal, VENTURE_TYPE_RECIPE_LIST_ENTRY,
+	                                        VENTURE_USER_ROLE_EDITOR, NULL);
+	here = mdw_here(request);
 
 	html = g_string_new(NULL);
-	mdw_head(html, "Trading", "Crafting",
-	         "What every recipe makes on the latest prices: reagents where they are cheapest (commodities "
-	         "from the region's market), the craft sold where it fetches most, after the auction house's "
-	         "cut and deposit.");
-	g_string_append(html, "<p class=\"muted\"><a href=\"/arbitrage/plan\">Flip planner</a> \xc2\xb7 "
-	                      "<a href=\"/arbitrage?strategy=transform\">Arbitrage</a> \xc2\xb7 "
-	                      "<a href=\"/e/recipe\">Recipes</a></p>");
 
-	g_string_append(html, "<div class=\"card\"><form method=\"get\" action=\"/arbitrage/crafting\" "
-	                      "class=\"form-grid arbitrage-filters\" role=\"search\" aria-label=\"Crafting filters\">");
+	if (list_id > 0)
+	{
+		JsonArray *filter = json_object_get_array_member(root, "recipe_list_filter");
+		const gchar *name = ((NULL != filter) && (json_array_get_length(filter) > 0))
+			? venture_json_object_get_string(json_array_get_object_element(filter, 0), "name", "") : "";
+
+		action = g_strdup_printf("/arbitrage/recipe-lists/%" G_GINT64_FORMAT, list_id);
+		g_string_append(html, "<div class=\"page-head\"><div class=\"page-title\"><nav class=\"crumbs\" "
+		                      "aria-label=\"Breadcrumb\"><a href=\"/arbitrage/recipe-lists\">Recipe lists</a></nav><h1>");
+		venture_html_escape_append(html, name);
+		g_string_append_printf(html, "</h1><p class=\"muted\">The list's recipes priced as Crafting prices "
+		                             "them, on the latest prices.</p></div><div class=\"page-actions\">"
+		                             "<a class=\"btn\" href=\"/e/recipe_list/%" G_GINT64_FORMAT "\">Edit list</a>"
+		                             "<a class=\"btn\" href=\"/arbitrage/crafting\">Every recipe</a></div></div>",
+		                       list_id);
+	}
+	else
+	{
+		action = g_strdup("/arbitrage/crafting");
+		mdw_head(html, "Trading", "Crafting",
+		         "What every recipe makes on the latest prices: reagents where they are cheapest (commodities "
+		         "from the region's market), the craft sold where it fetches most, after the auction house's "
+		         "cut and deposit.");
+		g_string_append(html, "<p class=\"muted\"><a href=\"/arbitrage/plan\">Flip planner</a> \xc2\xb7 "
+		                      "<a href=\"/arbitrage?strategy=transform\">Arbitrage</a> \xc2\xb7 "
+		                      "<a href=\"/arbitrage/recipe-lists\">Recipe lists</a> \xc2\xb7 "
+		                      "<a href=\"/e/recipe\">Recipes</a></p>");
+	}
+
+	g_string_append_printf(html, "<div class=\"card\"><form method=\"get\" action=\"%s\" "
+	                             "class=\"form-grid arbitrage-filters\" role=\"search\" "
+	                             "aria-label=\"Crafting filters\">", action);
+
+	/* On a list's own page the list is the page; elsewhere a picker. */
+	if (0 == list_id)
+		arw_recipe_list_picker(html, root, question);
+
 	arw_character_picker(html, root, question);
 	arw_name_picker(html, root, question, "profession_choices", "Profession", "profession", "every profession");
 	arw_name_picker(html, root, question, "expansion_choices", "Expansion", "expansion", "every expansion");
@@ -1954,15 +2034,216 @@ venture_arbitrage_web_crafting(
 		                       venture_json_object_get_int(question, "recipe_id", 0));
 
 	g_string_append(html, "<button class=\"btn\" type=\"submit\">Price</button></form></div>");
+	mdw_list_notice(html, request, json_object_get_array_member(root, "recipe_list_choices"));
 	mdw_notes(html, root);
-	arw_craft_rows(self, html, root, can_plan);
+	arw_craft_rows(self, html, root, can_plan, here, can_list);
 
 	if (json_object_get_boolean_member(root, "truncated"))
 		g_string_append(html, "<p class=\"muted market-more\">More recipes were priced than are shown; "
 		                      "narrow to a recipe category.</p>");
 
-	return venture_web_html_response(venture_web_page(self, request, "/arbitrage/crafting", "Crafting",
+	return venture_web_html_response(venture_web_page(self, request,
+	                                                  (list_id > 0) ? "/arbitrage/recipe-lists" : "/arbitrage/crafting",
+	                                                  (list_id > 0) ? "Recipe list" : "Crafting", html->str), 200);
+}
+
+/* --- /arbitrage/recipe-lists ---------------------------------------------------- */
+
+/* Every recipe list, with how many recipes each holds. */
+static HtmxResponse *
+venture_arbitrage_web_recipe_lists(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GString) html = NULL;
+	JsonArray *lists;
+	gboolean api;
+	HtmxResponse *gate;
+	gint64 organization_id;
+	guint i;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_RECIPE_LIST);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	answer = venture_arbitrage_recipe_lists(self->context, organization_id);
+
+	if (api)
+		return venture_web_json_response(answer, 200);
+
+	lists = json_object_get_array_member(json_node_get_object(answer), "recipe_lists");
+	html = g_string_new("<div class=\"page-head\"><div class=\"page-title\"><div class=\"eyebrow\">Trading"
+	                    "</div><h1>Recipe lists</h1><p class=\"muted\">Recipes you keep coming back to -- "
+	                    "favourites, this week's bag crafts -- each list priced as Crafting prices it.</p></div>"
+	                    "<div class=\"page-actions\"><a class=\"btn btn-primary\" href=\"/e/recipe_list/new\">"
+	                    "New recipe list</a></div></div>");
+	mdw_list_notice(html, request, lists);
+	g_string_append(html, "<div class=\"card\"><table class=\"data\"><thead><tr><th scope=\"col\">Name</th>"
+	                      "<th scope=\"col\" class=\"num\">Recipes</th>"
+	                      "<th scope=\"col\"><span class=\"visually-hidden\">Edit</span></th></tr></thead><tbody>");
+
+	for (i = 0; (NULL != lists) && (i < json_array_get_length(lists)); i++)
+	{
+		JsonObject *list = json_array_get_object_element(lists, i);
+		gint64 id = venture_json_object_get_int(list, "id", 0);
+
+		g_string_append_printf(html, "<tr><td class=\"row-head\"><a href=\"/arbitrage/recipe-lists/%"
+		                       G_GINT64_FORMAT "\">", id);
+		venture_html_escape_append(html, venture_json_object_get_string(list, "name", ""));
+		g_string_append(html, "</a></td><td class=\"num\">");
+		mdw_int(html, list, "entries");
+		g_string_append_printf(html, "</td><td><a href=\"/e/recipe_list/%" G_GINT64_FORMAT "\">Edit</a></td></tr>",
+		                       id);
+	}
+
+	if ((NULL == lists) || (0 == json_array_get_length(lists)))
+		g_string_append(html, "<tr><td colspan=\"3\" class=\"muted\">No recipe lists yet. Add a recipe to a "
+		                      "new list from a Crafting row.</td></tr>");
+
+	g_string_append(html, "</tbody></table></div>");
+
+	return venture_web_html_response(venture_web_page(self, request, "/arbitrage/recipe-lists", "Recipe lists",
 	                                                  html->str), 200);
+}
+
+/*
+ * POST /arbitrage/recipe-lists/add: recipe_id onto a list -- list_id (or
+ * recipe_list_id), or `list`, a name found ignoring case or made. Back
+ * to `return` (the Crafting page it came from, filters kept) with a
+ * notice; the API twin answers the entry.
+ */
+static HtmxResponse *
+venture_arbitrage_web_recipe_list_add(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	static const gchar *const list_ids[] = { "list_id", "recipe_list_id", NULL };
+	static const gchar *const recipe_ids[] = { "recipe_id", NULL };
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) body = NULL;
+	g_autoptr(VentureEntity) entry = NULL;
+	g_autofree gchar *name = NULL;
+	g_autofree gchar *asked = NULL;
+	g_autofree gchar *back = NULL;
+	VentureActor actor;
+	gboolean api;
+	gboolean created_list = FALSE;
+	gboolean created_entry = FALSE;
+	gint64 organization_id;
+	gint64 list_id;
+	gint64 recipe_id;
+	gint64 entry_list = 0;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_RECIPE_LIST_ENTRY);
+
+	if (NULL != gate)
+		return gate;
+
+	body = mdw_json_body(request, &error);
+
+	if (NULL != error)
+		return venture_web_error_response(error);
+
+	if (!venture_web_request_organization(self, request, body, &organization_id, &error) ||
+	    !mdw_body_id(request, body, list_ids, &list_id, &error) ||
+	    !mdw_body_id(request, body, recipe_ids, &recipe_id, &error))
+		return venture_web_error_response(error);
+
+	name = mdw_body_field(request, body, "list");
+
+	if (NULL == name)
+		name = mdw_body_field(request, body, "recipe_list_name");
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_arbitrage_recipe_list_add(self->context, organization_id, list_id, name, recipe_id, &actor, &entry,
+	                                       &created_list, &created_entry, &error))
+		return venture_web_error_response(error);
+
+	g_object_get(entry, "recipe-list-id", &entry_list, NULL);
+
+	if (api)
+		return mdw_list_answer(entry, entry_list, created_list, created_entry, 0);
+
+	asked = mdw_body_field(request, body, "return");
+	back = mdw_list_back(asked, "/arbitrage/crafting", "list_added", entry_list, created_list);
+
+	return mdw_see_other(back);
+}
+
+/* POST /arbitrage/recipe-lists/remove: entry_id off its list. */
+static HtmxResponse *
+venture_arbitrage_web_recipe_list_remove(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	static const gchar *const entry_ids[] = { "entry_id", NULL };
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) body = NULL;
+	g_autofree gchar *asked = NULL;
+	g_autofree gchar *back = NULL;
+	g_autofree gchar *fallback = NULL;
+	VentureActor actor;
+	gboolean api;
+	gint64 organization_id;
+	gint64 entry_id;
+	gint64 list_id = 0;
+	HtmxResponse *gate;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_RECIPE_LIST_ENTRY);
+
+	if (NULL != gate)
+		return gate;
+
+	body = mdw_json_body(request, &error);
+
+	if (NULL != error)
+		return venture_web_error_response(error);
+
+	if (!venture_web_request_organization(self, request, body, &organization_id, &error) ||
+	    !mdw_body_id(request, body, entry_ids, &entry_id, &error))
+		return venture_web_error_response(error);
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_marketdata_list_take(self->context, venture_arbitrage_recipe_list_kind(), organization_id,
+	                                  entry_id, &actor, &list_id, &error))
+		return venture_web_error_response(error);
+
+	if (api)
+		return mdw_list_answer(NULL, list_id, FALSE, FALSE, entry_id);
+
+	asked = mdw_body_field(request, body, "return");
+	fallback = g_strdup_printf("/arbitrage/recipe-lists/%" G_GINT64_FORMAT, list_id);
+	back = mdw_list_back(asked, fallback, "list_removed", list_id, FALSE);
+
+	return mdw_see_other(back);
 }
 
 /* --- /arbitrage/plan ---------------------------------------------------------- */
@@ -2442,6 +2723,10 @@ venture_arbitrage_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_GET, "/arbitrage/export", venture_arbitrage_web_export },
 		{ HTMX_METHOD_GET, "/arbitrage/calc", venture_arbitrage_web_calc },
 		{ HTMX_METHOD_GET, "/arbitrage/crafting", venture_arbitrage_web_crafting },
+		{ HTMX_METHOD_GET, "/arbitrage/recipe-lists", venture_arbitrage_web_recipe_lists },
+		{ HTMX_METHOD_POST, "/arbitrage/recipe-lists/add", venture_arbitrage_web_recipe_list_add },
+		{ HTMX_METHOD_POST, "/arbitrage/recipe-lists/remove", venture_arbitrage_web_recipe_list_remove },
+		{ HTMX_METHOD_GET, "/arbitrage/recipe-lists/:id", venture_arbitrage_web_crafting },
 		{ HTMX_METHOD_GET, "/arbitrage/plan", venture_arbitrage_web_plan },
 		{ HTMX_METHOD_POST, "/arbitrage/plan/add", venture_arbitrage_web_record },
 		{ HTMX_METHOD_POST, "/arbitrage/plan/remove", venture_arbitrage_web_plan_remove },
@@ -2453,6 +2738,10 @@ venture_arbitrage_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/calc", venture_arbitrage_web_calc },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/registries", venture_arbitrage_web_registries },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/crafting", venture_arbitrage_web_crafting },
+		{ HTMX_METHOD_GET, "/api/v1/arbitrage/recipe-lists", venture_arbitrage_web_recipe_lists },
+		{ HTMX_METHOD_POST, "/api/v1/arbitrage/recipe-lists/add", venture_arbitrage_web_recipe_list_add },
+		{ HTMX_METHOD_POST, "/api/v1/arbitrage/recipe-lists/remove", venture_arbitrage_web_recipe_list_remove },
+		{ HTMX_METHOD_GET, "/api/v1/arbitrage/recipe-lists/:id", venture_arbitrage_web_crafting },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/plan", venture_arbitrage_web_plan },
 		{ HTMX_METHOD_POST, "/api/v1/arbitrage/plan/remove", venture_arbitrage_web_plan_remove },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/plan/export", venture_arbitrage_web_plan_export },

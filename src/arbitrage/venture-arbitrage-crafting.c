@@ -31,7 +31,7 @@
 static const gchar *const craft_options[] = {
 	"data_source_id", "recipe_category_id", "recipe_id", "buy_realm", "sell_realm", "venue_group",
 	"units", "sell_basis", "max_age_hours", "share", "character", "profession", "expansion", "only_known",
-	"min_profit", "min_margin", "max_cost", "min_sold_per_day", NULL
+	"min_profit", "min_margin", "max_cost", "min_sold_per_day", "recipe_list", NULL
 };
 
 /* The options the scan reads as they are given. The realms are read here,
@@ -521,6 +521,7 @@ craft_choose_recipes(
 	gint64		  organization_id,
 	CraftTree	 *tree,
 	JsonObject	 *question,
+	GArray		 *listed,
 	JsonArray	 *notes,
 	GArray		**out_ids,
 	GHashTable	**out_known,
@@ -562,6 +563,19 @@ craft_choose_recipes(
 
 	if ((recipe_id > 0) && !venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, recipe_id, error))
 		return FALSE;
+
+	/* A recipe list is a set of ids, narrowed in the same query: the
+	 * bound counts only what the list holds. */
+	if ((NULL != listed) && (listed->len > 0))
+	{
+		g_autoptr(GPtrArray) operands = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < listed->len; i++)
+			g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT, g_array_index(listed, gint64, i)));
+
+		if (!venture_query_add_filter(query, "id", VENTURE_FILTER_OP_IN, operands, error))
+			return FALSE;
+	}
 
 	/* A category and a profession narrow in the query, so the bound
 	 * counts only what they keep. */
@@ -628,8 +642,10 @@ craft_choose_recipes(
 			return FALSE;
 	}
 
-	/* Nothing filed where it was asked: no recipe, without asking. */
-	if ((NULL != categories) && (0 == g_hash_table_size(categories)))
+	/* Nothing filed where it was asked, or an empty list: no recipe,
+	 * without asking. */
+	if (((NULL != categories) && (0 == g_hash_table_size(categories))) ||
+	    ((NULL != listed) && (0 == listed->len)))
 		recipes = g_ptr_array_new_with_free_func(g_object_unref);
 	else
 		recipes = venture_database_find(database, query, error);
@@ -681,8 +697,10 @@ craft_choose_recipes(
 
 	/* Only what somebody knows, unless asked otherwise -- and never
 	 * where nobody knows anything, which would be an empty page for an
-	 * organization that imported recipes from Battle.net alone. */
-	if (!craft_flag(question, "only_known", any_known, &only_known, error))
+	 * organization that imported recipes from Battle.net alone. A
+	 * recipe list is what a person chose, so it shows whole unless
+	 * only_known is asked for. */
+	if (!craft_flag(question, "only_known", any_known && (NULL == listed), &only_known, error))
 		return FALSE;
 
 	json_object_set_string_member(question, "only_known", only_known ? "1" : "0");
@@ -958,6 +976,9 @@ venture_arbitrage_crafting(
 	g_autoptr(JsonArray) characters = NULL;
 	g_autoptr(GHashTable) expansions = NULL;
 	g_autoptr(GHashTable) knower_attrs = NULL;
+	g_autoptr(GArray) listed = NULL;
+	g_autoptr(JsonArray) listed_lists = NULL;
+	g_autoptr(GHashTable) memberships = NULL;
 	g_auto(CraftTree) tree = { NULL, NULL };
 	VentureDatabase *database;
 	JsonObject *root;
@@ -1012,12 +1033,34 @@ venture_arbitrage_crafting(
 	}
 
 	/* Which recipes: chosen here, every one of them priced -- the losses
-	 * too, since a craft that loses money is an answer as well. */
+	 * too, since a craft that loses money is an answer as well. A recipe
+	 * list is read first: another organization's is not found. */
 	notes = json_array_new();
 
+	if (!venture_string_is_empty(venture_json_object_get_string(question, "recipe_list", NULL)))
+	{
+		g_autoptr(GString) ids = g_string_new(NULL);
+
+		if (!venture_marketdata_list_ids(context, venture_arbitrage_recipe_list_kind(), organization_id,
+		                                 venture_json_object_get_string(question, "recipe_list", NULL), &listed,
+		                                 &listed_lists, error))
+			return NULL;
+
+		/* Echoed as ids, so a page's links keep the list. */
+		for (i = 0; i < json_array_get_length(listed_lists); i++)
+			g_string_append_printf(ids, "%s%" G_GINT64_FORMAT, (0 == i) ? "" : ",",
+			                       json_object_get_int_member(json_array_get_object_element(listed_lists, i),
+			                                                  "id"));
+
+		json_object_set_string_member(question, "recipe_list", ids->str);
+
+		if (0 == listed->len)
+			json_array_add_string_element(notes, "The list holds no recipe yet: add one from a Crafting row.");
+	}
+
 	if (!craft_tree_load(database, organization_id, &tree, error) ||
-	    !craft_choose_recipes(database, organization_id, &tree, question, notes, &recipe_ids, &known, &characters,
-	                          error))
+	    !craft_choose_recipes(database, organization_id, &tree, question, listed, notes, &recipe_ids, &known,
+	                          &characters, error))
 	{
 		craft_tree_clear(&tree);
 		return NULL;
@@ -1159,6 +1202,39 @@ venture_arbitrage_crafting(
 		json_object_set_array_member(row, "knowers", knowers);
 	}
 
+	/* The lists each recipe is on, for the row's tags: two reads for
+	 * the page. */
+	{
+		g_autoptr(GArray) shown_ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+		for (i = 0; i < json_array_get_length(shown); i++)
+		{
+			gint64 id = venture_json_object_get_int(json_array_get_object_element(shown, i), "recipe_id", 0);
+
+			if (id > 0)
+				g_array_append_val(shown_ids, id);
+		}
+
+		memberships = venture_marketdata_list_memberships(context, venture_arbitrage_recipe_list_kind(),
+		                                                  organization_id, shown_ids);
+
+		for (i = 0; i < json_array_get_length(shown); i++)
+		{
+			JsonObject *row = json_array_get_object_element(shown, i);
+			gint64 id = venture_json_object_get_int(row, "recipe_id", 0);
+			JsonArray *on = g_hash_table_lookup(memberships, &id);
+
+			json_object_set_array_member(row, "recipe_lists", (NULL != on) ? json_array_ref(on) : json_array_new());
+		}
+	}
+
+	json_object_set_array_member(root, "recipe_list_choices",
+	                             venture_marketdata_list_choices(context, venture_arbitrage_recipe_list_kind(),
+	                                                             organization_id));
+
+	if (NULL != listed_lists)
+		json_object_set_array_member(root, "recipe_list_filter", json_array_ref(listed_lists));
+
 	json_object_set_array_member(root, "rows", shown);
 	json_object_set_int_member(root, "recipes", recipe_ids->len);
 
@@ -1267,6 +1343,215 @@ venture_arbitrage_crafting(
 	}
 
 	return g_steal_pointer(&answer);
+}
+
+/* ==========================================================================
+ * Recipe lists
+ * ========================================================================== */
+
+const VentureMarketdataListKind *
+venture_arbitrage_recipe_list_kind(void)
+{
+	static VentureMarketdataListKind kind;
+	static gsize ready = 0;
+
+	/* The types are registered at run time, so the table is finished
+	 * on first use. */
+	if (g_once_init_enter(&ready))
+	{
+		kind.list_type = VENTURE_TYPE_RECIPE_LIST;
+		kind.list_label = "recipe list";
+		kind.entry_type = VENTURE_TYPE_RECIPE_LIST_ENTRY;
+		kind.list_field = "recipe-list-id";
+		kind.item_field = "recipe-id";
+		g_once_init_leave(&ready, 1);
+	}
+
+	return &kind;
+}
+
+static gint64
+craft_int_property(
+	VentureEntity	*entity,
+	const gchar	*property
+){
+	gint64 value = 0;
+
+	if (NULL != entity)
+		g_object_get(entity, property, &value, NULL);
+
+	return value;
+}
+
+/* A reference written to a record of another organization is refused;
+ * a value kept from @previous is left alone, as every reference is. */
+static gboolean
+craft_same_organization(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	const gchar	 *property,
+	GType		  type,
+	const gchar	 *label,
+	GError		**error
+){
+	g_autoptr(VentureEntity) target = NULL;
+	gint64 id = craft_int_property(entity, property);
+
+	if ((NULL != previous) && (craft_int_property(previous, property) == id))
+		return TRUE;
+
+	target = venture_database_get(database, type, id, NULL);
+
+	if ((NULL != target) &&
+	    (venture_entity_get_organization_id(target) != venture_entity_get_organization_id(entity)))
+	{
+		venture_set_error_validation(error, label, "is another organization's");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * An entry names a list and a recipe of its own organization, once per
+ * list: a second entry for the same recipe would be a second tag nobody
+ * could tell apart, and removing one would leave the recipe listed.
+ */
+static gboolean
+craft_validate_recipe_list_entry(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	gint64 list_id = craft_int_property(entity, "recipe-list-id");
+	gint64 recipe_id = craft_int_property(entity, "recipe-id");
+	guint i;
+
+	(void)user_data;
+
+	/* NOT_NULL covers strings and times only; a reference reads 0. */
+	if (list_id <= 0)
+	{
+		venture_set_error_validation(error, "Recipe list", "is required");
+		return FALSE;
+	}
+
+	if (recipe_id <= 0)
+	{
+		venture_set_error_validation(error, "Recipe", "is required");
+		return FALSE;
+	}
+
+	if (!craft_same_organization(database, entity, previous, "recipe-list-id", VENTURE_TYPE_RECIPE_LIST,
+	                             "Recipe list", error) ||
+	    !craft_same_organization(database, entity, previous, "recipe-id", VENTURE_TYPE_RECIPE, "Recipe", error))
+		return FALSE;
+
+	/* Once per list, judged when either half is written. */
+	if ((NULL != previous) && (craft_int_property(previous, "recipe-list-id") == list_id) &&
+	    (craft_int_property(previous, "recipe-id") == recipe_id))
+		return TRUE;
+
+	query = venture_query_new(VENTURE_TYPE_RECIPE_LIST_ENTRY);
+	venture_query_set_limit(query, 2);
+
+	if (!venture_query_add_filter_int(query, "recipe-list-id", VENTURE_FILTER_OP_EQ, list_id, error) ||
+	    !venture_query_add_filter_int(query, "recipe-id", VENTURE_FILTER_OP_EQ, recipe_id, error))
+		return FALSE;
+
+	rows = venture_database_find(database, query, error);
+
+	if (NULL == rows)
+		return FALSE;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *other = g_ptr_array_index(rows, i);
+
+		if (venture_entity_get_id(other) != venture_entity_get_id(entity))
+		{
+			venture_set_error_validation(error, "Recipe",
+				"is already on this list (entry #%" G_GINT64_FORMAT ")", venture_entity_get_id(other));
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+void
+venture_arbitrage_recipe_lists_install(VentureDatabase *database)
+{
+	g_return_if_fail(VENTURE_IS_DATABASE(database));
+
+	venture_database_add_save_validator(database, VENTURE_TYPE_RECIPE_LIST_ENTRY,
+	                                    craft_validate_recipe_list_entry, NULL, NULL);
+}
+
+gboolean
+venture_arbitrage_recipe_list_add(
+	VentureContext		 *context,
+	gint64			  organization_id,
+	gint64			  list_id,
+	const gchar		 *list_name,
+	gint64			  recipe_id,
+	const VentureActor	 *actor,
+	VentureEntity		**out_entry,
+	gboolean		 *out_created_list,
+	gboolean		 *out_created_entry,
+	GError			**error
+){
+	g_autoptr(VentureEntity) recipe = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+
+	if (organization_id <= 0)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	/* Another organization's recipe is no recipe, as its list is no
+	 * list: NOT_FOUND, never a validation message naming it. */
+	if (recipe_id > 0)
+		recipe = venture_database_get(venture_context_get_database(context), VENTURE_TYPE_RECIPE, recipe_id, NULL);
+
+	if ((NULL == recipe) || venture_entity_is_deleted(recipe) ||
+	    (venture_entity_get_organization_id(recipe) != organization_id))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "No recipe #%" G_GINT64_FORMAT " in this organization", recipe_id);
+		return FALSE;
+	}
+
+	return venture_marketdata_list_put(context, venture_arbitrage_recipe_list_kind(), organization_id, list_id,
+	                                   list_name, recipe_id, actor, out_entry, out_created_list, out_created_entry,
+	                                   error);
+}
+
+JsonNode *
+venture_arbitrage_recipe_lists(
+	VentureContext	*context,
+	gint64		 organization_id
+){
+	JsonObject *root;
+	JsonNode *node;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	if (organization_id <= 0)
+		organization_id = venture_context_get_default_organization_id(context);
+
+	root = json_object_new();
+	json_object_set_array_member(root, "recipe_lists",
+	                             venture_marketdata_list_choices(context, venture_arbitrage_recipe_list_kind(),
+	                                                             organization_id));
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(node, root);
+
+	return node;
 }
 
 /* ==========================================================================

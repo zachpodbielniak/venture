@@ -3643,6 +3643,291 @@ test_crafting_pages(
 	                 ==, 0);
 }
 
+/* The id a Location's @name parameter carries, or 0. */
+static gint64
+location_id_of(
+	const gchar	*location,
+	const gchar	*name
+){
+	g_autofree gchar *needle = g_strdup_printf("%s=", name);
+	const gchar *at = strstr(location, needle);
+
+	return (NULL != at) ? g_ascii_strtoll(at + strlen(needle), NULL, 10) : 0;
+}
+
+/* Whether @answer prices recipe @recipe_id. */
+static gboolean
+has_recipe(
+	JsonNode	*answer,
+	gint64		 recipe_id
+){
+	JsonArray *rows = rows_of(answer);
+	guint i;
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+		if (json_object_get_int_member(json_array_get_object_element(rows, i), "recipe_id") == recipe_id)
+			return TRUE;
+
+	return FALSE;
+}
+
+/*
+ * Recipe lists: a named set of recipes Crafting narrows to. Putting a
+ * recipe on one makes the list by name (any case finds it again) and a
+ * second press writes nothing; Crafting with recipe_list prices exactly
+ * the list's recipes -- the union of several -- with every other filter
+ * still applying, and shows a list whole even where only_known would
+ * hide what nobody knows; every row says which lists it is on. Another
+ * organization's list or recipe is not found. The pages: a List picker
+ * and "Add to list" on Crafting, the add going back to the same filtered
+ * page with a notice, the lists page and a list's own page -- Crafting's
+ * table narrowed.
+ *
+ * What breaks if this regresses: a person's favourite crafts are lost
+ * among nine hundred, a double click makes two lists, or a list from
+ * another organization prices its recipes here.
+ */
+static void
+test_recipe_lists(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) entry = NULL;
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(JsonNode) everything = NULL;
+	g_autoptr(JsonNode) favourites = NULL;
+	g_autoptr(JsonNode) both = NULL;
+	g_autoptr(JsonNode) bounded = NULL;
+	g_autoptr(JsonNode) empty = NULL;
+	g_autofree gchar *options = NULL;
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *form = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	gboolean created_list = FALSE;
+	gboolean created_entry = FALSE;
+	gint64 brew;
+	gint64 quick;
+	gint64 favourites_id;
+	gint64 bags_id;
+	gint64 entry_id;
+	JsonArray *on;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_market(fixture);
+	seed_venues(fixture);
+	seed_recipe(fixture);
+	brew = fixture->recipe;
+	quick = seed_quick_brew(fixture, NULL);
+
+	/* A new name makes the list and the entry; again, or in another
+	 * case, finds both. */
+	g_assert_true(venture_arbitrage_recipe_list_add(fixture->context, fixture->org, 0, "  Favourites ", quick, NULL,
+	                                                &entry, &created_list, &created_entry, &error));
+	g_assert_no_error(error);
+	g_assert_true(created_list);
+	g_assert_true(created_entry);
+	g_object_get(entry, "recipe-list-id", &favourites_id, NULL);
+	entry_id = ID(entry);
+	g_assert_true(venture_arbitrage_recipe_list_add(fixture->context, fixture->org, 0, "favourites", quick, NULL,
+	                                                &again, &created_list, &created_entry, &error));
+	g_assert_no_error(error);
+	g_assert_false(created_list);
+	g_assert_false(created_entry);
+	g_assert_cmpint(ID(again), ==, entry_id);
+	g_clear_object(&again);
+
+	/* Once per list, whoever writes it. */
+	{
+		g_autoptr(VentureEntity) twice = record(fixture, "recipe_list_entry");
+
+		g_object_set(twice, "recipe-list-id", favourites_id, "recipe-id", quick, NULL);
+		save_refused(fixture, twice, "already on this list");
+	}
+
+	/* Brew is known by somebody, so Crafting hides what nobody knows --
+	 * but a list shows whole. */
+	set_known_by(fixture, brew, "[\"Bob-Realm A\"]");
+	everything = crafting(fixture, "{\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\"}");
+	g_assert_false(has_recipe(everything, quick));
+	g_assert_true(has_recipe(everything, brew));
+
+	options = g_strdup_printf("{\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\",\"recipe_list\":\"%"
+	                          G_GINT64_FORMAT "\"}", favourites_id);
+	favourites = crafting(fixture, options);
+	g_assert_cmpuint(json_array_get_length(rows_of(favourites)), ==, 1);
+	g_assert_true(has_recipe(favourites, quick));
+	on = json_object_get_array_member(json_array_get_object_element(rows_of(favourites), 0), "recipe_lists");
+	g_assert_cmpuint(json_array_get_length(on), ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(on, 0), "name"), ==, "Favourites");
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(on, 0), "entry_id"), ==, entry_id);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(
+		json_object_get_array_member(json_node_get_object(favourites), "recipe_list_filter"), 0), "name"), ==,
+		"Favourites");
+
+	/* A second list holding Brew: the union of the two, and any other
+	 * filter still narrows it. */
+	g_assert_true(venture_arbitrage_recipe_list_add(fixture->context, fixture->org, 0, "Bags", brew, NULL, &again,
+	                                                &created_list, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(created_list);
+	g_object_get(again, "recipe-list-id", &bags_id, NULL);
+	g_clear_object(&again);
+	g_free(options);
+	options = g_strdup_printf("{\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\",\"recipe_list\":\"%"
+	                          G_GINT64_FORMAT ", %" G_GINT64_FORMAT "\"}", favourites_id, bags_id);
+	both = crafting(fixture, options);
+	g_assert_cmpuint(json_array_get_length(rows_of(both)), ==, 2);
+	g_free(options);
+	options = g_strdup_printf("{\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\",\"recipe_list\":\"%"
+	                          G_GINT64_FORMAT ",%" G_GINT64_FORMAT "\",\"character\":\"Bob-Realm A\"}",
+	                          favourites_id, bags_id);
+	bounded = crafting(fixture, options);
+	g_assert_cmpuint(json_array_get_length(rows_of(bounded)), ==, 1);
+	g_assert_true(has_recipe(bounded, brew));
+
+	/* Off the list: an empty list prices nothing, and says why. */
+	g_assert_true(venture_marketdata_list_take(fixture->context, venture_arbitrage_recipe_list_kind(), fixture->org,
+	                                           entry_id, NULL, NULL, &error));
+	g_assert_no_error(error);
+	g_free(options);
+	options = g_strdup_printf("{\"recipe_list\":\"%" G_GINT64_FORMAT "\"}", favourites_id);
+	empty = crafting(fixture, options);
+	g_assert_cmpuint(json_array_get_length(rows_of(empty)), ==, 0);
+	g_assert_true(noted(empty, "The list holds no recipe yet"));
+
+	/* Another organization's list and recipe are not found. */
+	{
+		g_autoptr(VentureEntity) organization = record(fixture, "organization");
+		g_autoptr(VentureEntity) theirs = NULL;
+		g_autoptr(VentureEntity) their_recipe = NULL;
+		g_autoptr(VentureEntity) their_product = NULL;
+		g_autoptr(JsonObject) asked = NULL;
+		g_autoptr(JsonNode) none = NULL;
+
+		g_object_set(organization, "name", "Elsewhere", "slug", "elsewhere", NULL);
+		save(fixture, organization);
+		theirs = record(fixture, "recipe_list");
+		venture_entity_set_organization_id(theirs, ID(organization));
+		g_object_set(theirs, "name", "Their crafts", NULL);
+		save(fixture, theirs);
+		their_product = record(fixture, "product");
+		venture_entity_set_organization_id(their_product, ID(organization));
+		g_object_set(their_product, "name", "Their potion", NULL);
+		save(fixture, their_product);
+		their_recipe = record(fixture, "recipe");
+		venture_entity_set_organization_id(their_recipe, ID(organization));
+		g_object_set(their_recipe, "name", "Their brew", "output-product-id", ID(their_product),
+		             "output-quantity", (gint64)1, NULL);
+		save(fixture, their_recipe);
+
+		g_free(options);
+		options = g_strdup_printf("{\"recipe_list\":\"%" G_GINT64_FORMAT "\"}", ID(theirs));
+		asked = object_of(options);
+		none = venture_arbitrage_crafting(fixture->context, fixture->org, asked, &error);
+		g_assert_null(none);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+		g_clear_error(&error);
+
+		g_assert_false(venture_arbitrage_recipe_list_add(fixture->context, fixture->org, ID(theirs), NULL, quick, NULL,
+		                                                 NULL, NULL, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+		g_clear_error(&error);
+		g_assert_false(venture_arbitrage_recipe_list_add(fixture->context, fixture->org, favourites_id, NULL,
+		                                                 ID(their_recipe), NULL, NULL, NULL, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+		g_clear_error(&error);
+
+		path = g_strdup_printf("/api/v1/arbitrage/recipe-lists/%" G_GINT64_FORMAT, ID(theirs));
+		g_assert_cmpuint(http(fixture, "GET", path, NULL, NULL, NULL, NULL), ==, 404);
+		g_clear_pointer(&path, g_free);
+		g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/crafting?recipe_list=x", NULL, NULL, NULL, NULL),
+		                 ==, 400);
+	}
+
+	/* The page: the List picker, the row's tag and "Add to list". */
+	page = get_page(fixture, "/arbitrage/crafting?buy_realm=realm-a&sell_realm=realm-b&only_known=0");
+	assert_buttons_named(page, "/arbitrage/crafting");
+	g_assert_nonnull(strstr(page, "<select name=\"recipe_list\" multiple"));
+	g_assert_nonnull(strstr(page, "<datalist id=\"recipe-list-names\"><option value=\"Bags\">"));
+	g_assert_nonnull(strstr(page, "action=\"/arbitrage/recipe-lists/add\" class=\"list-add\""));
+	g_assert_nonnull(strstr(page, ">Bags</a>"));
+	g_assert_nonnull(strstr(page, "action=\"/arbitrage/recipe-lists/remove\""));
+	g_clear_pointer(&page, g_free);
+
+	/* Add from a filtered page: back to it, its question kept, saying
+	 * so -- and the notice is the page's, never a refused option. */
+	form = g_strdup_printf("recipe_id=%" G_GINT64_FORMAT "&list=Week+crafts&return=%%2Farbitrage%%2Fcrafting"
+	                       "%%3Fbuy_realm%%3Drealm-a%%26only_known%%3D0", quick);
+	g_assert_cmpuint(http(fixture, "POST", "/arbitrage/recipe-lists/add", form, NULL, &location, NULL), ==, 303);
+	g_assert_true(g_str_has_prefix(location, "/arbitrage/crafting?buy_realm=realm-a&only_known=0&list_added="));
+	g_assert_nonnull(strstr(location, "&list_new=1"));
+	page = get_page(fixture, location);
+	g_assert_nonnull(strstr(page, "Made the list <strong>Week crafts</strong> and added it."));
+	g_clear_pointer(&page, g_free);
+
+	/* The lists page, and a list's own page: Crafting's table, its
+	 * recipes only, its API twin the Crafting answer. */
+	page = get_page(fixture, "/arbitrage/recipe-lists");
+	assert_buttons_named(page, "/arbitrage/recipe-lists");
+	g_assert_nonnull(strstr(page, ">Week crafts</a>"));
+	g_assert_nonnull(strstr(page, ">Bags</a>"));
+	g_clear_pointer(&page, g_free);
+	path = g_strdup_printf("/arbitrage/recipe-lists/%" G_GINT64_FORMAT "?buy_realm=realm-a&sell_realm=realm-b",
+	                       location_id_of(location, "list_added"));
+	page = get_page(fixture, path);
+	assert_buttons_named(page, path);
+	g_assert_nonnull(strstr(page, "<h1>Week crafts</h1>"));
+	g_assert_nonnull(strstr(page, "Quick brew: Healing Potion"));
+	g_assert_null(strstr(page, ">Brew: Healing Potion"));
+	g_assert_nonnull(strstr(page, "<table class=\"data arbitrage-table crafting-table\">"));
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/arbitrage/recipe-lists/%" G_GINT64_FORMAT, location_id_of(location, "list_added"));
+	g_assert_cmpuint(http(fixture, "GET", path, NULL, &body, NULL, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "\"recipe_list_filter\""));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&path, g_free);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/recipe-lists", NULL, &body, NULL, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "\"Week crafts\""));
+	g_clear_pointer(&body, g_free);
+
+	/* The API twin answers the entry: 201 made, 200 found. */
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("recipe_id=%" G_GINT64_FORMAT "&list_id=%" G_GINT64_FORMAT, brew, bags_id);
+	g_assert_cmpuint(http(fixture, "POST", "/api/v1/arbitrage/recipe-lists/add", form, &body, NULL, NULL), ==, 200);
+	{
+		g_autoptr(JsonNode) answer = json_from_string(body, &error);
+
+		g_assert_no_error(error);
+		g_assert_false(json_object_get_boolean_member(json_node_get_object(answer), "created_entry"));
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(answer), "list_id"), ==, bags_id);
+	}
+	g_clear_pointer(&body, g_free);
+
+	/* Remove from the tag: back to the page, saying so. */
+	{
+		g_autoptr(JsonNode) listed = crafting(fixture, "{\"buy_realm\":\"realm-a\"}");
+		JsonArray *tags = json_object_get_array_member(json_array_get_object_element(rows_of(listed), 0),
+		                                               "recipe_lists");
+		gint64 tag_entry = json_object_get_int_member(json_array_get_object_element(tags, 0), "entry_id");
+
+		g_clear_pointer(&form, g_free);
+		g_clear_pointer(&location, g_free);
+		form = g_strdup_printf("entry_id=%" G_GINT64_FORMAT "&return=%%2Farbitrage%%2Fcrafting", tag_entry);
+		g_assert_cmpuint(http(fixture, "POST", "/arbitrage/recipe-lists/remove", form, NULL, &location, NULL), ==,
+		                 303);
+		g_assert_true(g_str_has_prefix(location, "/arbitrage/crafting?list_removed="));
+		page = get_page(fixture, location);
+		g_assert_nonnull(strstr(page, "Removed from <strong>"));
+		g_clear_pointer(&page, g_free);
+		g_assert_cmpuint(http(fixture, "POST", "/arbitrage/recipe-lists/remove", form, NULL, NULL, NULL), ==, 404);
+	}
+}
+
 #define ADD(path, func) \
 	g_test_add("/arbitrage-scan/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -3684,6 +3969,7 @@ main(
 	ADD("crafting-filters", test_crafting_filters);
 	ADD("crafting-past-the-cap", test_crafting_past_the_cap);
 	ADD("crafting-pages", test_crafting_pages);
+	ADD("recipe-lists", test_recipe_lists);
 	ADD("planner-build", test_planner_build);
 	ADD("planner", test_planner);
 

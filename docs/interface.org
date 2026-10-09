@@ -137,7 +137,7 @@ Every chart has a =<title>=, a =<desc>= when it has a sentence to say, =role="im
 
 The Trading pages add =.market-filters= (a filter form), =.market-action-row= and =.form-inline= (a row of small forms), =.market-stats= (a hook on the shared =.stat-row=, which styles it) and =.market-figure= (stat rows), =.market-heat= (two heat maps stacked), =.market-ranges= and =.market-range= (the price history's row of range links in the micro register, the one drawn =aria-current="page"= and in ink, never the accent), =.market-trend= (a table cell holding a row's seven-day sparkline, kept on one line), =.market-table= (a data table that scrolls inside its card on a phone), =.market-widget= and =.market-hits= (the market dashboard cards). They are the block /Market data: the charts and the Trading pages/ in each stylesheet.
 
-The arbitrage pages (=/arbitrage=, =/arbitrage/crafting=, =/arbitrage/plan=, =/arbitrage/calc=) add the block /Arbitrage: the scan, the presets and the calculators/:
+The arbitrage pages (=/arbitrage=, =/arbitrage/crafting=, =/arbitrage/recipe-lists=, =/arbitrage/plan=, =/arbitrage/calc=) add the block /Arbitrage: the scan, the presets and the calculators/:
 
 | Class | What it is |
 |-------+------------|
@@ -158,8 +158,11 @@ The arbitrage pages (=/arbitrage=, =/arbitrage/crafting=, =/arbitrage/plan=, =/a
 | =.plan-section=, =.plan-venue=, =.plan-table= | a planner list (Buy, Moving lots, Post): a heading per venue over its own short table, its total in =<tfoot>= so a sort never moves it among the lines |
 | =.plan-trades= | the planned trades, with their standing when priced again (a =.tone-chip=) and Remove |
 | =.deal-plan= | Deals' "Add to plan" cell: a small number box for the units and the button |
+| =.list-cell= | a row's /Lists/ cell -- Deals, Browse and Crafting, and an item's page (in =.market-lists=) -- holding the tags and the box below |
+| =.list-tags=, =.list-tag= | the lists a row is on: a tag each, a link to the list and, for an editor, a remove button (=.list-tag-remove=, a =btn-ghost= whose =aria-label= names the item and the list) |
+| =.list-add= | "Add to list": one text box (=list=, its =<datalist>= the page's lists by name, so a known name is picked and a new one typed) and the button; one POST, back to the same page with a =.notice.positive= saying what happened |
 
-Like every rule here they are written once against the tokens and appended to *both* looks -- =venture-industrial.css= and =venture-classic.css= carry the same two blocks -- so a Trading page is written once and checked in both. =tests/test-market-pages.c= (=/market-pages/doors-and-looks=) greps both stylesheets for a sample of the chart and market classes (the four chart lines and their keys, the range links, the heat cell, the grid, the axis, the sparkline, the legend, the caption, =.market-action-row= and =.form-inline=); the arbitrage block's =arbitrage-*= classes are checked in both looks by =/arbitrage-scan/looks=, which fetches the scan, the calculators, Crafting and the planner; the =craft-*=, =plan-*= and =deal-plan= rules have to be checked in both by eye. See [[file:market-data.org::*Browsing: the Trading pages][Market data: the Trading pages]] and [[file:arbitrage.org::*Pages and routes][Arbitrage: pages and routes]].
+Like every rule here they are written once against the tokens and appended to *both* looks -- =venture-industrial.css= and =venture-classic.css= carry the same two blocks -- so a Trading page is written once and checked in both. =tests/test-market-pages.c= (=/market-pages/doors-and-looks=) greps both stylesheets for a sample of the chart and market classes (the four chart lines and their keys, the range links, the heat cell, the grid, the axis, the sparkline, the legend, the caption, =.market-action-row= and =.form-inline=); the arbitrage block's =arbitrage-*= classes are checked in both looks by =/arbitrage-scan/looks=, which fetches the scan, the calculators, Crafting and the planner; the =craft-*=, =plan-*=, =deal-plan= and =list-*= rules have to be checked in both by eye. See [[file:market-data.org::*Browsing: the Trading pages][Market data: the Trading pages]] and [[file:arbitrage.org::*Pages and routes][Arbitrage: pages and routes]].
 
 ** The Accounts pages
 

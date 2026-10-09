@@ -4146,6 +4146,7 @@ venture_arbitrage_install(VentureContext *context)
 	                                    venture_arbitrage_validate_trade, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_ARBITRAGE_LEG,
 	                                    venture_arbitrage_validate_leg, NULL, NULL);
+	venture_arbitrage_recipe_lists_install(database);
 
 	/* Posting on save: the rule first, then the type, so a save never
 	 * finds the type registered and the rule missing. */

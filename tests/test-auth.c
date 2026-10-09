@@ -1332,6 +1332,10 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/alerts/1/evaluate", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/i/1/2770", NULL, "action=promote", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/i/1/a/key/with/slashes", NULL, "action=watch", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/watchlists/add", NULL, "data_source_id=1&key=2770&list=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/market/watchlists/remove", NULL, "entry_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/watchlists/add", NULL, "{\"data_source_id\":1,\"key\":\"2770\",\"list\":\"x\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/market/watchlists/remove", NULL, "{\"entry_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/browse"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/deals"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/market/venues"), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -1360,6 +1364,14 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/plan/export?format=csv"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/plan/add", NULL, "key=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/plan/remove", NULL, "trade_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/recipe-lists"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/arbitrage/recipe-lists/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/recipe-lists/add", NULL, "recipe_id=1&list=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/arbitrage/recipe-lists/remove", NULL, "entry_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/recipe-lists"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/recipe-lists/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/arbitrage/recipe-lists/add", NULL, "{\"recipe_id\":1,\"list\":\"x\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/arbitrage/recipe-lists/remove", NULL, "{\"entry_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/crafting"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/plan"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/arbitrage/plan/export?format=csv"), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -6448,6 +6460,41 @@ test_auth_trading_organization(
 	                 ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_nonnull(strstr(body, "There is no organization"));
 	g_clear_pointer(&body, g_free);
+
+	/* --- Lists: watchlists and recipe lists, read by any member,
+	 * written by an editor, another organization's not found --- */
+	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/arbitrage/recipe-lists"
+	                              "?organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/arbitrage/recipe-lists"
+	                              "?organization_id=%" G_GINT64_FORMAT, other), ==, SOUP_STATUS_NOT_FOUND);
+	json = g_strdup_printf("{\"data_source_id\":%" G_GINT64_FORMAT ",\"key\":\"x\",\"list\":\"Bags\","
+	                       "\"organization_id\":%" G_GINT64_FORMAT "}", other_source, other);
+	g_assert_cmpuint(trading_call(fixture, "POST", home, json, NULL, "/api/v1/market/watchlists/add"),
+	                 ==, SOUP_STATUS_NOT_FOUND);
+	g_clear_pointer(&json, g_free);
+	{
+		g_autofree gchar *viewer = NULL;
+
+		/* A viewer reads the lists and every page they narrow, and
+		 * writes none of them. */
+		server_fixture_create_member(fixture, "tr-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+		viewer = server_fixture_login(fixture, "tr-viewer", "viewer-long-password");
+		g_assert_cmpuint(trading_call(fixture, "GET", viewer, NULL, NULL, "/api/v1/arbitrage/recipe-lists"),
+		                 ==, SOUP_STATUS_OK);
+		g_assert_cmpuint(trading_call(fixture, "GET", viewer, NULL, NULL, "/api/v1/market/watchlists"),
+		                 ==, SOUP_STATUS_OK);
+		g_assert_cmpuint(trading_call(fixture, "POST", viewer, "{\"recipe_id\":1,\"list\":\"Bags\"}", NULL,
+		                              "/api/v1/arbitrage/recipe-lists/add"), ==, SOUP_STATUS_FORBIDDEN);
+		g_assert_cmpuint(trading_call(fixture, "POST", viewer, "{\"entry_id\":1}", NULL,
+		                              "/api/v1/arbitrage/recipe-lists/remove"), ==, SOUP_STATUS_FORBIDDEN);
+		json = g_strdup_printf("{\"data_source_id\":%" G_GINT64_FORMAT ",\"key\":\"x\",\"list\":\"Bags\"}",
+		                       home_source);
+		g_assert_cmpuint(trading_call(fixture, "POST", viewer, json, NULL, "/api/v1/market/watchlists/add"),
+		                 ==, SOUP_STATUS_FORBIDDEN);
+		g_assert_cmpuint(trading_call(fixture, "POST", viewer, "{\"entry_id\":1}", NULL,
+		                              "/api/v1/market/watchlists/remove"), ==, SOUP_STATUS_FORBIDDEN);
+		g_clear_pointer(&json, g_free);
+	}
 
 	/* --- Dashboards: a template or a definition filed under the
 	 * organization named, judged like the rest. The Operations page is

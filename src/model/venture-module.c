@@ -700,10 +700,13 @@ static const gchar *const arbitrage_reports[] = {
 };
 /* external_posting is here because posting an external ledger to the books
  * needs exactly what this module requires: market data's accounts and
- * the ledger's journals. */
+ * the ledger's journals. Recipe lists are here because Crafting is: a
+ * list names recipes (production's), which is a reference like any other
+ * and refused with the switch named while production is off. */
 static GType (*const arbitrage_types[]) (void) = {
 	venture_arbitrage_trade_get_type, venture_arbitrage_leg_get_type,
-	venture_arbitrage_strategy_get_type, venture_external_posting_get_type, NULL
+	venture_arbitrage_strategy_get_type, venture_external_posting_get_type,
+	venture_recipe_list_get_type, venture_recipe_list_entry_get_type, NULL
 };
 static const gchar *const commerce_requires[] = { "invoicing", "receivables", "integrations", NULL };
 static GType (*const commerce_types[])(void) = { venture_commerce_import_link_get_type, NULL };

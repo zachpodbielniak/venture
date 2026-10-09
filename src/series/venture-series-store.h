@@ -566,6 +566,14 @@ venture_series_row_free(VentureSeriesRow *row);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesRow, venture_series_row_free)
 
 /**
+ * VENTURE_SERIES_MAX_FILTER_INSTRUMENTS:
+ *
+ * The most instruments one filter names: a person's list, read into one
+ * statement's parameters, never a store's worth of keys.
+ */
+#define VENTURE_SERIES_MAX_FILTER_INSTRUMENTS (5000)
+
+/**
  * VentureSeriesFilter:
  * @venue_keys: (array zero-terminated=1) (nullable): only these venues
  * @group_key: (nullable): only venues in this group
@@ -589,6 +597,9 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesRow, venture_series_row_free)
  * @offset: rows to skip
  * @count: rows to return, 0 for %VENTURE_SERIES_DEFAULT_PAGE, at most
  *   %VENTURE_SERIES_MAX_PAGE
+ * @instrument_keys: (array zero-terminated=1) (nullable): only these
+ *   instruments, at most %VENTURE_SERIES_MAX_FILTER_INSTRUMENTS; an empty
+ *   set matches nothing, not everything
  *
  * Narrows and orders venture_series_store_list_current(). Zero-filled
  * means everything, sorted by minimum price -- except @min_value, which
@@ -611,6 +622,7 @@ typedef struct
 	gboolean		 descending;
 	guint			 offset;
 	guint			 count;
+	const gchar *const	*instrument_keys;
 } VentureSeriesFilter;
 
 /**

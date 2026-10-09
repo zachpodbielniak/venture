@@ -4870,6 +4870,17 @@ input:not([type="hidden"]):focus-visible {
 .plan-trades form, .deal-plan { margin: 0; }
 .deal-plan { display: flex; gap: var(--space-1); align-items: center; }
 .deal-plan input[type="number"] { width: 5em; }
+/* A row's lists: a tag per list (a link, a remove button) and one box
+ * that names a list or makes one. Compact, so a Deals row stays a row. */
+.list-cell { min-width: 9rem; }
+.list-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.list-tags:empty { display: none; }
+.list-tag { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; }
+.list-tag form, .list-tag-remove, .list-add { margin: 0; }
+.list-tag .btn { padding: 0 4px; }
+.list-add { display: flex; gap: var(--space-1); align-items: center; margin-top: var(--space-1); }
+.list-add input[type="text"] { width: 8em; min-width: 0; }
+.market-lists { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 
 /* ==========================================================================
    Source attribution: who a page's market data came from
