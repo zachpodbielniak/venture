@@ -843,6 +843,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "kind", "arbitrage_scan: only instruments of this kind.");
 		venture_mcp_catalog_add_string_property(builder, "instrument", "arbitrage_scan: one instrument (or event) key. external_pnl: one item's ledger rows.");
 		venture_mcp_catalog_add_integer_property(builder, "recipe_id", "arbitrage_scan transform, craft_arbitrage: one recipe.");
+		venture_mcp_catalog_add_integer_property(builder, "recipe_category_id", "arbitrage_scan transform, craft_arbitrage: only recipes filed in this category or beneath it (a profession, an expansion, a section).");
 		venture_mcp_catalog_add_integer_property(builder, "units", "arbitrage_scan: units per opportunity; craft_arbitrage: batches. 1 by default.");
 		venture_mcp_catalog_add_integer_property(builder, "buy_sources", "arbitrage_scan spread: the N cheapest buy venues per item, 1 to 10.");
 		venture_mcp_catalog_add_string_property(builder, "sell_basis", "arbitrage_scan, craft_arbitrage: min, market, sale_avg, region_median or bid.");

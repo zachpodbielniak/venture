@@ -110,6 +110,8 @@ in the repository lists today's.
 | `GET /market/quote`, `POST /market/promote`, `GET /market/browse\|find\|deals\|venues`, `GET /market/i/:source/*`, `GET /market/watchlists[/:id]`, `GET /market/alerts`, `POST /market/alerts/:id/evaluate` | `market ...` |
 | `GET /accounts`, `GET /accounts/inventory`, `GET /accounts/pnl`, `GET /accounts/:source/*` (each takes `show_ignored`) | `accounts ...` |
 | `GET /arbitrage/scan\|registries\|export\|calc`, `POST /arbitrage/record` | `arbitrage ...` |
+| `GET /arbitrage/crafting` (crafting question: `recipe_category_id`, `buy_realm`, `sell_realm`, `venue_group`, `units`, ...) | `arbitrage crafting` |
+| `GET /arbitrage/plan` (`?reprice=1`), `GET /arbitrage/plan/export?format=csv\|tsm`, `POST /arbitrage/plan/remove` (`{"trade_id": N}`) | `arbitrage plan [export\|remove]` |
 
 ## Public routes (no session; their own guard)
 

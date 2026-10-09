@@ -366,6 +366,7 @@
 #include "arbitrage/venture-arbitrage-math.h"
 #include "arbitrage/venture-arbitrage-engine.h"
 #include "arbitrage/venture-arbitrage-books.h"
+#include "arbitrage/venture-arbitrage-crafting.h"
 #include "forms/venture-forms.h"
 
 #endif /* VENTURE_SERVER_BUILD */

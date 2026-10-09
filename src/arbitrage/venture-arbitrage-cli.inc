@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * venture-arbitrage-cli.inc - venturectl arbitrage scan|record|calc|
- * export|close|reopen|abandon|execute|registries
+ * venture-arbitrage-cli.inc - venturectl arbitrage scan|record|crafting|
+ * plan|calc|export|close|reopen|abandon|execute|registries
  *
  * Thin calls on /api/v1/arbitrage and on the arbitrage actions. The scan,
  * the export and the calculators ask exactly what /arbitrage and
@@ -26,7 +26,7 @@
  * the server, which refuses an unknown option by name. A strategy a plugin
  * registers may add options of its own, so there is no allowlist here. */
 static const gchar *const venture_cli_arbitrage_int_options[] = {
-	"preset_id", "data_source_id", "recipe_id", "units", "buy_sources", "max_age_hours", "top",
+	"preset_id", "data_source_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "top",
 	"organization_id", NULL
 };
 
@@ -50,6 +50,12 @@ static const gchar venture_cli_arbitrage_usage[] =
 	"  record name=NAME legs=JSON|@FILE [strategy=S] [venture_id=N] [expected=JSON|@FILE]\n"
 	"         [notes=TEXT] [organization_id=N]\n"
 	"                                       record a trade from explicit legs\n"
+	"  crafting [option=value ...]          every recipe at the picked realms: recipe_category_id,\n"
+	"                                       buy_realm, sell_realm, venue_group, units, sell_basis,\n"
+	"                                       max_age_hours, share, recipe_id, data_source_id\n"
+	"  plan [reprice=1]                     the flip planner: totals and the planned trades\n"
+	"  plan export csv|FORMAT [-o FILE]     the shopping list as CSV, or a plugin's format (tsm)\n"
+	"  plan remove TRADE_ID                 take a planned trade off the plan\n"
 	"  calc surebet ODDS... --stake AMOUNT [format=auto|decimal|american|fractional]\n"
 	"  calc back-lay BACK LAY --stake AMOUNT [commission=PCT] [back_commission=PCT] [format=F]\n"
 	"  calc flip BUY SELL [units=N] [cut=PCT] [fixed=AMOUNT] [deposit=PCT] [refundable=true]\n"
@@ -62,7 +68,7 @@ static const gchar venture_cli_arbitrage_usage[] =
 	"  registries                           strategies, fee models, export formats, options\n"
 	"Scan options: preset_id, data_source_id, buy_venues, sell_venues, venue_group\n"
 	"(characters or a venue group's id), group_key, category_path, kind,\n"
-	"instrument, recipe_id, units, buy_sources, sell_basis,\n"
+	"instrument, recipe_id, recipe_category_id, units, buy_sources, sell_basis,\n"
 	"total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct,\n"
 	"min_confidence, max_age_hours, share, sort, top (and a plugin strategy's own).\n"
 	"organization_id=N on scan, record and export answers for that organization\n"
@@ -79,6 +85,9 @@ static const gchar venture_cli_arbitrage_usage[] =
 	"  venturectl arbitrage calc flip \"1.25 GOLD\" \"2.10 GOLD\" units=20 cut=5 sale_rate=40\n"
 	"  venturectl arbitrage export csv spread group_key=eu -o opportunities.csv\n"
 	"  venturectl arbitrage scan spread organization_id=2 min_roi=15\n"
+	"  venturectl arbitrage crafting buy_realm=Thrall sell_realm=Thrall recipe_category_id=12 units=5\n"
+	"  venturectl arbitrage plan reprice=1\n"
+	"  venturectl arbitrage plan export tsm -o shopping.txt\n"
 	"  venturectl arbitrage execute 12 occurred_at=2026-03-05T10:00:00Z\n"
 	"  venturectl arbitrage close 4\n"
 	"  venturectl arbitrage abandon 4 goods=write_off";
@@ -97,6 +106,47 @@ static const VentureCliColumn venture_cli_arbitrage_scan_columns[] = {
 	{ "confidence", "conf", VENTURE_CLI_CELL_NUMBER, FALSE },
 	{ "missing", "unquoted", VENTURE_CLI_CELL_TEXT, FALSE },
 	{ "key", "key", VENTURE_CLI_CELL_TEXT, TRUE },
+	{ NULL, NULL, 0, FALSE }
+};
+
+static const VentureCliColumn venture_cli_arbitrage_crafting_columns[] = {
+	{ "", "#", VENTURE_CLI_CELL_INDEX, FALSE },
+	{ "title", "recipe", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "recipe_category", "category", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "cost", "reagents", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "sell.venue_key", "sell at", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sell.unit_price", "sells for", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "sell.fees", "cut", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "sell.deposit", "deposit", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "net", "profit", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "margin", "margin", VENTURE_CLI_CELL_FRACTION, FALSE },
+	{ "buy_stale", "buy stale", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "sell_stale", "sell stale", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "missing", "unquoted", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "key", "key", VENTURE_CLI_CELL_TEXT, TRUE },
+	{ NULL, NULL, 0, FALSE }
+};
+
+static const VentureCliColumn venture_cli_arbitrage_plan_total_columns[] = {
+	{ "currency", "currency", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "trades", "trades", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "outlay", "outlay", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "gross", "sales", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "cut", "cut", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "deposit", "deposits", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "listing_loss", "lost deposits", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "revenue", "revenue", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "profit", "profit", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ NULL, NULL, 0, FALSE }
+};
+
+static const VentureCliColumn venture_cli_arbitrage_plan_trade_columns[] = {
+	{ "id", "trade", VENTURE_CLI_CELL_NUMBER, TRUE },
+	{ "name", "name", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "strategy", "strategy", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "reprice.state", "standing", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "reprice.planned_net", "planned", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "reprice.net", "now", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
 
@@ -755,6 +805,154 @@ venture_cli_arbitrage_export(
 	return 0;
 }
 
+/* Writes @bytes to @output, or to stdout. */
+static gint
+venture_cli_arbitrage_write(
+	VentureCli	 *cli,
+	GBytes		 *bytes,
+	const gchar	 *output,
+	GError		**error
+){
+	if (NULL != output)
+	{
+		g_autoptr(GError) local_error = NULL;
+
+		if (!g_file_set_contents(output, g_bytes_get_data(bytes, NULL),
+		                         (gssize)g_bytes_get_size(bytes), &local_error))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "%s", local_error->message);
+			return -1;
+		}
+
+		if (!cli->quiet)
+			g_printerr("Wrote %" G_GSIZE_FORMAT " bytes to %s\n", g_bytes_get_size(bytes), output);
+
+		return 0;
+	}
+
+	if (fwrite(g_bytes_get_data(bytes, NULL), 1, g_bytes_get_size(bytes), stdout) != g_bytes_get_size(bytes))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "Could not write the export");
+		return -1;
+	}
+
+	return 0;
+}
+
+/* arbitrage crafting [option=value ...]: every recipe at the picked realms. */
+static gint
+venture_cli_arbitrage_crafting(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GString) path = g_string_new("/api/v1/arbitrage/crafting");
+	g_autoptr(JsonNode) response = NULL;
+
+	if (!venture_cli_arbitrage_options(args, 2, FALSE, "arbitrage crafting", options, error))
+		return -1;
+
+	venture_cli_arbitrage_query(path, options);
+	response = venture_cli_request(cli, "GET", path->str, NULL, error);
+
+	if (NULL == response)
+		return -1;
+
+	venture_cli_print_answer(cli, response, "rows", venture_cli_arbitrage_crafting_columns,
+	                         "No recipe to price: import your professions' recipes, or widen the question.");
+	return 0;
+}
+
+/* arbitrage plan [reprice=1] | plan export FORMAT | plan remove TRADE_ID. */
+static gint
+venture_cli_arbitrage_plan(
+	VentureCli	 *cli,
+	gchar		**args,
+	const gchar	 *output,
+	GError		**error
+){
+	g_autoptr(JsonNode) response = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GString) path = NULL;
+
+	if ((NULL != output) && (0 != g_strcmp0(args[2], "export")))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "-o belongs to arbitrage plan export");
+		return -1;
+	}
+
+	if (0 == g_strcmp0(args[2], "export"))
+	{
+		g_autoptr(GBytes) bytes = NULL;
+
+		path = g_string_new("/api/v1/arbitrage/plan/export?format=");
+		g_string_append_uri_escaped(path, (NULL != args[3]) ? args[3] : "csv", NULL, FALSE);
+
+		if ((NULL != args[3]) && !venture_cli_arbitrage_options(args, 4, FALSE, "arbitrage plan export",
+		                                                        options, error))
+			return -1;
+
+		venture_cli_arbitrage_query(path, options);
+		bytes = venture_cli_request_bytes(cli, "GET", path->str, error);
+
+		return (NULL == bytes) ? -1 : venture_cli_arbitrage_write(cli, bytes, output, error);
+	}
+
+	if (0 == g_strcmp0(args[2], "remove"))
+	{
+		g_autoptr(JsonNode) body = json_node_new(JSON_NODE_OBJECT);
+		JsonObject *object = json_object_new();
+		gint64 id;
+
+		if (!venture_cli_positive_id(args[3], "usage: venturectl arbitrage plan remove TRADE_ID", &id, error) ||
+		    !venture_cli_arbitrage_options(args, 4, FALSE, "arbitrage plan remove", options, error))
+			return -1;
+
+		json_object_set_int_member(object, "trade_id", id);
+
+		if (json_object_has_member(options, "organization_id"))
+			json_object_set_string_member(object, "organization_id",
+			                              json_object_get_string_member(options, "organization_id"));
+
+		json_node_take_object(body, object);
+		response = venture_cli_request(cli, "POST", "/api/v1/arbitrage/plan/remove", body, error);
+
+		if (NULL == response)
+			return -1;
+
+		if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+			venture_cli_output(cli, response);
+		else if (!cli->quiet)
+			g_print("Removed trade #%" G_GINT64_FORMAT " from the plan\n", id);
+
+		return 0;
+	}
+
+	if (!venture_cli_arbitrage_options(args, 2, FALSE, "arbitrage plan", options, error))
+		return -1;
+
+	path = g_string_new("/api/v1/arbitrage/plan");
+	venture_cli_arbitrage_query(path, options);
+	response = venture_cli_request(cli, "GET", path->str, NULL, error);
+
+	if (NULL == response)
+		return -1;
+
+	if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+	{
+		venture_cli_output(cli, response);
+		return 0;
+	}
+
+	venture_cli_print_answer(cli, response, "totals", venture_cli_arbitrage_plan_total_columns,
+	                         "Nothing is planned.");
+	g_print("\n");
+	venture_cli_print_answer(cli, response, "trades", venture_cli_arbitrage_plan_trade_columns, "");
+	return 0;
+}
+
 /* arbitrage registries: what this server's strategies, fees and exports are. */
 static gint
 venture_cli_arbitrage_registries(
@@ -817,10 +1015,10 @@ venture_cli_command_arbitrage(
 		return -1;
 	}
 
-	if ((NULL != output) && (0 != g_strcmp0(verb, "export")))
+	if ((NULL != output) && (0 != g_strcmp0(verb, "export")) && (0 != g_strcmp0(verb, "plan")))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "-o belongs to arbitrage export");
+		                    "-o belongs to arbitrage export and arbitrage plan export");
 		return -1;
 	}
 
@@ -844,6 +1042,12 @@ venture_cli_command_arbitrage(
 
 	if (0 == g_strcmp0(verb, "record"))
 		return venture_cli_arbitrage_record(cli, args, error);
+
+	if (0 == g_strcmp0(verb, "crafting"))
+		return venture_cli_arbitrage_crafting(cli, args, error);
+
+	if (0 == g_strcmp0(verb, "plan"))
+		return venture_cli_arbitrage_plan(cli, args, output, error);
 
 	if (0 == g_strcmp0(verb, "calc"))
 		return venture_cli_arbitrage_calc(cli, args, stake, error);

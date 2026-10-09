@@ -350,6 +350,8 @@ ids, notes) in words.
 | "Alert me when a price drops" | `create alert_rule ...`, `market alerts evaluate --dry-run` | [market-data.md](references/market-data.md) |
 | "Where do I log in next / what do my accounts hold?" | `accounts attention`, `accounts inventory`, `accounts pnl` | [accounts.md](references/accounts.md) |
 | "Find and record an arbitrage" | `arbitrage scan`, `arbitrage record N ...`, `arbitrage close` | [arbitrage-scan.md](references/arbitrage-scan.md) |
+| "What do my crafts make? / plan my flips" | `arbitrage crafting buy_realm=... sell_realm=...`; `arbitrage plan [reprice=1]`, `arbitrage plan export tsm` | [arbitrage-scan.md](references/arbitrage-scan.md) |
+| "Import my professions' recipes" (WoW) | `act data_source ID import_recipes professions="..." skill_tier="..." max_recipes=500 create_products=true venture_id=N`; `act data_source ID set_venue_fees` | [feeds.md](references/feeds.md) |
 | "Craft from a recipe / what is a recipe's margin?" | `act recipe ID craft times=N`; `report recipe_margin` | [market-production.md](references/market-production.md) |
 | "Log a farming session / track a goal" | `session` + `session_yield`, `act session ID post`; `goal`, `report goal_progress` | [sessions-goals.md](references/sessions-goals.md) |
 | "Run X every day / when Y changes" | a pod in `automations.pod` or cron calling the sweep | [automation.md](references/automation.md) |

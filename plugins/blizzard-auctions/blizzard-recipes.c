@@ -72,6 +72,14 @@ typedef struct
 	gboolean		 create_products;
 	gchar			*namespace_;
 
+	/* Where the recipe being read is filed in the professions' book:
+	 * the profession, its skill tier (an expansion) and the tier's
+	 * category ("Materials"). Borrowed from the walk's JSON. */
+	const gchar		*profession_name;
+	const gchar		*tier_name;
+	const gchar		*category_name;
+	GHashTable		*categories;	/* "parent\037name" -> category id */
+
 	guint			 read;
 	guint			 created;
 	guint			 updated;
@@ -352,6 +360,123 @@ blizzard_item_product(
 	return TRUE;
 }
 
+/*
+ * The `recipe` category @name under @parent_id (0: a top level), made
+ * when there is none: a profession, its tier, the tier's section. Found
+ * by name, parent and `applies-to`, a live one first; a deleted one is
+ * left deleted and another made, since a person deleted it. Remembered
+ * for the rest of the walk.
+ */
+static gboolean
+blizzard_category(
+	BlizzardImport	 *import,
+	gint64		  parent_id,
+	const gchar	 *name,
+	gint64		 *out_id,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(VentureEntity) category = NULL;
+	g_autofree gchar *cache_key = NULL;
+	gpointer cached;
+	guint i;
+
+	*out_id = 0;
+	cache_key = g_strdup_printf("%" G_GINT64_FORMAT "\037%s", parent_id, name);
+
+	if (g_hash_table_lookup_extended(import->categories, cache_key, NULL, &cached))
+	{
+		*out_id = *(gint64 *)cached;
+		return TRUE;
+	}
+
+	query = venture_query_new(VENTURE_TYPE_CATEGORY);
+	venture_query_set_organization(query, import->organization_id);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+
+	if (!venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ, name, error) ||
+	    !venture_query_add_filter_string(query, "applies-to", VENTURE_FILTER_OP_EQ, "recipe", error))
+		return FALSE;
+
+	found = venture_database_find(import->database, query, error);
+
+	if (NULL == found)
+		return FALSE;
+
+	for (i = 0; (i < found->len) && (0 == *out_id); i++)
+	{
+		gint64 parent = 0;
+
+		g_object_get(g_ptr_array_index(found, i), "parent-id", &parent, NULL);
+
+		if (parent == parent_id)
+			*out_id = venture_entity_get_id(g_ptr_array_index(found, i));
+	}
+
+	if (0 == *out_id)
+	{
+		category = blizzard_new_record(import, "category", error);
+
+		if (NULL == category)
+			return FALSE;
+
+		g_object_set(category, "name", name, "applies-to", "recipe", NULL);
+
+		if (parent_id > 0)
+			g_object_set(category, "parent-id", parent_id, NULL);
+
+		if (!venture_database_save(import->database, category, import->actor, error))
+			return FALSE;
+
+		*out_id = venture_entity_get_id(category);
+	}
+
+	g_hash_table_insert(import->categories, g_steal_pointer(&cache_key), g_memdup2(out_id, sizeof(gint64)));
+
+	return TRUE;
+}
+
+/* Where the recipe being read is filed: profession / tier / section, the
+ * tier left out when it is only the profession's name again. 0 when the
+ * walk knows none. */
+static gboolean
+blizzard_recipe_category(
+	BlizzardImport	 *import,
+	gint64		 *out_id,
+	GError		**error
+){
+	const gchar *levels[3];
+	gint64 parent;
+	guint n;
+	guint i;
+
+	*out_id = 0;
+	n = 0;
+
+	if (!venture_string_is_empty(import->profession_name))
+		levels[n++] = import->profession_name;
+
+	if (!venture_string_is_empty(import->tier_name) &&
+	    (0 != g_strcmp0(import->tier_name, import->profession_name)))
+		levels[n++] = import->tier_name;
+
+	if (!venture_string_is_empty(import->category_name))
+		levels[n++] = import->category_name;
+
+	parent = 0;
+
+	for (i = 0; i < n; i++)
+	{
+		if (!blizzard_category(import, parent, levels[i], &parent, error))
+			return FALSE;
+	}
+
+	*out_id = parent;
+
+	return TRUE;
+}
+
 /* One reagent line: the product and the quantity, merged by product. */
 typedef struct
 {
@@ -392,6 +517,7 @@ blizzard_import_recipe(
 	gint64 recipe_id;
 	gint64 output_id;
 	gint64 output_quantity;
+	gint64 category_id;
 	gboolean changed;
 	guint i;
 	guint j;
@@ -492,6 +618,9 @@ blizzard_import_recipe(
 
 	changed = FALSE;
 
+	if (!blizzard_recipe_category(import, &category_id, error))
+		return FALSE;
+
 	if (NULL == record)
 	{
 		g_autofree gchar *notes = g_strdup_printf("Imported from Battle.net recipe %" G_GINT64_FORMAT,
@@ -508,6 +637,9 @@ blizzard_import_recipe(
 		if (import->venture_id > 0)
 			g_object_set(record, "venture-id", import->venture_id, NULL);
 
+		if (category_id > 0)
+			g_object_set(record, "category-id", category_id, NULL);
+
 		if (!venture_database_save(import->database, record, import->actor, error))
 			return FALSE;
 
@@ -516,13 +648,28 @@ blizzard_import_recipe(
 	else
 	{
 		gint64 stored;
+		gint64 filed;
+		gboolean moved = FALSE;
 
-		g_object_get(record, "output-quantity", &stored, NULL);
+		g_object_get(record, "output-quantity", &stored, "category-id", &filed, NULL);
 
 		if (stored != output_quantity)
 		{
 			g_object_set(record, "output-quantity", output_quantity, NULL);
+			moved = TRUE;
+		}
 
+		/* Filed only when nobody filed it: a recipe imported before the
+		 * walk filed recipes gets its place, and one a person moved
+		 * keeps theirs. */
+		if ((0 == filed) && (category_id > 0))
+		{
+			g_object_set(record, "category-id", category_id, NULL);
+			moved = TRUE;
+		}
+
+		if (moved)
+		{
 			if (!venture_database_save(import->database, record, import->actor, error))
 				return FALSE;
 
@@ -686,10 +833,85 @@ blizzard_parse_cursor(
  * recipes were read. Each recipe is one transaction: a failure keeps what
  * came before it. Returns the cursor to continue from, "" when done.
  */
+/* The name an entry of an index array gives @id, or NULL. */
+static const gchar *
+blizzard_entry_name(
+	JsonArray	*array,
+	gint64		 id,
+	const gchar	*locale
+){
+	guint i;
+
+	for (i = 0; (NULL != array) && (i < json_array_get_length(array)); i++)
+	{
+		JsonNode *element = json_array_get_element(array, i);
+
+		if (JSON_NODE_HOLDS_OBJECT(element) && (blizzard_int(json_node_get_object(element), "id", 0) == id))
+			return blizzard_text(json_node_get_object(element), "name", locale);
+	}
+
+	return NULL;
+}
+
+/* Whether a profession is one the import was asked for: by its id or its
+ * name, case folded. No list is every profession. */
+static gboolean
+blizzard_profession_wanted(
+	gchar *const	*wanted,
+	gint64		 id,
+	const gchar	*name
+){
+	g_autofree gchar *folded = NULL;
+	guint i;
+
+	if ((NULL == wanted) || (NULL == wanted[0]))
+		return TRUE;
+
+	folded = (NULL != name) ? g_utf8_casefold(name, -1) : NULL;
+
+	for (i = 0; NULL != wanted[i]; i++)
+	{
+		g_autofree gchar *want = g_utf8_casefold(wanted[i], -1);
+		gint64 number;
+
+		if (g_ascii_string_to_signed(wanted[i], 10, 1, G_MAXINT64, &number, NULL) && (number == id))
+			return TRUE;
+
+		if ((NULL != folded) && (0 == g_strcmp0(want, folded)))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/* Whether a skill tier's name has @wanted in it, case folded: "Khaz
+ * Algar" keeps "Khaz Algar Blacksmithing". No filter is every tier. */
+static gboolean
+blizzard_tier_wanted(
+	const gchar	*wanted,
+	const gchar	*name
+){
+	g_autofree gchar *want = NULL;
+	g_autofree gchar *folded = NULL;
+
+	if (venture_string_is_empty(wanted))
+		return TRUE;
+
+	if (NULL == name)
+		return FALSE;
+
+	want = g_utf8_casefold(wanted, -1);
+	folded = g_utf8_casefold(name, -1);
+
+	return NULL != strstr(folded, want);
+}
+
 static gchar *
 blizzard_import_walk(
 	BlizzardImport	 *import,
 	gint64		  only_profession,
+	gchar *const	 *professions_wanted,
+	const gchar	 *skill_tier,
 	const gchar	 *cursor,
 	guint		  budget,
 	GError		**error
@@ -727,7 +949,13 @@ blizzard_import_walk(
 		profession_id = g_array_index(professions, gint64, p);
 
 		if (((only_profession > 0) && (profession_id != only_profession)) ||
-		    ((start_profession > 0) && (profession_id < start_profession)))
+		    ((start_profession > 0) && (profession_id < start_profession)) ||
+		    !blizzard_profession_wanted(professions_wanted, profession_id,
+		                                blizzard_entry_name(json_object_has_member(index_object, "professions")
+		                                                    ? json_object_get_array_member(index_object,
+		                                                                                   "professions")
+		                                                    : NULL, profession_id,
+		                                                    import->frozen->settings->locale)))
 			continue;
 
 		path = g_strdup_printf("/data/wow/profession/%" G_GINT64_FORMAT, profession_id);
@@ -739,11 +967,13 @@ blizzard_import_walk(
 		tiers = blizzard_import_ids(json_object_has_member(profession, "skill_tiers")
 		                            ? json_object_get_array_member(profession, "skill_tiers") : NULL,
 		                            TRUE);
+		import->profession_name = blizzard_text(profession, "name", import->frozen->settings->locale);
 
 		for (t = 0; t < tiers->len; t++)
 		{
 			g_autoptr(JsonNode) tier_node = NULL;
 			g_autoptr(GArray) recipes = NULL;
+			g_autoptr(GPtrArray) sections = NULL;
 			g_autofree gchar *tier_path = NULL;
 			JsonObject *tier;
 			JsonArray *categories;
@@ -757,6 +987,14 @@ blizzard_import_walk(
 			if ((profession_id == start_profession) && (tier_id < start_tier))
 				continue;
 
+			/* An expansion asked for by name: the profession's list
+			 * names every tier, so the others are never fetched. */
+			if (!blizzard_tier_wanted(skill_tier,
+			                          blizzard_entry_name(json_object_get_array_member(profession,
+			                                                                           "skill_tiers"),
+			                                              tier_id, import->frozen->settings->locale)))
+				continue;
+
 			tier_path = g_strdup_printf("/data/wow/profession/%" G_GINT64_FORMAT "/skill-tier/%"
 			                            G_GINT64_FORMAT, profession_id, tier_id);
 			tier = blizzard_import_require(import, tier_path, "a skill tier", &tier_node, error);
@@ -764,15 +1002,19 @@ blizzard_import_walk(
 			if (NULL == tier)
 				return NULL;
 
-			/* Every category's recipes, in Blizzard's order. */
+			/* Every category's recipes, in Blizzard's order, each
+			 * remembering which section of the book it is in. */
 			recipes = g_array_new(FALSE, FALSE, sizeof(gint64));
+			sections = g_ptr_array_new();
 			categories = json_object_has_member(tier, "categories")
 				? json_object_get_array_member(tier, "categories") : NULL;
+			import->tier_name = blizzard_text(tier, "name", import->frozen->settings->locale);
 
 			for (c = 0; (NULL != categories) && (c < json_array_get_length(categories)); c++)
 			{
 				JsonNode *element = json_array_get_element(categories, c);
 				g_autoptr(GArray) some = NULL;
+				guint k;
 
 				if (!JSON_NODE_HOLDS_OBJECT(element) ||
 				    !json_object_has_member(json_node_get_object(element), "recipes"))
@@ -781,6 +1023,10 @@ blizzard_import_walk(
 				some = blizzard_import_ids(json_object_get_array_member(json_node_get_object(element),
 				                                                        "recipes"), FALSE);
 				g_array_append_vals(recipes, some->data, some->len);
+
+				for (k = 0; k < some->len; k++)
+					g_ptr_array_add(sections, (gpointer)blizzard_text(json_node_get_object(element), "name",
+					                                                  import->frozen->settings->locale));
 			}
 
 			first = ((profession_id == start_profession) && (tier_id == start_tier))
@@ -805,6 +1051,7 @@ blizzard_import_walk(
 
 				budget--;
 				import->read++;
+				import->category_name = g_ptr_array_index(sections, r);
 
 				if (!blizzard_import_one(import, recipe, error))
 					return NULL;
@@ -904,8 +1151,11 @@ blizzard_import_invoke(
 	g_autoptr(GString) result = NULL;
 	g_autofree gchar *next = NULL;
 	g_autofree gchar *namespace_ = NULL;
+	g_auto(GStrv) professions = NULL;
+	g_autoptr(GHashTable) categories = NULL;
 	BlizzardImport import;
 	JsonNode *node;
+	const gchar *skill_tier;
 	const gchar *cursor;
 	gint64 only_profession;
 	gint64 budget;
@@ -936,6 +1186,29 @@ blizzard_import_invoke(
 	only_profession = (NULL != node) ? json_node_get_int(node) : 0;
 	node = blizzard_param(params, "cursor");
 	cursor = (NULL != node) ? json_node_get_string(node) : NULL;
+	node = blizzard_param(params, "skill_tier");
+	skill_tier = (NULL != node) ? json_node_get_string(node) : NULL;
+	node = blizzard_param(params, "professions");
+
+	/* "Alchemy, Inscription" or "171,773": the professions a person
+	 * has, by name or Blizzard's id, so one call reads just theirs. */
+	if ((NULL != node) && !venture_string_is_empty(json_node_get_string(node)))
+	{
+		g_auto(GStrv) parts = g_strsplit(json_node_get_string(node), ",", -1);
+		g_autoptr(GPtrArray) kept = g_ptr_array_new_with_free_func(g_free);
+		guint k;
+
+		for (k = 0; NULL != parts[k]; k++)
+		{
+			g_strstrip(parts[k]);
+
+			if ('\0' != parts[k][0])
+				g_ptr_array_add(kept, g_strdup(parts[k]));
+		}
+
+		g_ptr_array_add(kept, NULL);
+		professions = (gchar **)g_ptr_array_free(g_steal_pointer(&kept), FALSE);
+	}
 
 	memset(&import, 0, sizeof(import));
 	node = blizzard_param(params, "create_products");
@@ -971,6 +1244,8 @@ blizzard_import_invoke(
 	import.namespace_ = venture_string_is_empty(namespace_) ? (gchar *)BLIZZARD_INSTRUMENT_NAMESPACE
 	                                                        : namespace_;
 	import.reasons = reasons;
+	categories = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	import.categories = categories;
 
 	if (NULL == import.frozen)
 	{
@@ -982,7 +1257,8 @@ blizzard_import_invoke(
 	{
 		g_autoptr(GError) walk_error = NULL;
 
-		next = blizzard_import_walk(&import, only_profession, cursor, (guint)budget, &walk_error);
+		next = blizzard_import_walk(&import, only_profession, professions, skill_tier, cursor, (guint)budget,
+		                            &walk_error);
 
 		if (NULL == next)
 		{
@@ -1011,6 +1287,168 @@ blizzard_import_invoke(
 		g_string_append(result, " Done: every recipe has been read.");
 
 	g_object_set(entity, "result", result->str, NULL);
+
+	return g_object_ref(entity);
+}
+
+/* ==========================================================================
+ * The fees action: every realm's venue record, given wow_auction
+ *
+ * A scan nets the auction house's cut and deposit out only at a venue
+ * whose record names a fee model, and a region has some eighty realms
+ * and its commodity market. `set_venue_fees` promotes every venue the
+ * source's store knows to a record (idempotent) and gives each one that
+ * names no fee model `wow_auction` with the parameters asked. A record
+ * that already names a model is a person's choice and is left alone
+ * unless `replace` says otherwise.
+ * ========================================================================== */
+
+static gboolean
+blizzard_fees_allowed(
+	VentureAction		 *action,
+	VentureEntity		 *entity,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(VentureContext) context = NULL;
+	g_autofree gchar *provider = NULL;
+
+	(void)actor;
+
+	if (venture_entity_is_deleted(entity))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		                    "A deleted data source has no venues to price");
+		return FALSE;
+	}
+
+	g_object_get(entity, "provider", &provider, NULL);
+
+	if (0 != g_strcmp0(provider, BLIZZARD_PROVIDER_NAME))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "set_venue_fees prices World of Warcraft auction houses; this source's provider is %s",
+		            (NULL != provider) ? provider : "unset");
+		return FALSE;
+	}
+
+	context = blizzard_context_for(VENTURE_DATABASE(venture_action_get_data(action)));
+
+	if ((NULL == context) || (NULL == venture_context_get_feeds_service(context)) ||
+	    !venture_context_module_enabled(context, "marketdata"))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Setting venue fees needs market data feeds (feeds.enabled) and the "
+		                    "marketdata module on");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static VentureEntity *
+blizzard_fees_invoke(
+	VentureAction		 *action,
+	VentureEntity		 *entity,
+	GHashTable		 *params,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GPtrArray) venues = NULL;
+	g_autoptr(GString) yaml = NULL;
+	g_autofree gchar *result = NULL;
+	VentureDatabase *database;
+	JsonNode *node;
+	gboolean replace;
+	guint set;
+	guint kept;
+	guint i;
+
+	context = blizzard_context_for(VENTURE_DATABASE(venture_action_get_data(action)));
+
+	if ((NULL == context) || (NULL == venture_context_get_feeds_service(context)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+		                    "Market data feeds are off (feeds.enabled)");
+		return NULL;
+	}
+
+	/* The model's own parameters, written as YAML the venue's validator
+	 * judges with the model: a bad one is refused there, by name. */
+	yaml = g_string_new(NULL);
+	node = blizzard_param(params, "cut_percent");
+	g_string_append_printf(yaml, "cut_percent: %" G_GINT64_FORMAT "\n",
+	                       (NULL != node) ? json_node_get_int(node) : (gint64)5);
+	node = blizzard_param(params, "duration_hours");
+	g_string_append_printf(yaml, "duration_hours: %" G_GINT64_FORMAT "\n",
+	                       (NULL != node) ? json_node_get_int(node) : (gint64)48);
+	node = blizzard_param(params, "deposit_factor_percent");
+
+	if (NULL != node)
+		g_string_append_printf(yaml, "deposit_factor_percent: %" G_GINT64_FORMAT "\n", json_node_get_int(node));
+
+	node = blizzard_param(params, "replace");
+	replace = (NULL != node) && json_node_get_boolean(node);
+
+	store = venture_feeds_service_open_reader(venture_context_get_feeds_service(context),
+	                                          venture_entity_get_id(entity), error);
+
+	if (NULL == store)
+		return NULL;
+
+	venues = venture_series_store_list_venues(store, error);
+
+	if (NULL == venues)
+		return NULL;
+
+	database = venture_context_get_database(context);
+	set = 0;
+	kept = 0;
+
+	if (!venture_database_begin(database, error))
+		return NULL;
+
+	for (i = 0; i < venues->len; i++)
+	{
+		VentureSeriesVenueRow *row = g_ptr_array_index(venues, i);
+		g_autoptr(VentureEntity) venue = NULL;
+		g_autofree gchar *model = NULL;
+
+		if (!venture_marketdata_promote_venue(context, venture_entity_get_organization_id(entity),
+		                                      venture_entity_get_id(entity), row->key, actor, &venue, error))
+		{
+			venture_database_rollback(database);
+			return NULL;
+		}
+
+		g_object_get(venue, "fee-model", &model, NULL);
+
+		if (!venture_string_is_empty(model) && !replace)
+		{
+			kept++;
+			continue;
+		}
+
+		g_object_set(venue, "fee-model", BLIZZARD_FEE_MODEL_NAME, "fee-params", yaml->str, NULL);
+
+		if (!venture_database_save(database, venue, actor, error))
+		{
+			venture_database_rollback(database);
+			return NULL;
+		}
+
+		set++;
+	}
+
+	if (!venture_database_commit(database, error))
+		return NULL;
+
+	result = g_strdup_printf("%u venue%s given wow_auction (%s), %u kept the fee model %s already had.",
+	                         set, (1 == set) ? "" : "s", g_strstrip(g_strdelimit(yaml->str, "\n", ' ')), kept,
+	                         (1 == kept) ? "it" : "they");
+	g_object_set(entity, "result", result, NULL);
 
 	return g_object_ref(entity);
 }
@@ -1056,6 +1494,15 @@ blizzard_recipes_register(
 	field = venture_field_spec_new("profession_id", "Profession", VENTURE_FIELD_KIND_INTEGER);
 	field->help = g_strdup("Only this profession's recipes (Blizzard's id: 164 is Blacksmithing)");
 	g_ptr_array_add(parameters, field);
+	field = venture_field_spec_new("professions", "Professions", VENTURE_FIELD_KIND_STRING);
+	field->help = g_strdup("Only these professions, by name or Blizzard's id, comma separated: "
+	                       "\"Alchemy, Inscription\"");
+	g_ptr_array_add(parameters, field);
+	field = venture_field_spec_new("skill_tier", "Expansion",
+	                               VENTURE_FIELD_KIND_STRING);
+	field->help = g_strdup("Only skill tiers whose name has this in it: \"Khaz Algar\" reads this "
+	                       "expansion's recipes and none of the older ones");
+	g_ptr_array_add(parameters, field);
 	field = venture_field_spec_new("cursor", "Continue from", VENTURE_FIELD_KIND_STRING);
 	field->help = g_strdup("What the last import said to continue with; empty starts at the top");
 	g_ptr_array_add(parameters, field);
@@ -1078,8 +1525,41 @@ blizzard_recipes_register(
 	                      "parameters", parameters, "stageable", FALSE,
 	                      "roles", VENTURE_USER_ROLE_EDITOR, NULL);
 
+	if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
+	                                      blizzard_import_allowed, blizzard_import_invoke, database,
+	                                      NULL, error))
+		return FALSE;
+
+	g_clear_object(&action);
+	g_clear_pointer(&parameters, g_ptr_array_unref);
+	parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	field = venture_field_spec_new("cut_percent", "Cut %", VENTURE_FIELD_KIND_INTEGER);
+	field->help = g_strdup("The auction house's share of a sale; 5 when left empty");
+	g_ptr_array_add(parameters, field);
+	field = venture_field_spec_new("duration_hours", "Listing hours", VENTURE_FIELD_KIND_INTEGER);
+	field->help = g_strdup("12, 24 or 48: how long an auction is posted for, which sets the deposit; 48 "
+	                       "when left empty");
+	g_ptr_array_add(parameters, field);
+	field = venture_field_spec_new("deposit_factor_percent", "Deposit %", VENTURE_FIELD_KIND_INTEGER);
+	field->help = g_strdup("The deposit as a percent of the vendor price, replacing the classic shares");
+	g_ptr_array_add(parameters, field);
+	field = venture_field_spec_new("replace", "Replace", VENTURE_FIELD_KIND_BOOLEAN);
+	field->help = g_strdup("Also replace a fee model a venue already names");
+	g_ptr_array_add(parameters, field);
+
+	/* Venue records are an editor's to write, as promoting one by hand
+	 * is; the source names which store's venues. */
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+	                      "type-name", "data_source", "name", BLIZZARD_FEES_ACTION_NAME,
+	                      "label", "Set venue fees",
+	                      "description", "Give every venue this source's store knows a venue record with the "
+	                                     "wow_auction fee model, so scans and crafting count the auction "
+	                                     "house's cut and deposit",
+	                      "parameters", parameters, "stageable", FALSE,
+	                      "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+
 	return venture_action_registry_register(venture_database_get_action_registry(database), action,
-	                                        blizzard_import_allowed, blizzard_import_invoke, database,
+	                                        blizzard_fees_allowed, blizzard_fees_invoke, database,
 	                                        NULL, error);
 }
 

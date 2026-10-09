@@ -2466,6 +2466,8 @@ test_looks(
 	static const gchar *const paths[] = {
 		"/arbitrage?units=2&category_path=Herbs",
 		"/arbitrage/calc?calc=surebet&odds=2.1%2C+2.2&stake=100.00+USD",
+		"/arbitrage/crafting?buy_realm=realm-a",
+		"/arbitrage/plan",
 		NULL
 	};
 	guint i;
@@ -2475,6 +2477,7 @@ test_looks(
 
 	seed_store(fixture, NULL);
 	seed_venues(fixture);
+	seed_recipe(fixture);
 
 	for (i = 0; NULL != looks[i]; i++)
 	{
@@ -2492,6 +2495,751 @@ test_looks(
 		/* Tabs, tab, presets, filters, exports, table; calc, answer. */
 		g_assert_cmpuint(checked, >=, 8);
 	}
+}
+
+/* ==========================================================================
+ * Crafting and the flip planner
+ * ========================================================================== */
+
+/*
+ * A region-wide market beside the realms, as a game's commodity market
+ * is: one venue every realm trades on, marked by its store attributes.
+ * Its vial is dearer than realm-b's.
+ */
+static void
+seed_market(Fixture *fixture)
+{
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	VentureSeriesVenue venue;
+	static const Offer market[] = { { "vial", 40, 150, 50 } };
+
+	source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+
+	memset(&venue, 0, sizeof(venue));
+	venue.key = "market";
+	venue.namespace_ = "realm";
+	venue.name = "Region market";
+	venue.kind = "auction_house";
+	venue.group_key = "eu";
+	venue.currency = "USD";
+	venue.attrs_json = "{\"region_wide\":true}";
+	g_assert_true(venture_series_store_upsert_venue(store, &venue, fixture->now - 600, &error));
+	g_assert_no_error(error);
+	sold_earlier(store, "market", "USD", fixture->now - 4200, market, G_N_ELEMENTS(market));
+	snapshot(store, "market", "USD", fixture->now - 600, market, G_N_ELEMENTS(market));
+	g_assert_true(venture_series_store_recompute_region(store, NULL, fixture->now, VENTURE_SERIES_NONE, NULL,
+	                                                    NULL, &error));
+	g_assert_no_error(error);
+}
+
+/* A recipe category, filed under @parent (0 for a top level). */
+static gint64
+recipe_category(
+	Fixture		*fixture,
+	const gchar	*name,
+	gint64		 parent
+){
+	g_autoptr(VentureEntity) category = record(fixture, "category");
+
+	g_object_set(category, "name", name, "applies-to", "recipe", NULL);
+
+	if (parent > 0)
+		g_object_set(category, "parent-id", parent, NULL);
+
+	save(fixture, category);
+
+	return ID(category);
+}
+
+/* "Quick brew": two herbs and a vial make a potion -- no tool, so every
+ * reagent is on the market -- filed under Alchemy / Potions. */
+static gint64
+seed_quick_brew(
+	Fixture	*fixture,
+	gint64	*out_alchemy
+){
+	g_autoptr(VentureEntity) recipe = record(fixture, "recipe");
+	gint64 alchemy;
+	gint64 potions;
+	guint i;
+	const gint64 parts[2][2] = {
+		{ 0, 2 }, { 1, 1 }
+	};
+	gint64 products[2];
+
+	products[0] = fixture->herb_product;
+	products[1] = fixture->vial_product;
+	alchemy = recipe_category(fixture, "Alchemy", 0);
+	potions = recipe_category(fixture, "Potions", alchemy);
+	g_object_set(recipe, "name", "Quick brew", "output-product-id", fixture->potion_product,
+	             "output-quantity", (gint64)1, "active", TRUE, "category-id", potions, NULL);
+	save(fixture, recipe);
+
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureEntity) component = record(fixture, "recipe_component");
+
+		g_object_set(component, "recipe-id", ID(recipe), "product-id", products[parts[i][0]],
+		             "quantity", parts[i][1], NULL);
+		save(fixture, component);
+	}
+
+	if (NULL != out_alchemy)
+		*out_alchemy = alchemy;
+
+	return ID(recipe);
+}
+
+/* The crafting question's answer, which must exist. */
+static JsonNode *
+crafting(
+	Fixture		*fixture,
+	const gchar	*options
+){
+	g_autoptr(JsonObject) asked = object_of(options);
+	g_autoptr(GError) error = NULL;
+	JsonNode *answer;
+
+	answer = venture_arbitrage_crafting(fixture->context, fixture->org, asked, &error);
+
+	if (NULL == answer)
+		g_error("crafting %s refused: %s", options, error->message);
+
+	return answer;
+}
+
+static JsonObject *
+input_named(
+	JsonObject	*row,
+	const gchar	*name
+){
+	JsonArray *inputs = json_object_get_array_member(row, "inputs");
+	guint i;
+
+	for (i = 0; i < json_array_get_length(inputs); i++)
+	{
+		JsonObject *input = json_array_get_object_element(inputs, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(input, "name"), name))
+			return input;
+	}
+
+	g_error("no input named %s", name);
+	return NULL;
+}
+
+/*
+ * Crafting is the transform strategy, worked by hand for three batches of
+ * Quick brew, reagents bought at realm-a and the potion sold at realm-b:
+ *
+ *   herb  6 at realm-a, 10.00 each                     60.00
+ *   vial  3 from the region-wide market, 1.50 each      4.50
+ *         (realm-b's 1.00 is not where we buy, and realm-a has none:
+ *         a commodity comes from the region's market whatever realm is
+ *         picked, so it is not left unquoted)
+ *   potion 3 at realm-b, 90.00 each                   270.00 gross
+ *   realm-b's cut, 5%                                  13.50
+ *   realm-b's deposit, 10% of the listing              27.00 (refunded on a sale)
+ *
+ * net = 270.00 - 13.50 - 64.50 - the deposits relisting is expected to
+ * lose (listing_loss, the flip's formula). The margin is net / gross.
+ * With no realm picked, the vial is bought where it is cheapest: realm-b.
+ * What breaks if this regresses: a crafter's commodity reagents read as
+ * unquoted on their own realm, or the auction house's fees go missing
+ * from what a craft makes.
+ */
+static void
+test_crafting(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) picked = NULL;
+	g_autoptr(JsonNode) cheapest = NULL;
+	g_autoptr(JsonNode) every = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMoney) loss = NULL;
+	g_autofree gchar *options = NULL;
+	JsonObject *root;
+	JsonObject *row;
+	JsonObject *sell;
+	JsonArray *realms;
+	gint64 alchemy;
+	gint64 net;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_market(fixture);
+	venue_record(fixture, "realm-a", "none", NULL, NULL);
+	venue_record(fixture, "realm-b", "percent", "cut_percent: 5\ndeposit_percent: 10", NULL);
+	venue_record(fixture, "market", "none", NULL, NULL);
+	seed_recipe(fixture);
+	seed_quick_brew(fixture, &alchemy);
+
+	options = g_strdup_printf("{\"recipe_category_id\":%" G_GINT64_FORMAT ",\"buy_realm\":\"realm-a\","
+	                          "\"sell_realm\":\"realm-b\",\"units\":\"3\"}", alchemy);
+	picked = crafting(fixture, options);
+	root = json_node_get_object(picked);
+
+	/* The category narrows in the query: Brew, filed nowhere, is not
+	 * priced at all. */
+	g_assert_cmpuint(json_array_get_length(rows_of(picked)), ==, 1);
+	row = json_array_get_object_element(rows_of(picked), 0);
+	g_assert_cmpstr(json_object_get_string_member(row, "recipe_category"), ==, "Alchemy / Potions");
+	g_assert_false(json_object_has_member(row, "missing"));
+	g_assert_cmpstr(json_object_get_string_member(input_named(row, "Peacebloom"), "venue_key"), ==, "realm-a");
+	g_assert_cmpint(amount_of(input_named(row, "Peacebloom"), "cost"), ==, 6000);
+	g_assert_cmpstr(json_object_get_string_member(input_named(row, "Empty Vial"), "venue_key"), ==, "market");
+	g_assert_cmpint(amount_of(input_named(row, "Empty Vial"), "cost"), ==, 450);
+	g_assert_cmpint(amount_of(row, "cost"), ==, 6450);
+	g_assert_cmpint(amount_of(row, "gross"), ==, 27000);
+	sell = json_object_get_object_member(row, "sell");
+	g_assert_cmpstr(json_object_get_string_member(sell, "venue_key"), ==, "realm-b");
+	g_assert_cmpint(amount_of(sell, "fees"), ==, 1350);
+	g_assert_cmpint(amount_of(sell, "deposit"), ==, 2700);
+	loss = venture_money_from_json(json_object_get_member(row, "listing_loss"), NULL, &error);
+	g_assert_no_error(error);
+	net = amount_of(row, "net");
+	g_assert_cmpint(net, ==, 27000 - 1350 - 6450 - venture_money_get_amount(loss));
+	g_assert_cmpfloat_with_epsilon(json_object_get_double_member(row, "margin"), (gdouble)net / 27000.0, 1e-9);
+
+	/* Each price says how old it is, as Deals does. */
+	g_assert_false(json_object_get_boolean_member(row, "buy_stale"));
+	g_assert_false(json_object_get_boolean_member(row, "sell_stale"));
+	g_assert_true(json_object_has_member(input_named(row, "Empty Vial"), "age_seconds"));
+	g_assert_true(json_object_has_member(sell, "age_seconds"));
+
+	/* The realm pickers offer the realms, not the market every realm
+	 * trades on; the categories, by path. */
+	realms = json_object_get_array_member(root, "realm_choices");
+	g_assert_cmpuint(json_array_get_length(realms), >, 0);
+
+	for (i = 0; i < json_array_get_length(realms); i++)
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(realms, i), "name"), !=,
+		                "Region market");
+
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root, "categories")), ==, 2);
+
+	/* No realm picked: every reagent where it is cheapest. */
+	g_free(options);
+	options = g_strdup_printf("{\"recipe_category_id\":%" G_GINT64_FORMAT ",\"units\":3}", alchemy);
+	cheapest = crafting(fixture, options);
+	row = json_array_get_object_element(rows_of(cheapest), 0);
+	g_assert_cmpstr(json_object_get_string_member(input_named(row, "Empty Vial"), "venue_key"), ==, "realm-b");
+	g_assert_cmpint(amount_of(row, "cost"), ==, 6300);
+
+	/* Every active recipe, losses and blanks kept: Brew's mortar is at
+	 * realm-c only, so on realm-a it is unquoted and says so. */
+	every = crafting(fixture, "{\"buy_realm\":\"realm-a\",\"units\":3}");
+	g_assert_cmpuint(json_array_get_length(rows_of(every)), ==, 2);
+
+	/* A realm nobody has, and a name the question does not take. */
+	{
+		g_autoptr(JsonObject) bad = object_of("{\"buy_realm\":\"Atlantis\"}");
+		g_autoptr(JsonNode) none = venture_arbitrage_crafting(fixture->context, fixture->org, bad, &error);
+
+		g_assert_null(none);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+		g_clear_error(&error);
+	}
+
+	{
+		g_autoptr(JsonObject) bad = object_of("{\"min_rio\":\"5\"}");
+		g_autoptr(JsonNode) none = venture_arbitrage_crafting(fixture->context, fixture->org, bad, &error);
+
+		g_assert_null(none);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+		g_clear_error(&error);
+	}
+}
+
+/*
+ * A venue the output sells at with no fee model is named beside the
+ * craft and in a note: its cut and deposit are not counted, and the
+ * craft reads better than it is.
+ */
+static void
+test_crafting_unpriced_fees(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	JsonObject *row;
+	JsonArray *warnings;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_market(fixture);
+	seed_recipe(fixture);
+	seed_quick_brew(fixture, NULL);
+
+	answer = crafting(fixture, "{\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\"}");
+	row = json_array_get_object_element(rows_of(answer), 0);
+	warnings = json_object_get_array_member(row, "warnings");
+	g_assert_cmpuint(json_array_get_length(warnings), ==, 1);
+	g_assert_nonnull(strstr(json_array_get_string_element(warnings, 0), "no venue record"));
+	g_assert_true(noted(answer, "no fee model"));
+}
+
+/* The plan's totals in @currency. */
+static JsonObject *
+plan_total(
+	JsonNode	*answer,
+	const gchar	*currency
+){
+	JsonArray *totals = json_object_get_array_member(json_node_get_object(answer), "totals");
+	guint i;
+
+	for (i = 0; i < json_array_get_length(totals); i++)
+	{
+		JsonObject *total = json_array_get_object_element(totals, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(total, "currency"), currency))
+			return total;
+	}
+
+	g_error("no %s totals", currency);
+	return NULL;
+}
+
+/* A venue's group in the plan's @section. */
+static JsonObject *
+plan_venue(
+	JsonObject	*plan,
+	const gchar	*section,
+	const gchar	*venue_name
+){
+	JsonArray *venues = json_object_get_array_member(plan, section);
+	guint i;
+
+	for (i = 0; i < json_array_get_length(venues); i++)
+	{
+		JsonObject *venue = json_array_get_object_element(venues, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(venue, "venue_name"), venue_name))
+			return venue;
+	}
+
+	return NULL;
+}
+
+static JsonObject *
+plan_line(
+	JsonObject	*venue,
+	const gchar	*instrument
+){
+	JsonArray *lines = json_object_get_array_member(venue, "lines");
+	guint i;
+
+	for (i = 0; i < json_array_get_length(lines); i++)
+	{
+		JsonObject *line = json_array_get_object_element(lines, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(line, "instrument_name"), instrument))
+			return line;
+	}
+
+	return NULL;
+}
+
+/*
+ * The planner's regrouping, from plain data: the same item bought at one
+ * venue by two trades is one line, its units added and the dearest price
+ * the most to pay; the same item posted at two prices is two lines;
+ * euros and dollars are two blocks of totals, never one; an executed leg
+ * is the books' now and is not on the list; revenue is the sales less
+ * the cut less the deposits relisting is expected to lose, and profit is
+ * that less every buy, buy fee and fee leg.
+ */
+static void
+test_planner_build(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonObject) plan = NULL;
+	g_autoptr(JsonNode) trades = NULL;
+	g_autoptr(GError) error = NULL;
+	JsonObject *venue;
+	JsonObject *line;
+	JsonArray *totals;
+	JsonObject *euro;
+	JsonObject *usd;
+	guint i;
+
+	(void)fixture;
+	(void)user_data;
+
+	trades = json_from_string(
+		"[{\"id\":1,\"expected\":{\"listing_loss\":\"0.50 EUR\",\"deposit\":\"2.00 EUR\"},\"legs\":["
+		"  {\"kind\":\"buy\",\"status\":\"planned\",\"venue_id\":7,\"venue_name\":\"Thrall\","
+		"   \"instrument_id\":3,\"instrument_name\":\"Mycobloom\",\"quantity\":10,"
+		"   \"unit_price\":\"1.00 EUR\",\"amount\":\"10.00 EUR\"},"
+		"  {\"kind\":\"sell\",\"status\":\"planned\",\"venue_id\":8,\"venue_name\":\"Area 52\","
+		"   \"instrument_id\":3,\"instrument_name\":\"Mycobloom\",\"quantity\":10,"
+		"   \"unit_price\":\"2.00 EUR\",\"amount\":\"20.00 EUR\",\"fees\":\"1.00 EUR\"},"
+		"  {\"kind\":\"fee\",\"status\":\"planned\",\"venue_id\":7,\"venue_name\":\"Thrall\","
+		"   \"amount\":\"0.25 EUR\",\"notes\":\"Moving the lot\"}]},"
+		" {\"id\":2,\"expected\":{\"listing_loss\":\"0.25 EUR\"},\"legs\":["
+		"  {\"kind\":\"buy\",\"status\":\"planned\",\"venue_id\":7,\"venue_name\":\"Thrall\","
+		"   \"instrument_id\":3,\"instrument_name\":\"Mycobloom\",\"quantity\":5,"
+		"   \"unit_price\":\"1.20 EUR\",\"amount\":\"6.00 EUR\"},"
+		"  {\"kind\":\"sell\",\"status\":\"planned\",\"venue_id\":8,\"venue_name\":\"Area 52\","
+		"   \"instrument_id\":3,\"instrument_name\":\"Mycobloom\",\"quantity\":5,"
+		"   \"unit_price\":\"2.50 EUR\",\"amount\":\"12.50 EUR\",\"fees\":\"0.62 EUR\"},"
+		"  {\"kind\":\"buy\",\"status\":\"executed\",\"venue_id\":9,\"venue_name\":\"Nowhere\","
+		"   \"instrument_id\":4,\"instrument_name\":\"Gone\",\"quantity\":1,\"amount\":\"99.00 EUR\"}]},"
+		" {\"id\":3,\"legs\":["
+		"  {\"kind\":\"buy\",\"status\":\"planned\",\"venue_id\":10,\"venue_name\":\"Supplier\","
+		"   \"instrument_id\":5,\"instrument_name\":\"Widget\",\"quantity\":2,"
+		"   \"unit_price\":\"3.00 USD\",\"amount\":\"6.00 USD\",\"fees\":\"0.50 USD\"},"
+		"  {\"kind\":\"sell\",\"status\":\"planned\",\"venue_id\":11,\"venue_name\":\"Shop\","
+		"   \"instrument_id\":5,\"instrument_name\":\"Widget\",\"quantity\":2,"
+		"   \"unit_price\":\"5.00 USD\",\"amount\":\"10.00 USD\"}]}]", &error);
+	g_assert_no_error(error);
+
+	plan = venture_arbitrage_planner_build(json_node_get_array(trades), &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(plan);
+
+	/* Buy at Thrall: one Mycobloom line of 15, at most 1.20 a unit. */
+	venue = plan_venue(plan, "buy", "Thrall");
+	g_assert_nonnull(venue);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(venue, "lines")), ==, 1);
+	line = plan_line(venue, "Mycobloom");
+	g_assert_cmpint(json_object_get_int_member(line, "quantity"), ==, 15);
+	g_assert_cmpint(amount_of(line, "unit_price"), ==, 120);
+	g_assert_cmpint(amount_of(line, "amount"), ==, 1600);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(line, "trades")), ==, 2);
+	g_assert_null(plan_venue(plan, "buy", "Nowhere"));
+
+	/* Post at Area 52: two prices, two lines. */
+	venue = plan_venue(plan, "sell", "Area 52");
+	g_assert_nonnull(venue);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(venue, "lines")), ==, 2);
+
+	/* The move is its own section. */
+	g_assert_nonnull(plan_venue(plan, "fees", "Thrall"));
+
+	totals = json_object_get_array_member(plan, "totals");
+	g_assert_cmpuint(json_array_get_length(totals), ==, 2);
+	euro = NULL;
+	usd = NULL;
+
+	for (i = 0; i < json_array_get_length(totals); i++)
+	{
+		JsonObject *total = json_array_get_object_element(totals, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(total, "currency"), "EUR"))
+			euro = total;
+		else
+			usd = total;
+	}
+
+	/* Euros: out 10.00 + 6.00 + 0.25 = 16.25; sales 32.50, cut 1.62,
+	 * lost deposits 0.75: revenue 30.13, profit 13.88. */
+	g_assert_nonnull(euro);
+	g_assert_cmpint(json_object_get_int_member(euro, "trades"), ==, 2);
+	g_assert_cmpint(amount_of(euro, "outlay"), ==, 1625);
+	g_assert_cmpint(amount_of(euro, "gross"), ==, 3250);
+	g_assert_cmpint(amount_of(euro, "cut"), ==, 162);
+	g_assert_cmpint(amount_of(euro, "deposit"), ==, 200);
+	g_assert_cmpint(amount_of(euro, "listing_loss"), ==, 75);
+	g_assert_cmpint(amount_of(euro, "revenue"), ==, 3013);
+	g_assert_cmpint(amount_of(euro, "profit"), ==, 1388);
+
+	/* Dollars: out 6.00 and its 0.50 fee; in 10.00; profit 3.50. */
+	g_assert_nonnull(usd);
+	g_assert_cmpint(amount_of(usd, "outlay"), ==, 650);
+	g_assert_cmpint(amount_of(usd, "revenue"), ==, 1000);
+	g_assert_cmpint(amount_of(usd, "profit"), ==, 350);
+}
+
+/*
+ * The planner over real planned trades: a flip and a craft added to the
+ * plan through the one path (plan and the record action), regrouped by
+ * the venue each leg names. Its profit is exactly what the scan promised
+ * for both, because it adds up the same legs, cut and expected lost
+ * deposits. Asked again on today's prices, a flip whose buy price rose
+ * past its sale is no longer profitable; removed, a trade leaves the plan
+ * and its legs with it.
+ */
+static void
+test_planner(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonObject) options = NULL;
+	g_autoptr(JsonObject) craft_question = NULL;
+	g_autoptr(VentureEntity) flip = NULL;
+	g_autoptr(VentureEntity) craft = NULL;
+	g_autoptr(JsonNode) craft_answer = NULL;
+	g_autoptr(JsonNode) plan = NULL;
+	g_autoptr(JsonNode) repriced = NULL;
+	g_autoptr(JsonNode) after = NULL;
+	g_autoptr(GBytes) csv = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *expected = NULL;
+	g_autoptr(VentureMoney) flip_net = NULL;
+	g_autoptr(VentureMoney) craft_net = NULL;
+	JsonObject *root;
+	JsonObject *venue;
+	JsonObject *line;
+	JsonObject *total;
+	JsonObject *craft_row;
+	JsonArray *trades;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_market(fixture);
+	seed_venues(fixture);
+	seed_recipe(fixture);
+	seed_quick_brew(fixture, NULL);
+
+	/* A flip from Deals' question: two herbs, realm-a to realm-b. */
+	key = key_of(fixture, "spread:S:realm-a>S:realm-b:herb");
+	options = object_of("{\"units\":2,\"instrument\":\"herb\",\"buy_venues\":\"realm-a\","
+	                    "\"sell_venues\":\"realm-b\",\"sell_basis\":\"min\"}");
+	flip = venture_arbitrage_record_opportunity(fixture->context, fixture->org, options, key, NULL,
+	                                            VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error);
+	g_object_get(flip, "expected", &expected, NULL);
+	g_assert_nonnull(strstr(expected, "\"question\""));
+
+	/* A craft from Crafting's: its answer's question and the row's key. */
+	craft_answer = crafting(fixture, "{\"buy_realm\":\"realm-a\",\"sell_realm\":\"realm-b\",\"units\":\"3\"}");
+	craft_row = NULL;
+
+	for (i = 0; i < json_array_get_length(rows_of(craft_answer)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows_of(craft_answer), i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(row, "title"), "Quick brew: Healing Potion"))
+			craft_row = row;
+	}
+
+	g_assert_nonnull(craft_row);
+	craft_question = json_object_ref(json_object_get_object_member(json_node_get_object(craft_answer), "options"));
+	json_object_set_int_member(craft_question, "recipe_id",
+	                           json_object_get_int_member(craft_row, "recipe_id"));
+	craft = venture_arbitrage_record_opportunity(fixture->context, fixture->org, craft_question,
+	                                             json_object_get_string_member(craft_row, "key"), NULL,
+	                                             VENTURE_USER_ROLE_OWNER, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(craft);
+	craft_net = venture_money_from_json(json_object_get_member(craft_row, "net"), NULL, NULL);
+	flip_net = venture_money_from_string("16.50 USD", NULL, NULL);
+
+	plan = venture_arbitrage_planner(fixture->context, fixture->org, FALSE, &error);
+	g_assert_no_error(error);
+	root = json_node_get_object(plan);
+	trades = json_object_get_array_member(root, "trades");
+	g_assert_cmpuint(json_array_get_length(trades), ==, 2);
+
+	/* realm-a's list: the flip's two herbs and the craft's six, one line. */
+	venue = plan_venue(root, "buy", "realm-a");
+	g_assert_nonnull(venue);
+	line = plan_line(venue, "Peacebloom");
+	g_assert_cmpint(json_object_get_int_member(line, "quantity"), ==, 8);
+	g_assert_cmpint(amount_of(line, "amount"), ==, 8000);
+	g_assert_cmpint(amount_of(line, "unit_price"), ==, 1000);
+
+	/* The vial from the region's market; the posts at realm-b, the herb
+	 * and the potion on lines of their own. */
+	g_assert_nonnull(plan_line(plan_venue(root, "buy", "Region market"), "Empty Vial"));
+	venue = plan_venue(root, "sell", "realm-b");
+	g_assert_nonnull(venue);
+	g_assert_cmpint(json_object_get_int_member(plan_line(venue, "Peacebloom"), "quantity"), ==, 2);
+	g_assert_cmpint(json_object_get_int_member(plan_line(venue, "Healing Potion"), "quantity"), ==, 3);
+
+	/* Exactly what the scan promised, both trades together. */
+	total = plan_total(plan, "USD");
+	g_assert_cmpint(json_object_get_int_member(total, "trades"), ==, 2);
+	g_assert_cmpint(amount_of(total, "profit"), ==,
+	                venture_money_get_amount(flip_net) + venture_money_get_amount(craft_net));
+
+	/* Both still pay on today's prices. */
+	repriced = venture_arbitrage_planner(fixture->context, fixture->org, TRUE, &error);
+	g_assert_no_error(error);
+	trades = json_object_get_array_member(json_node_get_object(repriced), "trades");
+
+	for (i = 0; i < json_array_get_length(trades); i++)
+	{
+		JsonObject *reprice = json_object_get_object_member(json_array_get_object_element(trades, i),
+		                                                    "reprice");
+
+		g_assert_cmpstr(json_object_get_string_member(reprice, "state"), ==, "ok");
+	}
+
+	/* The shopping list as CSV, a total per currency under it. */
+	csv = venture_arbitrage_planner_csv(root);
+	text = g_strndup(g_bytes_get_data(csv, NULL), g_bytes_get_size(csv));
+	g_assert_true(g_str_has_prefix(text, "section,venue,instrument,key,quantity,unit_price,amount,fees\r\n"));
+	g_assert_nonnull(strstr(text, "buy,realm-a,Peacebloom,herb,8,10.00 USD,80.00 USD,"));
+	g_assert_nonnull(strstr(text, "total,USD,profit,"));
+
+	/* What a game addon's import is handed: the buy lines, each once. */
+	{
+		g_autoptr(JsonArray) rows = venture_arbitrage_planner_export_rows(root);
+
+		g_assert_cmpuint(json_array_get_length(rows), ==, 2);
+	}
+
+	/* Realm-a's herb goes up past what realm-b pays: the flip, asked
+	 * again at its own realms, now loses money and says so. */
+	{
+		g_autoptr(VentureEntity) source = NULL;
+		g_autoptr(VentureSeriesStore) store = NULL;
+		g_autofree gchar *dir = NULL;
+		static const Offer dear[] = { { "herb", 50, 2500, 10 }, { "evil", 2, 100, 1 } };
+
+		source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, fixture->source_id, NULL);
+		dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
+		store = venture_series_store_open(dir, &error);
+		g_assert_no_error(error);
+		snapshot(store, "realm-a", "USD", fixture->now - 60, dear, G_N_ELEMENTS(dear));
+	}
+
+	g_clear_pointer(&repriced, json_node_unref);
+	repriced = venture_arbitrage_planner(fixture->context, fixture->org, TRUE, &error);
+	g_assert_no_error(error);
+	trades = json_object_get_array_member(json_node_get_object(repriced), "trades");
+
+	for (i = 0; i < json_array_get_length(trades); i++)
+	{
+		JsonObject *trade = json_array_get_object_element(trades, i);
+		JsonObject *reprice = json_object_get_object_member(trade, "reprice");
+
+		if (json_object_get_int_member(trade, "id") == ID(flip))
+			g_assert_cmpstr(json_object_get_string_member(reprice, "state"), ==, "unprofitable");
+	}
+
+	/* Off the plan: the trade and its legs. */
+	g_assert_true(venture_arbitrage_planner_remove(fixture->context, fixture->org, ID(flip), NULL, &error));
+	g_assert_no_error(error);
+	after = venture_arbitrage_planner(fixture->context, fixture->org, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(after), "trades")),
+	                 ==, 1);
+	g_assert_null(plan_venue(json_node_get_object(after), "sell", "realm-b") != NULL
+	              ? plan_line(plan_venue(json_node_get_object(after), "sell", "realm-b"), "Peacebloom") : NULL);
+
+	/* Not twice, and not another organization's. */
+	g_assert_false(venture_arbitrage_planner_remove(fixture->context, fixture->org, ID(flip), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+}
+
+/*
+ * The pages: Crafting draws every recipe with its pickers and an "Add to
+ * plan" per craft that pays; Deals offers "Add to plan" per deal, which
+ * lands on the planner as a planned spread; the planner draws the lists
+ * and exports them; Remove takes a trade off. Every button has a name.
+ */
+static void
+test_crafting_pages(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *page = NULL;
+	g_autofree gchar *deals = NULL;
+	g_autofree gchar *plan = NULL;
+	g_autofree gchar *api = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *type = NULL;
+	g_autofree gchar *form = NULL;
+	g_autofree gchar *key = NULL;
+	g_autofree gchar *escaped = NULL;
+	g_autofree gchar *remove = NULL;
+	g_autoptr(JsonNode) twin = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 trade_id;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_market(fixture);
+	seed_venues(fixture);
+	seed_recipe(fixture);
+	seed_quick_brew(fixture, NULL);
+
+	page = get_page(fixture, "/arbitrage/crafting?buy_realm=realm-a&sell_realm=realm-b&units=3");
+	assert_buttons_named(page, "/arbitrage/crafting");
+	g_assert_nonnull(strstr(page, "Quick brew: Healing Potion"));
+	g_assert_nonnull(strstr(page, "Alchemy / Potions"));
+	g_assert_nonnull(strstr(page, "name=\"buy_realm\""));
+	g_assert_nonnull(strstr(page, "Add to plan"));
+	/* The table keeps the browser's sorting: no opt-out on it. */
+	g_assert_nonnull(strstr(page, "<table class=\"data arbitrage-table crafting-table\"><thead>"));
+
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/crafting?buy_realm=realm-a&units=3", NULL, &api,
+	                      NULL, NULL), ==, 200);
+	twin = json_from_string(api, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(rows_of(twin)), ==, 2);
+	g_clear_pointer(&api, g_free);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/crafting?min_rio=5", NULL, &api, NULL, NULL), ==,
+	                 400);
+
+	/* Deals: a deal goes on the plan as its spread. */
+	deals = get_page(fixture, "/market/deals");
+	assert_buttons_named(deals, "/market/deals");
+	g_assert_nonnull(strstr(deals, "action=\"/arbitrage/plan/add\""));
+
+	key = key_of(fixture, "spread:S:realm-a>S:realm-b:herb");
+	escaped = g_uri_escape_string(key, NULL, FALSE);
+	form = g_strdup_printf("data_source_id=%" G_GINT64_FORMAT "&strategy=spread&sell_basis=min&instrument=herb"
+	                       "&buy_venues=realm-a&sell_venues=realm-b&units=2&key=%s", fixture->source_id, escaped);
+	g_assert_cmpuint(http(fixture, "POST", "/arbitrage/plan/add", form, &body, &location, NULL), ==, 303);
+	g_assert_cmpstr(location, ==, "/arbitrage/plan");
+
+	plan = get_page(fixture, "/arbitrage/plan?reprice=1");
+	assert_buttons_named(plan, "/arbitrage/plan");
+	g_assert_nonnull(strstr(plan, "Expected profit"));
+	g_assert_nonnull(strstr(plan, "Peacebloom"));
+	g_assert_nonnull(strstr(plan, "Still pays"));
+	g_assert_nonnull(strstr(plan, "/arbitrage/plan/export?format=csv"));
+	g_assert_nonnull(strstr(plan, "<tfoot>"));
+
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(fixture, "GET", "/arbitrage/plan/export?format=csv", NULL, &body, NULL, &type), ==, 200);
+	g_assert_cmpstr(type, ==, "text/csv");
+	g_assert_nonnull(strstr(body, "buy,realm-a,Peacebloom"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(fixture, "GET", "/arbitrage/plan/export?format=shopping_list", NULL, &body, NULL, NULL),
+	                 ==, 404);
+
+	/* Remove it: the planner is empty again. */
+	g_clear_pointer(&api, g_free);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/plan", NULL, &api, NULL, NULL), ==, 200);
+	g_clear_pointer(&twin, json_node_unref);
+	twin = json_from_string(api, &error);
+	g_assert_no_error(error);
+	trade_id = json_object_get_int_member(json_array_get_object_element(
+		json_object_get_array_member(json_node_get_object(twin), "trades"), 0), "id");
+	remove = g_strdup_printf("trade_id=%" G_GINT64_FORMAT, trade_id);
+	g_clear_pointer(&location, g_free);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(fixture, "POST", "/arbitrage/plan/remove", remove, &body, &location, NULL), ==, 302);
+	g_clear_pointer(&api, g_free);
+	g_assert_cmpuint(http(fixture, "GET", "/api/v1/arbitrage/plan", NULL, &api, NULL, NULL), ==, 200);
+	g_clear_pointer(&twin, json_node_unref);
+	twin = json_from_string(api, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(twin), "trades")),
+	                 ==, 0);
 }
 
 #define ADD(path, func) \
@@ -2529,6 +3277,11 @@ main(
 	ADD("reports", test_reports);
 	ADD("widget", test_widget);
 	ADD("attribution", test_attribution);
+	ADD("crafting", test_crafting);
+	ADD("crafting-unpriced-fees", test_crafting_unpriced_fees);
+	ADD("crafting-pages", test_crafting_pages);
+	ADD("planner-build", test_planner_build);
+	ADD("planner", test_planner);
 
 	return g_test_run();
 }

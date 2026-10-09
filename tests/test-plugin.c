@@ -1198,7 +1198,8 @@ test_web_navigation_links_all_resolve(
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
 		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
 		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
-		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc",
+		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting",
+		"/arbitrage/plan", "/arbitrage/calc",
 		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
 	const VentureWebNavLink *links;
@@ -1356,7 +1357,8 @@ test_web_navigation_groups_by_question(
 	};
 	static const gchar *const trading[] = {
 		"/market/browse", "/market/find", "/market/deals", "/market/venues", "/e/venue_group",
-		"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/calc", "/e/arbitrage_trade",
+		"/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting", "/arbitrage/plan",
+		"/arbitrage/calc", "/e/arbitrage_trade",
 		"/feeds", NULL
 	};
 	static const gchar *const ideas[] = { "/e/idea", "/e/research_note", NULL };

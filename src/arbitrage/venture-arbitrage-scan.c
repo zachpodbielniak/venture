@@ -352,6 +352,7 @@ static const ArbOption arb_options[] = {
 	{ "kind", ARB_OPT_TEXT, 0, 0, NULL },
 	{ "instrument", ARB_OPT_TEXT, 0, 0, NULL },
 	{ "recipe_id", ARB_OPT_INT, 1, G_MAXINT64, NULL },
+	{ "recipe_category_id", ARB_OPT_INT, 1, G_MAXINT64, NULL },
 	{ "units", ARB_OPT_INT, 1, VENTURE_ARBITRAGE_MAX_UNITS, NULL },
 	{ "buy_sources", ARB_OPT_INT, 1, 10, NULL },
 	{ "sell_basis", ARB_OPT_CHOICE, 0, 0, arb_sell_bases },
@@ -829,6 +830,7 @@ struct _VentureArbitrageScan
 	VentureExchangePolicy		*policy;
 	GHashTable			*no_rate;	/* "FROM>TO" -> count */
 	GHashTable			*attrs;		/* "id\037key" -> JsonObject, or NULL */
+	GHashTable			*region_wide;	/* source id -> GHashTable of keys, or NULL */
 	guint				 never_sells;
 };
 
@@ -862,6 +864,13 @@ arb_unref_attrs(gpointer attrs)
 }
 
 static void
+arb_unref_keys(gpointer keys)
+{
+	if (NULL != keys)
+		g_hash_table_unref(keys);
+}
+
+static void
 arb_scan_free(VentureArbitrageScan *scan)
 {
 	if (NULL == scan)
@@ -881,6 +890,7 @@ arb_scan_free(VentureArbitrageScan *scan)
 	g_clear_object(&scan->policy);
 	g_clear_pointer(&scan->no_rate, g_hash_table_unref);
 	g_clear_pointer(&scan->attrs, g_hash_table_unref);
+	g_clear_pointer(&scan->region_wide, g_hash_table_unref);
 	g_free(scan);
 }
 
@@ -1213,6 +1223,120 @@ venture_arbitrage_scan_open_store(
 }
 #endif
 
+/*
+ * Whether a source's store marks @venue_key region-wide: its `attrs`
+ * carry "region_wide": true, as a game's commodity market does -- one
+ * market every venue of the group trades on. Read once per source per
+ * scan; a store that cannot be read marks nothing.
+ */
+gboolean
+venture_arbitrage_scan_venue_region_wide(
+	VentureArbitrageScan	*scan,
+	gint64			 data_source_id,
+	const gchar		*venue_key
+){
+	GHashTable *keys;
+	gpointer found;
+
+	g_return_val_if_fail(NULL != scan, FALSE);
+
+	if (NULL == venue_key)
+		return FALSE;
+
+	if (!g_hash_table_lookup_extended(scan->region_wide, &data_source_id, NULL, &found))
+	{
+#ifdef VENTURE_HAVE_SQLITE
+		g_autoptr(GPtrArray) venues = NULL;
+		VentureSeriesStore *store;
+		guint i;
+
+		found = NULL;
+		store = venture_arbitrage_scan_open_store(scan, data_source_id);
+		venues = (NULL != store) ? venture_series_store_list_venues(store, NULL) : NULL;
+
+		for (i = 0; (NULL != venues) && (i < venues->len); i++)
+		{
+			VentureSeriesVenueRow *venue = g_ptr_array_index(venues, i);
+			g_autoptr(JsonNode) attrs = NULL;
+			JsonNode *flag;
+
+			if (NULL == venue->attrs_json)
+				continue;
+
+			attrs = json_from_string(venue->attrs_json, NULL);
+
+			if ((NULL == attrs) || !JSON_NODE_HOLDS_OBJECT(attrs))
+				continue;
+
+			flag = json_object_get_member(json_node_get_object(attrs), "region_wide");
+
+			if ((NULL == flag) || !JSON_NODE_HOLDS_VALUE(flag) ||
+			    (G_TYPE_BOOLEAN != json_node_get_value_type(flag)) || !json_node_get_boolean(flag))
+				continue;
+
+			if (NULL == found)
+				found = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+			g_hash_table_add(found, g_strdup(venue->key));
+		}
+#else
+		found = NULL;
+#endif
+		g_hash_table_insert(scan->region_wide, g_memdup2(&data_source_id, sizeof(data_source_id)), found);
+	}
+
+	keys = found;
+
+	return (NULL != keys) && g_hash_table_contains(keys, venue_key);
+}
+
+void
+venture_arbitrage_scan_set_age(
+	VentureArbitrageScan	*scan,
+	JsonObject		*object,
+	const gchar		*prefix,
+	gint64			 taken_at
+){
+	g_autoptr(GDateTime) moment = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *taken = NULL;
+	g_autofree gchar *age = NULL;
+	g_autofree gchar *stale = NULL;
+
+	g_return_if_fail(NULL != scan);
+	g_return_if_fail(NULL != object);
+
+	if (NULL == prefix)
+		prefix = "";
+
+	taken = g_strconcat(prefix, "taken_at", NULL);
+	age = g_strconcat(prefix, "age_seconds", NULL);
+	stale = g_strconcat(prefix, "stale", NULL);
+	moment = (taken_at > 0) ? g_date_time_new_from_unix_utc(taken_at) : NULL;
+
+	if (NULL != moment)
+	{
+		text = venture_time_to_string(moment);
+		json_object_set_string_member(object, taken, text);
+	}
+	else
+		json_object_set_null_member(object, taken);
+
+	/* How old the price is, judged as the Trading pages judge it: a
+	 * price from a realm whose feed stopped is one nobody can take. No
+	 * time at all is stale. */
+	if (taken_at > 0)
+	{
+		json_object_set_int_member(object, age, MAX((gint64)0, scan->now - taken_at));
+		json_object_set_boolean_member(object, stale, scan->now - taken_at > scan->stale_after);
+	}
+	else
+	{
+		json_object_set_null_member(object, age);
+		json_object_set_boolean_member(object, stale, TRUE);
+	}
+}
+
 /* ==========================================================================
  * Flips: the one way a buy and a sell become an opportunity
  * ========================================================================== */
@@ -1312,20 +1436,7 @@ arb_side_object(
 	venture_arbitrage_set_money(object, "unit_price", unit_price);
 	venture_arbitrage_set_money(object, "amount", amount);
 	venture_arbitrage_set_money(object, "fees", fees);
-	arb_set_time(object, "taken_at", side->taken_at);
-
-	/* How old the price is, judged as the Trading pages judge it: a
-	 * spread from a realm whose feed stopped is a spread nobody can take. */
-	if (side->taken_at > 0)
-	{
-		json_object_set_int_member(object, "age_seconds", MAX((gint64)0, scan->now - side->taken_at));
-		json_object_set_boolean_member(object, "stale", scan->now - side->taken_at > scan->stale_after);
-	}
-	else
-	{
-		json_object_set_null_member(object, "age_seconds");
-		json_object_set_boolean_member(object, "stale", TRUE);
-	}
+	venture_arbitrage_scan_set_age(scan, object, NULL, side->taken_at);
 
 	return object;
 }
@@ -2202,6 +2313,7 @@ venture_arbitrage_scan_run_full(
 	scan->rows = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
 	scan->no_rate = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	scan->attrs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, arb_unref_attrs);
+	scan->region_wide = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, arb_unref_keys);
 
 	available = TRUE;
 
@@ -2428,6 +2540,32 @@ arb_expected(JsonObject *opportunity)
 		json_object_set_int_member(expected, "data_age_seconds",
 		                           json_object_get_int_member(opportunity, "age_seconds"));
 
+	/* What listing costs and what relisting is expected to lose: the
+	 * flip planner's revenue is the sale less the cut less this loss, so
+	 * a plan adds up to the nets the scan promised. */
+	{
+		g_autoptr(VentureMoney) loss = venture_arbitrage_get_money(opportunity, "listing_loss");
+		JsonNode *sell = json_object_get_member(opportunity, "sell");
+		g_autoptr(VentureMoney) deposit = NULL;
+
+		if ((NULL != sell) && JSON_NODE_HOLDS_OBJECT(sell))
+			deposit = venture_arbitrage_get_money(json_node_get_object(sell), "deposit");
+
+		if (NULL != deposit)
+		{
+			g_autofree gchar *text = venture_money_to_string(deposit);
+
+			json_object_set_string_member(expected, "deposit", text);
+		}
+
+		if (NULL != loss)
+		{
+			g_autofree gchar *text = venture_money_to_string(loss);
+
+			json_object_set_string_member(expected, "listing_loss", text);
+		}
+	}
+
 	json_object_set_string_member(expected, "key", venture_json_object_get_string(opportunity, "key", ""));
 
 	return expected;
@@ -2534,6 +2672,49 @@ venture_arbitrage_plan_legs(
 	return g_steal_pointer(&request);
 }
 
+/*
+ * The question as the scan read it, narrowed to one opportunity: every
+ * normalised option but `top` (a re-ask reads every row) and `preset_id`
+ * (its filters are already merged in, and a preset edited since must not
+ * change what was planned), with the row's `narrow` members over it.
+ */
+static JsonObject *
+arb_question_of(
+	JsonObject	*options,
+	JsonObject	*row
+){
+	g_autoptr(GList) members = NULL;
+	JsonObject *question;
+	JsonNode *narrow;
+	GList *member;
+
+	question = json_object_new();
+	members = (NULL != options) ? json_object_get_members(options) : NULL;
+
+	for (member = members; NULL != member; member = member->next)
+	{
+		if ((0 == g_strcmp0(member->data, "top")) || (0 == g_strcmp0(member->data, "preset_id")))
+			continue;
+
+		json_object_set_member(question, member->data,
+		                       json_node_copy(json_object_get_member(options, member->data)));
+	}
+
+	narrow = json_object_get_member(row, "narrow");
+
+	if ((NULL != narrow) && JSON_NODE_HOLDS_OBJECT(narrow))
+	{
+		g_autoptr(GList) narrowing = json_object_get_members(json_node_get_object(narrow));
+
+		for (member = narrowing; NULL != member; member = member->next)
+			json_object_set_member(question, member->data,
+			                       json_node_copy(json_object_get_member(json_node_get_object(narrow),
+			                                                             member->data)));
+	}
+
+	return question;
+}
+
 JsonObject *
 venture_arbitrage_plan(
 	VentureContext		 *context,
@@ -2548,6 +2729,7 @@ venture_arbitrage_plan(
 	g_autoptr(JsonNode) answer = NULL;
 	g_autoptr(GList) members = NULL;
 	ArbStrategy *strategy;
+	JsonObject *planned;
 	JsonObject *found;
 	JsonArray *rows;
 	GList *member;
@@ -2611,9 +2793,24 @@ venture_arbitrage_plan(
 		*out_opportunity = json_object_ref(found);
 
 	if ((NULL != strategy) && (NULL != strategy->plan))
-		return strategy->plan(context, organization_id, found, actor, strategy->user_data, error);
+		planned = strategy->plan(context, organization_id, found, actor, strategy->user_data, error);
+	else
+		planned = venture_arbitrage_plan_legs(context, organization_id, found, actor, error);
 
-	return venture_arbitrage_plan_legs(context, organization_id, found, actor, error);
+	if (NULL == planned)
+		return NULL;
+
+	/* The question that found it, narrowed to it, beside what it
+	 * promised: the flip planner asks it again to say whether a planned
+	 * trade still pays on today's prices. */
+	if (json_object_has_member(planned, "expected") &&
+	    JSON_NODE_HOLDS_OBJECT(json_object_get_member(planned, "expected")))
+		json_object_set_object_member(json_object_get_object_member(planned, "expected"), "question",
+		                              arb_question_of(json_object_get_object_member(
+		                                                  json_node_get_object(answer), "options"),
+		                                              found));
+
+	return planned;
 }
 
 /*

@@ -304,6 +304,64 @@ venture_marketdata_venue_group_choices(
 );
 
 /**
+ * venture_marketdata_realm_choices:
+ * @context: a #VentureContext
+ * @organization_id: whose sources
+ * @venue_group: (nullable): "characters" or a venue group's id, to offer
+ *   only its realms; %NULL or empty for every realm
+ * @out_choices: (out) (transfer full): a JSON array of choices, one per
+ *   connected realm, in label order, shaped as Deals' `venue_choices`
+ *   ({name, value, group_key, members, venues: [{data_source_id,
+ *   venue_key, taken_at, age_seconds, stale}]}) plus `region_wide`, true
+ *   for a market every realm trades on (a commodity market)
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The realm picker Deals offers, for any page that buys or sells at a
+ * chosen realm: every source's venues grouped into connected realms,
+ * whatever each source keys them by. Empty with feeds off or without a
+ * series store.
+ *
+ * Returns: %FALSE on error (a venue group that is not the organization's)
+ */
+gboolean
+venture_marketdata_realm_choices(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *venue_group,
+	JsonNode	**out_choices,
+	GError		**error
+);
+
+/**
+ * venture_marketdata_realm_venue_keys:
+ * @context: a #VentureContext
+ * @organization_id: whose sources
+ * @wanted: (nullable): a realm as a person names it: a choice's label,
+ *   any member realm's name, a source's whole name for it or any source's
+ *   key; %NULL or empty for none
+ * @out_keys: (out) (transfer full) (array zero-terminated=1): every
+ *   source's venue keys for that connected realm; %NULL when @wanted
+ *   names none
+ * @out_label: (out) (optional) (transfer full): the realm's label, as the
+ *   picker spells it
+ * @error: (out) (optional): return location for a #GError
+ *
+ * A picked realm as the venue keys a scan's `buy_venues` or
+ * `sell_venues` take, read exactly as Deals reads its `venue`.
+ *
+ * Returns: %FALSE with NOT_FOUND when no source has the realm
+ */
+gboolean
+venture_marketdata_realm_venue_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *wanted,
+	gchar		***out_keys,
+	gchar		**out_label,
+	GError		**error
+);
+
+/**
  * venture_marketdata_venue_group_venue_keys:
  * @context: a #VentureContext
  * @organization_id: whose group and sources

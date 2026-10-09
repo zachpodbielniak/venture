@@ -187,6 +187,14 @@ arb_csv_field(
 		g_string_append_c(out, '"');
 }
 
+void
+venture_arbitrage_csv_field(
+	GString		*out,
+	const gchar	*text
+){
+	arb_csv_field(out, text);
+}
+
 /* A money member as "12.5000 GOLD", or empty. */
 static gchar *
 arb_money_text(

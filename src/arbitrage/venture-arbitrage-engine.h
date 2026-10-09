@@ -664,6 +664,46 @@ venture_arbitrage_scan_venue_allowed(
 );
 
 /**
+ * venture_arbitrage_scan_venue_region_wide:
+ * @scan: the scan
+ * @data_source_id: the venue's source
+ * @venue_key: a venue's key in that source's store
+ *
+ * Whether the store marks the venue region-wide: its attributes carry
+ * `"region_wide": true`, as a game's commodity market does -- one market
+ * every venue of its group trades on, so it is open from whichever venue
+ * a person is at. The `transform` strategy buys and sells there whatever
+ * `buy_venues` and `sell_venues` say. Read once per source per scan.
+ *
+ * Returns: %TRUE when the venue is region-wide
+ */
+gboolean
+venture_arbitrage_scan_venue_region_wide(
+	VentureArbitrageScan	*scan,
+	gint64			 data_source_id,
+	const gchar		*venue_key
+);
+
+/**
+ * venture_arbitrage_scan_set_age:
+ * @scan: the scan
+ * @object: where to write
+ * @prefix: (nullable): put before each member's name ("buy_"), or %NULL
+ * @taken_at: when the price was seen, unix seconds; 0 or less for never
+ *
+ * Writes `taken_at`, `age_seconds` and `stale` (each with @prefix): how
+ * old a price is, judged against `series.stale_minutes` as the Trading
+ * pages judge it. A price with no time is stale.
+ */
+void
+venture_arbitrage_scan_set_age(
+	VentureArbitrageScan	*scan,
+	JsonObject		*object,
+	const gchar		*prefix,
+	gint64			 taken_at
+);
+
+/**
  * venture_arbitrage_scan_add_note:
  * @scan: the scan
  * @note: a sentence for the answer's notes; repeated notes are kept once

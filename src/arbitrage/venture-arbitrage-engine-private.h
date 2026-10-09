@@ -124,6 +124,14 @@ venture_arbitrage_scan_run_full(
 	GError		**error
 );
 
+/* One CSV field, quoted when it must be and defused when a spreadsheet
+ * would run it as a formula: every CSV the module writes uses it. */
+void
+venture_arbitrage_csv_field(
+	GString		*out,
+	const gchar	*text
+);
+
 /* The built-in strategies, export formats; registered by the registries'
  * constructors. */
 void

@@ -2400,6 +2400,21 @@ series stores. `docs/arbitrage.org` ("Finding opportunities").
   A test fixture with a fixed kick-off is a time bomb -- serve it moved
   into the future, as `serve_odds()` in `tests/test-plugin-examples.c`
   does.
+- **Crafting and the flip planner compute nothing of their own.**
+  `venture_arbitrage_crafting()` is the `transform` strategy's rows with
+  a category path added; the planner adds up planned legs and the
+  `expected` deposit and listing loss the scan wrote, so a plan's profit
+  is exactly what its trades promised. A margin, fee or profit worked out
+  in either, or in a page, is a second formula. **A plan is planned
+  `arbitrage_trade`s**: "Add to plan" is the record path (plan, then the
+  `record` action), never a parallel record type; re-pricing re-asks the
+  `expected.question` `venture_arbitrage_plan()` keeps.
+- **A region-wide venue is open only to `transform`.** A store venue
+  whose attrs say `"region_wide": true` (a game's commodity market) is
+  allowed on both sides of a craft whatever `buy_venues`/`sell_venues`
+  say, or narrowing reagents to one realm leaves every commodity
+  unquoted. Do not extend it to `spread` or `deal`: a commodity market is
+  its group's only venue, so every commodity there reads as a deal.
 - **What a calculator presents as the result is rounded against the
   person.** A surebet's `payout` and `profit` are the least rounded payout
   and it less the stakes; the unrounded T/S and T(1/S - 1) are

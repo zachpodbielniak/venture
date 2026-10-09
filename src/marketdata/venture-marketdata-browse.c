@@ -1985,6 +1985,236 @@ venture_marketdata_venue_group_venue_keys(
 	return TRUE;
 }
 
+/* --- Connected realms, for pickers outside Deals --------------------------- */
+
+#ifdef VENTURE_HAVE_SQLITE
+
+static JsonArray *
+md_venue_choices_json(
+	GHashTable	*choices,
+	gint64		 now,
+	gint64		 stale_after
+);
+
+/* Every source's venues as connected realms, the way Deals reads them;
+ * @out_region_wide holds "source id\037key" for each venue whose store
+ * marks it region-wide (a commodity market). */
+static MdRealms *
+md_realms_load(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	GPtrArray	**out_sources,
+	GPtrArray	**out_venue_lists,
+	GHashTable	**out_region_wide
+){
+	g_autoptr(GPtrArray) sources = NULL;
+	g_autoptr(GPtrArray) venue_lists = NULL;
+	g_autoptr(GHashTable) region_wide = NULL;
+	MdRealms *realms;
+	guint i;
+	guint j;
+
+	sources = venture_context_module_enabled(context, "feeds")
+		? md_sources(context, organization_id, NULL) : NULL;
+
+	if (NULL == sources)
+		sources = g_ptr_array_new_with_free_func(g_object_unref);
+
+	venue_lists = g_ptr_array_new_with_free_func(md_unref_venues);
+	region_wide = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	realms = md_realms_new();
+
+	for (i = 0; i < sources->len; i++)
+	{
+		gint64 source_id = venture_entity_get_id(g_ptr_array_index(sources, i));
+		g_autoptr(VentureSeriesStore) reader = md_reader(context, g_ptr_array_index(sources, i), NULL, NULL);
+		GPtrArray *venues = (NULL != reader) ? venture_series_store_list_venues(reader, NULL) : NULL;
+
+		g_ptr_array_add(venue_lists, venues);
+		md_realms_add(realms, source_id, venues);
+
+		for (j = 0; (NULL != venues) && (j < venues->len); j++)
+		{
+			VentureSeriesVenueRow *venue = g_ptr_array_index(venues, j);
+			g_autoptr(JsonNode) attrs = NULL;
+			JsonNode *flag;
+
+			attrs = (NULL != venue->attrs_json) ? json_from_string(venue->attrs_json, NULL) : NULL;
+			flag = ((NULL != attrs) && JSON_NODE_HOLDS_OBJECT(attrs))
+				? json_object_get_member(json_node_get_object(attrs), "region_wide") : NULL;
+
+			if ((NULL != flag) && JSON_NODE_HOLDS_VALUE(flag) &&
+			    (G_TYPE_BOOLEAN == json_node_get_value_type(flag)) && json_node_get_boolean(flag))
+				g_hash_table_add(region_wide, g_strdup_printf("%" G_GINT64_FORMAT "\037%s", source_id,
+				                                              venue->key));
+		}
+	}
+
+	md_realms_build(realms);
+	*out_sources = g_steal_pointer(&sources);
+	*out_venue_lists = g_steal_pointer(&venue_lists);
+	*out_region_wide = g_steal_pointer(&region_wide);
+
+	return realms;
+}
+
+#endif /* VENTURE_HAVE_SQLITE */
+
+gboolean
+venture_marketdata_realm_choices(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *venue_group,
+	JsonNode	**out_choices,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != out_choices, FALSE);
+
+	*out_choices = json_node_new(JSON_NODE_ARRAY);
+
+#ifdef VENTURE_HAVE_SQLITE
+	{
+		g_autoptr(GPtrArray) sources = NULL;
+		g_autoptr(GPtrArray) venue_lists = NULL;
+		g_autoptr(GHashTable) region_wide = NULL;
+		g_autoptr(GHashTable) group_realms = NULL;
+		g_autoptr(GHashTable) choices = NULL;
+		g_autoptr(MdRealms) realms = NULL;
+		JsonArray *array;
+		gint64 now;
+		gint64 stale_after;
+		guint i;
+
+		realms = md_realms_load(context, organization_id, &sources, &venue_lists, &region_wide);
+
+		if (!md_realms_of_group(context, organization_id, realms, sources, venue_lists, venue_group, NULL,
+		                        &group_realms, NULL, error))
+		{
+			g_clear_pointer(out_choices, json_node_unref);
+			return FALSE;
+		}
+
+		choices = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+		for (i = 0; i < realms->realms->len; i++)
+		{
+			MdRealm *realm = g_ptr_array_index(realms->realms, i);
+
+			if ((NULL == group_realms) || g_hash_table_contains(group_realms, realm))
+				g_hash_table_add(choices, realm);
+		}
+
+		now = g_get_real_time() / G_USEC_PER_SEC;
+		stale_after = venture_marketdata_stale_seconds(context);
+		array = md_venue_choices_json(choices, now, stale_after);
+
+		/* A region-wide market (a commodity market) is a venue every
+		 * realm trades on, not a realm to choose: say so on its choice
+		 * so a picker can leave it out. */
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			JsonObject *choice = json_array_get_object_element(array, i);
+			JsonArray *venues = json_object_get_array_member(choice, "venues");
+			gboolean wide = FALSE;
+			guint j;
+
+			for (j = 0; (NULL != venues) && (j < json_array_get_length(venues)); j++)
+			{
+				JsonObject *venue = json_array_get_object_element(venues, j);
+				g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT "\037%s",
+				                                        json_object_get_int_member(venue, "data_source_id"),
+				                                        json_object_get_string_member(venue, "venue_key"));
+
+				wide = wide || g_hash_table_contains(region_wide, key);
+			}
+
+			json_object_set_boolean_member(choice, "region_wide", wide);
+		}
+
+		json_node_take_array(*out_choices, array);
+	}
+#else
+	(void)organization_id;
+	(void)venue_group;
+	(void)error;
+	json_node_take_array(*out_choices, json_array_new());
+#endif
+
+	return TRUE;
+}
+
+gboolean
+venture_marketdata_realm_venue_keys(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *wanted,
+	gchar		***out_keys,
+	gchar		**out_label,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+	g_return_val_if_fail(NULL != out_keys, FALSE);
+
+	*out_keys = NULL;
+
+	if (NULL != out_label)
+		*out_label = NULL;
+
+	if (venture_string_is_empty(wanted))
+		return TRUE;
+
+#ifdef VENTURE_HAVE_SQLITE
+	{
+		g_autoptr(GPtrArray) sources = NULL;
+		g_autoptr(GPtrArray) venue_lists = NULL;
+		g_autoptr(GHashTable) region_wide = NULL;
+		g_autoptr(MdRealms) realms = NULL;
+		g_autoptr(GPtrArray) keys = NULL;
+		MdRealm *realm;
+		guint i;
+
+		realms = md_realms_load(context, organization_id, &sources, &venue_lists, &region_wide);
+		realm = md_realms_find(realms, wanted);
+
+		if (NULL == realm)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No source of this organization has a realm called \"%s\"", wanted);
+			return FALSE;
+		}
+
+		keys = g_ptr_array_new_with_free_func(g_free);
+
+		for (i = 0; i < realm->venues->len; i++)
+		{
+			MdRealmVenue *venue = g_ptr_array_index(realm->venues, i);
+			guint j;
+			gboolean seen = FALSE;
+
+			for (j = 0; j < keys->len; j++)
+				seen = seen || (0 == g_strcmp0(g_ptr_array_index(keys, j), venue->key));
+
+			if (!seen)
+				g_ptr_array_add(keys, g_strdup(venue->key));
+		}
+
+		g_ptr_array_add(keys, NULL);
+		*out_keys = (gchar **)g_ptr_array_free(g_steal_pointer(&keys), FALSE);
+
+		if (NULL != out_label)
+			*out_label = g_strdup(realm->label);
+	}
+#else
+	(void)organization_id;
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+	            "No source of this organization has a realm called \"%s\"", wanted);
+	return FALSE;
+#endif
+
+	return TRUE;
+}
+
 /* --- Browse ---------------------------------------------------------------- */
 
 void

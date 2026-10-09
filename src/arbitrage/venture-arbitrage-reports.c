@@ -1156,6 +1156,8 @@ venture_arbitrage_craft_report(
 	"\"kind\":{\"type\":\"string\",\"description\":\"Only instruments of this kind\"}," \
 	"\"instrument\":{\"type\":\"string\",\"description\":\"One instrument (or event) key\"}," \
 	"\"recipe_id\":{\"type\":\"integer\",\"description\":\"transform: one recipe\"}," \
+	"\"recipe_category_id\":{\"type\":\"integer\",\"description\":\"transform: only recipes " \
+	"filed in this category or beneath it\"}," \
 	"\"units\":{\"type\":\"integer\",\"description\":\"Units to price each opportunity for (batches " \
 	"for transform); 1 by default\"}," \
 	"\"buy_sources\":{\"type\":\"integer\",\"description\":\"spread: the N cheapest buy venues per " \
@@ -1299,6 +1301,8 @@ venture_arbitrage_register_reports(VentureReportRegistry *registry)
 		"{\"type\":\"object\",\"properties\":{"
 		"\"recipe_id\":{\"type\":\"integer\",\"description\":\"One recipe; every active "
 		"recipe when omitted\"},"
+		"\"recipe_category_id\":{\"type\":\"integer\",\"description\":\"Only recipes filed "
+		"in this category or beneath it: a profession, an expansion, a section\"},"
 		"\"units\":{\"type\":\"integer\",\"description\":\"Batches to make; 1 by default\"},"
 		"\"data_source_id\":{\"type\":\"integer\",\"description\":\"Only this source's "
 		"stores\"},"

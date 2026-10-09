@@ -243,6 +243,16 @@ arw_select(
 
 /* --- /arbitrage ----------------------------------------------------------------- */
 
+static void
+arw_plan_form(
+	GString		*html,
+	JsonObject	*options,
+	JsonObject	*row,
+	const gchar	*action,
+	const gchar	*label
+);
+
+
 /* The strategies as tabs, the chosen one marked. */
 static void
 arw_tabs(
@@ -426,7 +436,10 @@ arw_filters(
 	arw_input(html, options, "Instrument", "instrument", "one key");
 
 	if (0 == g_strcmp0(strategy, "transform"))
+	{
 		arw_input(html, options, "Recipe", "recipe_id", "a recipe's id; every active one");
+		arw_input(html, options, "Recipe category", "recipe_category_id", "a category's id, and beneath it");
+	}
 
 	arw_input(html, options, (0 == g_strcmp0(strategy, "transform")) ? "Batches" : "Units", "units", "1");
 
@@ -641,6 +654,7 @@ arw_results(
 			g_string_append(html, "<input type=\"hidden\" name=\"key\" value=\"");
 			venture_html_escape_append(html, venture_json_object_get_string(row, "key", ""));
 			g_string_append(html, "\"><button class=\"btn\" type=\"submit\">Record attempt</button></form>");
+			arw_plan_form(html, options, row, "/arbitrage/plan/add", "Add to plan");
 		}
 
 		g_string_append(html, "</td></tr>");
@@ -829,7 +843,13 @@ venture_arbitrage_web_record(
 		return venture_web_json_response(created, 201);
 	}
 
-	location = g_strdup_printf("/e/arbitrage_trade/%" G_GINT64_FORMAT, venture_entity_get_id(trade));
+	/* "Add to plan" is the same record, shown on the plan rather than
+	 * on its own page: a planned trade is a line of the plan. */
+	if (0 == g_strcmp0(htmx_request_get_path(request), "/arbitrage/plan/add"))
+		location = g_strdup("/arbitrage/plan");
+	else
+		location = g_strdup_printf("/e/arbitrage_trade/%" G_GINT64_FORMAT, venture_entity_get_id(trade));
+
 	redirect = htmx_response_new();
 	htmx_response_set_status(redirect, 303);
 	htmx_response_add_header(redirect, "Location", location);
@@ -1284,7 +1304,11 @@ venture_arbitrage_web_report_controls(
 		venture_web_goals_input(request, content, "Preset", "preset_id", "a preset's id");
 	}
 	else
+	{
 		venture_web_goals_input(request, content, "Recipe", "recipe_id", "every active recipe");
+		venture_web_goals_input(request, content, "Recipe category", "recipe_category_id",
+		                        "a category's id, and beneath it");
+	}
 
 	venture_web_goals_input(request, content, "Data source", "data_source_id", "id; every source");
 	venture_web_goals_input(request, content, "Buy at", "buy_venues", "venue keys, comma separated");
@@ -1301,6 +1325,8 @@ venture_arbitrage_web_report_controls(
 		venture_web_goals_input(request, content, "Kind", "kind", "e.g. item");
 		venture_web_goals_input(request, content, "Instrument", "instrument", "one key");
 		venture_web_goals_input(request, content, "Recipe", "recipe_id", "transform: one recipe");
+		venture_web_goals_input(request, content, "Recipe category", "recipe_category_id",
+		                        "transform: a category's id");
 		venture_web_goals_input(request, content, "Buy sources per item", "buy_sources", "1");
 		venture_web_goals_input(request, content, "Stake", "total_stake", "e.g. 100.00 USD");
 		venture_web_goals_input(request, content, "Least profit", "min_profit", "e.g. 10.00 GOLD");
@@ -1315,6 +1341,864 @@ venture_arbitrage_web_report_controls(
 	}
 
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+}
+
+/* --- /arbitrage/crafting ------------------------------------------------------- */
+
+/* A <select> of the answer's realm choices, by label. */
+static void
+arw_realm_picker(
+	GString		*html,
+	JsonObject	*root,
+	const gchar	*label,
+	const gchar	*name,
+	const gchar	*selected,
+	const gchar	*empty
+){
+	JsonArray *choices;
+	gboolean found = FALSE;
+	guint i;
+
+	choices = json_object_has_member(root, "realm_choices") ? json_object_get_array_member(root, "realm_choices")
+	                                                        : NULL;
+	g_string_append(html, "<div class=\"field\"><label>");
+	venture_html_escape_append(html, label);
+	g_string_append_printf(html, "<select name=\"%s\"><option value=\"\">", name);
+	venture_html_escape_append(html, empty);
+	g_string_append(html, "</option>");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+		const gchar *value = venture_json_object_get_string(choice, "value", "");
+		gboolean chosen = (0 == g_strcmp0(value, selected));
+
+		found = found || chosen;
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, value);
+		g_string_append_printf(html, "\"%s>", chosen ? " selected" : "");
+		venture_html_escape_append(html, venture_json_object_get_string(choice, "name", value));
+		g_string_append(html, "</option>");
+	}
+
+	/* A realm asked for that the list does not offer stays chosen rather
+	 * than quietly becoming "every realm". */
+	if (!found && !venture_string_is_empty(selected))
+	{
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, selected);
+		g_string_append(html, "\" selected>");
+		venture_html_escape_append(html, selected);
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/* The recipe categories as a picker: a profession, an expansion, a part
+ * of its book, each with everything filed beneath it. */
+static void
+arw_recipe_category_picker(
+	GString		*html,
+	JsonObject	*root,
+	gint64		 selected
+){
+	JsonArray *categories;
+	guint i;
+
+	categories = json_object_has_member(root, "categories") ? json_object_get_array_member(root, "categories")
+	                                                        : NULL;
+	g_string_append(html, "<div class=\"field\"><label>Recipe category<select name=\"recipe_category_id\">"
+	                      "<option value=\"\">every recipe</option>");
+
+	for (i = 0; (NULL != categories) && (i < json_array_get_length(categories)); i++)
+	{
+		JsonObject *category = json_array_get_object_element(categories, i);
+		gint64 id = venture_json_object_get_int(category, "id", 0);
+
+		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\"%s>", id,
+		                       (id == selected) ? " selected" : "");
+		venture_html_escape_append(html, venture_json_object_get_string(category, "path", ""));
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label></div>");
+}
+
+/* A form that adds one opportunity to the plan: the question, narrowed
+ * to it, and its key -- the plan is made from what the data says when
+ * the button is pressed, exactly as "Record attempt" does. */
+static void
+arw_plan_form(
+	GString		*html,
+	JsonObject	*options,
+	JsonObject	*row,
+	const gchar	*action,
+	const gchar	*label
+){
+	JsonObject *narrow;
+
+	narrow = json_object_has_member(row, "narrow") ? json_object_get_object_member(row, "narrow") : NULL;
+	g_string_append_printf(html, "<form method=\"post\" action=\"%s\">", action);
+	arw_hidden_options(html, options, narrow);
+	g_string_append(html, "<input type=\"hidden\" name=\"key\" value=\"");
+	venture_html_escape_append(html, venture_json_object_get_string(row, "key", ""));
+	g_string_append(html, "\"><button class=\"btn\" type=\"submit\">");
+	venture_html_escape_append(html, label);
+	g_string_append(html, "</button></form>");
+}
+
+/* A money cell that sorts by its amount; @object may be NULL. */
+static void
+arw_money_cell(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*member
+){
+	g_string_append(html, "<td class=\"num\"");
+	mdw_sort_value(html, object, member);
+	g_string_append(html, ">");
+	mdw_money(html, object, member);
+	g_string_append(html, "</td>");
+}
+
+/* A craft's reagents, each where it is cheapest and how old that is. */
+static void
+arw_craft_inputs(
+	VentureWebServer	*self,
+	GString			*html,
+	JsonObject		*row
+){
+	JsonArray *inputs;
+	guint i;
+
+	inputs = json_object_has_member(row, "inputs") ? json_object_get_array_member(row, "inputs") : NULL;
+
+	if ((NULL == inputs) || (0 == json_array_get_length(inputs)))
+		return;
+
+	g_string_append_printf(html, "<details class=\"craft-inputs\"><summary>%u reagent%s</summary><ul>",
+	                       json_array_get_length(inputs), (1 == json_array_get_length(inputs)) ? "" : "s");
+
+	for (i = 0; i < json_array_get_length(inputs); i++)
+	{
+		JsonObject *input = json_array_get_object_element(inputs, i);
+
+		g_string_append_printf(html, "<li%s>%" G_GINT64_FORMAT " \xc3\x97 ",
+		                       mdw_stale(input, "") ? " class=\"is-stale\"" : "",
+		                       venture_json_object_get_int(input, "quantity", 0));
+		venture_html_escape_append(html, venture_json_object_get_string(input, "name", ""));
+
+		if (venture_json_object_get_bool(input, "reusable", FALSE))
+			g_string_append(html, " <span class=\"muted\">(reusable, bought once)</span>");
+
+		if (NULL != venture_json_object_get_string(input, "venue_name", NULL))
+		{
+			g_string_append(html, " at ");
+			venture_html_escape_append(html, venture_json_object_get_string(input, "venue_name", ""));
+			g_string_append(html, " ");
+			mdw_age(self, html, input, "");
+			g_string_append(html, ": ");
+			mdw_money(html, input, "unit_price");
+			g_string_append(html, " each, ");
+			mdw_money(html, input, "cost");
+		}
+		else
+		{
+			g_string_append(html, ": ");
+			venture_html_escape_append(html, venture_json_object_get_string(input, "problem", "unquoted"));
+		}
+
+		g_string_append(html, "</li>");
+	}
+
+	g_string_append(html, "</ul></details>");
+}
+
+static void
+arw_warnings(
+	GString		*html,
+	JsonObject	*row
+){
+	JsonArray *warnings;
+	guint i;
+
+	warnings = json_object_has_member(row, "warnings") ? json_object_get_array_member(row, "warnings") : NULL;
+
+	for (i = 0; (NULL != warnings) && (i < json_array_get_length(warnings)); i++)
+	{
+		g_string_append(html, "<div class=\"muted arbitrage-warning\">");
+		venture_html_escape_append(html, json_array_get_string_element(warnings, i));
+		g_string_append(html, "</div>");
+	}
+}
+
+static void
+arw_craft_rows(
+	VentureWebServer	*self,
+	GString			*html,
+	JsonObject		*root,
+	gboolean		 can_plan
+){
+	JsonObject *options;
+	JsonArray *rows;
+	guint i;
+
+	options = json_object_get_object_member(root, "options");
+	rows = json_object_get_array_member(root, "rows");
+
+	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Recipes</h2></div>"
+	                      "<div class=\"table-wrap\"><table class=\"data arbitrage-table crafting-table\">"
+	                      "<thead><tr><th scope=\"col\">Recipe</th><th scope=\"col\">Category</th>"
+	                      "<th scope=\"col\" class=\"num\">Reagents</th><th scope=\"col\">Sell at</th>"
+	                      "<th scope=\"col\" class=\"num\">Sells for</th><th scope=\"col\" class=\"num\">Gross</th>"
+	                      "<th scope=\"col\" class=\"num\">AH cut</th><th scope=\"col\" class=\"num\">Deposit</th>"
+	                      "<th scope=\"col\" class=\"num\">Profit</th><th scope=\"col\" class=\"num\">Margin</th>"
+	                      "<th scope=\"col\" class=\"num\">ROI</th><th scope=\"col\" class=\"num\">Sale rate</th>"
+	                      "<th scope=\"col\">Plan</th></tr></thead><tbody>");
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		JsonObject *sell = arw_side(row, "sell");
+		JsonNode *net = json_object_get_member(row, "net");
+		gboolean pays;
+		gboolean blanked;
+
+		blanked = json_object_has_member(row, "missing") &&
+		          (json_array_get_length(json_object_get_array_member(row, "missing")) > 0);
+
+		g_string_append(html, "<tr><td class=\"row-head\"");
+		mdw_sort_text(html, venture_json_object_get_string(row, "title", ""));
+		g_string_append(html, ">");
+
+		if ((NULL != venture_json_object_get_string(row, "instrument_key", NULL)) &&
+		    (venture_json_object_get_int(row, "data_source_id", 0) > 0))
+		{
+			g_autofree gchar *path = venture_marketdata_instrument_path(
+				venture_json_object_get_int(row, "data_source_id", 0),
+				venture_json_object_get_string(row, "instrument_key", NULL),
+				(NULL != sell) ? venture_json_object_get_string(sell, "venue_key", NULL) : NULL);
+
+			g_string_append(html, "<a href=\"");
+			venture_html_escape_append(html, path);
+			g_string_append(html, "\">");
+			venture_html_escape_append(html, venture_json_object_get_string(row, "title", ""));
+			g_string_append(html, "</a>");
+		}
+		else
+			venture_html_escape_append(html, venture_json_object_get_string(row, "title", ""));
+
+		arw_craft_inputs(self, html, row);
+		arw_missing(html, row);
+		arw_warnings(html, row);
+		g_string_append(html, "</td><td>");
+
+		if (NULL != venture_json_object_get_string(row, "recipe_category", NULL))
+			venture_html_escape_append(html, venture_json_object_get_string(row, "recipe_category", ""));
+		else
+			mdw_dash(html);
+
+		/* The reagents' cost, aged by the oldest of their prices, as
+		 * Deals ages a buy. */
+		g_string_append(html, "</td><td class=\"num");
+		g_string_append(html, mdw_stale(row, "buy_") ? " is-stale\"" : "\"");
+		mdw_sort_value(html, row, "cost");
+		g_string_append(html, ">");
+		mdw_money(html, row, "cost");
+		g_string_append(html, "<br>");
+		mdw_age(self, html, row, "buy_");
+		g_string_append(html, "</td>");
+		arw_venue(self, html, row, "sell");
+
+		arw_money_cell(html, sell, "unit_price");
+		arw_money_cell(html, row, "gross");
+		arw_money_cell(html, sell, "fees");
+		arw_money_cell(html, sell, "deposit");
+		arw_money_cell(html, row, "net");
+		g_string_append(html, "<td class=\"num\"");
+		mdw_sort_value(html, row, "margin");
+		g_string_append(html, ">");
+		mdw_percent(html, row, "margin", 100.0);
+		g_string_append(html, "</td><td class=\"num\"");
+		mdw_sort_value(html, row, "roi");
+		g_string_append(html, ">");
+		mdw_percent(html, row, "roi", 100.0);
+		g_string_append(html, "</td><td class=\"num\"");
+		mdw_sort_value(html, row, "sale_rate");
+		g_string_append(html, ">");
+		mdw_percent(html, row, "sale_rate", 100.0);
+		g_string_append(html, "</td><td>");
+
+		/* Only a craft that pays can be planned: a plan is re-asked
+		 * with losses left out, so a losing one would be refused. */
+		pays = (NULL != net) && JSON_NODE_HOLDS_OBJECT(net) &&
+		       (json_object_get_int_member_with_default(json_node_get_object(net), "amount", 0) > 0);
+
+		if (can_plan && !blanked && pays)
+			arw_plan_form(html, options, row, "/arbitrage/plan/add", "Add to plan");
+		else
+			mdw_dash(html);
+
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL == rows) || (0 == json_array_get_length(rows)))
+		g_string_append(html, "<tr><td colspan=\"13\" class=\"muted\">No recipe to price. Import your "
+		                      "professions' recipes (see Crafting in the docs), or widen the question.</td></tr>");
+
+	g_string_append(html, "</tbody></table></div></div>");
+	mdw_attribution(html, root);
+}
+
+static HtmxResponse *
+venture_arbitrage_web_crafting(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	static const gchar *const bases[] = { "min", "market", "sale_avg", "region_median", "bid", NULL };
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) asked = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GString) html = NULL;
+	JsonObject *root;
+	JsonObject *question;
+	gboolean api;
+	gboolean can_plan;
+	HtmxResponse *gate;
+	gint64 organization_id;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_DATA_SOURCE);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	asked = arw_options(htmx_request_get_query_params(request));
+	json_object_remove_member(asked, "organization_id");
+	answer = venture_arbitrage_crafting(self->context, organization_id, asked, &error);
+
+	if (NULL == answer)
+		return venture_web_error_response(error);
+
+	if (api)
+		return venture_web_json_response(answer, 200);
+
+	root = json_node_get_object(answer);
+	question = json_object_get_object_member(root, "question");
+	principal = venture_auth_authenticate(self->auth, request);
+	can_plan = venture_web_require_for_type(self, principal, VENTURE_TYPE_ARBITRAGE_TRADE,
+	                                        VENTURE_USER_ROLE_EDITOR, NULL);
+
+	html = g_string_new(NULL);
+	mdw_head(html, "Trading", "Crafting",
+	         "What every recipe makes on the latest prices: reagents where they are cheapest (commodities "
+	         "from the region's market), the craft sold where it fetches most, after the auction house's "
+	         "cut and deposit.");
+	g_string_append(html, "<p class=\"muted\"><a href=\"/arbitrage/plan\">Flip planner</a> \xc2\xb7 "
+	                      "<a href=\"/arbitrage?strategy=transform\">Arbitrage</a> \xc2\xb7 "
+	                      "<a href=\"/e/recipe\">Recipes</a></p>");
+
+	g_string_append(html, "<div class=\"card\"><form method=\"get\" action=\"/arbitrage/crafting\" "
+	                      "class=\"form-grid arbitrage-filters\" role=\"search\" aria-label=\"Crafting filters\">");
+	arw_recipe_category_picker(html, root, venture_json_object_get_int(question, "recipe_category_id", 0));
+	arw_realm_picker(html, root, "Buy reagents at", "buy_realm",
+	                 venture_json_object_get_string(question, "buy_realm", NULL), "the cheapest realm");
+	arw_realm_picker(html, root, "Sell at", "sell_realm",
+	                 venture_json_object_get_string(question, "sell_realm", NULL), "the best realm");
+	mdw_venue_group_picker(html, root, venture_json_object_get_string(question, "venue_group", NULL));
+	arw_input(html, question, "Batches", "units", "1");
+	arw_select(html, question, "Sell at price", "sell_basis", bases, "lowest listing");
+	arw_input(html, question, "Newest within hours", "max_age_hours", "any age");
+	arw_input(html, question, "Share of sales %", "share", "100");
+
+	if (venture_json_object_get_int(question, "data_source_id", 0) > 0)
+		g_string_append_printf(html, "<input type=\"hidden\" name=\"data_source_id\" value=\"%" G_GINT64_FORMAT "\">",
+		                       venture_json_object_get_int(question, "data_source_id", 0));
+
+	if (venture_json_object_get_int(question, "recipe_id", 0) > 0)
+		g_string_append_printf(html, "<input type=\"hidden\" name=\"recipe_id\" value=\"%" G_GINT64_FORMAT "\">",
+		                       venture_json_object_get_int(question, "recipe_id", 0));
+
+	g_string_append(html, "<button class=\"btn\" type=\"submit\">Price</button></form></div>");
+	mdw_notes(html, root);
+	arw_craft_rows(self, html, root, can_plan);
+
+	if (json_object_get_boolean_member(root, "truncated"))
+		g_string_append(html, "<p class=\"muted market-more\">More recipes were priced than are shown; "
+		                      "narrow to a recipe category.</p>");
+
+	return venture_web_html_response(venture_web_page(self, request, "/arbitrage/crafting", "Crafting",
+	                                                  html->str), 200);
+}
+
+/* --- /arbitrage/plan ---------------------------------------------------------- */
+
+/* One venue's list: a heading, then the lines, its totals in the foot so
+ * a sort never moves them among the lines they add up. */
+static void
+arw_plan_venues(
+	GString		*html,
+	JsonObject	*root,
+	const gchar	*section,
+	const gchar	*title,
+	const gchar	*price_label,
+	const gchar	*fees_label,
+	const gchar	*empty
+){
+	JsonArray *venues;
+	guint i;
+	guint j;
+
+	venues = json_object_has_member(root, section) ? json_object_get_array_member(root, section) : NULL;
+
+	if ((NULL == venues) || (0 == json_array_get_length(venues)))
+	{
+		if (NULL != empty)
+		{
+			g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>");
+			venture_html_escape_append(html, title);
+			g_string_append(html, "</h2></div><div class=\"card-body\"><p class=\"muted\">");
+			venture_html_escape_append(html, empty);
+			g_string_append(html, "</p></div></div>");
+		}
+
+		return;
+	}
+
+	g_string_append(html, "<div class=\"card plan-section\"><div class=\"card-head\"><h2>");
+	venture_html_escape_append(html, title);
+	g_string_append(html, "</h2></div>");
+
+	for (i = 0; i < json_array_get_length(venues); i++)
+	{
+		JsonObject *venue = json_array_get_object_element(venues, i);
+		JsonArray *lines = json_object_get_array_member(venue, "lines");
+		JsonArray *totals = json_object_get_array_member(venue, "totals");
+
+		g_string_append(html, "<div class=\"card-body plan-venue\"><h3>");
+		venture_html_escape_append(html, venture_json_object_get_string(venue, "venue_name", ""));
+		g_string_append(html, "</h3></div><div class=\"table-wrap\"><table class=\"data plan-table\"><thead><tr>"
+		                      "<th scope=\"col\">Item</th><th scope=\"col\" class=\"num\">Quantity</th>"
+		                      "<th scope=\"col\" class=\"num\">");
+		venture_html_escape_append(html, price_label);
+		g_string_append(html, "</th><th scope=\"col\" class=\"num\">Amount</th><th scope=\"col\" class=\"num\">");
+		venture_html_escape_append(html, fees_label);
+		g_string_append(html, "</th><th scope=\"col\">Trades</th></tr></thead><tbody>");
+
+		for (j = 0; (NULL != lines) && (j < json_array_get_length(lines)); j++)
+		{
+			JsonObject *line = json_array_get_object_element(lines, j);
+			JsonArray *trades = json_object_get_array_member(line, "trades");
+			guint k;
+
+			g_string_append(html, "<tr><td class=\"row-head\">");
+			venture_html_escape_append(html, venture_json_object_get_string(line, "instrument_name", ""));
+			g_string_append(html, "</td><td class=\"num\">");
+			mdw_int(html, line, "quantity");
+			g_string_append(html, "</td>");
+			arw_money_cell(html, line, "unit_price");
+			arw_money_cell(html, line, "amount");
+			arw_money_cell(html, line, "fees");
+			g_string_append(html, "<td>");
+
+			for (k = 0; (NULL != trades) && (k < json_array_get_length(trades)); k++)
+			{
+				gint64 id = json_array_get_int_element(trades, k);
+
+				g_string_append_printf(html, "%s<a href=\"/e/arbitrage_trade/%" G_GINT64_FORMAT "\">#%"
+				                       G_GINT64_FORMAT "</a>", (k > 0) ? " " : "", id, id);
+			}
+
+			g_string_append(html, "</td></tr>");
+		}
+
+		g_string_append(html, "</tbody><tfoot>");
+
+		for (j = 0; (NULL != totals) && (j < json_array_get_length(totals)); j++)
+		{
+			JsonObject *total = json_array_get_object_element(totals, j);
+
+			g_string_append(html, "<tr><td colspan=\"3\">Total");
+
+			if (json_array_get_length(totals) > 1)
+			{
+				g_string_append(html, " in ");
+				venture_html_escape_append(html, venture_json_object_get_string(total, "currency", ""));
+			}
+
+			g_string_append(html, "</td><td class=\"num\" colspan=\"2\">");
+			mdw_money(html, total, "amount");
+			g_string_append(html, "</td><td></td></tr>");
+		}
+
+		g_string_append(html, "</tfoot></table></div>");
+	}
+
+	g_string_append(html, "</div>");
+}
+
+static void
+arw_plan_totals(
+	GString		*html,
+	JsonObject	*root
+){
+	JsonArray *totals;
+	guint i;
+
+	totals = json_object_has_member(root, "totals") ? json_object_get_array_member(root, "totals") : NULL;
+
+	for (i = 0; (NULL != totals) && (i < json_array_get_length(totals)); i++)
+	{
+		JsonObject *total = json_array_get_object_element(totals, i);
+		g_autofree gchar *trades = g_strdup_printf("%" G_GINT64_FORMAT,
+		                                           venture_json_object_get_int(total, "trades", 0));
+
+		g_string_append(html, "<div class=\"stat-row market-stats plan-totals\">");
+		mdw_stat(html, "Trades", trades);
+		mdw_stat_of(html, "Gold outlay", mdw_money, total, "outlay");
+		mdw_stat_of(html, "Sales", mdw_money, total, "gross");
+		mdw_stat_of(html, "AH cut", mdw_money, total, "cut");
+		mdw_stat_of(html, "Deposits to post", mdw_money, total, "deposit");
+		mdw_stat_of(html, "Expected lost deposits", mdw_money, total, "listing_loss");
+		mdw_stat_of(html, "Revenue after fees", mdw_money, total, "revenue");
+		mdw_stat_of(html, "Expected profit", mdw_money, total, "profit");
+		g_string_append(html, "</div>");
+	}
+}
+
+static void
+arw_plan_trades(
+	GString		*html,
+	JsonObject	*root,
+	gboolean	 can_remove
+){
+	JsonArray *trades;
+	gboolean repriced;
+	guint i;
+
+	trades = json_object_get_array_member(root, "trades");
+	repriced = json_object_get_boolean_member(root, "repriced");
+
+	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Planned trades</h2></div>"
+	                      "<div class=\"table-wrap\"><table class=\"data plan-trades\"><thead><tr>"
+	                      "<th scope=\"col\">Trade</th><th scope=\"col\">Strategy</th>"
+	                      "<th scope=\"col\" class=\"num\">Planned profit</th>");
+
+	if (repriced)
+		g_string_append(html, "<th scope=\"col\" class=\"num\">Now</th><th scope=\"col\">Standing</th>");
+
+	g_string_append(html, "<th scope=\"col\">Remove</th></tr></thead><tbody>");
+
+	for (i = 0; (NULL != trades) && (i < json_array_get_length(trades)); i++)
+	{
+		JsonObject *trade = json_array_get_object_element(trades, i);
+		JsonObject *expected = json_object_has_member(trade, "expected")
+			? json_object_get_object_member(trade, "expected") : NULL;
+		JsonObject *reprice = json_object_has_member(trade, "reprice")
+			? json_object_get_object_member(trade, "reprice") : NULL;
+		gint64 id = venture_json_object_get_int(trade, "id", 0);
+		JsonArray *profit = ((NULL != expected) && json_object_has_member(expected, "profit") &&
+		                     JSON_NODE_HOLDS_ARRAY(json_object_get_member(expected, "profit")))
+			? json_object_get_array_member(expected, "profit") : NULL;
+
+		g_string_append_printf(html, "<tr><td class=\"row-head\"><a href=\"/e/arbitrage_trade/%" G_GINT64_FORMAT
+		                       "\">", id);
+		venture_html_escape_append(html, venture_json_object_get_string(trade, "name", ""));
+		g_string_append(html, "</a></td><td>");
+		venture_html_escape_append(html, venture_json_object_get_string(trade, "strategy", ""));
+		g_string_append(html, "</td><td class=\"num\">");
+
+		if ((NULL != profit) && (json_array_get_length(profit) > 0))
+		{
+			g_autoptr(VentureMoney) money = venture_money_from_string(json_array_get_string_element(profit, 0),
+			                                                          NULL, NULL);
+			g_autofree gchar *text = (NULL != money) ? venture_money_to_display_string(money, TRUE) : NULL;
+
+			venture_html_escape_append(html, (NULL != text) ? text : json_array_get_string_element(profit, 0));
+		}
+		else
+			mdw_dash(html);
+
+		g_string_append(html, "</td>");
+
+		if (repriced)
+		{
+			const gchar *state = (NULL != reprice) ? venture_json_object_get_string(reprice, "state", "") : "";
+			const gchar *tone = (0 == g_strcmp0(state, "ok")) ? "good"
+			                  : (0 == g_strcmp0(state, "stale")) ? "meh" : "bad";
+
+			arw_money_cell(html, reprice, "net");
+			g_string_append(html, "<td>");
+
+			if (NULL != reprice)
+			{
+				mdw_chip_open(html, tone);
+				venture_html_escape_append(html, state);
+				g_string_append(html, "</span> <span class=\"muted\">");
+				venture_html_escape_append(html, venture_json_object_get_string(reprice, "message", ""));
+				g_string_append(html, "</span>");
+			}
+			else
+				g_string_append(html, "<span class=\"muted\">not priced again</span>");
+
+			g_string_append(html, "</td>");
+		}
+
+		g_string_append(html, "<td>");
+
+		if (can_remove)
+			g_string_append_printf(html, "<form method=\"post\" action=\"/arbitrage/plan/remove\">"
+			                       "<input type=\"hidden\" name=\"trade_id\" value=\"%" G_GINT64_FORMAT "\">"
+			                       "<button class=\"btn\" type=\"submit\">Remove</button></form>", id);
+		else
+			mdw_dash(html);
+
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL == trades) || (0 == json_array_get_length(trades)))
+		g_string_append_printf(html, "<tr><td colspan=\"%d\" class=\"muted\">Nothing is planned.</td></tr>",
+		                       repriced ? 6 : 4);
+
+	g_string_append(html, "</tbody></table></div></div>");
+}
+
+/* The export formats the plan offers: its own CSV, and every registered
+ * format that is not the scan's (a game addon's shopping import). */
+static gboolean
+arw_plan_format(
+	VentureExportFormatRegistry	*formats,
+	const gchar			*format
+){
+	if (0 == g_strcmp0(format, "csv"))
+		return TRUE;
+
+	return (0 != g_strcmp0(format, "shopping_list")) && venture_export_format_registry_has(formats, format);
+}
+
+static HtmxResponse *
+venture_arbitrage_web_plan(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	VentureExportFormatRegistry *formats;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GString) html = NULL;
+	g_auto(GStrv) names = NULL;
+	JsonObject *root;
+	gboolean api;
+	gboolean reprice;
+	gboolean can_remove;
+	HtmxResponse *gate;
+	gint64 organization_id;
+	guint i;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_ARBITRAGE_TRADE);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	reprice = mdw_flag(request, "reprice");
+	answer = venture_arbitrage_planner(self->context, organization_id, reprice, &error);
+
+	if (NULL == answer)
+		return venture_web_error_response(error);
+
+	if (api)
+		return venture_web_json_response(answer, 200);
+
+	root = json_node_get_object(answer);
+	principal = venture_auth_authenticate(self->auth, request);
+	can_remove = venture_web_require_for_type(self, principal, VENTURE_TYPE_ARBITRAGE_TRADE,
+	                                          VENTURE_USER_ROLE_EDITOR, NULL);
+	formats = venture_context_get_export_formats(self->context);
+	names = venture_export_format_registry_dup_names(formats);
+
+	html = g_string_new(NULL);
+	mdw_head(html, "Trading", "Flip planner",
+	         "Everything planned, as a shopping list: what to buy at each realm and the most to pay, then "
+	         "what to post at each and at what price, with the gold it needs and what it should bring back "
+	         "after the auction house's cut and deposits.");
+	g_string_append(html, "<p class=\"muted\"><a href=\"/market/deals\">Deals</a> \xc2\xb7 "
+	                      "<a href=\"/arbitrage/crafting\">Crafting</a> \xc2\xb7 <a href=\"/arbitrage\">Arbitrage</a>"
+	                      " \xc2\xb7 <a href=\"/e/arbitrage_trade\">Trades</a></p>");
+	g_string_append(html, "<div class=\"card\"><div class=\"card-body plan-actions\">"
+	                      "<a class=\"btn\" href=\"/arbitrage/plan?reprice=1\">Price again</a> "
+	                      "<span class=\"muted\">Export:</span> <a href=\"/arbitrage/plan/export?format=csv\">CSV</a>");
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		if ((0 == g_strcmp0(names[i], "csv")) || !arw_plan_format(formats, names[i]))
+			continue;
+
+		g_string_append_printf(html, " \xc2\xb7 <a href=\"/arbitrage/plan/export?format=%s\">", names[i]);
+		venture_html_escape_append(html, venture_export_format_registry_get_label(formats, names[i]));
+		g_string_append(html, "</a>");
+	}
+
+	g_string_append(html, "</div></div>");
+	mdw_notes(html, root);
+	arw_plan_totals(html, root);
+	arw_plan_venues(html, root, "buy", "Buy", "Most a unit", "Fees", "Nothing to buy.");
+	arw_plan_venues(html, root, "fees", "Moving lots", "Each", "Fees", NULL);
+	arw_plan_venues(html, root, "sell", "Post", "Post at", "AH cut", "Nothing to post.");
+	arw_plan_trades(html, root, can_remove);
+
+	return venture_web_html_response(venture_web_page(self, request, "/arbitrage/plan", "Flip planner",
+	                                                  html->str), 200);
+}
+
+static HtmxResponse *
+venture_arbitrage_web_plan_export(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	VentureExportFormatRegistry *formats;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *disposition = NULL;
+	const gchar *format;
+	HtmxResponse *gate;
+	HtmxResponse *response;
+	gint64 organization_id;
+
+	(void)params;
+
+	gate = arw_gate(self, request, mdw_is_api(request), VENTURE_USER_ROLE_VIEWER, VENTURE_TYPE_ARBITRAGE_TRADE);
+
+	if (NULL != gate)
+		return gate;
+
+	if (!venture_web_request_organization(self, request, NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	formats = venture_context_get_export_formats(self->context);
+	format = (NULL != mdw_param(request, "format")) ? mdw_param(request, "format") : "csv";
+
+	if (!arw_plan_format(formats, format))
+	{
+		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "The plan exports as csv, or a format a plugin registered (tsm); not %s", format);
+		return venture_web_error_response(error);
+	}
+
+	answer = venture_arbitrage_planner(self->context, organization_id, FALSE, &error);
+
+	if (NULL == answer)
+		return venture_web_error_response(error);
+
+	if (0 == g_strcmp0(format, "csv"))
+		bytes = venture_arbitrage_planner_csv(json_node_get_object(answer));
+	else
+	{
+		g_autoptr(JsonArray) rows = venture_arbitrage_planner_export_rows(json_node_get_object(answer));
+		g_autoptr(JsonObject) options = json_object_new();
+
+		bytes = venture_export_format_registry_export(formats, format, rows, options, &error);
+
+		if (NULL == bytes)
+			return venture_web_error_response(error);
+	}
+
+	response = htmx_response_new();
+	htmx_response_set_bytes(response, bytes);
+	htmx_response_set_content_type(response, (0 == g_strcmp0(format, "csv"))
+	                               ? "text/csv; charset=utf-8"
+	                               : venture_export_format_registry_get_content_type(formats, format));
+	htmx_response_set_status(response, 200);
+	disposition = g_strdup_printf("attachment; filename=\"flip-plan-%s.%s\"", format,
+	                              (0 == g_strcmp0(format, "csv")) ? "csv"
+	                              : venture_export_format_registry_get_extension(formats, format));
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+	htmx_response_add_header(response, "Cache-Control", "no-store");
+
+	return response;
+}
+
+static HtmxResponse *
+venture_arbitrage_web_plan_remove(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	const gchar *text;
+	VentureActor actor;
+	gboolean api;
+	HtmxResponse *gate;
+	gint64 organization_id;
+	gint64 trade_id;
+
+	(void)params;
+
+	api = mdw_is_api(request);
+	gate = arw_gate(self, request, api, VENTURE_USER_ROLE_EDITOR, VENTURE_TYPE_ARBITRAGE_TRADE);
+
+	if (NULL != gate)
+		return gate;
+
+	/* A form from the page, or JSON {"trade_id": N} from a client. */
+	if (g_str_has_prefix((NULL != htmx_request_get_content_type(request))
+	                     ? htmx_request_get_content_type(request) : "",
+	                     "application/x-www-form-urlencoded"))
+	{
+		text = htmx_request_get_form_value(request, "trade_id");
+		trade_id = (NULL != text) ? g_ascii_strtoll(text, NULL, 10) : 0;
+	}
+	else
+	{
+		body = htmx_request_get_json(request, NULL);
+		trade_id = ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+			? venture_json_object_get_int(json_node_get_object(body), "trade_id", 0) : 0;
+	}
+
+	if (!venture_web_request_organization(self, request, ((NULL != body) && JSON_NODE_HOLDS_OBJECT(body))
+	                                      ? json_node_get_object(body) : NULL, &organization_id, &error))
+		return venture_web_error_response(error);
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	if (!venture_arbitrage_planner_remove(self->context, organization_id, trade_id, &actor, &error))
+		return venture_web_error_response(error);
+
+	if (api)
+	{
+		g_autoptr(JsonNode) done = json_node_new(JSON_NODE_OBJECT);
+		JsonObject *object = json_object_new();
+
+		json_object_set_int_member(object, "removed", trade_id);
+		json_node_take_object(done, object);
+
+		return venture_web_json_response(done, 200);
+	}
+
+	return venture_web_redirect_to("/arbitrage/plan");
 }
 
 /* --- Routes ---------------------------------------------------------------------- */
@@ -1332,12 +2216,21 @@ venture_arbitrage_pages_register(VentureWebServer *self)
 		{ HTMX_METHOD_POST, "/arbitrage/record", venture_arbitrage_web_record },
 		{ HTMX_METHOD_GET, "/arbitrage/export", venture_arbitrage_web_export },
 		{ HTMX_METHOD_GET, "/arbitrage/calc", venture_arbitrage_web_calc },
+		{ HTMX_METHOD_GET, "/arbitrage/crafting", venture_arbitrage_web_crafting },
+		{ HTMX_METHOD_GET, "/arbitrage/plan", venture_arbitrage_web_plan },
+		{ HTMX_METHOD_POST, "/arbitrage/plan/add", venture_arbitrage_web_record },
+		{ HTMX_METHOD_POST, "/arbitrage/plan/remove", venture_arbitrage_web_plan_remove },
+		{ HTMX_METHOD_GET, "/arbitrage/plan/export", venture_arbitrage_web_plan_export },
 		/* The twins: /api/v1/arbitrage is not a record type. */
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/scan", venture_arbitrage_web_scan },
 		{ HTMX_METHOD_POST, "/api/v1/arbitrage/record", venture_arbitrage_web_record },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/export", venture_arbitrage_web_export },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/calc", venture_arbitrage_web_calc },
 		{ HTMX_METHOD_GET, "/api/v1/arbitrage/registries", venture_arbitrage_web_registries },
+		{ HTMX_METHOD_GET, "/api/v1/arbitrage/crafting", venture_arbitrage_web_crafting },
+		{ HTMX_METHOD_GET, "/api/v1/arbitrage/plan", venture_arbitrage_web_plan },
+		{ HTMX_METHOD_POST, "/api/v1/arbitrage/plan/remove", venture_arbitrage_web_plan_remove },
+		{ HTMX_METHOD_GET, "/api/v1/arbitrage/plan/export", venture_arbitrage_web_plan_export },
 	};
 	gsize i;
 

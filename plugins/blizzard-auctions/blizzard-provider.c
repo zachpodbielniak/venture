@@ -2076,8 +2076,16 @@ blizzard_add_venue(
 
 	json_object_set_string_member(object, "region", frozen->settings->region);
 
+	/* The commodity market is one market every realm of the region
+	 * trades on: `region_wide` is the generic word for that, which the
+	 * arbitrage engine reads (a craft's reagents come from it whichever
+	 * realm a person buys at); `commodities` stays for anyone reading the
+	 * game's own word. */
 	if (commodities)
+	{
 		json_object_set_boolean_member(object, "commodities", TRUE);
+		json_object_set_boolean_member(object, "region_wide", TRUE);
+	}
 	else
 		json_object_set_int_member(object, "connected_realm_id", g_ascii_strtoll(key, NULL, 10));
 

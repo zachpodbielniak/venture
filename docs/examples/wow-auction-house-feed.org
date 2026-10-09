@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-04]
-#+updated: [2026-10-08]
+#+updated: [2026-10-09]
 #+version: 0.3.0
 
 * What this is
@@ -120,7 +120,7 @@ Blizzard allows 36,000 requests an hour per client. A region of ~85 connected re
 
 * What lands in the store
 
-- *Venues*: one per connected realm, keyed by its id, named from =/data/wow/connected-realm/{id}= (its realms' names, joined: "Area 52, Ner'zhul"), and one =commodities= venue ("US commodities"). All are =auction_house= venues in the region's group, so region medians compare realms of one region.
+- *Venues*: one per connected realm, keyed by its id, named from =/data/wow/connected-realm/{id}= (its realms' names, joined: "Area 52, Ner'zhul"), and one =commodities= venue ("US commodities"), whose attributes say ="commodities": true= and ="region_wide": true= -- one market every realm trades on, which crafting buys reagents from whatever realm is picked. All are =auction_house= venues in the region's group, so region medians compare realms of one region.
 - *Instruments*: one per item, and one per variant of an item, in the =wow-item= namespace (the source's instrument namespace). A variant is filed under its plain item.
 - *Listings*: one per auction, with its id, so the store can tell what sold between two snapshots. Each snapshot is complete -- an item that vanished is out of stock -- and dated by Blizzard's =Last-Modified=.
 - *Names and details*, lazily: up to =item_names_per_fetch= items a fetch has not named yet are looked up at =/data/wow/item/{id}=, lowest id first; the name, a category =Item class/Subclass= and attributes (=vendor_sell= in copper, =quality=, =level=) are stored once known and kept after.
@@ -166,37 +166,50 @@ The lower bound, because the store's sale estimate asks whether an auction that 
 
 * Recipes
 
-The =import_recipes= action reads the professions into =recipe= and =recipe_component= records, for crafting and for the arbitrage =transform= strategy:
+The =import_recipes= action reads the professions into =recipe= and =recipe_component= records, for crafting and for the arbitrage =transform= strategy. One command imports a crafter's own professions, this expansion only:
 
 #+begin_src sh
-venturectl act data_source 3 import_recipes max_recipes=50 create_products=true venture_id=2
-# Read 50 recipes: 47 created, 0 updated, 0 unchanged, 3 skipped. ...
-# More remain: run again with cursor=164/2437/50
-
-venturectl act data_source 3 import_recipes max_recipes=50 create_products=true venture_id=2 cursor=164/2437/50
+venturectl act data_source 3 import_recipes professions="Alchemy, Inscription" skill_tier="Khaz Algar" \
+    max_recipes=500 create_products=true venture_id=2
+# Read 412 recipes: 371 created, 0 updated, 0 unchanged, 41 skipped. ... Done: every recipe has been read.
 #+end_src
+
+=professions= names them by name (any case) or Blizzard's id, comma separated; =skill_tier= keeps the skill tiers whose name has it in it ("Khaz Algar" is "Khaz Algar Alchemy", "Khaz Algar Inscription"), so the older expansions are never fetched; =max_recipes= at its most (500) covers a profession's expansion in one call. Should the answer end "More remain: run again with cursor=...", run the same command with that =cursor== added until it says "Done". Running it again later picks up new recipes and changed quantities and changes nothing else.
 
 | Parameter         | Meaning                                                                                          |
 |-------------------+--------------------------------------------------------------------------------------------------|
 | =max_recipes=     | recipes this call reads, 1 to 500; 50 by default                                                 |
+| =professions=     | only these professions, by name or id, comma separated: "Alchemy, Inscription" or "171,773"      |
+| =skill_tier=      | only the skill tiers (expansions) whose name contains this, case folded: "Khaz Algar"            |
 | =profession_id=   | only this profession (Blizzard's id: 164 Blacksmithing, 186 Mining...)                           |
 | =cursor=          | what the last call said to continue with                                                         |
 | =create_products= | make a product for an item that has none                                                         |
 | =venture_id=      | the venture new products and recipes belong to; required with =create_products=                  |
 
-Each item a recipe names becomes an =instrument= record under the source (promoted from the store when the auctions have seen it, made outright when not), and the recipe points at that instrument's product. Without =create_products=, a recipe whose items have no product is skipped and the result names the item -- link its instrument to a product, or run again with it. A recipe that makes no item (an enchant) is skipped. Two slots of one reagent become one line; a proc's range (=crafted_quantity= minimum and maximum) is read as its minimum. Running it again changes nothing it made: a recipe is found by its output product and name, a line by its recipe and product, and only a quantity that moved is written; a line someone added by hand is left alone.
+Each recipe is filed under =recipe= categories that follow the professions' book -- /Alchemy / Khaz Algar Alchemy / Potions/; a tier named only for its profession (/Mining/ under Mining) is left out -- so Crafting filters by a profession, an expansion or one section of it. A recipe imported before recipes were filed gets its place the next time the import reads it; one a person refiled keeps theirs.
 
-It runs on the main thread -- it writes records -- and blocks for the requests it makes, each within =feeds.request_timeout=, which is what =max_recipes= bounds. It needs an editor.
+Each item a recipe names becomes an =instrument= record under the source (promoted from the store when the auctions have seen it, made outright when not), and the recipe points at that instrument's product. Without =create_products=, a recipe whose items have no product is skipped and the result names the item -- link its instrument to a product, or run again with it. A recipe that makes no item (an enchant) is skipped. Two slots of one reagent become one line; a proc's range (=crafted_quantity= minimum and maximum) is read as its minimum. Running it again changes nothing it made: a recipe is found by its output product and name, a line by its recipe and product, and only a quantity that moved (or a recipe not yet filed) is written; a line someone added by hand is left alone.
+
+It runs on the main thread -- it writes records -- and blocks for the requests it makes, one per recipe, each within =feeds.request_timeout=, which is what =max_recipes= bounds. It needs an editor.
 
 * Fees: =wow_auction=
 
-Give each realm's =venue= record the fee model, so a scan nets the auction house's cut and deposit out of every flip:
+Give each realm's =venue= record the fee model, so a scan -- and Crafting, and the flip planner -- nets the auction house's cut and deposit out of every flip and craft. One command does every venue the source's store knows, the commodity market included:
+
+#+begin_src sh
+venturectl act data_source 3 set_venue_fees
+# 85 venues given wow_auction (cut_percent: 5 duration_hours: 48), 0 kept the fee model they already had.
+#+end_src
+
+=set_venue_fees= promotes each venue to a record (idempotent) and gives every one that names no fee model =wow_auction= with =cut_percent= (5 by default), =duration_hours= (48) and, when given, =deposit_factor_percent=; =replace=true= also replaces a model a venue already names. Run it again after the realm list grows. One venue by hand:
 
 #+begin_src sh
 venturectl market promote 3 venue 3676
 venturectl update venue 12 fee_model=wow_auction "fee_params=cut_percent: 5
 duration_hours: 48"
 #+end_src
+
+A venue with no fee model charges nothing in a scan; Crafting names each one it sells at, beside the craft and in a note.
 
 | Parameter                | Default | Meaning                                                                                      |
 |--------------------------+---------+----------------------------------------------------------------------------------------------|
@@ -214,7 +227,9 @@ Once a sync has run: =/market/browse= lists every item at every realm with its p
 i:2770,i:2589,i:19019,p:39
 #+end_example
 
-one TradeSkillMaster item string per item a row names -- the row's item and a craft's reagents -- each once, a variant as its item, a pet as =p:<species>=; paste it into TSM's group import. =venturectl report arbitrage_scan strategy=spread data_source_id=3= (or =venturectl arbitrage scan spread data_source_id=3=) gives the same rows on the command line. [[file:arbitrage-wow-cross-realm.org][The cross-realm flip worked example]] takes one of those rows to a closed trade, and [[file:arbitrage-crafting.org][the crafting example]] does the same for a recipe; [[file:../arbitrage.org][Arbitrage]] has every strategy, option and fee model.
+one TradeSkillMaster item string per item a row names -- the row's item and a craft's reagents -- each once, a variant as its item, a pet as =p:<species>=; paste it into TSM's group import.
+
+=/arbitrage/crafting= is every imported recipe at once: pick a profession or expansion, the realm you buy reagents on (commodities always come from the region's market) and the realm you sell on, and every recipe shows its reagent cost, what it sells for, the cut, the deposit, the profit and the margin, sortable, with each price's age. "Add to plan" there, on Deals and on =/arbitrage= puts a craft or a flip on =/arbitrage/plan=, the flip planner: what to buy on each realm and the most to pay, what to post on each and at what price, the gold it needs and what it should bring back, exported as CSV or as a TSM group of what to buy (=/arbitrage/plan/export?format=tsm=). See [[file:../arbitrage.org::*Crafting][Arbitrage: Crafting]] and [[file:../arbitrage.org::*The flip planner][the flip planner]]. =venturectl report arbitrage_scan strategy=spread data_source_id=3= (or =venturectl arbitrage scan spread data_source_id=3=) gives the same rows on the command line. [[file:arbitrage-wow-cross-realm.org][The cross-realm flip worked example]] takes one of those rows to a closed trade, and [[file:arbitrage-crafting.org][the crafting example]] does the same for a recipe; [[file:../arbitrage.org][Arbitrage]] has every strategy, option and fee model.
 
 * When it goes wrong
 
@@ -243,6 +258,6 @@ one TradeSkillMaster item string per item a row names -- the row's item and a cr
 |-------------------------------------------------+---------------------------------------------------------|
 | =plugins/blizzard-auctions/blizzard-plugin.c=   | registration, the =wow_auction= fee model, the =tsm= export |
 | =plugins/blizzard-auctions/blizzard-provider.c= | the provider: settings, token, units, auctions, keys     |
-| =plugins/blizzard-auctions/blizzard-recipes.c=  | the =import_recipes= action                              |
+| =plugins/blizzard-auctions/blizzard-recipes.c=  | the =import_recipes= and =set_venue_fees= actions        |
 | =tests/test-plugin-blizzard.c=                  | all of it against a scripted Battle.net                  |
 | =tests/fixtures/blizzard/=                      | the Battle.net answers those tests serve                 |
