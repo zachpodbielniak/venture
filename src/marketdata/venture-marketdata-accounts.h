@@ -438,6 +438,42 @@ venture_marketdata_account_path(
 	const gchar	*key
 );
 
+/**
+ * venture_marketdata_crafting_url:
+ * @account_key: (nullable): the character, by its account key
+ * @profession: (nullable): one of its professions
+ * @expansion: (nullable): one expansion's tier of that profession
+ *
+ * Returns: (transfer full): the Crafting page narrowed to what is given,
+ *   "/arbitrage/crafting?character=...&profession=...&expansion=..."
+ */
+gchar *
+venture_marketdata_crafting_url(
+	const gchar	*account_key,
+	const gchar	*profession,
+	const gchar	*expansion
+);
+
+/**
+ * venture_marketdata_profession_tiers:
+ * @text: (nullable): a "profession_tiers:<Name>" attribute, "Classic
+ *   300/300; Outland 75/75; ...; Khaz Algar 65/100"
+ * @account_key: (nullable): the character, for each tier's Crafting link
+ * @profession: (nullable): the profession, for the same
+ *
+ * Reads a profession's ranks by expansion in the order given. An entry
+ * "<label> <rank>/<max>" becomes {label, rank, max, text, crafting_url};
+ * one that does not match is kept as {text} alone, shown as it came.
+ *
+ * Returns: (transfer full): the tiers, empty for no text
+ */
+JsonArray *
+venture_marketdata_profession_tiers(
+	const gchar	*text,
+	const gchar	*account_key,
+	const gchar	*profession
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_MARKETDATA_ACCOUNTS_H */

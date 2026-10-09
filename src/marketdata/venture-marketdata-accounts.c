@@ -1431,6 +1431,225 @@ ma_attrs(const gchar *text)
 	return json_object_ref(json_node_get_object(node));
 }
 
+/* A whole number an attribute holds (an integer, or a number written with
+ * a point); FALSE for anything else. */
+static gboolean
+ma_attr_whole(
+	JsonObject	*attrs,
+	const gchar	*member,
+	gint64		*out
+){
+	JsonNode *node;
+
+	node = json_object_has_member(attrs, member) ? json_object_get_member(attrs, member) : NULL;
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_VALUE(node))
+		return FALSE;
+
+	if (G_TYPE_INT64 == json_node_get_value_type(node))
+		*out = json_node_get_int(node);
+	else if (G_TYPE_DOUBLE == json_node_get_value_type(node))
+		*out = (gint64)json_node_get_double(node);
+	else
+		return FALSE;
+
+	return TRUE;
+}
+
+/* Primary professions first, then by name. */
+static gint
+ma_compare_professions(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	JsonObject *x = *(JsonObject *const *)a;
+	JsonObject *y = *(JsonObject *const *)b;
+	gboolean x_secondary = json_object_get_boolean_member(x, "secondary");
+	gboolean y_secondary = json_object_get_boolean_member(y, "secondary");
+
+	if (x_secondary != y_secondary)
+		return x_secondary ? 1 : -1;
+
+	return g_utf8_collate(json_object_get_string_member(x, "name"), json_object_get_string_member(y, "name"));
+}
+
+gchar *
+venture_marketdata_crafting_url(
+	const gchar	*account_key,
+	const gchar	*profession,
+	const gchar	*expansion
+){
+	const gchar *const names[] = { "character", "profession", "expansion" };
+	const gchar *values[3];
+	GString *url;
+	guint i;
+
+	values[0] = account_key;
+	values[1] = profession;
+	values[2] = expansion;
+	url = g_string_new("/arbitrage/crafting");
+
+	for (i = 0; i < G_N_ELEMENTS(names); i++)
+	{
+		g_autofree gchar *escaped = NULL;
+
+		if (venture_string_is_empty(values[i]))
+			continue;
+
+		escaped = g_uri_escape_string(values[i], NULL, FALSE);
+		g_string_append_printf(url, "%c%s=%s", (NULL == strchr(url->str, '?')) ? '?' : '&', names[i], escaped);
+	}
+
+	return g_string_free(url, FALSE);
+}
+
+JsonArray *
+venture_marketdata_profession_tiers(
+	const gchar	*text,
+	const gchar	*account_key,
+	const gchar	*profession
+){
+	g_auto(GStrv) entries = NULL;
+	JsonArray *tiers;
+	guint i;
+
+	tiers = json_array_new();
+
+	if (venture_string_is_empty(text))
+		return tiers;
+
+	/* Attrs are capped at 64 members, so a profession's tiers arrive as
+	 * one string: "<label> <rank>/<max>" entries separated by "; ". */
+	entries = g_strsplit(text, ";", -1);
+
+	for (i = 0; NULL != entries[i]; i++)
+	{
+		const gchar *entry = g_strstrip(entries[i]);
+		const gchar *space;
+		JsonObject *tier;
+		gint64 rank = 0;
+		gint64 cap = 0;
+		gboolean read = FALSE;
+
+		if ('\0' == *entry)
+			continue;
+
+		tier = json_object_new();
+		space = strrchr(entry, ' ');
+
+		if ((NULL != space) && (space > entry))
+		{
+			g_auto(GStrv) figures = g_strsplit(space + 1, "/", -1);
+
+			read = (2 == g_strv_length(figures)) &&
+			       g_ascii_string_to_signed(figures[0], 10, 0, G_MAXINT32, &rank, NULL) &&
+			       g_ascii_string_to_signed(figures[1], 10, 0, G_MAXINT32, &cap, NULL);
+		}
+
+		json_object_set_string_member(tier, "text", entry);
+
+		if (read)
+		{
+			g_autofree gchar *label = g_strstrip(g_strndup(entry, (gsize)(space - entry)));
+			g_autofree gchar *url = venture_marketdata_crafting_url(account_key, profession, label);
+
+			json_object_set_string_member(tier, "label", label);
+			json_object_set_int_member(tier, "rank", rank);
+			json_object_set_int_member(tier, "max", cap);
+
+			if (NULL != account_key)
+				json_object_set_string_member(tier, "crafting_url", url);
+		}
+
+		json_array_add_object_element(tiers, tier);
+	}
+
+	return tiers;
+}
+
+/*
+ * A character's professions from its attributes, by the convention the
+ * push protocol's scalar attrs carry them (docs/market-data.org):
+ * "profession:<Name>" its skill, "profession_max:<Name>" the cap, and
+ * "profession_secondary:<Name>": true for a secondary one, and
+ * "profession_tiers:<Name>" its ranks by expansion, one string (see
+ * venture_marketdata_profession_tiers()). A profession is
+ * one with a skill; a cap or a flag alone names nothing. Each carries the
+ * Crafting page narrowed to it and the character.
+ */
+static JsonArray *
+ma_professions(
+	JsonObject	*attrs,
+	const gchar	*account_key
+){
+	g_autoptr(GList) members = NULL;
+	g_autoptr(GPtrArray) found = NULL;
+	JsonArray *array;
+	GList *member;
+	guint i;
+
+	found = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
+	members = json_object_get_members(attrs);
+
+	for (member = members; NULL != member; member = member->next)
+	{
+		const gchar *name;
+		g_autofree gchar *max_member = NULL;
+		g_autofree gchar *secondary_member = NULL;
+		g_autofree gchar *tiers_member = NULL;
+		g_autofree gchar *url = NULL;
+		JsonObject *object;
+		JsonNode *flag;
+		JsonNode *tiers;
+		gint64 skill;
+		gint64 cap;
+
+		if (!g_str_has_prefix(member->data, "profession:"))
+			continue;
+
+		name = (const gchar *)member->data + strlen("profession:");
+
+		if (venture_string_is_empty(name) || !ma_attr_whole(attrs, member->data, &skill))
+			continue;
+
+		max_member = g_strconcat("profession_max:", name, NULL);
+		secondary_member = g_strconcat("profession_secondary:", name, NULL);
+		tiers_member = g_strconcat("profession_tiers:", name, NULL);
+		flag = json_object_has_member(attrs, secondary_member) ? json_object_get_member(attrs, secondary_member)
+		                                                         : NULL;
+		tiers = json_object_has_member(attrs, tiers_member) ? json_object_get_member(attrs, tiers_member) : NULL;
+		url = venture_marketdata_crafting_url(account_key, name, NULL);
+		object = json_object_new();
+		json_object_set_string_member(object, "name", name);
+		json_object_set_int_member(object, "skill", skill);
+
+		if (ma_attr_whole(attrs, max_member, &cap))
+			json_object_set_int_member(object, "max", cap);
+		else
+			json_object_set_null_member(object, "max");
+
+		json_object_set_boolean_member(object, "secondary",
+		                               (NULL != flag) && JSON_NODE_HOLDS_VALUE(flag) &&
+		                               (G_TYPE_BOOLEAN == json_node_get_value_type(flag)) &&
+		                               json_node_get_boolean(flag));
+		json_object_set_string_member(object, "crafting_url", url);
+		json_object_set_array_member(object, "tiers",
+		                             venture_marketdata_profession_tiers(
+		                                     ((NULL != tiers) && JSON_NODE_HOLDS_VALUE(tiers) &&
+		                                      (G_TYPE_STRING == json_node_get_value_type(tiers)))
+		                                     ? json_node_get_string(tiers) : NULL, account_key, name));
+		g_ptr_array_add(found, object);
+	}
+
+	g_ptr_array_sort(found, ma_compare_professions);
+	array = json_array_new();
+
+	for (i = 0; i < found->len; i++)
+		json_array_add_object_element(array, json_object_ref(g_ptr_array_index(found, i)));
+
+	return array;
+}
+
 /* The closing balance of each of the trend's days, oldest first, carried
  * forward from the last change; null before anything was known. */
 static JsonArray *
@@ -1554,6 +1773,14 @@ ma_account_row(
 	}
 	else
 		json_object_set_null_member(json, "class");
+
+	/* Professions, and Crafting narrowed to the character. */
+	{
+		g_autofree gchar *crafting = venture_marketdata_crafting_url(account->key, NULL, NULL);
+
+		json_object_set_array_member(json, "professions", ma_professions(attrs, account->key));
+		json_object_set_string_member(json, "crafting_url", crafting);
+	}
 
 	json_object_set_object_member(json, "attrs", attrs);
 
