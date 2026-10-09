@@ -149,3 +149,15 @@ token acts as the linked local user. Existing people link once through
 memberships. Site management requires `can_manage_sites`; editing and viewing
 use `can_edit_sites` and `can_view_sites`. A displayed role never expands an
 old token's captured authority. See `docs/lightsite-accounts.org`.
+
+### Hosted browser sign-in
+
+`hosted.identity_browser_client` enables the existing enrolled owner's browser
+handoff at `/auth/hosted/start` and `/auth/hosted/callback`. It requires secure
+cookies and an exact HTTPS callback registered for a public PKCE client.
+The owner uses **Continue with Lightsite**, without a local password or pasted
+credentials. Issuer/subject must already be linked by verified enrollment;
+email and role claims do not grant membership. Signed sessions retain local
+MFA and identity-revision checks. Record returns select an authorized business;
+a portfolio without a specific record stays on the existing all-business view.
+See `docs/lightsite-accounts.org` for setup, refusal and revocation behavior.

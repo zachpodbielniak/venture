@@ -91,7 +91,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureAuthPrincipal, venture_auth_principal_free)
 /**
  * venture_auth_login_identity:
  * @self: authentication service
- * @identity_id: identity returned by a verified OIDC finish, never request input
+ * @identity_id: identity returned by a verified OIDC finish, never request input;
+ * negative denotes the ID of a verified hosted enrollment identity
  * @out_cookie: (out) (transfer full): identity-bound session or MFA challenge
  * @out_mfa_pending: (out): whether the local second factor remains required
  * @error: (out) (optional): revoked local identity or authority

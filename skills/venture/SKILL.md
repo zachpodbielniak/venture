@@ -99,6 +99,9 @@ that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
 to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
+Hosted browser sign-in for enrolled owners is covered in the platform and
+route references, with the flow and its refusal rules.
+
 <!-- skill-baseline:start -- reviewed 2026-10-09 against a0809d2 -->
 ```bash
 # From a checkout: what changed since this skill was written?

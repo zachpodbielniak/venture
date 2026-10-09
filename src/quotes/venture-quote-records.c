@@ -46,7 +46,7 @@ static const VentureFieldDecl quote_fields[] = {
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("contact-id", "Attention of", NULL, "contact", VENTURE_COLUMN_FLAG_SAME_PARENT),
 	VENTURE_FIELD_REF("deal-id", "Deal", NULL, "deal", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_ENUM("status", "Status", "Use VentureQuoteService", venture_quote_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("status", "Status", "Use the actions on the quote to change its status", venture_quote_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("issued-at", "Issued at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("valid-until", "Valid until", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("currency", "Currency", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),

@@ -244,7 +244,7 @@ venture_auth_verify_identity_cookie(VentureAuth *self, const gchar *value,
 		!g_ascii_string_to_signed(parts[0], 10, 1, G_MAXINT64, &id, NULL) ||
 		!g_ascii_string_to_signed(parts[1], 10, 1, G_MAXINT64, &issued, NULL) ||
 		!g_ascii_string_to_signed(parts[2], 10, 1, G_MAXINT64, &expires, NULL) ||
-		!g_ascii_string_to_signed(parts[3], 10, 1, G_MAXINT64, &identity, NULL)) return 0;
+		!g_ascii_string_to_signed(parts[3], 10, G_MININT64 + 1, G_MAXINT64, &identity, NULL) || identity == 0) return 0;
 	signature = venture_auth_sign_identity(self, id, issued, expires, identity, mfa);
 	if (!signature || !venture_constant_time_equal(signature, parts[4]) || g_get_real_time() / G_USEC_PER_SEC >= expires) return 0;
 	user = venture_oidc_service_identity_user(venture_oidc_service_get(venture_context_get_database(self->context)), identity, NULL);

@@ -113,6 +113,7 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR("hosted-origin", "hosted", "origin", "", "Immutable public HTTPS tenant origin"),
 	VC_STR("hosted-identity-issuer", "hosted", "identity_issuer", "", "Identity provider whose access tokens act as their linked user; empty trusts none"),
 	VC_STR("hosted-identity-audience", "hosted", "identity_audience", "", "Audience such a token must carry"),
+	VC_STR("hosted-identity-browser-client", "hosted", "identity_browser_client", "", "Public PKCE browser client; empty disables hosted browser sign-in"),
 	VC_STR("hosted-identity-jwks-uri", "hosted", "identity_jwks_uri", "", "The provider's signing keys (HTTPS, or HTTP on loopback)"),
 	VC_INT("hosted-http-requests-per-minute", "hosted", "http_requests_per_minute", 600,
 	       "Workspace dynamic HTTP requests per minute, 1 through 1000000"),

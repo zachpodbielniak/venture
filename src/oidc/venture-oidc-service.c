@@ -10,6 +10,8 @@ typedef struct {
 	gint64 connection, version, user, user_version, expires;
 	gchar *issuer, *client, *token_uri, *nonce, *verifier, *browser_hash, *peer_hash;
 	GObject *validator;
+	gboolean hosted;
+	gchar *return_to;
 } Attempt;
 typedef struct { gint64 expires; guint count; } Budget;
 struct _VentureOidcService { GObject parent; VentureDatabase *database; VentureConfig *config; GHashTable *attempts; GHashTable *budgets; GHashTable *validators; VentureEntity *writing; };
@@ -18,7 +20,7 @@ static void attempt_free(gpointer data)
 {
 	Attempt *a = data;
 	g_free(a->issuer); g_free(a->client); g_free(a->token_uri); g_free(a->nonce); g_free(a->verifier);
-	g_free(a->browser_hash); g_free(a->peer_hash); g_clear_object(&a->validator); g_free(a);
+	g_free(a->browser_hash); g_free(a->peer_hash); g_free(a->return_to); g_clear_object(&a->validator); g_free(a);
 }
 static void finalize(GObject *object)
 {
@@ -371,6 +373,8 @@ gchar *venture_oidc_service_begin(VentureOidcService *self, const gchar *uuid, g
 	g_hash_table_insert(self->attempts, g_steal_pointer(&state), a);
 	return g_strconcat(authorize, "?", form, NULL);
 }
+#include "venture-oidc-hosted.inc"
+
 VentureUser *venture_oidc_service_identity_user(VentureOidcService *self, gint64 id, GError **error)
 {
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -381,6 +385,7 @@ VentureUser *venture_oidc_service_identity_user(VentureOidcService *self, gint64
 	gint64 connection_id = 0, user_id = 0;
 	gboolean active = FALSE;
 	g_return_val_if_fail(VENTURE_IS_OIDC_SERVICE(self), NULL);
+	if (id < 0 && id != G_MININT64) return hosted_user(self, -id, error);
 	if (!ready(self, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
 	identity = venture_database_get(self->database, VENTURE_TYPE_OIDC_IDENTITY, id, NULL);
@@ -400,6 +405,7 @@ gchar *venture_oidc_service_dup_session_binding(VentureOidcService *self, gint64
 	gint64 connection_id = 0;
 	gboolean active = FALSE;
 	g_return_val_if_fail(VENTURE_IS_OIDC_SERVICE(self), NULL);
+	if (id < 0 && id != G_MININT64) return hosted_session_binding(self, -id, error);
 	if (!ready(self, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
 	identity = venture_database_get(self->database, VENTURE_TYPE_OIDC_IDENTITY, id, NULL);
@@ -430,7 +436,7 @@ VentureOidcIdentity *venture_oidc_service_finish(VentureOidcService *self, const
 	if (!state || strlen(state) != 64 || !g_hash_table_steal_extended(self->attempts, state, &stored_key, &stored_value)) { denied(error); return NULL; }
 	g_free(stored_key); a = stored_value;
 	/* Even an invalid response consumes state: retry always starts a new flow. */
-	if (!code || !*code || strlen(code) > 4096 || !browser || strlen(browser) != 64 ||
+	if (a->hosted || !code || !*code || strlen(code) > 4096 || !browser || strlen(browser) != 64 ||
 		a->expires <= g_get_monotonic_time() || a->user != user_id) { denied(error); goto done; }
 	browser_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, browser, -1);
 	if (!venture_constant_time_equal(browser_hash, a->browser_hash)) { denied(error); goto done; }

@@ -1025,7 +1025,15 @@ venture_web_ui_require_session(
 
 	response = htmx_response_new();
 	htmx_response_set_status(response, 302);
-	htmx_response_add_header(response, "Location", "/login");
+	if (venture_oidc_service_hosted_enabled(venture_oidc_service_get(venture_context_get_database(self->context)))) {
+		SoupServerMessage *message = htmx_request_get_message(request);
+		GUri *uri = soup_server_message_get_uri(message);
+		const gchar *query = g_uri_get_query(uri);
+		g_autofree gchar *target = g_strconcat(htmx_request_get_path(request), query ? "?" : "", query ? query : "", NULL);
+		g_autofree gchar *encoded = g_uri_escape_string(target, NULL, FALSE);
+		g_autofree gchar *location = g_strconcat("/auth/hosted/start?return_to=", encoded, NULL);
+		htmx_response_add_header(response, "Location", location);
+	} else htmx_response_add_header(response, "Location", "/login");
 
 	return response;
 }
@@ -8136,10 +8144,13 @@ venture_web_ui_login_form(
 ){
 	VentureWebServer *self;
 	g_autofree gchar *html = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
 
 	self = user_data;
 
-	html = venture_web_auth_page(self, request,
+	if (venture_oidc_service_hosted_enabled(venture_oidc_service_get(venture_context_get_database(self->context))))
+		g_string_append(body, "<p><a class=\"btn btn-primary btn-lg\" href=\"/auth/hosted/start\">Continue with Lightsite</a></p>");
+	g_string_append(body,
 		"<form class=\"auth-form\" method=\"post\" action=\"/login\">"
 		"<div class=\"field\"><label for=\"u\">Username</label>"
 		"<input id=\"u\" type=\"text\" name=\"username\" "
@@ -8150,6 +8161,7 @@ venture_web_ui_login_form(
 		"autocomplete=\"current-password\"></div>"
 		"<button class=\"btn btn-primary btn-lg\" type=\"submit\">"
 		"Sign in</button></form>");
+	html = venture_web_auth_page(self, request, body->str);
 
 	return venture_web_html_response(g_steal_pointer(&html), 200);
 }
@@ -32820,6 +32832,7 @@ venture_web_api_ticket_draft(
 #include "report/venture-report-pack-web.inc"
 #include "orgaccess/venture-mfa-web.inc"
 #include "oidc/venture-oidc-web.inc"
+#include "oidc/venture-oidc-hosted-web.inc"
 #include "tenant/venture-tenant-web.inc"
 
 VentureWebServer *
@@ -33405,6 +33418,8 @@ venture_document_web_register(router, self);
 	venture_crm_import_web_register(router, self);
 	venture_mfa_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/oidc/start", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/hosted/start", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_hosted_browser_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/hosted/callback", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_hosted_browser_callback, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/oidc/callback", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_callback, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/oidc", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_account, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/oidc", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_account, self);

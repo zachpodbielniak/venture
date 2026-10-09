@@ -1071,3 +1071,36 @@ asserts zero payment requests after cancellation on day thirteen. The prepaid
 installment fixture proves that cancellation after publication preserves the
 already committed second payment. Provider interactions are deterministic
 fixtures; no live credentials are used.
+
+* Public booking, form links and quote delivery
+
+The booking browser-origin regression on the current baseline failed with 403
+instead of creating a meeting. The owner form-link regression failed because
+its configured public address was absent. Their restored fixes preserve the
+hosted authority gate and use the configured public address for hosted,
+fragment, script and schema links; an unconfigured local instance retains its
+bound-address fallback.
+
+Quote mail delivery is already present in the baseline. Its delivery and
+missing-recipient rollback cases pass. Additional coverage checks that a repeat
+send leaves one delivery and one outbox identity, and that rolling back the
+surrounding send transaction leaves the quote draft with no delivery, event or
+mail. The acceptance capability remains excluded from generic mail output.
+* Hosted owner browser sign-in
+
+=make DEBUG=1 test-one T=test-hosted-identity= exercises passwordless signup
+and the browser handoff using real HTTP and a synthetic HTTPS OIDC provider.
+The initial regression failed because the browser-client configuration was
+absent. A second regression reproduced a signed-in owner creating an enquiry
+that was missing from the default business list; the handoff now selects an
+authorized business. Refusal cases cover malformed return targets, one-use
+state, missing browser binding, wrong token claims, unlinked subjects and
+revoked identity revisions. The MFA case checks that a provider login alone
+does not open a session for an owner with a local second factor.
+
+The provider fixture advertises confidential token-authentication methods,
+as a public PKCE client does not authenticate with a client secret. Requiring
+an advertised =none= method originally refused this valid handoff. The edit
+page case also checks quote and invoice access as the enrolled owner; it
+caught an internal service instruction leaking into the quote's field help,
+which now describes the owner's actions in plain language.
