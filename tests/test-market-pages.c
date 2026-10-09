@@ -2882,7 +2882,7 @@ test_doors_and_looks(
 		"watchlist_id", NULL
 	};
 	static const gchar *const classes[] = {
-		".chart-line-1", ".chart-line-2", ".chart-line-3", ".chart-line-4", ".chart-key-3",
+		".chart-line-1", ".chart-line-2", ".chart-line-3", ".chart-line-4", ".chart-key-3", ".chart-bridge",
 		".chart-key-4", ".chart-heat-cell", ".chart-grid", ".chart-axis", ".sparkline",
 		".market-action-row", ".form-inline", ".chart-legend", ".chart-caption", ".market-ranges",
 		".market-range", ".market-trend", ".source-attribution", ".source-attribution-label", NULL

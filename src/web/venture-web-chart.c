@@ -20,6 +20,13 @@
  * - The figures are in a visually hidden table beside the picture, so a
  *   screen reader and a copy-paste get the numbers, not a description of
  *   a line.
+ * - An axis steps in round figures and its margin is as wide as its
+ *   labels: a price axis reads 2600g, 2800g, never a cut-off
+ *   "958g 31s 50c".
+ * - A line or bar chart carries its raw numbers as JSON beside the table
+ *   (script[data-plot]); venture.js redraws from them at the size the
+ *   chart is shown and adds the readout, toggles and zoom. Nothing in
+ *   that JSON is markup, and <, >, & and ' in it are escapes.
  */
 
 #include "venture.h"
@@ -33,13 +40,25 @@
 #define CHART_MARGIN_BOTTOM (28.0)
 #define CHART_MARGIN_SIDE (64.0)
 #define CHART_MARGIN_BARE (12.0)
-#define CHART_TICKS (4)
+#define CHART_TICK_TARGET (4)
 #define CHART_X_LABELS (6)
+/* One character of the 10px monospace an axis is set in, in user units. */
+#define CHART_CHAR_WIDTH (6.2)
 #define CHART_HEAT_CELL (22.0)
 #define CHART_HEAT_LABEL_WIDTH (40.0)
 #define CHART_HEAT_LABEL_HEIGHT (18.0)
 #define CHART_SPARK_WIDTH (100.0)
 #define CHART_SPARK_HEIGHT (24.0)
+
+/* One side's axis: from @low to @high in @n_steps steps of @step. */
+typedef struct
+{
+	gdouble		low;
+	gdouble		high;
+	gdouble		step;
+	gsize		n_steps;
+	gboolean	integral;
+} ChartScale;
 
 /* --- Small pieces -------------------------------------------------------- */
 
@@ -253,33 +272,211 @@ chart_is_drawable(
 	return any;
 }
 
-/* The bottom labels, thinned to about CHART_X_LABELS of them. */
+/* How wide @text is drawn in the 10px monospace of an axis. */
+static gdouble
+chart_text_width(const gchar *text)
+{
+	return (gdouble)g_utf8_strlen((NULL != text) ? text : "", -1) * CHART_CHAR_WIDTH;
+}
+
+/* Whether every finite value is whole: a count, or minor units. */
+static gboolean
+chart_integral(
+	const gdouble	*values,
+	gsize		 n
+){
+	gsize i;
+
+	for (i = 0; i < n; i++)
+	{
+		if (isfinite(values[i]) && (values[i] != floor(values[i])))
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ * A round step that cuts @span into about CHART_TICK_TARGET pieces: 1, 2,
+ * 2.5 or 5 times a power of ten, so an axis reads 2600g, 2800g, 3000g
+ * rather than 2958g 31s 50c. Whole data gets a whole step.
+ */
+static gdouble
+chart_nice_step(
+	gdouble		 span,
+	gboolean	 integral
+){
+	gdouble raw;
+	gdouble magnitude;
+	gdouble fraction;
+	gdouble step;
+
+	raw = span / (gdouble)CHART_TICK_TARGET;
+
+	if (!isfinite(raw) || (raw <= 0.0))
+		raw = 1.0;
+
+	magnitude = pow(10.0, floor(log10(raw)));
+	fraction = raw / magnitude;
+
+	if (fraction <= 1.0)
+		step = 1.0;
+	else if (fraction <= 2.0)
+		step = 2.0;
+	else if (fraction <= 2.5)
+		step = 2.5;
+	else if (fraction <= 5.0)
+		step = 5.0;
+	else
+		step = 10.0;
+
+	step *= magnitude;
+
+	/* 2.5 of a whole unit is not a whole step; 2 is near enough. */
+	if (integral && (step != floor(step)))
+		step = MAX(1.0, floor(step));
+
+	return step;
+}
+
+/*
+ * The scale of one side: the data's range padded a little, then widened
+ * out to whole steps, never below zero when nothing is. A flat series
+ * gets a range around it, so it is a line across the middle.
+ */
+static void
+chart_scale(
+	gdouble		 low,
+	gdouble		 high,
+	gboolean	 integral,
+	ChartScale	*scale
+){
+	gboolean non_negative;
+	gdouble pad;
+	gdouble step;
+
+	non_negative = (low >= 0.0);
+
+	if (high <= low)
+		pad = integral ? 1.0 : ((0.0 == low) ? 1.0 : fabs(low) * 0.1);
+	else
+		pad = (high - low) * 0.04;
+
+	low -= pad;
+	high += pad;
+
+	if (non_negative && (low < 0.0))
+		low = 0.0;
+
+	step = chart_nice_step(high - low, integral);
+	scale->step = step;
+	scale->low = floor(low / step) * step;
+	scale->high = ceil(high / step) * step;
+
+	if (scale->high <= scale->low)
+		scale->high = scale->low + step;
+
+	scale->n_steps = (gsize)llround((scale->high - scale->low) / step);
+	scale->integral = integral;
+}
+
+/* Where @value sits between @top and @bottom on @scale. */
+static gdouble
+chart_y(
+	const ChartScale	*scale,
+	gdouble			 value,
+	gdouble			 top,
+	gdouble			 bottom
+){
+	return bottom - (bottom - top) * (value - scale->low) / (scale->high - scale->low);
+}
+
+/* The labels of one axis, bottom up, and the widest of them. */
+static GPtrArray *
+chart_tick_labels(
+	const ChartScale	*scale,
+	VentureWebChartFormat	 format,
+	gpointer		 format_data,
+	gdouble			*widest
+){
+	GPtrArray *labels;
+	gsize k;
+
+	labels = g_ptr_array_new_with_free_func(g_free);
+	*widest = 0.0;
+
+	for (k = 0; k <= scale->n_steps; k++)
+	{
+		gdouble value;
+		gchar *text;
+
+		value = scale->low + scale->step * (gdouble)k;
+
+		/* Whole steps stay whole; a sum of 0.1s must not read 0.30000004. */
+		if (scale->integral)
+			value = (gdouble)llround(value);
+		else
+			value = round(value / scale->step * 1e6) / 1e6 * scale->step;
+
+		text = chart_format(format, format_data, value);
+		*widest = MAX(*widest, chart_text_width(text));
+		g_ptr_array_add(labels, text);
+	}
+
+	return labels;
+}
+
+/*
+ * The bottom labels: as many as fit their width, at most CHART_X_LABELS,
+ * and the two at the ends kept inside the drawing.
+ */
 static void
 chart_x_labels(
 	GString			*out,
 	const VentureWebChart	*chart,
 	gdouble			 left,
+	gdouble			 right,
 	gdouble			 step,
 	gdouble			 baseline,
-	gboolean		 centred
+	gboolean		 centred,
+	gdouble			 width
 ){
+	gdouble widest;
+	gsize fit;
 	gsize every;
 	gsize i;
 
 	if (NULL == chart->labels)
 		return;
 
-	every = (chart->n_points + CHART_X_LABELS - 1) / CHART_X_LABELS;
+	widest = 0.0;
+
+	for (i = 0; i < chart->n_points; i++)
+		widest = MAX(widest, chart_text_width(chart->labels[i]));
+
+	fit = (gsize)MAX(1.0, floor((right - left) / (widest + 14.0)));
+	fit = MIN(fit, (gsize)CHART_X_LABELS);
+	every = (chart->n_points + fit - 1) / fit;
 
 	if (0 == every)
 		every = 1;
 
 	for (i = 0; i < chart->n_points; i += every)
 	{
+		const gchar *anchor;
 		gdouble x;
+		gdouble half;
 
 		x = left + step * (gdouble)i + (centred ? step / 2.0 : 0.0);
-		chart_text(out, "chart-axis", x, baseline, "middle", chart->labels[i]);
+		half = chart_text_width(chart->labels[i]) / 2.0;
+		anchor = (x - half < 0.0) ? "start" : (x + half > width) ? "end" : "middle";
+
+		if (0 == g_strcmp0(anchor, "start"))
+			x = MAX(x - half, 0.0);
+		else if (0 == g_strcmp0(anchor, "end"))
+			x = MIN(x + half, width);
+
+		chart_text(out, "chart-axis", x, baseline, anchor, chart->labels[i]);
 	}
 }
 
@@ -287,27 +484,22 @@ chart_x_labels(
 static void
 chart_y_axis(
 	GString			*out,
-	gdouble			 low,
-	gdouble			 high,
+	const ChartScale	*scale,
+	GPtrArray		*labels,
 	gdouble			 top,
 	gdouble			 bottom,
 	gdouble			 left,
 	gdouble			 right,
 	gboolean		 on_right,
-	gboolean		 rules,
-	VentureWebChartFormat	 format,
-	gpointer		 format_data
+	gboolean		 rules
 ){
-	gint i;
+	gsize k;
 
-	for (i = 0; i <= CHART_TICKS; i++)
+	for (k = 0; k <= scale->n_steps; k++)
 	{
-		g_autofree gchar *text = NULL;
-		gdouble value;
 		gdouble y;
 
-		value = low + (high - low) * (gdouble)i / (gdouble)CHART_TICKS;
-		y = bottom - (bottom - top) * (gdouble)i / (gdouble)CHART_TICKS;
+		y = bottom - (bottom - top) * (gdouble)k / (gdouble)scale->n_steps;
 
 		if (rules)
 		{
@@ -322,10 +514,154 @@ chart_y_axis(
 			g_string_append(out, "\" stroke=\"currentColor\"/>");
 		}
 
-		text = chart_format(format, format_data, value);
-		chart_text(out, "chart-axis", on_right ? right + 4.0 : left - 4.0, y + 3.5,
-		           on_right ? "start" : "end", text);
+		chart_text(out, "chart-axis", on_right ? right + 6.0 : left - 6.0, y + 3.5,
+		           on_right ? "start" : "end", g_ptr_array_index(labels, k));
 	}
+}
+
+/*
+ * Appends @text as a JSON string that is safe inside <script>: the
+ * characters HTML could read (<, >, &, ') are \u escapes, so a feed's
+ * "</script>" in a currency symbol stays a string.
+ */
+static void
+chart_json_string(
+	GString		*out,
+	const gchar	*text
+){
+	const guchar *p;
+
+	g_string_append_c(out, '"');
+
+	for (p = (const guchar *)((NULL != text) ? text : ""); '\0' != *p; p++)
+	{
+		if (('"' == *p) || ('\\' == *p))
+		{
+			g_string_append_c(out, '\\');
+			g_string_append_c(out, (gchar)*p);
+		}
+		else if ((*p < 0x20) || ('<' == *p) || ('>' == *p) || ('&' == *p) || ('\'' == *p))
+		{
+			g_string_append_printf(out, "\\u%04x", (guint)*p);
+		}
+		else
+		{
+			g_string_append_c(out, (gchar)*p);
+		}
+	}
+
+	g_string_append_c(out, '"');
+}
+
+/*
+ * How a series' axis reads, for a script that draws ticks of its own: a
+ * currency's exponent and what goes either side of the figure ("" and
+ * "g", "$" and ""), a percent, or a plain number.
+ */
+static void
+chart_spec_axis(
+	GString				*out,
+	const VentureWebChartSeries	*series,
+	gsize				 n_points
+){
+	const gchar *currency;
+
+	currency = series->currency;
+
+	if ((NULL == currency) && (series->format == venture_web_chart_format_minor))
+		currency = series->format_data;
+
+	if (!venture_string_is_empty(currency) && venture_currency_is_valid(currency))
+	{
+		g_autoptr(VentureMoney) one = NULL;
+		g_autofree gchar *text = NULL;
+		g_autofree gchar *prefix = NULL;
+		const gchar *digit;
+
+		/* One whole unit at exponent 0: "1g", "$1", "1 PTS". */
+		one = venture_money_new(1, currency, 0);
+		text = (NULL != one) ? venture_money_to_display_string(one, FALSE) : NULL;
+		digit = (NULL != text) ? strchr(text, '1') : NULL;
+
+		if (NULL != digit)
+		{
+			prefix = g_strndup(text, (gsize)(digit - text));
+			g_string_append_printf(out, "{\"kind\":\"money\",\"exp\":%u,\"pre\":",
+			                       (guint)venture_currency_get_exponent(currency));
+			chart_json_string(out, prefix);
+			g_string_append(out, ",\"suf\":");
+			chart_json_string(out, digit + 1);
+			g_string_append_c(out, '}');
+			return;
+		}
+	}
+
+	if (series->format == venture_web_chart_format_percent)
+	{
+		g_string_append(out, "{\"kind\":\"percent\"}");
+		return;
+	}
+
+	g_string_append_printf(out, "{\"kind\":\"number\",\"int\":%s}",
+	                       chart_integral(series->values, n_points) ? "true" : "false");
+}
+
+/*
+ * The numbers behind a line or bar chart, as JSON in a script element the
+ * browser never runs (type="application/json"). venture.js reads them
+ * with the table's text -- names, labels and every figure as the server
+ * wrote it -- and redraws the chart at the size it is shown.
+ */
+static void
+chart_spec(
+	GString			*out,
+	const VentureWebChart	*chart,
+	gsize			 n_series,
+	const gchar		*kind
+){
+	gchar buffer[G_ASCII_DTOSTR_BUF_SIZE];
+	gsize s;
+	gsize i;
+
+	g_string_append_printf(out, "<script type=\"application/json\" data-plot>{\"kind\":\"%s\",\"sec\":[",
+	                       kind);
+
+	for (s = 0; s < n_series; s++)
+		g_string_append_printf(out, "%s%s", (s > 0) ? "," : "", chart->series[s].secondary ? "true" : "false");
+
+	g_string_append(out, "],\"axis\":[");
+
+	for (s = 0; s < n_series; s++)
+	{
+		if (s > 0)
+			g_string_append_c(out, ',');
+
+		chart_spec_axis(out, &chart->series[s], chart->n_points);
+	}
+
+	g_string_append(out, "],\"v\":[");
+
+	for (s = 0; s < n_series; s++)
+	{
+		g_string_append(out, (s > 0) ? ",[" : "[");
+
+		for (i = 0; i < chart->n_points; i++)
+		{
+			gdouble value = chart->series[s].values[i];
+
+			if (i > 0)
+				g_string_append_c(out, ',');
+
+			if (isfinite(value))
+				g_string_append(out, g_ascii_formatd(buffer, sizeof(buffer), "%.15g", value));
+			else
+				g_string_append(out, "null");
+		}
+
+		g_string_append_c(out, ']');
+	}
+
+	g_string_append(out, "]}</script>");
 }
 
 /* --- Line ------------------------------------------------------------------ */
@@ -334,6 +670,9 @@ gchar *
 venture_web_chart_line(const VentureWebChart *chart)
 {
 	g_autoptr(GString) out = NULL;
+	GPtrArray *tick_labels[2];
+	ChartScale scales[2];
+	gdouble widest[2];
 	gdouble width;
 	gdouble height;
 	gdouble left;
@@ -341,10 +680,12 @@ venture_web_chart_line(const VentureWebChart *chart)
 	gdouble top;
 	gdouble bottom;
 	gdouble step;
-	gboolean has_secondary;
 	gboolean sides[2];
+	gboolean integral[2];
 	gdouble lows[2];
 	gdouble highs[2];
+	gint axis_series[2];
+	gsize side;
 	gsize s;
 
 	out = g_string_new(NULL);
@@ -355,36 +696,31 @@ venture_web_chart_line(const VentureWebChart *chart)
 		return g_string_free(g_steal_pointer(&out), FALSE);
 	}
 
-	has_secondary = FALSE;
-
-	for (s = 0; s < chart->n_series; s++)
-		has_secondary = has_secondary || chart->series[s].secondary;
-
 	width = (0 != chart->width) ? (gdouble)chart->width : CHART_DEFAULT_WIDTH;
 	height = (0 != chart->height) ? (gdouble)chart->height : CHART_DEFAULT_HEIGHT;
-	left = CHART_MARGIN_SIDE;
-	right = width - (has_secondary ? CHART_MARGIN_SIDE : CHART_MARGIN_BARE);
-	top = CHART_MARGIN_TOP;
-	bottom = height - CHART_MARGIN_BOTTOM;
-	step = (chart->n_points > 1) ? (right - left) / (gdouble)(chart->n_points - 1) : 0.0;
-
-	chart_open(out, "line", chart->title, chart->summary, width, height);
 
 	/*
 	 * Each side is scaled to the series drawn against it: a price and a
 	 * quantity share a picture, not a unit, but two prices share a unit
-	 * and must share an axis. Side 0 is the left, 1 the right.
+	 * and must share an axis. Side 0 is the left, 1 the right. The first
+	 * drawable series of a side labels it, in its own format.
 	 */
-	sides[0] = FALSE;
-	sides[1] = FALSE;
-	lows[0] = lows[1] = 0.0;
-	highs[0] = highs[1] = 0.0;
+	for (side = 0; side < 2; side++)
+	{
+		tick_labels[side] = NULL;
+		sides[side] = FALSE;
+		integral[side] = TRUE;
+		lows[side] = highs[side] = 0.0;
+		axis_series[side] = -1;
+		widest[side] = 0.0;
+	}
 
 	for (s = 0; s < chart->n_series; s++)
 	{
-		gsize side = chart->series[s].secondary ? 1 : 0;
 		gdouble low = 0.0;
 		gdouble high = 0.0;
+
+		side = chart->series[s].secondary ? 1 : 0;
 
 		if (!chart_range(chart->series[s].values, chart->n_points, &low, &high))
 			continue;
@@ -393,58 +729,68 @@ venture_web_chart_line(const VentureWebChart *chart)
 			lows[side] = low;
 		if (!sides[side] || (high > highs[side]))
 			highs[side] = high;
+		if (!sides[side])
+			axis_series[side] = (gint)s;
+
+		integral[side] = integral[side] && chart_integral(chart->series[s].values, chart->n_points);
 		sides[side] = TRUE;
 	}
 
-	if (sides[0])
-		chart_widen(&lows[0], &highs[0]);
-	if (sides[1])
-		chart_widen(&lows[1], &highs[1]);
+	for (side = 0; side < 2; side++)
+	{
+		const VentureWebChartSeries *labelled;
+
+		if (!sides[side])
+			continue;
+
+		labelled = &chart->series[axis_series[side]];
+		chart_scale(lows[side], highs[side], integral[side], &scales[side]);
+		tick_labels[side] = chart_tick_labels(&scales[side], labelled->format, labelled->format_data,
+		                                      &widest[side]);
+	}
+
+	/* The margins are as wide as the labels in them, so none is cut. */
+	left = sides[0] ? MAX(CHART_MARGIN_BARE * 2.0, widest[0] + 10.0) : CHART_MARGIN_BARE;
+	right = width - (sides[1] ? MAX(CHART_MARGIN_BARE * 2.0, widest[1] + 10.0) : CHART_MARGIN_BARE);
+	left = MIN(left, width * 0.4);
+	right = MAX(right, width * 0.6);
+	top = CHART_MARGIN_TOP;
+	bottom = height - CHART_MARGIN_BOTTOM;
+	step = (chart->n_points > 1) ? (right - left) / (gdouble)(chart->n_points - 1) : 0.0;
+
+	chart_open(out, "line", chart->title, chart->summary, width, height);
+
+	for (side = 0; side < 2; side++)
+	{
+		if (sides[side])
+			chart_y_axis(out, &scales[side], tick_labels[side], top, bottom, left, right, 1 == side,
+			             (0 == side) || !sides[0]);
+	}
 
 	for (s = 0; s < chart->n_series; s++)
 	{
 		const VentureWebChartSeries *series;
-		gdouble low;
-		gdouble high;
+		const ChartScale *scale;
+		g_autoptr(GString) bridges = NULL;
+		gdouble low = 0.0;
+		gdouble high = 0.0;
 		gboolean pen_down;
-		gsize side;
+		gssize previous;
 		gsize i;
-		gsize k;
-		gboolean first_of_side;
 
 		series = &chart->series[s];
-		side = series->secondary ? 1 : 0;
-		low = 0.0;
-		high = 0.0;
 
-		/* A series with nothing to draw draws nothing, not an axis. */
+		/* A series with nothing to draw draws nothing. */
 		if (!chart_range(series->values, chart->n_points, &low, &high))
 			continue;
 
-		low = lows[side];
-		high = highs[side];
-
-		/* The first drawable series of each side draws that side's axis,
-		 * in its own format; the left side draws the rules. */
-		first_of_side = TRUE;
-
-		for (k = 0; k < s; k++)
-		{
-			gdouble a = 0.0;
-			gdouble b = 0.0;
-
-			if ((chart->series[k].secondary == series->secondary) &&
-			    chart_range(chart->series[k].values, chart->n_points, &a, &b))
-				first_of_side = FALSE;
-		}
-
-		if (first_of_side)
-			chart_y_axis(out, low, high, top, bottom, left, right, series->secondary,
-			             !series->secondary, series->format, series->format_data);
+		scale = &scales[series->secondary ? 1 : 0];
+		bridges = g_string_new(NULL);
 
 		g_string_append_printf(out, "<path class=\"chart-line chart-line-%" G_GSIZE_FORMAT
 		                       "\" fill=\"none\" stroke=\"currentColor\" d=\"", s + 1);
 		pen_down = FALSE;
+		previous = -1;
 
 		for (i = 0; i < chart->n_points; i++)
 		{
@@ -458,24 +804,43 @@ venture_web_chart_line(const VentureWebChart *chart)
 			}
 
 			x = left + step * (gdouble)i;
-			y = bottom - (bottom - top) * (series->values[i] - low) / (high - low);
+			y = chart_y(scale, series->values[i], top, bottom);
 			g_string_append_c(out, pen_down ? 'L' : 'M');
 			chart_num(out, x);
 			g_string_append_c(out, ' ');
 			chart_num(out, y);
 			g_string_append_c(out, ' ');
 			pen_down = TRUE;
+
+			/* Across a gap, a bridge from the last point seen. */
+			if ((previous >= 0) && ((gsize)previous + 1 < i))
+			{
+				g_string_append_c(bridges, 'M');
+				chart_num(bridges, left + step * (gdouble)previous);
+				g_string_append_c(bridges, ' ');
+				chart_num(bridges, chart_y(scale, series->values[previous], top, bottom));
+				g_string_append(bridges, " L");
+				chart_num(bridges, x);
+				g_string_append_c(bridges, ' ');
+				chart_num(bridges, y);
+				g_string_append_c(bridges, ' ');
+			}
+
+			previous = (gssize)i;
 		}
 
 		g_string_append(out, "\"/>");
+
+		if (bridges->len > 0)
+			g_string_append_printf(out, "<path class=\"chart-bridge chart-line-%" G_GSIZE_FORMAT
+			                       "\" fill=\"none\" stroke=\"currentColor\" d=\"%s\"/>", s + 1,
+			                       bridges->str);
 
 		/* A point with a gap on each side is a dot, or it vanishes. */
 		for (i = 0; i < chart->n_points; i++)
 		{
 			gboolean before;
 			gboolean after;
-			gdouble x;
-			gdouble y;
 
 			if (!isfinite(series->values[i]))
 				continue;
@@ -486,19 +851,19 @@ venture_web_chart_line(const VentureWebChart *chart)
 			if (before || after)
 				continue;
 
-			x = left + step * (gdouble)i;
-			y = bottom - (bottom - top) * (series->values[i] - low) / (high - low);
 			g_string_append_printf(out, "<circle class=\"chart-dot chart-line-%" G_GSIZE_FORMAT
 			                       "\" r=\"2.5\" fill=\"currentColor\" cx=\"", s + 1);
-			chart_num(out, x);
+			chart_num(out, left + step * (gdouble)i);
 			g_string_append(out, "\" cy=\"");
-			chart_num(out, y);
+			chart_num(out, chart_y(scale, series->values[i], top, bottom));
 			g_string_append(out, "\"/>");
 		}
 	}
 
-	chart_x_labels(out, chart, left, step, height - 8.0, FALSE);
+	chart_x_labels(out, chart, left, right, step, height - 8.0, FALSE, width);
 	g_string_append(out, "</svg>");
+	g_clear_pointer(&tick_labels[0], g_ptr_array_unref);
+	g_clear_pointer(&tick_labels[1], g_ptr_array_unref);
 
 	/* The legend: words, with the mark each series is drawn in. */
 	g_string_append(out, "<figcaption class=\"chart-legend\">");
@@ -516,6 +881,7 @@ venture_web_chart_line(const VentureWebChart *chart)
 
 	g_string_append(out, "</figcaption>");
 	chart_table(out, chart, chart->n_series);
+	chart_spec(out, chart, chart->n_series, "line");
 	g_string_append(out, "</figure>");
 
 	return g_string_free(g_steal_pointer(&out), FALSE);
@@ -527,7 +893,10 @@ gchar *
 venture_web_chart_bar(const VentureWebChart *chart)
 {
 	g_autoptr(GString) out = NULL;
+	g_autoptr(GPtrArray) tick_labels = NULL;
 	const VentureWebChartSeries *series;
+	ChartScale scale;
+	gdouble widest;
 	gdouble width;
 	gdouble height;
 	gdouble left;
@@ -561,21 +930,21 @@ venture_web_chart_bar(const VentureWebChart *chart)
 		low = 0.0;
 	if (high < 0.0)
 		high = 0.0;
-	if (high == low)
-		high = low + 1.0;
+
+	chart_scale(low, high, chart_integral(series->values, chart->n_points), &scale);
+	tick_labels = chart_tick_labels(&scale, series->format, series->format_data, &widest);
 
 	width = (0 != chart->width) ? (gdouble)chart->width : CHART_DEFAULT_WIDTH;
 	height = (0 != chart->height) ? (gdouble)chart->height : CHART_DEFAULT_HEIGHT;
-	left = CHART_MARGIN_SIDE;
+	left = MIN(MAX(CHART_MARGIN_BARE * 2.0, widest + 10.0), width * 0.4);
 	right = width - CHART_MARGIN_BARE;
 	top = CHART_MARGIN_TOP;
 	bottom = height - CHART_MARGIN_BOTTOM;
 	step = (right - left) / (gdouble)chart->n_points;
-	zero = bottom - (bottom - top) * (0.0 - low) / (high - low);
+	zero = chart_y(&scale, 0.0, top, bottom);
 
 	chart_open(out, "bar", chart->title, chart->summary, width, height);
-	chart_y_axis(out, low, high, top, bottom, left, right, FALSE, TRUE, series->format,
-	             series->format_data);
+	chart_y_axis(out, &scale, tick_labels, top, bottom, left, right, FALSE, TRUE);
 
 	for (i = 0; i < chart->n_points; i++)
 	{
@@ -586,7 +955,7 @@ venture_web_chart_bar(const VentureWebChart *chart)
 		if (!isfinite(series->values[i]))
 			continue;
 
-		y = bottom - (bottom - top) * (series->values[i] - low) / (high - low);
+		y = chart_y(&scale, series->values[i], top, bottom);
 		x = left + step * (gdouble)i + step * 0.15;
 		text = chart_format(series->format, series->format_data, series->values[i]);
 
@@ -605,9 +974,10 @@ venture_web_chart_bar(const VentureWebChart *chart)
 		g_string_append(out, "</title></rect>");
 	}
 
-	chart_x_labels(out, chart, left, step, height - 8.0, TRUE);
+	chart_x_labels(out, chart, left, right, step, height - 8.0, TRUE, width);
 	g_string_append(out, "</svg>");
 	chart_table(out, chart, 1);
+	chart_spec(out, chart, 1, "bar");
 	g_string_append(out, "</figure>");
 
 	return g_string_free(g_steal_pointer(&out), FALSE);

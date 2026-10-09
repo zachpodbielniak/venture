@@ -2354,6 +2354,11 @@ pages").
   `/market-pages/doors-and-looks` checks the page in both looks. A line
   chart's series on one side share that side's scale (two prices are one
   unit); at most `VENTURE_WEB_CHART_MAX_SERIES`, one mark class each.
+  A line or bar chart carries `script[data-plot]` (raw numbers; names and
+  figures come from its table), which venture.js redraws as `plot-*`
+  markup -- set `VentureWebChartSeries.currency` on a money series drawn
+  with its own formatter, or its axis ticks read as plain numbers. Never
+  write a `chart-*` class name in venture.js.
 
 ## The Accounts pages
 

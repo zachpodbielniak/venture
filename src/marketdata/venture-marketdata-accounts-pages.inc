@@ -1470,6 +1470,7 @@ acw_balance_chart(
 	series.values = (const gdouble *)(gpointer)values->data;
 	series.format = acw_format_money;
 	series.format_data = (gpointer)currency;
+	series.currency = currency;
 	memset(&chart, 0, sizeof(chart));
 	chart.title = title;
 	chart.summary = "The last balance the source reported on each day, carried forward over days "
@@ -2427,6 +2428,7 @@ acw_pnl_charts(
 	series[0].values = (const gdouble *)(gpointer)net->data;
 	series[0].format = acw_format_money;
 	series[0].format_data = (gpointer)currency;
+	series[0].currency = currency;
 	memset(&chart, 0, sizeof(chart));
 	chart.title = "Net per period";
 	chart.summary = "Sales after the cut and other income, less purchases and expenses.";
@@ -2442,6 +2444,7 @@ acw_pnl_charts(
 	series[1].values = (const gdouble *)(gpointer)purchases->data;
 	series[1].format = acw_format_money;
 	series[1].format_data = (gpointer)currency;
+	series[1].currency = currency;
 	chart.title = "Money in and out per period";
 	chart.summary = "What sold, after the venue's cut, against what was spent.";
 	chart.series = series;
