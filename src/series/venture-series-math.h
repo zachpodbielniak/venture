@@ -172,6 +172,28 @@ typedef struct
 } VentureSeriesBulkCost;
 
 /**
+ * VentureSeriesRealisable:
+ * @units: units bought at a profit that are expected to sell, at most the
+ *   cap
+ * @cost: what buying @units costs, in minor units
+ * @profit: what selling @units at the net price makes, less @cost
+ * @book_units: every unit the book offers under the net price, whatever
+ *   the cap
+ * @capped: whether the cap, not the book, stopped the walk
+ *
+ * What a trade can really make: the profitable part of a book, no more of
+ * it than is expected to sell.
+ */
+typedef struct
+{
+	gint64		units;
+	gint64		cost;
+	gint64		profit;
+	gint64		book_units;
+	gboolean	capped;
+} VentureSeriesRealisable;
+
+/**
  * VentureSeriesListingMark:
  * @id: the listing's identifier, never zero
  * @instrument: which instrument the listing is for (an opaque number the
@@ -476,6 +498,55 @@ venture_series_math_bulk_cost(
 	gint64			  units,
 	VentureSeriesBulkCost	 *out,
 	GError			**error
+);
+
+/**
+ * venture_series_math_expected_sales:
+ * @sold_per_day: units sold a day at a venue, or NAN when unknown
+ * @days: the horizon, in days, more than zero
+ *
+ * The units a venue is expected to sell over @days: @sold_per_day times
+ * @days, rounded *down* -- a whole unit that is only probably sold is not
+ * counted -- and held at %G_MAXINT64.
+ *
+ * Returns: the units, or %VENTURE_SERIES_NONE when @sold_per_day is NAN,
+ *   negative or infinite, or @days is not a finite number above zero
+ */
+gint64
+venture_series_math_expected_sales(
+	gdouble	sold_per_day,
+	gdouble	days
+);
+
+/**
+ * venture_series_math_realisable:
+ * @tiers: (array length=n_tiers): the buy venue's tiers sorted by price
+ * @n_tiers: the number of tiers
+ * @net_price: what one unit sells for at the sell venue after its cut
+ * @max_units: the most units to buy: what the sell venue is expected to
+ *   sell over the horizon (venture_series_math_expected_sales()), at
+ *   least zero
+ * @out: (out caller-allocates): the result
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Walks the tiers from the cheapest, buying every unit priced under
+ * @net_price -- each one sold at @net_price makes @net_price less its
+ * price -- until @max_units are bought or the next tier would make
+ * nothing. The profit is the sum over the units bought, so it is margin
+ * times units where every unit costs the same and less where the cheap
+ * units run out. A negative @max_units is refused with
+ * %VENTURE_ERROR_INVALID_ARGUMENT, a sum past the 64-bit range likewise.
+ *
+ * Returns: %TRUE on success
+ */
+gboolean
+venture_series_math_realisable(
+	const VentureSeriesTier		 *tiers,
+	gsize				  n_tiers,
+	gint64				  net_price,
+	gint64				  max_units,
+	VentureSeriesRealisable		 *out,
+	GError				**error
 );
 
 /**

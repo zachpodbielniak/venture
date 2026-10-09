@@ -542,6 +542,21 @@ venture_series_row_sell_plausible(
 );
 
 /**
+ * venture_series_region_venue_key:
+ * @group_key: (nullable): a venue's group, e.g. "us"
+ *
+ * The key of the venue where a statistics source keeps a whole group's
+ * figures: "region-" and the group in lower case ("region-us"). It is
+ * where tsmctl sends TSM's region-wide AuctionDB figures, and the
+ * accounts pages read the same convention in SQL. A convention, never a
+ * guess: a source that keeps no such venue simply has no region figures.
+ *
+ * Returns: (transfer full) (nullable): the key; %NULL for no group
+ */
+gchar *
+venture_series_region_venue_key(const gchar *group_key);
+
+/**
  * venture_series_row_free:
  * @row: (transfer full) (nullable): a row
  */

@@ -862,6 +862,104 @@ test_spread(
 	g_assert_nonnull(row_with_key(answer, key_of(fixture, "spread:S:realm-a>S:realm-b:evil")));
 }
 
+/* Another source of the organization keeping @market as the EU region's
+ * market value for herb, as tsmctl pushes TSM's. */
+static void
+region_source(
+	Fixture		*fixture,
+	const gchar	*name,
+	const gchar	*instrument_namespace,
+	gint64		 market
+){
+	g_autoptr(VentureDataSource) source = NULL;
+	g_autoptr(VentureSeriesStore) store = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = NULL;
+	VentureSeriesSnapshot *snap;
+	VentureSeriesCommitResult result;
+	VentureSeriesStats stats;
+	gint64 t = fixture->now - 600;
+
+	source = venture_data_source_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(source), fixture->org);
+	g_object_set(source, "name", name, "provider", "file_jsonl", "settings", "file: r.jsonl",
+	             "schedule", "manual", "currency", "USD", "instrument-namespace", instrument_namespace,
+	             "venue-namespace", "realm", NULL);
+	save(fixture, source);
+	dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(VENTURE_ENTITY(source)));
+	store = venture_series_store_open(dir, &error);
+	g_assert_no_error(error);
+	add_venue(store, "region-eu", "region", "eu", "USD", t);
+	add_instrument(store, "herb", "Peacebloom", "item", "Herbs", NULL, t);
+
+	venture_series_stats_init(&stats);
+	stats.instrument_key = "herb";
+	stats.market_value = market;
+	snap = venture_series_store_begin_snapshot(store, "region-eu", "USD", t, t + 30, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_series_snapshot_add_stats(snap, &stats, &error));
+	g_assert_true(venture_series_store_commit_snapshot(store, snap, &result, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * sell_basis=region_market sells at the region's market value another
+ * source keeps (TSM's, pushed by tsmctl), read from its region venue and
+ * joined on the item key only within the same instrument namespace.
+ * With none, nothing is priced; a region figure under another namespace
+ * is not this item's. What breaks if it regresses: a scan priced on a
+ * different item's TSM value, or on zero.
+ */
+static void
+test_spread_region_market(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *key = NULL;
+	JsonObject *row;
+	JsonArray *legs;
+	guint i;
+
+	(void)user_data;
+
+	seed_store(fixture, NULL);
+	seed_venues(fixture);
+	/* Every sell venue prices at the one region figure, so the free one
+	 * (realm-c has no fee model) is where it is sold. */
+	key = key_of(fixture, "spread:S:realm-a>S:realm-c:herb");
+
+	answer = scan(fixture, "{\"strategy\":\"spread\",\"units\":2,\"category_path\":\"Herbs\","
+	                       "\"sell_basis\":\"region_market\"}");
+	g_assert_null(row_with_key(answer, key));
+	g_clear_pointer(&answer, json_node_unref);
+
+	region_source(fixture, "Not items", "not-item", 2600);
+	answer = scan(fixture, "{\"strategy\":\"spread\",\"units\":2,\"category_path\":\"Herbs\","
+	                       "\"sell_basis\":\"region_market\"}");
+	g_assert_null(row_with_key(answer, key));
+	g_clear_pointer(&answer, json_node_unref);
+
+	region_source(fixture, "AuctionDB", "item", 2500);
+	answer = scan(fixture, "{\"strategy\":\"spread\",\"units\":2,\"category_path\":\"Herbs\","
+	                       "\"sell_basis\":\"region_market\"}");
+	row = row_with_key(answer, key);
+	g_assert_nonnull(row);
+	/* The region venue keeps figures; nobody sells there. */
+	for (i = 0; i < json_array_get_length(rows_of(answer)); i++)
+		g_assert_null(strstr(json_object_get_string_member(json_array_get_object_element(rows_of(answer), i),
+		                                                   "key"), ":region-eu:"));
+	legs = json_object_get_array_member(row, "legs");
+
+	for (i = 0; i < json_array_get_length(legs); i++)
+	{
+		JsonObject *leg = json_array_get_object_element(legs, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(leg, "kind"), "sell"))
+			g_assert_cmpstr(json_object_get_string_member(leg, "amount"), ==, "50.00 USD");
+	}
+}
+
 /*
  * A spread of nothing or below is left out and counted as unprofitable;
  * the drop-shipper's list (buy_sources) prices the two cheapest sources
@@ -2507,6 +2605,7 @@ main(
 	ADD("spread", test_spread);
 	ADD("spread-ignores-asking-prices", test_spread_ignores_asking_prices);
 	ADD("spread-sources-and-rates", test_spread_sources_and_rates);
+	ADD("spread-region-market", test_spread_region_market);
 	ADD("filters", test_filters);
 	ADD("stale", test_stale);
 	ADD("venue-group", test_venue_group);

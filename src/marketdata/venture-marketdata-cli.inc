@@ -579,6 +579,10 @@ static const VentureCliOption venture_cli_market_deals_options[] = {
 	{ "category_path", "category", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "min_value", "min_value", VENTURE_CLI_OPTION_TEXT, NULL },
 	{ "max_pct", "max_pct", VENTURE_CLI_OPTION_NUMBER, NULL },
+	{ "min_sold_per_day", "min_sold_per_day", VENTURE_CLI_OPTION_NUMBER, NULL },
+	{ "horizon_days", "horizon_days", VENTURE_CLI_OPTION_NUMBER, NULL },
+	{ "sort", "sort", VENTURE_CLI_OPTION_TEXT, NULL },
+	{ "dir", "dir", VENTURE_CLI_OPTION_TEXT, "asc|desc" },
 	{ "top", "top", VENTURE_CLI_OPTION_INT, NULL },
 	{ "organization_id", "organization_id", VENTURE_CLI_OPTION_INT, NULL },
 	{ NULL, NULL, 0, NULL }
@@ -636,6 +640,11 @@ static const VentureCliColumn venture_cli_market_deal_columns[] = {
 	{ "sell.min_price", "sell", VENTURE_CLI_CELL_MONEY, FALSE },
 	{ "sell_age_seconds", "sell age s", VENTURE_CLI_CELL_NUMBER, FALSE },
 	{ "sell_stale", "sell stale", VENTURE_CLI_CELL_TEXT, FALSE },
+	{ "profit", "profit", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "sell_sold_per_day", "sold/day", VENTURE_CLI_CELL_NUMBER, FALSE },
+	{ "realisable_profit", "realisable", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "ref.region_market", "ref region", VENTURE_CLI_CELL_MONEY, FALSE },
+	{ "ref.buy_vs_region_pct", "buy vs ref", VENTURE_CLI_CELL_PERCENT, FALSE },
 	{ NULL, NULL, 0, FALSE }
 };
 
@@ -744,6 +753,7 @@ static const gchar venture_cli_market_usage[] =
 	"         [stock=true] [sort=COLUMN] [dir=asc|desc] [page=N] [per_page=N]\n"
 	"  deals [source=N] [venue=KEY] [group=G] [category=PATH]\n"
 	"        [min_value=\"10.00 GOLD\"] [max_pct=80] [top=N]\n"
+	"        [min_sold_per_day=N] [horizon_days=7] [sort=realisable|profit|sold|...]\n"
 	"  venues [source=N] [group=G]\n"
 	"  instrument SOURCE_ID KEY [venue=KEY] [units=N]\n"
 	"  watchlist [ID] [organization_id=N]\n"

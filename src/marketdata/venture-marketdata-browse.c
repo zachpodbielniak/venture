@@ -2475,6 +2475,282 @@ md_watchlists_brief(
 	return array;
 }
 
+/* --- Another source's view of an item -------------------------------------- */
+
+/*
+ * What a second source says of the same item: TSM's AuctionDB, as tsmctl
+ * pushes it, beside Blizzard's live listings. Two stores, so two key
+ * spaces joined only where both say they are the same namespace
+ * (instrument-namespace, wow-item): an item key means nothing across
+ * namespaces, and a match there would read as a price. Venues are joined
+ * as the pickers join them (MdRealms): the region by its venue's
+ * convention (venture_series_region_venue_key()), a realm by its
+ * connected realm, whichever source keys it how.
+ */
+typedef struct
+{
+	gint64			 id;
+	gchar			*name;
+	gchar			*instrument_namespace;	/* "" for none */
+	VentureSeriesStore	*reader;		/* NULL when unreadable */
+} MdRefSource;
+
+typedef struct
+{
+	GPtrArray	*sources;	/* MdRefSource, the organization's by name */
+	MdRealms	*realms;
+} MdRefs;
+
+static void
+md_ref_source_free(gpointer data)
+{
+	MdRefSource *source = data;
+
+	g_free(source->name);
+	g_free(source->instrument_namespace);
+	g_clear_object(&source->reader);
+	g_free(source);
+}
+
+static void
+md_refs_free(MdRefs *refs)
+{
+	if (NULL == refs)
+		return;
+
+	g_ptr_array_unref(refs->sources);
+	md_realms_free(refs->realms);
+	g_free(refs);
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(MdRefs, md_refs_free)
+
+/* Every source of the organization, readable or not, and their realms.
+ * A store that cannot be read has nothing to compare with; it is not a
+ * failure of the page asking. */
+static MdRefs *
+md_refs_new(
+	VentureContext	*context,
+	gint64		 organization_id
+){
+	g_autoptr(GPtrArray) sources = md_sources(context, organization_id, NULL);
+	MdRefs *refs = g_new0(MdRefs, 1);
+	guint i;
+
+	refs->sources = g_ptr_array_new_with_free_func(md_ref_source_free);
+	refs->realms = md_realms_new();
+
+	for (i = 0; (NULL != sources) && (i < sources->len); i++)
+	{
+		VentureEntity *entity = g_ptr_array_index(sources, i);
+		MdRefSource *source = g_new0(MdRefSource, 1);
+		g_autoptr(GPtrArray) venues = NULL;
+		gchar *ns = NULL;
+
+		g_object_get(entity, "instrument-namespace", &ns, NULL);
+		source->id = venture_entity_get_id(entity);
+		source->name = md_source_name(entity);
+		source->instrument_namespace = (NULL != ns) ? ns : g_strdup("");
+		source->reader = md_reader(context, entity, NULL, NULL);
+
+		if (NULL != source->reader)
+			venues = venture_series_store_list_venues(source->reader, NULL);
+
+		md_realms_add(refs->realms, source->id, venues);
+		g_ptr_array_add(refs->sources, source);
+	}
+
+	md_realms_build(refs->realms);
+
+	return refs;
+}
+
+static MdRefSource *
+md_refs_find(
+	MdRefs	*refs,
+	gint64	 id
+){
+	guint i;
+
+	for (i = 0; i < refs->sources->len; i++)
+	{
+		MdRefSource *source = g_ptr_array_index(refs->sources, i);
+
+		if (source->id == id)
+			return source;
+	}
+
+	return NULL;
+}
+
+/* Whether @row is a figure to compare with: in @currency, with a market
+ * value or the source's historical price. */
+static gboolean
+md_ref_row_usable(
+	const VentureSeriesRow	*row,
+	const gchar		*currency
+){
+	return (NULL != row) && (0 == g_strcmp0(row->currency, currency)) &&
+	       ((VENTURE_SERIES_NONE != row->market_value) || (VENTURE_SERIES_NONE != row->source_historical));
+}
+
+/* @source's row for @row's instrument at @row's connected realm, the
+ * newest of its member realms' when it keeps several apart (one auction
+ * house, so one market); NULL when it has none. Transfer full. */
+static VentureSeriesRow *
+md_ref_realm_row(
+	MdRefs			*refs,
+	MdRefSource		*source,
+	gint64			 own_id,
+	const VentureSeriesRow	*row
+){
+	g_auto(GStrv) keys = NULL;
+	VentureSeriesRow *best = NULL;
+	guint i;
+
+	keys = md_realm_keys(md_realms_of(refs->realms, own_id, row->venue_key), source->id);
+
+	for (i = 0; (NULL != keys) && (NULL != keys[i]); i++)
+	{
+		VentureSeriesRow *found = NULL;
+
+		if (!venture_series_store_get_current(source->reader, keys[i], row->instrument_key, &found, NULL) ||
+		    !md_ref_row_usable(found, row->currency) || (VENTURE_SERIES_NONE == found->market_value) ||
+		    ((NULL != best) && (found->taken_at <= best->taken_at)))
+		{
+			venture_series_row_free(found);
+			continue;
+		}
+
+		venture_series_row_free(best);
+		best = found;
+	}
+
+	return best;
+}
+
+/* @price against @reference as a percent difference: -20 is a fifth
+ * under it. NAN when either is unknown or the reference is not above
+ * zero. */
+static gdouble
+md_ref_pct(
+	gint64	price,
+	gint64	reference
+){
+	if ((VENTURE_SERIES_NONE == price) || (VENTURE_SERIES_NONE == reference) || (reference <= 0))
+		return NAN;
+
+	return 100.0 * ((gdouble)price - (gdouble)reference) / (gdouble)reference;
+}
+
+/*
+ * The first source with anything to say of @buy's instrument -- the
+ * deal's own source first (its own region venue, never its own realm,
+ * which is the row itself), then the others of the same instrument
+ * namespace by name -- as the "ref" object; NULL when none has anything,
+ * so a page shows nothing rather than a zero. @sell may be NULL.
+ */
+static JsonObject *
+md_ref_object(
+	MdRefs			*refs,
+	gint64			 own_id,
+	const VentureSeriesRow	*buy,
+	const VentureSeriesRow	*sell,
+	gint64			 now,
+	gint64			 stale_after
+){
+	g_autofree gchar *region_key = venture_series_region_venue_key(buy->group_key);
+	MdRefSource *own = md_refs_find(refs, own_id);
+	guint pass;
+	guint i;
+
+	for (pass = 0; pass < 2; pass++)
+	{
+		for (i = 0; i < refs->sources->len; i++)
+		{
+			MdRefSource *source = g_ptr_array_index(refs->sources, i);
+			g_autoptr(VentureSeriesRow) region = NULL;
+			g_autoptr(VentureSeriesRow) buy_realm = NULL;
+			g_autoptr(VentureSeriesRow) sell_realm = NULL;
+			gboolean is_own = (source == own);
+			JsonObject *object;
+			gint64 region_market;
+
+			if (((0 == pass) != is_own) || (NULL == source->reader))
+				continue;
+
+			if (!is_own && ((NULL == own) || ('\0' == own->instrument_namespace[0]) ||
+			                (0 != g_strcmp0(own->instrument_namespace, source->instrument_namespace))))
+				continue;
+
+			if ((NULL != region_key) &&
+			    (!venture_series_store_get_current(source->reader, region_key, buy->instrument_key,
+			                                       &region, NULL) ||
+			     !md_ref_row_usable(region, buy->currency)))
+				g_clear_pointer(&region, venture_series_row_free);
+
+			if (!is_own)
+			{
+				buy_realm = md_ref_realm_row(refs, source, own_id, buy);
+				if (NULL != sell)
+					sell_realm = md_ref_realm_row(refs, source, own_id, sell);
+			}
+
+			if ((NULL == region) && (NULL == buy_realm) && (NULL == sell_realm))
+				continue;
+
+			region_market = (NULL != region) ? region->market_value : VENTURE_SERIES_NONE;
+			object = json_object_new();
+			json_object_set_int_member(object, "data_source_id", source->id);
+			json_object_set_string_member(object, "source_name", source->name);
+			md_set_text(object, "region_venue", (NULL != region) ? region_key : NULL);
+			md_set_money(object, "region_market", region_market, buy->currency);
+			md_set_money(object, "region_historical",
+			             (NULL != region) ? region->source_historical : VENTURE_SERIES_NONE, buy->currency);
+			/* The source's own rate where it sent one (TSM's), else
+			 * what its store estimated. */
+			md_set_ratio(object, "region_sale_rate",
+			             (NULL == region) ? NAN
+			             : !isnan(region->source_sale_rate) ? region->source_sale_rate : region->sale_rate);
+			md_set_ratio(object, "region_sold_per_day",
+			             (NULL == region) ? NAN
+			             : !isnan(region->source_sold_per_day) ? region->source_sold_per_day
+			             : region->sold_per_day);
+
+			if (NULL != region)
+				md_set_age(object, "region_", region->taken_at, now, stale_after);
+			else
+			{
+				json_object_set_null_member(object, "region_taken_at");
+				json_object_set_null_member(object, "region_age_seconds");
+				json_object_set_null_member(object, "region_stale");
+			}
+
+			md_set_ratio(object, "buy_vs_region_pct", md_ref_pct(buy->min_price, region_market));
+			md_set_money(object, "buy_realm_market",
+			             (NULL != buy_realm) ? buy_realm->market_value : VENTURE_SERIES_NONE, buy->currency);
+			md_set_ratio(object, "buy_vs_realm_pct",
+			             md_ref_pct(buy->min_price,
+			                        (NULL != buy_realm) ? buy_realm->market_value : VENTURE_SERIES_NONE));
+
+			if (NULL != sell)
+			{
+				md_set_ratio(object, "sell_vs_region_pct", md_ref_pct(sell->min_price, region_market));
+				md_set_money(object, "sell_realm_market",
+				             (NULL != sell_realm) ? sell_realm->market_value : VENTURE_SERIES_NONE,
+				             buy->currency);
+				md_set_ratio(object, "sell_vs_realm_pct",
+				             md_ref_pct(sell->min_price,
+				                        (NULL != sell_realm) ? sell_realm->market_value : VENTURE_SERIES_NONE));
+			}
+
+			return object;
+		}
+	}
+
+	return NULL;
+}
+
 #endif /* VENTURE_HAVE_SQLITE */
 
 JsonNode *
@@ -2772,6 +3048,16 @@ venture_marketdata_instrument(
 			md_set_time(object, "region_computed_at", region.found ? region.computed_at : 0);
 			md_set_ratio(object, "pct_vs_region", row->pct_vs_region);
 			json_object_set_object_member(root, "base", object);
+
+			/* Another source's view of it, as on Deals: the region's
+			 * figures, and the charted venue's realm's. */
+			{
+				g_autoptr(MdRefs) refs = md_refs_new(context, query->organization_id);
+				JsonObject *ref = md_ref_object(refs, query->data_source_id, row, NULL, now, stale_after);
+
+				if (NULL != ref)
+					json_object_set_object_member(root, "ref", ref);
+			}
 
 			/* The sale estimate and the slow prices, at this venue. */
 			object = json_object_new();
@@ -3178,6 +3464,8 @@ venture_marketdata_deals_query_init(VentureMarketdataDealsQuery *query)
 	memset(query, 0, sizeof(*query));
 	query->max_pct = NAN;
 	query->cut_pct = 5.0;
+	query->min_sold_per_day = NAN;
+	query->horizon_days = VENTURE_MARKETDATA_DEALS_HORIZON_DAYS;
 }
 
 #ifdef VENTURE_HAVE_SQLITE
@@ -3193,6 +3481,11 @@ typedef struct
 	const gchar		*sell_label;	/* from the answer's MdRealms, or NULL */
 	gint64			 profit;	/* sell less the cut less the buy */
 	gdouble			 roi;		/* profit / buy, percent */
+	gint64			 net;		/* one unit's sale after the cut */
+	guint			 source_index;	/* into the answer's sources and readers */
+	gboolean		 realised;	/* md_deal_realise() has run */
+	gint64			 expected;	/* units the sell venue sells over the horizon, or NONE */
+	VentureSeriesRealisable	 realisable;	/* meaningful when expected is not NONE */
 } MdDeal;
 
 static void
@@ -3212,7 +3505,8 @@ md_deal_free(gpointer data)
  * the same order every time, whatever order the sources were read in. */
 /* The columns deals sort by, "deal" being the deal index's own order. */
 static const gchar *const md_deal_sorts[] = {
-	"deal", "name", "ilvl", "buy_at", "buy", "sell_at", "sell", "profit", "roi", "region", "rate", "qty", NULL
+	"deal", "name", "ilvl", "buy_at", "buy", "sell_at", "sell", "profit", "roi", "region", "rate", "sold",
+	"realisable", "qty", NULL
 };
 
 /* The merge's order: NULL for the deal index's own, else a column of
@@ -3256,6 +3550,10 @@ md_deal_figure(const MdDeal *deal, const gchar *sort)
 		return deal->roi;
 	if (0 == g_strcmp0(sort, "rate"))
 		return deal->sell->sale_rate;
+	if (0 == g_strcmp0(sort, "sold"))
+		return deal->sell->sold_per_day;
+	if (0 == g_strcmp0(sort, "realisable"))
+		return (VENTURE_SERIES_NONE != deal->expected) ? (gdouble)deal->realisable.profit : NAN;
 	return NAN;
 }
 
@@ -3279,15 +3577,17 @@ md_deal_text(const MdDeal *deal, const gchar *sort)
  * Where @deal is best sold: the dearest venue offering its instrument, in
  * @group_keys when given and else in the buy venue's group, other than
  * the buy venue, with stock (a market with nothing in it has no price to
- * sell at), where it has been selling, and whose price is not an outlier.
- * Sets deal->sell, profit and roi; leaves sell NULL when there is nowhere.
+ * sell at), where it has been selling -- at least @min_sold_per_day a day
+ * when that is a number -- and whose price is not an outlier. Sets
+ * deal->sell, net, profit and roi; leaves sell NULL when there is nowhere.
  */
 static void
 md_deal_sell_side(
 	MdDeal			*deal,
 	VentureSeriesStore	*reader,
 	const gchar *const	*group_keys,
-	gdouble			 cut_pct
+	gdouble			 cut_pct,
+	gdouble			 min_sold_per_day
 ){
 	g_autoptr(GPtrArray) venues = NULL;
 	gint64 cut;
@@ -3311,6 +3611,13 @@ md_deal_sell_side(
 		if (!venture_series_row_sell_plausible(candidate, candidate->min_price))
 			continue;
 
+		/* A floor on how fast it sells is a floor on the store's own
+		 * estimate: a venue it has none for is not known to sell at
+		 * that rate, so it is not one. */
+		if (!isnan(min_sold_per_day) &&
+		    (isnan(candidate->sold_per_day) || (candidate->sold_per_day < min_sold_per_day)))
+			continue;
+
 		/* Over twenty times the buy price is a troll's listing, however
 		 * "sold" it looks (VENTURE_SERIES_SELL_MAX_MARKUP). */
 		if ((deal->row->min_price > 0) &&
@@ -3332,8 +3639,60 @@ md_deal_sell_side(
 	 * seller's way (down): a profit is never overstated by a fraction. */
 	cut = (gint64)ceil((gdouble)deal->sell->min_price * CLAMP(cut_pct, 0.0, 100.0) / 100.0);
 	net = deal->sell->min_price - cut;
+	deal->net = net;
 	deal->profit = net - deal->row->min_price;
 	deal->roi = (deal->row->min_price > 0) ? (100.0 * (gdouble)deal->profit / (gdouble)deal->row->min_price) : 0.0;
+}
+
+/*
+ * What @deal can really make over @horizon_days: the sell venue's units
+ * sold a day times the horizon, rounded down, is how many it is expected
+ * to sell; the buy venue's book, cheapest first and only while a unit
+ * costs less than one sells for after the cut, is how many there are to
+ * buy at a profit. The smaller of the two, each unit at its own margin
+ * (venture_series_math_realisable()). A store that keeps no tiers (a
+ * source's statistics) is one tier: its lowest price, its quantity. No
+ * sell side, or no estimate of how fast it sells there, leaves it
+ * unknown -- never zero, which is a real answer ("it does not sell").
+ */
+static void
+md_deal_realise(
+	MdDeal			*deal,
+	VentureSeriesStore	*reader,
+	gdouble			 horizon_days
+){
+	g_autoptr(GArray) tiers = NULL;
+
+	if (deal->realised)
+		return;
+
+	deal->realised = TRUE;
+	deal->expected = VENTURE_SERIES_NONE;
+
+	if (NULL == deal->sell)
+		return;
+
+	deal->expected = venture_series_math_expected_sales(deal->sell->sold_per_day, horizon_days);
+
+	if (VENTURE_SERIES_NONE == deal->expected)
+		return;
+
+	tiers = venture_series_store_get_tiers(reader, deal->row->venue_key, deal->row->instrument_key, NULL);
+
+	if ((NULL != tiers) && (0 == tiers->len) && (VENTURE_SERIES_NONE != deal->row->min_price) &&
+	    (VENTURE_SERIES_NONE != deal->row->quantity) && (deal->row->quantity > 0))
+	{
+		VentureSeriesTier one;
+
+		one.price = deal->row->min_price;
+		one.quantity = deal->row->quantity;
+		g_array_append_val(tiers, one);
+	}
+
+	if ((NULL == tiers) ||
+	    !venture_series_math_realisable((const VentureSeriesTier *)(gpointer)tiers->data, tiers->len,
+	                                    deal->net, deal->expected, &deal->realisable, NULL))
+		deal->expected = VENTURE_SERIES_NONE;
 }
 
 /* The deals pickers' venues, one per connected realm, in label order. */
@@ -3504,6 +3863,22 @@ venture_marketdata_deals(
 		return NULL;
 	}
 
+	if (!isnan(query->min_sold_per_day) && (!isfinite(query->min_sold_per_day) || (query->min_sold_per_day < 0.0)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "min_sold_per_day is the fewest units the sell venue sells a day, zero or more");
+		return NULL;
+	}
+
+	if (!isfinite(query->horizon_days) || (query->horizon_days <= 0.0) ||
+	    (query->horizon_days > VENTURE_MARKETDATA_DEALS_MAX_HORIZON_DAYS))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "horizon_days is the days a realisable profit counts sales over: above 0, at most %g",
+		            VENTURE_MARKETDATA_DEALS_MAX_HORIZON_DAYS);
+		return NULL;
+	}
+
 	if ((NULL != query->sort) && !g_strv_contains(md_deal_sorts, query->sort))
 	{
 		g_autofree gchar *names = g_strjoinv(", ", (gchar **)md_deal_sorts);
@@ -3534,9 +3909,18 @@ venture_marketdata_deals(
 		g_autoptr(GPtrArray) deals = NULL;
 		g_autoptr(GHashTable) category_counts = NULL;
 		gboolean by_trade = (NULL != query->sort) && (0 != g_strcmp0(query->sort, "deal"));
-		/* Selling at one venue throws away every deal that has no
-		 * price there, so the pool is the wide one, as for a sort. */
-		gboolean wide = by_trade || !venture_string_is_empty(query->sell_venue);
+		/* Selling at one venue, or only where it sells fast enough,
+		 * throws away every deal that has no price there, so the pool
+		 * is the wide one, as for a sort. */
+		gboolean wide = by_trade || !venture_string_is_empty(query->sell_venue) ||
+		                !isnan(query->min_sold_per_day);
+		/* Sorting by it needs it for the whole pool; otherwise only the
+		 * rows kept are realised, after the cut. */
+		gboolean by_realisable = (0 == g_strcmp0(query->sort, "realisable"));
+		g_autoptr(MdRefs) refs = NULL;
+		gint64 totals_realisable = 0;
+		gint64 totals_realisable_rows = 0;
+		gboolean totals_realisable_overflow = FALSE;
 		g_autoptr(GHashTable) choices = g_hash_table_new(g_direct_hash, g_direct_equal);
 		g_autoptr(GPtrArray) readers = NULL;
 		g_autoptr(GPtrArray) venue_lists = NULL;
@@ -3751,21 +4135,26 @@ venture_marketdata_deals(
 				 * outlives it. */
 				deal->display = json_object_new();
 				md_row_set_display(deal->display, reader, deal->row->instrument_key);
+				deal->source_index = i;
 				md_deal_sell_side(deal, reader,
 				                  (const gchar *const *)((NULL != sell_keys) ? sell_keys : group_keys),
-				                  query->cut_pct);
+				                  query->cut_pct, query->min_sold_per_day);
 
 				deal->buy_label = md_realm_label(realms, source_id, deal->row->venue_key);
 				if (NULL != deal->sell)
 					deal->sell_label = md_realm_label(realms, source_id, deal->sell->venue_key);
 
-				/* Asked to sell at one venue, a deal that cannot be
-				 * sold there is not one. */
-				if ((NULL != sell_keys) && (NULL == deal->sell))
+				/* Asked to sell at one venue, or only where it sells
+				 * fast enough, a deal that cannot be sold there is not
+				 * one. */
+				if (((NULL != sell_keys) || !isnan(query->min_sold_per_day)) && (NULL == deal->sell))
 				{
 					md_deal_free(deal);
 					continue;
 				}
+
+				if (by_realisable)
+					md_deal_realise(deal, reader, query->horizon_days);
 
 				g_ptr_array_add(deals, deal);
 			}
@@ -3784,11 +4173,19 @@ venture_marketdata_deals(
 			g_ptr_array_set_size(deals, count);
 		}
 
+		/* Another source's view of the kept rows only: a handful of
+		 * indexed reads each, never the pool's. */
+		if (deals->len > 0)
+			refs = md_refs_new(context, query->organization_id);
+
 		for (i = 0; i < deals->len; i++)
 		{
 			MdDeal *deal = g_ptr_array_index(deals, i);
 			JsonObject *object;
+			JsonObject *ref;
 			gint64 discount;
+
+			md_deal_realise(deal, g_ptr_array_index(readers, deal->source_index), query->horizon_days);
 
 			object = md_row_object(deal->row, deal->data_source_id);
 			if (json_object_has_member(deal->display, "display"))
@@ -3824,6 +4221,27 @@ venture_marketdata_deals(
 				md_set_money(object, "profit", deal->profit, deal->row->currency);
 				md_set_ratio(object, "roi_pct", deal->roi);
 
+				/* How fast it goes where it is sold, and what that
+				 * leaves of the profit over the horizon. */
+				md_set_ratio(object, "sell_sold_per_day", deal->sell->sold_per_day);
+				md_set_ratio(object, "sell_sale_rate", deal->sell->sale_rate);
+				md_set_figure(object, "expected_sales", deal->expected);
+
+				if (VENTURE_SERIES_NONE != deal->expected)
+				{
+					md_set_money(object, "realisable_profit", deal->realisable.profit, deal->row->currency);
+					md_set_money(object, "realisable_cost", deal->realisable.cost, deal->row->currency);
+					json_object_set_int_member(object, "realisable_units", deal->realisable.units);
+					json_object_set_int_member(object, "book_units", deal->realisable.book_units);
+				}
+				else
+				{
+					json_object_set_null_member(object, "realisable_profit");
+					json_object_set_null_member(object, "realisable_cost");
+					json_object_set_null_member(object, "realisable_units");
+					json_object_set_null_member(object, "book_units");
+				}
+
 				/* One of each: what buying every row once costs, sells
 				 * for after the cut, and makes. */
 				if (NULL == totals_currency)
@@ -3834,15 +4252,29 @@ venture_marketdata_deals(
 					totals_investment += deal->row->min_price;
 					totals_profit += deal->profit;
 					totals_rows++;
+
+					if ((VENTURE_SERIES_NONE != deal->expected) &&
+					    !venture_series_math_add(totals_realisable, deal->realisable.profit,
+					                             &totals_realisable))
+						totals_realisable_overflow = TRUE;
+					else if (VENTURE_SERIES_NONE != deal->expected)
+						totals_realisable_rows++;
 				}
 				else
 					totals_mixed = TRUE;
 			}
 
+			ref = md_ref_object(refs, deal->data_source_id, deal->row, deal->sell, now, stale_after);
+
+			if (NULL != ref)
+				json_object_set_object_member(object, "ref", ref);
+
 			json_array_add_object_element(rows, object);
 		}
 
 		json_object_set_double_member(root, "cut_pct", query->cut_pct);
+		json_object_set_double_member(root, "horizon_days", query->horizon_days);
+		md_set_ratio(root, "min_sold_per_day", query->min_sold_per_day);
 		json_object_set_array_member(root, "venue_choices", md_venue_choices_json(choices, now, stale_after));
 
 		/* Set aside only where no source could use it. */
@@ -3870,6 +4302,12 @@ venture_marketdata_deals(
 			md_set_money(totals, "sale", totals_investment + totals_profit, totals_currency);
 			md_set_money(totals, "profit", totals_profit, totals_currency);
 			json_object_set_int_member(totals, "rows", totals_rows);
+			/* Over the rows that have one; a sum past 64 bits is no
+			 * sum, not a wrapped one. */
+			md_set_money(totals, "realisable_profit",
+			             ((totals_realisable_rows > 0) && !totals_realisable_overflow)
+			             ? totals_realisable : VENTURE_SERIES_NONE, totals_currency);
+			json_object_set_int_member(totals, "realisable_rows", totals_realisable_rows);
 			json_object_set_object_member(root, "totals", totals);
 		}
 
