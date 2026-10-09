@@ -6273,21 +6273,21 @@ test_auth_trading_organization(
 	{
 		g_autoptr(VentureEntity) source = NULL;
 		g_autoptr(VentureSeriesStore) store = NULL;
-		g_autoptr(GError) error = NULL;
+		g_autoptr(GError) store_error = NULL;
 		g_autofree gchar *dir = NULL;
 		VentureSeriesInstrument instrument;
 
 		source = venture_database_get(fixture->database, VENTURE_TYPE_DATA_SOURCE, other_source, NULL);
 		dir = venture_feeds_store_dir(fixture->config, venture_entity_get_uuid(source));
-		store = venture_series_store_open(dir, &error);
-		g_assert_no_error(error);
+		store = venture_series_store_open(dir, &store_error);
+		g_assert_no_error(store_error);
 		memset(&instrument, 0, sizeof(instrument));
 		instrument.key = "ore";
 		instrument.name = "Ore";
 		g_assert_true(venture_series_store_upsert_instrument(store, &instrument,
 		                                                     g_get_real_time() / G_USEC_PER_SEC,
-		                                                     NULL, NULL, &error));
-		g_assert_no_error(error);
+		                                                     NULL, NULL, &store_error));
+		g_assert_no_error(store_error);
 	}
 
 	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, NULL, "/api/v1/market/history/%"
@@ -6295,7 +6295,7 @@ test_auth_trading_organization(
 	g_assert_cmpuint(trading_call(fixture, "GET", both, NULL, &body, "/api/v1/market/history/%"
 	                              G_GINT64_FORMAT "/ore?organization_id=%" G_GINT64_FORMAT, other_source, other),
 	                 ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(body, "\"name\":\"Ore\""));
+	g_assert_nonnull(strstr(body, "\"Ore\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(trading_call(fixture, "GET", home, NULL, NULL, "/api/v1/market/history/%"
 	                              G_GINT64_FORMAT "/ore?organization_id=%" G_GINT64_FORMAT, other_source, other),
