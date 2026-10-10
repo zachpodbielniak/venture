@@ -1136,3 +1136,17 @@ failure-recovery test failed first with this shape. Failure evidence may use
 that retained attempted method only when the current method is null or absent;
 a different attempted method is rejected. Successful settlement still requires
 the current method to match.
+* Password verifier compatibility and cost
+
+The saved PBKDF2-HMAC-SHA256 format, salt and iteration count are unchanged.
+The cryptographic library derives the same bytes without allocating a fresh
+HMAC for every iteration. Core and standalone CLI builds require =libcrypto=.
+Authentication still checks each token's current activity, expiry and user
+permissions; no cross-request authentication cache is introduced.
+
+=/auth/password-known-answers= checks independently known SHA-256 vectors,
+a wrong secret and malformed encodings. Its first run failed because an odd
+salt length was silently truncated. Encoding errors and library failures now
+refuse verification. Existing salt-randomness and minimum-work-factor tests
+remain in the full suite. Performance is measured separately with identical
+inputs and iterations, rather than a clock threshold in a loaded test suite.

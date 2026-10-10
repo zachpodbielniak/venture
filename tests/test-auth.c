@@ -389,6 +389,18 @@ test_auth_disabled_grants_owner(
 }
 
 /* --- Password hashing ---------------------------------------------------- */
+static void
+test_auth_password_known_answers(Fixture *fixture, gconstpointer user_data)
+{
+	/* Published PBKDF2-HMAC-SHA256 vectors keep saved verifiers compatible
+	 * when the implementation changes. Encoding errors must fail closed. */
+	g_assert_true(venture_verify_password("password", "pbkdf2-sha256$1$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+	g_assert_true(venture_verify_password("password", "pbkdf2-sha256$2$73616c74$ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"));
+	g_assert_true(venture_verify_password("password", "pbkdf2-sha256$4096$73616c74$c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"));
+	g_assert_false(venture_verify_password("wrong", "pbkdf2-sha256$1$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+	g_assert_false(venture_verify_password("password", "pbkdf2-sha256$1$73616c740$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+	g_assert_false(venture_verify_password("password", "pbkdf2-sha256$1junk$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+}
 
 static void
 test_auth_password_hashes_are_salted(
@@ -6926,6 +6938,7 @@ main(
 
 	ADD("/auth/disabled-grants-owner", test_auth_disabled_grants_owner);
 
+	ADD("/auth/password-known-answers", test_auth_password_known_answers);
 	ADD("/auth/password-hashes-are-salted", test_auth_password_hashes_are_salted);
 	ADD("/auth/password-iterations-are-floored",
 	    test_auth_password_iterations_are_floored);
