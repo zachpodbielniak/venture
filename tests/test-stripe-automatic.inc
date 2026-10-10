@@ -487,7 +487,7 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 				g_test_message("Due renewal reused billing lifecycle: invoices=%u; collected oldest invoice=%" G_GINT64_FORMAT, invoices->len, collected_id);
 			}
 		}
-		if (data && (!g_strcmp0(data, "collection") || !g_strcmp0(data, "settlement") || !g_strcmp0(data, "failure-recovery") || !g_strcmp0(data, "paused-recovery") || !g_strcmp0(data, "cancel") || !g_strcmp0(data, "retry") || !g_strcmp0(data, "manual-conflict") || !g_strcmp0(data, "manual-recovery") || !g_strcmp0(data, "pay-retry")))
+		if (data && (!g_strcmp0(data, "collection") || !g_strcmp0(data, "settlement") || !g_strcmp0(data, "new-webhook") || !g_strcmp0(data, "failure-recovery") || !g_strcmp0(data, "paused-recovery") || !g_strcmp0(data, "cancel") || !g_strcmp0(data, "retry") || !g_strcmp0(data, "manual-conflict") || !g_strcmp0(data, "manual-recovery") || !g_strcmp0(data, "pay-retry")))
 		{
 			g_autoptr(GPtrArray) events = rows(f, "subscription_event");
 			g_autoptr(GPtrArray) payments = NULL;
@@ -568,6 +568,12 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 				g_autoptr(VentureEntity) sub = NULL;
 				gint sub_status;
 				fake_invoice_latest((FakeTransport *)transport)->processing = FALSE;
+				if (!g_strcmp0(data, "failure-recovery")) {
+					fake_invoice_latest((FakeTransport *)transport)->wrong_failed_method = TRUE;
+					g_assert_false(automatic_fixture_event(service, (FakeTransport *)transport, "evt_wrong_failed_method", FALSE, &error));
+					g_assert_nonnull(error); g_clear_error(&error);
+					fake_invoice_latest((FakeTransport *)transport)->wrong_failed_method = FALSE;
+				}
 				g_assert_true(venture_stripe_service_handle_webhook(service, raw, sig, &error));
 				g_assert_no_error(error);
 				sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, &error);
@@ -628,8 +634,39 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 			if (g_strcmp0(data, "collection") && g_strcmp0(data, "cancel") && g_strcmp0(data, "retry") && g_strcmp0(data, "manual-conflict") && g_strcmp0(data, "manual-recovery"))
 			{
 				g_autofree gchar *body = g_strdup_printf("{\"id\":\"evt_auto_paid\",\"type\":\"invoice.payment_succeeded\",\"api_version\":\"2024-06-20\",\"livemode\":false,\"created\":%" G_GINT64_FORMAT ",\"data\":{\"object\":{\"id\":\"in_auto\",\"customer\":\"cus_offline\",\"currency\":\"usd\",\"amount_paid\":5000,\"payment_intent\":\"pi_auto\"}}}", g_get_real_time() / G_USEC_PER_SEC);
-				g_autofree gchar *sig = binding_signature(body, "whsec_original");
-				g_autoptr(GBytes) raw = g_bytes_new(body, strlen(body));
+				g_autofree gchar *sig = NULL;
+				g_autoptr(GBytes) raw = NULL;
+				if (!g_strcmp0(data, "new-webhook"))
+				{
+					/* New invoice snapshots omit the legacy payment_intent field.
+					 * Settlement still needs the pinned authenticated invoice read. */
+					g_autoptr(JsonNode) event = json_from_string(body, NULL);
+					JsonObject *root = json_node_get_object(event);
+					JsonObject *object = json_object_get_object_member(json_object_get_object_member(root, "data"), "object");
+					json_object_set_string_member(root, "api_version", "2026-05-27.dahlia");
+					json_object_remove_member(object, "payment_intent");
+					{
+						guint mismatch;
+						fake_invoice_latest((FakeTransport *)transport)->paid = TRUE;
+						for (mismatch = 0; mismatch < 2; mismatch++) {
+							g_autofree gchar *bad_body = NULL, *bad_signature = NULL;
+							g_autoptr(GBytes) bad_raw = NULL;
+							json_object_set_string_member(root, "id", mismatch ? "evt_new_wrong_intent" : "evt_new_wrong_customer");
+							json_object_set_string_member(object, "customer", mismatch ? "cus_offline" : "cus_other");
+							if (mismatch) json_object_set_string_member(object, "payment_intent", "pi_other");
+							bad_body = json_to_string(event, FALSE);
+							bad_signature = binding_signature(bad_body, "whsec_original");
+							bad_raw = g_bytes_new(bad_body, strlen(bad_body));
+							g_assert_false(venture_stripe_service_handle_webhook(service, bad_raw, bad_signature, &error));
+							g_assert_nonnull(error); g_clear_error(&error);
+						}
+					}
+					json_object_set_string_member(root, "id", "evt_auto_paid");
+					json_object_remove_member(object, "payment_intent");
+					g_free(body); body = json_to_string(event, FALSE);
+				}
+				sig = binding_signature(body, "whsec_original");
+				raw = g_bytes_new(body, strlen(body));
 				fake_invoice_latest((FakeTransport *)transport)->paid = TRUE;
 				g_assert_true(venture_stripe_service_handle_webhook(service, raw, sig, &error));
 				g_assert_no_error(error);
