@@ -973,14 +973,17 @@ test_professions(
 	g_assert_nonnull(strstr(page, "<div class=\"account-sub account-professions\">"
 	                              "<a href=\"/arbitrage/crafting?character=Drgold-A\">Crafting</a>: "
 	                              "<a href=\"/arbitrage/crafting?character=Drgold-A&amp;profession=Tailoring\">"
-	                              "Tailoring 65/100</a> <details class=\"account-tiers\"><summary>by expansion"
+	                              "Tailoring <span class=\"rank\" title=\"65 of 100\"><span class=\"rank-bar\" aria-hidden=\"true\"><span style=\"width:65%\"></span></span><span class=\"rank-text\">65/100</span></span></a> <details class=\"account-tiers\"><summary>by expansion"
 	                              "</summary><a href=\"/arbitrage/crafting?character=Drgold-A&amp;"
-	                              "profession=Tailoring&amp;expansion=Classic\">Classic 300/300</a> \xc2\xb7 "
+	                              "profession=Tailoring&amp;expansion=Classic\">"
+	                              "<span class=\"xpac\" style=\"--xpac:#c9a227\">Classic</span> "
+	                              "<span class=\"rank rank-max\" title=\"300 of 300\"><span class=\"rank-bar\" aria-hidden=\"true\"><span style=\"width:100%\"></span></span><span class=\"rank-text\">300/300</span></span></a> \xc2\xb7 "
 	                              "<a href=\"/arbitrage/crafting?character=Drgold-A&amp;profession=Tailoring&amp;"
-	                              "expansion=Khaz%20Algar\">Khaz Algar 65/100</a> \xc2\xb7 odd entry</details>"
+	                              "expansion=Khaz%20Algar\"><span class=\"xpac\" style=\"--xpac:#d8a03a\">Khaz Algar"
+	                              "</span> <span class=\"rank\" title=\"65 of 100\"><span class=\"rank-bar\" aria-hidden=\"true\"><span style=\"width:65%\"></span></span><span class=\"rank-text\">65/100</span></span></a> \xc2\xb7 odd entry</details>"
 	                              " \xc2\xb7 "
 	                              "<a href=\"/arbitrage/crafting?character=Drgold-A&amp;profession=Cooking\">"
-	                              "Cooking 1/100</a></div>"));
+	                              "Cooking <span class=\"rank\" title=\"1 of 100\"><span class=\"rank-bar\" aria-hidden=\"true\"><span style=\"width:1%\"></span></span><span class=\"rank-text\">1/100</span></span></a></div>"));
 }
 
 static void

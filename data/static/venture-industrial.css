@@ -74,6 +74,14 @@
 	 */
 	--positive: #1f7a2e;
 	--positive-soft: color-mix(in srgb, #1f7a2e 10%, transparent);
+	--coin-1: #8a6500;
+	--coin-2: #5c636e;
+	--coin-3: #9a4a17;
+	--series-1: #a86f00;
+	--series-2: #1b7f8c;
+	--series-3: #6b4fcf;
+	--series-4: #c0502a;
+	--item-name-filter: brightness(0.55) saturate(1.6);
 	--negative: var(--accent);
 	--negative-soft: var(--accent-soft);
 	--warning: #9a6400;
@@ -185,6 +193,14 @@
 
 		--positive: #6fcf5a;
 		--positive-soft: color-mix(in srgb, #6fcf5a 14%, transparent);
+		--coin-1: #f2c14e;
+		--coin-2: #c8cdd5;
+		--coin-3: #df8a4f;
+		--series-1: #e8b64c;
+		--series-2: #4cc2cf;
+		--series-3: #a98bff;
+		--series-4: #f2875a;
+		--item-name-filter: none;
 		--warning: #ffb000;
 		--warning-soft: color-mix(in srgb, #ffb000 14%, transparent);
 		--info: #b4b4b4;
@@ -224,6 +240,14 @@
 
 	--positive: #6fcf5a;
 	--positive-soft: color-mix(in srgb, #6fcf5a 14%, transparent);
+	--coin-1: #f2c14e;
+	--coin-2: #c8cdd5;
+	--coin-3: #df8a4f;
+	--series-1: #e8b64c;
+	--series-2: #4cc2cf;
+	--series-3: #a98bff;
+	--series-4: #f2875a;
+	--item-name-filter: none;
 	--warning: #ffb000;
 	--warning-soft: color-mix(in srgb, #ffb000 14%, transparent);
 	--info: #b4b4b4;
@@ -269,6 +293,14 @@
 
 	--positive: #a6e3a1;
 	--positive-soft: color-mix(in srgb, #a6e3a1 14%, transparent);
+	--coin-1: #f9e2af;
+	--coin-2: #bac2de;
+	--coin-3: #fab387;
+	--series-1: #f9e2af;
+	--series-2: #94e2d5;
+	--series-3: #cba6f7;
+	--series-4: #fab387;
+	--item-name-filter: none;
 	--warning: #f9e2af;
 	--warning-soft: color-mix(in srgb, #f9e2af 14%, transparent);
 	--info: #a6adc8;
@@ -5022,6 +5054,204 @@ input:not([type="hidden"]):focus-visible {
 .chart-key-4::before { border-top: 2px dotted var(--text); }
 .chart-empty { margin: var(--space-3) 0; }
 .chart-caption { margin-top: var(--space-2); font-size: 12px; color: var(--text-muted); }
+
+/* Several choices as chips (a market filter's lists, who knows a
+ * recipe): a ticked one is filled, and the checkbox itself is hidden
+ * but still what the keyboard and the form use. */
+.chips { border: 0; padding: 0; margin: 0; min-width: 0; }
+.chips legend { padding: 0; margin-bottom: 6px; }
+.chips-row { display: flex; flex-wrap: wrap; gap: 6px; }
+/* An item's name is drawn in the game's colour for its quality, which
+ * was chosen for a dark ground: white (common) and the pale greens and
+ * blues vanish on a light one, so a light palette darkens them. */
+.item-name { filter: var(--item-name-filter, none); }
+.field.chips legend { font-family: var(--font-mono); font-size: var(--micro-size); font-weight: 600;
+                      color: var(--text-muted); text-transform: uppercase; letter-spacing: var(--micro-track); }
+/* A chip is a label holding a checkbox, which the field rules above
+ * would draw as a caption over a control; it is neither. */
+.field.chips label.chip {
+	position: relative;
+	display: inline-flex;
+	flex-direction: row;
+	gap: 0;
+	min-height: 0;
+	cursor: pointer;
+	font-family: var(--font);
+	font-size: 13px;
+	font-weight: 500;
+	text-transform: none;
+	letter-spacing: 0;
+}
+.field.chips .chip input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.chip span {
+	display: inline-block;
+	padding: 4px 10px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-pill);
+	font-size: 13px;
+	color: var(--text-muted);
+	background: var(--surface);
+	user-select: none;
+}
+.chip:hover span { color: var(--text); border-color: var(--text-muted); }
+.chip input:checked + span { color: var(--accent-contrast); background: var(--accent); border-color: var(--accent); }
+.chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A form's rarely used filters, folded: the row of what most people
+ * change stays short, and one click shows the rest. */
+.form-more { grid-column: 1 / -1; }
+.form-more > summary {
+	cursor: pointer;
+	width: max-content;
+	font-family: var(--font-mono);
+	font-size: var(--micro-size);
+	font-weight: 600;
+	letter-spacing: var(--micro-track);
+	text-transform: uppercase;
+	color: var(--text-muted);
+}
+.form-more > summary:hover { color: var(--text); }
+.form-more > summary .badge { margin-left: 6px; text-transform: none; }
+.form-more-grid { margin-top: var(--space-4); }
+
+/* Coins: an amount in a currency kept in denominations ("12g 5s 30c"),
+ * wrapped by venture.js. Each coin in its metal, the whole amount on one
+ * line -- a price broken over three lines of a table cell reads as three
+ * numbers. */
+.coins { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.coin { font-weight: 600; }
+.coin-1 { color: var(--coin-1); }
+.coin-2 { color: var(--coin-2); }
+.coin-3 { color: var(--coin-3); }
+/* The coin itself, as the game draws it, after the count; the suffix
+ * letter stays in the text (copying, a screen reader, print) but is not
+ * shown beside it. */
+.coin::after {
+	content: "";
+	display: inline-block;
+	width: 0.66em;
+	height: 0.66em;
+	margin: 0 0.1em 0 0.14em;
+	border-radius: 50%;
+	vertical-align: -0.02em;
+	background: radial-gradient(circle at 35% 30%, color-mix(in srgb, currentColor 30%, #fff), currentColor 55%,
+	                            color-mix(in srgb, currentColor 65%, #000));
+	box-shadow: 0 0 0 0.5px color-mix(in srgb, currentColor 60%, #000);
+}
+.coin-mark {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+/* A profit or a loss in coins keeps each coin's metal; the sign is the
+ * wash behind the amount, as the Deals profit badge has it. */
+.money-positive .coins,
+.money-negative .coins { padding: 0.1em 0.35em; border-radius: 3px; }
+.money-positive .coins { background: var(--positive-soft); }
+.money-negative .coins { background: var(--negative-soft); }
+@media print {
+	.coin::after { display: none; }
+	.coin-mark { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+}
+/* A gap in a line is bridged faintly: the points either side are real,
+ * the stretch between them was not seen. */
+.chart-svg .chart-bridge { stroke-width: 1.25; stroke-dasharray: 1.5 4; opacity: 0.55;
+                           vector-effect: non-scaling-stroke; }
+/* Drawn by the server at a fixed size and scaled to the card; capped so
+ * its text stays near its size on a wide screen when no script redraws it. */
+.chart-line .chart-svg, .chart-bar .chart-svg { max-height: 360px; }
+/* venture.js redraws a line or bar chart at the size it is shown (plot-*),
+ * from the numbers the server put beside the table, and hides the drawing
+ * it replaced. Every mark is currentColor; these pick the tokens. */
+.plot-on > .chart-svg, .plot-on > .chart-legend { display: none; }
+.plot { position: relative; }
+.plot:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px; }
+.plot-svg { display: block; width: 100%; overflow: visible; cursor: crosshair; touch-action: pan-y;
+            user-select: none; -webkit-user-select: none; }
+.plot-grid { color: var(--border); stroke-width: 1; }
+.plot-zero { color: var(--text-faint); stroke-width: 1; }
+.plot-axis { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+             font-variant-numeric: tabular-nums; }
+.plot-s1 { color: var(--text); }
+.plot-s2 { color: var(--text-muted); }
+.plot-s3 { color: var(--text-muted); }
+.plot-s4 { color: var(--text); }
+.plot-line { stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.plot-line.plot-s2 { stroke-dasharray: 5 4; }
+.plot-line.plot-s3 { stroke-width: 1.5; }
+.plot-line.plot-s4 { stroke-dasharray: 1 4; }
+.plot-area { fill-opacity: 0.07; stroke: none; }
+.plot-bridge { stroke-width: 1.25; stroke-dasharray: 1.5 4; opacity: 0.6; }
+.plot-dot { stroke: none; }
+.plot-col { color: var(--text-muted); }
+.plot-band { color: var(--text); fill-opacity: 0.06; }
+.plot-cross { color: var(--text-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+.plot-ring { fill: var(--surface-raised); stroke-width: 2; }
+.plot-brush { color: var(--text); fill-opacity: 0.08; stroke-opacity: 0.35; stroke-width: 1; }
+.plot-tip {
+	position: absolute;
+	z-index: 2;
+	min-width: 160px;
+	max-width: 320px;
+	padding: 6px 8px;
+	pointer-events: none;
+	background: var(--surface-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow);
+	font-size: 12px;
+	color: var(--text);
+}
+.plot-tip-head { margin-bottom: 4px; font-family: var(--font-mono); font-size: 10.5px;
+                 text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.plot-tip-row { display: grid; grid-template-columns: 18px 1fr auto; gap: 6px; align-items: center;
+                white-space: nowrap; }
+.plot-tip-row b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.plot-controls { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: center;
+                 margin-top: var(--space-2); }
+.plot-legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
+.plot-key {
+	padding: 2px 6px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	background: none;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.plot-key:hover { border-color: var(--border); color: var(--text); }
+.plot-key[aria-pressed="false"] { opacity: 0.45; text-decoration: line-through; }
+.plot-key::before, .plot-swatch::before {
+	content: "";
+	display: inline-block;
+	width: 18px;
+	margin-right: 6px;
+	vertical-align: middle;
+	border-top: 2px solid var(--text);
+}
+.plot-swatch::before { width: 14px; margin-right: 0; }
+.plot-key-2::before { border-top: 2px dashed var(--text-muted); }
+.plot-key-3::before { border-top: 2px solid var(--text-muted); }
+.plot-key-4::before { border-top: 2px dotted var(--text); }
+.plot-stats { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); flex: 1 1 auto;
+              font-size: 12px; color: var(--text-muted); }
+.plot-stats b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.plot-tools { display: flex; gap: var(--space-2); margin-left: auto; }
+.plot-on .chart-data:not(.visually-hidden) { display: block; max-height: 360px; overflow: auto;
+                                             margin-top: var(--space-3); font-size: 12px; }
+.plot-on .chart-data:not(.visually-hidden) th,
+.plot-on .chart-data:not(.visually-hidden) td { padding: 3px 12px 3px 0; text-align: left; white-space: nowrap;
+                                                font-variant-numeric: tabular-nums; }
+.plot-on .chart-data:not(.visually-hidden) caption { text-align: left; color: var(--text-muted); }
+@media print {
+	.plot-controls, .plot-tip { display: none; }
+}
 .sparkline { display: inline-block; width: 100px; height: 24px; vertical-align: middle;
              color: var(--text-muted); }
 .sparkline-line { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
@@ -5096,7 +5326,7 @@ input:not([type="hidden"]):focus-visible {
  */
 .arbitrage-warning { margin-top: var(--space-1); font-size: 12px; color: var(--text-muted); }
 .craft-inputs { margin-top: var(--space-1); font-size: 12.5px; }
-.craft-inputs summary { cursor: pointer; color: var(--text-muted); }
+.craft-inputs summary { cursor: pointer; color: var(--text-muted); white-space: nowrap; }
 .craft-inputs ul { margin: var(--space-1) 0 0; padding-left: var(--space-4); }
 .craft-inputs li.is-stale { color: var(--text-muted); }
 .plan-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
@@ -5870,3 +6100,68 @@ table[data-client-sort] th[aria-sort="ascending"] > button.th-sort::after { cont
 table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { content: " \25BE"; }
 .table-filter { display: flex; align-items: center; gap: 0.75rem; margin: 0.5rem 0; }
 .table-filter input { max-width: 22rem; width: 100%; }
+
+/* ==========================================================================
+   Colour: charts, trends and the figures worth a glance
+   ========================================================================== */
+
+/*
+ * The series palette. The first is the coins' gold, because the first
+ * line is nearly always a price; the rest are told apart by hue and,
+ * as before, by dash, so a chart still reads in print or to anyone who
+ * cannot tell teal from violet. None is the accent: red means "look
+ * here", and a chart is for reading.
+ */
+.chart-line-1, .plot-s1 { color: var(--series-1); }
+.chart-line-2, .plot-s2 { color: var(--series-2); }
+.chart-line-3, .plot-s3 { color: var(--series-3); }
+.chart-line-4, .plot-s4 { color: var(--series-4); }
+.chart-key::before, .plot-key::before, .plot-swatch::before { border-top-color: var(--series-1); }
+.chart-key-2::before, .plot-key-2::before { border-top-color: var(--series-2); }
+.chart-key-3::before, .plot-key-3::before { border-top-color: var(--series-3); }
+.chart-key-4::before, .plot-key-4::before { border-top-color: var(--series-4); }
+.plot-area { fill-opacity: 0.12; }
+.chart-bar, .plot-col { color: color-mix(in srgb, var(--series-1) 75%, transparent); }
+.chart-bar:hover { color: var(--series-1); }
+.chart-heat-cell:not(.chart-heat-empty) { color: var(--series-1); }
+
+/* A sparkline coloured by which way it went over its window. */
+.sparkline[data-trend="up"] { color: var(--positive); }
+.sparkline[data-trend="down"] { color: var(--negative); }
+.sparkline[data-trend="flat"] { color: color-mix(in srgb, var(--series-1) 70%, var(--text-muted)); }
+
+/* A figure in a plain cell that is notably good or bad: its text
+ * coloured, the in-between left alone (mdw_toned_percent()). */
+.tone-text { font-weight: 600; }
+.tone-text.tone-good { color: var(--positive); }
+.tone-text.tone-bad { color: var(--negative); }
+
+/* What holds the most of an inventory, and a skill against its cap:
+ * bars in gold, and a skill at its cap filled to the brim. */
+.share-bar .bar-fill { background: var(--series-1); }
+.rank { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; vertical-align: middle; }
+.rank-bar { display: inline-block; width: 42px; height: 5px; overflow: hidden;
+            background: color-mix(in srgb, var(--series-2) 18%, transparent); border-radius: 3px; }
+.rank-bar > span { display: block; height: 100%; background: var(--series-2); border-radius: 3px; }
+.rank-max .rank-bar > span { background: var(--coin-1); }
+.rank-text { font-family: var(--font-mono); font-size: 0.92em; font-variant-numeric: tabular-nums; }
+.rank-max .rank-text { color: var(--coin-1); }
+
+/* An expansion's name as a tag in its own colour (mdw_expansion_tag());
+ * one the page does not know is a plain tag. */
+.xpac {
+	--xpac: var(--text-muted);
+	display: inline-block;
+	padding: 0 6px;
+	border: 1px solid color-mix(in srgb, var(--xpac) 55%, transparent);
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--xpac) 12%, transparent);
+	color: color-mix(in srgb, var(--xpac) 80%, var(--text));
+	font-size: 0.86em;
+	white-space: nowrap;
+}
+
+/* A character's professions are links, but a column of red ones shouts;
+ * they read as text, the bar carrying the colour. */
+.account-professions a { color: var(--text-muted); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); }
+.account-professions a:hover { color: var(--text); }

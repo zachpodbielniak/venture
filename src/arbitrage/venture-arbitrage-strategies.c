@@ -1579,7 +1579,14 @@ arb_transform_recipe(
 	                      venture_entity_get_id(recipe), (NULL != output.row) ? output.source_id : 0,
 	                      (NULL != output.row) ? ":" : "",
 	                      (NULL != output.row) ? output.row->venue_key : "");
-	title = g_strdup_printf("%s: %s", recipe_name, output_name);
+	/* "Quick brew: Healing potion", but a recipe named for what it
+	 * makes -- every recipe the game itself names -- once. */
+	if ((NULL != recipe_name) && (NULL != output_name) &&
+	    (0 == g_utf8_collate(recipe_name, output_name) ||
+	     0 == g_ascii_strcasecmp(recipe_name, output_name)))
+		title = g_strdup(recipe_name);
+	else
+		title = g_strdup_printf("%s: %s", recipe_name, output_name);
 	opportunity = json_object_new();
 	json_object_set_string_member(opportunity, "strategy", "transform");
 	json_object_set_string_member(opportunity, "key", key);

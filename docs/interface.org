@@ -122,6 +122,7 @@ Charts are drawn by the server as inline SVG (=src/web/venture-web-chart.c=): a 
 | =.chart-line-3= | the third series, solid and quieter (the price history's market value) | =--text-muted= |
 | =.chart-line-4= | the fourth series, dotted (the price history's comparison: the region's median or another venue) | =--text= |
 | =.chart-dot= | a point alone between gaps | its series' colour |
+| =.chart-bridge= | a gap crossed: a faint dotted line from the last point seen to the next | its series' colour |
 | =.chart-bar= (on a =rect=) | a bar | =--text-muted=, =--text= under the pointer |
 | =.chart-heat-cell= | a heat cell; its strength is =fill-opacity= (0.12 to 0.92), not a colour | =--text= |
 | =.chart-heat-empty= | a cell with nothing in it: outlined, never filled, so empty never reads as cheapest | =--border= |
@@ -134,6 +135,54 @@ Charts are drawn by the server as inline SVG (=src/web/venture-web-chart.c=): a 
 Red is not used: a chart is something to read, and red means "look here". A heat map of prices shades the cheapest cell darkest, because cheap is what a buyer looks for; a map of quantities shades the most darkest. No radius, no gradient, no shadow, as everywhere.
 
 Every chart has a =<title>=, a =<desc>= when it has a sentence to say, =role="img"= with an =aria-label=, and a table of every figure -- a picture of numbers is not the numbers. Every label is escaped; the coordinates are written in the C locale, because a decimal comma would split one SVG number into two.
+
+An axis steps in round figures -- 1, 2, 2.5 or 5 times a power of ten, whole when every value is (a count, or minor units) -- and its margin is as wide as its widest label, so a gold price axis reads 2,600g, 2,800g and is never cut off at the card's edge. The drawing is a fixed 640 by 220 scaled to its box, capped at 360px high so its text stays near its size without script.
+
+*** Interactive charts (venture.js)
+
+A line or bar chart also carries its raw numbers as JSON in =<script type="application/json" data-plot>= beside its table: ={kind, sec, axis, v}= -- each series' side, how its axis reads (={kind: "money", exp, pre, suf}= from the series' =currency=, or =percent=, or =number= with =int=), and its values with =null= for a gap. The names, the labels and every figure shown come from the table, as the server formatted them; =<=, =>=, =&= and ='= in the JSON are =\u= escapes. =wirePlots()= in venture.js redraws the chart from them at the width it is shown (=.plot-on= on the figure hides the server's drawing and legend) and adds:
+
+- a readout under the pointer -- a rule, a ring on each line, and every series' figure at that point, snapped to the nearest point with data -- or under the arrow keys when the chart has focus (Home and End too; the arrows skip the hours nothing was seen in);
+- the legend as buttons (=aria-pressed=) that switch a series off and rescale its axis; one always stays;
+- drag across the chart, or + and -, to zoom into a range; Reset zoom, a double-click or 0 shows it all;
+- the low, high, latest and change of the first series shown, over the range in view;
+- Table, which shows the chart's table, and CSV, which downloads it.
+
+Its classes are =plot-*= (=.plot=, =.plot-svg=, =.plot-s1= … =.plot-s4= with =.plot-line=, =.plot-area=, =.plot-bridge=, =.plot-dot=, =.plot-ring=, =.plot-col=, =.plot-tip=, =.plot-key-1= … =.plot-key-4=, =.plot-controls=, =.plot-stats=, =.plot-tools=), in both stylesheets after the =chart-*= rules, and never a =chart-*= class: venture.js is inlined into every page, and a test that greps a page for =chart-line= would find the script. A chart wired once is marked, and the page's MutationObserver ignores changes inside a =.plot=, so the readout redrawing on every pointer move does not rescan the page's tables.
+
+*** Coins
+
+A currency kept in denominations -- WoW's gold, silver and copper -- is written by the server as plain text, ="12g 5s 30c"=. Every page carries those currencies as =<script type="application/json" id="venture-coins">= (=venture_currency_get_denominations_json()=: ={"GOLD":[["g",10000],["s",100],["c",1]]}=; absent when no currency has denominations), and =wireCoins()= in venture.js finds amounts in the page's text by exactly those suffixes, in order, and wraps each:
+
+| Class | What it is |
+|-------+------------|
+| =.coins= | one amount, never broken across lines; =.coins-negative= when it is below zero |
+| =.coin=, =.coin-1= … =.coin-3= | one count and its coin, by rank (=coin-1= the largest), drawn in =--coin-1= … =--coin-3= (gold, silver, copper) with the coin itself as a disc after the count |
+| =.coin-mark= | the suffix letter: still in the text, so a sort, a filter, a copy and a screen reader read ="12g"=, but shown only in print |
+
+It skips scripts, inputs, code, SVG, an element marked =.no-coins=, and what it has wrapped already; it runs on the page, after every swap, and on a chart's readout and figures. A money chart's axis names its currency (=cur= in the =data-plot= axis), so a chart in coins labels its ticks in coins (="3s 25c"=), not as a decimal of the largest. Under =.money-positive= or =.money-negative= an amount keeps its metals and the sign is a wash behind it.
+
+An item's name is drawn in its quality's colour from the instrument's =display= (=.item-name=); a light palette darkens those colours with =--item-name-filter=, because the game chose them for a dark ground. Inventory, an account's page, Profit and loss and Crafting (its products and reagents) get the display from the organization's stores with =venture_marketdata_decorate_items()=, the row's own source first, so items an account pushed by tsmctl holds are drawn with the Blizzard source's icon and colour.
+
+*** Colour
+
+Charts, trends and the figures worth a glance carry colour from tokens both looks define for every palette (the block /Colour/ at the end of each stylesheet):
+
+| Token or class | What it colours |
+|----------------+-----------------|
+| =--series-1= … =--series-4= | a chart's series, in order (=.chart-line-N=, =.plot-sN=, their legend keys, bars and the heat map's cells): gold, teal, violet, coral. Series are still told apart by dash as well, so a chart reads in print. Never the accent |
+| =.sparkline[data-trend]= | a sparkline by which way it went, first point to last: =up= in =--positive=, =down= in =--negative=, =flat= (under 2% either way) in a muted gold. =venture_web_chart_sparkline()= sets it |
+| =.tone-text.tone-good=, =.tone-bad= | a percentage in a plain cell that is notably good or bad for the reader -- of region on Browse and an item's venues (85% and under, 115% and over), sale rate (25% and over, under 5%), a craft's ROI (20% and over, zero and under) -- the rest left plain (=mdw_toned_percent()=) |
+| =.xpac= | an expansion's name as a tag in its colour (=--xpac=, from =mdw_expansion_tag()=, matched by a word of the name: Outland, Northrend, Pandaria, Khaz Algar, …); one it does not know is a plain tag |
+| =.rank=, =.rank-bar=, =.rank-max= | a profession's skill against its cap as a short bar and "65/100", gold at the cap (=mdw_rank_bar()=; =mdw_rank_text()= reads "Khaz Algar 65/100") |
+| =.share-bar= | Inventory's share of the whole, in =--series-1= |
+
+*** Filters
+
+| Class | What it is |
+|-------+------------|
+| =.chips=, =.chip= | several choices as chips: a =<fieldset class="field chips">= of checkboxes, each a =label.chip= whose checkbox is hidden and whose text fills when ticked. The query is the one a =<select multiple>= sends, one =name=value= per choice. A picker with nothing to choose is left out |
+| =.form-more= | a filter form's rarely used fields folded in a =<details>= "More filters", open, with a count, whenever the question sets one of them (=mdw_more_open()=; a field a form always sends, like =only_known=0=, is not setting it) |
 
 The Trading pages add =.market-filters= (a filter form), =.market-action-row= and =.form-inline= (a row of small forms), =.market-stats= (a hook on the shared =.stat-row=, which styles it) and =.market-figure= (stat rows), =.market-heat= (two heat maps stacked), =.market-ranges= and =.market-range= (the price history's row of range links in the micro register, the one drawn =aria-current="page"= and in ink, never the accent), =.market-trend= (a table cell holding a row's seven-day sparkline, kept on one line), =.market-table= (a data table that scrolls inside its card on a phone), =.market-widget= and =.market-hits= (the market dashboard cards). They are the block /Market data: the charts and the Trading pages/ in each stylesheet.
 
@@ -151,7 +200,7 @@ The arbitrage pages (=/arbitrage=, =/arbitrage/crafting=, =/arbitrage/recipe-lis
 | =.arbitrage-calc= | one calculator's card (surebet, back and lay, flip) |
 | =.arbitrage-answer= | the calculator's answer, a =.stat-row= whose figures use tabular digits so stakes line up |
 | =.arbitrage-warning= | the muted line under a row naming a venue whose fees are not counted (no venue record, no fee model) |
-| =.crafting-table= | Crafting's table of recipes (an =.arbitrage-table=); it sorts in the browser like every table, each money cell carrying its amount as =data-sort-value=. Its character picker is a plain =<select multiple data-no-picker>=, so several characters are one parameter each in the query string |
+| =.crafting-table= | Crafting's table of recipes (an =.arbitrage-table=); it sorts in the browser like every table, each money cell carrying its amount as =data-sort-value=. Its columns run profit, margin, ROI and sale rate first, then the cost, where it sells and the fees, and the category, expansion and who knows it last; profit and margin carry =.money-positive= or =.money-negative= |
 | =.craft-inputs= | a craft's reagents folded under its name (=<details>=), one line each with its venue, price and age; a stale one is muted |
 | =.plan-actions= | the planner's line of actions: "Price again" and the exports |
 | =.plan-totals= | one =.stat-row= per currency: outlay, sales, cut, deposits, expected lost deposits, revenue, profit |

@@ -118,6 +118,136 @@ test_line(void)
 
 	/* Coordinates are C-locale numbers, never "12,5". */
 	g_assert_null(strstr(d, ","));
+
+	/* The gaps are bridged, faintly, from 1 to 3 and from 3 to 5. */
+	g_assert_cmpuint(occurrences(svg, "class=\"chart-bridge chart-line-1\""), ==, 1);
+	g_assert_cmpuint(occurrences(svg, "class=\"chart-bridge chart-line-2\""), ==, 0);
+}
+
+/* The text of every left-hand axis label of @svg, bottom up. */
+static GPtrArray *
+left_labels(const gchar *svg)
+{
+	static const gchar mark[] = "class=\"chart-axis\" x=\"";
+	GPtrArray *labels;
+	const gchar *at;
+
+	labels = g_ptr_array_new_with_free_func(g_free);
+
+	for (at = strstr(svg, mark); NULL != at; at = strstr(at + 1, mark))
+	{
+		const gchar *text;
+		const gchar *end;
+
+		text = strstr(at, ">");
+		end = strstr(text, "</text>");
+
+		if (NULL != g_strstr_len(at, text - at, "text-anchor=\"end\""))
+			g_ptr_array_add(labels, g_strndup(text + 1, end - (text + 1)));
+	}
+
+	return labels;
+}
+
+/*
+ * The axis steps in round figures and its margin is as wide as its
+ * widest label; the figure carries its numbers as JSON a script can
+ * read, with nothing in it HTML would.
+ *
+ * What breaks if this regresses: a gold price axis reads "3353g 39s 80c"
+ * and runs off the left of the card; the interactive chart has nothing
+ * to draw from, or a feed's name closes the script element.
+ */
+static void
+test_axis_and_spec(void)
+{
+	static const gdouble prices[] = { 295800.0, 301234.0, NAN, 335339.0 };
+	static const gdouble quantities[] = { 2.0, 2.0, 2.0, 2.0 };
+	static const gchar *const labels[] = { "a", "b", "c", "d", NULL };
+	g_autoptr(GPtrArray) ticks = NULL;
+	g_autoptr(JsonParser) parser = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *svg = NULL;
+	g_autofree gchar *json = NULL;
+	VentureWebChartSeries series[2];
+	VentureWebChart chart;
+	JsonObject *root;
+	JsonArray *values;
+	JsonObject *axis;
+	const gchar *start;
+	const gchar *end;
+	gsize widest;
+	gdouble margin;
+	guint i;
+
+	memset(series, 0, sizeof(series));
+	series[0].name = hostile;
+	series[0].values = prices;
+	series[0].format = venture_web_chart_format_minor;
+	series[0].format_data = (gpointer)"USD";
+	series[1].name = "Quantity";
+	series[1].values = quantities;
+	series[1].secondary = TRUE;
+	memset(&chart, 0, sizeof(chart));
+	chart.title = hostile;
+	chart.labels = labels;
+	chart.n_points = G_N_ELEMENTS(prices);
+	chart.series = series;
+	chart.n_series = 2;
+
+	svg = venture_web_chart_line(&chart);
+	assert_clean(svg);
+
+	/* Round steps: whole hundreds of dollars, never the data's cents. */
+	ticks = left_labels(svg);
+	g_assert_cmpuint(ticks->len, >=, 3);
+	widest = 0;
+
+	for (i = 0; i < ticks->len; i++)
+	{
+		const gchar *tick = g_ptr_array_index(ticks, i);
+
+		g_assert_true(g_str_has_suffix(tick, "00.00"));
+		widest = MAX(widest, strlen(tick));
+	}
+
+	/* The plot starts right of the widest label (6.2 units a character). */
+	start = strstr(svg, "<line class=\"chart-grid\" x1=\"");
+	g_assert_nonnull(start);
+	margin = g_ascii_strtod(start + strlen("<line class=\"chart-grid\" x1=\""), NULL);
+	g_assert_cmpfloat(margin, >=, (gdouble)widest * 6.2);
+
+	/* A flat whole quantity still steps in whole units. */
+	g_assert_nonnull(strstr(svg, "text-anchor=\"start\" fill=\"currentColor\">2</text>"));
+	g_assert_null(strstr(svg, "text-anchor=\"start\" fill=\"currentColor\">2.50</text>"));
+
+	/* The numbers, as JSON the browser never runs. */
+	start = strstr(svg, "<script type=\"application/json\" data-plot>");
+	g_assert_nonnull(start);
+	start = strchr(start, '>') + 1;
+	end = strstr(start, "</script>");
+	g_assert_nonnull(end);
+	json = g_strndup(start, end - start);
+	g_assert_null(strchr(json, '<'));
+	parser = json_parser_new();
+	g_assert_true(json_parser_load_from_data(parser, json, -1, &error));
+	g_assert_no_error(error);
+	root = json_node_get_object(json_parser_get_root(parser));
+	g_assert_cmpstr(json_object_get_string_member(root, "kind"), ==, "line");
+	values = json_array_get_array_element(json_object_get_array_member(root, "v"), 0);
+	g_assert_cmpuint(json_array_get_length(values), ==, 4);
+	g_assert_cmpint(json_array_get_int_element(values, 0), ==, 295800);
+	g_assert_true(JSON_NODE_HOLDS_NULL(json_array_get_element(values, 2)));
+	g_assert_true(json_array_get_boolean_element(json_object_get_array_member(root, "sec"), 1));
+	axis = json_array_get_object_element(json_object_get_array_member(root, "axis"), 0);
+	g_assert_cmpstr(json_object_get_string_member(axis, "kind"), ==, "money");
+	g_assert_cmpint(json_object_get_int_member(axis, "exp"), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(axis, "pre"), ==, "$");
+	g_assert_cmpstr(json_object_get_string_member(axis, "suf"), ==, "");
+	g_assert_cmpstr(json_object_get_string_member(axis, "cur"), ==, "USD");
+	axis = json_array_get_object_element(json_object_get_array_member(root, "axis"), 1);
+	g_assert_cmpstr(json_object_get_string_member(axis, "kind"), ==, "number");
+	g_assert_true(json_object_get_boolean_member(axis, "int"));
 }
 
 /* The y of every point of @svg's path of class chart-line-@n, in order. */
@@ -215,9 +345,11 @@ test_line_shared_scale(void)
 	g_assert_cmpfloat_with_epsilon(g_array_index(second, gdouble, 0), g_array_index(first, gdouble, 1), 0.05);
 	g_assert_cmpfloat_with_epsilon(g_array_index(second, gdouble, 2), g_array_index(first, gdouble, 1), 0.05);
 
-	/* The quantity keeps an axis of its own: its 9 is as high as the
-	 * price's 200, a different unit at the same height. */
-	g_assert_cmpfloat_with_epsilon(g_array_index(quantity, gdouble, 1), g_array_index(first, gdouble, 1), 0.05);
+	/* The quantity keeps an axis of its own: its 9 is drawn above the
+	 * price's 100, where on the price's axis it would sit under the
+	 * floor; and its 1 below its 9. */
+	g_assert_cmpfloat(g_array_index(quantity, gdouble, 1), <, g_array_index(first, gdouble, 0));
+	g_assert_cmpfloat(g_array_index(quantity, gdouble, 2), >, g_array_index(quantity, gdouble, 1));
 
 	chart.n_series = 5;
 	refused = venture_web_chart_line(&chart);
@@ -371,7 +503,7 @@ test_sparkline(void)
 	g_autofree gchar *svg = NULL;
 
 	svg = venture_web_chart_sparkline(hostile, values, G_N_ELEMENTS(values));
-	g_assert_true(g_str_has_prefix(svg, "<svg class=\"sparkline\""));
+	g_assert_true(g_str_has_prefix(svg, "<svg class=\"sparkline\" data-trend=\"up\""));
 	g_assert_nonnull(strstr(svg, "role=\"img\" aria-label=\"&lt;script&gt;"));
 	g_assert_null(strstr(svg, "<script>"));
 	g_assert_null(strstr(svg, "<table"));
@@ -412,6 +544,7 @@ main(
 
 	g_test_add_func("/web-chart/line", test_line);
 	g_test_add_func("/web-chart/line-shared-scale", test_line_shared_scale);
+	g_test_add_func("/web-chart/axis-and-spec", test_axis_and_spec);
 	g_test_add_func("/web-chart/empty-and-bounds", test_empty_and_bounds);
 	g_test_add_func("/web-chart/bar", test_bar);
 	g_test_add_func("/web-chart/heat", test_heat);

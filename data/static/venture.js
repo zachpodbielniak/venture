@@ -5745,12 +5745,1235 @@
 		                heading ? Array.prototype.indexOf.call(heading.parentNode.children, heading) : -1);
 	});
 
-	/* Tables arrive after the page too -- an htmx swap, a streamed chat
-	 * answer, a modal -- so new ones are wired as they appear. */
+	/*
+	 * Charts, redrawn where they are shown. The server draws every line
+	 * and bar chart as SVG (src/web/venture-web-chart.c), so a chart reads
+	 * without script and prints; beside its hidden table of figures it
+	 * carries the raw numbers in script[data-plot]. This redraws it from
+	 * those, at the width it is actually shown -- the server's drawing is
+	 * scaled to the card, which made its text huge on a wide screen --
+	 * and adds what paper cannot: a readout under the pointer or the
+	 * arrow keys, series to switch off, a range to drag and zoom into, the
+	 * low, high, latest and change of what is in view, the table, and a
+	 * CSV of it. Every figure shown is the table's text, as the server
+	 * formatted it; only the axis ticks are formatted here. Colour stays
+	 * the stylesheets': every mark is currentColor and a class.
+	 */
+	var PLOT_NS = "http://www.w3.org/2000/svg";
+	var PLOT_CHAR = 6.8;
+	var PLOT_SERIES = 4;
+
+	function plotEsc(text) {
+		return String(text).replace(/[&<>"']/g, function (c) {
+			return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c];
+		});
+	}
+
+	function plotNum(value) {
+		return (Math.round(value * 10) / 10).toString();
+	}
+
+	/* The same round steps as the server: 1, 2, 2.5 or 5 times ten to a power. */
+	function plotNiceStep(span, integral) {
+		var raw = span / 4;
+		var magnitude;
+		var fraction;
+		var step;
+
+		if (!isFinite(raw) || raw <= 0) {
+			raw = 1;
+		}
+
+		magnitude = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+		fraction = raw / magnitude;
+		step = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10;
+		step *= magnitude;
+
+		if (integral && step !== Math.floor(step)) {
+			step = Math.max(1, Math.floor(step));
+		}
+
+		return step;
+	}
+
+	function plotScale(low, high, integral) {
+		var nonNegative = low >= 0;
+		var pad = high <= low
+			? (integral ? 1 : (low === 0 ? 1 : Math.abs(low) * 0.1))
+			: (high - low) * 0.04;
+		var step;
+		var scale;
+
+		low -= pad;
+		high += pad;
+
+		if (nonNegative && low < 0) {
+			low = 0;
+		}
+
+		step = plotNiceStep(high - low, integral);
+		scale = { step: step, low: Math.floor(low / step) * step, high: Math.ceil(high / step) * step };
+
+		if (scale.high <= scale.low) {
+			scale.high = scale.low + step;
+		}
+
+		scale.n = Math.round((scale.high - scale.low) / step);
+		return scale;
+	}
+
+	function plotDecimals(step) {
+		var d = 0;
+
+		while (d < 6 && Math.abs(step * Math.pow(10, d) - Math.round(step * Math.pow(10, d))) > 1e-6) {
+			d++;
+		}
+
+		return d;
+	}
+
+	/*
+	 * A tick's label in its axis's unit: "2,600g", "$1,250", "12.5%",
+	 * past a million "1.25M g". Ticks are round, so the coins below a
+	 * gold piece never show; the readout has the exact figure.
+	 */
+	function plotTick(axis, value, step) {
+		var kind = axis ? axis.kind : "number";
+		var scale = 1;
+		var pre = "";
+		var suf = kind === "percent" ? "%" : "";
+		var big = "";
+		var digits;
+		var v;
+		var s;
+
+		if (kind === "money") {
+			var table = coinRead();
+			var units = table && axis.cur ? table[String(axis.cur).toUpperCase()] : null;
+
+			if (units && units.length) {
+				return coinFormat(units, value);
+			}
+
+			scale = Math.pow(10, axis.exp || 0);
+			pre = axis.pre || "";
+			suf = axis.suf || "";
+		}
+
+		v = value / scale;
+		s = step / scale;
+
+		if (Math.abs(v) >= 1e6 && s >= 1e4) {
+			v /= 1e6;
+			s /= 1e6;
+			big = "M";
+		}
+
+		digits = plotDecimals(s);
+		return (v < -1e-12 ? "-" : "") + pre
+			+ Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+			+ big + (big && /^[A-Za-z]/.test(suf) ? " " : "") + suf;
+	}
+
+	function plotFinite(value) {
+		return typeof value === "number" && isFinite(value);
+	}
+
+	/* The chart's figures: the JSON's numbers, the table's names and text. */
+	function plotRead(figure, script) {
+		var spec;
+		var table = figure.querySelector("table");
+		var head;
+		var rows;
+		var p;
+		var s;
+		var i;
+
+		try {
+			spec = JSON.parse(script.textContent);
+		} catch (e) {
+			return null;
+		}
+
+		if (!table || !table.tHead || !table.tBodies.length || !spec || !spec.v || !spec.v.length
+		    || spec.v.length > PLOT_SERIES) {
+			return null;
+		}
+
+		head = table.tHead.rows[0].cells;
+		rows = table.tBodies[0].rows;
+		p = {
+			figure: figure, table: table, kind: spec.kind === "bar" ? "bar" : "line",
+			values: spec.v, secondary: spec.sec || [], axis: spec.axis || [],
+			names: [], labels: [], text: [], hidden: [],
+			n: rows.length, from: 0, to: rows.length - 1, hover: -1, drag: null, geo: null,
+			title: (figure.querySelector("svg title") || { textContent: "Chart" }).textContent
+		};
+
+		for (s = 0; s < spec.v.length; s++) {
+			if (!spec.v[s] || spec.v[s].length !== p.n) {
+				return null;
+			}
+
+			p.names.push(head[s + 1] ? head[s + 1].textContent : "");
+			p.text.push([]);
+			p.hidden.push(false);
+		}
+
+		for (i = 0; i < rows.length; i++) {
+			p.labels.push(rows[i].cells[0] ? rows[i].cells[0].textContent : "");
+
+			for (s = 0; s < spec.v.length; s++) {
+				p.text[s].push(rows[i].cells[s + 1] ? rows[i].cells[s + 1].textContent : "");
+			}
+		}
+
+		return p.n > 0 ? p : null;
+	}
+
+	function plotButton(label, onClick) {
+		var button = document.createElement("button");
+
+		button.type = "button";
+		button.className = "btn btn-sm";
+		button.textContent = label;
+		button.addEventListener("click", onClick);
+		return button;
+	}
+
+	function plotSide(p, s) {
+		return p.kind === "bar" ? 0 : (p.secondary[s] ? 1 : 0);
+	}
+
+	function plotY(geo, side, value) {
+		var scale = geo.scales[side];
+
+		return geo.bottom - (geo.bottom - geo.top) * (value - scale.low) / (scale.high - scale.low);
+	}
+
+	/* Draws the whole chart for the current width, window and series. */
+	function plotDraw(p) {
+		var width = p.holder.clientWidth;
+		var height;
+		var bar = p.kind === "bar";
+		var ranges = [null, null];
+		var axisOf = [-1, -1];
+		var scales = [null, null];
+		var ticks = [[], []];
+		var widest = [0, 0];
+		var html = [];
+		var count = p.to - p.from;
+		var geo;
+		var left;
+		var right;
+		var top = 10;
+		var bottom;
+		var areaSeries = -1;
+		var labelWidth = 0;
+		var every;
+		var side;
+		var s;
+		var i;
+		var k;
+
+		if (!width) {
+			return;
+		}
+
+		height = Math.max(200, Math.min(340, Math.round(width * 0.34)));
+
+		for (s = 0; s < p.values.length; s++) {
+			if (p.hidden[s] || (bar && s > 0)) {
+				continue;
+			}
+
+			side = plotSide(p, s);
+
+			for (i = p.from; i <= p.to; i++) {
+				var v = p.values[s][i];
+
+				if (!plotFinite(v)) {
+					continue;
+				}
+
+				if (!ranges[side]) {
+					ranges[side] = { low: v, high: v, integral: true };
+					axisOf[side] = s;
+				}
+
+				ranges[side].low = Math.min(ranges[side].low, v);
+				ranges[side].high = Math.max(ranges[side].high, v);
+				ranges[side].integral = ranges[side].integral && v === Math.floor(v);
+			}
+		}
+
+		for (side = 0; side < 2; side++) {
+			if (!ranges[side]) {
+				continue;
+			}
+
+			if (bar) {
+				ranges[side].low = Math.min(ranges[side].low, 0);
+				ranges[side].high = Math.max(ranges[side].high, 0);
+			}
+
+			scales[side] = plotScale(ranges[side].low, ranges[side].high, ranges[side].integral);
+
+			for (k = 0; k <= scales[side].n; k++) {
+				var text = plotTick(p.axis[axisOf[side]], scales[side].low + scales[side].step * k,
+				                    scales[side].step);
+
+				ticks[side].push(text);
+				widest[side] = Math.max(widest[side], text.length * PLOT_CHAR);
+			}
+		}
+
+		left = scales[0] ? Math.max(28, widest[0] + 14) : 14;
+		right = width - (scales[1] ? Math.max(28, widest[1] + 14) : 16);
+		bottom = height - 26;
+		geo = {
+			left: left, right: right, top: top, bottom: bottom, width: width, height: height,
+			scales: scales, bar: bar,
+			band: (right - left) / (count + 1),
+			x: function (index) {
+				if (bar) {
+					return left + (index - p.from + 0.5) * (right - left) / (count + 1);
+				}
+
+				return count > 0 ? left + (index - p.from) * (right - left) / count : (left + right) / 2;
+			}
+		};
+		p.geo = geo;
+
+		/* The rules and their labels, the right side's only where the left has none. */
+		for (side = 0; side < 2; side++) {
+			if (!scales[side]) {
+				continue;
+			}
+
+			for (k = 0; k <= scales[side].n; k++) {
+				var y = bottom - (bottom - top) * k / scales[side].n;
+
+				if (side === 0 || !scales[0]) {
+					html.push("<line class=\"plot-grid\" stroke=\"currentColor\" x1=\"" + plotNum(left)
+					          + "\" x2=\"" + plotNum(right) + "\" y1=\"" + plotNum(y) + "\" y2=\""
+					          + plotNum(y) + "\"/>");
+				}
+
+				html.push("<text class=\"plot-axis\" fill=\"currentColor\" x=\""
+				          + plotNum(side === 0 ? left - 8 : right + 8) + "\" y=\"" + plotNum(y + 4)
+				          + "\" text-anchor=\"" + (side === 0 ? "end" : "start") + "\">"
+				          + plotEsc(ticks[side][k]) + "</text>");
+			}
+		}
+
+		/* The bottom labels: as many as fit, the end ones kept inside. */
+		for (i = p.from; i <= p.to; i++) {
+			labelWidth = Math.max(labelWidth, p.labels[i].length * PLOT_CHAR);
+		}
+
+		every = Math.max(1, Math.ceil((count + 1) / Math.max(1, Math.floor((right - left) / (labelWidth + 18)))));
+
+		for (i = p.from; i <= p.to; i += every) {
+			var lx = geo.x(i);
+			var half = p.labels[i].length * PLOT_CHAR / 2;
+			var anchor = "middle";
+
+			if (lx - half < 0) {
+				anchor = "start";
+				lx = Math.max(0, lx - half);
+			} else if (lx + half > width) {
+				anchor = "end";
+				lx = Math.min(width, lx + half);
+			}
+
+			html.push("<text class=\"plot-axis\" fill=\"currentColor\" x=\"" + plotNum(lx) + "\" y=\""
+			          + plotNum(height - 8) + "\" text-anchor=\"" + anchor + "\">" + plotEsc(p.labels[i])
+			          + "</text>");
+		}
+
+		if (bar && scales[0]) {
+			var zero = plotY(geo, 0, 0);
+
+			for (i = p.from; i <= p.to; i++) {
+				var bv = p.values[0][i];
+				var by;
+
+				if (!plotFinite(bv)) {
+					continue;
+				}
+
+				by = plotY(geo, 0, bv);
+				html.push("<rect class=\"plot-col\" data-i=\"" + i + "\" fill=\"currentColor\" x=\""
+				          + plotNum(geo.x(i) - geo.band * 0.36) + "\" y=\"" + plotNum(Math.min(by, zero))
+				          + "\" width=\"" + plotNum(Math.max(1, geo.band * 0.72)) + "\" height=\""
+				          + plotNum(Math.max(Math.abs(zero - by), 1)) + "\"/>");
+			}
+
+			html.push("<line class=\"plot-zero\" stroke=\"currentColor\" x1=\"" + plotNum(left) + "\" x2=\""
+			          + plotNum(right) + "\" y1=\"" + plotNum(zero) + "\" y2=\"" + plotNum(zero) + "\"/>");
+		}
+
+		/* The lines, last first so the first series is drawn on top. */
+		for (s = p.values.length - 1; !bar && s >= 0; s--) {
+			if (!p.hidden[s] && plotSide(p, s) === 0 && scales[0]) {
+				areaSeries = s;
+			}
+		}
+
+		for (s = p.values.length - 1; !bar && s >= 0; s--) {
+			var line = [];
+			var area = [];
+			var bridge = [];
+			var dots = [];
+			var run = [];
+			var previous = -1;
+			var seen = 0;
+			var cls = "plot-s" + (s + 1);
+
+			side = plotSide(p, s);
+
+			if (p.hidden[s] || !scales[side]) {
+				continue;
+			}
+
+			for (i = p.from; i <= p.to; i++) {
+				if (plotFinite(p.values[s][i])) {
+					seen++;
+				}
+			}
+
+			for (i = p.from; i <= p.to + 1; i++) {
+				var value = i <= p.to ? p.values[s][i] : null;
+
+				if (plotFinite(value)) {
+					var px = geo.x(i);
+					var py = plotY(geo, side, value);
+
+					if (previous >= 0 && previous < i - 1) {
+						bridge.push("M" + plotNum(geo.x(previous)) + " "
+						            + plotNum(plotY(geo, side, p.values[s][previous])) + " L"
+						            + plotNum(px) + " " + plotNum(py));
+					}
+
+					run.push([px, py]);
+					previous = i;
+					continue;
+				}
+
+				/* Dots where something was seen: every point when there
+				 * are few, else a lone point and each end of a run, so a
+				 * bridge visibly starts and stops at a real figure. */
+				run.forEach(function (pt, at) {
+					if (seen <= 12 || at === 0 || at === run.length - 1) {
+						dots.push("<circle class=\"plot-dot " + cls + "\" fill=\"currentColor\" r=\""
+						          + (run.length === 1 ? "3" : "2.25") + "\" cx=\"" + plotNum(pt[0])
+						          + "\" cy=\"" + plotNum(pt[1]) + "\"/>");
+					}
+				});
+
+				if (run.length > 1) {
+					line.push("M" + run.map(function (pt) {
+						return plotNum(pt[0]) + " " + plotNum(pt[1]);
+					}).join(" L"));
+
+					/* Shaded only where it is a stretch, not a sliver. */
+					if (s === areaSeries && run.length >= 4) {
+						area.push("M" + plotNum(run[0][0]) + " " + plotNum(bottom) + " L"
+						          + run.map(function (pt) {
+							return plotNum(pt[0]) + " " + plotNum(pt[1]);
+						}).join(" L") + " L" + plotNum(run[run.length - 1][0]) + " " + plotNum(bottom) + " Z");
+					}
+				}
+
+				run = [];
+			}
+
+			if (area.length) {
+				html.push("<path class=\"plot-area " + cls + "\" fill=\"currentColor\" d=\"" + area.join(" ")
+				          + "\"/>");
+			}
+
+			if (bridge.length) {
+				html.push("<path class=\"plot-bridge " + cls + "\" fill=\"none\" stroke=\"currentColor\" d=\""
+				          + bridge.join(" ") + "\"/>");
+			}
+
+			if (line.length) {
+				html.push("<path class=\"plot-line " + cls + "\" fill=\"none\" stroke=\"currentColor\" d=\""
+				          + line.join(" ") + "\"/>");
+			}
+
+			html.push(dots.join(""));
+		}
+
+		html.push("<g class=\"plot-hover-layer\"></g>");
+		html.push("<rect class=\"plot-brush\" fill=\"currentColor\" stroke=\"currentColor\" x=\"0\" y=\""
+		          + plotNum(top) + "\" width=\"0\" height=\"" + plotNum(bottom - top) + "\" visibility=\"hidden\"/>");
+		html.push("<rect class=\"plot-hit\" fill=\"transparent\" x=\"" + plotNum(left) + "\" y=\"" + plotNum(top)
+		          + "\" width=\"" + plotNum(Math.max(1, right - left)) + "\" height=\""
+		          + plotNum(bottom - top) + "\"/>");
+
+		p.svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+		p.svg.setAttribute("width", String(width));
+		p.svg.setAttribute("height", String(height));
+		p.svg.innerHTML = html.join("");
+		p.layer = p.svg.querySelector(".plot-hover-layer");
+		p.brush = p.svg.querySelector(".plot-brush");
+		p.drawnWidth = width;
+		plotStats(p);
+
+		if (p.hover >= p.from && p.hover <= p.to) {
+			plotHover(p, p.hover);
+		} else {
+			plotHover(p, -1);
+		}
+	}
+
+	/* The readout at point @index: a rule, a ring on each line, the figures. */
+	function plotHover(p, index) {
+		var geo = p.geo;
+		var marks = [];
+		var rows = [];
+		var x;
+		var s;
+
+		if (!geo || index < p.from || index > p.to) {
+			p.hover = -1;
+
+			if (p.layer) {
+				p.layer.innerHTML = "";
+			}
+
+			p.tip.hidden = true;
+			return;
+		}
+
+		p.hover = index;
+		x = geo.x(index);
+
+		if (geo.bar) {
+			marks.push("<rect class=\"plot-band\" fill=\"currentColor\" x=\"" + plotNum(x - geo.band / 2)
+			           + "\" y=\"" + plotNum(geo.top) + "\" width=\"" + plotNum(geo.band) + "\" height=\""
+			           + plotNum(geo.bottom - geo.top) + "\"/>");
+		} else {
+			marks.push("<line class=\"plot-cross\" stroke=\"currentColor\" x1=\"" + plotNum(x) + "\" x2=\""
+			           + plotNum(x) + "\" y1=\"" + plotNum(geo.top) + "\" y2=\"" + plotNum(geo.bottom) + "\"/>");
+		}
+
+		rows.push("<div class=\"plot-tip-head\">" + plotEsc(p.labels[index]) + "</div>");
+
+		for (s = 0; s < p.values.length; s++) {
+			var value = p.values[s][index];
+			var side = plotSide(p, s);
+
+			if (p.hidden[s] || (geo.bar && s > 0)) {
+				continue;
+			}
+
+			if (!geo.bar && plotFinite(value) && geo.scales[side]) {
+				marks.push("<circle class=\"plot-ring plot-s" + (s + 1) + "\" stroke=\"currentColor\" r=\"4\" cx=\""
+				           + plotNum(x) + "\" cy=\"" + plotNum(plotY(geo, side, value)) + "\"/>");
+			}
+
+			rows.push("<div class=\"plot-tip-row\"><span class=\"plot-swatch plot-key-" + (s + 1)
+			          + "\"></span><span>" + plotEsc(p.names[s]) + "</span><b>" + plotEsc(p.text[s][index])
+			          + "</b></div>");
+		}
+
+		p.layer.innerHTML = marks.join("");
+		p.tip.innerHTML = rows.join("");
+		wireCoins(p.tip);
+		p.tip.hidden = false;
+
+		/* Beside the rule, on whichever side has room. */
+		var tipWidth = p.tip.offsetWidth;
+		var tipLeft = x + 14;
+
+		if (tipLeft + tipWidth > geo.width) {
+			tipLeft = Math.max(0, x - 14 - tipWidth);
+		}
+
+		p.tip.style.left = Math.round(tipLeft) + "px";
+		p.tip.style.top = Math.round(geo.top + 4) + "px";
+	}
+
+	/* Low, high, latest and change of the first series shown, over the window. */
+	function plotStats(p) {
+		var s;
+		var i;
+		var low = -1;
+		var high = -1;
+		var first = -1;
+		var last = -1;
+		var parts = [];
+		var change;
+
+		for (s = 0; s < p.values.length; s++) {
+			if (!p.hidden[s] && (p.kind !== "bar" || s === 0)) {
+				break;
+			}
+		}
+
+		if (s >= p.values.length) {
+			p.stats.innerHTML = "";
+			return;
+		}
+
+		for (i = p.from; i <= p.to; i++) {
+			var v = p.values[s][i];
+
+			if (!plotFinite(v)) {
+				continue;
+			}
+
+			if (first < 0) {
+				first = i;
+			}
+
+			last = i;
+
+			if (low < 0 || v < p.values[s][low]) {
+				low = i;
+			}
+
+			if (high < 0 || v > p.values[s][high]) {
+				high = i;
+			}
+		}
+
+		if (p.from > 0 || p.to < p.n - 1) {
+			parts.push("<span>" + plotEsc(p.labels[p.from]) + " – " + plotEsc(p.labels[p.to]) + "</span>");
+		}
+
+		if (first < 0) {
+			parts.push("<span>" + plotEsc(p.names[s]) + ": nothing in this range</span>");
+			p.stats.innerHTML = parts.join("");
+			return;
+		}
+
+		parts.push("<span>" + plotEsc(p.names[s]) + "</span>");
+		parts.push("<span>Low <b>" + plotEsc(p.text[s][low]) + "</b></span>");
+		parts.push("<span>High <b>" + plotEsc(p.text[s][high]) + "</b></span>");
+		parts.push("<span>Latest <b>" + plotEsc(p.text[s][last]) + "</b></span>");
+
+		if (last > first && p.values[s][first] !== 0) {
+			change = (p.values[s][last] - p.values[s][first]) / Math.abs(p.values[s][first]) * 100;
+			parts.push("<span>Change <b>" + (change > 0 ? "+" : change < 0 ? "−" : "")
+			           + Math.abs(change).toFixed(1) + "%</b></span>");
+		}
+
+		p.stats.innerHTML = parts.join("");
+		wireCoins(p.stats);
+	}
+
+	function plotZoom(p, from, to) {
+		var least = p.kind === "bar" ? 0 : 2;
+
+		from = Math.max(0, Math.min(from, p.n - 1));
+		to = Math.max(0, Math.min(to, p.n - 1));
+
+		if (to - from < least) {
+			var middle = Math.round((from + to) / 2);
+
+			from = Math.max(0, middle - 1);
+			to = Math.min(p.n - 1, from + Math.max(least, 1));
+		}
+
+		p.from = from;
+		p.to = to;
+		p.reset.hidden = from === 0 && to === p.n - 1;
+		plotDraw(p);
+	}
+
+	function plotIndex(p, clientX) {
+		var geo = p.geo;
+		var rect = p.svg.getBoundingClientRect();
+		var x = clientX - rect.left;
+		var count = p.to - p.from;
+		var offset;
+
+		if (!geo) {
+			return -1;
+		}
+
+		offset = geo.bar
+			? Math.floor((x - geo.left) / geo.band)
+			: (count > 0 ? Math.round((x - geo.left) / (geo.right - geo.left) * count) : 0);
+		return Math.max(p.from, Math.min(p.to, p.from + offset));
+	}
+
+	/* Whether any series shown has a figure at @index. */
+	function plotHasData(p, index) {
+		var s;
+
+		for (s = 0; s < p.values.length; s++) {
+			if (!p.hidden[s] && (p.kind !== "bar" || s === 0) && plotFinite(p.values[s][index])) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/*
+	 * The point nearest @index that has a figure, in the window: hovering
+	 * an hour nothing was seen in reads the nearest hour something was.
+	 * @direction 1 or -1 looks only that way (the arrow keys), keeping
+	 * @index when there is nothing further.
+	 */
+	function plotSnap(p, index, direction) {
+		var step;
+
+		if (index < 0) {
+			return index;
+		}
+
+		if (direction) {
+			for (step = index; step >= p.from && step <= p.to; step += direction) {
+				if (plotHasData(p, step)) {
+					return step;
+				}
+			}
+
+			return Math.max(p.from, Math.min(p.to, index - direction));
+		}
+
+		for (step = 0; step <= p.to - p.from; step++) {
+			if (index - step >= p.from && plotHasData(p, index - step)) {
+				return index - step;
+			}
+
+			if (index + step <= p.to && plotHasData(p, index + step)) {
+				return index + step;
+			}
+		}
+
+		return index;
+	}
+
+	function plotCsv(p) {
+		var lines = [];
+		var quote = function (text) {
+			return /[",\n]/.test(text) ? "\"" + String(text).replace(/"/g, "\"\"") + "\"" : text;
+		};
+		var link = document.createElement("a");
+		var i;
+
+		lines.push(["Point"].concat(p.names).map(quote).join(","));
+
+		for (i = 0; i < p.n; i++) {
+			lines.push([p.labels[i]].concat(p.text.map(function (column) {
+				return column[i];
+			})).map(quote).join(","));
+		}
+
+		link.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/csv" }));
+		link.download = (p.title.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "chart")
+			+ ".csv";
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		window.setTimeout(function () {
+			URL.revokeObjectURL(link.href);
+		}, 1000);
+	}
+
+	/* Puts the drawing, its controls and their wiring into @p's figure. */
+	function plotBuild(p) {
+		var figure = p.figure;
+		var controls = document.createElement("div");
+		var legend = document.createElement("div");
+		var tools = document.createElement("div");
+		var tableButton;
+		var s;
+
+		p.holder = document.createElement("div");
+		p.holder.className = "plot";
+		p.holder.tabIndex = 0;
+		p.holder.setAttribute("role", "group");
+		p.holder.setAttribute("aria-label", p.title + ". Left and right arrows read each point; "
+		                      + "drag across the chart, or press + and -, to zoom; 0 shows it all.");
+		p.svg = document.createElementNS(PLOT_NS, "svg");
+		p.svg.setAttribute("class", "plot-svg");
+		p.svg.setAttribute("aria-hidden", "true");
+		p.svg.setAttribute("focusable", "false");
+		p.tip = document.createElement("div");
+		p.tip.className = "plot-tip";
+		p.tip.hidden = true;
+		p.holder.appendChild(p.svg);
+		p.holder.appendChild(p.tip);
+
+		controls.className = "plot-controls";
+		legend.className = "plot-legend";
+		tools.className = "plot-tools";
+		p.stats = document.createElement("div");
+		p.stats.className = "plot-stats";
+
+		for (s = 0; p.kind !== "bar" && s < p.values.length; s++) {
+			(function (series) {
+				var key = document.createElement("button");
+
+				key.type = "button";
+				key.className = "plot-key plot-key-" + (series + 1);
+				key.textContent = p.names[series] + (p.secondary[series] ? " (right)" : "");
+				key.setAttribute("aria-pressed", "true");
+				key.title = "Show or hide " + p.names[series];
+				key.addEventListener("click", function () {
+					var shown = p.hidden.filter(function (hidden) {
+						return !hidden;
+					}).length;
+
+					/* One line always stays: an empty chart answers nothing. */
+					if (!p.hidden[series] && shown <= 1) {
+						return;
+					}
+
+					p.hidden[series] = !p.hidden[series];
+					key.setAttribute("aria-pressed", p.hidden[series] ? "false" : "true");
+					plotDraw(p);
+				});
+				legend.appendChild(key);
+			}(s));
+		}
+
+		p.reset = plotButton("Reset zoom", function () {
+			plotZoom(p, 0, p.n - 1);
+		});
+		p.reset.hidden = true;
+		tableButton = plotButton("Table", function () {
+			var open = p.table.classList.toggle("visually-hidden") === false;
+
+			tableButton.setAttribute("aria-expanded", open ? "true" : "false");
+		});
+		tableButton.setAttribute("aria-expanded", "false");
+		tools.appendChild(p.reset);
+		tools.appendChild(tableButton);
+		tools.appendChild(plotButton("CSV", function () {
+			plotCsv(p);
+		}));
+
+		controls.appendChild(legend);
+		controls.appendChild(p.stats);
+		controls.appendChild(tools);
+		figure.insertBefore(p.holder, figure.firstChild);
+		figure.insertBefore(controls, p.holder.nextSibling);
+		figure.classList.add("plot-on");
+
+		p.svg.addEventListener("pointermove", function (event) {
+			var index = plotIndex(p, event.clientX);
+
+			if (p.drag) {
+				var a = Math.min(p.drag.x, event.clientX) - p.svg.getBoundingClientRect().left;
+				var b = Math.max(p.drag.x, event.clientX) - p.svg.getBoundingClientRect().left;
+
+				a = Math.max(a, p.geo.left);
+				b = Math.min(b, p.geo.right);
+				p.brush.setAttribute("x", plotNum(a));
+				p.brush.setAttribute("width", plotNum(Math.max(0, b - a)));
+				p.brush.setAttribute("visibility", Math.abs(event.clientX - p.drag.x) > 6 ? "visible" : "hidden");
+			}
+
+			plotHover(p, plotSnap(p, index, 0));
+		});
+		p.svg.addEventListener("pointerleave", function () {
+			if (!p.drag) {
+				plotHover(p, -1);
+			}
+		});
+		p.svg.addEventListener("pointerdown", function (event) {
+			if (event.button !== 0 || p.n < 3) {
+				return;
+			}
+
+			p.drag = { x: event.clientX, index: plotIndex(p, event.clientX) };
+
+			if (p.svg.setPointerCapture) {
+				p.svg.setPointerCapture(event.pointerId);
+			}
+		});
+
+		var endDrag = function (event) {
+			var drag = p.drag;
+			var index;
+
+			p.drag = null;
+
+			if (!drag) {
+				return;
+			}
+
+			p.brush.setAttribute("visibility", "hidden");
+			index = plotIndex(p, event.clientX);
+
+			if (Math.abs(event.clientX - drag.x) > 6 && index !== drag.index) {
+				plotZoom(p, Math.min(index, drag.index), Math.max(index, drag.index));
+			} else {
+				plotHover(p, plotSnap(p, index, 0));
+			}
+		};
+
+		p.svg.addEventListener("pointerup", endDrag);
+		p.svg.addEventListener("pointercancel", function () {
+			p.drag = null;
+			p.brush.setAttribute("visibility", "hidden");
+		});
+		p.svg.addEventListener("dblclick", function () {
+			plotZoom(p, 0, p.n - 1);
+		});
+
+		p.holder.addEventListener("keydown", function (event) {
+			var at = p.hover >= 0 ? p.hover : p.to;
+			var span = p.to - p.from;
+			var handled = true;
+
+			switch (event.key) {
+			case "ArrowLeft":
+				plotHover(p, plotSnap(p, p.hover < 0 ? p.to : p.hover - 1, -1));
+				break;
+			case "ArrowRight":
+				plotHover(p, plotSnap(p, p.hover < 0 ? p.from : p.hover + 1, 1));
+				break;
+			case "Home":
+				plotHover(p, plotSnap(p, p.from, 1));
+				break;
+			case "End":
+				plotHover(p, plotSnap(p, p.to, -1));
+				break;
+			case "+":
+			case "=":
+				plotZoom(p, at - Math.floor(span / 4), at + Math.ceil(span / 4));
+				break;
+			case "-":
+				plotZoom(p, p.from - Math.ceil(span / 2), p.to + Math.ceil(span / 2));
+				break;
+			case "0":
+				plotZoom(p, 0, p.n - 1);
+				break;
+			case "Escape":
+				plotHover(p, -1);
+				break;
+			default:
+				handled = false;
+			}
+
+			if (handled) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+		});
+		p.holder.addEventListener("blur", function () {
+			plotHover(p, -1);
+		});
+
+		if (window.ResizeObserver) {
+			new ResizeObserver(function () {
+				if (p.holder.clientWidth && p.holder.clientWidth !== p.drawnWidth) {
+					window.requestAnimationFrame(function () {
+						plotDraw(p);
+					});
+				}
+			}).observe(p.holder);
+		} else {
+			window.addEventListener("resize", function () {
+				plotDraw(p);
+			});
+		}
+	}
+
+	/* Every chart under @root not yet redrawn. */
+	/*
+	 * Coins. A currency kept in denominations -- WoW's gold, silver and
+	 * copper -- is written "12g 5s 30c" by the server, as plain text. The
+	 * page carries those currencies' suffixes (script#venture-coins), so
+	 * the text can be found exactly: a run of counts, each followed by
+	 * one of a currency's suffixes in its order, largest first. Each
+	 * count and its suffix is wrapped in a span for its rank (coin-1 is
+	 * the largest), which the stylesheet draws in that coin's metal, and
+	 * the whole amount in one that never breaks across lines. The text
+	 * itself is unchanged, so sorting, filtering and copying read it as
+	 * before.
+	 */
+	var coinTable = null;
+
+	function coinRead() {
+		var node;
+
+		if (coinTable !== null) {
+			return coinTable;
+		}
+
+		coinTable = false;
+		node = document.getElementById("venture-coins");
+
+		if (node) {
+			try {
+				coinTable = JSON.parse(node.textContent) || false;
+			} catch (error) {
+				coinTable = false;
+			}
+		}
+
+		return coinTable;
+	}
+
+	function coinEscape(text) {
+		return text.replace(/[.*+?^${}()|[\]\\\/-]/g, "\\$&");
+	}
+
+	var coinPatterns = null;
+
+	/* One pattern per currency: every non-empty, in-order selection of
+	 * its coins, separated by single spaces, with an optional sign. Not
+	 * inside a longer word or number, so "7s" in "7sec" is left alone. */
+	function coinPatternList() {
+		var table = coinRead();
+		var code;
+
+		if (coinPatterns !== null) {
+			return coinPatterns;
+		}
+
+		coinPatterns = [];
+
+		if (!table) {
+			return coinPatterns;
+		}
+
+		for (code in table) {
+			if (Object.prototype.hasOwnProperty.call(table, code) && table[code].length) {
+				var units = table[code];
+				var count = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)";
+				var alternatives = [];
+				var i;
+				var j;
+
+				for (i = 0; i < units.length; i++) {
+					var tail = count + coinEscape(units[i][0]);
+
+					for (j = i + 1; j < units.length; j++) {
+						tail += "(?: " + count + coinEscape(units[j][0]) + ")?";
+					}
+
+					alternatives.push(tail);
+				}
+
+				coinPatterns.push({
+					units: units,
+					re: new RegExp("(^|[^\\w.,\\-])(-?(?:" + alternatives.join("|") + "))(?![\\w%])", "g")
+				});
+			}
+		}
+
+		return coinPatterns;
+	}
+
+	function coinSpan(text, units) {
+		var wrap = document.createElement("span");
+		var parts = text.split(" ");
+		var i;
+
+		wrap.className = "coins";
+
+		if (parts[0].charAt(0) === "-") {
+			wrap.classList.add("coins-negative");
+		}
+
+		for (i = 0; i < parts.length; i++) {
+			var part = parts[i];
+			var rank = 0;
+			var k;
+
+			for (k = 0; k < units.length; k++) {
+				var suffix = units[k][0];
+
+				if (part.length > suffix.length
+				    && part.slice(-suffix.length).toLowerCase() === suffix.toLowerCase()
+				    && /\d$/.test(part.slice(0, -suffix.length))) {
+					rank = k + 1;
+					break;
+				}
+			}
+
+			if (i > 0) {
+				wrap.appendChild(document.createTextNode(" "));
+			}
+
+			if (rank) {
+				var coin = document.createElement("span");
+				var mark = document.createElement("span");
+				var suffixText = units[rank - 1][0];
+
+				coin.className = "coin coin-" + Math.min(rank, 3);
+				coin.appendChild(document.createTextNode(part.slice(0, -suffixText.length)));
+				mark.className = "coin-mark";
+				mark.textContent = part.slice(-suffixText.length);
+				coin.appendChild(mark);
+				wrap.appendChild(coin);
+			} else {
+				wrap.appendChild(document.createTextNode(part));
+			}
+		}
+
+		return wrap;
+	}
+
+	var coinSkip = /^(script|style|textarea|input|select|option|code|pre|svg|title|noscript)$/i;
+
+	function wireCoins(root) {
+		var patterns = coinPatternList();
+		var walker;
+		var nodes = [];
+		var node;
+		var i;
+
+		if (!patterns.length || !document.createTreeWalker) {
+			return;
+		}
+
+		root = root && root.nodeType === 1 ? root : document.body;
+
+		if (!root) {
+			return;
+		}
+
+		walker = document.createTreeWalker(root, 4, {
+			acceptNode: function (text) {
+				var parent = text.parentNode;
+
+				if (!/\d/.test(text.nodeValue)) {
+					return 2;
+				}
+
+				for (; parent && parent !== root.parentNode; parent = parent.parentNode) {
+					if (parent.nodeType === 1 && (coinSkip.test(parent.nodeName)
+					    || parent.isContentEditable
+					    || (parent.classList && (parent.classList.contains("coins")
+					        || parent.classList.contains("no-coins"))))) {
+						return 2;
+					}
+				}
+
+				return 1;
+			}
+		});
+
+		while ((node = walker.nextNode())) {
+			nodes.push(node);
+		}
+
+		for (i = 0; i < nodes.length; i++) {
+			coinReplace(nodes[i], patterns);
+		}
+	}
+
+	function coinReplace(text, patterns) {
+		var value = text.nodeValue;
+		var found = [];
+		var p;
+		var m;
+
+		for (p = 0; p < patterns.length; p++) {
+			patterns[p].re.lastIndex = 0;
+
+			while ((m = patterns[p].re.exec(value))) {
+				var start = m.index + m[1].length;
+
+				found.push({ start: start, end: start + m[2].length, units: patterns[p].units });
+
+				/* The leading character belongs to no match: let the
+				 * next search start on it. */
+				patterns[p].re.lastIndex = start + m[2].length;
+			}
+		}
+
+		if (!found.length) {
+			return;
+		}
+
+		found.sort(function (a, b) { return a.start - b.start; });
+
+		var fragment = document.createDocumentFragment();
+		var at = 0;
+		var i;
+
+		for (i = 0; i < found.length; i++) {
+			if (found[i].start < at) {
+				continue;
+			}
+
+			if (found[i].start > at) {
+				fragment.appendChild(document.createTextNode(value.slice(at, found[i].start)));
+			}
+
+			fragment.appendChild(coinSpan(value.slice(found[i].start, found[i].end), found[i].units));
+			at = found[i].end;
+		}
+
+		if (at < value.length) {
+			fragment.appendChild(document.createTextNode(value.slice(at)));
+		}
+
+		text.parentNode.replaceChild(fragment, text);
+	}
+
+	/* An amount in minor units as coins, largest first, zero coins left
+	 * out: 12345 copper is "1g 23s 45c". */
+	function coinFormat(units, minor) {
+		var negative = minor < 0;
+		var rest = Math.round(Math.abs(minor));
+		var parts = [];
+		var i;
+
+		for (i = 0; i < units.length; i++) {
+			var n = Math.floor(rest / units[i][1]);
+
+			rest -= n * units[i][1];
+
+			if (n) {
+				parts.push((i === 0 ? n.toLocaleString("en-US") : String(n)) + units[i][0]);
+			}
+		}
+
+		if (!parts.length) {
+			parts.push("0" + units[units.length - 1][0]);
+		}
+
+		return (negative ? "-" : "") + parts.join(" ");
+	}
+
+	function wirePlots(root) {
+		var scripts = (root || document).querySelectorAll("script[data-plot]");
+		var i;
+
+		for (i = 0; i < scripts.length; i++) {
+			var script = scripts[i];
+			var figure = script.parentNode;
+			var p;
+
+			if (script.ventureWired || !figure || figure.nodeName.toLowerCase() !== "figure") {
+				continue;
+			}
+
+			script.ventureWired = true;
+			p = plotRead(figure, script);
+
+			if (p) {
+				plotBuild(p);
+				plotDraw(p);
+			}
+		}
+	}
+
+	/* Tables and charts arrive after the page too -- an htmx swap, a
+	 * streamed chat answer, a modal -- so new ones are wired as they
+	 * appear. */
 	function watchTables() {
 		var pending = false;
 
 		wireSortableTables(document);
+		wirePlots(document);
+		wireCoins(document.body);
 
 		/* Back and forward over orders swapped in above: the address
 		 * changed and the table must follow it. */
@@ -5765,12 +6988,28 @@
 		if (!window.MutationObserver) {
 			document.addEventListener("htmx:afterSwap", function (event) {
 				wireSortableTables(event.target);
+				wirePlots(event.target);
+				wireCoins(event.target);
 			});
 			return;
 		}
 
-		new MutationObserver(function () {
+		new MutationObserver(function (records) {
+			var i;
+
 			if (pending) {
+				return;
+			}
+
+			/* A chart's readout redraws on every pointer move; that is
+			 * no new table or chart to look for. */
+			for (i = 0; i < records.length; i++) {
+				if (!records[i].target.closest || !records[i].target.closest(".plot")) {
+					break;
+				}
+			}
+
+			if (records.length && i === records.length) {
 				return;
 			}
 
@@ -5778,6 +7017,8 @@
 			window.requestAnimationFrame(function () {
 				pending = false;
 				wireSortableTables(document);
+				wirePlots(document);
+				wireCoins(document.body);
 			});
 		}).observe(document.body, { childList: true, subtree: true });
 	}

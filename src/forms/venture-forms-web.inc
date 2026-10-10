@@ -191,18 +191,26 @@ forms_web_live(VentureWebServer *self, GHashTable *params, GDateTime *now)
 }
 
 static gchar *
+forms_web_public_base(VentureWebServer *self)
+{
+	gchar *base = NULL;
+	g_object_get(venture_context_get_config(self->context), "server-base-url", &base, NULL);
+	if (venture_string_is_empty(base)) {
+		g_free(base);
+		base = g_strdup(self->base_url ? self->base_url : "");
+	}
+	while (g_str_has_suffix(base, "/")) base[strlen(base) - 1] = '\0';
+	return base;
+}
+
+static gchar *
 forms_web_action(VentureWebServer *self, VentureEntity *form, gboolean absolute)
 {
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *base = NULL;
 
 	g_object_get(form, "public-token", &token, NULL);
-	if (absolute && !venture_string_is_empty(self->base_url))
-	{
-		base = g_strdup(self->base_url);
-		while (g_str_has_suffix(base, "/"))
-			base[strlen(base) - 1] = '\0';
-	}
+	if (absolute) base = forms_web_public_base(self);
 	return g_strdup_printf("%s/pub/form/%s", base != NULL ? base : "", token);
 }
 
@@ -951,9 +959,7 @@ venture_web_append_form_block(VentureWebServer *self, GString *content, VentureE
 	guint i;
 
 	g_object_get(record, "state", &state, NULL);
-	base = g_strdup(!venture_string_is_empty(self->base_url) ? self->base_url : "");
-	while (g_str_has_suffix(base, "/"))
-		base[strlen(base) - 1] = '\0';
+	base = forms_web_public_base(self);
 	hosted = forms_web_action(self, record, TRUE);
 	venture_query_set_organization(responses, venture_entity_get_organization_id(record));
 	venture_query_add_filter_int(responses, "form-id", VENTURE_FILTER_OP_EQ, id, NULL);
