@@ -7040,3 +7040,138 @@ venture_marketdata_source_health(
 
 	return md_node(root);
 }
+
+#ifdef VENTURE_HAVE_SQLITE
+/* A reader in a list where a source with no store holds NULL. */
+static void
+md_reader_unref(gpointer reader)
+{
+	if (NULL != reader)
+		g_object_unref(reader);
+}
+
+/* The display @key has in the first of @readers that knows it, the
+ * row's own source first. */
+static gboolean
+md_decorate_one(
+	JsonObject	*row,
+	const gchar	*key,
+	GPtrArray	*sources,
+	GPtrArray	*readers
+){
+	gint64 own = json_object_get_int_member_with_default(row, "data_source_id", 0);
+	guint pass;
+	guint i;
+
+	for (pass = 0; pass < 2; pass++)
+	{
+		for (i = 0; i < readers->len; i++)
+		{
+			VentureSeriesStore *reader = g_ptr_array_index(readers, i);
+			gboolean mine = (venture_entity_get_id(g_ptr_array_index(sources, i)) == own);
+
+			if ((NULL == reader) || (mine != (0 == pass)))
+				continue;
+
+			md_row_set_display(row, reader, key);
+
+			if (json_object_has_member(row, "display"))
+				return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+static void
+md_decorate_rows(
+	JsonArray	*rows,
+	const gchar	*key_member,
+	GPtrArray	*sources,
+	GPtrArray	*readers,
+	guint		 depth
+){
+	guint i;
+
+	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
+	{
+		JsonNode *node = json_array_get_element(rows, i);
+		JsonObject *row;
+		const gchar *key;
+		GList *members;
+		GList *l;
+
+		if (!JSON_NODE_HOLDS_OBJECT(node))
+			continue;
+
+		row = json_node_get_object(node);
+		key = json_object_has_member(row, key_member) &&
+		      JSON_NODE_HOLDS_VALUE(json_object_get_member(row, key_member))
+			? json_object_get_string_member_with_default(row, key_member, NULL) : NULL;
+
+		if (!venture_string_is_empty(key) && !json_object_has_member(row, "display"))
+			md_decorate_one(row, key, sources, readers);
+
+		if (depth > 0)
+			continue;
+
+		/* A craft's reagents, and an account's lines. */
+		members = json_object_get_members(row);
+
+		for (l = members; NULL != l; l = l->next)
+		{
+			const gchar *name = l->data;
+			JsonNode *child = json_object_get_member(row, name);
+
+			if (JSON_NODE_HOLDS_ARRAY(child) &&
+			    (g_str_has_suffix(name, "inputs") || (0 == g_strcmp0(name, "lines"))))
+				md_decorate_rows(json_node_get_array(child), key_member, sources, readers, depth + 1);
+		}
+
+		g_list_free(members);
+	}
+}
+#endif
+
+void
+venture_marketdata_decorate_items(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonArray	*rows,
+	const gchar	*key_member
+){
+#ifdef VENTURE_HAVE_SQLITE
+	g_autoptr(JsonArray) notes = NULL;
+	g_autoptr(GPtrArray) sources = NULL;
+	g_autoptr(GPtrArray) readers = NULL;
+	guint i;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(context));
+	g_return_if_fail(NULL != key_member);
+
+	if ((NULL == rows) || (0 == json_array_get_length(rows)))
+		return;
+
+	notes = json_array_new();
+
+	if (!md_series_ready(context, notes))
+		return;
+
+	sources = md_sources(context, organization_id, NULL);
+
+	if ((NULL == sources) || (0 == sources->len))
+		return;
+
+	readers = g_ptr_array_new_with_free_func(md_reader_unref);
+
+	for (i = 0; i < sources->len; i++)
+		g_ptr_array_add(readers, md_reader(context, g_ptr_array_index(sources, i), notes, NULL));
+
+	md_decorate_rows(rows, key_member, sources, readers, 0);
+#else
+	(void)context;
+	(void)organization_id;
+	(void)rows;
+	(void)key_member;
+#endif
+}

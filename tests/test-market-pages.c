@@ -2882,7 +2882,7 @@ test_doors_and_looks(
 		"watchlist_id", NULL
 	};
 	static const gchar *const classes[] = {
-		".chart-line-1", ".chart-line-2", ".chart-line-3", ".chart-line-4", ".chart-key-3",
+		".chart-line-1", ".chart-line-2", ".chart-line-3", ".chart-line-4", ".chart-key-3", ".chart-bridge",
 		".chart-key-4", ".chart-heat-cell", ".chart-grid", ".chart-axis", ".sparkline",
 		".market-action-row", ".form-inline", ".chart-legend", ".chart-caption", ".market-ranges",
 		".market-range", ".market-trend", ".source-attribution", ".source-attribution-label", NULL
@@ -3874,8 +3874,8 @@ test_deals_watchlists(
 	path = g_strdup_printf("/market/deals?watchlist=%" G_GINT64_FORMAT, list_id);
 	page = get_page(fixture, path);
 	assert_buttons_named(page, path);
-	g_assert_nonnull(strstr(page, "<select name=\"watchlist\" multiple"));
-	g_assert_nonnull(strstr(page, " selected>Bag flips</option>"));
+	g_assert_nonnull(strstr(page, "<input type=\"checkbox\" name=\"watchlist\""));
+	g_assert_nonnull(strstr(page, " checked><span>Bag flips</span></label>"));
 	g_assert_nonnull(strstr(page, "<datalist id=\"watchlist-names\">"));
 	g_assert_nonnull(strstr(page, "class=\"list-tag\""));
 	g_assert_nonnull(strstr(page, "action=\"/market/watchlists/add\" class=\"list-add\""));

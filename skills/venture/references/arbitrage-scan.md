@@ -80,7 +80,10 @@ open whatever `buy_venues`/`sell_venues` say), `cover` (surebets; `total_stake`)
   `recipes`, `options` (the scan question "Add to plan" sends back),
   `recipe_list_choices` (`{id, name, entries}`) and, asked,
   `recipe_list_filter`; every row has `recipe_lists` (`[{id, name,
-  entry_id}]`, the lists it is on).
+  entry_id}]`, the lists it is on). A row's `title` is "Recipe: Output"
+  ("Quick brew: Healing potion"), or the recipe's name alone when it is
+  named for what it makes (every recipe the game names) -- match a recipe
+  by `recipe_id`, never by parsing `title`.
 - **Recipe lists** (`recipe_list` + `recipe_list_entry`, arbitrage
   module; "favourites", "bag crafts"): put a recipe on one with
   `POST /api/v1/arbitrage/recipe-lists/add` `{"recipe_id": N, "list":

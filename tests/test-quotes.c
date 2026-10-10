@@ -222,6 +222,48 @@ test_delivery_recipient_rollback(Fixture *f, gconstpointer data)
 }
 
 static void
+test_delivery_transaction(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) customer = fresh(f, "company", f->company);
+	g_autoptr(VentureEntity) q = quote(f, "MAIL-TRANSACTION");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) repeated = NULL;
+	g_autoptr(GPtrArray) messages = NULL, deliveries = NULL, events = NULL;
+	gboolean rollback = GPOINTER_TO_INT(data);
+	gint64 original_message;
+	g_object_set(f->config, "server-base-url", "https://quotes.example.test", NULL);
+	g_object_set(customer, "email", "buyer@example.test", NULL);
+	save(f, customer);
+	if (rollback) {
+		g_assert_true(venture_database_begin(f->db, &error));
+		g_assert_no_error(error);
+	}
+	action(f, q, "send");
+	messages = rows(f, "mail_message");
+	g_assert_cmpuint(messages->len, ==, 1);
+	original_message = venture_entity_get_id(g_ptr_array_index(messages, 0));
+	g_clear_pointer(&messages, g_ptr_array_unref);
+	if (rollback) {
+		venture_database_rollback(f->db);
+		status(f, q, "draft");
+	} else {
+		repeated = request(f, q, "send");
+		g_assert_false(venture_database_save(f->db, repeated, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		status(f, q, "sent");
+	}
+	messages = rows(f, "mail_message");
+	deliveries = rows(f, "quote_delivery");
+	events = rows(f, "quote_event");
+	g_assert_cmpuint(messages->len, ==, rollback ? 0 : 1);
+	g_assert_cmpuint(deliveries->len, ==, rollback ? 0 : 1);
+	g_assert_cmpuint(events->len, ==, rollback ? 0 : 1);
+	if (!rollback)
+		g_assert_cmpint(venture_entity_get_id(g_ptr_array_index(messages, 0)), ==, original_message);
+}
+
+static void
 test_records(Fixture *f, gconstpointer data)
 {
 	const gchar *names[] = { "price_list", "price_list_item", "quote", "quote_line", "quote_event", "quote_delivery", "quote_action", NULL };
@@ -1141,6 +1183,8 @@ main(int argc, char **argv)
 	g_test_add("/quotes/percentage-parts", Fixture, NULL, setup, test_percentage_parts, teardown);
 	g_test_add("/quotes/delivery-mail", Fixture, NULL, setup, test_delivery_mail, teardown);
 	g_test_add("/quotes/delivery-recipient-rollback", Fixture, NULL, setup, test_delivery_recipient_rollback, teardown);
+	g_test_add("/quotes/delivery-repeated-send", Fixture, NULL, setup, test_delivery_transaction, teardown);
+	g_test_add("/quotes/delivery-transaction-rollback", Fixture, GINT_TO_POINTER(1), setup, test_delivery_transaction, teardown);
 	g_test_add("/quotes/records", Fixture, NULL, setup, test_records, teardown);
 	g_test_add("/quotes/tax-code", Fixture, NULL, setup, test_tax_code, teardown);
 	g_test_add("/quotes/totals", Fixture, NULL, setup, test_totals, teardown);

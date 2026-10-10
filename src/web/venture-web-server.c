@@ -2649,6 +2649,20 @@ venture_web_page(
 	venture_web_append_stylesheet(self, request, html);
 
 	/*
+	 * The currencies written in coins, for venture.js: it finds "12g 5s"
+	 * in the page's text by these suffixes and draws each coin in its
+	 * metal, and a chart labels a money axis in them. Absent when no
+	 * currency has denominations, which is every books-only instance.
+	 */
+	{
+		g_autofree gchar *coins = venture_currency_get_denominations_json();
+
+		if (NULL != coins)
+			g_string_append_printf(html, "<script type=\"application/json\" "
+			                       "id=\"venture-coins\">%s</script>", coins);
+	}
+
+	/*
 	 * The configured accent overrides the stylesheet's default without
 	 * needing the stylesheet regenerated.
 	 *

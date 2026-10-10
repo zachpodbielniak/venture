@@ -3575,7 +3575,7 @@ test_crafting_pages(
 		known = get_page(fixture, "/arbitrage/crafting?buy_realm=realm-a&sell_realm=realm-b");
 		g_assert_nonnull(strstr(known, "<a href=\"/arbitrage/crafting?character=Bob-Realm%20A&amp;"
 		                               "buy_realm=realm-a&amp;sell_realm=realm-b\">Bob-Realm A</a>"));
-		g_assert_nonnull(strstr(known, "<option value=\"Bob-Realm A\">Bob-Realm A</option>"));
+		g_assert_nonnull(strstr(known, "name=\"character\" value=\"Bob-Realm A\"><span>Bob-Realm A</span></label>"));
 		g_assert_null(strstr(known, "Quick brew: Healing Potion"));
 
 		g_clear_pointer(&api, g_free);
@@ -3589,8 +3589,8 @@ test_crafting_pages(
 		                                                                              "question"), "character"),
 		                ==, "Bob-Realm A,Cy-Realm B");
 		both = get_page(fixture, "/arbitrage/crafting?character=Bob-Realm+A&character=Cy-Realm+B");
-		g_assert_nonnull(strstr(both, "<option value=\"Bob-Realm A\" selected>"));
-		g_assert_nonnull(strstr(both, "<option value=\"Cy-Realm B\" selected>"));
+		g_assert_nonnull(strstr(both, "value=\"Bob-Realm A\" checked>"));
+		g_assert_nonnull(strstr(both, "value=\"Cy-Realm B\" checked>"));
 		set_known_by(fixture, fixture->recipe, NULL);
 	}
 
@@ -3852,7 +3852,7 @@ test_recipe_lists(
 	/* The page: the List picker, the row's tag and "Add to list". */
 	page = get_page(fixture, "/arbitrage/crafting?buy_realm=realm-a&sell_realm=realm-b&only_known=0");
 	assert_buttons_named(page, "/arbitrage/crafting");
-	g_assert_nonnull(strstr(page, "<select name=\"recipe_list\" multiple"));
+	g_assert_nonnull(strstr(page, "<input type=\"checkbox\" name=\"recipe_list\""));
 	g_assert_nonnull(strstr(page, "<datalist id=\"recipe-list-names\"><option value=\"Bags\">"));
 	g_assert_nonnull(strstr(page, "action=\"/arbitrage/recipe-lists/add\" class=\"list-add\""));
 	g_assert_nonnull(strstr(page, ">Bags</a>"));

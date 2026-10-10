@@ -65,6 +65,9 @@ typedef gchar * (*VentureWebChartFormat) (
  *   series, such as quantity beside a price)
  * @format: (nullable): how a value reads; %NULL for a plain number
  * @format_data: (nullable): passed to @format
+ * @currency: (nullable): the currency @values are minor units of, so the
+ *   page's script can label an axis it rescales. %NULL with
+ *   venture_web_chart_format_minor() takes the code from @format_data.
  *
  * One line or one set of bars.
  */
@@ -75,6 +78,7 @@ typedef struct
 	gboolean		 secondary;
 	VentureWebChartFormat	 format;
 	gpointer		 format_data;
+	const gchar		*currency;
 } VentureWebChartSeries;
 
 /**
@@ -143,8 +147,16 @@ typedef struct
  * marked secondary against an axis of their own on the right, with a
  * legend and the data table. The series on one side share that side's
  * scale -- a price and a median of prices are read against one axis, or
- * the gap between them would mean nothing. A gap (NAN) breaks the line; a
- * point with gaps both sides is drawn as a dot.
+ * the gap between them would mean nothing. A gap (NAN) breaks the line,
+ * a faint dotted bridge joins the points either side of it, and a point
+ * with gaps both sides is drawn as a dot. The axes step in round figures
+ * (1, 2, 2.5 or 5 times a power of ten, whole when every value is) and
+ * the margins are as wide as their labels.
+ *
+ * The figure also carries its numbers as JSON (script[data-plot]), which
+ * venture.js reads, with the table's text, to redraw the chart at the
+ * size it is shown and make it interactive. Without script the drawing
+ * here is the chart.
  *
  * Returns: (transfer full): an HTML <figure>, or an empty-state paragraph
  *   when there is nothing to draw

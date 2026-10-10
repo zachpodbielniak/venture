@@ -10,6 +10,11 @@ meetings, so the worklist and the phone agree. A =booking_page= is a public
 link, =/book/<slug>=, that offers the owner's free times and turns a
 customer's choice into a contact and a planned meeting.
 
+Public scheduling responses use =Referrer-Policy: same-origin= so browser
+form submissions retain the origin required by hosted workspace validation.
+Referrers, including private management links, are withheld from other
+origins. Foreign-origin submissions remain rejected.
+
 This serves the customer question of the product spine: a booked slot is a
 nurture touch that lands on the timeline like any other activity.
 

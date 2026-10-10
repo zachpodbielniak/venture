@@ -2591,6 +2591,92 @@ venture_currency_register(
 	return TRUE;
 }
 
+/* Two entries by code, for a listing in a stable order. */
+static gint
+venture_currency_entry_compare(
+	const VentureCurrencyEntry	*a,
+	const VentureCurrencyEntry	*b
+){
+	return strcmp(a->code, b->code);
+}
+
+/* A JSON string of @text, every ASCII character but a letter escaped. */
+static void
+venture_currency_json_string(
+	GString		*out,
+	const gchar	*text
+){
+	const guchar *p;
+
+	g_string_append_c(out, '"');
+
+	for (p = (const guchar *)text; '\0' != *p; p++)
+	{
+		if ((*p >= 0x80) || g_ascii_isalpha(*p))
+			g_string_append_c(out, (gchar)*p);
+		else
+			g_string_append_printf(out, "\\u%04x", (guint)*p);
+	}
+
+	g_string_append_c(out, '"');
+}
+
+gchar *
+venture_currency_get_denominations_json(void)
+{
+	g_autoptr(GString) out = g_string_new("{");
+	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_free);
+	GHashTableIter iter;
+	gpointer value;
+	guint i;
+	guint u;
+
+	g_rw_lock_reader_lock(&venture_currency_registry_lock);
+
+	if (NULL != venture_currency_registry)
+	{
+		g_hash_table_iter_init(&iter, venture_currency_registry);
+
+		while (g_hash_table_iter_next(&iter, NULL, &value))
+		{
+			const VentureCurrencyEntry *entry = value;
+
+			if (entry->n_units > 0)
+				g_ptr_array_add(entries, g_memdup2(entry, sizeof(*entry)));
+		}
+	}
+
+	g_rw_lock_reader_unlock(&venture_currency_registry_lock);
+
+	if (0 == entries->len)
+		return NULL;
+
+	g_ptr_array_sort_values(entries, (GCompareFunc)venture_currency_entry_compare);
+
+	for (i = 0; i < entries->len; i++)
+	{
+		const VentureCurrencyEntry *entry = g_ptr_array_index(entries, i);
+
+		if (i > 0)
+			g_string_append_c(out, ',');
+
+		venture_currency_json_string(out, entry->code);
+		g_string_append(out, ":[");
+
+		for (u = 0; u < entry->n_units; u++)
+		{
+			g_string_append(out, (u > 0) ? ",[" : "[");
+			venture_currency_json_string(out, entry->units[u].suffix);
+			g_string_append_printf(out, ",%" G_GINT64_FORMAT "]", entry->units[u].units);
+		}
+
+		g_string_append_c(out, ']');
+	}
+
+	g_string_append_c(out, '}');
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 gboolean
 venture_currency_set_book_treatment(
 	const gchar		*currency,

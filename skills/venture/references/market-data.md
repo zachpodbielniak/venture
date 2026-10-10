@@ -103,7 +103,11 @@ venturectl market help                               # every verb, options, exam
   lowest price, market value and quantity over `range` (`24h`, `7d`, `14d`
   default, `90d`, `all`; anything else is a 400): hour by hour within
   `series.hourly_days`, day by day beyond, never both on one line. Gaps are
-  hours (or days) nothing was stored for. `compare=region` adds the group's
+  hours (or days) nothing was stored for, drawn as a faint dotted bridge
+  (the API's `null`s are the gaps). On the page the chart is redrawn in
+  the browser from its `script[data-plot]` numbers -- pointer readout,
+  zoom, legend toggles, Table and CSV -- but every figure it shows is
+  the server's, so quote the API or the table, never a pixel. `compare=region` adds the group's
   median as it stood then, `compare=VENUE_KEY` another venue (a 404 if it
   never listed the item). `GET /api/v1/market/history/SOURCE/KEY` answers
   the history alone. Deals and Browse rows carry `trend_7d` (42 four-hour

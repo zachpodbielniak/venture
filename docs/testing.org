@@ -1086,6 +1086,7 @@ missing-recipient rollback cases pass. Additional coverage checks that a repeat
 send leaves one delivery and one outbox identity, and that rolling back the
 surrounding send transaction leaves the quote draft with no delivery, event or
 mail. The acceptance capability remains excluded from generic mail output.
+
 * Hosted owner browser sign-in
 
 =make DEBUG=1 test-one T=test-hosted-identity= exercises passwordless signup

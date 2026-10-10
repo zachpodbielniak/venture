@@ -657,6 +657,36 @@ register_gold(void)
 }
 
 /*
+ * The coins a page carries for venture.js: only the currencies written
+ * in denominations, largest first, codes in order, and nothing at all
+ * when no currency has any.
+ */
+static void
+test_currency_denominations_json(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *none = NULL;
+	g_autofree gchar *json = NULL;
+
+	venture_currency_clear_registered();
+	none = venture_currency_get_denominations_json();
+	g_assert_null(none);
+
+	register_gold();
+	g_assert_true(venture_currency_register("POINTS", 0, "pts", TRUE, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_currency_register("ARC", 2, NULL, FALSE,
+	                                        "[{\"suffix\":\"cr\",\"units\":100},"
+	                                        "{\"suffix\":\"b<\",\"units\":1}]", &error));
+	g_assert_no_error(error);
+
+	json = venture_currency_get_denominations_json();
+	g_assert_cmpstr(json, ==, "{\"ARC\":[[\"cr\",100],[\"b\\u003c\",1]],"
+	                          "\"GOLD\":[[\"g\",10000],[\"s\",100],[\"c\",1]]}");
+	venture_currency_clear_registered();
+}
+
+/*
  * A code longer than three letters must survive intact. With the old
  * four-byte buffer "GOLD" became "GOL" -- a different currency, silently --
  * and an over-long code must now be refused rather than cut to fit.
@@ -1246,5 +1276,6 @@ main(
 	g_test_add_func("/currency/denominations-parse", test_currency_denominations_parse);
 	g_test_add_func("/currency/denominations-ambiguous", test_currency_denominations_ambiguous);
 	g_test_add_func("/currency/denominations-validation", test_currency_denominations_validation);
+	g_test_add_func("/currency/denominations-json", test_currency_denominations_json);
 	return g_test_run();
 }

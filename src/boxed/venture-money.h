@@ -827,6 +827,23 @@ venture_currency_register(
 );
 
 /**
+ * venture_currency_get_denominations_json:
+ *
+ * Every registered currency written in coins, as a JSON object from code
+ * to its denominations largest first: `{"GOLD":[["g",10000],["s",100],
+ * ["c",1]]}`, codes in order. A page carries it so a browser can tell
+ * "12g 5s" from text that merely ends in a letter, and so a chart can
+ * label its axis in the same coins. Every character of a suffix outside
+ * [A-Za-z] that is ASCII is written as a \u escape, so the text is safe
+ * inside a script element.
+ *
+ * Returns: (transfer full) (nullable): the JSON text, or %NULL when no
+ *   registered currency has denominations
+ */
+gchar *
+venture_currency_get_denominations_json(void);
+
+/**
  * venture_currency_set_book_treatment:
  * @currency: a registered currency's code
  * @treatment: how the ledger treats amounts in it

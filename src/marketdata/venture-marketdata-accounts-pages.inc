@@ -140,6 +140,30 @@ acw_sort_header(
 
 static gchar *acw_money_display(const VentureMoney *money);
 
+/*
+ * Every item the answer's @names arrays list, given its icon and quality
+ * colour from the organization's stores (venture_marketdata_decorate_
+ * items()). Only for the page: an API answer is what the query said.
+ */
+static void
+acw_decorate(
+	VentureWebServer	*self,
+	JsonObject		*root,
+	gint64			 organization_id,
+	const gchar *const	*names
+){
+	guint i;
+
+	for (i = 0; NULL != names[i]; i++)
+		if (json_object_has_member(root, names[i]) &&
+		    JSON_NODE_HOLDS_ARRAY(json_object_get_member(root, names[i])))
+			venture_marketdata_decorate_items(self->context, organization_id,
+			                                  json_object_get_array_member(root, names[i]),
+			                                  "instrument_key");
+}
+
+
+
 /* An array of money objects, one per currency, as "12g 3s · 4.00 USD". */
 static void
 acw_money_list(
@@ -1062,7 +1086,15 @@ acw_profession_tiers(
 			g_string_append(html, "\">");
 		}
 
-		venture_html_escape_append(html, mdw_text(tier, "text"));
+		if ((NULL != mdw_text(tier, "label")) && json_object_has_member(tier, "rank"))
+		{
+			mdw_expansion_tag(html, mdw_text(tier, "label"));
+			g_string_append_c(html, ' ');
+			mdw_rank_bar(html, json_object_get_int_member(tier, "rank"),
+			             json_object_get_int_member_with_default(tier, "max", 0));
+		}
+		else
+			venture_html_escape_append(html, mdw_text(tier, "text"));
 
 		if (NULL != url)
 			g_string_append(html, "</a>");
@@ -1104,11 +1136,10 @@ acw_professions(
 		venture_html_escape_append(html, mdw_text(profession, "crafting_url"));
 		g_string_append(html, "\">");
 		venture_html_escape_append(html, mdw_text(profession, "name"));
-		g_string_append_printf(html, " %" G_GINT64_FORMAT, json_object_get_int_member(profession, "skill"));
-
-		if (JSON_NODE_HOLDS_VALUE(json_object_get_member(profession, "max")))
-			g_string_append_printf(html, "/%" G_GINT64_FORMAT, json_object_get_int_member(profession, "max"));
-
+		g_string_append_c(html, ' ');
+		mdw_rank_bar(html, json_object_get_int_member(profession, "skill"),
+		             JSON_NODE_HOLDS_VALUE(json_object_get_member(profession, "max"))
+		             ? json_object_get_int_member(profession, "max") : 0);
 		g_string_append(html, "</a>");
 		acw_profession_tiers(html, profession);
 	}
@@ -1470,6 +1501,7 @@ acw_balance_chart(
 	series.values = (const gdouble *)(gpointer)values->data;
 	series.format = acw_format_money;
 	series.format_data = (gpointer)currency;
+	series.currency = currency;
 	memset(&chart, 0, sizeof(chart));
 	chart.title = title;
 	chart.summary = "The last balance the source reported on each day, carried forward over days "
@@ -1538,6 +1570,11 @@ venture_marketdata_web_account(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	{
+		static const gchar *const lists[] = { "positions", "inbound", "holdings", "ledger", NULL };
+
+		acw_decorate(self, root, query.organization_id, lists);
+	}
 	html = g_string_new(NULL);
 
 	if (!json_object_get_boolean_member(root, "available"))
@@ -2065,6 +2102,11 @@ venture_marketdata_web_inventory(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	{
+		static const gchar *const lists[] = { "rows", NULL };
+
+		acw_decorate(self, root, query.organization_id, lists);
+	}
 	echo = json_object_get_object_member(root, "query");
 	totals = json_object_get_object_member(root, "totals");
 	rows = json_object_get_array_member(root, "rows");
@@ -2427,6 +2469,7 @@ acw_pnl_charts(
 	series[0].values = (const gdouble *)(gpointer)net->data;
 	series[0].format = acw_format_money;
 	series[0].format_data = (gpointer)currency;
+	series[0].currency = currency;
 	memset(&chart, 0, sizeof(chart));
 	chart.title = "Net per period";
 	chart.summary = "Sales after the cut and other income, less purchases and expenses.";
@@ -2442,6 +2485,7 @@ acw_pnl_charts(
 	series[1].values = (const gdouble *)(gpointer)purchases->data;
 	series[1].format = acw_format_money;
 	series[1].format_data = (gpointer)currency;
+	series[1].currency = currency;
 	chart.title = "Money in and out per period";
 	chart.summary = "What sold, after the venue's cut, against what was spent.";
 	chart.series = series;
@@ -2563,6 +2607,16 @@ venture_marketdata_web_pnl(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	{
+		static const gchar *const lists[] = { "top_items", NULL };
+		static const gchar *const flip_lists[] = { "rows", NULL };
+
+		acw_decorate(self, root, query.organization_id, lists);
+
+		if (json_object_has_member(root, "flips") && JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "flips")))
+			acw_decorate(self, json_object_get_object_member(root, "flips"), query.organization_id,
+			             flip_lists);
+	}
 	html = g_string_new(NULL);
 	mdw_head(html, "Accounts", "Profit and loss",
 	         "The source's own ledger summed: sales after the venue's cut, purchases, other income "
