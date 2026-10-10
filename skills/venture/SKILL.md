@@ -92,17 +92,17 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`a0809d24db2a7247e67098de9160d0ce06689bf4` (2026-10-09, server version
+`dfaecc88db260b62efc1cbacd14e7edc74bb206d` (2026-10-10, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
 to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
-<!-- skill-baseline:start -- reviewed 2026-10-09 against a0809d2 -->
+<!-- skill-baseline:start -- reviewed 2026-10-10 against dfaecc8 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=a0809d24db2a7247e67098de9160d0ce06689bf4
+base=dfaecc88db260b62efc1cbacd14e7edc74bb206d
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -439,5 +439,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `a0809d2`; when the live server disagrees,
+- This skill describes baseline `dfaecc8`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.

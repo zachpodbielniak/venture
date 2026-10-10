@@ -142,7 +142,13 @@ Privacy settings and actions:
 
 Public addresses (no session): `/pub/form/TOKEN` (hosted page and where
 answers are posted), `/pub/form/TOKEN/fragment`, `/pub/form/TOKEN/schema`,
-`/pub/forms.js`. A draft, closed, full, never-published or unknown form is
+`/pub/forms.js`. The hosted link and every embed variant a form's page
+offers are built on `server.base_url` -- set it behind a reverse proxy,
+or they carry the listening address and port; only unconfigured local
+development uses that fallback on purpose. Public booking and form
+pages send `Referrer-Policy: same-origin`, so a browser post keeps the
+origin hosted validation checks; a post from a foreign origin is still
+refused. A draft, closed, full, never-published or unknown form is
 the same 404. `form_summary` rows carry a `versions` column; a question
 whose kind or scale changed between versions is split.
 

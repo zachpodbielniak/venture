@@ -37,6 +37,11 @@ venturectl create sale venture_id=1 gross="12g 34s 56c"
 - Denominations: largest first, each dividing the one before, the last
   worth exactly 1 minor unit, suffixes without digits/spaces/points.
   `.formatted` stays the canonical decimal (`"12.3456 GOLD"`).
+- The coloured coins on the web pages (gold, silver, copper discs) are
+  drawn by the browser from the page's plain text and
+  `script#venture-coins` (every denominated currency's suffixes). The
+  server's text, the API and the CLI are unchanged, so read and quote
+  `"12g 34s 56c"`, never the markup.
 - A coin amount without a code is read in the field's default currency if
   its coins fit, else in the one currency that has those coins; two
   candidates is refused as ambiguous -- add the code. A word beside a
