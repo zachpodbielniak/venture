@@ -37,7 +37,10 @@ typedef struct {
 	GThread *thread;
 	GMainContext *context;
 	GMainLoop *loop;
-	gchar *jwks_uri, *jwk;
+	gchar *jwks_uri, *jwk, *issuer, *nonce, *pkce;
+	gboolean browser, bad_nonce, unlinked;
+	guint claim_defect;
+	GTlsDatabase *previous_trust;
 	EVP_PKEY *key;
 } Provider;
 typedef struct {
@@ -48,7 +51,7 @@ typedef struct {
 	VentureWebServer *server;
 	VentureTenantService *service;
 	SoupSession *session;
-	gchar *directory, *admin_secret;
+	gchar *directory, *admin_secret, *location;
 	gint64 admin_id;
 } Fixture;
 typedef struct { gboolean done; GBytes *body; GError *error; } Reply;
@@ -79,7 +82,7 @@ static gchar *public_number(EVP_PKEY *key, const gchar *name)
 static gint64 now_seconds(void) { return g_get_real_time() / G_USEC_PER_SEC; }
 /* A Keycloak-shaped access token: two audiences, an authorized party, a
  * realm role and an email, none of which may pick the user or grant anything. */
-static gchar *token_with(Fixture *f, Claims c)
+static gchar *provider_token(Provider *p, Claims c)
 {
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(JsonGenerator) generator = json_generator_new();
@@ -90,13 +93,14 @@ static gchar *token_with(Fixture *f, Claims c)
 	EVP_MD_CTX *ctx = EVP_MD_CTX_new();
 	gsize length = 0;
 	json_builder_begin_object(builder);
-	json_builder_set_member_name(builder, "iss"); json_builder_add_string_value(builder, c.issuer ? c.issuer : ISSUER);
+	json_builder_set_member_name(builder, "iss"); json_builder_add_string_value(builder, c.issuer ? c.issuer : p->issuer);
 	json_builder_set_member_name(builder, "aud");
 	json_builder_begin_array(builder);
 	json_builder_add_string_value(builder, c.audience ? c.audience : AUDIENCE);
-	json_builder_add_string_value(builder, "lightsite-api");
+	if (!p->browser) json_builder_add_string_value(builder, "lightsite-api");
 	json_builder_end_array(builder);
-	json_builder_set_member_name(builder, "azp"); json_builder_add_string_value(builder, "lightsite-app");
+	json_builder_set_member_name(builder, "azp"); json_builder_add_string_value(builder, p->claim_defect == 5 ? "other-client" : (p->browser ? "source-browser" : "lightsite-app"));
+	if (p->browser) { json_builder_set_member_name(builder, "nonce"); json_builder_add_string_value(builder, p->bad_nonce ? "wrong" : p->nonce); }
 	json_builder_set_member_name(builder, "sub"); json_builder_add_string_value(builder, c.subject);
 	json_builder_set_member_name(builder, "email"); json_builder_add_string_value(builder, "admin@provider.test");
 	json_builder_set_member_name(builder, "role"); json_builder_add_string_value(builder, "owner");
@@ -106,7 +110,7 @@ static gchar *token_with(Fixture *f, Claims c)
 	json_generator_set_root(generator, node); json = json_generator_to_data(generator, NULL);
 	header = base64url((const guchar *)head, strlen(head));
 	body = base64url((const guchar *)json, strlen(json)); payload = g_strconcat(header, ".", body, NULL);
-	g_assert_cmpint(EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, f->provider.key), ==, 1);
+	g_assert_cmpint(EVP_DigestSignInit(ctx, NULL, EVP_sha256(), NULL, p->key), ==, 1);
 	g_assert_cmpint(EVP_DigestSign(ctx, NULL, &length, (const guchar *)payload, strlen(payload)), ==, 1);
 	bytes = g_malloc(length);
 	g_assert_cmpint(EVP_DigestSign(ctx, bytes, &length, (const guchar *)payload, strlen(payload)), ==, 1);
@@ -117,16 +121,43 @@ static gchar *token_with(Fixture *f, Claims c)
 static gchar *token_for(Fixture *f, const gchar *subject)
 {
 	Claims c = { subject, NULL, NULL, 0, 0, FALSE };
-	return token_with(f, c);
+	return provider_token(&f->provider, c);
 }
+static gchar *token_with(Fixture *f, Claims c) { return provider_token(&f->provider, c); }
 static void provider_handler(SoupServer *server, SoupServerMessage *message, const gchar *path, GHashTable *query, gpointer data)
 {
 	Provider *p = data;
+	g_autofree gchar *answer = NULL;
 	(void)server; (void)query;
-	if (strcmp(path, "/jwks")) { soup_server_message_set_status(message, 404, NULL); return; }
 	g_mutex_lock(&p->mutex);
+	if (p->browser && !strcmp(path, "/.well-known/openid-configuration"))
+		/* A public PKCE client does not authenticate itself at the token
+		 * endpoint. The provider advertises confidential client methods. */
+		answer = g_strdup_printf("{\"issuer\":\"%s\",\"authorization_endpoint\":\"%s/authorize\",\"token_endpoint\":\"%s/token\",\"jwks_uri\":\"%s/jwks\",\"response_types_supported\":[\"code\"],\"code_challenge_methods_supported\":[\"S256\"],\"token_endpoint_auth_methods_supported\":[\"client_secret_basic\"]}", p->issuer, p->issuer, p->issuer, p->issuer);
+	else if (p->browser && !strcmp(path, "/token")) {
+		SoupMessageBody *body = soup_server_message_get_request_body(message);
+		g_autofree gchar *encoded = g_strndup(body->data, body->length), *actual = NULL, *token = NULL;
+		g_autoptr(GHashTable) form = soup_form_decode(encoded);
+		g_autoptr(GChecksum) hash = g_checksum_new(G_CHECKSUM_SHA256);
+		const gchar *verifier = g_hash_table_lookup(form, "code_verifier");
+		guchar digest[32]; gsize length = sizeof digest;
+		Claims c = { p->unlinked ? "unknown-subject" : "browser-owner", NULL, "source-browser", 0, 0, FALSE };
+		if (p->claim_defect == 1) c.issuer = "https://other.example.test";
+		if (p->claim_defect == 2) c.audience = "other-client";
+		if (p->claim_defect == 3) c.forged = TRUE;
+		if (p->claim_defect == 4) c.expires = now_seconds() - 300;
+		g_assert_cmpstr(g_hash_table_lookup(form, "grant_type"), ==, "authorization_code");
+		g_assert_cmpstr(g_hash_table_lookup(form, "client_id"), ==, "source-browser");
+		g_assert_null(g_hash_table_lookup(form, "client_secret"));
+		g_assert_cmpstr(g_hash_table_lookup(form, "redirect_uri"), ==, ORIGIN "/auth/hosted/callback");
+		g_assert_nonnull(verifier); g_assert_cmpuint(strlen(verifier), >=, 43);
+		g_checksum_update(hash, (const guchar *)verifier, strlen(verifier)); g_checksum_get_digest(hash, digest, &length);
+		actual = base64url(digest, length); g_assert_cmpstr(actual, ==, p->pkce);
+		token = provider_token(p, c); answer = g_strdup_printf("{\"id_token\":\"%s\"}", token);
+	} else if (!strcmp(path, "/jwks")) answer = g_strdup(p->jwk);
+	if (!answer) { soup_server_message_set_status(message, 404, NULL); g_mutex_unlock(&p->mutex); return; }
 	soup_server_message_set_status(message, 200, NULL);
-	soup_server_message_set_response(message, "application/json", SOUP_MEMORY_COPY, p->jwk, strlen(p->jwk));
+	soup_server_message_set_response(message, "application/json", SOUP_MEMORY_COPY, answer, strlen(answer));
 	g_mutex_unlock(&p->mutex);
 }
 static gpointer provider_thread(gpointer data)
@@ -134,16 +165,23 @@ static gpointer provider_thread(gpointer data)
 	Provider *p = data;
 	g_autoptr(SoupServer) server = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(GTlsCertificate) certificate = NULL;
 	GSList *uris;
 	p->context = g_main_context_new(); g_main_context_push_thread_default(p->context);
-	p->loop = g_main_loop_new(p->context, FALSE); server = soup_server_new(NULL, NULL);
+	p->loop = g_main_loop_new(p->context, FALSE);
+	if (p->browser) {
+		certificate = g_tls_certificate_new_from_files("tests/fixtures/federation/tls-cert.pem", "tests/fixtures/federation/tls-key.pem", &error);
+		g_assert_no_error(error);
+	}
+	server = soup_server_new("tls-certificate", certificate, NULL);
 	soup_server_add_handler(server, NULL, provider_handler, p, NULL);
-	g_assert_true(soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error)); g_assert_no_error(error);
+	g_assert_true(soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY | (p->browser ? SOUP_SERVER_LISTEN_HTTPS : 0), &error)); g_assert_no_error(error);
 	uris = soup_server_get_uris(server);
 	g_mutex_lock(&p->mutex); p->jwks_uri = g_uri_to_string_partial(uris->data, G_URI_HIDE_NONE);
 	{
 		gchar *base = p->jwks_uri;
-		p->jwks_uri = g_uri_resolve_relative(base, "jwks", G_URI_FLAGS_NONE, NULL);
+		p->issuer = p->browser ? g_strdup_printf("https://localhost:%d", g_uri_get_port(uris->data)) : g_strdup(ISSUER);
+		p->jwks_uri = p->browser ? g_strconcat(p->issuer, "/jwks", NULL) : g_uri_resolve_relative(base, "jwks", G_URI_FLAGS_NONE, NULL);
 		g_free(base);
 	}
 	g_cond_signal(&p->ready); g_mutex_unlock(&p->mutex);
@@ -176,9 +214,26 @@ static guint exchange(Fixture *f, const gchar *method, const gchar *path, const 
 	soup_session_send_and_read_async(f->session, message, G_PRIORITY_DEFAULT, NULL, received, &reply);
 	while (!reply.done) g_main_context_iteration(NULL, TRUE);
 	g_assert_no_error(reply.error);
+	g_free(f->location);
+	f->location = g_strdup(soup_message_headers_get_one(soup_message_get_response_headers(message), "Location"));
 	if (out_cookie) {
-		const gchar *set = soup_message_headers_get_one(soup_message_get_response_headers(message), "Set-Cookie");
-		*out_cookie = set ? g_strndup(set, strcspn(set, ";")) : NULL;
+		GSList *list = soup_cookies_from_response(message), *iter;
+		g_autofree gchar *business = NULL;
+		gint priority = 0;
+		*out_cookie = NULL;
+		for (iter = list; iter; iter = iter->next) {
+			const gchar *name = soup_cookie_get_name(iter->data);
+			gint rank = !strcmp(name, "venture_session") ? 3 : (!strcmp(name, "venture_mfa") ? 2 : 1);
+			if (!strcmp(name, "venture_entity")) { business = soup_cookie_to_cookie_header(iter->data); continue; }
+			if (rank > priority && *soup_cookie_get_value(iter->data)) {
+				g_free(*out_cookie); *out_cookie = soup_cookie_to_cookie_header(iter->data); priority = rank;
+			}
+		}
+		if (*out_cookie && business) {
+			gchar *combined = g_strconcat(*out_cookie, "; ", business, NULL);
+			g_free(*out_cookie); *out_cookie = combined;
+		}
+		soup_cookies_free(list);
 	}
 	bytes = g_bytes_get_data(reply.body, &length);
 	if (out_body) *out_body = g_strndup(bytes, length);
@@ -229,8 +284,8 @@ static gint64 member_with_password(Fixture *f, const gchar *username, gint64 org
 /* A business by trusted sign-up; returns its organization id, *user its owner. */
 static gint64 sign_up(Fixture *f, const gchar *key, const gchar *email, const gchar *subject, const gchar *name, gint64 *user)
 {
-	g_autofree gchar *payload = g_strdup_printf("{\"idempotency_key\":\"%s\",\"email\":\"%s\",\"issuer\":\"" ISSUER "\","
-		"\"subject\":\"%s\",\"business_name\":\"%s\"}", key, email, subject, name);
+	g_autofree gchar *payload = g_strdup_printf("{\"idempotency_key\":\"%s\",\"email\":\"%s\",\"issuer\":\"%s\","
+		"\"subject\":\"%s\",\"business_name\":\"%s\"}", key, email, f->provider.issuer, subject, name);
 	g_autofree gchar *body = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	guint status = exchange(f, "POST", "/api/v1/lightsite/signups", NULL, f->admin_secret, "application/json", payload, &body, NULL);
@@ -248,7 +303,7 @@ static void configure(Fixture *f, gboolean trusted)
 		"security-password-iterations", (gint64)2000, "state-dir", f->directory,
 		"server-bind-address", loopback, "server-port", (gint64)0, NULL);
 	if (trusted)
-		g_object_set(f->config, "hosted-identity-issuer", ISSUER, "hosted-identity-audience", AUDIENCE,
+		g_object_set(f->config, "hosted-identity-issuer", f->provider.issuer, "hosted-identity-audience", AUDIENCE,
 			"hosted-identity-jwks-uri", f->provider.jwks_uri, NULL);
 }
 static void start(Fixture *f, gboolean trusted)
@@ -280,6 +335,14 @@ static void setup(Fixture *f, gconstpointer data)
 	g_autofree gchar *n = NULL, *e = NULL;
 	EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
 	Provider *p = &f->provider;
+	p->browser = !g_strcmp0(data, "browser");
+	if (p->browser) {
+		g_autofree gchar *path = g_canonicalize_filename("tests/fixtures/federation/tls-cert.pem", NULL);
+		g_autoptr(GTlsDatabase) trust = g_tls_file_database_new(path, &error);
+		g_assert_no_error(error);
+		p->previous_trust = g_object_ref(g_tls_backend_get_default_database(g_tls_backend_get_default()));
+		g_tls_backend_set_default_database(g_tls_backend_get_default(), trust);
+	}
 	g_mutex_init(&p->mutex); g_cond_init(&p->ready);
 	g_assert_cmpint(EVP_PKEY_keygen_init(ctx), ==, 1); g_assert_cmpint(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048), ==, 1);
 	g_assert_cmpint(EVP_PKEY_keygen(ctx, &p->key), ==, 1); EVP_PKEY_CTX_free(ctx);
@@ -290,9 +353,11 @@ static void setup(Fixture *f, gconstpointer data)
 	g_mutex_unlock(&p->mutex);
 	f->db = venture_test_accounting_database(&error); g_assert_no_error(error);
 	f->config = venture_config_new();
+	if (p->browser) g_object_set(f->config, "hosted-identity-browser-client", "source-browser", "security-cookie-secure", TRUE,
+		"security-mfa-key-env", "VENTURE_TEST_BROWSER_MFA", NULL);
 	f->directory = g_dir_make_tmp("venture-identity-XXXXXX", &error); g_assert_no_error(error);
 	f->session = soup_session_new_with_options("timeout", 10, NULL);
-	start(f, data == NULL);
+	start(f, data == NULL || p->browser);
 }
 static void teardown(Fixture *f, gconstpointer data)
 {
@@ -302,10 +367,11 @@ static void teardown(Fixture *f, gconstpointer data)
 	g_clear_object(&f->server); g_clear_object(&f->context); g_clear_object(&f->session);
 	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db); g_clear_object(&f->config);
-	venture_test_remove_tree(f->directory); g_free(f->directory); g_free(f->admin_secret);
+	venture_test_remove_tree(f->directory); g_free(f->directory); g_free(f->admin_secret); g_free(f->location);
 	g_main_context_invoke(p->context, stop_provider, p); g_thread_join(p->thread);
 	g_main_loop_unref(p->loop); g_main_context_unref(p->context);
-	g_free(p->jwks_uri); g_free(p->jwk); EVP_PKEY_free(p->key);
+	g_free(p->jwks_uri); g_free(p->jwk); g_free(p->issuer); g_free(p->nonce); g_free(p->pkce); EVP_PKEY_free(p->key);
+	if (p->browser) { g_tls_backend_set_default_database(g_tls_backend_get_default(), p->previous_trust); g_clear_object(&p->previous_trust); }
 	g_mutex_clear(&p->mutex); g_cond_clear(&p->ready);
 }
 /* The organizations of an account-authority answer, by id -> "role/manage". */
@@ -486,14 +552,24 @@ static void test_config(void)
 	g_assert_nonnull(strstr(error->message, "identity"));
 	venture_test_accounting_database_cleanup(db);
 }
+#include "test-hosted-browser.inc"
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_setenv("VENTURE_TEST_BROWSER_MFA", "synthetic-browser-fixture", TRUE);
 	g_test_add("/hosted-identity/signup-links", Fixture, NULL, setup, test_signup_links, teardown);
 	g_test_add("/hosted-identity/refusals", Fixture, NULL, setup, test_refusals, teardown);
 	g_test_add("/hosted-identity/untrusted", Fixture, "untrusted", setup, test_untrusted, teardown);
 	g_test_add("/hosted-identity/self-link", Fixture, NULL, setup, test_self_link, teardown);
 	g_test_add("/hosted-identity/revocation", Fixture, NULL, setup, test_revocation, teardown);
+	g_test_add("/hosted-identity/browser-records", Fixture, "browser", setup, test_browser_records, teardown);
+	g_test_add("/hosted-identity/browser-refusals", Fixture, "browser", setup, test_browser_refusals, teardown);
+	g_test_add("/hosted-identity/browser-revocation", Fixture, "browser", setup, test_browser_revocation, teardown);
+	g_test_add("/hosted-identity/browser-policy", Fixture, "browser", setup, test_browser_policy, teardown);
+	g_test_add("/hosted-identity/browser-mfa", Fixture, "browser", setup, test_browser_mfa, teardown);
+	g_test_add("/hosted-identity/browser-business-context", Fixture, "browser", setup, test_browser_business_context, teardown);
+	g_test_add("/hosted-identity/browser-edit-pages", Fixture, "browser", setup, test_browser_edit_pages, teardown);
+	g_test_add("/hosted-identity/browser-token-refusals", Fixture, "browser", setup, test_browser_token_refusals, teardown);
 	g_test_add_func("/hosted-identity/config", test_config);
 	return g_test_run();
 }

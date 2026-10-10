@@ -99,6 +99,9 @@ that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
 to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
+Hosted browser sign-in for an enrolled owner is in the platform guide and
+the route index. The baseline below remains the last full review.
+
 <!-- skill-baseline:start -- reviewed 2026-10-10 against dfaecc8 -->
 ```bash
 # From a checkout: what changed since this skill was written?
@@ -299,6 +302,7 @@ ids, notes) in words.
 |---|---|---|
 | "Provision a Lightsite owner" | trusted idempotent sign-up service | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
+| "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
 | "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish`, `first-charge`, `cancel`, `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |

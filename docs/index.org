@@ -26,7 +26,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:attribution.org][First-party attribution]] — consented site observations, signed Lightsite capture and source-linked financial measures
 - [[file:attribution-demonstration.org][Attribution demonstration]] — built CLI/server, consent, signed intake, conversion and financial transcripts
 - [[file:orgaccess.org][Organization access]] — membership, organization roles and record ownership
-- [[file:lightsite-accounts.org][Lightsite account validation]] — scoped provisioning identity for hosted organizations
+- [[file:lightsite-accounts.org][Lightsite account validation]] — scoped provisioning identity and enrolled-owner browser handoff
 - [[file:lightsite-billing.org][Lightsite billing]] — binding a Lightsite business to a plan in the billing organization, and what it owes
 - [[file:hosted-billing.org][Hosted enrollment and guarantee]] — saved payment authority, deferred first charge, attributed value and one-time account credit
 

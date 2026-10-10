@@ -351,3 +351,44 @@ including a session cookie and a token without the captured workspace role,
 body shape and bounds, rollback after a failed membership write followed by a
 successful retry, username derivation and the recovery path above. See
 [[file:evidence/lightsite-signup.org][the evidence]].
+
+* Browser handoff for an enrolled owner
+
+An owner created by trusted signup can also open ordinary business record
+pages without creating a separate local password. Set
+=hosted.identity_browser_client= to a dedicated public OIDC client and enable
+=security.cookie_secure=. Register the exact HTTPS callback
+=/auth/hosted/callback= on the already-bound hosted origin. The client must
+use authorization code with PKCE S256; no password or implicit grant is
+needed. Unset, hosted browser sign-in is disabled and local login is unchanged.
+
+The login page offers =Continue with Lightsite=. An anonymous request for a
+protected page starts the handoff with its local return path. The service
+uses the configured trusted issuer, bounded same-origin discovery, PKCE,
+a nonce, and five-minute one-use state bound to a secure HttpOnly browser
+cookie. The callback consumes state even on failure, verifies the ID token's
+signature, issuer, audience, authorized party, expiry and nonce, and resolves
+only the existing enrollment link. It never provisions a user, matches an
+email address, or takes roles from provider claims. Restart discards unfinished
+handoffs; start again.
+
+The resulting signed session binds the enrollment identity and its revision.
+Disabling the link, changing the configured client, deactivating the user or
+ending their sessions invalidates access. Restoring a link at a new revision
+does not revive an old cookie. Local MFA remains required when enrolled, and
+normal workspace lifecycle, membership and business record policies still
+apply to every request. Organization OIDC links retain their separate flow.
+
+A successful handoff selects the business of an authorized record, or the
+owner's sole active business. With multiple businesses and no specific record,
+the existing portfolio view is used. This selection is only a view preference;
+it grants no permissions. Return targets must stay within this source origin.
+External URLs, network-path references, control characters, backslashes and
+authentication loops are refused.
+
+The regression fixture performs the real HTTPS discovery and token exchange
+against a synthetic provider, including PKCE verification. It covers a fresh
+passwordless owner, a retained record destination, business selection,
+cross-business refusal, forged/expired/wrong-issuer/wrong-audience ID tokens,
+invalid nonce or authorized party, unlinked subjects, state replay, revocation,
+client changes and local MFA.

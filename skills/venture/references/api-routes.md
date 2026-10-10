@@ -146,3 +146,9 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `GET /lightsite/billing/:organization_id/notifications` | owner notification facts, no payment credentials | -- |
 | `GET /lightsite/billing/:organization_id` | business plan, balance and own Stripe status | -- |
 | `GET /lightsite/billing` | staff billing overview | -- |
+
+Hosted browser authentication (not bearer API routes): `GET /auth/hosted/start`
+accepts a local `return_to` path; `GET /auth/hosted/callback` consumes the
+browser-bound authorization response. These routes are opt-in through
+`hosted.identity_browser_client`, use the signup identity link and never
+create accounts. Owners follow record links or **Continue with Lightsite**.

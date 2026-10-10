@@ -8,6 +8,39 @@ G_BEGIN_DECLS
 #define VENTURE_TYPE_OIDC_SERVICE (venture_oidc_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureOidcService, venture_oidc_service, VENTURE, OIDC_SERVICE, GObject)
 /**
+ * venture_oidc_service_hosted_enabled:
+ * @self: service
+ * Returns: whether secure browser sign-in for the trusted hosted issuer is configured
+ */
+gboolean venture_oidc_service_hosted_enabled(VentureOidcService *self);
+/**
+ * venture_oidc_service_begin_hosted:
+ * @self: service
+ * @return_to: (nullable): local record path, never an external URL
+ * @remote_address: peer used for the bounded attempt budget
+ * @out_browser_token: (out) (transfer full): one-use secure browser binding
+ * @error: (out) (optional): refusal
+ * Returns: (transfer full) (nullable): authorization URL with PKCE and nonce
+ */
+gchar *venture_oidc_service_begin_hosted(VentureOidcService *self, const gchar *return_to,
+	const gchar *remote_address, gchar **out_browser_token, GError **error);
+/**
+ * venture_oidc_service_finish_hosted:
+ * @self: service
+ * @state: one-use authorization state
+ * @code: authorization code, never logged or retained
+ * @browser_token: browser binding
+ * @out_return_to: (out) (transfer full): validated local return path
+ * @error: (out) (optional): refusal
+ *
+ * Verifies issuer, audience, signature, nonce and PKCE, then resolves only an
+ * existing active hosted identity. Never creates accounts or links by email.
+ * Returns: (transfer full) (nullable): existing verified hosted identity
+ */
+VentureTenantIdentity *venture_oidc_service_finish_hosted(VentureOidcService *self,
+	const gchar *state, const gchar *code, const gchar *browser_token,
+	gchar **out_return_to, GError **error);
+/**
  * venture_oidc_service_get:
  * @database: repository, weakly held
  * Returns: (transfer none): repository-owned sign-in service
@@ -70,7 +103,8 @@ VentureOidcIdentity *venture_oidc_service_finish(VentureOidcService *self, const
 /**
  * venture_oidc_service_identity_user:
  * @self: service
- * @identity_id: identity from a verified signed session/challenge or finish result
+ * @identity_id: signed identity reference from a verified session or finish result;
+ * positive for organization OIDC, negative for hosted enrollment identities
  * @error: (out) (optional): revoked identity/provider/membership/account
  *
  * Trusted authentication boundary. Reloads local authority on every call;
@@ -81,7 +115,7 @@ VentureUser *venture_oidc_service_identity_user(VentureOidcService *self, gint64
 /**
  * venture_oidc_service_dup_session_binding:
  * @self: service
- * @identity_id: linked identity
+ * @identity_id: linked identity; negative denotes a hosted enrollment identity
  * @error: (out) (optional): missing or revoked binding
  *
  * Supplies current identity and provider revisions for the session MAC.
