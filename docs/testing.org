@@ -1142,7 +1142,13 @@ The saved PBKDF2-HMAC-SHA256 format, salt and iteration count are unchanged.
 The cryptographic library derives the same bytes without allocating a fresh
 HMAC for every iteration. Core and standalone CLI builds require =libcrypto=.
 Authentication still checks each token's current activity, expiry and user
-permissions; neither credentials nor principals are cached. The repeated-request
+permissions. Only the cryptographic proof of an exact secret and stored verifier
+is reused, for at most 60 seconds and 64 entries. The cache holds one-way
+fingerprints, not plaintext secrets, principals or authorization decisions.
+Invalid secrets are never cached; changing the stored verifier misses the cache.
+Token-use telemetry is written on first use, then refreshed after one minute;
+a failed write remains eligible for retry on the next request. Token-use audit updates therefore have the same minute granularity.
+Business-change auditing and authorization checks are unchanged. The repeated-request
 HTTP regression changes expiry, rotates the hash, presents a wrong secret and
 revokes the token after success.
 

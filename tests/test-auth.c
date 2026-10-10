@@ -3894,6 +3894,50 @@ test_auth_token_reveal_is_one_shot(
  * incident wants to still be able to read.
  */
 /* Repeated authentication must always read current authorization state. */
+/* Repeated authentication keeps checks live without rewriting telemetry. */
+static void
+test_auth_token_last_use_is_bounded(
+	ServerFixture *fixture,
+	gconstpointer user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autoptr(GDateTime) first = NULL;
+	g_autoptr(GDateTime) second = NULL;
+	g_autoptr(GDateTime) past = NULL;
+
+	server_fixture_create_user(fixture, "example", "example-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "example", "example-long-password");
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=example&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_object_get(token, "last-used-at", &first, NULL);
+	g_assert_nonnull(first);
+	g_clear_object(&token);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_object_get(token, "last-used-at", &second, NULL);
+	g_assert_cmpint(g_date_time_compare(first, second), ==, 0);
+
+	past = g_date_time_add_seconds(first, -120);
+	g_object_set(token, "last-used-at", past, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_clear_object(&token);
+	g_clear_pointer(&second, g_date_time_unref);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_object_get(token, "last-used-at", &second, NULL);
+	g_assert_cmpint(g_date_time_compare(second, first), >=, 0);
+	g_assert_cmpint(g_date_time_compare(second, past), >, 0);
+}
+
 static void
 test_auth_token_repeated_checks_live_state(
 	ServerFixture *fixture,
@@ -7037,6 +7081,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-revoke-stops-it-working", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_revoke_stops_it_working,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-last-use-is-bounded", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_last_use_is_bounded,
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-repeat-checks-live-state", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_repeated_checks_live_state,

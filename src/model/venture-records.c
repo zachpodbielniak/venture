@@ -3560,6 +3560,45 @@ venture_api_token_generate(VentureApiToken *self)
 	return g_steal_pointer(&presented);
 }
 
+G_LOCK_DEFINE_STATIC(venture_token_proofs);
+static GHashTable *venture_token_proofs;
+
+/* A proof is a pure function of the secret and the exact stored verifier.
+ * Activity, expiry, identity and authorization remain live record checks. */
+static gboolean
+venture_token_secret_matches(const gchar *secret, const gchar *hash)
+{
+	g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+	g_autofree gchar *key = NULL;
+	gint64 now = g_get_monotonic_time();
+	gint64 *proved_at;
+	gboolean matched;
+
+	g_checksum_update(checksum, (const guchar *)hash, strlen(hash) + 1);
+	g_checksum_update(checksum, (const guchar *)secret, strlen(secret));
+	key = g_strdup(g_checksum_get_string(checksum));
+	G_LOCK(venture_token_proofs);
+	if (venture_token_proofs == NULL)
+		venture_token_proofs = g_hash_table_new_full(g_str_hash, g_str_equal,
+		                                           g_free, g_free);
+	proved_at = g_hash_table_lookup(venture_token_proofs, key);
+	matched = proved_at != NULL && now - *proved_at < G_TIME_SPAN_MINUTE;
+	G_UNLOCK(venture_token_proofs);
+	if (matched)
+		return TRUE;
+	if (!venture_verify_password(secret, hash))
+		return FALSE;
+
+	G_LOCK(venture_token_proofs);
+	if (g_hash_table_size(venture_token_proofs) >= 64)
+		g_hash_table_remove_all(venture_token_proofs);
+	proved_at = g_new(gint64, 1);
+	*proved_at = now;
+	g_hash_table_replace(venture_token_proofs, g_steal_pointer(&key), proved_at);
+	G_UNLOCK(venture_token_proofs);
+	return TRUE;
+}
+
 gboolean
 venture_api_token_matches(
 	VentureApiToken	*self,
@@ -3597,7 +3636,7 @@ venture_api_token_matches(
 	 * that stored the value verbatim and one that stripped it both work. */
 	secret = g_str_has_prefix(presented, "vk_") ? (presented + 3) : presented;
 
-	return venture_verify_password(secret, hash);
+	return venture_token_secret_matches(secret, hash);
 }
 
 static const VentureFieldDecl venture_audit_entry_fields[] = {

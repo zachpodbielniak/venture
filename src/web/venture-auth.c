@@ -539,11 +539,18 @@ venture_auth_from_token(
 		/* Recording use makes a leaked token visible in the audit
 		 * trail and lets an unused one be retired with confidence. */
 		{
-			g_autoptr(GDateTime) now = NULL;
+			g_autoptr(GDateTime) now = venture_time_now();
+			g_autoptr(GDateTime) last = NULL;
+			gint64 elapsed;
 
-			now = venture_time_now();
-			g_object_set(token, "last-used-at", now, NULL);
-			venture_database_save(database, token, NULL, NULL);
+			g_object_get(token, "last-used-at", &last, NULL);
+			elapsed = last ? g_date_time_difference(now, last) : G_TIME_SPAN_MINUTE;
+			/* Usage telemetry has minute precision; authority is always fresh. */
+			if (elapsed < 0 || elapsed >= G_TIME_SPAN_MINUTE)
+			{
+				g_object_set(token, "last-used-at", now, NULL);
+				venture_database_save(database, token, NULL, NULL);
+			}
 		}
 
 		return principal;
