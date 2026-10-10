@@ -150,6 +150,27 @@ A line or bar chart also carries its raw numbers as JSON in =<script type="appli
 
 Its classes are =plot-*= (=.plot=, =.plot-svg=, =.plot-s1= … =.plot-s4= with =.plot-line=, =.plot-area=, =.plot-bridge=, =.plot-dot=, =.plot-ring=, =.plot-col=, =.plot-tip=, =.plot-key-1= … =.plot-key-4=, =.plot-controls=, =.plot-stats=, =.plot-tools=), in both stylesheets after the =chart-*= rules, and never a =chart-*= class: venture.js is inlined into every page, and a test that greps a page for =chart-line= would find the script. A chart wired once is marked, and the page's MutationObserver ignores changes inside a =.plot=, so the readout redrawing on every pointer move does not rescan the page's tables.
 
+*** Coins
+
+A currency kept in denominations -- WoW's gold, silver and copper -- is written by the server as plain text, ="12g 5s 30c"=. Every page carries those currencies as =<script type="application/json" id="venture-coins">= (=venture_currency_get_denominations_json()=: ={"GOLD":[["g",10000],["s",100],["c",1]]}=; absent when no currency has denominations), and =wireCoins()= in venture.js finds amounts in the page's text by exactly those suffixes, in order, and wraps each:
+
+| Class | What it is |
+|-------+------------|
+| =.coins= | one amount, never broken across lines; =.coins-negative= when it is below zero |
+| =.coin=, =.coin-1= … =.coin-3= | one count and its coin, by rank (=coin-1= the largest), drawn in =--coin-1= … =--coin-3= (gold, silver, copper) with the coin itself as a disc after the count |
+| =.coin-mark= | the suffix letter: still in the text, so a sort, a filter, a copy and a screen reader read ="12g"=, but shown only in print |
+
+It skips scripts, inputs, code, SVG, an element marked =.no-coins=, and what it has wrapped already; it runs on the page, after every swap, and on a chart's readout and figures. A money chart's axis names its currency (=cur= in the =data-plot= axis), so a chart in coins labels its ticks in coins (="3s 25c"=), not as a decimal of the largest. Under =.money-positive= or =.money-negative= an amount keeps its metals and the sign is a wash behind it.
+
+An item's name is drawn in its quality's colour from the instrument's =display= (=.item-name=); a light palette darkens those colours with =--item-name-filter=, because the game chose them for a dark ground. Inventory, an account's page, Profit and loss and Crafting (its products and reagents) get the display from the organization's stores with =venture_marketdata_decorate_items()=, the row's own source first, so items an account pushed by tsmctl holds are drawn with the Blizzard source's icon and colour.
+
+*** Filters
+
+| Class | What it is |
+|-------+------------|
+| =.chips=, =.chip= | several choices as chips: a =<fieldset class="field chips">= of checkboxes, each a =label.chip= whose checkbox is hidden and whose text fills when ticked. The query is the one a =<select multiple>= sends, one =name=value= per choice. A picker with nothing to choose is left out |
+| =.form-more= | a filter form's rarely used fields folded in a =<details>= "More filters", open, with a count, whenever the question sets one of them (=mdw_more_open()=; a field a form always sends, like =only_known=0=, is not setting it) |
+
 The Trading pages add =.market-filters= (a filter form), =.market-action-row= and =.form-inline= (a row of small forms), =.market-stats= (a hook on the shared =.stat-row=, which styles it) and =.market-figure= (stat rows), =.market-heat= (two heat maps stacked), =.market-ranges= and =.market-range= (the price history's row of range links in the micro register, the one drawn =aria-current="page"= and in ink, never the accent), =.market-trend= (a table cell holding a row's seven-day sparkline, kept on one line), =.market-table= (a data table that scrolls inside its card on a phone), =.market-widget= and =.market-hits= (the market dashboard cards). They are the block /Market data: the charts and the Trading pages/ in each stylesheet.
 
 The arbitrage pages (=/arbitrage=, =/arbitrage/crafting=, =/arbitrage/recipe-lists=, =/arbitrage/plan=, =/arbitrage/calc=) add the block /Arbitrage: the scan, the presets and the calculators/:
@@ -166,7 +187,7 @@ The arbitrage pages (=/arbitrage=, =/arbitrage/crafting=, =/arbitrage/recipe-lis
 | =.arbitrage-calc= | one calculator's card (surebet, back and lay, flip) |
 | =.arbitrage-answer= | the calculator's answer, a =.stat-row= whose figures use tabular digits so stakes line up |
 | =.arbitrage-warning= | the muted line under a row naming a venue whose fees are not counted (no venue record, no fee model) |
-| =.crafting-table= | Crafting's table of recipes (an =.arbitrage-table=); it sorts in the browser like every table, each money cell carrying its amount as =data-sort-value=. Its character picker is a plain =<select multiple data-no-picker>=, so several characters are one parameter each in the query string |
+| =.crafting-table= | Crafting's table of recipes (an =.arbitrage-table=); it sorts in the browser like every table, each money cell carrying its amount as =data-sort-value=. Its columns run profit, margin, ROI and sale rate first, then the cost, where it sells and the fees, and the category, expansion and who knows it last; profit and margin carry =.money-positive= or =.money-negative= |
 | =.craft-inputs= | a craft's reagents folded under its name (=<details>=), one line each with its venue, price and age; a stale one is muted |
 | =.plan-actions= | the planner's line of actions: "Price again" and the exports |
 | =.plan-totals= | one =.stat-row= per currency: outlay, sales, cut, deposits, expected lost deposits, revenue, profit |

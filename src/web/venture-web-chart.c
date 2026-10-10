@@ -591,6 +591,10 @@ chart_spec_axis(
 			chart_json_string(out, prefix);
 			g_string_append(out, ",\"suf\":");
 			chart_json_string(out, digit + 1);
+			/* The code, so a currency written in coins labels its
+			 * ticks in them from the page's own list. */
+			g_string_append(out, ",\"cur\":");
+			chart_json_string(out, currency);
 			g_string_append_c(out, '}');
 			return;
 		}

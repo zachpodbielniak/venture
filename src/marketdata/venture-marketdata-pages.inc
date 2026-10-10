@@ -1107,7 +1107,92 @@ mdw_list_cell(
 	                      "Add</button></form>");
 }
 
-/* The Deals "List" picker: several may be chosen, their union shown. */
+/*
+ * A field of several choices as chips: a checkbox each, ticked for what
+ * is chosen. The query is the one a <select multiple> sends -- one
+ * name=value per choice -- without a box that is mostly empty, needs a
+ * modifier key to pick two, and hides what is picked once it scrolls.
+ */
+static void
+mdw_chips_open(
+	GString		*html,
+	const gchar	*label
+){
+	g_string_append(html, "<fieldset class=\"field chips\"><legend class=\"field-label\">");
+	venture_html_escape_append(html, label);
+	g_string_append(html, "</legend><div class=\"chips-row\">");
+}
+
+static void
+mdw_chip(
+	GString		*html,
+	const gchar	*name,
+	const gchar	*value,
+	const gchar	*text,
+	gboolean	 checked
+){
+	g_string_append(html, "<label class=\"chip\"><input type=\"checkbox\" name=\"");
+	venture_html_escape_append(html, name);
+	g_string_append(html, "\" value=\"");
+	venture_html_escape_append(html, value);
+	g_string_append_printf(html, "\"%s><span>", checked ? " checked" : "");
+	venture_html_escape_append(html, text);
+	g_string_append(html, "</span></label>");
+}
+
+static void
+mdw_chips_close(GString *html)
+{
+	g_string_append(html, "</div></fieldset>");
+}
+
+/*
+ * The filters a page keeps folded away: "More filters", open when the
+ * question already sets any of @names -- so a filter in use is never
+ * hidden -- and saying how many it sets. A name may carry the value a
+ * form always sends for it, "only_known=0", which is not setting it.
+ */
+static void
+mdw_more_open(
+	GString			*html,
+	HtmxRequest		*request,
+	const gchar *const	*names
+){
+	guint set = 0;
+	guint i;
+
+	for (i = 0; NULL != names[i]; i++)
+	{
+		const gchar *equals = strchr(names[i], '=');
+		g_autofree gchar *name = (NULL != equals) ? g_strndup(names[i], (gsize)(equals - names[i]))
+		                                          : g_strdup(names[i]);
+		g_autofree gchar *value = mdw_query_all(request, name);
+
+		if (!venture_string_is_empty(value) && ((NULL == equals) || (0 != g_strcmp0(value, equals + 1))))
+			set++;
+	}
+
+	g_string_append_printf(html, "<details class=\"form-more\"%s><summary>More filters", (set > 0) ? " open" : "");
+
+	if (set > 0)
+		g_string_append_printf(html, " <span class=\"badge\">%u set</span>", set);
+
+	g_string_append(html, "</summary><div class=\"form-grid form-more-grid\">");
+}
+
+static void
+mdw_more_close(GString *html)
+{
+	g_string_append(html, "</div></details>");
+}
+
+/* The Deals filters folded under "More filters". */
+static const gchar *const mdw_deals_more[] = {
+	"venue_group", "group", "min_value", "max_pct", "top", "cut", "min_sold_per_day", "horizon_days", NULL
+};
+
+/* The Deals "List" picker: several may be chosen, their union shown.
+ * None at all, no field. */
 static void
 mdw_watchlist_picker(
 	GString		*html,
@@ -1119,22 +1204,22 @@ mdw_watchlist_picker(
 	g_auto(GStrv) chosen = g_strsplit((NULL != chosen_text) ? chosen_text : "", ",", -1);
 	guint i;
 
-	g_string_append(html, "<div class=\"field\"><label>List<select name=\"watchlist\" multiple "
-	                      "data-no-picker size=\"3\">");
+	if ((NULL == choices) || (0 == json_array_get_length(choices)))
+		return;
 
-	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	mdw_chips_open(html, "List");
+
+	for (i = 0; i < json_array_get_length(choices); i++)
 	{
 		JsonObject *choice = json_array_get_object_element(choices, i);
 		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT,
 		                                       json_object_get_int_member_with_default(choice, "id", 0));
 
-		g_string_append_printf(html, "<option value=\"%s\"%s>", id,
-		                       g_strv_contains((const gchar *const *)chosen, id) ? " selected" : "");
-		venture_html_escape_append(html, mdw_text(choice, "name"));
-		g_string_append(html, "</option>");
+		mdw_chip(html, "watchlist", id, mdw_text(choice, "name"),
+		         g_strv_contains((const gchar *const *)chosen, id));
 	}
 
-	g_string_append(html, "</select></label></div>");
+	mdw_chips_close(html);
 }
 
 /* A store row's lists and its "Add to list", as Deals and Browse draw
@@ -3257,18 +3342,20 @@ venture_marketdata_web_deals(
 	                      "class=\"form-grid market-filters\" role=\"search\" aria-label=\"Deal filters\">");
 	mdw_source_picker(html, root, query.data_source_id, TRUE);
 	mdw_input(html, request, "Search", "search", "name or key");
-	mdw_venue_group_picker(html, root, query.venue_group);
-	mdw_watchlist_picker(html, root, watchlists);
 	mdw_deal_venue_picker(html, root, "Buy at", "venue", mdw_text(root, "buy_venue"));
 	mdw_deal_venue_picker(html, root, "Sell at", "sell_venue", mdw_text(root, "sell_venue"));
-	mdw_input(html, request, "Group", "group", "a group, e.g. eu");
 	mdw_category_picker(html, root, mdw_param(request, "category"));
+	mdw_watchlist_picker(html, root, watchlists);
+	mdw_more_open(html, request, mdw_deals_more);
+	mdw_venue_group_picker(html, root, query.venue_group);
+	mdw_input(html, request, "Group", "group", "a group, e.g. eu");
 	mdw_input(html, request, "Worth at least", "min_value", "e.g. 10.00 GOLD");
 	mdw_input(html, request, "At most % of region", "max_pct", "e.g. 80");
 	mdw_input(html, request, "How many", "top", "50");
 	mdw_input(html, request, "Sale cut %", "cut", "5");
 	mdw_input(html, request, "Sells at least, a day", "min_sold_per_day", "e.g. 2");
 	mdw_input(html, request, "Over days", "horizon_days", "7");
+	mdw_more_close(html);
 	{
 		const gchar *sort = query.sort;
 

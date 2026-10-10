@@ -1462,6 +1462,55 @@ arw_money_cell(
 	g_string_append(html, "</td>");
 }
 
+/*
+ * " money-positive" or " money-negative" for @member of @object -- a
+ * money object's amount or a plain number -- and nothing for zero or
+ * none, inside a class attribute already open.
+ */
+static void
+arw_sign_class(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*member
+){
+	JsonNode *node;
+	gdouble value;
+
+	node = ((NULL != object) && json_object_has_member(object, member))
+		? json_object_get_member(object, member) : NULL;
+
+	if (NULL == node)
+		return;
+
+	if (JSON_NODE_HOLDS_OBJECT(node))
+		value = (gdouble)json_object_get_int_member_with_default(json_node_get_object(node), "amount", 0);
+	else if (JSON_NODE_HOLDS_VALUE(node) && (G_TYPE_STRING != json_node_get_value_type(node)))
+		value = json_node_get_double(node);
+	else
+		return;
+
+	if (value > 0)
+		g_string_append(html, " money-positive");
+	else if (value < 0)
+		g_string_append(html, " money-negative");
+}
+
+/* A money cell coloured by its sign: a profit, or the loss it is. */
+static void
+arw_signed_money_cell(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*member
+){
+	g_string_append(html, "<td class=\"num");
+	arw_sign_class(html, object, member);
+	g_string_append(html, "\"");
+	mdw_sort_value(html, object, member);
+	g_string_append(html, ">");
+	mdw_money(html, object, member);
+	g_string_append(html, "</td>");
+}
+
 /* A craft's reagents, each where it is cheapest and how old that is. */
 static void
 arw_craft_inputs(
@@ -1487,7 +1536,8 @@ arw_craft_inputs(
 		g_string_append_printf(html, "<li%s>%" G_GINT64_FORMAT " \xc3\x97 ",
 		                       mdw_stale(input, "") ? " class=\"is-stale\"" : "",
 		                       venture_json_object_get_int(input, "quantity", 0));
-		venture_html_escape_append(html, venture_json_object_get_string(input, "name", ""));
+		if (NULL != venture_json_object_get_string(input, "name", NULL))
+			mdw_name(html, input, "name", "instrument_key");
 
 		if (venture_json_object_get_bool(input, "reusable", FALSE))
 			g_string_append(html, " <span class=\"muted\">(reusable, bought once)</span>");
@@ -1576,22 +1626,21 @@ arw_character_picker(
 
 	choices = json_object_has_member(root, "character_choices")
 		? json_object_get_array_member(root, "character_choices") : NULL;
-	chosen = g_strsplit(venture_json_object_get_string(question, "character", ""), ",", -1);
-	g_string_append(html, "<div class=\"field\"><label>Known by<select name=\"character\" multiple "
-	                      "data-no-picker size=\"4\">");
 
-	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	if ((NULL == choices) || (0 == json_array_get_length(choices)))
+		return;
+
+	chosen = g_strsplit(venture_json_object_get_string(question, "character", ""), ",", -1);
+	mdw_chips_open(html, "Known by");
+
+	for (i = 0; i < json_array_get_length(choices); i++)
 	{
 		const gchar *key = json_array_get_string_element(choices, i);
 
-		g_string_append(html, "<option value=\"");
-		venture_html_escape_append(html, key);
-		g_string_append_printf(html, "\"%s>", g_strv_contains((const gchar *const *)chosen, key) ? " selected" : "");
-		venture_html_escape_append(html, key);
-		g_string_append(html, "</option>");
+		mdw_chip(html, "character", key, key, g_strv_contains((const gchar *const *)chosen, key));
 	}
 
-	g_string_append(html, "</select></label></div>");
+	mdw_chips_close(html);
 }
 
 /* A picker of names the answer offers in @member -- the professions (the
@@ -1644,7 +1693,14 @@ arw_name_picker(
 	g_string_append(html, "</select></label></div>");
 }
 
-/* The Crafting "List" picker: several may be chosen, their union priced. */
+/* The Crafting filters folded under "More filters". */
+static const gchar *const arw_crafting_more[] = {
+	"recipe_category_id", "only_known=0", "min_margin", "max_cost", "min_sold_per_day", "buy_realm",
+	"sell_realm", "venue_group", "units", "sell_basis", "max_age_hours", "share", NULL
+};
+
+/* The Crafting "List" picker: several may be chosen, their union
+ * priced. None at all, no field. */
 static void
 arw_recipe_list_picker(
 	GString		*html,
@@ -1656,21 +1712,21 @@ arw_recipe_list_picker(
 	g_auto(GStrv) chosen = g_strsplit(venture_json_object_get_string(question, "recipe_list", ""), ",", -1);
 	guint i;
 
-	g_string_append(html, "<div class=\"field\"><label>List<select name=\"recipe_list\" multiple "
-	                      "data-no-picker size=\"3\">");
+	if ((NULL == choices) || (0 == json_array_get_length(choices)))
+		return;
 
-	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	mdw_chips_open(html, "List");
+
+	for (i = 0; i < json_array_get_length(choices); i++)
 	{
 		JsonObject *choice = json_array_get_object_element(choices, i);
 		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_json_object_get_int(choice, "id", 0));
 
-		g_string_append_printf(html, "<option value=\"%s\"%s>", id,
-		                       g_strv_contains((const gchar *const *)chosen, id) ? " selected" : "");
-		venture_html_escape_append(html, venture_json_object_get_string(choice, "name", ""));
-		g_string_append(html, "</option>");
+		mdw_chip(html, "recipe_list", id, venture_json_object_get_string(choice, "name", ""),
+		         g_strv_contains((const gchar *const *)chosen, id));
 	}
 
-	g_string_append(html, "</select></label></div>");
+	mdw_chips_close(html);
 }
 
 /* A recipe's lists and its "Add to list". */
@@ -1720,13 +1776,14 @@ arw_craft_rows(
 	mdw_list_datalist(html, "recipe-list-names", json_object_get_array_member(root, "recipe_list_choices"));
 	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Recipes</h2></div>"
 	                      "<div class=\"table-wrap\"><table class=\"data arbitrage-table crafting-table\">"
-	                      "<thead><tr><th scope=\"col\">Recipe</th><th scope=\"col\">Category</th>"
-	                      "<th scope=\"col\">Expansion</th><th scope=\"col\">Known by</th>"
+	                      "<thead><tr><th scope=\"col\">Recipe</th>"
+	                      "<th scope=\"col\" class=\"num\">Profit</th><th scope=\"col\" class=\"num\">Margin</th>"
+	                      "<th scope=\"col\" class=\"num\">ROI</th><th scope=\"col\" class=\"num\">Sale rate</th>"
 	                      "<th scope=\"col\" class=\"num\">Cost to craft</th><th scope=\"col\">Sell at</th>"
 	                      "<th scope=\"col\" class=\"num\">Sells for</th><th scope=\"col\" class=\"num\">Gross</th>"
 	                      "<th scope=\"col\" class=\"num\">AH cut</th><th scope=\"col\" class=\"num\">Deposit</th>"
-	                      "<th scope=\"col\" class=\"num\">Profit</th><th scope=\"col\" class=\"num\">Margin</th>"
-	                      "<th scope=\"col\" class=\"num\">ROI</th><th scope=\"col\" class=\"num\">Sale rate</th>"
+	                      "<th scope=\"col\">Category</th><th scope=\"col\">Expansion</th>"
+	                      "<th scope=\"col\">Known by</th>"
 	                      "<th scope=\"col\">Lists</th><th scope=\"col\">Plan</th></tr></thead><tbody>");
 
 	for (i = 0; (NULL != rows) && (i < json_array_get_length(rows)); i++)
@@ -1734,6 +1791,10 @@ arw_craft_rows(
 		JsonObject *row = json_array_get_object_element(rows, i);
 		JsonObject *sell = arw_side(row, "sell");
 		JsonNode *net = json_object_get_member(row, "net");
+		gsize at_meta;
+		gsize at_cost;
+		gsize at_breakdown;
+		gsize at_profit;
 		gboolean pays;
 		gboolean blanked;
 
@@ -1755,11 +1816,11 @@ arw_craft_rows(
 			g_string_append(html, "<a href=\"");
 			venture_html_escape_append(html, path);
 			g_string_append(html, "\">");
-			venture_html_escape_append(html, venture_json_object_get_string(row, "title", ""));
+			mdw_name(html, row, "title", "instrument_key");
 			g_string_append(html, "</a>");
 		}
 		else
-			venture_html_escape_append(html, venture_json_object_get_string(row, "title", ""));
+			mdw_name(html, row, "title", "instrument_key");
 
 		if (blanked)
 			g_string_append(html, " <span class=\"badge warning\">no price</span>");
@@ -1767,7 +1828,9 @@ arw_craft_rows(
 		arw_craft_inputs(self, html, row);
 		arw_missing(html, row);
 		arw_warnings(html, row);
-		g_string_append(html, "</td><td>");
+		g_string_append(html, "</td>");
+		at_meta = html->len;
+		g_string_append(html, "<td>");
 
 		if (NULL != venture_json_object_get_string(row, "recipe_category", NULL))
 			venture_html_escape_append(html, venture_json_object_get_string(row, "recipe_category", ""));
@@ -1813,7 +1876,9 @@ arw_craft_rows(
 
 		/* The reagents' cost, aged by the oldest of their prices, as
 		 * Deals ages a buy. */
-		g_string_append(html, "</td><td class=\"num");
+		g_string_append(html, "</td>");
+		at_cost = html->len;
+		g_string_append(html, "<td class=\"num");
 		g_string_append(html, mdw_stale(row, "buy_") ? " is-stale\"" : "\"");
 		mdw_sort_value(html, row, "cost");
 		g_string_append(html, ">");
@@ -1824,11 +1889,15 @@ arw_craft_rows(
 		arw_venue(self, html, row, "sell");
 
 		arw_money_cell(html, sell, "unit_price");
+		at_breakdown = html->len;
 		arw_money_cell(html, row, "gross");
 		arw_money_cell(html, sell, "fees");
 		arw_money_cell(html, sell, "deposit");
-		arw_money_cell(html, row, "net");
-		g_string_append(html, "<td class=\"num\"");
+		at_profit = html->len;
+		arw_signed_money_cell(html, row, "net");
+		g_string_append(html, "<td class=\"num");
+		arw_sign_class(html, row, "margin");
+		g_string_append(html, "\"");
 		mdw_sort_value(html, row, "margin");
 		g_string_append(html, ">");
 		mdw_percent(html, row, "margin", 100.0);
@@ -1840,7 +1909,23 @@ arw_craft_rows(
 		mdw_sort_value(html, row, "sale_rate");
 		g_string_append(html, ">");
 		mdw_percent(html, row, "sale_rate", 100.0);
-		g_string_append(html, "</td><td class=\"list-cell\">");
+		g_string_append(html, "</td>");
+
+		/* Drawn in the order the code reads best, shown in the order a
+		 * person reads: what it makes first, then what it costs and
+		 * where it sells, the fees, and who and what it is last. */
+		{
+			g_autoptr(GString) moved = g_string_new(NULL);
+
+			g_string_append_len(moved, html->str + at_profit, (gssize)(html->len - at_profit));
+			g_string_append_len(moved, html->str + at_cost, (gssize)(at_breakdown - at_cost));
+			g_string_append_len(moved, html->str + at_breakdown, (gssize)(at_profit - at_breakdown));
+			g_string_append_len(moved, html->str + at_meta, (gssize)(at_cost - at_meta));
+			g_string_truncate(html, at_meta);
+			g_string_append_len(html, moved->str, (gssize)moved->len);
+		}
+
+		g_string_append(html, "<td class=\"list-cell\">");
 		arw_recipe_list_cell(html, row, here, can_list);
 		g_string_append(html, "</td><td>");
 
@@ -1952,6 +2037,8 @@ venture_arbitrage_web_crafting(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	venture_marketdata_decorate_items(self->context, organization_id,
+	                                  json_object_get_array_member(root, "rows"), "instrument_key");
 	question = json_object_get_object_member(root, "question");
 	principal = venture_auth_authenticate(self->auth, request);
 	can_plan = venture_web_require_for_type(self, principal, VENTURE_TYPE_ARBITRAGE_TRADE,
@@ -2002,6 +2089,8 @@ venture_arbitrage_web_crafting(
 	arw_character_picker(html, root, question);
 	arw_name_picker(html, root, question, "profession_choices", "Profession", "profession", "every profession");
 	arw_name_picker(html, root, question, "expansion_choices", "Expansion", "expansion", "every expansion");
+	arw_input(html, question, "Least profit", "min_profit", "any, in gold");
+	mdw_more_open(html, request, arw_crafting_more);
 	arw_recipe_category_picker(html, root, venture_json_object_get_int(question, "recipe_category_id", 0));
 	{
 		gboolean only = (0 == g_strcmp0(venture_json_object_get_string(question, "only_known", "0"), "1"));
@@ -2011,7 +2100,6 @@ venture_arbitrage_web_crafting(
 		                             "<option value=\"0\"%s>every recipe</option></select></label></div>",
 		                       only ? " selected" : "", only ? "" : " selected");
 	}
-	arw_input(html, question, "Least profit", "min_profit", "any; 50 is 50 of the craft's currency");
 	arw_input(html, question, "Least margin %", "min_margin", "any");
 	arw_input(html, question, "Most cost to craft", "max_cost", "any");
 	arw_input(html, question, "Least sold per day", "min_sold_per_day", "any");
@@ -2024,6 +2112,7 @@ venture_arbitrage_web_crafting(
 	arw_select(html, question, "Sell at price", "sell_basis", bases, "lowest listing");
 	arw_input(html, question, "Newest within hours", "max_age_hours", "any age");
 	arw_input(html, question, "Share of sales %", "share", "100");
+	mdw_more_close(html);
 
 	if (venture_json_object_get_int(question, "data_source_id", 0) > 0)
 		g_string_append_printf(html, "<input type=\"hidden\" name=\"data_source_id\" value=\"%" G_GINT64_FORMAT "\">",

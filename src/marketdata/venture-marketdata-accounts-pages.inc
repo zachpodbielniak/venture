@@ -140,6 +140,30 @@ acw_sort_header(
 
 static gchar *acw_money_display(const VentureMoney *money);
 
+/*
+ * Every item the answer's @names arrays list, given its icon and quality
+ * colour from the organization's stores (venture_marketdata_decorate_
+ * items()). Only for the page: an API answer is what the query said.
+ */
+static void
+acw_decorate(
+	VentureWebServer	*self,
+	JsonObject		*root,
+	gint64			 organization_id,
+	const gchar *const	*names
+){
+	guint i;
+
+	for (i = 0; NULL != names[i]; i++)
+		if (json_object_has_member(root, names[i]) &&
+		    JSON_NODE_HOLDS_ARRAY(json_object_get_member(root, names[i])))
+			venture_marketdata_decorate_items(self->context, organization_id,
+			                                  json_object_get_array_member(root, names[i]),
+			                                  "instrument_key");
+}
+
+
+
 /* An array of money objects, one per currency, as "12g 3s · 4.00 USD". */
 static void
 acw_money_list(
@@ -1539,6 +1563,11 @@ venture_marketdata_web_account(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	{
+		static const gchar *const lists[] = { "positions", "inbound", "holdings", "ledger", NULL };
+
+		acw_decorate(self, root, query.organization_id, lists);
+	}
 	html = g_string_new(NULL);
 
 	if (!json_object_get_boolean_member(root, "available"))
@@ -2066,6 +2095,11 @@ venture_marketdata_web_inventory(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	{
+		static const gchar *const lists[] = { "rows", NULL };
+
+		acw_decorate(self, root, query.organization_id, lists);
+	}
 	echo = json_object_get_object_member(root, "query");
 	totals = json_object_get_object_member(root, "totals");
 	rows = json_object_get_array_member(root, "rows");
@@ -2566,6 +2600,16 @@ venture_marketdata_web_pnl(
 		return venture_web_json_response(answer, 200);
 
 	root = json_node_get_object(answer);
+	{
+		static const gchar *const lists[] = { "top_items", NULL };
+		static const gchar *const flip_lists[] = { "rows", NULL };
+
+		acw_decorate(self, root, query.organization_id, lists);
+
+		if (json_object_has_member(root, "flips") && JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "flips")))
+			acw_decorate(self, json_object_get_object_member(root, "flips"), query.organization_id,
+			             flip_lists);
+	}
 	html = g_string_new(NULL);
 	mdw_head(html, "Accounts", "Profit and loss",
 	         "The source's own ledger summed: sales after the venue's cut, purchases, other income "

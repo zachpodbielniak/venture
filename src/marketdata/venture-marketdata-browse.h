@@ -1019,6 +1019,31 @@ venture_marketdata_source_health(
 );
 
 /**
+ * venture_marketdata_decorate_items:
+ * @context: a #VentureContext
+ * @organization_id: whose sources to look in
+ * @rows: (nullable): JSON objects naming an instrument
+ * @key_member: the member holding each row's instrument key
+ *
+ * Gives every object in @rows that names an instrument and has no
+ * "display" the display its data source's store keeps for it -- the
+ * icon, the quality colour, the tooltip -- so a page that lists what an
+ * account holds draws an item as Browse does. The row's own
+ * "data_source_id" is asked first, then every other source of the
+ * organization's: an inventory pushed by tsmctl names an item whose
+ * picture only the Blizzard source has. A row nothing knows is left
+ * alone; nothing is ever an error, because a missing icon is not one.
+ * "*_inputs" arrays (a craft's reagents) are decorated too.
+ */
+void
+venture_marketdata_decorate_items(
+	VentureContext	*context,
+	gint64		 organization_id,
+	JsonArray	*rows,
+	const gchar	*key_member
+);
+
+/**
  * venture_marketdata_instrument_path:
  * @data_source_id: the source
  * @key: the instrument's key

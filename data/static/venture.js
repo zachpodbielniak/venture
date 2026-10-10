@@ -5848,6 +5848,13 @@
 		var s;
 
 		if (kind === "money") {
+			var table = coinRead();
+			var units = table && axis.cur ? table[String(axis.cur).toUpperCase()] : null;
+
+			if (units && units.length) {
+				return coinFormat(units, value);
+			}
+
 			scale = Math.pow(10, axis.exp || 0);
 			pre = axis.pre || "";
 			suf = axis.suf || "";
@@ -6276,6 +6283,7 @@
 
 		p.layer.innerHTML = marks.join("");
 		p.tip.innerHTML = rows.join("");
+		wireCoins(p.tip);
 		p.tip.hidden = false;
 
 		/* Beside the rule, on whichever side has room. */
@@ -6356,6 +6364,7 @@
 		}
 
 		p.stats.innerHTML = parts.join("");
+		wireCoins(p.stats);
 	}
 
 	function plotZoom(p, from, to) {
@@ -6673,6 +6682,266 @@
 	}
 
 	/* Every chart under @root not yet redrawn. */
+	/*
+	 * Coins. A currency kept in denominations -- WoW's gold, silver and
+	 * copper -- is written "12g 5s 30c" by the server, as plain text. The
+	 * page carries those currencies' suffixes (script#venture-coins), so
+	 * the text can be found exactly: a run of counts, each followed by
+	 * one of a currency's suffixes in its order, largest first. Each
+	 * count and its suffix is wrapped in a span for its rank (coin-1 is
+	 * the largest), which the stylesheet draws in that coin's metal, and
+	 * the whole amount in one that never breaks across lines. The text
+	 * itself is unchanged, so sorting, filtering and copying read it as
+	 * before.
+	 */
+	var coinTable = null;
+
+	function coinRead() {
+		var node;
+
+		if (coinTable !== null) {
+			return coinTable;
+		}
+
+		coinTable = false;
+		node = document.getElementById("venture-coins");
+
+		if (node) {
+			try {
+				coinTable = JSON.parse(node.textContent) || false;
+			} catch (error) {
+				coinTable = false;
+			}
+		}
+
+		return coinTable;
+	}
+
+	function coinEscape(text) {
+		return text.replace(/[.*+?^${}()|[\]\\\/-]/g, "\\$&");
+	}
+
+	var coinPatterns = null;
+
+	/* One pattern per currency: every non-empty, in-order selection of
+	 * its coins, separated by single spaces, with an optional sign. Not
+	 * inside a longer word or number, so "7s" in "7sec" is left alone. */
+	function coinPatternList() {
+		var table = coinRead();
+		var code;
+
+		if (coinPatterns !== null) {
+			return coinPatterns;
+		}
+
+		coinPatterns = [];
+
+		if (!table) {
+			return coinPatterns;
+		}
+
+		for (code in table) {
+			if (Object.prototype.hasOwnProperty.call(table, code) && table[code].length) {
+				var units = table[code];
+				var count = "(?:\\d{1,3}(?:,\\d{3})+|\\d+)";
+				var alternatives = [];
+				var i;
+				var j;
+
+				for (i = 0; i < units.length; i++) {
+					var tail = count + coinEscape(units[i][0]);
+
+					for (j = i + 1; j < units.length; j++) {
+						tail += "(?: " + count + coinEscape(units[j][0]) + ")?";
+					}
+
+					alternatives.push(tail);
+				}
+
+				coinPatterns.push({
+					units: units,
+					re: new RegExp("(^|[^\\w.,\\-])(-?(?:" + alternatives.join("|") + "))(?![\\w%])", "g")
+				});
+			}
+		}
+
+		return coinPatterns;
+	}
+
+	function coinSpan(text, units) {
+		var wrap = document.createElement("span");
+		var parts = text.split(" ");
+		var i;
+
+		wrap.className = "coins";
+
+		if (parts[0].charAt(0) === "-") {
+			wrap.classList.add("coins-negative");
+		}
+
+		for (i = 0; i < parts.length; i++) {
+			var part = parts[i];
+			var rank = 0;
+			var k;
+
+			for (k = 0; k < units.length; k++) {
+				var suffix = units[k][0];
+
+				if (part.length > suffix.length
+				    && part.slice(-suffix.length).toLowerCase() === suffix.toLowerCase()
+				    && /\d$/.test(part.slice(0, -suffix.length))) {
+					rank = k + 1;
+					break;
+				}
+			}
+
+			if (i > 0) {
+				wrap.appendChild(document.createTextNode(" "));
+			}
+
+			if (rank) {
+				var coin = document.createElement("span");
+				var mark = document.createElement("span");
+				var suffixText = units[rank - 1][0];
+
+				coin.className = "coin coin-" + Math.min(rank, 3);
+				coin.appendChild(document.createTextNode(part.slice(0, -suffixText.length)));
+				mark.className = "coin-mark";
+				mark.textContent = part.slice(-suffixText.length);
+				coin.appendChild(mark);
+				wrap.appendChild(coin);
+			} else {
+				wrap.appendChild(document.createTextNode(part));
+			}
+		}
+
+		return wrap;
+	}
+
+	var coinSkip = /^(script|style|textarea|input|select|option|code|pre|svg|title|noscript)$/i;
+
+	function wireCoins(root) {
+		var patterns = coinPatternList();
+		var walker;
+		var nodes = [];
+		var node;
+		var i;
+
+		if (!patterns.length || !document.createTreeWalker) {
+			return;
+		}
+
+		root = root && root.nodeType === 1 ? root : document.body;
+
+		if (!root) {
+			return;
+		}
+
+		walker = document.createTreeWalker(root, 4, {
+			acceptNode: function (text) {
+				var parent = text.parentNode;
+
+				if (!/\d/.test(text.nodeValue)) {
+					return 2;
+				}
+
+				for (; parent && parent !== root.parentNode; parent = parent.parentNode) {
+					if (parent.nodeType === 1 && (coinSkip.test(parent.nodeName)
+					    || parent.isContentEditable
+					    || (parent.classList && (parent.classList.contains("coins")
+					        || parent.classList.contains("no-coins"))))) {
+						return 2;
+					}
+				}
+
+				return 1;
+			}
+		});
+
+		while ((node = walker.nextNode())) {
+			nodes.push(node);
+		}
+
+		for (i = 0; i < nodes.length; i++) {
+			coinReplace(nodes[i], patterns);
+		}
+	}
+
+	function coinReplace(text, patterns) {
+		var value = text.nodeValue;
+		var found = [];
+		var p;
+		var m;
+
+		for (p = 0; p < patterns.length; p++) {
+			patterns[p].re.lastIndex = 0;
+
+			while ((m = patterns[p].re.exec(value))) {
+				var start = m.index + m[1].length;
+
+				found.push({ start: start, end: start + m[2].length, units: patterns[p].units });
+
+				/* The leading character belongs to no match: let the
+				 * next search start on it. */
+				patterns[p].re.lastIndex = start + m[2].length;
+			}
+		}
+
+		if (!found.length) {
+			return;
+		}
+
+		found.sort(function (a, b) { return a.start - b.start; });
+
+		var fragment = document.createDocumentFragment();
+		var at = 0;
+		var i;
+
+		for (i = 0; i < found.length; i++) {
+			if (found[i].start < at) {
+				continue;
+			}
+
+			if (found[i].start > at) {
+				fragment.appendChild(document.createTextNode(value.slice(at, found[i].start)));
+			}
+
+			fragment.appendChild(coinSpan(value.slice(found[i].start, found[i].end), found[i].units));
+			at = found[i].end;
+		}
+
+		if (at < value.length) {
+			fragment.appendChild(document.createTextNode(value.slice(at)));
+		}
+
+		text.parentNode.replaceChild(fragment, text);
+	}
+
+	/* An amount in minor units as coins, largest first, zero coins left
+	 * out: 12345 copper is "1g 23s 45c". */
+	function coinFormat(units, minor) {
+		var negative = minor < 0;
+		var rest = Math.round(Math.abs(minor));
+		var parts = [];
+		var i;
+
+		for (i = 0; i < units.length; i++) {
+			var n = Math.floor(rest / units[i][1]);
+
+			rest -= n * units[i][1];
+
+			if (n) {
+				parts.push((i === 0 ? n.toLocaleString("en-US") : String(n)) + units[i][0]);
+			}
+		}
+
+		if (!parts.length) {
+			parts.push("0" + units[units.length - 1][0]);
+		}
+
+		return (negative ? "-" : "") + parts.join(" ");
+	}
+
 	function wirePlots(root) {
 		var scripts = (root || document).querySelectorAll("script[data-plot]");
 		var i;
@@ -6704,6 +6973,7 @@
 
 		wireSortableTables(document);
 		wirePlots(document);
+		wireCoins(document.body);
 
 		/* Back and forward over orders swapped in above: the address
 		 * changed and the table must follow it. */
@@ -6719,6 +6989,7 @@
 			document.addEventListener("htmx:afterSwap", function (event) {
 				wireSortableTables(event.target);
 				wirePlots(event.target);
+				wireCoins(event.target);
 			});
 			return;
 		}
@@ -6747,6 +7018,7 @@
 				pending = false;
 				wireSortableTables(document);
 				wirePlots(document);
+				wireCoins(document.body);
 			});
 		}).observe(document.body, { childList: true, subtree: true });
 	}

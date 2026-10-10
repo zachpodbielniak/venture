@@ -407,11 +407,24 @@ write_realm () {
         # deposit silently vanishes. The demo's venues charge the percent
         # model's deposit_percent, so this attribute is what a venue
         # switched to wow_auction would read.
+        #
+        # display is what the Blizzard provider stores for an item: its
+        # name's colour by quality and its tooltip's lines, which the
+        # pages draw as the game does. No icon: that is a picture the
+        # provider fetched, and the demo fetches nothing.
         for (( i = 0; i < n_items; i++ ))
         do
+            local quality_color
+            case "${category[i]}" in
+                Gear/Weapons) quality_color='#a335ee' ;;
+                Gear/*|Pets) quality_color='#0070dd' ;;
+                Recipes|Consumables/Flasks) quality_color='#1eff00' ;;
+                *) quality_color='#ffffff' ;;
+            esac
             json_escape "${name[i]}"
-            printf '{"type":"instrument","key":"%s","name":"%s","kind":"item","category":"%s","attrs":{"vendor_sell":%d}}\n' \
-                "${key[i]}" "${json_text}" "${category[i]}" "$(( base[i] / 20 ))"
+            printf '{"type":"instrument","key":"%s","name":"%s","kind":"item","category":"%s","attrs":{"vendor_sell":%d,"display":{"color":"%s","lines":[{"text":"%s","color":"#ffd100"},{"text":"Sell price: %dc"}]}}}\n' \
+                "${key[i]}" "${json_text}" "${category[i]}" "$(( base[i] / 20 ))" "${quality_color}" \
+                "${category[i]}" "$(( base[i] / 20 ))"
         done
 
         # Oldest first: a snapshot older than the venue's newest is only

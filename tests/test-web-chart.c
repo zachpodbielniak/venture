@@ -244,6 +244,7 @@ test_axis_and_spec(void)
 	g_assert_cmpint(json_object_get_int_member(axis, "exp"), ==, 2);
 	g_assert_cmpstr(json_object_get_string_member(axis, "pre"), ==, "$");
 	g_assert_cmpstr(json_object_get_string_member(axis, "suf"), ==, "");
+	g_assert_cmpstr(json_object_get_string_member(axis, "cur"), ==, "USD");
 	axis = json_array_get_object_element(json_object_get_array_member(root, "axis"), 1);
 	g_assert_cmpstr(json_object_get_string_member(axis, "kind"), ==, "number");
 	g_assert_true(json_object_get_boolean_member(axis, "int"));

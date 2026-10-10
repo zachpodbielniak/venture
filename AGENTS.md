@@ -2359,6 +2359,12 @@ pages").
   markup -- set `VentureWebChartSeries.currency` on a money series drawn
   with its own formatter, or its axis ticks read as plain numbers. Never
   write a `chart-*` class name in venture.js.
+- **Coins are the browser's.** An amount in a denominated currency
+  ("12g 5s") stays plain text from the server; venture.js wraps it
+  (`.coins`, `.coin-N`) from `script#venture-coins`. Never emit coin
+  markup in C, and keep the server's text exact -- sorting, filtering and
+  the pattern all read it. Mark an element `.no-coins` if text in it only
+  looks like money.
 
 ## The Accounts pages
 
