@@ -1142,7 +1142,9 @@ The saved PBKDF2-HMAC-SHA256 format, salt and iteration count are unchanged.
 The cryptographic library derives the same bytes without allocating a fresh
 HMAC for every iteration. Core and standalone CLI builds require =libcrypto=.
 Authentication still checks each token's current activity, expiry and user
-permissions; no cross-request authentication cache is introduced.
+permissions; neither credentials nor principals are cached. The repeated-request
+HTTP regression changes expiry, rotates the hash, presents a wrong secret and
+revokes the token after success.
 
 =/auth/password-known-answers= checks independently known SHA-256 vectors,
 a wrong secret and malformed encodings. Its first run failed because an odd
@@ -1150,3 +1152,12 @@ salt length was silently truncated. Encoding errors and library failures now
 refuse verification. Existing salt-randomness and minimum-work-factor tests
 remain in the full suite. Performance is measured separately with identical
 inputs and iterations, rather than a clock threshold in a loaded test suite.
+
+* Property layout enumeration
+
+Persistent-property enumeration reuses the fixed layout of static GObject
+classes. It still applies current column flags on every call and returns a
+separate caller-owned container. Dynamic plugin types retain live enumeration.
+The compatibility regression changes persistence flags after the first lookup
+and modifies a returned container; neither operation contaminates later calls.
+This caches class metadata only, never record values or authorization decisions.

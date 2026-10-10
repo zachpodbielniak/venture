@@ -3893,6 +3893,67 @@ test_auth_token_reveal_is_one_shot(
  * it, which is exactly what somebody revoking a credential after an
  * incident wants to still be able to read.
  */
+/* Repeated authentication must always read current authorization state. */
+static void
+test_auth_token_repeated_checks_live_state(
+	ServerFixture *fixture,
+	gconstpointer user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *wrong = NULL;
+	g_autofree gchar *original_hash = NULL;
+	g_autofree gchar *replacement_hash = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autoptr(GDateTime) past = NULL;
+	g_autoptr(GDateTime) now = NULL;
+
+	server_fixture_create_user(fixture, "example", "example-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "example", "example-long-password");
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=example&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_assert_nonnull(token);
+	g_object_get(token, "token-hash", &original_hash, NULL);
+
+	wrong = g_strconcat(secret, "wrong", NULL);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, wrong, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	now = venture_time_now();
+	past = g_date_time_add_seconds(now, -1);
+	g_object_set(token, "expires-at", past, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_object_set(token, "expires-at", NULL, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+
+	g_clear_object(&token);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	replacement_hash = venture_hash_password("replacement-secret", 1000, NULL);
+	g_object_set(token, "token-hash", replacement_hash, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_object_set(token, "token-hash", original_hash, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+}
+
 static void
 test_auth_token_revoke_stops_it_working(
 	ServerFixture	*fixture,
@@ -6976,6 +7037,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-revoke-stops-it-working", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_revoke_stops_it_working,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-repeat-checks-live-state", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_repeated_checks_live_state,
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-expiry-is-recorded", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_expiry_is_recorded,

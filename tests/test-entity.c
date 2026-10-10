@@ -1077,6 +1077,40 @@ test_audit_token_name_private(void)
 /* --- Field specs --------------------------------------------------------- */
 
 static void
+test_entity_property_layout_preserves_live_flags(void)
+{
+	g_autoptr(VentureProduct) product = venture_product_new();
+	VentureEntityClass *klass = VENTURE_ENTITY_GET_CLASS(product);
+	g_autofree GParamSpec **first = NULL;
+	g_autofree GParamSpec **second = NULL;
+	VentureColumnFlags original;
+	guint n_first, n_second, i;
+	gboolean found = FALSE;
+
+	first = venture_entity_class_list_persistent_properties(klass, &n_first);
+	g_assert_cmpuint(n_first, >, 0);
+	original = venture_entity_class_get_column_flags(klass, "name");
+	venture_entity_class_set_column_flags(klass, "name",
+	                                      original | VENTURE_COLUMN_FLAG_TRANSIENT);
+	second = venture_entity_class_list_persistent_properties(klass, &n_second);
+	g_assert_cmpuint(n_second, ==, n_first - 1);
+	for (i = 0; i < n_second; i++)
+		g_assert_cmpstr(second[i]->name, !=, "name");
+	/* The returned container belongs to its caller, never to a cache. */
+	second[0] = NULL;
+	g_clear_pointer(&second, g_free);
+	venture_entity_class_set_column_flags(klass, "name", original);
+	second = venture_entity_class_list_persistent_properties(klass, &n_second);
+	g_assert_cmpuint(n_second, ==, n_first);
+	for (i = 0; i < n_second; i++)
+	{
+		g_assert_true(first[i] == second[i]);
+		if (g_str_equal(second[i]->name, "name")) found = TRUE;
+	}
+	g_assert_true(found);
+}
+
+static void
 test_entity_field_specs_derived_from_properties(void)
 {
 	g_autoptr(VentureProduct) product = NULL;
@@ -1482,6 +1516,8 @@ main(
 	g_test_add_func("/records/audit-entry-for-change", test_audit_entry_for_change);
 	g_test_add_func("/entity/audit-token-name-private", test_audit_token_name_private);
 
+	g_test_add_func("/entity/property-layout-preserves-live-flags",
+	                test_entity_property_layout_preserves_live_flags);
 	g_test_add_func("/entity/field-specs-derived-from-properties",
 	                test_entity_field_specs_derived_from_properties);
 	g_test_add_func("/entity/field-spec-enum-choices-from-gtype",

@@ -800,6 +800,49 @@ venture_entity_class_get_reference(
 	                                      property_name, &found);
 }
 
+typedef struct
+{
+	GParamSpec **properties;
+	guint count;
+} VenturePropertyLayout;
+
+G_LOCK_DEFINE_STATIC(venture_property_layout);
+
+/* Static classes install their property layout during class initialization.
+ * Retain that layout, but apply mutable persistence flags on every call. */
+static GParamSpec **
+venture_entity_class_property_layout(VentureEntityClass *klass, guint *count)
+{
+	VenturePropertyLayout *layout;
+	GParamSpec **copy;
+	GType type = G_OBJECT_CLASS_TYPE(klass);
+	GType ancestor;
+	GQuark quark = g_quark_from_static_string("venture-property-layout");
+	guint i;
+
+	/* A plugin class can be unloaded and rebuilt with another layout. */
+	for (ancestor = type; ancestor != 0; ancestor = g_type_parent(ancestor))
+		if (g_type_get_plugin(ancestor) != NULL)
+			return g_object_class_list_properties(G_OBJECT_CLASS(klass), count);
+
+	G_LOCK(venture_property_layout);
+	layout = g_type_get_qdata(type, quark);
+	if (layout == NULL)
+	{
+		layout = g_new0(VenturePropertyLayout, 1);
+		layout->properties = g_object_class_list_properties(G_OBJECT_CLASS(klass),
+		                                                   &layout->count);
+		for (i = 0; i < layout->count; i++)
+			g_param_spec_ref(layout->properties[i]);
+		/* Static type metadata lives for the lifetime of the process. */
+		g_type_set_qdata(type, quark, layout);
+	}
+	*count = layout->count;
+	copy = g_memdup2(layout->properties, sizeof(GParamSpec *) * layout->count);
+	G_UNLOCK(venture_property_layout);
+	return copy;
+}
+
 GParamSpec **
 venture_entity_class_list_persistent_properties(
 	VentureEntityClass	*klass,
@@ -814,7 +857,7 @@ venture_entity_class_list_persistent_properties(
 	g_return_val_if_fail(VENTURE_IS_ENTITY_CLASS(klass), NULL);
 	g_return_val_if_fail(NULL != n_properties, NULL);
 
-	all = g_object_class_list_properties(G_OBJECT_CLASS(klass), &n_all);
+	all = venture_entity_class_property_layout(klass, &n_all);
 	kept = g_new0(GParamSpec *, n_all + 1);
 	n_kept = 0;
 
