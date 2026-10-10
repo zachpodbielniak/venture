@@ -164,6 +164,19 @@ It skips scripts, inputs, code, SVG, an element marked =.no-coins=, and what it 
 
 An item's name is drawn in its quality's colour from the instrument's =display= (=.item-name=); a light palette darkens those colours with =--item-name-filter=, because the game chose them for a dark ground. Inventory, an account's page, Profit and loss and Crafting (its products and reagents) get the display from the organization's stores with =venture_marketdata_decorate_items()=, the row's own source first, so items an account pushed by tsmctl holds are drawn with the Blizzard source's icon and colour.
 
+*** Colour
+
+Charts, trends and the figures worth a glance carry colour from tokens both looks define for every palette (the block /Colour/ at the end of each stylesheet):
+
+| Token or class | What it colours |
+|----------------+-----------------|
+| =--series-1= … =--series-4= | a chart's series, in order (=.chart-line-N=, =.plot-sN=, their legend keys, bars and the heat map's cells): gold, teal, violet, coral. Series are still told apart by dash as well, so a chart reads in print. Never the accent |
+| =.sparkline[data-trend]= | a sparkline by which way it went, first point to last: =up= in =--positive=, =down= in =--negative=, =flat= (under 2% either way) in a muted gold. =venture_web_chart_sparkline()= sets it |
+| =.tone-text.tone-good=, =.tone-bad= | a percentage in a plain cell that is notably good or bad for the reader -- of region on Browse and an item's venues (85% and under, 115% and over), sale rate (25% and over, under 5%), a craft's ROI (20% and over, zero and under) -- the rest left plain (=mdw_toned_percent()=) |
+| =.xpac= | an expansion's name as a tag in its colour (=--xpac=, from =mdw_expansion_tag()=, matched by a word of the name: Outland, Northrend, Pandaria, Khaz Algar, …); one it does not know is a plain tag |
+| =.rank=, =.rank-bar=, =.rank-max= | a profession's skill against its cap as a short bar and "65/100", gold at the cap (=mdw_rank_bar()=; =mdw_rank_text()= reads "Khaz Algar 65/100") |
+| =.share-bar= | Inventory's share of the whole, in =--series-1= |
+
 *** Filters
 
 | Class | What it is |

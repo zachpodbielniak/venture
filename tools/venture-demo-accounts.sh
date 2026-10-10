@@ -205,12 +205,12 @@ parse_arguments () {
 # Tallow two, Quill three weeks back; the banks were last written when
 # Tallow logged out.
 readonly ACCOUNTS=(
-    'Brisk-Thornmere|Brisk|character|Thornmere|thornmere|1|8|450000|{"class":"RANGER","level":60,"race":"Wildkin","faction":"Tidewardens","guild":"Tidewardens","login_account":"EVERMOOR1","played_seconds":1840320}'
-    'Tallow-Silverfen|Tallow|character|Silverfen|silverfen|0|2|1200000|{"class":"ALCHEMIST","level":60,"race":"Human","faction":"Tidewardens","guild":"Tidewardens","login_account":"EVERMOOR1","played_seconds":2611080}'
-    'Quill-Duskwatch|Quill|character|Duskwatch|duskwatch|5|480|150000|{"class":"SCRIBE","level":34,"race":"Gnome","faction":"Tidewardens","login_account":"EVERMOOR1","played_seconds":201600}'
+    'Brisk-Thornmere|Brisk|character|Thornmere|thornmere|1|8|450000|{"class":"RANGER","color":"#aad372","level":60,"profession:Mining":300,"profession_max:Mining":300,"profession:Smithing":180,"profession_max:Smithing":300,"profession_tiers:Smithing":"Classic 300/300; Evermoor 180/300","race":"Wildkin","faction":"Tidewardens","guild":"Tidewardens","login_account":"EVERMOOR1","played_seconds":1840320}'
+    'Tallow-Silverfen|Tallow|character|Silverfen|silverfen|0|2|1200000|{"class":"ALCHEMIST","color":"#3fc7eb","level":60,"profession:Alchemy":300,"profession_max:Alchemy":300,"profession:Herbalism":265,"profession_max:Herbalism":300,"profession_tiers:Alchemy":"Classic 300/300; Evermoor 300/300","race":"Human","faction":"Tidewardens","guild":"Tidewardens","login_account":"EVERMOOR1","played_seconds":2611080}'
+    'Quill-Duskwatch|Quill|character|Duskwatch|duskwatch|5|480|150000|{"class":"SCRIBE","color":"#fff468","level":34,"profession:Inscription":120,"profession_max:Inscription":300,"race":"Gnome","faction":"Tidewardens","login_account":"EVERMOOR1","played_seconds":201600}'
     'warbank:EVERMOOR1|Warband bank|shared|||-1|2|3000000|{"login_account":"EVERMOOR1"}'
     'guild:Tidewardens-Silverfen|Tidewardens guild bank|guild|Silverfen||-1|2|9000000|{"guild":"Tidewardens","realm":"Silverfen"}'
-    'Wren-Moonwell|Wren|character|Moonwell|moonwell|2|30|250000|{"class":"TAILOR","level":48,"race":"Human","faction":"Tidewardens","login_account":"EVERMOOR2","played_seconds":402400}'
+    'Wren-Moonwell|Wren|character|Moonwell|moonwell|2|30|250000|{"class":"TAILOR","color":"#f48cba","level":48,"profession:Tailoring":210,"profession_max:Tailoring":300,"profession_tiers:Tailoring":"Classic 210/300","race":"Human","faction":"Tidewardens","login_account":"EVERMOOR2","played_seconds":402400}'
 )
 
 # The logins, as tsmctl names them: the game's account folder is the key,

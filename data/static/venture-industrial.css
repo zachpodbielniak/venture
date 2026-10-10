@@ -77,6 +77,10 @@
 	--coin-1: #8a6500;
 	--coin-2: #5c636e;
 	--coin-3: #9a4a17;
+	--series-1: #a86f00;
+	--series-2: #1b7f8c;
+	--series-3: #6b4fcf;
+	--series-4: #c0502a;
 	--item-name-filter: brightness(0.55) saturate(1.6);
 	--negative: var(--accent);
 	--negative-soft: var(--accent-soft);
@@ -192,6 +196,10 @@
 		--coin-1: #f2c14e;
 		--coin-2: #c8cdd5;
 		--coin-3: #df8a4f;
+		--series-1: #e8b64c;
+		--series-2: #4cc2cf;
+		--series-3: #a98bff;
+		--series-4: #f2875a;
 		--item-name-filter: none;
 		--warning: #ffb000;
 		--warning-soft: color-mix(in srgb, #ffb000 14%, transparent);
@@ -235,6 +243,10 @@
 	--coin-1: #f2c14e;
 	--coin-2: #c8cdd5;
 	--coin-3: #df8a4f;
+	--series-1: #e8b64c;
+	--series-2: #4cc2cf;
+	--series-3: #a98bff;
+	--series-4: #f2875a;
 	--item-name-filter: none;
 	--warning: #ffb000;
 	--warning-soft: color-mix(in srgb, #ffb000 14%, transparent);
@@ -281,9 +293,13 @@
 
 	--positive: #a6e3a1;
 	--positive-soft: color-mix(in srgb, #a6e3a1 14%, transparent);
-	--coin-1: #f2c14e;
-	--coin-2: #c8cdd5;
-	--coin-3: #df8a4f;
+	--coin-1: #f9e2af;
+	--coin-2: #bac2de;
+	--coin-3: #fab387;
+	--series-1: #f9e2af;
+	--series-2: #94e2d5;
+	--series-3: #cba6f7;
+	--series-4: #fab387;
 	--item-name-filter: none;
 	--warning: #f9e2af;
 	--warning-soft: color-mix(in srgb, #f9e2af 14%, transparent);
@@ -6084,3 +6100,68 @@ table[data-client-sort] th[aria-sort="ascending"] > button.th-sort::after { cont
 table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { content: " \25BE"; }
 .table-filter { display: flex; align-items: center; gap: 0.75rem; margin: 0.5rem 0; }
 .table-filter input { max-width: 22rem; width: 100%; }
+
+/* ==========================================================================
+   Colour: charts, trends and the figures worth a glance
+   ========================================================================== */
+
+/*
+ * The series palette. The first is the coins' gold, because the first
+ * line is nearly always a price; the rest are told apart by hue and,
+ * as before, by dash, so a chart still reads in print or to anyone who
+ * cannot tell teal from violet. None is the accent: red means "look
+ * here", and a chart is for reading.
+ */
+.chart-line-1, .plot-s1 { color: var(--series-1); }
+.chart-line-2, .plot-s2 { color: var(--series-2); }
+.chart-line-3, .plot-s3 { color: var(--series-3); }
+.chart-line-4, .plot-s4 { color: var(--series-4); }
+.chart-key::before, .plot-key::before, .plot-swatch::before { border-top-color: var(--series-1); }
+.chart-key-2::before, .plot-key-2::before { border-top-color: var(--series-2); }
+.chart-key-3::before, .plot-key-3::before { border-top-color: var(--series-3); }
+.chart-key-4::before, .plot-key-4::before { border-top-color: var(--series-4); }
+.plot-area { fill-opacity: 0.12; }
+.chart-bar, .plot-col { color: color-mix(in srgb, var(--series-1) 75%, transparent); }
+.chart-bar:hover { color: var(--series-1); }
+.chart-heat-cell:not(.chart-heat-empty) { color: var(--series-1); }
+
+/* A sparkline coloured by which way it went over its window. */
+.sparkline[data-trend="up"] { color: var(--positive); }
+.sparkline[data-trend="down"] { color: var(--negative); }
+.sparkline[data-trend="flat"] { color: color-mix(in srgb, var(--series-1) 70%, var(--text-muted)); }
+
+/* A figure in a plain cell that is notably good or bad: its text
+ * coloured, the in-between left alone (mdw_toned_percent()). */
+.tone-text { font-weight: 600; }
+.tone-text.tone-good { color: var(--positive); }
+.tone-text.tone-bad { color: var(--negative); }
+
+/* What holds the most of an inventory, and a skill against its cap:
+ * bars in gold, and a skill at its cap filled to the brim. */
+.share-bar .bar-fill { background: var(--series-1); }
+.rank { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; vertical-align: middle; }
+.rank-bar { display: inline-block; width: 42px; height: 5px; overflow: hidden;
+            background: color-mix(in srgb, var(--series-2) 18%, transparent); border-radius: 3px; }
+.rank-bar > span { display: block; height: 100%; background: var(--series-2); border-radius: 3px; }
+.rank-max .rank-bar > span { background: var(--coin-1); }
+.rank-text { font-family: var(--font-mono); font-size: 0.92em; font-variant-numeric: tabular-nums; }
+.rank-max .rank-text { color: var(--coin-1); }
+
+/* An expansion's name as a tag in its own colour (mdw_expansion_tag());
+ * one the page does not know is a plain tag. */
+.xpac {
+	--xpac: var(--text-muted);
+	display: inline-block;
+	padding: 0 6px;
+	border: 1px solid color-mix(in srgb, var(--xpac) 55%, transparent);
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--xpac) 12%, transparent);
+	color: color-mix(in srgb, var(--xpac) 80%, var(--text));
+	font-size: 0.86em;
+	white-space: nowrap;
+}
+
+/* A character's professions are links, but a column of red ones shouts;
+ * they read as text, the bar carrying the colour. */
+.account-professions a { color: var(--text-muted); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); }
+.account-professions a:hover { color: var(--text); }

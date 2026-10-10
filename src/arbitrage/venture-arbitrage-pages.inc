@@ -1840,7 +1840,7 @@ arw_craft_rows(
 		g_string_append(html, "</td><td>");
 
 		if (NULL != venture_json_object_get_string(row, "expansion", NULL))
-			venture_html_escape_append(html, venture_json_object_get_string(row, "expansion", ""));
+			mdw_expansion_tag(html, venture_json_object_get_string(row, "expansion", ""));
 		else
 			mdw_dash(html);
 
@@ -1864,9 +1864,9 @@ arw_craft_rows(
 
 				if (NULL != rank)
 				{
-					g_string_append(html, " <span class=\"muted\">(");
-					venture_html_escape_append(html, rank);
-					g_string_append(html, ")</span>");
+					g_string_append(html, " <span class=\"knower-rank\">");
+					mdw_rank_text(html, rank);
+					g_string_append(html, "</span>");
 				}
 			}
 
@@ -1904,11 +1904,11 @@ arw_craft_rows(
 		g_string_append(html, "</td><td class=\"num\"");
 		mdw_sort_value(html, row, "roi");
 		g_string_append(html, ">");
-		mdw_percent(html, row, "roi", 100.0);
+		mdw_toned_percent(html, row, "roi", 100.0, 20.0, 0.0);
 		g_string_append(html, "</td><td class=\"num\"");
 		mdw_sort_value(html, row, "sale_rate");
 		g_string_append(html, ">");
-		mdw_percent(html, row, "sale_rate", 100.0);
+		mdw_toned_percent(html, row, "sale_rate", 100.0, 25.0, 5.0);
 		g_string_append(html, "</td>");
 
 		/* Drawn in the order the code reads best, shown in the order a

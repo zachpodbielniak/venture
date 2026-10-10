@@ -430,7 +430,11 @@ mdw_name(
 	JsonObject *display;
 
 	name = mdw_text(object, name_member);
-	display = ((NULL != name) && json_object_has_member(object, "display"))
+
+	/* The display is the instrument's: a row's venue is named from the
+	 * same object and is not drawn as the item. */
+	display = ((NULL != name) && !g_str_has_prefix(name_member, "venue") &&
+	           json_object_has_member(object, "display"))
 		? json_object_get_object_member(object, "display") : NULL;
 
 	if (NULL != display)
@@ -1366,6 +1370,8 @@ mdw_list_answer(
 static gdouble mdw_double (JsonObject *object, const gchar *member);
 static const gchar *mdw_tone (gdouble value, gdouble good_at, gdouble bad_at);
 static void mdw_chip_open (GString *html, const gchar *tone);
+static void mdw_toned_percent (GString *html, JsonObject *object, const gchar *member, gdouble factor,
+                               gdouble good_at, gdouble bad_at);
 static void mdw_sort_value (GString *html, JsonObject *object, const gchar *member);
 
 /* The headings of the two cells mdw_recent_cells() draws. A sparkline
@@ -1598,6 +1604,7 @@ venture_marketdata_web_browse(
 	echo = json_object_get_object_member(root, "query");
 	rows = json_object_get_array_member(root, "rows");
 	source_id = json_object_get_int_member(root, "data_source_id");
+	venture_marketdata_decorate_items(self->context, query.organization_id, rows, "instrument_key");
 	html = g_string_new(NULL);
 	mdw_head(html, "Trading", "Browse",
 	         "Every instrument the data sources list, at every venue, now. Sorted on the store's "
@@ -1712,11 +1719,11 @@ venture_marketdata_web_browse(
 		g_string_append(html, "</td><td class=\"num\">");
 		mdw_money(html, row, "region_median");
 		g_string_append(html, "</td><td class=\"num\">");
-		mdw_percent(html, row, "pct_vs_region", 1.0);
+		mdw_toned_percent(html, row, "pct_vs_region", 1.0, 85.0, 115.0);
 		g_string_append(html, "</td>");
 		mdw_recent_cells(html, row);
 		g_string_append(html, "<td class=\"num\">");
-		mdw_percent(html, row, "sale_rate", 100.0);
+		mdw_toned_percent(html, row, "sale_rate", 100.0, 25.0, 5.0);
 		g_string_append(html, "</td><td>");
 		mdw_when(html, row, "taken_at");
 		g_string_append(html, "</td><td class=\"list-cell\">");
@@ -2714,7 +2721,7 @@ venture_marketdata_web_instrument(
 			g_string_append(html, "</td><td class=\"num\">");
 			mdw_money(html, row, "market_value");
 			g_string_append(html, "</td><td class=\"num\">");
-			mdw_percent(html, row, "pct_vs_region", 1.0);
+			mdw_toned_percent(html, row, "pct_vs_region", 1.0, 85.0, 115.0);
 			g_string_append(html, "</td><td>");
 			mdw_age(self, html, row, "");
 			g_string_append(html, "</td><td>");
@@ -2908,6 +2915,151 @@ mdw_chip_open(
 ){
 	g_string_append_printf(html, "<span class=\"tone-chip%s%s\">", (NULL != tone) ? " tone-" : "",
 	                       (NULL != tone) ? tone : "");
+}
+
+/*
+ * The colour an expansion is known by -- Outland's fel green, Northrend's
+ * ice, Pandaria's jade -- found by a word of its name, so the game's
+ * names ("Khaz Algar", "Dragon Isles") and the expansions' own ("The War
+ * Within", "Dragonflight") both match. %NULL for anything else, which is
+ * drawn plain.
+ */
+static const gchar *
+mdw_expansion_color(const gchar *name)
+{
+	static const struct { const gchar *word; const gchar *color; } expansions[] = {
+		{ "classic", "#c9a227" }, { "vanilla", "#c9a227" },
+		{ "outland", "#3fae49" }, { "burning crusade", "#3fae49" },
+		{ "northrend", "#5fb4e6" }, { "lich king", "#5fb4e6" }, { "wrath", "#5fb4e6" },
+		{ "cataclysm", "#e0603a" },
+		{ "pandaria", "#2fb38a" },
+		{ "draenor", "#b3702d" },
+		{ "legion", "#7bd42f" },
+		{ "kul tiran", "#3a78d4" }, { "zandalari", "#3a78d4" }, { "battle for azeroth", "#3a78d4" },
+		{ "shadowlands", "#6fb0c8" },
+		{ "dragon", "#d65f3a" },
+		{ "khaz algar", "#d8a03a" }, { "war within", "#d8a03a" },
+		{ "midnight", "#8b6fe0" }, { "quel", "#8b6fe0" },
+	};
+	g_autofree gchar *lower = NULL;
+	guint i;
+
+	if (venture_string_is_empty(name))
+		return NULL;
+
+	lower = g_utf8_strdown(name, -1);
+
+	for (i = 0; i < G_N_ELEMENTS(expansions); i++)
+		if (NULL != strstr(lower, expansions[i].word))
+			return expansions[i].color;
+
+	return NULL;
+}
+
+/* An expansion's name as a small tag in its colour. */
+static void
+mdw_expansion_tag(
+	GString		*html,
+	const gchar	*name
+){
+	const gchar *color = mdw_expansion_color(name);
+
+	if (NULL != color)
+		g_string_append_printf(html, "<span class=\"xpac\" style=\"--xpac:%s\">", color);
+	else
+		g_string_append(html, "<span class=\"xpac\">");
+
+	venture_html_escape_append(html, name);
+	g_string_append(html, "</span>");
+}
+
+/* A skill against its cap as a short bar and "65/100", filled gold at the
+ * cap. No cap, just the figure. */
+static void
+mdw_rank_bar(
+	GString	*html,
+	gint64	 rank,
+	gint64	 max
+){
+	if (max <= 0)
+	{
+		g_string_append_printf(html, "<span class=\"rank\"><span class=\"rank-text\">%" G_GINT64_FORMAT
+		                             "</span></span>", rank);
+		return;
+	}
+
+	g_string_append_printf(html, "<span class=\"rank%s\" title=\"%" G_GINT64_FORMAT " of %" G_GINT64_FORMAT
+	                             "\"><span class=\"rank-bar\" aria-hidden=\"true\"><span style=\"width:%d%%\">"
+	                             "</span></span><span class=\"rank-text\">%" G_GINT64_FORMAT "/%" G_GINT64_FORMAT
+	                             "</span></span>",
+	                       (rank >= max) ? " rank-max" : "", rank, max,
+	                       (gint)CLAMP((rank * 100) / max, 0, 100), rank, max);
+}
+
+/*
+ * A rank as a source wrote it, "Khaz Algar 65/100": the expansion's tag
+ * and the bar. Text in any other shape is shown as it came.
+ */
+static void
+mdw_rank_text(
+	GString		*html,
+	const gchar	*text
+){
+	const gchar *space = (NULL != text) ? strrchr(text, ' ') : NULL;
+	gint64 rank = 0;
+	gint64 max = 0;
+	gchar *end = NULL;
+
+	if (NULL != space)
+	{
+		rank = g_ascii_strtoll(space + 1, &end, 10);
+
+		if ((NULL != end) && (end > space + 1) && ('/' == *end))
+		{
+			const gchar *cap = end + 1;
+
+			max = g_ascii_strtoll(cap, &end, 10);
+
+			if ((end > cap) && ('\0' == *end) && (max > 0))
+			{
+				g_autofree gchar *label = g_strndup(text, (gsize)(space - text));
+
+				mdw_expansion_tag(html, label);
+				g_string_append_c(html, ' ');
+				mdw_rank_bar(html, rank, max);
+				return;
+			}
+		}
+	}
+
+	venture_html_escape_append(html, (NULL != text) ? text : "");
+}
+
+/*
+ * A percentage in a plain table cell, its text coloured when it is
+ * notably good or bad for the reader (mdw_tone(), on the figure as
+ * shown) and left plain in between: the colour points at the rows that
+ * matter without turning a whole column into chips.
+ */
+static void
+mdw_toned_percent(
+	GString		*html,
+	JsonObject	*object,
+	const gchar	*member,
+	gdouble		 factor,
+	gdouble		 good_at,
+	gdouble		 bad_at
+){
+	const gchar *tone = mdw_tone(mdw_double(object, member) * factor, good_at, bad_at);
+	gboolean marked = (NULL != tone) && (0 != g_strcmp0(tone, "meh"));
+
+	if (marked)
+		g_string_append_printf(html, "<span class=\"tone-text tone-%s\">", tone);
+
+	mdw_percent(html, object, member, factor);
+
+	if (marked)
+		g_string_append(html, "</span>");
 }
 
 /* A venue's name, short, its whole name on hover: a connected realm is
@@ -3331,6 +3483,7 @@ venture_marketdata_web_deals(
 
 	root = json_node_get_object(answer);
 	rows = json_object_get_array_member(root, "rows");
+	venture_marketdata_decorate_items(self->context, organization_id, rows, "instrument_key");
 	html = g_string_new(NULL);
 	mdw_head(html, "Trading", "Deals",
 	         "Where to buy and where to sell: in stock at a price at or under the group's deal price "

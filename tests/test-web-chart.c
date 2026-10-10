@@ -503,7 +503,7 @@ test_sparkline(void)
 	g_autofree gchar *svg = NULL;
 
 	svg = venture_web_chart_sparkline(hostile, values, G_N_ELEMENTS(values));
-	g_assert_true(g_str_has_prefix(svg, "<svg class=\"sparkline\""));
+	g_assert_true(g_str_has_prefix(svg, "<svg class=\"sparkline\" data-trend=\"up\""));
 	g_assert_nonnull(strstr(svg, "role=\"img\" aria-label=\"&lt;script&gt;"));
 	g_assert_null(strstr(svg, "<script>"));
 	g_assert_null(strstr(svg, "<table"));

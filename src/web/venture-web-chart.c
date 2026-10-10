@@ -1016,7 +1016,33 @@ venture_web_chart_sparkline(
 	chart_widen(&low, &high);
 	step = (n_values > 1) ? (CHART_SPARK_WIDTH - 2.0) / (gdouble)(n_values - 1) : 0.0;
 
-	g_string_append(out, "<svg class=\"sparkline\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ");
+	/* Which way it went, first seen to last, for the stylesheet to
+	 * colour: a move under 2% either way is flat. */
+	{
+		gdouble first = NAN;
+		gdouble last = NAN;
+		const gchar *trend = "flat";
+
+		for (i = 0; i < n_values; i++)
+		{
+			if (!isfinite(values[i]))
+				continue;
+
+			if (!isfinite(first))
+				first = values[i];
+
+			last = values[i];
+		}
+
+		if (isfinite(first) && (first != 0.0) && ((last - first) / fabs(first) > 0.02))
+			trend = "up";
+		else if (isfinite(first) && (first != 0.0) && ((last - first) / fabs(first) < -0.02))
+			trend = "down";
+
+		g_string_append_printf(out, "<svg class=\"sparkline\" data-trend=\"%s\" "
+		                       "xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ", trend);
+	}
+
 	chart_num(out, CHART_SPARK_WIDTH);
 	g_string_append_c(out, ' ');
 	chart_num(out, CHART_SPARK_HEIGHT);

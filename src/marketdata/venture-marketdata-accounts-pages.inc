@@ -1086,7 +1086,15 @@ acw_profession_tiers(
 			g_string_append(html, "\">");
 		}
 
-		venture_html_escape_append(html, mdw_text(tier, "text"));
+		if ((NULL != mdw_text(tier, "label")) && json_object_has_member(tier, "rank"))
+		{
+			mdw_expansion_tag(html, mdw_text(tier, "label"));
+			g_string_append_c(html, ' ');
+			mdw_rank_bar(html, json_object_get_int_member(tier, "rank"),
+			             json_object_get_int_member_with_default(tier, "max", 0));
+		}
+		else
+			venture_html_escape_append(html, mdw_text(tier, "text"));
 
 		if (NULL != url)
 			g_string_append(html, "</a>");
@@ -1128,11 +1136,10 @@ acw_professions(
 		venture_html_escape_append(html, mdw_text(profession, "crafting_url"));
 		g_string_append(html, "\">");
 		venture_html_escape_append(html, mdw_text(profession, "name"));
-		g_string_append_printf(html, " %" G_GINT64_FORMAT, json_object_get_int_member(profession, "skill"));
-
-		if (JSON_NODE_HOLDS_VALUE(json_object_get_member(profession, "max")))
-			g_string_append_printf(html, "/%" G_GINT64_FORMAT, json_object_get_int_member(profession, "max"));
-
+		g_string_append_c(html, ' ');
+		mdw_rank_bar(html, json_object_get_int_member(profession, "skill"),
+		             JSON_NODE_HOLDS_VALUE(json_object_get_member(profession, "max"))
+		             ? json_object_get_int_member(profession, "max") : 0);
 		g_string_append(html, "</a>");
 		acw_profession_tiers(html, profession);
 	}
