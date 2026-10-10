@@ -165,6 +165,8 @@ test_payment_link(Fixture *f, gconstpointer data)
 			g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, calls);
 			g_assert_cmpuint(http_request_origin(server, "POST", path, "application/x-www-form-urlencoded", "invoice_id=999999", NULL,
 				"venture.example", "https://venture.example", NULL), ==, 303);
+			/* The bound invoice must reach Checkout. A bare 303 is not that proof. */
+			g_assert_cmpuint(((FakeTransport *)transport)->calls, >, calls);
 			calls = ((FakeTransport *)transport)->calls;
 			{ gboolean ok = venture_tenant_service_set_state_operator(tenant, "suspended", "Payment fixture", &error);
 			  g_assert_no_error(error); g_assert_true(ok); }
