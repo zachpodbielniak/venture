@@ -54,6 +54,7 @@ static gchar *venture_hosted_browser_business(VentureWebServer *self, gint64 ide
 	g_object_get(user, "role", &principal.role, NULL);
 	scope = venture_access_policy_enter(venture_database_get_access_policy(db), &principal);
 	authority = venture_tenant_service_account_authority(venture_tenant_service_get(db), NULL);
+	if (!target || !*target) target = "/";
 	if (authority) {
 		organizations = json_object_get_array_member(json_node_get_object(authority), "organizations");
 		path = g_strndup(target, strcspn(target, "?#")); parts = g_strsplit(path, "/", 0);
@@ -63,8 +64,11 @@ static gchar *venture_hosted_browser_business(VentureWebServer *self, gint64 ide
 			if (type != G_TYPE_INVALID) record = venture_database_get(db, type, id, NULL);
 			if (record) requested = VENTURE_IS_ORGANIZATION(record) ? venture_entity_get_id(record) : venture_entity_get_organization_id(record);
 		}
-		for (i = 0; i < json_array_get_length(organizations); i++) {
-			id = json_object_get_int_member(json_array_get_object_element(organizations, i), "organization_id");
+		/* A missing membership list selects nothing. It must not crash sign-in. */
+		for (i = 0; organizations && i < json_array_get_length(organizations); i++) {
+			JsonObject *entry = json_array_get_object_element(organizations, i);
+			if (!entry) continue;
+			id = json_object_get_int_member(entry, "organization_id");
 			if (id == requested || json_array_get_length(organizations) == 1) selected = id;
 		}
 	}
