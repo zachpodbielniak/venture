@@ -171,6 +171,8 @@ unavailable:
 	htmx_response_set_status(response, 404);
 headers:
 	htmx_response_add_header(response, "Cache-Control", "no-store");
-	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
+	/* Preserve the form Origin while withholding its capability from the
+	 * external payment provider. no-referrer makes browser POST Origin null. */
+	htmx_response_add_header(response, "Referrer-Policy", "same-origin");
 	return response;
 }

@@ -24,16 +24,19 @@ stripe_prepare_invoice_evidence(VentureStripeService *self, VentureStripeEvent *
 	JsonObject *payment;
 	VentureEntity *attempt;
 	const gchar *id = string_member(object, "id"), *intent = string_member(object, "payment_intent");
-	const gchar *payment_state, *currency;
+	const gchar *payment_state, *currency, *verified_intent, *attempted_method;
+	JsonNode *method_node;
 	gboolean success = g_strcmp0(string_member(event, "type"), "invoice.payment_failed") != 0;
 	gint64 amount, configuration_version;
 	g_object_get(record, "provider-evidence", &stored, NULL);
 	if (stored && *stored) return TRUE;
 	if (venture_database_has_transaction(self->database))
 		return refuse(error, "Invoice evidence must be read before opening an accounting transaction");
-	if (g_strcmp0(self->api_version, "2024-06-20") || g_strcmp0(string_member(event, "api_version"), "2024-06-20"))
-		return refuse(error, "Automatic invoice evidence requires API and webhook version 2024-06-20");
-	if (!stripe_identifier(id, "in_") || !stripe_identifier(intent, "pi_"))
+	if (g_strcmp0(self->api_version, "2024-06-20"))
+		return refuse(error, "Automatic invoice evidence requires API version 2024-06-20");
+	/* A signed snapshot is only a trigger. Newer snapshots omit the legacy
+	 * intent field; the pinned authenticated read below remains authoritative. */
+	if (!stripe_identifier(id, "in_") || (intent && !stripe_identifier(intent, "pi_")))
 		return refuse(error, "Invoice event has no supported provider invoice/payment identity");
 	attempts = find_rows(self, VENTURE_TYPE_STRIPE_CHECKOUT, "provider-invoice-id", id, error);
 	if (!attempts) return FALSE;
@@ -54,7 +57,14 @@ stripe_prepare_invoice_evidence(VentureStripeService *self, VentureStripeEvent *
 	resource = stripe_client_execute(self->client, request, NULL, error);
 	if (!resource) return FALSE;
 	invoice = stripe_resource_get_json(resource); payment = object_member(invoice, "payment_intent");
+	verified_intent = string_member(payment, "id");
 	payment_state = string_member(payment, "status");
+	attempted_method = string_member(payment, "payment_method");
+	method_node = payment ? json_object_get_member(payment, "payment_method") : NULL;
+	/* A declined intent clears its current method. Only a failure may use
+	 * the attempted method retained in the authenticated failure evidence. */
+	if (!success && (!method_node || JSON_NODE_HOLDS_NULL(method_node)))
+		attempted_method = string_member(object_member(object_member(payment, "last_payment_error"), "payment_method"), "id");
 	currency = string_member(payment, "currency");
 	if (!stripe_collection_invoice_matches(invoice, id, customer, method, expected, venture_entity_get_uuid(attempt), error)) return FALSE;
 	if (!stripe_json_boolean(invoice, "livemode", !g_strcmp0(self->environment, "live")) ||
@@ -62,9 +72,9 @@ stripe_prepare_invoice_evidence(VentureStripeService *self, VentureStripeEvent *
 		!stripe_json_integer(invoice, "amount_paid", success ? amount : 0) ||
 		!stripe_json_integer(invoice, "amount_remaining", success ? 0 : amount) ||
 		g_strcmp0(string_member(invoice, "status"), success ? "paid" : "open") ||
-		g_strcmp0(string_member(payment, "id"), intent) ||
+		!stripe_identifier(verified_intent, "pi_") || (intent && g_strcmp0(verified_intent, intent)) ||
 		g_strcmp0(string_member(payment, "invoice"), id) || g_strcmp0(string_member(payment, "customer"), customer) ||
-		g_strcmp0(string_member(payment, "payment_method"), method) || !currency ||
+		g_strcmp0(attempted_method, method) || !currency ||
 		g_ascii_strcasecmp(currency, venture_money_get_currency(expected)) ||
 		!stripe_json_boolean(payment, "livemode", !g_strcmp0(self->environment, "live")) ||
 		!stripe_json_integer(payment, "amount", amount) || !stripe_json_integer(payment, "amount_received", success ? amount : 0) ||
@@ -73,7 +83,7 @@ stripe_prepare_invoice_evidence(VentureStripeService *self, VentureStripeEvent *
 		return refuse(error, "Authenticated invoice/payment evidence does not prove the signed collection outcome");
 	json_object_set_string_member(evidence, "outcome", success ? "succeeded" : "failed");
 	json_object_set_string_member(evidence, "invoice", id);
-	json_object_set_string_member(evidence, "payment_intent", intent);
+	json_object_set_string_member(evidence, "payment_intent", verified_intent);
 	json_object_set_string_member(evidence, "customer", customer);
 	json_object_set_string_member(evidence, "payment_method", method);
 	json_object_set_string_member(evidence, "payment_status", payment_state);

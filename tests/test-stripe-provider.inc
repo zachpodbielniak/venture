@@ -6,6 +6,7 @@ typedef struct
 	gchar *id, *reference, *customer, *method, *item_key, *pay_key, *description;
 	gint64 amount, received_override;
 	gboolean draft, processing, paid, voided, deleted, action_required;
+	gboolean wrong_failed_method;
 	guint lines;
 } FakeInvoice;
 
@@ -134,6 +135,15 @@ fake_invoice_send(FakeTransport *self, const StripeHttpRequest *request)
 			json_object_set_int_member(payment, "amount_received", invoice->received_override >= 0 ? invoice->received_override : invoice->paid ? invoice->amount : 0);
 			json_object_set_boolean_member(payment, "livemode", FALSE);
 			json_object_set_string_member(payment, "status", invoice->voided ? "canceled" : invoice->paid ? "succeeded" : invoice->processing ? "processing" : invoice->action_required ? "requires_action" : "requires_payment_method");
+			if (!invoice->voided && !invoice->paid && !invoice->processing && !invoice->action_required) {
+				JsonObject *failure = json_object_new(), *failed_method = json_object_new();
+				/* A real declined intent clears its current method; the pinned
+				 * failure evidence retains the method that was attempted. */
+				json_object_set_null_member(payment, "payment_method");
+				json_object_set_string_member(failed_method, "id", invoice->wrong_failed_method ? "pm_other" : invoice->method);
+				json_object_set_object_member(failure, "payment_method", failed_method);
+				json_object_set_object_member(payment, "last_payment_error", failure);
+			}
 			json_object_set_string_member(payment, "client_secret", "should-never-retain");
 			json_object_set_object_member(object, "payment_intent", json_object_ref(payment));
 		}

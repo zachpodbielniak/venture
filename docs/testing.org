@@ -1086,3 +1086,34 @@ missing-recipient rollback cases pass. Additional coverage checks that a repeat
 send leaves one delivery and one outbox identity, and that rolling back the
 surrounding send transaction leaves the quote draft with no delivery, event or
 mail. The acceptance capability remains excluded from generic mail output.
+
+* Hosted invoice payment browser origin
+
+The hosted payment-link regression requests the anonymous form and follows its
+same-origin POST. Before the fix its response policy was =no-referrer=, which
+makes browsers send an opaque Origin and fail the workspace gate. The regression
+fails on that response policy, then proves the bound invoice reaches hosted
+Checkout after the fix. Invalid capabilities, foreign hosts and Origins,
+ordinary API writes with an opaque Origin, and suspended workspaces remain
+refused without a provider call. Existing link expiry, revocation and settlement
+cases cover the same payment capability implementation.
+
+* Invoice collection and newer signed snapshots
+
+The =/stripe/automatic-new-webhook= regression first failed when a signed
+invoice snapshot used a newer API version without the legacy payment-intent
+field. It now requires the same pinned authenticated invoice/payment read as
+older snapshots; a wrong signed customer or supplied payment identity is still
+refused. Replaying the accepted snapshot must leave exactly one payment.
+
+The payment dependency also omits =paid_out_of_band=false= from saved-method
+invoice collection: the provider rejects that optional parameter together with
+=payment_method=. This changes the request shape, not the retained reservation
+or idempotency key.
+
+The real decline fixture now clears the intent's current method and carries the
+attempted method in authenticated =last_payment_error.payment_method=. The
+failure-recovery test failed first with this shape. Failure evidence may use
+that retained attempted method only when the current method is null or absent;
+a different attempted method is rejected. Successful settlement still requires
+the current method to match.
