@@ -191,7 +191,7 @@ endif
 
 # Needed by every target, including a standalone venturectl build.
 DEPS_CORE := glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0
-DEPS_CORE += json-glib-1.0 yaml-0.1
+DEPS_CORE += json-glib-1.0 yaml-0.1 libcrypto
 
 # Needed by venturectl (it speaks HTTP to the server).
 DEPS_CLI := $(DEPS_CORE) libsoup-3.0
@@ -573,11 +573,11 @@ DEBIAN_DEPS := gcc make nodejs pkg-config \
                libglib2.0-dev libyaml-dev libjson-glib-dev libsoup-3.0-dev \
                libxml2-dev libsqlite3-dev libpq-dev libreadline-dev \
                gobject-introspection libgirepository1.0-dev \
-               libpoppler-glib-dev libgdk-pixbuf-2.0-dev libarchive-dev
+               libpoppler-glib-dev libgdk-pixbuf-2.0-dev libarchive-dev libssl-dev
 
 ARCH_DEPS := gcc make nodejs pkgconf \
              glib2 libyaml json-glib libsoup3 libxml2 sqlite postgresql-libs \
-             readline gobject-introspection poppler-glib gdk-pixbuf2 libarchive
+             readline gobject-introspection poppler-glib gdk-pixbuf2 libarchive openssl
 
 .PHONY: install-deps
 install-deps:

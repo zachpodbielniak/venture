@@ -1136,3 +1136,36 @@ failure-recovery test failed first with this shape. Failure evidence may use
 that retained attempted method only when the current method is null or absent;
 a different attempted method is rejected. Successful settlement still requires
 the current method to match.
+* Password verifier compatibility and cost
+
+The saved PBKDF2-HMAC-SHA256 format, salt and iteration count are unchanged.
+The cryptographic library derives the same bytes without allocating a fresh
+HMAC for every iteration. Core and standalone CLI builds require =libcrypto=.
+Authentication still checks each token's current activity, expiry and user
+permissions. Only the cryptographic proof of an exact secret and stored verifier
+is reused, for at most 60 seconds and 64 entries. The cache holds one-way
+fingerprints, not plaintext secrets, principals or authorization decisions.
+Invalid secrets are never cached; changing the stored verifier misses the cache.
+Token-use telemetry is written on first use, then refreshed after one minute;
+a failed write remains eligible for retry on the next request. Token-use audit updates therefore have the same minute granularity.
+Business-change auditing and authorization checks are unchanged. The repeated-request
+HTTP regression changes expiry, rotates the hash, presents a wrong secret and
+revokes the token after success.
+
+=/auth/password-known-answers= checks independently known SHA-256 vectors,
+a wrong secret and malformed encodings. Its first run failed because an odd
+salt length was silently truncated. Encoding errors and library failures now
+refuse verification. Existing salt-randomness and minimum-work-factor tests
+remain in the full suite. Performance is measured separately with identical
+inputs and iterations, rather than a clock threshold in a loaded test suite.
+
+* Property layout enumeration
+
+Persistent-property enumeration reuses the fixed layout of static GObject
+classes. It still applies current column flags on every call and returns a
+separate caller-owned container. A type owned by a GTypePlugin is enumerated
+live, because that plugin can unload. Venture plugins register static types
+and are never unloaded, so they use the cache.
+The compatibility regression changes persistence flags after the first lookup
+and modifies a returned container; neither operation contaminates later calls.
+This caches class metadata only, never record values or authorization decisions.

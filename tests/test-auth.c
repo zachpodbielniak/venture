@@ -389,6 +389,18 @@ test_auth_disabled_grants_owner(
 }
 
 /* --- Password hashing ---------------------------------------------------- */
+static void
+test_auth_password_known_answers(Fixture *fixture, gconstpointer user_data)
+{
+	/* Published PBKDF2-HMAC-SHA256 vectors keep saved verifiers compatible
+	 * when the implementation changes. Encoding errors must fail closed. */
+	g_assert_true(venture_verify_password("password", "pbkdf2-sha256$1$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+	g_assert_true(venture_verify_password("password", "pbkdf2-sha256$2$73616c74$ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"));
+	g_assert_true(venture_verify_password("password", "pbkdf2-sha256$4096$73616c74$c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"));
+	g_assert_false(venture_verify_password("wrong", "pbkdf2-sha256$1$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+	g_assert_false(venture_verify_password("password", "pbkdf2-sha256$1$73616c740$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+	g_assert_false(venture_verify_password("password", "pbkdf2-sha256$1junk$73616c74$120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
+}
 
 static void
 test_auth_password_hashes_are_salted(
@@ -3881,6 +3893,111 @@ test_auth_token_reveal_is_one_shot(
  * it, which is exactly what somebody revoking a credential after an
  * incident wants to still be able to read.
  */
+/* Repeated authentication must always read current authorization state. */
+/* Repeated authentication keeps checks live without rewriting telemetry. */
+static void
+test_auth_token_last_use_is_bounded(
+	ServerFixture *fixture,
+	gconstpointer user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autoptr(GDateTime) first = NULL;
+	g_autoptr(GDateTime) second = NULL;
+	g_autoptr(GDateTime) past = NULL;
+
+	server_fixture_create_user(fixture, "example", "example-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "example", "example-long-password");
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=example&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_object_get(token, "last-used-at", &first, NULL);
+	g_assert_nonnull(first);
+	g_clear_object(&token);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_object_get(token, "last-used-at", &second, NULL);
+	g_assert_cmpint(g_date_time_compare(first, second), ==, 0);
+
+	past = g_date_time_add_seconds(first, -120);
+	g_object_set(token, "last-used-at", past, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_clear_object(&token);
+	g_clear_pointer(&second, g_date_time_unref);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_object_get(token, "last-used-at", &second, NULL);
+	g_assert_cmpint(g_date_time_compare(second, first), >=, 0);
+	g_assert_cmpint(g_date_time_compare(second, past), >, 0);
+}
+
+static void
+test_auth_token_repeated_checks_live_state(
+	ServerFixture *fixture,
+	gconstpointer user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *wrong = NULL;
+	g_autofree gchar *original_hash = NULL;
+	g_autofree gchar *replacement_hash = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	g_autoptr(GDateTime) past = NULL;
+	g_autoptr(GDateTime) now = NULL;
+
+	server_fixture_create_user(fixture, "example", "example-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "example", "example-long-password");
+	secret = server_fixture_mint_token(fixture, cookie,
+	                                   "name=example&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	g_assert_nonnull(token);
+	g_object_get(token, "token-hash", &original_hash, NULL);
+
+	wrong = g_strconcat(secret, "wrong", NULL);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, wrong, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	now = venture_time_now();
+	past = g_date_time_add_seconds(now, -1);
+	g_object_set(token, "expires-at", past, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_object_set(token, "expires-at", NULL, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+
+	g_clear_object(&token);
+	token = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN, 1, NULL);
+	replacement_hash = venture_hash_password("replacement-secret", 1000, NULL);
+	g_object_set(token, "token-hash", replacement_hash, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_object_set(token, "token-hash", original_hash, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(fixture->database, token, NULL, NULL));
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_UNAUTHORIZED);
+}
+
 static void
 test_auth_token_revoke_stops_it_working(
 	ServerFixture	*fixture,
@@ -6926,6 +7043,7 @@ main(
 
 	ADD("/auth/disabled-grants-owner", test_auth_disabled_grants_owner);
 
+	ADD("/auth/password-known-answers", test_auth_password_known_answers);
 	ADD("/auth/password-hashes-are-salted", test_auth_password_hashes_are_salted);
 	ADD("/auth/password-iterations-are-floored",
 	    test_auth_password_iterations_are_floored);
@@ -6963,6 +7081,12 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-revoke-stops-it-working", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_revoke_stops_it_working,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-last-use-is-bounded", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_last_use_is_bounded,
+	           server_fixture_tear_down);
+	g_test_add("/auth/token-repeat-checks-live-state", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_token_repeated_checks_live_state,
 	           server_fixture_tear_down);
 	g_test_add("/auth/token-expiry-is-recorded", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_token_expiry_is_recorded,

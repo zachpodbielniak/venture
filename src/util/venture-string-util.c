@@ -8,6 +8,7 @@
 #include "venture.h"
 
 #include <string.h>
+#include <openssl/evp.h>
 
 gboolean
 venture_string_is_empty(const gchar *text)
@@ -276,14 +277,10 @@ venture_generate_token(gsize n_bytes)
 }
 
 /*
- * PBKDF2-HMAC-SHA256. GLib has no PBKDF2, so this is the standard
- * construction over GHmac: for a single output block, the result is the XOR
- * of `iterations` successive HMACs, each taken over the previous one.
- *
- * One block of SHA-256 gives 32 bytes of derived key, which is the full
- * strength of the underlying hash and plenty for a password verifier.
+ * Keep the saved PBKDF2 format and work factor. The library primitive avoids
+ * allocating and initializing a separate HMAC for every iteration.
  */
-static void
+static gboolean
 venture_pbkdf2_sha256(
 	const gchar	*password,
 	const guchar	*salt,
@@ -292,55 +289,12 @@ venture_pbkdf2_sha256(
 	guchar		*out_key,
 	gsize		 key_len
 ){
-	g_autofree guchar *block = NULL;
-	g_autofree guchar *previous = NULL;
-	g_autofree guchar *salt_and_index = NULL;
-	gsize digest_len;
-	guint iteration;
-	gsize i;
-
-	digest_len = g_checksum_type_get_length(G_CHECKSUM_SHA256);
-	block = g_new0(guchar, digest_len);
-	previous = g_new0(guchar, digest_len);
-
-	/* The first HMAC is over salt || INT32BE(1); with a single output
-	 * block the block index is always 1. */
-	salt_and_index = g_new0(guchar, salt_len + 4);
-	memcpy(salt_and_index, salt, salt_len);
-	salt_and_index[salt_len + 0] = 0;
-	salt_and_index[salt_len + 1] = 0;
-	salt_and_index[salt_len + 2] = 0;
-	salt_and_index[salt_len + 3] = 1;
-
-	{
-		g_autoptr(GHmac) hmac = NULL;
-		gsize length;
-
-		length = digest_len;
-		hmac = g_hmac_new(G_CHECKSUM_SHA256, (const guchar *)password,
-		                  strlen(password));
-		g_hmac_update(hmac, salt_and_index, (gssize)(salt_len + 4));
-		g_hmac_get_digest(hmac, previous, &length);
-	}
-
-	memcpy(block, previous, digest_len);
-
-	for (iteration = 1; iteration < iterations; iteration++)
-	{
-		g_autoptr(GHmac) hmac = NULL;
-		gsize length;
-
-		length = digest_len;
-		hmac = g_hmac_new(G_CHECKSUM_SHA256, (const guchar *)password,
-		                  strlen(password));
-		g_hmac_update(hmac, previous, (gssize)digest_len);
-		g_hmac_get_digest(hmac, previous, &length);
-
-		for (i = 0; i < digest_len; i++)
-			block[i] ^= previous[i];
-	}
-
-	memcpy(out_key, block, MIN(key_len, digest_len));
+	gsize password_len = strlen(password);
+	if (password_len > G_MAXINT || salt_len > G_MAXINT || key_len > G_MAXINT ||
+	    iterations == 0 || iterations > G_MAXINT)
+		return FALSE;
+	return PKCS5_PBKDF2_HMAC(password, (gint)password_len, salt, (gint)salt_len,
+	                          (gint)iterations, EVP_sha256(), (gint)key_len, out_key) == 1;
 }
 
 static gchar *
@@ -398,8 +352,13 @@ venture_hash_password(
 		salt[i] = (guchar)((high << 4) | low);
 	}
 
-	venture_pbkdf2_sha256(password, salt, sizeof(salt), iterations,
-	                      key, sizeof(key));
+	if (!venture_pbkdf2_sha256(password, salt, sizeof(salt), iterations,
+	                           key, sizeof(key)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "Password verification could not be prepared");
+		return NULL;
+	}
 
 	hash_hex = venture_bytes_to_hex(key, sizeof(key));
 
@@ -419,6 +378,8 @@ venture_verify_password(
 	guchar salt[16];
 	guchar key[32];
 	guint iterations;
+	guint64 parsed;
+	gchar *end;
 	gsize salt_len;
 	gsize i;
 
@@ -434,15 +395,15 @@ venture_verify_password(
 	if (0 != g_strcmp0(parts[0], "pbkdf2-sha256"))
 		return FALSE;
 
-	iterations = (guint)g_ascii_strtoull(parts[1], NULL, 10);
-
-	if (0 == iterations)
+	parsed = g_ascii_strtoull(parts[1], &end, 10);
+	if (!g_ascii_isdigit(parts[1][0]) || *end || parsed == 0 || parsed > G_MAXINT)
 		return FALSE;
+	iterations = (guint)parsed;
 
 	salt_len = strlen(parts[2]) / 2;
 
-	if (salt_len > sizeof(salt))
-		salt_len = sizeof(salt);
+	if (!salt_len || strlen(parts[2]) % 2 || salt_len > sizeof(salt) || strlen(parts[3]) != 64)
+		return FALSE;
 
 	for (i = 0; i < salt_len; i++)
 	{
@@ -458,8 +419,8 @@ venture_verify_password(
 		salt[i] = (guchar)((high << 4) | low);
 	}
 
-	venture_pbkdf2_sha256(password, salt, salt_len, iterations,
-	                      key, sizeof(key));
+	if (!venture_pbkdf2_sha256(password, salt, salt_len, iterations, key, sizeof(key)))
+		return FALSE;
 
 	candidate = venture_bytes_to_hex(key, sizeof(key));
 

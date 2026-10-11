@@ -45,6 +45,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         git \
         pkgconf-pkg-config \
         glib2-devel \
+        openssl-devel \
         libyaml-devel \
         json-glib-devel \
         libsoup3-devel \
@@ -202,6 +203,7 @@ LABEL org.opencontainers.image.title="VENTURE" \
 #
 RUN dnf install -y --setopt=install_weak_deps=False \
         glib2 \
+        openssl-libs \
         libyaml \
         json-glib \
         libsoup3 \
@@ -248,6 +250,7 @@ RUN if [ "${WITH_CRISPY}" = "1" ]; then \
             gcc \
             pkgconf-pkg-config \
             glib2-devel \
+            openssl-devel \
             libyaml-devel \
             json-glib-devel \
             libsoup3-devel \

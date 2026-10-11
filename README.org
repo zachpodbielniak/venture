@@ -65,7 +65,7 @@ See =make help= for the full target list and =make show-config= for the resolved
 =make list-deps= prints the package names to layer into an image build:
 
 #+begin_src
-gcc make pkgconf-pkg-config glib2-devel libyaml-devel json-glib-devel
+gcc make pkgconf-pkg-config glib2-devel libyaml-devel json-glib-devel openssl-devel
 libsoup3-devel libxml2-devel sqlite-devel libpq-devel readline-devel
 gobject-introspection-devel
 #+end_src
