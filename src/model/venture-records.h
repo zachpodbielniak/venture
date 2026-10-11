@@ -457,9 +457,13 @@ venture_api_token_generate(VentureApiToken *self);
  * @self: a #VentureApiToken
  * @presented: the token presented by a client
  *
- * Compares a presented token against the stored hash in constant time.
+ * Compares a presented token against the stored hash. An inactive or expired
+ * token is refused before that comparison. A wrong secret still pays for a
+ * full derivation and a constant-time compare. A secret that matched this
+ * exact stored verifier in the last minute reuses that proof; the proof does
+ * not include activity, expiry, identity or authorization.
  *
- * Returns: %TRUE if the token is correct and has not expired
+ * Returns: %TRUE if the token is correct, active and unexpired
  */
 gboolean
 venture_api_token_matches(

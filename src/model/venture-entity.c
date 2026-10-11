@@ -820,7 +820,9 @@ venture_entity_class_property_layout(VentureEntityClass *klass, guint *count)
 	GQuark quark = g_quark_from_static_string("venture-property-layout");
 	guint i;
 
-	/* A plugin class can be unloaded and rebuilt with another layout. */
+	/* A GTypePlugin can unload its class and invalidate a cached layout.
+	 * Venture plugins register static types and are never unloaded, so
+	 * they keep the cache. */
 	for (ancestor = type; ancestor != 0; ancestor = g_type_parent(ancestor))
 		if (g_type_get_plugin(ancestor) != NULL)
 			return g_object_class_list_properties(G_OBJECT_CLASS(klass), count);

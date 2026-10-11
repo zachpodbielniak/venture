@@ -1163,7 +1163,9 @@ inputs and iterations, rather than a clock threshold in a loaded test suite.
 
 Persistent-property enumeration reuses the fixed layout of static GObject
 classes. It still applies current column flags on every call and returns a
-separate caller-owned container. Dynamic plugin types retain live enumeration.
+separate caller-owned container. A type owned by a GTypePlugin is enumerated
+live, because that plugin can unload. Venture plugins register static types
+and are never unloaded, so they use the cache.
 The compatibility regression changes persistence flags after the first lookup
 and modifies a returned container; neither operation contaminates later calls.
 This caches class metadata only, never record values or authorization decisions.
