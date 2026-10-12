@@ -2285,7 +2285,20 @@ accounts_holding_where(
 
 	accounts_where_exclude(sql, bindings, "h.account_id", FALSE, filter->exclude_account_keys);
 
-	if (NULL != filter->instrument_key)
+	if ((NULL != filter->instrument_key) && filter->with_variants)
+	{
+		g_autofree gchar *from = g_strconcat(filter->instrument_key, ":", NULL);
+		g_autofree gchar *until = g_strconcat(filter->instrument_key, ";", NULL);
+
+		/* "KEY:" up to "KEY;" is every "KEY:..." -- ';' follows ':' --
+		 * so the index answers it as a range, not a scan. */
+		g_string_append(sql, " AND (h.instrument_key = ?"
+		                     " OR (h.instrument_key > ? AND h.instrument_key < ?))");
+		accounts_bind_add_text(bindings, filter->instrument_key);
+		accounts_bind_add_text(bindings, from);
+		accounts_bind_add_text(bindings, until);
+	}
+	else if (NULL != filter->instrument_key)
 	{
 		g_string_append(sql, " AND h.instrument_key = ?");
 		accounts_bind_add_text(bindings, filter->instrument_key);

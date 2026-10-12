@@ -146,6 +146,17 @@ venturectl market help                               # every verb, options, exam
   variants (Blizzard's `:m...` modifiers) usually have none.
 - `market instrument SOURCE_ID KEY`: KEY is the store key (`herb`,
   `2589:b1234`), not an instrument record id; a key with `/` is fine.
+- **"How many do I have, and where?"** The instrument answer's
+  `holdings` says, from every source of the organization (prices from
+  the Blizzard source, bags from tsmctl, joined by key): `quantity`,
+  `holders`, `places` (`{place, label, quantity}`: bag, bank,
+  reagent_bank, warbank, guild, mail, auction, ...) and `rows` (one per
+  holder and place, most first: `account_name`, `kind`
+  character|shared|guild, `realm`, `login_name`, `place_label`,
+  `quantity`, `at`, `url`). A plain key counts its variants (`variant`
+  true on those rows); ignored accounts are left out and summed in
+  `ignored`. Quote these; never add up `accounts inventory` pages for one
+  item.
 - Tables show money with its currency and leave a missing figure blank,
   then the answer's notes (`-q` drops them); `-f json` is the whole answer
   (notes, echoes); `-f csv` the rows.

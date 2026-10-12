@@ -425,6 +425,39 @@ venture_marketdata_external_pnl(
 );
 
 /**
+ * venture_marketdata_item_holdings:
+ * @context: a #VentureContext
+ * @organization_id: whose
+ * @instrument_key: the item; a plain key ("19019") counts its variants
+ *   ("19019:b1472,6646") too
+ * @now: the moment, or 0 for now
+ * @error: (out) (optional): return location for a #GError
+ *
+ * How many of one item the operator holds and where, across every data
+ * source of the organization -- an item page's prices come from one
+ * source, its holdings usually from another (tsmctl), joined by key:
+ * {available, notes, instrument_key, with_variants, quantity, holders,
+ * ignored, places: [{place, label, quantity}] (only places holding any,
+ * in the order the account pages list them), rows: [{data_source_id,
+ * source_name, account_key, account_name, kind, login, login_name,
+ * class, class_color, realm, place, place_label, instrument_key,
+ * instrument_name, variant, quantity, at, url}] (most first)}. Accounts
+ * the organization ignores are left out and their units summed in
+ * @ignored. A store that cannot be read is a note.
+ *
+ * Returns: (transfer full) (nullable): the answer, or %NULL when the
+ *   marketdata module is off or the sources cannot be listed
+ */
+JsonNode *
+venture_marketdata_item_holdings(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *instrument_key,
+	gint64		  now,
+	GError		**error
+);
+
+/**
  * venture_marketdata_account_path:
  * @data_source_id: the source
  * @key: the account's key

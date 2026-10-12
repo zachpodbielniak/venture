@@ -2953,6 +2953,149 @@ test_ignore(
 	g_assert_cmpuint(json_array_get_length(rows), ==, 4);
 }
 
+/* An item's page says how many the operator holds and where -- every
+ * character, the warband and guild banks, a plain item counting its
+ * variants -- though its prices come from another source. */
+static void
+test_item_holdings(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GString) body = g_string_new(NULL);
+	g_autoptr(GString) prices = g_string_new(NULL);
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) realm = NULL;
+	g_autofree gchar *taken = iso(fixture->now - HOUR);
+	g_autofree gchar *snap = iso(fixture->now - 10 * 60);
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	JsonObject *root;
+	JsonObject *row;
+	JsonArray *rows;
+	JsonArray *places;
+	gint64 prices_id;
+
+	(void)user_data;
+
+	seed(fixture);
+
+	/* A guild bank on realm A: plain ore and a variant of it. */
+	line(body, "{\"type\":\"account\",\"key\":\"guild:Tide-A\",\"name\":\"Tide\",\"kind\":\"guild\","
+	           "\"group\":\"Realm A\",\"venue\":\"realm-a\"}");
+	line(body, "{\"type\":\"account_snapshot\",\"account\":\"guild:Tide-A\",\"at\":\"%s\","
+	           "\"covers\":[\"holdings\"]}", snap);
+	line(body, "{\"type\":\"holding\",\"account\":\"guild:Tide-A\",\"place\":\"guild\",\"instrument\":\"ore\","
+	           "\"quantity\":20}");
+	line(body, "{\"type\":\"holding\",\"account\":\"guild:Tide-A\",\"place\":\"guild\","
+	           "\"instrument\":\"ore:b1,2\",\"quantity\":3}");
+	line(body, "{\"type\":\"holding\",\"account\":\"guild:Tide-A\",\"place\":\"guild\","
+	           "\"instrument\":\"orem\",\"quantity\":99}");
+	push(fixture, fixture->source_id, body->str);
+
+	/* The prices from a source that holds nothing. */
+	prices_id = push_source(fixture, fixture->org, "Auctions");
+	line(prices, "{\"type\":\"snapshot\",\"venue\":\"realm-a\",\"taken_at\":\"%s\"}", taken);
+	line(prices, "{\"type\":\"stat\",\"venue\":\"realm-a\",\"instrument\":\"ore\",\"market\":\"10.0000\","
+	             "\"min\":\"9.0000\",\"quantity\":100}");
+	line(prices, "{\"type\":\"stat\",\"venue\":\"realm-a\",\"instrument\":\"gem\",\"market\":\"30.0000\","
+	             "\"min\":\"29.0000\",\"quantity\":4}");
+	push(fixture, prices_id, prices->str);
+
+	/* Ore: Drgold's 10 in bags, Herbz's 5, the guild's 20 and 3 of a
+	 * variant -- never "orem", which only starts the same. */
+	answer = venture_marketdata_item_holdings(fixture->context, fixture->org, "ore", fixture->now, &error);
+	g_assert_no_error(error);
+	root = root_of(answer);
+	g_assert_true(json_object_get_boolean_member(root, "available"));
+	g_assert_true(json_object_get_boolean_member(root, "with_variants"));
+	g_assert_cmpint(json_object_get_int_member(root, "quantity"), ==, 38);
+	g_assert_cmpint(json_object_get_int_member(root, "holders"), ==, 3);
+	g_assert_cmpint(json_object_get_int_member(root, "ignored"), ==, 0);
+	rows = json_object_get_array_member(root, "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 4);
+	row = json_array_get_object_element(rows, 0);
+	g_assert_cmpstr(json_object_get_string_member(row, "account_name"), ==, "Tide");
+	g_assert_cmpstr(json_object_get_string_member(row, "kind"), ==, "guild");
+	g_assert_cmpstr(json_object_get_string_member(row, "place_label"), ==, "Guild bank");
+	g_assert_cmpstr(json_object_get_string_member(row, "realm"), ==, "Realm A");
+	g_assert_cmpint(json_object_get_int_member(row, "quantity"), ==, 20);
+	g_assert_false(json_object_get_boolean_member(row, "variant"));
+	g_assert_cmpint(json_object_get_int_member(row, "data_source_id"), ==, fixture->source_id);
+	row = json_array_get_object_element(rows, 1);
+	g_assert_cmpstr(json_object_get_string_member(row, "account_key"), ==, "Drgold-A");
+	g_assert_cmpstr(json_object_get_string_member(row, "class"), ==, "WARRIOR");
+	g_assert_cmpstr(json_object_get_string_member(row, "place"), ==, "bag");
+	row = json_array_get_object_element(rows, 3);
+	g_assert_cmpstr(json_object_get_string_member(row, "instrument_key"), ==, "ore:b1,2");
+	g_assert_true(json_object_get_boolean_member(row, "variant"));
+	places = json_object_get_array_member(root, "places");
+	g_assert_cmpuint(json_array_get_length(places), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(places, 0), "place"), ==, "bag");
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(places, 0), "quantity"), ==, 15);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(places, 1), "place"), ==, "guild");
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(places, 1), "quantity"), ==, 23);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* A variant's own page counts only that variant. */
+	answer = venture_marketdata_item_holdings(fixture->context, fixture->org, "ore:b1,2", fixture->now, &error);
+	g_assert_no_error(error);
+	g_assert_false(json_object_get_boolean_member(root_of(answer), "with_variants"));
+	g_assert_cmpint(json_object_get_int_member(root_of(answer), "quantity"), ==, 3);
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* Herb: bank, reagent bank and the warband's, in that order. */
+	answer = venture_marketdata_item_holdings(fixture->context, fixture->org, "herb", fixture->now, &error);
+	g_assert_no_error(error);
+	root = root_of(answer);
+	g_assert_cmpint(json_object_get_int_member(root, "quantity"), ==, 16);
+	places = json_object_get_array_member(root, "places");
+	g_assert_cmpuint(json_array_get_length(places), ==, 3);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(places, 2), "label"), ==,
+	                "Warband bank");
+	g_assert_cmpstr(json_object_get_string_member(find_row(json_object_get_array_member(root, "rows"),
+	                                                       "account_key", "warbank:ME"), "kind"), ==, "shared");
+	g_clear_pointer(&answer, json_node_unref);
+
+	/* On the item page of the source with the prices, and its API. */
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/ore", prices_id);
+	answer = get_json(fixture, path, 200);
+	root = json_object_get_object_member(root_of(answer), "holdings");
+	g_assert_nonnull(root);
+	g_assert_cmpint(json_object_get_int_member(root, "quantity"), ==, 38);
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/ore", prices_id);
+	page = get_page(fixture, path);
+	assert_buttons_named(page, path);
+	g_assert_nonnull(strstr(page, "You have <strong>38</strong>"));
+	g_assert_nonnull(strstr(page, "id=\"yours\""));
+	g_assert_nonnull(strstr(page, "class=\"place-tag\" data-place=\"guild\">Guild bank<"));
+	g_assert_nonnull(strstr(page, "<span class=\"badge holder-kind\">Guild</span>"));
+	g_assert_nonnull(strstr(page, "The count includes every variant of this item."));
+	g_assert_nonnull(strstr(page, "<span class=\"holder-bank\" data-place=\"guild\">Tide</span>"));
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/gem", prices_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "You have none"));
+	g_assert_null(strstr(page, "id=\"yours\""));
+	g_clear_pointer(&page, g_free);
+
+	/* An ignored realm's characters are not counted, but said. */
+	realm = VENTURE_ENTITY(venture_account_ignore_new());
+	venture_entity_set_organization_id(realm, fixture->org);
+	g_object_set(realm, "name", "Realm B", "kind", "realm", "key", "realm b", NULL);
+	save(fixture, realm);
+	answer = venture_marketdata_item_holdings(fixture->context, fixture->org, "ore", fixture->now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(json_object_get_int_member(root_of(answer), "quantity"), ==, 33);
+	g_assert_cmpint(json_object_get_int_member(root_of(answer), "ignored"), ==, 5);
+	g_assert_cmpint(json_object_get_int_member(root_of(answer), "holders"), ==, 2);
+}
+
 #define ADD(path, func) \
 	g_test_add("/accounts-pages/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -2983,6 +3126,7 @@ main(
 	ADD("login-doors", test_login_doors);
 	ADD("login-organizations", test_login_organizations);
 	ADD("ignore", test_ignore);
+	ADD("item-holdings", test_item_holdings);
 
 	return g_test_run();
 }

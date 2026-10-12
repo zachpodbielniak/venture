@@ -2258,6 +2258,204 @@ mdw_instrument_query(
 	return mdw_number(request, "units", 0, VENTURE_MARKETDATA_BULK_MAX_UNITS, &query->units, error);
 }
 
+/* --- What the operator holds of an item ------------------------------------- */
+
+/* The item's holdings, venture_marketdata_item_holdings()'s answer, or
+ * NULL when there is none to show (no module, no store, an error). */
+static JsonObject *
+mdw_item_holdings(JsonObject *root)
+{
+	JsonObject *holdings;
+
+	if (!json_object_has_member(root, "holdings") ||
+	    !JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "holdings")))
+		return NULL;
+
+	holdings = json_object_get_object_member(root, "holdings");
+
+	return json_object_get_boolean_member_with_default(holdings, "available", FALSE) ? holdings : NULL;
+}
+
+/* "You have 247 · 5 characters", in the item's heading, linking to the
+ * card that says who and where. */
+static void
+mdw_item_owned(
+	GString		*html,
+	JsonObject	*holdings
+){
+	gint64 quantity = json_object_get_int_member(holdings, "quantity");
+	gint64 holders = json_object_get_int_member(holdings, "holders");
+
+	if (0 == quantity)
+	{
+		g_string_append(html, "<p class=\"item-owned is-none\">You have none</p>");
+		return;
+	}
+
+	g_string_append_printf(html, "<p class=\"item-owned\"><a href=\"#yours\">You have <strong>%"
+	                       G_GINT64_FORMAT "</strong></a> <span class=\"muted\">on %" G_GINT64_FORMAT
+	                       " %s</span></p>", quantity, holders,
+	                       (1 == holders) ? "character or bank" : "characters and banks");
+}
+
+/* What a holder is when it is not a character: a guild's bank, the
+ * warband's. */
+static const gchar *
+mdw_holder_kind(const gchar *kind)
+{
+	if (0 == g_strcmp0(kind, "guild"))
+		return "Guild";
+
+	if (0 == g_strcmp0(kind, "shared"))
+		return "Warband";
+
+	return NULL;
+}
+
+/* Whether @text holds @word, ignoring case. */
+static gboolean
+mdw_says(
+	const gchar	*text,
+	const gchar	*word
+){
+	g_autofree gchar *haystack = (NULL != text) ? g_utf8_casefold(text, -1) : NULL;
+	g_autofree gchar *needle = g_utf8_casefold(word, -1);
+
+	return (NULL != haystack) && (NULL != strstr(haystack, needle));
+}
+
+/* The card: a tile per place with its count, then every holder, most
+ * first, linked to their account page. */
+static void
+mdw_item_holdings_card(
+	GString		*html,
+	JsonObject	*holdings
+){
+	JsonArray *places = json_object_get_array_member(holdings, "places");
+	JsonArray *rows = json_object_get_array_member(holdings, "rows");
+	gint64 ignored = json_object_get_int_member(holdings, "ignored");
+	gboolean variants = FALSE;
+	guint i;
+
+	if ((NULL == rows) || (0 == json_array_get_length(rows)))
+	{
+		if (ignored > 0)
+			g_string_append_printf(html, "<p class=\"muted\">Only ignored characters hold this (%"
+			                       G_GINT64_FORMAT ").</p>", ignored);
+		return;
+	}
+
+	g_string_append_printf(html, "<section class=\"card item-yours\" id=\"yours\" aria-labelledby=\"yours-h\">"
+	                       "<div class=\"card-head\"><h2 id=\"yours-h\">Yours</h2><span class=\"muted\">%"
+	                       G_GINT64_FORMAT " held</span></div><div class=\"card-body\">"
+	                       "<div class=\"accounts-places\">",
+	                       json_object_get_int_member(holdings, "quantity"));
+
+	for (i = 0; (NULL != places) && (i < json_array_get_length(places)); i++)
+	{
+		JsonObject *place = json_array_get_object_element(places, i);
+
+		g_string_append(html, "<div class=\"accounts-place place-tile\" data-place=\"");
+		venture_html_escape_append(html, mdw_text(place, "place"));
+		g_string_append(html, "\"><span class=\"stat-label\">");
+		venture_html_escape_append(html, mdw_text(place, "label"));
+		g_string_append(html, "</span><span class=\"market-figure\">");
+		mdw_int(html, place, "quantity");
+		g_string_append(html, "</span></div>");
+	}
+
+	g_string_append(html, "</div><div class=\"table-wrap\"><table class=\"data market-table\">"
+	                      "<thead><tr><th scope=\"col\">Who</th><th scope=\"col\" class=\"num\">Count</th>"
+	                      "<th scope=\"col\">Where</th><th scope=\"col\">Realm</th>"
+	                      "<th scope=\"col\">As of</th></tr></thead><tbody>");
+
+	for (i = 0; i < json_array_get_length(rows); i++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, i);
+		const gchar *color = mdw_text(row, "class_color");
+		const gchar *kind = mdw_holder_kind(mdw_text(row, "kind"));
+
+		g_string_append(html, "<tr><td><a href=\"");
+		venture_html_escape_append(html, mdw_text(row, "url"));
+		g_string_append(html, "\">");
+
+		/* In its class colour where the theme allows (see .class-name);
+		 * the colour was checked as #rrggbb when the answer was built. A
+		 * bank is drawn in its place's colour. */
+		if (NULL != color)
+			g_string_append_printf(html, "<span class=\"class-name\" style=\"--class-color:%s\">", color);
+		else if (NULL != kind)
+		{
+			g_string_append(html, "<span class=\"holder-bank\" data-place=\"");
+			venture_html_escape_append(html, mdw_text(row, "place"));
+			g_string_append(html, "\">");
+		}
+
+		venture_html_escape_append(html, mdw_text(row, "account_name"));
+
+		if ((NULL != color) || (NULL != kind))
+			g_string_append(html, "</span>");
+
+		g_string_append(html, "</a>");
+
+		/* "Guild", unless the name says so already ("Tidewardens guild
+		 * bank"). */
+		if ((NULL != kind) && !mdw_says(mdw_text(row, "account_name"), kind))
+		{
+			g_string_append(html, " <span class=\"badge holder-kind\">");
+			venture_html_escape_append(html, kind);
+			g_string_append(html, "</span>");
+		}
+
+		if (NULL != mdw_text(row, "login_name"))
+		{
+			g_string_append(html, " <span class=\"muted\">(");
+			venture_html_escape_append(html, mdw_text(row, "login_name"));
+			g_string_append(html, ")</span>");
+		}
+
+		if (json_object_get_boolean_member_with_default(row, "variant", FALSE))
+		{
+			variants = TRUE;
+			g_string_append(html, "<div class=\"muted holder-variant\">");
+			venture_html_escape_append(html, (NULL != mdw_text(row, "instrument_name"))
+			                                 ? mdw_text(row, "instrument_name")
+			                                 : mdw_text(row, "instrument_key"));
+			g_string_append(html, " \xc2\xb7 ");
+			venture_html_escape_append(html, mdw_text(row, "instrument_key"));
+			g_string_append(html, "</div>");
+		}
+
+		g_string_append(html, "</td><td class=\"num market-figure\">");
+		mdw_int(html, row, "quantity");
+		g_string_append(html, "</td><td><span class=\"place-tag\" data-place=\"");
+		venture_html_escape_append(html, mdw_text(row, "place"));
+		g_string_append(html, "\">");
+		venture_html_escape_append(html, mdw_text(row, "place_label"));
+		g_string_append(html, "</span></td><td>");
+
+		if (venture_string_is_empty(mdw_text(row, "realm")))
+			mdw_dash(html);
+		else
+			venture_html_escape_append(html, mdw_text(row, "realm"));
+
+		g_string_append(html, "</td><td>");
+		mdw_when(html, row, "at");
+		g_string_append(html, "</td></tr>");
+	}
+
+	g_string_append(html, "</tbody></table></div>");
+
+	if (ignored > 0)
+		g_string_append_printf(html, "<p class=\"muted\">Not counted: %" G_GINT64_FORMAT
+		                       " on characters you ignore.</p>", ignored);
+
+	if (variants)
+		g_string_append(html, "<p class=\"muted\">The count includes every variant of this item.</p>");
+
+	g_string_append(html, "</div></section>");
+}
+
 static HtmxResponse *
 venture_marketdata_web_instrument(
 	HtmxRequest	*request,
@@ -2296,6 +2494,18 @@ venture_marketdata_web_instrument(
 
 	if (NULL == answer)
 		return venture_web_error_response(error);
+
+	/* How many the operator holds and where, from whichever source keeps
+	 * their bags; nothing is said when it cannot be read. */
+	{
+		g_autoptr(JsonNode) holdings = venture_marketdata_item_holdings(self->context,
+		                                                               query.organization_id, key, 0,
+		                                                               NULL);
+
+		if (NULL != holdings)
+			json_object_set_member(json_node_get_object(answer), "holdings",
+			                       g_steal_pointer(&holdings));
+	}
 
 	if (api)
 		return venture_web_json_response(answer, 200);
@@ -2375,6 +2585,9 @@ venture_marketdata_web_instrument(
 
 	g_string_append(html, "</p>");
 
+	if (NULL != mdw_item_holdings(root))
+		mdw_item_owned(html, mdw_item_holdings(root));
+
 	if (json_object_has_member(root, "links") &&
 	    (json_array_get_length(json_object_get_array_member(root, "links")) > 0))
 	{
@@ -2398,6 +2611,9 @@ venture_marketdata_web_instrument(
 	mdw_attribution(html, root);
 	mdw_list_notice(html, request, json_object_get_array_member(root, "watchlists"));
 	mdw_notes(html, root);
+
+	if (NULL != mdw_item_holdings(root))
+		mdw_item_holdings_card(html, mdw_item_holdings(root));
 
 	/* Where to look at it, and what to do with it. */
 	{

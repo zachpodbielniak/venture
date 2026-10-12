@@ -4898,3 +4898,302 @@ venture_marketdata_external_pnl(
 
 	return ma_node(root);
 }
+
+/* --- One item, wherever it is held ------------------------------------------------ */
+
+#ifdef VENTURE_HAVE_SQLITE
+
+/* Most first, then by who holds it and where, so the table reads down
+ * from the biggest stack. */
+static gint
+ma_compare_item_rows(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	JsonObject *left = *(JsonObject *const *)a;
+	JsonObject *right = *(JsonObject *const *)b;
+	gint64 l = json_object_get_int_member(left, "quantity");
+	gint64 r = json_object_get_int_member(right, "quantity");
+	gint order;
+
+	if (l != r)
+		return (l > r) ? -1 : 1;
+
+	order = g_utf8_collate(json_object_get_string_member(left, "account_name"),
+	                       json_object_get_string_member(right, "account_name"));
+
+	if (0 != order)
+		return order;
+
+	return g_strcmp0(json_object_get_string_member(left, "place"),
+	                 json_object_get_string_member(right, "place"));
+}
+
+/* One store's holdings of @key into @rows, with each holder's realm,
+ * kind, login and class colour; what ignored accounts hold adds to
+ * @ignored instead. */
+static gboolean
+ma_item_holdings_from(
+	VentureContext			 *context,
+	VentureEntity			 *source,
+	VentureSeriesStore		 *store,
+	const VentureMarketdataIgnores	 *ignores,
+	const gchar			 *key,
+	gint64				  now,
+	GPtrArray			 *rows,
+	gint64				 *ignored,
+	GError				**error
+){
+	g_autoptr(GPtrArray) holdings = NULL;
+	g_autoptr(GPtrArray) accounts = NULL;
+	g_autoptr(GHashTable) venues = NULL;
+	g_autoptr(GHashTable) by_key = NULL;
+	g_autofree gchar *default_group = NULL;
+	g_autofree gchar *source_name = NULL;
+	g_auto(GStrv) skip = NULL;
+	VentureSeriesHoldingFilter filter;
+	gint64 source_id;
+	guint i;
+
+	venture_series_holding_filter_init(&filter);
+	filter.instrument_key = key;
+
+	/* A plain item's page counts its variants: gear with other bonuses
+	 * is still that item to the person holding it. */
+	filter.with_variants = (NULL == strchr(key, ':'));
+	holdings = venture_series_store_list_holdings(store, &filter, error);
+
+	if (NULL == holdings)
+		return FALSE;
+
+	if (0 == holdings->len)
+		return TRUE;
+
+	accounts = venture_series_store_list_accounts(store, NULL, NULL, NULL, now, error);
+
+	if (NULL == accounts)
+		return FALSE;
+
+	venues = ma_venues(store, &default_group, error);
+
+	if (NULL == venues)
+		return FALSE;
+
+	skip = venture_marketdata_ignores_split(ignores, accounts, TRUE);
+	by_key = g_hash_table_new(g_str_hash, g_str_equal);
+
+	for (i = 0; i < accounts->len; i++)
+	{
+		VentureSeriesAccountRow *account = g_ptr_array_index(accounts, i);
+
+		g_hash_table_insert(by_key, account->key, account);
+	}
+
+	source_id = venture_entity_get_id(source);
+	source_name = ma_source_name(source);
+
+	for (i = 0; i < holdings->len; i++)
+	{
+		VentureSeriesHoldingRow *holding = g_ptr_array_index(holdings, i);
+		VentureSeriesAccountRow *account = g_hash_table_lookup(by_key, holding->account_key);
+		g_autofree gchar *url = NULL;
+		g_autofree gchar *realm = NULL;
+		JsonObject *object;
+		JsonObject *attrs;
+
+		if (g_strv_contains((const gchar *const *)skip, holding->account_key))
+		{
+			*ignored += holding->quantity;
+			continue;
+		}
+
+		url = venture_marketdata_account_path(source_id, holding->account_key);
+		object = json_object_new();
+		json_object_set_int_member(object, "data_source_id", source_id);
+		json_object_set_string_member(object, "source_name", source_name);
+		json_object_set_string_member(object, "account_key", holding->account_key);
+		json_object_set_string_member(object, "account_name",
+		                              (NULL != account) ? ma_account_name(account)
+		                              : (NULL != holding->account_name) ? holding->account_name
+		                              : holding->account_key);
+		ma_set_text(object, "kind", (NULL != account) ? account->kind : NULL);
+
+		if (NULL != account)
+		{
+			realm = ma_realm(account, venues);
+			ma_set_text(object, "login", venture_string_is_empty(account->login_key)
+			                             ? NULL : account->login_key);
+			ma_set_text(object, "login_name", ma_login_name(account));
+
+			/* The class and its colour, as the account pages draw them. */
+			attrs = ma_attrs(account->attrs_json);
+			ma_set_text(object, "class", json_object_get_string_member_with_default(attrs, "class",
+			                                                                         NULL));
+			json_object_set_object_member(object, "attrs", attrs);
+			ma_set_class_color(context, object);
+			json_object_remove_member(object, "attrs");
+		}
+		else
+		{
+			ma_set_text(object, "login", NULL);
+			ma_set_text(object, "login_name", NULL);
+			ma_set_text(object, "class", NULL);
+		}
+
+		json_object_set_string_member(object, "realm", (NULL != realm) ? realm : "");
+		json_object_set_string_member(object, "place", holding->place);
+		json_object_set_string_member(object, "place_label", ma_place_label(holding->place));
+		json_object_set_string_member(object, "instrument_key", holding->instrument_key);
+		ma_set_text(object, "instrument_name", holding->instrument_name);
+		json_object_set_boolean_member(object, "variant", 0 != g_strcmp0(holding->instrument_key, key));
+		json_object_set_int_member(object, "quantity", holding->quantity);
+		ma_set_time(object, "at", holding->at);
+		json_object_set_string_member(object, "url", url);
+		g_ptr_array_add(rows, object);
+	}
+
+	return TRUE;
+}
+
+#endif /* VENTURE_HAVE_SQLITE */
+
+JsonNode *
+venture_marketdata_item_holdings(
+	VentureContext	 *context,
+	gint64		  organization_id,
+	const gchar	 *instrument_key,
+	gint64		  now,
+	GError		**error
+){
+	JsonObject *root;
+	JsonArray *notes;
+	JsonArray *array;
+	gint64 quantity = 0;
+	gint64 ignored = 0;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(NULL != instrument_key, NULL);
+
+	if (!ma_require_module(context, error))
+		return NULL;
+
+	root = json_object_new();
+	notes = json_array_new();
+	json_object_set_array_member(root, "notes", notes);
+	json_object_set_string_member(root, "instrument_key", instrument_key);
+	json_object_set_boolean_member(root, "with_variants", NULL == strchr(instrument_key, ':'));
+	json_object_set_boolean_member(root, "available", ma_series_ready(context, notes));
+	json_object_set_array_member(root, "rows", json_array_new());
+	json_object_set_array_member(root, "places", json_array_new());
+
+#ifdef VENTURE_HAVE_SQLITE
+	if (json_object_get_boolean_member(root, "available"))
+	{
+		g_autoptr(GPtrArray) sources = NULL;
+		g_autoptr(GPtrArray) rows = NULL;
+		g_autoptr(GHashTable) holders = NULL;
+		g_autoptr(VentureMarketdataIgnores) ignores = NULL;
+		gint64 by_place[G_N_ELEMENTS(ma_places)];
+		guint i;
+
+		sources = ma_sources(context, organization_id, error);
+
+		if (NULL == sources)
+		{
+			json_object_unref(root);
+			return NULL;
+		}
+
+		now = ma_now(now);
+		ignores = venture_marketdata_ignores_load(context, organization_id);
+		rows = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
+
+		/*
+		 * Every source is asked, not just the one the page is about: the
+		 * auction house's prices come from one and the bags from another
+		 * (tsmctl), joined by the item's key. A store that cannot be read
+		 * is a note, never the item page's failure.
+		 */
+		for (i = 0; i < sources->len; i++)
+		{
+			VentureEntity *source = g_ptr_array_index(sources, i);
+			g_autoptr(VentureSeriesStore) store = NULL;
+			g_autoptr(GError) local_error = NULL;
+			g_autoptr(JsonArray) quiet = json_array_new();
+
+			store = ma_reader(context, source, quiet, NULL);
+
+			if (NULL == store)
+				continue;
+
+			if (!ma_item_holdings_from(context, source, store, ignores, instrument_key, now, rows,
+			                           &ignored, &local_error))
+			{
+				g_autofree gchar *name = ma_source_name(source);
+				g_autofree gchar *text = g_strdup_printf("%s: %s", name, local_error->message);
+
+				ma_note(notes, text);
+			}
+		}
+
+		g_ptr_array_sort(rows, ma_compare_item_rows);
+		memset(by_place, 0, sizeof(by_place));
+		holders = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		array = json_object_get_array_member(root, "rows");
+
+		for (i = 0; i < rows->len; i++)
+		{
+			JsonObject *row = g_ptr_array_index(rows, i);
+			const gchar *place = json_object_get_string_member(row, "place");
+			gint64 count = json_object_get_int_member(row, "quantity");
+			guint j;
+
+			quantity += count;
+			g_hash_table_add(holders, g_strdup_printf("%" G_GINT64_FORMAT ":%s",
+			                                          json_object_get_int_member(row, "data_source_id"),
+			                                          json_object_get_string_member(row,
+			                                                                        "account_key")));
+
+			for (j = 0; j < G_N_ELEMENTS(ma_places); j++)
+			{
+				if (0 == g_strcmp0(ma_places[j].place, place))
+					break;
+			}
+
+			by_place[MIN(j, G_N_ELEMENTS(ma_places) - 1)] += count;
+			json_array_add_object_element(array, json_object_ref(row));
+		}
+
+		/* Where it is, in the order a person looks: only places that hold
+		 * any. A place no source names is "Elsewhere". */
+		array = json_object_get_array_member(root, "places");
+
+		for (i = 0; i < G_N_ELEMENTS(ma_places); i++)
+		{
+			JsonObject *place;
+
+			if (0 == by_place[i])
+				continue;
+
+			place = json_object_new();
+			json_object_set_string_member(place, "place", ma_places[i].place);
+			json_object_set_string_member(place, "label", ma_places[i].label);
+			json_object_set_int_member(place, "quantity", by_place[i]);
+			json_array_add_object_element(array, place);
+		}
+
+		json_object_set_int_member(root, "holders", g_hash_table_size(holders));
+	}
+#else
+	(void)organization_id;
+	(void)now;
+#endif
+
+	json_object_set_int_member(root, "quantity", quantity);
+	json_object_set_int_member(root, "ignored", ignored);
+
+	if (!json_object_has_member(root, "holders"))
+		json_object_set_int_member(root, "holders", 0);
+
+	return ma_node(root);
+}

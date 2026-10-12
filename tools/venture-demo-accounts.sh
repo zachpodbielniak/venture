@@ -744,6 +744,7 @@ write_holdings () {
     holding warbank:EVERMOOR1 warbank recipe-flask-of-wisdom 1
 
     holding guild:Tidewardens-Silverfen guild flask-of-wisdom 6
+    holding guild:Tidewardens-Silverfen guild silverleaf 150
     holding guild:Tidewardens-Silverfen guild elixir-of-giants 20
     holding guild:Tidewardens-Silverfen guild tidewarden-blade 1
 

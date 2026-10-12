@@ -708,6 +708,9 @@ venture_series_store_get_account(
  *   those reached through none)
  * @exclude_account_keys: (nullable) (array zero-terminated=1): accounts to
  *   leave out, by key -- the ones the organization ignores
+ * @with_variants: with @instrument_key, its variants too: every key that
+ *   is @instrument_key followed by ':' ("19019:b1472,6646" is a variant of
+ *   "19019"), read as a range of the instrument index
  *
  * Which holdings a read wants. Start from venture_series_holding_filter_init().
  */
@@ -722,6 +725,7 @@ typedef struct
 	guint		 count;
 	const gchar	*login_key;
 	const gchar *const	*exclude_account_keys;
+	gboolean		 with_variants;
 } VentureSeriesHoldingFilter;
 
 /**

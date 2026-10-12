@@ -6165,3 +6165,34 @@ table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { con
  * they read as text, the bar carrying the colour. */
 .account-professions a { color: var(--text-muted); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); }
 .account-professions a:hover { color: var(--text); }
+
+/* --- An item's holdings: "You have", and each place in its colour ---------- */
+
+.item-owned { margin: var(--space-1) 0 0; font-size: 15px; }
+.item-owned a { color: inherit; text-decoration: none; }
+.item-owned a:hover, .item-owned a:focus-visible { text-decoration: underline; }
+.item-owned strong { color: var(--series-1); font-size: 18px; font-weight: 700; }
+.item-owned.is-none { color: var(--text-muted); }
+.place-tag, .place-tile, .holder-bank { --place: var(--text-muted); }
+[data-place="bank"], [data-place="reagent_bank"] { --place: var(--series-2); }
+[data-place="warbank"] { --place: var(--series-3); }
+[data-place="guild"] { --place: var(--positive); }
+[data-place="mail"] { --place: var(--series-4); }
+[data-place="auction"] { --place: var(--series-1); }
+.place-tag {
+	display: inline-block;
+	padding: 1px 8px;
+	border: 1px solid color-mix(in srgb, var(--place) 45%, transparent);
+	background: color-mix(in srgb, var(--place) 12%, transparent);
+	color: var(--place);
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+[data-place="bag"].place-tag { color: var(--text); }
+.place-tile { border-left: 3px solid var(--place); }
+.place-tile .market-figure { color: var(--place); }
+[data-place="bag"].place-tile .market-figure { color: var(--text); }
+.holder-kind { font-size: 11px; vertical-align: 1px; }
+.holder-bank { color: var(--place); font-weight: 600; }
+.holder-variant { font-size: 12px; }
