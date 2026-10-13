@@ -48,6 +48,15 @@ merchant eligibility and performs bank verification, including instant linking
 or microdeposits, and mandate acceptance in hosted Checkout. Venture never
 accepts bank account details or treats mandate acceptance as cash.
 
+Saved-bank prepaid collection creates an unconfirmed payment first, then
+confirms it with the retained mandate. The payment-library pin omits the
+mandate from creation: the provider only accepts that field at confirmation.
+The customer and saved method stay bound to the prepayment. Each step retains
+its own durable request key across retries. A successful setup is still not a
+paid invoice.
+The dependency-pin regression names the adopted client revision; the client
+request regression checks both creation and confirmation parameters.
+
 Issue an invoice through the ordinary receivables lifecycle. A nondeleted sent
 or partially paid invoice with a positive exact open balance can use Checkout.
 The bill-to company and invoice lines must exist. The remaining balance is sent
