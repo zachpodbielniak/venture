@@ -278,7 +278,8 @@ static gint64
 business(Fixture *f, const gchar *slug, const gchar *name)
 {
 	g_autofree gchar *payload = g_strdup_printf("{\"idempotency_key\":\"signup:%s\",\"email\":\"%s@example.test\","
-		"\"issuer\":\"" ISSUER "\",\"subject\":\"kc-%s\",\"business_name\":\"%s\"}", slug, slug, slug, name);
+		"\"issuer\":\"" ISSUER "\",\"subject\":\"kc-%s\",\"business_name\":\"%s\","
+		"\"first_name\":\"Alex\",\"last_name\":\"Example\"}", slug, slug, slug, name);
 	g_autoptr(JsonNode) result = call(f, "POST", SIGNUPS, f->admin_secret, NULL, payload, 201);
 	return json_object_get_int_member(json_node_get_object(result), "organization_id");
 }
