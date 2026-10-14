@@ -285,7 +285,7 @@ static gint64 member_with_password(Fixture *f, const gchar *username, gint64 org
 static gint64 sign_up(Fixture *f, const gchar *key, const gchar *email, const gchar *subject, const gchar *name, gint64 *user)
 {
 	g_autofree gchar *payload = g_strdup_printf("{\"idempotency_key\":\"%s\",\"email\":\"%s\",\"issuer\":\"%s\","
-		"\"subject\":\"%s\",\"business_name\":\"%s\"}", key, email, f->provider.issuer, subject, name);
+		"\"subject\":\"%s\",\"business_name\":\"%s\",\"first_name\":\"Alex\",\"last_name\":\"Example\"}", key, email, f->provider.issuer, subject, name);
 	g_autofree gchar *body = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	guint status = exchange(f, "POST", "/api/v1/lightsite/signups", NULL, f->admin_secret, "application/json", payload, &body, NULL);

@@ -100,7 +100,9 @@ to a command, flag, exit code, route, type or trap updates the skill in the
 same commit and moves this baseline.
 
 Hosted browser sign-in for an enrolled owner is in the platform guide and
-the route index. The baseline below remains the last full review.
+the route index. Trusted sign-up requires `first_name` and `last_name`;
+the old five-member body is refused (operations.md). The baseline below
+remains the last full review.
 
 <!-- skill-baseline:start -- reviewed 2026-10-12 against a246790 -->
 ```bash
@@ -300,7 +302,7 @@ ids, notes) in words.
 
 | Request | Answer | Guide |
 |---|---|---|
-| "Provision a Lightsite owner" | trusted idempotent sign-up service | [operations.md](references/operations.md) |
+| "Provision a Lightsite owner" | `POST /api/v1/lightsite/signups`: seven strings, including `first_name` and `last_name`; the old five-member body is 422 | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |

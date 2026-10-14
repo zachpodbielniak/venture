@@ -110,7 +110,7 @@ static void setup(Fixture *f, gconstpointer unused)
 	f->server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error)); g_assert_no_error(error);
 	f->session = soup_session_new();
-	business = call(f, "/api/v1/lightsite/signups", "{\"idempotency_key\":\"enrollment-example\",\"email\":\"owner@example.test\",\"issuer\":\"https://id.example.test\",\"subject\":\"example-owner\",\"business_name\":\"Example business\"}", 201);
+	business = call(f, "/api/v1/lightsite/signups", "{\"idempotency_key\":\"enrollment-example\",\"email\":\"owner@example.test\",\"issuer\":\"https://id.example.test\",\"subject\":\"example-owner\",\"business_name\":\"Example business\",\"first_name\":\"Alex\",\"last_name\":\"Example\"}", 201);
 	f->business = json_object_get_int_member(json_node_get_object(business), "organization_id");
 	f->owner = json_object_get_int_member(json_node_get_object(business), "user_id");
 }

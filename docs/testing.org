@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-18]
+#+updated: [2026-10-14]
 #+version: 0.6.0
 
 * Testing
@@ -13,6 +13,15 @@ make DEBUG=1 test                    # everything
 make DEBUG=1 test-one T=test-money   # one binary, verbosely
 make DEBUG=1 test-valgrind           # under valgrind, if installed
 #+end_src
+
+The trusted-service sign-up name regressions run with
+=make DEBUG=1 test-one T=test-lightsite-signup=. Before the change, a request
+with first and last names returned 422 instead of 201, while the old nameless
+request returned 201 instead of 422. The tests check trimmed Unicode display
+names, missing/blank/malformed/overlong names, identical retries and conflicts
+when either name changes. Existing members keep their saved display name,
+password and authority. The existing rollback and retry checks use the new
+required names too.
 
 By default, tests use private SQLite fixtures, so the suite needs no external service. It leaves nothing behind on disk either -- see [[#temporary-directories][Temporary directories]] below, which is a claim the suite now checks rather than one this page merely makes. Set =VENTURE_TEST_DB= to a =postgres://= URI to run the database tests against PostgreSQL instead:
 

@@ -56,7 +56,7 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	principal.token_id = venture_entity_get_id(VENTURE_ENTITY(token));
 	principal.role = VENTURE_USER_ROLE_EDITOR; principal.authenticated = TRUE; principal.name = (gchar *)"Example service";
 	scope = venture_access_policy_enter(venture_database_get_access_policy(f->database), &principal);
-	signup = venture_tenant_service_lightsite_signup(tenant, "hosted-example", "owner@example.test", "https://id.example.test", "example-owner", "Example business", &created, &error);
+	signup = venture_tenant_service_lightsite_signup(tenant, "hosted-example", "owner@example.test", "https://id.example.test", "example-owner", "Example business", "Alex", "Example", &created, &error);
 	g_assert_no_error(error); g_assert_nonnull(signup);
 	business = json_object_get_int_member(json_node_get_object(signup), "organization_id");
 	enrolled = venture_lightsite_billing_enroll(f->database, f->organization_id, business, venture_entity_get_id(price), &created, &error);

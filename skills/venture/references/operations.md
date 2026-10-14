@@ -173,8 +173,14 @@ Series store upkeep (retention in batches, vacuum, the one-time
 ## Trusted Lightsite self-sign-up
 
 `POST /api/v1/lightsite/signups` accepts a trusted workspace administrator's
-write token, not a browser session or an anonymous caller. It creates or
-links the owner and their business atomically. Preserve the idempotency key
-and request body on retry; a conflicting replay refuses rather than making
-another business. The new owner has no local password. See
-`docs/lightsite-accounts.org` for the exact request and authority contract.
+write token, not a browser session or an anonymous caller. The body is a
+closed object of exactly seven strings: `idempotency_key`, `email`,
+`issuer`, `subject`, `business_name`, `first_name` and `last_name`. The old
+five-member body is 422. Surrounding ASCII whitespace is trimmed from the
+two names before they are validated or hashed; a new owner's display name
+is those trimmed names joined by one space. Linking an existing member does
+not change their saved name, password or authority. The same key and trimmed
+request replays; a different name under that key is 409 and writes nothing.
+Preserve the idempotency key and the full seven-member body on retry. The
+new owner has no local password. See `docs/lightsite-accounts.org` for
+bounds and authority.
