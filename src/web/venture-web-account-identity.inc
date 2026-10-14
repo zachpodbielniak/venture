@@ -49,13 +49,13 @@ venture_web_account_identity(HtmxRequest *request, GHashTable *params, gpointer 
 	return account_identity_finish(response);
 }
 
-/* POST /api/v1/lightsite/signups. A closed object of five strings, at most
+/* POST /api/v1/lightsite/signups. A closed object of seven strings, at most
  * 4096 bytes; only a bearer token reaches the service, which decides the
  * authority. A browser session is refused as no service credential. */
 static HtmxResponse *
 venture_web_lightsite_signup(HtmxRequest *request, GHashTable *params, gpointer data)
 {
-	static const gchar *const members[] = { "idempotency_key", "email", "issuer", "subject", "business_name" };
+	static const gchar *const members[] = { "idempotency_key", "email", "issuer", "subject", "business_name", "first_name", "last_name" };
 	VentureWebServer *self = data;
 	VentureDatabase *database = venture_context_get_database(self->context);
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
@@ -98,11 +98,11 @@ venture_web_lightsite_signup(HtmxRequest *request, GHashTable *params, gpointer 
 	}
 	scope = venture_access_policy_enter(venture_database_get_access_policy(database), principal);
 	result = venture_tenant_service_lightsite_signup(venture_tenant_service_get(database),
-		values[0], values[1], values[2], values[3], values[4], &created, &error);
+		values[0], values[1], values[2], values[3], values[4], values[5], values[6], &created, &error);
 	return signup_finish(result ? venture_web_json_response(result, created ? 201 : 200) : venture_web_error_response(error));
 malformed:
 	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		"Expected a JSON object of exactly idempotency_key, email, issuer, subject and business_name strings");
+		"Expected a JSON object of exactly idempotency_key, email, issuer, subject, business_name, first_name and last_name strings");
 	return signup_finish(venture_web_error_response(error));
 }
 

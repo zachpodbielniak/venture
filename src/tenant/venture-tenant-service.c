@@ -1623,20 +1623,6 @@ signup_username(VentureTenantService *self, const gchar *email, GError **error)
 	return NULL;
 }
 
-/* A friendly name for screens and mail: the first word of the local part
- * ("sam" from sam.plumbing@...), never an ID. Falls back to the username. */
-static gchar *
-signup_display_name(const gchar *email, const gchar *username)
-{
-	g_autoptr(GString) name = g_string_new(NULL);
-	const gchar *cursor;
-	for (cursor = email; *cursor && *cursor != '@'; cursor++) {
-		if (g_ascii_isalnum(*cursor)) g_string_append_c(name, g_ascii_tolower(*cursor));
-		else if (name->len && strchr("._-+", *cursor)) break;
-	}
-	return name->len ? g_string_free(g_steal_pointer(&name), FALSE) : g_strdup(username);
-}
-
 /* Users whose address equals @email ignoring ASCII case, deleted included:
  * the LIKE match is a superset, and the exact comparison decides. */
 static GPtrArray *
@@ -1717,9 +1703,10 @@ signup_result(VentureTenantService *self, gint64 organization_id, gint64 user_id
 JsonNode *
 venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar *idempotency_key,
 	const gchar *email, const gchar *issuer, const gchar *subject, const gchar *business_name,
+	const gchar *first_name, const gchar *last_name,
 	gboolean *created, GError **error)
 {
-	const gchar *fields[5];
+	const gchar *fields[7];
 	const VentureAuthPrincipal *actor;
 	VentureAccessPolicy *policy;
 	VentureActor audit;
@@ -1728,6 +1715,8 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureEntity) receipt = NULL, user = NULL, member = NULL, organization = NULL;
 	g_autofree gchar *hash = NULL, *username = NULL, *display = NULL;
+	g_autofree gchar *first = first_name ? g_strstrip(g_strdup(first_name)) : NULL;
+	g_autofree gchar *last = last_name ? g_strstrip(g_strdup(last_name)) : NULL;
 	gint64 actor_id, user_id = 0, organization_id = 0;
 	gboolean linked = FALSE, committed = FALSE, replay = FALSE;
 	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
@@ -1737,6 +1726,8 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	if (!signup_issuer_valid(issuer)) { signup_refuse(error, "issuer must be an https URL without credentials, query or fragment"); return NULL; }
 	if (!signup_text_valid(subject, 255)) { signup_refuse(error, "subject must be 1-255 characters without control characters"); return NULL; }
 	if (!signup_text_valid(business_name, 200)) { signup_refuse(error, "business_name must be 1-200 characters without control characters"); return NULL; }
+	if (!signup_text_valid(first, 200)) { signup_refuse(error, "first_name must be 1-200 characters without control characters after trimming"); return NULL; }
+	if (!signup_text_valid(last, 200)) { signup_refuse(error, "last_name must be 1-200 characters without control characters after trimming"); return NULL; }
 	/* The caller's word that the address is verified is trusted only from
 	 * a workspace administrator's own write-capable service token. */
 	if (!venture_tenant_service_check_trusted_service(self, &actor_id, error)) return NULL;
@@ -1748,6 +1739,7 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	audit.request_id = NULL;
 	audit.approved_by = NULL;
 	fields[0] = idempotency_key; fields[1] = email; fields[2] = issuer; fields[3] = subject; fields[4] = business_name;
+	fields[5] = first; fields[6] = last;
 	hash = signup_request_hash(fields, G_N_ELEMENTS(fields));
 	internal = venture_access_policy_enter(policy, NULL);
 	self->maintenance_depth++;
@@ -1795,7 +1787,7 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	if (!linked) {
 		username = signup_username(self, email, error);
 		if (!username) goto rollback;
-		display = signup_display_name(email, username);
+		display = g_strconcat(first, " ", last, NULL);
 		/* No password: password sign-in stays impossible until one is set
 		 * through targeted recovery. The user belongs to the business it owns. */
 		user = g_object_new(VENTURE_TYPE_USER, "username", username, "email", email, "display-name", display,

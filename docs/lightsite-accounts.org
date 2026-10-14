@@ -196,7 +196,7 @@ path, nor [[file:oidc.org][OIDC sign-in]], ever finds or links a user by email.
 
 ** Request
 
-A closed JSON object of exactly five strings, at most 4096 bytes (413 above
+A closed JSON object of exactly seven strings, at most 4096 bytes (413 above
 that). A missing, extra or non-string member, a
 non-object body, malformed JSON or an escaped NUL is refused with 422.
 A member name repeated in the body keeps its last value (JSON-GLib's
@@ -209,6 +209,17 @@ parsing); send each member once.
 | =issuer= | =https= URL of the identity realm; no credentials, query or fragment; up to 1024 bytes |
 | =subject= | 1-255 characters of UTF-8, no control characters, not only white space |
 | =business_name= | 1-200 characters of UTF-8, no control characters, not only white space |
+| =first_name= | Required given name; surrounding ASCII whitespace trimmed, then 1-200 UTF-8 characters, no controls or whitespace-only value |
+| =last_name= | Required family name; same normalization and bounds as =first_name= |
+
+The two names are joined with a single space for a new owner's display name.
+Internal spaces, punctuation and accents are preserved. An existing owner's
+display name is never overwritten by this request.
+
+Callers must supply both names; the old five-member request is refused. Old
+receipts remain reserved: adding names to an already completed old request
+conflicts rather than silently creating another business. Finish outstanding
+old requests before upgrading the caller and service together.
 
 ** Behaviour
 
@@ -216,7 +227,8 @@ Everything happens in one database transaction, serialized by the workspace
 administration lock:
 
 1. A receipt for =idempotency_key= is looked up. If its stored request hash
-   (SHA-256 of the five members, length-prefixed in that fixed order) matches,
+   (SHA-256 of the seven members, length-prefixed in table order, with the two
+   names trimmed before hashing) matches,
    the stored result is returned with 200 and nothing is written. A different
    request under the same key is 409.
 2. Users are matched by =email= ignoring ASCII case, deleted ones included.
@@ -229,8 +241,7 @@ administration lock:
    the local part (lowercase letters, digits, =.=, =_= and =-=, trimmed to
    start and end on a letter or digit, at most 48 characters, =user= if
    nothing remains, then =-2=, =-3= ... until unused), a friendly display
-   name (the first word of the local part, =sam= from
-   =sam.plumbing@example.com=), global role editor, active, no password, and
+   name from the submitted first and last names, global role editor, active, no password, and
    the new business as its organization.
 3. The organization named =business_name= is created, and the user receives
    an active workspace =member= membership (an existing administrator stays

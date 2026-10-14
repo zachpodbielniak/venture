@@ -120,7 +120,7 @@ signup(Fixture *f, const gchar *payload, guint expected)
 static gchar *
 body_for(const gchar *key, const gchar *email, const gchar *subject, const gchar *business)
 {
-	return g_strdup_printf("{\"idempotency_key\":\"%s\",\"email\":\"%s\",\"issuer\":\"" ISSUER "\","
+	return g_strdup_printf("{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"%s\",\"email\":\"%s\",\"issuer\":\"" ISSUER "\","
 		"\"subject\":\"%s\",\"business_name\":\"%s\"}", key, email, subject, business);
 }
 
@@ -208,7 +208,7 @@ hosted_member(Fixture *f, const gchar *username, const gchar *email, gint64 orga
 	g_autoptr(VentureTenantMaintenance) maintenance = venture_tenant_service_enter_maintenance(f->service, "Provision a member", &error);
 	g_autoptr(VentureEntity) tenant_member = NULL;
 	g_autoptr(VentureEntity) org_member = NULL;
-	VentureEntity *user = g_object_new(VENTURE_TYPE_USER, "username", username, "email", email, "organization-id", organization,
+	VentureEntity *user = g_object_new(VENTURE_TYPE_USER, "username", username, "email", email, "display-name", "Established Person", "organization-id", organization,
 		"role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
 	g_assert_no_error(error); g_assert_nonnull(maintenance);
 	g_assert_true(venture_user_set_password(VENTURE_USER(user), "member-test-password", 2000, &error));
@@ -340,7 +340,7 @@ test_creates_owner(Fixture *f, gconstpointer data)
 		/* A friendly name for screens and mail, never a raw ID. */
 		g_autofree gchar *display = NULL;
 		g_object_get(user, "display-name", &display, NULL);
-		g_assert_cmpstr(display, ==, "new");
+		g_assert_cmpstr(display, ==, "Alex Example");
 	}
 	g_assert_cmpstr(email, ==, "new.owner@example.test");
 	g_assert_true(venture_string_is_empty(password_hash));
@@ -406,6 +406,11 @@ test_links_existing(Fixture *f, gconstpointer data)
 	 * membership and existing businesses stay as they were. */
 	user = venture_database_get(f->db, VENTURE_TYPE_USER, venture_entity_get_id(olive), &error); g_assert_no_error(error);
 	g_assert_true(venture_user_check_password(VENTURE_USER(user), "member-test-password"));
+	{
+		g_autofree gchar *display = NULL;
+		g_object_get(user, "display-name", &display, NULL);
+		g_assert_cmpstr(display, ==, "Established Person");
+	}
 	g_assert_true(venture_tenant_service_is_member(f->service, venture_entity_get_id(olive), FALSE));
 	g_assert_false(venture_tenant_service_is_member(f->service, venture_entity_get_id(olive), TRUE));
 	member = organization_member(f, organization_id, venture_entity_get_id(olive));
@@ -529,30 +534,30 @@ test_body(Fixture *f, gconstpointer data)
 		"[]",
 		"{}",
 		"\"text\"",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\",\"role\":\"admin\"}",
-		"{\"idempotency_key\":1,\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":null,\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":{\"x\":1}}",
-		"{\"idempotency_key\":\"\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"has space\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k/1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"no-at.example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@b@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a b@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@localhost\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"http://id.example.test/realms/x\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"https://u:p@id.example.test/realms/x\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"https://id.example.test/realms/x?q=1\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"https://id.example.test/realms/x#f\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"not a url\",\"subject\":\"s\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\\u0001\",\"business_name\":\"B\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"Bad\\u0007Name\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"Line\\nBreak\"}",
-		"{\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"   \"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\",\"role\":\"admin\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":1,\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":null,\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":{\"x\":1}}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"has space\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k/1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"no-at.example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@b@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a b@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@localhost\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"http://id.example.test/realms/x\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"https://u:p@id.example.test/realms/x\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"https://id.example.test/realms/x?q=1\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"https://id.example.test/realms/x#f\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"not a url\",\"subject\":\"s\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\\u0001\",\"business_name\":\"B\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"Bad\\u0007Name\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"Line\\nBreak\"}",
+		"{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"k1\",\"email\":\"a@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"s\",\"business_name\":\"   \"}",
 	};
 	g_autoptr(GString) long_key = g_string_new(NULL), long_subject = g_string_new(NULL);
 	g_autoptr(GString) long_name = g_string_new(NULL), max_name = g_string_new(NULL), huge = g_string_new(NULL);
@@ -683,10 +688,110 @@ test_passwordless_recovery(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(login_status(f, "recover", "owner-chosen-password", &cookie), ==, 302);
 }
 
+/* Names are part of the saved request, not an email-derived guess. */
+static void
+test_person_names(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *base = body_for("signup:names", "person@example.test", "person-subject", "Example Co");
+	g_autoptr(JsonNode) request = venture_json_parse(base, NULL);
+	JsonObject *object = json_node_get_object(request);
+	g_autofree gchar *payload = NULL, *display = NULL, *original = NULL, *replayed = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(GError) error = NULL;
+	Counts after;
+	(void)data;
+	json_object_set_string_member(object, "first_name", "  Renée  ");
+	json_object_set_string_member(object, "last_name", "  García López  ");
+	payload = venture_json_to_string(request, FALSE);
+	result = signup(f, payload, 201);
+	original = venture_json_to_string(result, FALSE);
+	user = venture_database_get(f->db, VENTURE_TYPE_USER,
+		json_object_get_int_member(json_node_get_object(result), "user_id"), &error);
+	g_assert_no_error(error); g_assert_nonnull(user);
+	g_object_get(user, "display-name", &display, NULL);
+	g_assert_cmpstr(display, ==, "Renée García López");
+	after = counts(f, TRUE);
+	g_clear_pointer(&result, json_node_unref); g_clear_pointer(&payload, g_free);
+	json_object_set_string_member(object, "first_name", "Renée");
+	json_object_set_string_member(object, "last_name", "García López");
+	payload = venture_json_to_string(request, FALSE);
+	result = signup(f, payload, 200);
+	replayed = venture_json_to_string(result, FALSE);
+	g_assert_cmpstr(replayed, ==, original);
+	g_clear_pointer(&result, json_node_unref); g_clear_pointer(&payload, g_free);
+	json_object_set_string_member(object, "first_name", "Other");
+	payload = venture_json_to_string(request, FALSE);
+	result = signup(f, payload, 409);
+	g_clear_pointer(&result, json_node_unref); g_clear_pointer(&payload, g_free);
+	json_object_set_string_member(object, "first_name", "Renée");
+	json_object_set_string_member(object, "last_name", "Other");
+	payload = venture_json_to_string(request, FALSE);
+	result = signup(f, payload, 409);
+	assert_counts(counts(f, TRUE), after);
+}
+
+static void
+test_required_names(Fixture *f, gconstpointer data)
+{
+	static const gchar *const members[] = { "first_name", "last_name" };
+	static const gchar *const invalid[] = { "", "   ", "\t\n", "\xc2\xa0", "Line\nBreak", "Bad\001Name" };
+	g_autofree gchar *base = body_for("signup:invalid-name", "person@example.test", "person-subject", "Example Co");
+	Counts before = counts(f, TRUE);
+	guint i, j;
+	(void)data;
+	{
+		g_autoptr(JsonNode) request = venture_json_parse(base, NULL);
+		g_autofree gchar *payload = NULL;
+		g_autoptr(JsonNode) result = NULL;
+		json_object_remove_member(json_node_get_object(request), "first_name");
+		json_object_remove_member(json_node_get_object(request), "last_name");
+		payload = venture_json_to_string(request, FALSE);
+		result = signup(f, payload, 422);
+		assert_counts(counts(f, TRUE), before);
+	}
+	for (i = 0; i < G_N_ELEMENTS(members); i++) {
+		g_autoptr(JsonNode) request = venture_json_parse(base, NULL);
+		JsonObject *object = json_node_get_object(request);
+		for (j = 0; j < G_N_ELEMENTS(invalid) + 4; j++) {
+			g_autofree gchar *payload = NULL;
+			g_autoptr(JsonNode) result = NULL;
+			g_autofree gchar *long_name = g_strnfill(201, 'x');
+			if (j < G_N_ELEMENTS(invalid)) json_object_set_string_member(object, members[i], invalid[j]);
+			else if (j == G_N_ELEMENTS(invalid)) json_object_remove_member(object, members[i]);
+			else if (j == G_N_ELEMENTS(invalid) + 1) json_object_set_null_member(object, members[i]);
+			else if (j == G_N_ELEMENTS(invalid) + 2) json_object_set_int_member(object, members[i], 1);
+			else json_object_set_string_member(object, members[i], long_name);
+			payload = venture_json_to_string(request, FALSE);
+			result = signup(f, payload, 422);
+			assert_counts(counts(f, TRUE), before);
+		}
+	}
+	{
+		g_autoptr(GString) limit = g_string_new(NULL);
+		g_autoptr(JsonNode) request = venture_json_parse(base, NULL), result = NULL;
+		g_autoptr(VentureEntity) user = NULL;
+		g_autofree gchar *payload = NULL, *display = NULL;
+		g_autoptr(GError) error = NULL;
+		for (i = 0; i < 200; i++) g_string_append(limit, "é");
+		json_object_set_string_member(json_node_get_object(request), "first_name", limit->str);
+		json_object_set_string_member(json_node_get_object(request), "last_name", limit->str);
+		payload = venture_json_to_string(request, FALSE);
+		result = signup(f, payload, 201);
+		user = venture_database_get(f->db, VENTURE_TYPE_USER,
+			json_object_get_int_member(json_node_get_object(result), "user_id"), &error);
+		g_assert_no_error(error); g_assert_nonnull(user);
+		g_object_get(user, "display-name", &display, NULL);
+		g_assert_cmpint(g_utf8_strlen(display, -1), ==, 401);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/signup/person-names", Fixture, NULL, setup, test_person_names, teardown);
+	g_test_add("/signup/required-names", Fixture, NULL, setup, test_required_names, teardown);
 	g_test_add("/lightsite-signup/creates-owner", Fixture, NULL, setup, test_creates_owner, teardown);
 	g_test_add("/lightsite-signup/links-existing", Fixture, NULL, setup, test_links_existing, teardown);
 	g_test_add("/lightsite-signup/replay", Fixture, NULL, setup, test_replay, teardown);
