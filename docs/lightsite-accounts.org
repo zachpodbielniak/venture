@@ -240,9 +240,9 @@ administration lock:
    email address. With no match a user is created: the email, a username from
    the local part (lowercase letters, digits, =.=, =_= and =-=, trimmed to
    start and end on a letter or digit, at most 48 characters, =user= if
-   nothing remains, then =-2=, =-3= ... until unused), a friendly display
-   name from the submitted first and last names, global role editor, active, no password, and
-   the new business as its organization.
+   nothing remains, then =-2=, =-3= ... until unused), a display
+   name joined from the submitted first and last names, global role editor,
+   active, no password, and the new business as its organization.
 3. The organization named =business_name= is created, and the user receives
    an active workspace =member= membership (an existing administrator stays
    one) and the organization =owner= membership through the same writer that
@@ -359,8 +359,11 @@ organization and reading what it owes -- uses this same authority; see
 tokens: creation, case-insensitive linking, replay and conflicting reuse with
 row counts, inactive/deleted/non-member addresses, every authority refusal
 including a session cookie and a token without the captured workspace role,
-body shape and bounds, rollback after a failed membership write followed by a
-successful retry, username derivation and the recovery path above. See
+body shape and bounds, required and trimmed owner names (including a joined
+Unicode display name, a conflict when either name changes, and an existing
+member whose display name stays put), rollback after a failed membership
+write followed by a successful retry, username derivation and the recovery
+path above. See
 [[file:evidence/lightsite-signup.org][the evidence]].
 
 * Browser handoff for an enrolled owner

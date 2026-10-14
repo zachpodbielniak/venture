@@ -1715,6 +1715,8 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureEntity) receipt = NULL, user = NULL, member = NULL, organization = NULL;
 	g_autofree gchar *hash = NULL, *username = NULL, *display = NULL;
+	/* Trim before validation and the receipt hash. Surrounding spaces then
+	 * replay the stored sign-up instead of looking like a different request. */
 	g_autofree gchar *first = first_name ? g_strstrip(g_strdup(first_name)) : NULL;
 	g_autofree gchar *last = last_name ? g_strstrip(g_strdup(last_name)) : NULL;
 	gint64 actor_id, user_id = 0, organization_id = 0;

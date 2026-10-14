@@ -10,7 +10,10 @@
  * What breaks if these regress: a retried sign-up makes a second user or a
  * second business; a failed step leaves an orphan; an ordinary member's
  * token -- or a browser session -- creates identities; an unknown member is
- * silently ignored; a deactivated person is revived by an email address.
+ * silently ignored; a deactivated person is revived by an email address;
+ * a sign-up without the owner's names is accepted; the same key with a
+ * changed name writes another business; an existing member's display name
+ * is overwritten.
  */
 #include <venture.h>
 #include <libsoup/soup.h>
