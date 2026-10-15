@@ -3423,6 +3423,142 @@ md_check_range(
 	return FALSE;
 }
 
+/* A venue row's lowest price in minor units, for ordering the merged
+ * table; G_MAXINT64 when nothing is on offer, so it sorts last. */
+static gint64
+md_row_min_amount(JsonObject *row)
+{
+	JsonNode *node = json_object_get_member(row, "min_price");
+
+	if ((NULL == node) || !JSON_NODE_HOLDS_OBJECT(node))
+		return G_MAXINT64;
+
+	return json_object_get_int_member_with_default(json_node_get_object(node), "amount", G_MAXINT64);
+}
+
+static gint
+md_row_cheapest_first(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	gint64 left = md_row_min_amount(*(JsonObject *const *)a);
+	gint64 right = md_row_min_amount(*(JsonObject *const *)b);
+
+	return (left < right) ? -1 : (left > right) ? 1 : 0;
+}
+
+static gint
+md_row_dearest_first(
+	gconstpointer	a,
+	gconstpointer	b
+){
+	gint64 left = md_row_min_amount(*(JsonObject *const *)a);
+	gint64 right = md_row_min_amount(*(JsonObject *const *)b);
+
+	/* Nothing on offer stays last here too. */
+	if ((G_MAXINT64 == left) || (G_MAXINT64 == right))
+		return (left == right) ? 0 : (G_MAXINT64 == left) ? 1 : -1;
+
+	return (left > right) ? -1 : (left < right) ? 1 : 0;
+}
+
+/*
+ * The item's venues at the organization's other sources of the same
+ * instrument namespace, appended to @rows: a push source knows only the
+ * realms its characters are on, and the region-wide feed every realm, so
+ * an item's page lists every realm whichever source it was opened from.
+ * Each row names its source. The venue group, when one is picked, is
+ * applied to each source's own venues. A source that cannot be read, or
+ * does not know the item, adds nothing. Returns how many sources added
+ * rows.
+ */
+static guint
+md_instrument_other_sources(
+	VentureContext				*context,
+	const VentureMarketdataInstrumentQuery	*query,
+	const gchar				*instrument_namespace,
+	gint64					 now,
+	gint64					 stale_after,
+	JsonArray				*rows
+){
+	g_autoptr(GPtrArray) sources = NULL;
+	guint added = 0;
+	guint i;
+
+	if (venture_string_is_empty(instrument_namespace))
+		return 0;
+
+	sources = md_sources(context, query->organization_id, NULL);
+
+	for (i = 0; (NULL != sources) && (i < sources->len); i++)
+	{
+		VentureEntity *source = g_ptr_array_index(sources, i);
+		g_autoptr(VentureSeriesStore) reader = NULL;
+		g_autoptr(VentureSeriesInstrumentRow) instrument = NULL;
+		g_autoptr(GPtrArray) venues = NULL;
+		g_autoptr(GPtrArray) store_venues = NULL;
+		g_auto(GStrv) group_keys = NULL;
+		g_autofree gchar *namespace_ = NULL;
+		g_autofree gchar *name = NULL;
+		gint64 id = venture_entity_get_id(source);
+		guint before = json_array_get_length(rows);
+		guint j;
+
+		if ((id == query->data_source_id) || venture_entity_is_deleted(source))
+			continue;
+
+		g_object_get(source, "instrument-namespace", &namespace_, NULL);
+
+		if (0 != g_strcmp0(namespace_, instrument_namespace))
+			continue;
+
+		reader = md_reader(context, source, NULL, NULL);
+
+		if ((NULL == reader) ||
+		    !venture_series_store_get_instrument(reader, query->key, &instrument, NULL) ||
+		    (NULL == instrument))
+			continue;
+
+		venues = venture_series_store_other_venues(reader, query->key, NULL, NULL);
+
+		if (NULL == venues)
+			continue;
+
+		if (!venture_string_is_empty(query->venue_group))
+		{
+			store_venues = venture_series_store_list_venues(reader, NULL);
+
+			if (!md_venue_group_keys(context, query->organization_id, store_venues,
+			                         query->venue_group, NULL, &group_keys, NULL, NULL))
+				continue;
+		}
+
+		name = md_source_name(source);
+
+		for (j = 0; j < venues->len; j++)
+		{
+			VentureSeriesRow *one = g_ptr_array_index(venues, j);
+			JsonObject *venue_row;
+
+			if ((NULL != group_keys) &&
+			    !g_strv_contains((const gchar *const *)group_keys, one->venue_key))
+				continue;
+
+			venue_row = md_row_object(one, id);
+			md_set_age(venue_row, "", one->taken_at, now, stale_after);
+			json_object_set_int_member(venue_row, "data_source_id", id);
+			json_object_set_string_member(venue_row, "source_name", name);
+			json_object_set_array_member(venue_row, "links", json_array_new());
+			json_array_add_object_element(rows, venue_row);
+		}
+
+		if (json_array_get_length(rows) > before)
+			added++;
+	}
+
+	return added;
+}
+
 JsonNode *
 venture_marketdata_instrument(
 	VentureContext				 *context,
@@ -3512,6 +3648,7 @@ venture_marketdata_instrument(
 		             "venue-namespace", &venue_namespace, NULL);
 		json_object_set_boolean_member(root, "available", TRUE);
 		json_object_set_string_member(root, "source_name", source_name);
+		md_set_text(root, "venue_namespace", venue_namespace);
 
 		object = json_object_new();
 		json_object_set_string_member(object, "key", instrument->key);
@@ -3634,12 +3771,40 @@ venture_marketdata_instrument(
 					JsonArray *row_links = json_array_new();
 
 					md_set_age(venue_row, "", one->taken_at, now, stale_after);
+					json_object_set_int_member(venue_row, "data_source_id", query->data_source_id);
+					json_object_set_string_member(venue_row, "source_name", source_name);
 
 					md_links_append(row_links, g_hash_table_lookup(venue_attrs, one->venue_key),
 					                instrument_attrs);
 					json_object_set_array_member(venue_row, "links", row_links);
 					json_array_add_object_element(array, venue_row);
 				}
+			}
+
+			/* Every other source's realms for the item, in the same
+			 * order: the table is every realm wherever it was opened. */
+			{
+				guint others = md_instrument_other_sources(context, query, instrument_namespace,
+				                                           now, stale_after, array);
+
+				if (others > 0)
+				{
+					g_autoptr(GPtrArray) merged = g_ptr_array_new_with_free_func((GDestroyNotify)json_object_unref);
+					guint m;
+
+					for (m = 0; m < json_array_get_length(array); m++)
+						g_ptr_array_add(merged, json_object_ref(json_array_get_object_element(array, m)));
+
+					g_ptr_array_sort(merged, query->venues_descending ? md_row_dearest_first
+					                                                  : md_row_cheapest_first);
+					json_array_unref(array);
+					array = json_array_new();
+
+					for (m = 0; m < merged->len; m++)
+						json_array_add_object_element(array, json_object_ref(g_ptr_array_index(merged, m)));
+				}
+
+				json_object_set_int_member(root, "venue_sources", 1 + others);
 			}
 
 			json_object_set_boolean_member(root, "venues_descending", query->venues_descending);

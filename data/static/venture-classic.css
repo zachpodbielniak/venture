@@ -5902,3 +5902,11 @@ table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { con
 .holder-kind { font-size: 11px; vertical-align: 1px; }
 .holder-bank { color: var(--place); font-weight: 600; }
 .holder-variant { font-size: 12px; }
+
+/* An item's every-realm table: the source and the region stay on one
+ * line, so eighty realms read as eighty short rows. */
+.item-realms td.realm-source,
+.item-realms td.realm-group {
+	white-space: nowrap;
+	font-size: 0.875em;
+}

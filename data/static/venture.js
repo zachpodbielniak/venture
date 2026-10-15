@@ -5463,7 +5463,9 @@
 
 	/* A filter box over a table: rows whose text does not contain what is
 	 * typed are hidden, a group heading with nothing left under it too,
-	 * and a count says how many show. */
+	 * and a count says how many show. A table marked data-filter has one
+	 * at any length (an item's realms: two today, eighty tomorrow), with
+	 * data-filter-placeholder for its prompt. */
 	function addTableFilter(table) {
 		var anchor = table.closest(".table-wrap, .md-table") || table;
 		var total = dataRows(table).length;
@@ -5471,7 +5473,8 @@
 		var input;
 		var count;
 
-		if (total < 8 || table.hasAttribute("data-filter-wired") || table.hasAttribute("data-no-filter")) {
+		if (total < (table.hasAttribute("data-filter") ? 1 : 8) ||
+		    table.hasAttribute("data-filter-wired") || table.hasAttribute("data-no-filter")) {
 			return;
 		}
 
@@ -5480,7 +5483,7 @@
 		box.className = "table-filter";
 		input = document.createElement("input");
 		input.type = "search";
-		input.placeholder = "Filter rows…";
+		input.placeholder = table.getAttribute("data-filter-placeholder") || "Filter rows…";
 		input.setAttribute("aria-label", "Filter the rows of this table");
 		count = document.createElement("span");
 		count.className = "muted";

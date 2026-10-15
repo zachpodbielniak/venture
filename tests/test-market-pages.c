@@ -806,7 +806,7 @@ test_instrument(
 	g_assert_nonnull(strstr(page, "class=\"list-add\"><input type=\"hidden\" name=\"action\" value=\"watch\">"));
 	g_assert_nonnull(strstr(page, "list=\"watchlist-names\""));
 	g_assert_nonnull(strstr(page, "Create an alert"));
-	g_assert_nonnull(strstr(page, "Every venue"));
+	g_assert_nonnull(strstr(page, "Every realm"));
 	assert_buttons_named(page, path);
 
 	/* Unknown key, unknown venue, a broken escape: not found. */
@@ -2084,6 +2084,104 @@ test_deals_reference_source(
 	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/9003", fixture->source_id);
 	page = get_page(fixture, path);
 	g_assert_null(strstr(page, "Region market value"));
+}
+
+/*
+ * An item's every-realm table lists the item at every source of the same
+ * instrument namespace, whichever source's page it is: the fixture's
+ * three venues and "Pushes"'s realm-far, merged cheapest first, each
+ * naming its source; "Elsewhere" keeps 2770 under another namespace and
+ * adds nothing. Opened from Pushes, the same four. The table always has
+ * its filter box. What breaks if it regresses: an item opened from a
+ * push source (the Accounts pages link there) shows only the realms the
+ * characters are on, not the region feed's.
+ */
+static void
+test_instrument_every_realm(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureSeriesStore) pushes = NULL;
+	g_autoptr(VentureSeriesStore) elsewhere = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *page = NULL;
+	gint64 t = g_get_real_time() / G_USEC_PER_SEC - 600;
+	gint64 pushes_id = 0;
+	static const Offer far[] = { { "2770", 30, 105, 9 } };
+	static const Offer odd[] = { { "2770", 31, 1, 1 } };
+	static const gchar *const order[] = { "realm-c", "realm-far", "realm-b", "realm-a" };
+	JsonObject *root;
+	JsonArray *venues;
+	guint i;
+
+	(void)user_data;
+	seed_store(fixture);
+
+	pushes = second_source(fixture, "Pushes", "wow-item");
+	add_venue(pushes, "realm-far", "eu", "USD", t);
+	add_instrument(pushes, "2770", "Copper Ore", "Materials/Ore", t);
+	snapshot(pushes, "realm-far", "USD", t, far, G_N_ELEMENTS(far));
+
+	elsewhere = second_source(fixture, "Elsewhere", "other-item");
+	add_venue(elsewhere, "realm-odd", "eu", "USD", t);
+	add_instrument(elsewhere, "2770", "Not ore", "Things", t);
+	snapshot(elsewhere, "realm-odd", "USD", t, odd, G_N_ELEMENTS(odd));
+
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	root = root_of(answer);
+	g_assert_cmpint(json_object_get_int_member(root, "venue_sources"), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(root, "venue_namespace"), ==, "realm");
+	venues = json_object_get_array_member(root, "venues");
+	g_assert_cmpuint(json_array_get_length(venues), ==, G_N_ELEMENTS(order));
+
+	for (i = 0; i < G_N_ELEMENTS(order); i++)
+	{
+		JsonObject *row = json_array_get_object_element(venues, i);
+
+		g_assert_cmpstr(json_object_get_string_member(row, "venue_key"), ==, order[i]);
+
+		if (0 == g_strcmp0(order[i], "realm-far"))
+		{
+			g_assert_cmpstr(json_object_get_string_member(row, "source_name"), ==, "Pushes");
+			pushes_id = json_object_get_int_member(row, "data_source_id");
+			g_assert_cmpint(pushes_id, !=, fixture->source_id);
+			g_assert_cmpint(money_amount(row, "min_price"), ==, 105);
+		}
+		else
+			g_assert_cmpint(json_object_get_int_member(row, "data_source_id"), ==, fixture->source_id);
+	}
+
+	/* Dearest first: the same rows turned round. */
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770?venues_dir=desc", fixture->source_id);
+	answer = get_json(fixture, path, 200);
+	venues = json_object_get_array_member(root_of(answer), "venues");
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(venues, 0), "venue_key"), ==,
+	                "realm-a");
+
+	/* From the other side: Pushes's page lists the fixture's realms too. */
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770", pushes_id);
+	answer = get_json(fixture, path, 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(root_of(answer), "venues")), ==, 4);
+
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, "id=\"realms\""));
+	g_assert_nonnull(strstr(page, "Every realm, cheapest first"));
+	g_assert_nonnull(strstr(page, "data-filter data-filter-placeholder=\"Filter realms"));
+	g_assert_nonnull(strstr(page, "<th scope=\"col\">Source</th>"));
+	g_assert_nonnull(strstr(page, "class=\"muted realm-source\">Pushes</td>"));
+	g_assert_null(strstr(page, "realm-odd"));
+	/* No row links elsewhere, so no column for it. */
+	g_assert_null(strstr(page, ">Elsewhere</th>"));
+	/* Ahead of the charts, not after the bulk calculator. */
+	g_assert_true(strstr(page, "id=\"realms\"") < strstr(page, "Bulk pricing"));
 }
 
 /*
@@ -3985,6 +4083,7 @@ main(
 	ADD("deals-velocity", test_deals_velocity);
 	ADD("deals-realisable-order", test_deals_realisable_order);
 	ADD("deals-reference-source", test_deals_reference_source);
+	ADD("instrument-every-realm", test_instrument_every_realm);
 	ADD("venue-index", test_venue_index);
 	ADD("watchlist-and-actions", test_watchlist_and_actions);
 	ADD("deals-watchlists", test_deals_watchlists);

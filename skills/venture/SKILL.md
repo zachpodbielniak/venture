@@ -356,6 +356,7 @@ ids, notes) in words.
 | "Alert me when a price drops" | `create alert_rule ...`, `market alerts evaluate --dry-run` | [market-data.md](references/market-data.md) |
 | "Push my price/deal alerts to my phone (gotify)" | `create alert_rule kind=deal ...`; `create webhook format=gotify events=alert_hit.created ...`, `webhook token ID < file` | [market-data.md](references/market-data.md), [automation.md](references/automation.md) |
 | "How many X do I have, and on whom / in which bank?" | `--format json market instrument SOURCE_ID KEY` → `.holdings` | [market-data.md](references/market-data.md) |
+| "What does X cost on every realm?" | `--format json market instrument SOURCE_ID KEY` → `.venues` (every source's realms, cheapest first) | [market-data.md](references/market-data.md) |
 | "Where do I log in next / what do my accounts hold?" | `accounts attention`, `accounts inventory`, `accounts pnl` | [accounts.md](references/accounts.md) |
 | "Find and record an arbitrage" | `arbitrage scan`, `arbitrage record N ...`, `arbitrage close` | [arbitrage-scan.md](references/arbitrage-scan.md) |
 | "What do my crafts make? / plan my flips" | `arbitrage crafting buy_realm=... sell_realm=...`; `arbitrage plan [reprice=1]`, `arbitrage plan export tsm` | [arbitrage-scan.md](references/arbitrage-scan.md) |

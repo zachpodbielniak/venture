@@ -157,6 +157,14 @@ venturectl market help                               # every verb, options, exam
   true on those rows); ignored accounts are left out and summed in
   `ignored`. Quote these; never add up `accounts inventory` pages for one
   item.
+- **"What does it cost on every realm?"** The instrument answer's
+  `venues` is every source's venues for the item (same
+  `instrument-namespace`), not just SOURCE_ID's, cheapest first; each
+  row has `data_source_id` and `source_name`, and `venue_sources` counts
+  the sources. So one call from the tsmctl source also gives the Blizzard
+  feed's realms. A connected realm's `venue_name` lists its member
+  realms: match a realm name inside it. A commodity has one row, the
+  region's `commodities` venue -- the same price on every realm.
 - Tables show money with its currency and leave a missing figure blank,
   then the answer's notes (`-q` drops them); `-f json` is the whole answer
   (notes, echoes); `-f csv` the rows.

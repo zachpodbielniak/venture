@@ -2456,6 +2456,156 @@ mdw_item_holdings_card(
 	g_string_append(html, "</div></section>");
 }
 
+/* --- Every realm's price for an item -------------------------------------- */
+
+/* Whether a source's venues are realms: the table is then "Every realm". */
+static gboolean
+mdw_venues_are_realms(JsonObject *root)
+{
+	const gchar *namespace_ = mdw_text(root, "venue_namespace");
+
+	return (NULL != namespace_) && (NULL != strstr(namespace_, "realm"));
+}
+
+/*
+ * The item at every venue -- Undermine's "other realms" -- from this
+ * source and every other source of the same items (the answer merges
+ * them, so a push source's page lists the region feed's realms too).
+ * A Source column appears when more than one source contributes. The
+ * table always carries its filter box (data-filter): typing a realm's
+ * name finds its connected realm, whose name lists every member.
+ */
+static void
+mdw_item_realms_card(
+	VentureWebServer			*self,
+	GString					*html,
+	JsonObject				*root,
+	const gchar				*self_path,
+	const VentureMarketdataInstrumentQuery	*query,
+	const gchar				*venue
+){
+	JsonArray *venues = json_object_get_array_member(root, "venues");
+	const gchar *group_name = mdw_text(root, "venue_group_name");
+	gboolean realms = mdw_venues_are_realms(root);
+	gboolean dearest = json_object_has_member(root, "venues_descending") &&
+	                   json_object_get_boolean_member(root, "venues_descending");
+	gboolean sources = json_object_get_int_member_with_default(root, "venue_sources", 1) > 1;
+	gboolean commodity = (NULL != venues) && (json_array_get_length(venues) > 0);
+	gboolean elsewhere = FALSE;
+	guint columns;
+	guint i;
+
+	/* "Elsewhere" (a realm's page on another site) only when a row has one. */
+	for (i = 0; (NULL != venues) && (i < json_array_get_length(venues)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(venues, i);
+
+		if (json_object_has_member(row, "links") &&
+		    (json_array_get_length(json_object_get_array_member(row, "links")) > 0))
+			elsewhere = TRUE;
+	}
+
+	columns = 7 + (sources ? 1 : 0) + (elsewhere ? 1 : 0);
+
+	g_string_append(html, "<div class=\"card item-realms\" id=\"realms\"><div class=\"card-head\"><h2>");
+	venture_html_escape_append(html, (NULL != group_name) ? group_name : realms ? "Every realm" : "Every venue");
+	g_string_append(html, dearest ? ", dearest first" : ", cheapest first");
+	g_string_append(html, "</h2></div><form method=\"get\" action=\"");
+	venture_html_escape_append(html, self_path);
+	g_string_append(html, "#realms\" class=\"form-grid market-filters\" role=\"search\" "
+	                      "aria-label=\"Venue filters\">");
+
+	if (NULL != query->venue)
+	{
+		g_string_append(html, "<input type=\"hidden\" name=\"venue\" value=\"");
+		venture_html_escape_append(html, query->venue);
+		g_string_append(html, "\">");
+	}
+
+	mdw_venue_group_picker(html, root, query->venue_group);
+	g_string_append_printf(html, "<div class=\"field\"><label>Order<select name=\"venues_dir\">"
+	                       "<option value=\"\"%s>cheapest first</option>"
+	                       "<option value=\"desc\"%s>dearest first</option></select></label></div>"
+	                       "<button class=\"btn\" type=\"submit\">Show</button></form>",
+	                       dearest ? "" : " selected", dearest ? " selected" : "");
+	g_string_append_printf(html, "<div class=\"table-wrap\"><table class=\"data market-table\" data-filter "
+	                       "data-filter-placeholder=\"%s\"><thead><tr>"
+	                       "<th scope=\"col\">%s</th>%s<th scope=\"col\">Group</th>"
+	                       "<th scope=\"col\" class=\"num\">Lowest</th><th scope=\"col\" class=\"num\">Quantity</th>"
+	                       "<th scope=\"col\" class=\"num\">Market value</th>"
+	                       "<th scope=\"col\" class=\"num\">Of region</th><th scope=\"col\">Updated</th>"
+	                       "%s</tr></thead><tbody>",
+	                       realms ? "Filter realms\xe2\x80\xa6" : "Filter venues\xe2\x80\xa6",
+	                       realms ? "Realm" : "Venue",
+	                       sources ? "<th scope=\"col\">Source</th>" : "",
+	                       elsewhere ? "<th scope=\"col\">Elsewhere</th>" : "");
+
+	for (i = 0; (NULL != venues) && (i < json_array_get_length(venues)); i++)
+	{
+		JsonObject *row = json_array_get_object_element(venues, i);
+		gint64 row_source = json_object_get_int_member_with_default(row, "data_source_id",
+		                                                            query->data_source_id);
+		gboolean current = (row_source == query->data_source_id) &&
+		                   (0 == g_strcmp0(mdw_text(row, "venue_key"), venue));
+		const gchar *key = mdw_text(row, "venue_key");
+
+		/* Blizzard's commodity market is one auction house for the whole
+		 * region, so a commodity has no realm of its own. */
+		if ((NULL == key) || !g_str_has_suffix(key, "commodities"))
+			commodity = FALSE;
+
+		g_string_append_printf(html, "<tr%s><td", current ? " aria-current=\"true\" class=\"selected\"" : "");
+		mdw_stale_class(html, row, "");
+		g_string_append(html, "><a href=\"");
+		venture_html_escape_append(html, mdw_text(row, "url"));
+		g_string_append(html, "\">");
+		mdw_name(html, row, "venue_name", "venue_key");
+		g_string_append(html, "</a></td>");
+
+		if (sources)
+		{
+			g_string_append(html, "<td class=\"muted realm-source\">");
+			venture_html_escape_append(html, mdw_text(row, "source_name"));
+			g_string_append(html, "</td>");
+		}
+
+		g_string_append(html, "<td class=\"realm-group\">");
+		venture_html_escape_append(html, mdw_text(row, "group_key"));
+		g_string_append(html, "</td><td class=\"num");
+		g_string_append(html, mdw_stale(row, "") ? " is-stale\">" : "\">");
+		mdw_money(html, row, "min_price");
+		g_string_append(html, "</td><td class=\"num\">");
+		mdw_int(html, row, "quantity");
+		g_string_append(html, "</td><td class=\"num\">");
+		mdw_money(html, row, "market_value");
+		g_string_append(html, "</td><td class=\"num\">");
+		mdw_toned_percent(html, row, "pct_vs_region", 1.0, 85.0, 115.0);
+		g_string_append(html, "</td><td>");
+		mdw_age(self, html, row, "");
+
+		if (elsewhere)
+		{
+			g_string_append(html, "</td><td>");
+			mdw_links(html, row, FALSE);
+		}
+
+		g_string_append(html, "</td></tr>");
+	}
+
+	if ((NULL == venues) || (0 == json_array_get_length(venues)))
+		g_string_append_printf(html, "<tr><td colspan=\"%u\" class=\"muted\">No prices yet.</td></tr>",
+		                       columns);
+
+	g_string_append(html, "</tbody></table></div>");
+
+	if (commodity)
+		g_string_append(html, "<p class=\"muted\">This is a commodity: Blizzard sells commodities "
+		                      "region-wide, so every realm shares one auction house and one "
+		                      "price.</p>");
+
+	g_string_append(html, "</div>");
+}
+
 static HtmxResponse *
 venture_marketdata_web_instrument(
 	HtmxRequest	*request,
@@ -2470,6 +2620,7 @@ venture_marketdata_web_instrument(
 	g_autofree gchar *self_path = NULL;
 	g_autofree gchar *escaped_key = NULL;
 	VentureMarketdataInstrumentQuery query;
+	gboolean realms_drawn = FALSE;
 	JsonObject *root;
 	JsonObject *instrument;
 	JsonObject *base;
@@ -2751,6 +2902,10 @@ venture_marketdata_web_instrument(
 			g_string_append(html, "</div></div>");
 		}
 
+		/* Every realm's price, then the pictures. */
+		mdw_item_realms_card(self, html, root, self_path, &query, venue);
+		realms_drawn = TRUE;
+
 		/* The pictures, each with its numbers in a table beside it. */
 		mdw_history_card(self, html, root, self_path, name);
 
@@ -2879,74 +3034,8 @@ venture_marketdata_web_instrument(
 		}
 	}
 
-	/* Other venues: Undermine's "other realms". */
-	{
-		JsonArray *venues = json_object_get_array_member(root, "venues");
-
-		const gchar *group_name = mdw_text(root, "venue_group_name");
-		gboolean dearest = json_object_has_member(root, "venues_descending") &&
-		                   json_object_get_boolean_member(root, "venues_descending");
-
-		g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>");
-		venture_html_escape_append(html, (NULL != group_name) ? group_name : "Every venue");
-		g_string_append(html, dearest ? ", dearest first" : ", cheapest first");
-		g_string_append(html, "</h2></div><form method=\"get\" action=\"");
-		venture_html_escape_append(html, self_path);
-		g_string_append(html, "\" class=\"form-grid market-filters\" role=\"search\" "
-		                      "aria-label=\"Venue filters\">");
-
-		if (NULL != query.venue)
-		{
-			g_string_append(html, "<input type=\"hidden\" name=\"venue\" value=\"");
-			venture_html_escape_append(html, query.venue);
-			g_string_append(html, "\">");
-		}
-
-		mdw_venue_group_picker(html, root, query.venue_group);
-		g_string_append_printf(html, "<div class=\"field\"><label>Order<select name=\"venues_dir\">"
-		                       "<option value=\"\"%s>cheapest first</option>"
-		                       "<option value=\"desc\"%s>dearest first</option></select></label></div>"
-		                       "<button class=\"btn\" type=\"submit\">Show</button></form>",
-		                       dearest ? "" : " selected", dearest ? " selected" : "");
-		g_string_append(html, "<div class=\"table-wrap\"><table class=\"data market-table\"><thead><tr>"
-		                      "<th scope=\"col\">Venue</th><th scope=\"col\">Group</th>"
-		                      "<th scope=\"col\" class=\"num\">Lowest</th><th scope=\"col\" class=\"num\">Quantity</th>"
-		                      "<th scope=\"col\" class=\"num\">Market value</th>"
-		                      "<th scope=\"col\" class=\"num\">Of region</th><th scope=\"col\">Updated</th>"
-		                      "<th scope=\"col\">Elsewhere</th>"
-		                      "</tr></thead><tbody>");
-
-		for (i = 0; (NULL != venues) && (i < json_array_get_length(venues)); i++)
-		{
-			JsonObject *row = json_array_get_object_element(venues, i);
-			gboolean current = (0 == g_strcmp0(mdw_text(row, "venue_key"), venue));
-
-			g_string_append_printf(html, "<tr%s><td", current ? " aria-current=\"true\" class=\"selected\"" : "");
-			mdw_stale_class(html, row, "");
-			g_string_append(html, "><a href=\"");
-			venture_html_escape_append(html, mdw_text(row, "url"));
-			g_string_append(html, "\">");
-			mdw_name(html, row, "venue_name", "venue_key");
-			g_string_append(html, "</a></td><td>");
-			venture_html_escape_append(html, mdw_text(row, "group_key"));
-			g_string_append(html, "</td><td class=\"num");
-			g_string_append(html, mdw_stale(row, "") ? " is-stale\">" : "\">");
-			mdw_money(html, row, "min_price");
-			g_string_append(html, "</td><td class=\"num\">");
-			mdw_int(html, row, "quantity");
-			g_string_append(html, "</td><td class=\"num\">");
-			mdw_money(html, row, "market_value");
-			g_string_append(html, "</td><td class=\"num\">");
-			mdw_toned_percent(html, row, "pct_vs_region", 1.0, 85.0, 115.0);
-			g_string_append(html, "</td><td>");
-			mdw_age(self, html, row, "");
-			g_string_append(html, "</td><td>");
-			mdw_links(html, row, FALSE);
-			g_string_append(html, "</td></tr>");
-		}
-
-		g_string_append(html, "</tbody></table></div></div>");
-	}
+	if (!realms_drawn)
+		mdw_item_realms_card(self, html, root, self_path, &query, venue);
 
 	return venture_web_html_response(venture_web_page(self, request, "/market/browse", name, html->str),
 	                                 200);
