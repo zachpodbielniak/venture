@@ -2482,10 +2482,13 @@ mdw_item_realms_card(
 	JsonObject				*root,
 	const gchar				*self_path,
 	const VentureMarketdataInstrumentQuery	*query,
-	const gchar				*venue
+	const gchar				*venue,
+	const gchar				*picked
 ){
 	JsonArray *venues = json_object_get_array_member(root, "venues");
-	const gchar *group_name = mdw_text(root, "venue_group_name");
+	JsonArray *choices = json_object_has_member(root, "venue_groups")
+		? json_object_get_array_member(root, "venue_groups") : NULL;
+	const gchar *group_name = NULL;
 	gboolean realms = mdw_venues_are_realms(root);
 	gboolean dearest = json_object_has_member(root, "venues_descending") &&
 	                   json_object_get_boolean_member(root, "venues_descending");
@@ -2507,10 +2510,27 @@ mdw_item_realms_card(
 
 	columns = 7 + (sources ? 1 : 0) + (elsewhere ? 1 : 0);
 
-	g_string_append(html, "<div class=\"card item-realms\" id=\"realms\"><div class=\"card-head\"><h2>");
+	if (venture_string_is_empty(picked))
+		picked = NULL;
+
+	for (i = 0; (NULL != picked) && (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+
+		if (0 == g_strcmp0(mdw_text(choice, "value"), picked))
+			group_name = mdw_text(choice, "name");
+	}
+
+	/* The heading names the group; the page's script renames it as the
+	 * picker changes, from data-all and the option picked. */
+	g_string_append(html, "<div class=\"card item-realms\" id=\"realms\"><div class=\"card-head\"><h2><span>"
+	                      "<span data-group-heading data-all=\"");
+	g_string_append(html, realms ? "Every realm" : "Every venue");
+	g_string_append(html, "\">");
 	venture_html_escape_append(html, (NULL != group_name) ? group_name : realms ? "Every realm" : "Every venue");
+	g_string_append(html, "</span>");
 	g_string_append(html, dearest ? ", dearest first" : ", cheapest first");
-	g_string_append(html, "</h2></div><form method=\"get\" action=\"");
+	g_string_append(html, "</span></h2></div><form method=\"get\" action=\"");
 	venture_html_escape_append(html, self_path);
 	g_string_append(html, "#realms\" class=\"form-grid market-filters\" role=\"search\" "
 	                      "aria-label=\"Venue filters\">");
@@ -2522,13 +2542,32 @@ mdw_item_realms_card(
 		g_string_append(html, "\">");
 	}
 
-	mdw_venue_group_picker(html, root, query->venue_group);
+	/* All realms, "My characters", the saved groups: every row is on the
+	 * page and says its groups (data-groups), so the script narrows the
+	 * table in place; without script, Show asks the server, which hides
+	 * the rest. */
+	g_string_append_printf(html, "<div class=\"field\"><label>%s<select name=\"venue_group\" "
+	                       "data-group-filter=\"realms-table\"><option value=\"\">%s</option>",
+	                       realms ? "Realms" : "Venues", realms ? "All realms" : "All venues");
+
+	for (i = 0; (NULL != choices) && (i < json_array_get_length(choices)); i++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, i);
+
+		g_string_append(html, "<option value=\"");
+		venture_html_escape_append(html, mdw_text(choice, "value"));
+		g_string_append_printf(html, "\"%s>", (0 == g_strcmp0(mdw_text(choice, "value"), picked)) ? " selected" : "");
+		venture_html_escape_append(html, mdw_text(choice, "name"));
+		g_string_append(html, "</option>");
+	}
+
+	g_string_append(html, "</select></label> <a class=\"muted\" href=\"/e/venue_group\">edit groups</a></div>");
 	g_string_append_printf(html, "<div class=\"field\"><label>Order<select name=\"venues_dir\">"
 	                       "<option value=\"\"%s>cheapest first</option>"
 	                       "<option value=\"desc\"%s>dearest first</option></select></label></div>"
 	                       "<button class=\"btn\" type=\"submit\">Show</button></form>",
 	                       dearest ? "" : " selected", dearest ? " selected" : "");
-	g_string_append_printf(html, "<div class=\"table-wrap\"><table class=\"data market-table\" data-filter "
+	g_string_append_printf(html, "<div class=\"table-wrap\"><table class=\"data market-table\" id=\"realms-table\" data-filter "
 	                       "data-filter-placeholder=\"%s\"><thead><tr>"
 	                       "<th scope=\"col\">%s</th>%s<th scope=\"col\">Group</th>"
 	                       "<th scope=\"col\" class=\"num\">Lowest</th><th scope=\"col\" class=\"num\">Quantity</th>"
@@ -2554,7 +2593,26 @@ mdw_item_realms_card(
 		if ((NULL == key) || !g_str_has_suffix(key, "commodities"))
 			commodity = FALSE;
 
-		g_string_append_printf(html, "<tr%s><td", current ? " aria-current=\"true\" class=\"selected\"" : "");
+		g_string_append_printf(html, "<tr%s data-groups=\"", current ? " aria-current=\"true\" class=\"selected\"" : "");
+
+		{
+			JsonArray *groups = json_object_has_member(row, "groups")
+				? json_object_get_array_member(row, "groups") : NULL;
+			gboolean in = (NULL == picked);
+			guint g;
+
+			for (g = 0; (NULL != groups) && (g < json_array_get_length(groups)); g++)
+			{
+				const gchar *one = json_array_get_string_element(groups, g);
+
+				g_string_append(html, (g > 0) ? " " : "");
+				venture_html_escape_append(html, one);
+				if (0 == g_strcmp0(one, picked))
+					in = TRUE;
+			}
+
+			g_string_append(html, in ? "\"><td" : "\" hidden data-group-out><td");
+		}
 		mdw_stale_class(html, row, "");
 		g_string_append(html, "><a href=\"");
 		venture_html_escape_append(html, mdw_text(row, "url"));
@@ -2621,6 +2679,7 @@ venture_marketdata_web_instrument(
 	g_autofree gchar *escaped_key = NULL;
 	VentureMarketdataInstrumentQuery query;
 	gboolean realms_drawn = FALSE;
+	const gchar *picked;
 	JsonObject *root;
 	JsonObject *instrument;
 	JsonObject *base;
@@ -2640,6 +2699,13 @@ venture_marketdata_web_instrument(
 
 	if (!mdw_instrument_query(self, request, params, &query, &key, &error))
 		return venture_web_error_response(error);
+
+	/* The page asks for every realm and narrows the table itself, so its
+	 * realm picker can change without a reload; the API answers the
+	 * group asked for. */
+	picked = query.venue_group;
+	if (!api)
+		query.venue_group = NULL;
 
 	answer = venture_marketdata_instrument(self->context, &query, &error);
 
@@ -2903,7 +2969,7 @@ venture_marketdata_web_instrument(
 		}
 
 		/* Every realm's price, then the pictures. */
-		mdw_item_realms_card(self, html, root, self_path, &query, venue);
+		mdw_item_realms_card(self, html, root, self_path, &query, venue, picked);
 		realms_drawn = TRUE;
 
 		/* The pictures, each with its numbers in a table beside it. */
@@ -3035,7 +3101,7 @@ venture_marketdata_web_instrument(
 	}
 
 	if (!realms_drawn)
-		mdw_item_realms_card(self, html, root, self_path, &query, venue);
+		mdw_item_realms_card(self, html, root, self_path, &query, venue, picked);
 
 	return venture_web_html_response(venture_web_page(self, request, "/market/browse", name, html->str),
 	                                 200);

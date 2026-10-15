@@ -5490,9 +5490,11 @@
 		box.appendChild(input);
 		box.appendChild(count);
 		anchor.parentNode.insertBefore(box, anchor);
+		table.tableFilterInput = input;
 
 		input.addEventListener("input", function () {
 			var needle = input.value.trim().toLocaleLowerCase();
+			var narrowed = !!table.querySelector("tr[data-group-out]");
 			var shown = 0;
 
 			Array.prototype.forEach.call(table.tBodies, function (tbody) {
@@ -5519,7 +5521,9 @@
 						return;
 					}
 
-					match = needle === "" || row.textContent.toLocaleLowerCase().indexOf(needle) >= 0;
+					/* A row a group picker left out stays out whatever is typed. */
+					match = !row.hasAttribute("data-group-out") &&
+						(needle === "" || row.textContent.toLocaleLowerCase().indexOf(needle) >= 0);
 					row.hidden = !match;
 					shown += match ? 1 : 0;
 					any = any || match;
@@ -5528,9 +5532,81 @@
 				closeGroup();
 			});
 
-			count.textContent = needle === "" ? "" : shown + " of " + total;
+			count.textContent = (needle === "" && !narrowed) ? "" : shown + " of " + total;
 		});
+
+		/* Drawn already narrowed to a group: say so from the start. */
+		if (table.querySelector("tr[data-group-out]")) {
+			input.dispatchEvent(new Event("input"));
+		}
 	}
+
+	/*
+	 * A group picker over a table (select[data-group-filter] naming the
+	 * table's id): each row lists the groups it is in (data-groups, values
+	 * split by spaces), and picking one hides the rest in place -- an
+	 * item's realms narrowed to "My characters" or a saved group -- with
+	 * the text filter still applying to what is left. An empty value is
+	 * every row. The card's [data-group-heading] takes the option's name
+	 * (its data-all for none), and the address keeps the choice, so a
+	 * reload or a shared link shows the same rows. The select is in a GET
+	 * form, so without script its Show button asks the server instead.
+	 */
+	document.addEventListener("change", function (event) {
+		var select = event.target.closest ? event.target.closest("select[data-group-filter]") : null;
+		var table;
+		var value;
+		var card;
+		var heading;
+		var url;
+
+		if (!select) {
+			return;
+		}
+
+		table = document.getElementById(select.getAttribute("data-group-filter"));
+
+		if (!table) {
+			return;
+		}
+
+		value = select.value;
+		dataRows(table).forEach(function (row) {
+			var groups = (row.getAttribute("data-groups") || "").split(" ");
+			var out = value !== "" && groups.indexOf(value) < 0;
+
+			if (out) {
+				row.setAttribute("data-group-out", "");
+			} else {
+				row.removeAttribute("data-group-out");
+			}
+			row.hidden = out;
+		});
+
+		if (table.tableFilterInput) {
+			table.tableFilterInput.dispatchEvent(new Event("input"));
+		}
+
+		card = select.closest(".card");
+		heading = card ? card.querySelector("[data-group-heading]") : null;
+
+		if (heading) {
+			heading.textContent = value === "" ? heading.getAttribute("data-all")
+				: select.options[select.selectedIndex].textContent;
+		}
+
+		try {
+			url = new URL(window.location.href);
+			if (value === "") {
+				url.searchParams.delete(select.name);
+			} else {
+				url.searchParams.set(select.name, value);
+			}
+			window.history.replaceState(window.history.state, "", url.toString());
+		} catch (ignored) {
+			/* An address that cannot be rewritten only loses the reload. */
+		}
+	});
 
 	/* Headings without a link become buttons, so every column sorts. */
 	function wireSortableTables(root) {

@@ -162,7 +162,9 @@ venturectl market help                               # every verb, options, exam
   `instrument-namespace`), not just SOURCE_ID's, cheapest first; each
   row has `data_source_id` and `source_name`, and `venue_sources` counts
   the sources. So one call from the tsmctl source also gives the Blizzard
-  feed's realms. A connected realm's `venue_name` lists its member
+  feed's realms. `venue_group=characters` (or a group id) narrows them to
+  "My characters" or a saved group; each row's `groups` says which it is
+  in. A connected realm's `venue_name` lists its member
   realms: match a realm name inside it. A commodity has one row, the
   region's `commodities` venue -- the same price on every realm.
 - Tables show money with its currency and leave a missing figure blank,

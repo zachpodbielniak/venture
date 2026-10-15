@@ -3423,6 +3423,63 @@ md_check_range(
 	return FALSE;
 }
 
+/*
+ * Tags @rows from @from on with the venue group choices (@choices, as
+ * md_venue_groups_json() lists them) each row's venue is in: "groups",
+ * an array of the choices' values. A page filters on it in place -- all
+ * realms, "My characters" or a saved group -- without asking again.
+ * @venues is the rows' store's own venue list, which each group is
+ * matched against.
+ */
+static void
+md_tag_venue_groups(
+	VentureContext	*context,
+	gint64		 organization_id,
+	GPtrArray	*venues,
+	JsonArray	*choices,
+	JsonArray	*rows,
+	guint		 from
+){
+	g_autoptr(GPtrArray) members = NULL;
+	guint n = (NULL != choices) ? json_array_get_length(choices) : 0;
+	guint c;
+	guint r;
+
+	members = g_ptr_array_new_with_free_func((GDestroyNotify)g_strfreev);
+
+	for (c = 0; c < n; c++)
+	{
+		JsonObject *choice = json_array_get_object_element(choices, c);
+		gchar **keys = NULL;
+
+		if (!md_venue_group_keys(context, organization_id, venues,
+		                         json_object_get_string_member_with_default(choice, "value", NULL),
+		                         NULL, &keys, NULL, NULL))
+			keys = NULL;
+
+		g_ptr_array_add(members, keys);
+	}
+
+	for (r = from; r < json_array_get_length(rows); r++)
+	{
+		JsonObject *row = json_array_get_object_element(rows, r);
+		const gchar *venue_key = json_object_get_string_member_with_default(row, "venue_key", NULL);
+		JsonArray *groups = json_array_new();
+
+		for (c = 0; c < n; c++)
+		{
+			gchar **keys = g_ptr_array_index(members, c);
+
+			if ((NULL != keys) && (NULL != venue_key) &&
+			    g_strv_contains((const gchar *const *)keys, venue_key))
+				json_array_add_string_element(groups,
+					json_object_get_string_member(json_array_get_object_element(choices, c), "value"));
+		}
+
+		json_object_set_array_member(row, "groups", groups);
+	}
+}
+
 /* A venue row's lowest price in minor units, for ordering the merged
  * table; G_MAXINT64 when nothing is on offer, so it sorts last. */
 static gint64
@@ -3479,6 +3536,7 @@ md_instrument_other_sources(
 	const gchar				*instrument_namespace,
 	gint64					 now,
 	gint64					 stale_after,
+	JsonArray				*choices,
 	JsonArray				*rows
 ){
 	g_autoptr(GPtrArray) sources = NULL;
@@ -3524,14 +3582,12 @@ md_instrument_other_sources(
 		if (NULL == venues)
 			continue;
 
-		if (!venture_string_is_empty(query->venue_group))
-		{
-			store_venues = venture_series_store_list_venues(reader, NULL);
+		store_venues = venture_series_store_list_venues(reader, NULL);
 
-			if (!md_venue_group_keys(context, query->organization_id, store_venues,
-			                         query->venue_group, NULL, &group_keys, NULL, NULL))
-				continue;
-		}
+		if (!venture_string_is_empty(query->venue_group) &&
+		    !md_venue_group_keys(context, query->organization_id, store_venues,
+		                         query->venue_group, NULL, &group_keys, NULL, NULL))
+			continue;
 
 		name = md_source_name(source);
 
@@ -3551,6 +3607,8 @@ md_instrument_other_sources(
 			json_object_set_array_member(venue_row, "links", json_array_new());
 			json_array_add_object_element(rows, venue_row);
 		}
+
+		md_tag_venue_groups(context, query->organization_id, store_venues, choices, rows, before);
 
 		if (json_array_get_length(rows) > before)
 			added++;
@@ -3696,6 +3754,7 @@ venture_marketdata_instrument(
 			g_autoptr(GPtrArray) store_venues = NULL;
 			g_autoptr(GPtrArray) shown = NULL;
 			guint priced = 0;
+			JsonArray *choices;
 
 			store_venues = venture_series_store_list_venues(reader, NULL);
 
@@ -3781,11 +3840,16 @@ venture_marketdata_instrument(
 				}
 			}
 
+			/* Which groups each realm is in, so a page can narrow the
+			 * table in place. */
+			choices = json_object_get_array_member(root, "venue_groups");
+			md_tag_venue_groups(context, query->organization_id, store_venues, choices, array, 0);
+
 			/* Every other source's realms for the item, in the same
 			 * order: the table is every realm wherever it was opened. */
 			{
 				guint others = md_instrument_other_sources(context, query, instrument_namespace,
-				                                           now, stale_after, array);
+				                                           now, stale_after, choices, array);
 
 				if (others > 0)
 				{

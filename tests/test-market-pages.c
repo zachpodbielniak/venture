@@ -2092,9 +2092,13 @@ test_deals_reference_source(
  * three venues and "Pushes"'s realm-far, merged cheapest first, each
  * naming its source; "Elsewhere" keeps 2770 under another namespace and
  * adds nothing. Opened from Pushes, the same four. The table always has
- * its filter box. What breaks if it regresses: an item opened from a
- * push source (the Accounts pages link there) shows only the realms the
- * characters are on, not the region feed's.
+ * its filter box, and a realm picker -- all realms or a group, here
+ * "Far" of realm-far and realm-b across both sources -- that the page's
+ * script applies in place: every row is drawn with its groups, and on a
+ * reload with ?venue_group= the rest are drawn hidden. The API still
+ * answers only the group asked for. What breaks if it regresses: an item
+ * opened from a push source (the Accounts pages link there) shows only
+ * the realms the characters are on, not the region feed's.
  */
 static void
 test_instrument_every_realm(
@@ -2106,6 +2110,8 @@ test_instrument_every_realm(
 	g_autoptr(JsonNode) answer = NULL;
 	g_autofree gchar *path = NULL;
 	g_autofree gchar *page = NULL;
+	g_autofree gchar *wanted = NULL;
+	g_autoptr(VentureEntity) group = NULL;
 	gint64 t = g_get_real_time() / G_USEC_PER_SEC - 600;
 	gint64 pushes_id = 0;
 	static const Offer far[] = { { "2770", 30, 105, 9 } };
@@ -2128,6 +2134,12 @@ test_instrument_every_realm(
 	add_instrument(elsewhere, "2770", "Not ore", "Things", t);
 	snapshot(elsewhere, "realm-odd", "USD", t, odd, G_N_ELEMENTS(odd));
 
+	group = VENTURE_ENTITY(venture_venue_group_new());
+	venture_entity_set_organization_id(group, fixture->org);
+	g_object_set(group, "name", "Far", "venues", "realm-far, realm-b", NULL);
+	save(fixture, group);
+	wanted = g_strdup_printf("%" G_GINT64_FORMAT, ID(group));
+
 	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
 	answer = get_json(fixture, path, 200);
 	root = root_of(answer);
@@ -2140,7 +2152,13 @@ test_instrument_every_realm(
 	{
 		JsonObject *row = json_array_get_object_element(venues, i);
 
+		JsonArray *groups = json_object_get_array_member(row, "groups");
+		gboolean far_one = (0 == g_strcmp0(order[i], "realm-far")) || (0 == g_strcmp0(order[i], "realm-b"));
+
 		g_assert_cmpstr(json_object_get_string_member(row, "venue_key"), ==, order[i]);
+		g_assert_cmpuint(json_array_get_length(groups), ==, far_one ? 1 : 0);
+		if (far_one)
+			g_assert_cmpstr(json_array_get_string_element(groups, 0), ==, wanted);
 
 		if (0 == g_strcmp0(order[i], "realm-far"))
 		{
@@ -2162,6 +2180,17 @@ test_instrument_every_realm(
 	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(venues, 0), "venue_key"), ==,
 	                "realm-a");
 
+	/* The API narrows to a group across both sources. */
+	g_clear_pointer(&answer, json_node_unref);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/market/i/%" G_GINT64_FORMAT "/2770?venue_group=%s", fixture->source_id,
+	                       wanted);
+	answer = get_json(fixture, path, 200);
+	venues = json_object_get_array_member(root_of(answer), "venues");
+	g_assert_cmpuint(json_array_get_length(venues), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(venues, 0), "venue_key"), ==,
+	                "realm-far");
+
 	/* From the other side: Pushes's page lists the fixture's realms too. */
 	g_clear_pointer(&answer, json_node_unref);
 	g_clear_pointer(&path, g_free);
@@ -2173,7 +2202,11 @@ test_instrument_every_realm(
 	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770", fixture->source_id);
 	page = get_page(fixture, path);
 	g_assert_nonnull(strstr(page, "id=\"realms\""));
-	g_assert_nonnull(strstr(page, "Every realm, cheapest first"));
+	g_assert_nonnull(strstr(page, "<span data-group-heading data-all=\"Every realm\">Every realm</span>, cheapest first"));
+	g_assert_nonnull(strstr(page, "<label>Realms<select name=\"venue_group\" data-group-filter=\"realms-table\">"
+	                              "<option value=\"\">All realms</option>"));
+	g_assert_nonnull(strstr(page, "id=\"realms-table\""));
+	g_assert_null(strstr(page, "\" hidden data-group-out><td"));
 	g_assert_nonnull(strstr(page, "data-filter data-filter-placeholder=\"Filter realms"));
 	g_assert_nonnull(strstr(page, "<th scope=\"col\">Source</th>"));
 	g_assert_nonnull(strstr(page, "class=\"muted realm-source\">Pushes</td>"));
@@ -2182,6 +2215,32 @@ test_instrument_every_realm(
 	g_assert_null(strstr(page, ">Elsewhere</th>"));
 	/* Ahead of the charts, not after the bulk calculator. */
 	g_assert_true(strstr(page, "id=\"realms\"") < strstr(page, "Bulk pricing"));
+
+	/* Reloaded on a group: all four drawn, the two outside it hidden. */
+	g_clear_pointer(&page, g_free);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/market/i/%" G_GINT64_FORMAT "/2770?venue_group=%s", fixture->source_id, wanted);
+	page = get_page(fixture, path);
+	g_assert_nonnull(strstr(page, ">Far</span>, cheapest first"));
+	g_assert_nonnull(strstr(page, "\" selected>Far</option>"));
+	{
+		g_autofree gchar *in = g_strdup_printf("<tr data-groups=\"%s\"><td", wanted);
+		const gchar *at = page;
+		guint hidden = 0;
+		guint shown = 0;
+
+		while (NULL != (at = strstr(at, "data-groups=\"\" hidden data-group-out><td")))
+		{
+			hidden++;
+			at++;
+		}
+
+		for (at = page; NULL != (at = strstr(at, in)); at++)
+			shown++;
+
+		g_assert_cmpuint(hidden, ==, 2);
+		g_assert_cmpuint(shown, ==, 2);
+	}
 }
 
 /*
