@@ -1,0 +1,156 @@
+#+title: The planner
+#+description: Events with run-sheets and attendees, and one calendar over every dated record -- month, week and agenda, JSON and a subscribable feed
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-16]
+#+updated: [2026-10-16]
+#+version: 0.1.0
+
+* What it is
+
+The =planner= module answers "what is happening, and when". It keeps two things:
+
+- *Events* -- a meeting, an appointment, a deadline, a conference, a trip, a launch -- each with an ordered run-sheet (=event_agenda_item=), the people expected (=event_attendee=) and the ordinary tickets that prepare it.
+- *One calendar* over every dated record VENTURE keeps: events, tickets by their due date, planned activities, milestones, goals, sprints, deals by their expected close, the money calendar's bills and invoices, and imported CalDAV events. It is a page (=/calendar=, month, week or agenda), the same answer as JSON (=/api/v1/calendar=) and as a feed a calendar application subscribes to (=/calendar.ics=).
+
+The module requires only =core=: a meeting names nothing else. It suggests the modules whose records the calendar draws; each of those is a /source/ that is simply absent while its module is off.
+
+Nothing on the calendar is edited there. A date is a fact on its record and changes on that record; the calendar is a view.
+
+* Events
+
+** The record
+
+=event= is a field table like every other record type, so it has its list, form, REST CRUD, CLI verbs and AI schema for free (=venturectl describe event=).
+
+| Field | Meaning |
+|-------+---------|
+| =name= | What it is. Required. |
+| =kind= | =meeting= (the zero value), =appointment=, =deadline=, =conference=, =trip=, =launch=, =personal=, =other=. Decides the label and nothing else. |
+| =status= | =confirmed= (the zero value), =tentative=, =cancelled=. |
+| =starts_at= | When it begins. Required. A date for an all-day event. |
+| =ends_at= | When it is over. Optional: a deadline has no length. For an all-day event, its *last day*, inclusive. |
+| =all_day= | It takes whole days; its times are dates. |
+| =location= | The place in a few words: "Room 4", "Berlin". Not the =location= record type, which is an inventory place with no address. |
+| =address= | The full address, long text. |
+| =online_url= | The call or stream address; drawn as a link only when it is a web address. |
+| =description=, =notes= | Long text. |
+| =organizer_user_id= | The user running it. |
+| =venture_id=, =goal_id=, =milestone_id=, =contact_id=, =company_id= | What it belongs to and who it is with. Each must be the event's own organization's. |
+| =recurrence= | =none= (the zero value), =daily=, =weekly=, =monthly=, =yearly=. |
+| =recurs_until= | The last day it may repeat on. Only on an event that repeats. |
+| =tags= | Comma separated. |
+
+** Why =confirmed= is the zero value
+
+An event somebody wrote down without saying otherwise is one they expect to happen. Making =tentative= the default would hide that intent: every event created through the API or the CLI without a status would be drawn as pencilled in. =tentative= is an explicit hedge; =cancelled= keeps the record and takes it off the calendar unless finished items are asked for. =none= is the zero recurrence for the opposite reason: an event saved without saying is not silently repeated forever.
+
+** The rules (save validators, every writer)
+
+- A start is required.
+- An all-day event's times are calendar dates: both are normalised to midnight UTC on the day they fall on in the configured zone (=locale.timezone=), the rule every date in VENTURE follows. Its end is the last day, inclusive -- "1 to 3 March" is =starts_at= 1 March and =ends_at= 3 March -- and an empty end is the start's day. An end before the first day is refused. The calendar and the feed turn it into the exclusive end they need.
+- A timed event's end may not be before its start; equal is a moment.
+- =recurs_until= is refused on an event that does not repeat, and before the event's first day.
+- Its references must be the event's own organization's, judged only when written, so a row whose target has since moved stays editable.
+
+The audit diff is taken before validators run, so an all-day time written as =15:00= shows as written in the diff while the stored value is the midnight it was normalised to.
+
+** The run-sheet
+
+=event_agenda_item= is one line: =event_id= (required), =position= (lowest first), =title= (required), =minutes= (not negative; 0 is a moment), =presenter=, =notes=, =done=.
+
+Each item's start is the event's start plus every earlier item's minutes, computed by =venture_planner_agenda()= on every read and never stored. A stored start would go stale the moment an earlier item was lengthened. The event's page shows each line's start, the total minutes, and a warning when the sheet runs past the event's end. An all-day event's sheet has offsets ("+30 min") and no clock.
+
+** Attendees
+
+=event_attendee= is somebody expected: =contact_id=, =user_id=, =name= or =email= -- at least one, or the row names nobody -- with a =role= (=required= is the zero value, =optional=, =organizer=) and an =rsvp= (=pending= is the zero value, so nobody counts as coming because a form left the box alone; =yes=, =no=, =maybe=). An email must at least contain an =@=. The event's page lists organizers first and counts the answers; the count comes from =venture_planner_attendees()=, not the page.
+
+** Preparation is tickets
+
+A ticket has an =event_id=. Booking the room or printing the slides is an ordinary ticket -- assigned, due and on the board like any other -- so the planner adds one reference rather than a second task list. The event's page lists them with "N of M done"; a cancelled ticket did not happen and counts as neither.
+
+* The calendar
+
+** Sources
+
+A source is registered on the context with =venture_calendar_sources_add()=: a name (the kind its items carry and the kind filter names), a label, the record type it reads, optionally a module it needs, what it can be narrowed by, and its fetch function. While the type is hidden -- the module registry's mask is the one switch -- the source is skipped. The milestone source therefore follows the milestone type to whichever module owns it. A plugin adds a source the same way; a failed plugin load takes it back.
+
+| Kind | Reads | Dated by | Shown | Narrows by |
+|------+-------+----------+-------+------------|
+| =event= | =event= | =starts_at= to =ends_at=; repeating events expanded | not =cancelled= | venture, assignee (organizer or attendee) |
+| =activity= | =activity= of kind =task=, =call=, =meeting=, =followup= | =starts_at= to =ends_at=, else =due_at= | =planned= | assignee (=owner=) |
+| =ticket= | =ticket= | =due_at= | not =done= or =cancelled= | venture, assignee |
+| =milestone= | =milestone= | =due_on= | not =completed= or =cancelled= | venture |
+| =goal= | =goal= | =due_on= | =active=, =paused= | venture |
+| =sprint= | =sprint= | =starts_on= to =ends_on= (days, inclusive) | not =completed= | venture |
+| =deal= | =deal= | =expected_close_at= | not =won= or =lost= | venture, assignee (=owner_user_id=) |
+| =money= | the money calendar's expander | each item's day | as the money calendar shows it | venture |
+| =caldav= | =calendar_event= with no activity | =starts_at= to =ends_at= | not =cancelled= | -- |
+
+=done=1= adds what is finished: done tickets and activities, completed milestones and sprints, achieved goals, won deals, cancelled events. A lost deal and a cancelled ticket never show.
+
+Email activities are a record of a message, not a plan, and are never on the calendar. A synced CalDAV event the sync turned into an activity is drawn by the activity source only; drawing the =calendar_event= too would put the same meeting on the calendar twice.
+
+The money source is not a second copy of the money calendar: it asks the money calendar's own expander (=venture_money_calendar_events()=), per organization, and turns its events into items. A bill or invoice past due is carried to today exactly as =/money/calendar= carries it.
+
+** Narrowing a source cannot answer
+
+A query for one venture, or for "only mine", asks every source a question some cannot answer: an activity carries no venture, a milestone has nobody assigned. Such a source is left out *with a note* -- "Activities: left out, because they carry no venture" -- rather than shown whole, which would answer a different question. The notes are drawn above the calendar and returned in the JSON.
+
+=assignee= takes only =me=: the signed-in user's tickets and activities (by name), deals (by owner) and events (organized or attended). A token with no user is refused: it owns nothing.
+
+** Bounds
+
+Every source reads through =VentureQuery=, scoped to the organization and bounded by =venture_aggregate_get_max_rows()= (20 000). A source that finds more is *refused*: it adds no items and a note says what was left out and how to narrow it. A month that silently drew the first twenty thousand tickets would look complete and not be. The other sources still answer.
+
+A span is at most =VENTURE_CALENDAR_MAX_DAYS= (367) days. A repeating event is expanded from its first start each time (a monthly event on the 31st is on the 28th in February and back on the 31st in March), starting from an index computed from the span rather than walking from a start years ago, and contributes at most =VENTURE_CALENDAR_MAX_OCCURRENCES= (400) occurrences; a daily event over the longest span stays under it. The series rows themselves count toward the source's bound.
+
+Time comparisons are filters on date-time fields, which the query emitter normalises (six fraction digits), so nothing compares stored time text by hand. Every boundary is midnight UTC; the configured zone decides only which day "today" is and which day a timed item is drawn on.
+
+** The span
+
+| =view= | Covers |
+|--------+--------|
+| =month= (default) | the month holding =date= (today when absent) |
+| =week= | Monday to Sunday of the week holding =date= |
+| =agenda= | thirty days from =date= |
+
+=from= and =to= override the view's span, both days inclusive as a person writes them. =from= alone starts the view's length there. =to= without =from=, a =to= before =from=, and a span past 367 days are refused.
+
+** Query parameters
+
+=view=, =date=, =from=, =to=, =kind= (repeat it, or a comma list), =venture_id=, =assignee= (=me=), =done= (=1=), and on the API =organization_id=. They are read by the calendar's handler and never reach =venture_query_apply_query_string()=, so none of them can be mistaken for a field filter on a list page; =/api/v1/calendar= is registered ahead of =/api/v1/:type=, which would otherwise read "calendar" as a record type. A kind nobody registered is refused by name, so a typo is not an empty month.
+
+** Three doors, one answer
+
+The page, the API and the feed run one handler. It reads the question, asks =venture_calendar_view_fetch()=, and draws the result:
+
+- =GET /calendar= (session): the month grid (Monday first, =data-no-sort=, because its rows are weeks and a sort would draw a wrong month), the week (the same grid, one row), or the agenda grouped by day. Kind checkboxes, a venture, "Only mine", "Include finished", previous, today and next. Each item is a link to its record, coloured by kind; an overdue one carries the accent and a badge.
+- =GET /api/v1/calendar= (viewer): ={from, to, view, venture_id, include_done, assignee, kinds, notes, count, items}=; each item has =kind=, =subkind=, =title=, =detail=, =start=, =end= (exclusive), =all_day=, =day=, =record_type=, =record_id=, =url=, =status=, =overdue= and =uid=.
+- =GET /calendar.ics= (viewer, so a calendar application subscribes with a token): one VEVENT per item, written by =venture_ical_event_append()= -- the CalDAV sync's folding and escaping -- with all-day items as =DATE= values and an exclusive end. Every item has a stable UID: the record's UUID, and for an occurrence of a repeating event the UUID and its day.
+
+Which days a trip covers (=venture_calendar_item_covers_day()=), the run-sheet's times, the attendees' answers and "N of M done" all come from core. The web layer draws; it computes nothing.
+
+** From the command line
+
+#+begin_src sh
+venturectl calendar show from=2026-03-01 to=2026-03-31
+venturectl calendar show view=week date=2026-03-09 kind=event,ticket assignee=me
+venturectl calendar show from=2026-03-01 to=2026-03-31 -f json
+venturectl create event name="Board meeting" starts_at=2026-03-09T09:00:00Z ends_at=2026-03-09T10:00:00Z
+venturectl create event_agenda_item event_id=4 title="Opening" position=1 minutes=20
+venturectl create event_attendee event_id=4 contact_id=12 rsvp=yes
+venturectl update ticket 31 event_id=4
+#+end_src
+
+=calendar show= is a convenience over =GET /api/v1/calendar=: every argument goes into the query string, and the agenda is printed by day. =-f json= prints the server's answer as it came.
+
+* Where the code is
+
+- =src/planner/venture-planner-records.c= -- the three field tables and their enums.
+- =src/planner/venture-planner.c= -- the validators, the run-sheet, attendees and preparation tickets.
+- =src/planner/venture-calendar-view.c= -- the source registry, the span, the fetch, JSON and the feed.
+- =src/planner/venture-calendar-sources.c= -- the built-in sources.
+- =src/planner/venture-planner-web.inc= -- the page, its twins and the event's block.
+- =migrations/*/000914_planner_events.sql=, =000915_ticket_event.sql= -- additive schema checks; nothing is backfilled.
+- =tests/test-planner.c= -- the rules, the run-sheet, every source in and out of the span, the filters, the bound, recurrence, the feed and the three doors.

@@ -731,6 +731,20 @@ manager_kind_remove(VenturePluginManager *self, const gchar *name)
 	venture_plugin_provides_registry_remove(venture_context_get_plugin_provides(self->context), name);
 }
 
+/* The calendar's sources: a plugin adds one with
+ * venture_calendar_sources_add(), and a failed load takes it back. */
+static GStrv
+manager_calendar_names(VenturePluginManager *self)
+{
+	return venture_calendar_sources_list(self->context);
+}
+
+static void
+manager_calendar_remove(VenturePluginManager *self, const gchar *name)
+{
+	venture_calendar_sources_remove(self->context, name);
+}
+
 static void
 manager_runtime_remove(VenturePluginManager *self, const gchar *name)
 {
@@ -756,6 +770,7 @@ static const ManagerRegistry manager_registries[] = {
 	{ manager_report_names, manager_report_remove },
 	{ manager_rule_names, manager_rule_remove },
 	{ manager_kind_names, manager_kind_remove },
+	{ manager_calendar_names, manager_calendar_remove },
 	{ venture_plugin_manager_list_runtimes, manager_runtime_remove }
 };
 

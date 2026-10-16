@@ -221,6 +221,11 @@ venture_context_new(
 	 * loop, and achieved and done times that follow the status. */
 	venture_goals_install(self);
 
+	/* Events whose end is not before their start and whose all-day times
+	 * are dates, agenda items and attendees that belong to their event's
+	 * organization; and the calendar's built-in sources. */
+	venture_planner_install(self);
+
 	/* Arbitrage trades and legs: an executed leg posts on save through the
 	 * ledger's source registry, stock legs are executed by an action that
 	 * moves the units once, and a closed trade's executed legs are frozen. */

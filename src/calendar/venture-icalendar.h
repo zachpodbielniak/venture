@@ -69,6 +69,18 @@ VentureICalEvent *venture_ical_event_parse(const gchar *text, GError **error);
  * Returns: (transfer full): the text
  */
 gchar *venture_ical_event_format(const VentureICalEvent *event, GDateTime *stamp);
+/**
+ * venture_ical_event_append:
+ * @calendar: a VCALENDAR being written, between its BEGIN and END lines
+ * @event: an event with at least a UID and a start
+ * @stamp: (nullable): DTSTAMP; %NULL is now
+ *
+ * Appends one VEVENT, CRLF-terminated, escaped and folded like
+ * venture_ical_event_format(). Unlike it, an all-day event is written with
+ * DATE values (its end exclusive), which is what a subscribed calendar
+ * needs to draw it across whole days.
+ */
+void venture_ical_event_append(GString *calendar, const VentureICalEvent *event, GDateTime *stamp);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureICalEvent, venture_ical_event_free)
 G_END_DECLS
 #endif

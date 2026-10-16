@@ -4351,6 +4351,8 @@ main(
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  mail sync|contact|dismiss          inbound mail sync and unmatched senders\n"
 		"  calendar sync [organization_id=N]  two-way CalDAV sweep\n"
+		"  calendar show [view=month|week|agenda] [date=D] [from=D to=D] [kind=K,..]\n"
+		"                [venture_id=N] [assignee=me] [done=1]  the unified calendar\n"
 		"  quote send|accept|decline|revise|start-subscription ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"

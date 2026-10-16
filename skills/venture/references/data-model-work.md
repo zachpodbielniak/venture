@@ -19,7 +19,8 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   an epic or none; task/bug/research under an epic, a story or none;
   subtask under a task/story/bug/research, required -- judged only when
   written), `repo_id -> forge_repo`, `milestone_id`, `goal_id -> goal`,
-  `release_id`, `sprint_id`, `story_points`, `estimate_hours`, `due_at`,
+  `release_id`, `sprint_id`, `event_id` (planner: the event it prepares),
+  `story_points`, `estimate_hours`, `due_at`,
   `resolution`, `tags`. Derived: `resolved_at`, SLA due times
   (`first_response_due_at`, `resolution_due_at`, `first_responded_at`,
   `sla_breached`), `logged_hours`. `satisfaction`
@@ -39,6 +40,26 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   `sprint` (`status` [planned|active|completed], `starts_on`, `ends_on`,
   `capacity_points`), `routing_rule` (`strategy`
   [round_robin|least_busy|first], `assignees`, matching kind/priority/tag).
+
+## planner (requires core; suggests goals, tickets, factory, crm, activities, money_calendar, calendar) -- no reports
+
+- `event` -- something at a time. **name**, `kind`
+  [meeting|appointment|deadline|conference|trip|launch|personal|other],
+  `status` [confirmed|tentative|cancelled], **starts_at**, `ends_at` (all
+  day: the last day, inclusive), `all_day`, `location` (text, not the
+  record type), `address`, `online_url`, `description`, `notes`,
+  `organizer_user_id`, `venture_id`, `goal_id`, `milestone_id`,
+  `contact_id`, `company_id`, `recurrence` [none|daily|weekly|monthly|yearly],
+  `recurs_until`, `tags`.
+- `event_agenda_item` -- one run-sheet line. **event_id**, `position`,
+  **title**, `minutes`, `presenter`, `notes`, `done`. Start times are
+  computed, never stored.
+- `event_attendee` -- **event_id**, one of `contact_id`/`user_id`/`name`/
+  `email`, `role` [required|optional|organizer], `rsvp`
+  [pending|yes|no|maybe].
+- A ticket's `event_id` makes it a preparation task of the event.
+- The calendar (`/calendar`, `/api/v1/calendar`, `/calendar.ics`) reads
+  every module's dated records: [planner.md](planner.md).
 
 ## kb (requires core) -- no reports
 

@@ -1183,6 +1183,10 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/sprints"),
 	                 ==, SOUP_STATUS_FOUND);
+	/* The planner's calendar draws every dated record of every module
+	 * at once: who meets whom, what is due, what money moves. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/calendar"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/runs"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/inbox/read",
@@ -1510,6 +1514,12 @@ test_auth_api_refuses_anonymous_requests(
 		"/api/v1/tickets/1/sla",
 		"/api/v1/sprints",
 		"/api/v1/sprints/1",
+		/* The calendar and its feed: the same answer as the page. */
+		"/api/v1/calendar",
+		"/calendar.ics",
+		"/api/v1/event",
+		"/api/v1/event_agenda_item",
+		"/api/v1/event_attendee",
 		"/api/v1/runs",
 		"/api/v1/budgets",
 		"/api/v1/palette?q=a",
