@@ -597,6 +597,15 @@ venture_web_page(
 	const gchar		*content
 );
 
+/* An event's own block on its record page, defined with the calendar in
+ * planner/venture-planner-web.inc. */
+static void
+venture_planner_web_append_event_block(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+);
+
 /* The dashboards, defined beside their pages further down but reached
  * from the home page and the sidebar above them. */
 static gchar *
@@ -1311,6 +1320,24 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"goals"
 	},
 	{
+		"/calendar", "Calendar",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\"/>"
+			"<path d=\"M3 10h18M8 3v4M16 3v4\"/><path d=\"M7 14h3v3H7z\"/>"
+		),
+		NULL,
+		"planner"
+	},
+	{
+		"/e/event", "Events",
+		VENTURE_ICON(
+			"<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\"/>"
+			"<path d=\"M3 10h18M8 3v4M16 3v4\"/><path d=\"M8 15h8\"/>"
+		),
+		NULL,
+		"planner"
+	},
+	{
 		"/e/form", "Forms",
 		VENTURE_ICON(
 			"<rect x=\"4\" y=\"3\" width=\"16\" height=\"18\" rx=\"1\"/>"
@@ -1909,6 +1936,13 @@ static const gchar *const venture_web_nav_operations[] = {
 	NULL
 };
 
+/* When things happen: the one calendar over every dated record, and the
+ * events that exist only to be on it. */
+static const gchar *const venture_web_nav_planner[] = {
+	"/calendar", "/e/event",
+	NULL
+};
+
 /* The operator's own side of the markets: the accounts (characters,
  * banks, seller accounts) a source reports, everything they hold, and
  * the ledger of what they traded. First under Trading because it is what
@@ -1971,6 +2005,7 @@ static const VentureWebNavSection venture_web_nav_sections[] = {
 	{ "Growth", NULL, venture_web_nav_growth },
 	{ "Support", NULL, venture_web_nav_support },
 	{ "Operations", NULL, venture_web_nav_operations },
+	{ "Planner", NULL, venture_web_nav_planner },
 	{ "Your accounts", "Trading", venture_web_nav_trading_accounts },
 	{ "Markets", "Trading", venture_web_nav_trading },
 	{ "Ideas", "Build", venture_web_nav_ideas },
@@ -9983,6 +10018,15 @@ venture_web_append_related(
 		    (VENTURE_TYPE_GOAL == G_OBJECT_TYPE(record)))
 			continue;
 
+		/* An event's agenda, attendees and preparation tickets are its
+		 * Run-sheet, Attendees and Preparation panels, in order and
+		 * counted; a list of their names here says it worse. */
+		if (((VENTURE_TYPE_EVENT_AGENDA_ITEM == types[i]) ||
+		     (VENTURE_TYPE_EVENT_ATTENDEE == types[i]) ||
+		     (VENTURE_TYPE_TICKET == types[i])) &&
+		    (VENTURE_TYPE_EVENT == G_OBJECT_TYPE(record)))
+			continue;
+
 		/* A trade's legs are its Legs panel, with venues, amounts and
 		 * Execute; listing their names again here says it worse. */
 		if ((VENTURE_TYPE_ARBITRAGE_LEG == types[i]) &&
@@ -11850,6 +11894,11 @@ venture_web_ui_detail(
 	if ((VENTURE_TYPE_FORM_SUBMISSION == entity_type) &&
 	    venture_web_module_enabled(self, "forms"))
 		venture_web_append_form_answers(self, content, record);
+
+	/* An event's run-sheet, attendees and preparation tickets. */
+	if ((VENTURE_TYPE_EVENT == entity_type) &&
+	    venture_web_module_enabled(self, "planner"))
+		venture_planner_web_append_event_block(self, content, record);
 
 	/* A goal's progress and its steps, in order. */
 	if ((VENTURE_TYPE_GOAL == entity_type) &&
@@ -32839,6 +32888,7 @@ venture_web_api_ticket_draft(
 #include "calendar/venture-calendar-web.inc"
 #include "core/venture-connector-web.inc"
 #include "money-calendar/venture-money-calendar-web.inc"
+#include "planner/venture-planner-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
 #include "report/venture-support-rollup-web.inc"
@@ -33414,6 +33464,9 @@ venture_web_server_new(
 	/* And /api/v1/arbitrage: the scan, recording, export and the
 	 * calculators, not a type. */
 	venture_arbitrage_pages_register(self);
+	/* The planner's calendar, ahead of /api/v1/:type, which would read
+	 * "calendar" as a record type. */
+	venture_planner_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
