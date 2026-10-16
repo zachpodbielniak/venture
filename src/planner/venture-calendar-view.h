@@ -420,6 +420,35 @@ JsonNode *venture_calendar_result_to_json(const VentureCalendarResult *result, c
 gchar *venture_calendar_result_to_ics(const VentureCalendarResult *result);
 
 /**
+ * venture_calendar_result_to_org:
+ * @result: a result
+ * @timezone: (nullable): the zone times are written in; %NULL is UTC
+ * @base_url: (nullable): the install's public address; links are
+ *   site-relative without one
+ * @from_day: the first day covered, YYYY-MM-DD, for the header
+ * @to_day: the last day covered, inclusive
+ *
+ * The calendar as an org-mode file for org-agenda: one heading per item.
+ * A due date -- a ticket, an activity, a milestone, a goal, a deal close,
+ * a bill -- is a `TODO` (or `DONE`) heading with a `DEADLINE:`; an event,
+ * a sprint or a synced meeting is a plain heading with an active
+ * timestamp, which the agenda shows on its day. Times are written in
+ * @timezone, as org timestamps carry none. Each heading keeps the item's
+ * stable identifier as `:ID:`, so a refreshed file is the same entries.
+ * Notes become `#` comment lines at the top: a feed missing a kind says so.
+ *
+ * Returns: (transfer full): the text
+ */
+gchar *
+venture_calendar_result_to_org(
+	const VentureCalendarResult	*result,
+	GTimeZone			*timezone,
+	const gchar			*base_url,
+	const gchar			*from_day,
+	const gchar			*to_day
+);
+
+/**
  * venture_calendar_register_builtin_sources:
  * @context: the context
  *

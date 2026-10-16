@@ -499,6 +499,8 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "The outreach campaign this paid for; its own spend figure is then not counted again",
 	                  "campaign", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("event-id", "Event", "Optional: the planner event this paid for; counted against its budget",
+	                  "event", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 

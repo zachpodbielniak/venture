@@ -463,6 +463,7 @@ venture_web_chat_append_starters(
 );
 
 static void activity_lazy_sweep(VentureWebServer *self, HtmxRequest *request);
+static void planner_lazy_sweep(VentureWebServer *self);
 
 static gboolean
 venture_web_field_is_machinery(const gchar *name);
@@ -1338,6 +1339,15 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"planner"
 	},
 	{
+		"/roadmap", "Roadmap",
+		VENTURE_ICON(
+			"<path d=\"M3 6h10M7 12h12M5 18h8\"/>"
+			"<path d=\"M3 3v18\"/>"
+		),
+		NULL,
+		"planner"
+	},
+	{
 		"/e/form", "Forms",
 		VENTURE_ICON(
 			"<rect x=\"4\" y=\"3\" width=\"16\" height=\"18\" rx=\"1\"/>"
@@ -1939,7 +1949,7 @@ static const gchar *const venture_web_nav_operations[] = {
 /* When things happen: the one calendar over every dated record, and the
  * events that exist only to be on it. */
 static const gchar *const venture_web_nav_planner[] = {
-	"/calendar", "/e/event",
+	"/calendar", "/e/event", "/roadmap",
 	NULL
 };
 
@@ -10018,12 +10028,14 @@ venture_web_append_related(
 		    (VENTURE_TYPE_GOAL == G_OBJECT_TYPE(record)))
 			continue;
 
-		/* An event's agenda, attendees and preparation tickets are its
-		 * Run-sheet, Attendees and Preparation panels, in order and
-		 * counted; a list of their names here says it worse. */
+		/* An event's agenda, attendees, preparation tickets and
+		 * expenses are its Run-sheet, Attendees, Preparation and Budget
+		 * panels, in order and counted; a list of their names here says
+		 * it worse. */
 		if (((VENTURE_TYPE_EVENT_AGENDA_ITEM == types[i]) ||
 		     (VENTURE_TYPE_EVENT_ATTENDEE == types[i]) ||
-		     (VENTURE_TYPE_TICKET == types[i])) &&
+		     (VENTURE_TYPE_TICKET == types[i]) ||
+		     (VENTURE_TYPE_EXPENSE == types[i])) &&
 		    (VENTURE_TYPE_EVENT == G_OBJECT_TYPE(record)))
 			continue;
 
@@ -12621,6 +12633,7 @@ venture_web_ui_tickets(
 	 * so a breached card is red the first time anybody looks. */
 	venture_sla_sweep(self->context, 50, NULL);
 	activity_lazy_sweep(self, request);
+	planner_lazy_sweep(self);
 
 	query = venture_web_ticket_query(self, request, &error);
 
@@ -28701,6 +28714,7 @@ venture_web_notification_tone(VentureNotificationKind kind)
 	{
 	case VENTURE_NOTIFICATION_KIND_MENTION:  return "accent";
 	case VENTURE_NOTIFICATION_KIND_REPLY:    return "accent";
+	case VENTURE_NOTIFICATION_KIND_REMINDER: return "info";
 	case VENTURE_NOTIFICATION_KIND_ASSIGNED: return "info";
 	case VENTURE_NOTIFICATION_KIND_SLA:      return "negative";
 	case VENTURE_NOTIFICATION_KIND_BUDGET:   return "warning";
@@ -28744,6 +28758,7 @@ venture_web_ui_inbox(
 	 * so the inbox never says "nothing" about a breach an hour old. */
 	venture_sla_sweep(self->context, 50, NULL);
 	activity_lazy_sweep(self, request);
+	planner_lazy_sweep(self);
 
 	filter = htmx_request_get_query_param(request, "show");
 	unread_only = (0 != g_strcmp0(filter, "all"));
@@ -28979,6 +28994,7 @@ venture_web_api_inbox(
 
 	venture_sla_sweep(self->context, 50, NULL);
 	activity_lazy_sweep(self, request);
+	planner_lazy_sweep(self);
 
 	unread = htmx_request_get_query_param(request, "unread");
 	limit = htmx_request_get_query_param(request, "limit");

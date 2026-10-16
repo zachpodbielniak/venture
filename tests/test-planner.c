@@ -1548,6 +1548,33 @@ test_http(
 		g_assert_true(opening < figures);
 		ASSERT_CONTAINS(event_page, "1 of 2 done");
 		ASSERT_CONTAINS(event_page, "href=\"https://meet.example.test/q\">Join online</a>");
+		/* The budget card, with its expenses kept out of the generic list. */
+		ASSERT_CONTAINS(event_page, "<div class=\"card event-budget\">");
+	}
+
+	/* --- The org-agenda file, the roadmap and the sweep --- */
+
+	{
+		g_autofree gchar *org = NULL;
+		g_autofree gchar *roadmap_json = NULL;
+		g_autofree gchar *roadmap_page = NULL;
+		g_autofree gchar *swept = NULL;
+
+		g_assert_cmpuint(server_request(fixture, "GET",
+			"/calendar.org?from=2026-03-01&to=2026-03-31&done=1", NULL, NULL, &org), ==, SOUP_STATUS_OK);
+		ASSERT_CONTAINS(org, "* Quarterly review :event:");
+		ASSERT_CONTAINS(org, "* TODO Book the room :ticket:");
+		ASSERT_CONTAINS(org, "* DONE Print slides :ticket:");
+
+		g_assert_cmpuint(server_request(fixture, "GET", "/api/v1/roadmap", NULL, NULL, &roadmap_json),
+		                 ==, SOUP_STATUS_OK);
+		ASSERT_CONTAINS(roadmap_json, "\"rows\"");
+		g_assert_cmpuint(server_request(fixture, "GET", "/roadmap", NULL, NULL, &roadmap_page),
+		                 ==, SOUP_STATUS_OK);
+		ASSERT_CONTAINS(roadmap_page, "<h1>Roadmap</h1>");
+		g_assert_cmpuint(server_request(fixture, "POST", "/api/v1/calendar/reminders", NULL, NULL, &swept),
+		                 ==, SOUP_STATUS_OK);
+		ASSERT_CONTAINS(swept, "\"reminded\"");
 	}
 }
 
@@ -1700,6 +1727,509 @@ test_cli(
 	refused = run_cli(fixture, typo, FALSE);
 }
 
+/* ==========================================================================
+ * Reminders
+ * ========================================================================== */
+
+static gint64
+user_new(
+	Fixture		*fixture,
+	const gchar	*username
+){
+	g_autoptr(VentureEntity) user = NULL;
+
+	user = g_object_new(VENTURE_TYPE_USER, "username", username, "display-name", username,
+	                    "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	save(fixture, user);
+
+	return ID(user);
+}
+
+static gint64
+attend(
+	Fixture		*fixture,
+	VentureEntity	*event,
+	gint64		 user_id,
+	VentureAttendeeRsvp rsvp
+){
+	g_autoptr(VentureEntity) attendee = VENTURE_ENTITY(venture_event_attendee_new());
+
+	g_object_set(attendee, "event-id", ID(event), "user-id", user_id, "rsvp", rsvp, NULL);
+	save(fixture, attendee);
+
+	return ID(attendee);
+}
+
+/* How many reminders @user_id has in their inbox. */
+static guint
+reminders_for(
+	Fixture		*fixture,
+	gint64		 user_id
+){
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) error = NULL;
+	guint n;
+	guint i;
+
+	rows = venture_notify_list(fixture->context, user_id, FALSE, 200, &error);
+	g_assert_no_error(error);
+	n = 0;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureNotificationKind kind;
+
+		g_object_get(g_ptr_array_index(rows, i), "kind", &kind, NULL);
+		n += (VENTURE_NOTIFICATION_KIND_REMINDER == kind);
+	}
+
+	return n;
+}
+
+static gint
+sweep_at(
+	Fixture		*fixture,
+	const gchar	*now
+){
+	g_autoptr(GDateTime) clock = at(now);
+	g_autoptr(GError) error = NULL;
+	gint reminded;
+
+	reminded = venture_planner_reminder_sweep(fixture->context, 0, clock, &error);
+	g_assert_no_error(error);
+
+	return reminded;
+}
+
+/*
+ * What breaks without these: a reminder sent every time somebody opens
+ * the inbox; one sent to an attendee who said no, or a day late for a
+ * meeting already under way; a weekly meeting reminded about once ever;
+ * and a reminder for an event that was cancelled.
+ */
+static void
+test_reminders(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) soon = NULL;
+	g_autoptr(VentureEntity) later = NULL;
+	g_autoptr(VentureEntity) cancelled = NULL;
+	g_autoptr(VentureEntity) begun = NULL;
+	g_autoptr(VentureEntity) daily = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GDateTime) told = NULL;
+	gint64 ben;
+	gint64 cleo;
+	gint64 dana;
+
+	(void)user_data;
+
+	ben = user_new(fixture, "ben");
+	cleo = user_new(fixture, "cleo");
+	dana = user_new(fixture, "dana");
+
+	/* Starts in thirty minutes, reminds an hour ahead: due now. */
+	soon = event_new(fixture, "Board call", "2026-03-10T09:00:00Z", NULL);
+	g_object_set(soon, "remind-minutes", (gint64)60, "organizer-user-id", ben, NULL);
+	save(fixture, soon);
+	attend(fixture, soon, cleo, VENTURE_ATTENDEE_RSVP_YES);
+	attend(fixture, soon, dana, VENTURE_ATTENDEE_RSVP_NO);
+	attend(fixture, soon, ben, VENTURE_ATTENDEE_RSVP_YES);
+
+	later = event_new(fixture, "Lunch", "2026-03-10T12:00:00Z", NULL);
+	g_object_set(later, "remind-minutes", (gint64)60, "organizer-user-id", ben, NULL);
+	save(fixture, later);
+
+	cancelled = event_new(fixture, "Off", "2026-03-10T08:45:00Z", NULL);
+	g_object_set(cancelled, "remind-minutes", (gint64)60, "organizer-user-id", ben,
+	             "status", VENTURE_EVENT_STATUS_CANCELLED, NULL);
+	save(fixture, cancelled);
+
+	begun = event_new(fixture, "Already on", "2026-03-10T08:25:00Z", NULL);
+	g_object_set(begun, "remind-minutes", (gint64)60, "organizer-user-id", ben, NULL);
+	save(fixture, begun);
+
+	daily = event_new(fixture, "Stand-up", "2026-03-01T09:00:00Z", "2026-03-01T09:15:00Z");
+	g_object_set(daily, "remind-minutes", (gint64)45, "organizer-user-id", cleo,
+	             "recurrence", VENTURE_EVENT_RECURRENCE_DAILY, NULL);
+	save(fixture, daily);
+
+	/* Board call and today's stand-up; organizer and attendee once each. */
+	g_assert_cmpint(sweep_at(fixture, "2026-03-10T08:30:00Z"), ==, 2);
+	g_assert_cmpuint(reminders_for(fixture, ben), ==, 1);
+	g_assert_cmpuint(reminders_for(fixture, cleo), ==, 2);
+	g_assert_cmpuint(reminders_for(fixture, dana), ==, 0);
+
+	stored = venture_database_get(fixture->database, VENTURE_TYPE_EVENT, ID(daily), NULL);
+	g_object_get(stored, "reminded-for", &told, NULL);
+	assert_time(told, "2026-03-10T09:00:00Z");
+
+	/* Looking again tells nobody anything twice. */
+	g_assert_cmpint(sweep_at(fixture, "2026-03-10T08:40:00Z"), ==, 0);
+	g_assert_cmpuint(reminders_for(fixture, cleo), ==, 2);
+
+	/* Lunch comes due; the next day's stand-up is a new occurrence. */
+	g_assert_cmpint(sweep_at(fixture, "2026-03-10T11:10:00Z"), ==, 1);
+	g_assert_cmpint(sweep_at(fixture, "2026-03-11T08:20:00Z"), ==, 1);
+	g_assert_cmpuint(reminders_for(fixture, cleo), ==, 3);
+
+	/* A lead past four weeks is refused when written. */
+	g_object_set(later, "remind-minutes", (gint64)(VENTURE_PLANNER_MAX_REMIND_MINUTES + 1), NULL);
+	save_refused(fixture, later, "four weeks");
+}
+
+/* ==========================================================================
+ * The org-agenda file
+ * ========================================================================== */
+
+/*
+ * What breaks without these: org-agenda showing a due ticket as an
+ * appointment rather than a deadline, an all-day trip a day too long, a
+ * title with a newline in it starting a heading of its own, and links
+ * that only work from inside the server.
+ */
+static void
+test_org(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) meeting = NULL;
+	g_autoptr(VentureEntity) trip = NULL;
+	g_autoptr(VentureCalendarResult) result = NULL;
+	g_autoptr(GTimeZone) utc = g_time_zone_new_utc();
+	g_autofree gchar *org = NULL;
+
+	(void)user_data;
+
+	meeting = event_new(fixture, "Planning\n* not a heading", "2026-03-11T09:00:00Z", "2026-03-11T12:00:00Z");
+	g_object_set(meeting, "location", "Room 4", NULL);
+	save(fixture, meeting);
+
+	trip = event_new(fixture, "Trip", "2026-03-14", "2026-03-16");
+	g_object_set(trip, "all-day", TRUE, NULL);
+	save(fixture, trip);
+
+	ticket(fixture, "File the report", "2026-03-12", NULL);
+	ticket(fixture, "Filed already", "2026-03-13", "done");
+
+	result = calendar(fixture, "2026-03-09", "2026-03-23", NULL, 0, TRUE);
+	org = venture_calendar_result_to_org(result, utc, "https://venture.example/", "2026-03-09", "2026-03-22");
+
+	ASSERT_CONTAINS(org, "#+title: VENTURE calendar\n");
+	ASSERT_CONTAINS(org, "* Planning * not a heading :event:");
+	g_assert_null(strstr(org, "\n* not a heading"));
+	ASSERT_CONTAINS(org, "<2026-03-11 Wed 09:00-12:00>");
+	ASSERT_CONTAINS(org, "* Trip :event:");
+	ASSERT_CONTAINS(org, "<2026-03-14 Sat>--<2026-03-16 Mon>");
+	ASSERT_CONTAINS(org, "* TODO File the report :ticket:");
+	ASSERT_CONTAINS(org, "DEADLINE: <2026-03-12 Thu");
+	ASSERT_CONTAINS(org, "* DONE Filed already :ticket:");
+	ASSERT_CONTAINS(org, ":ID: ");
+	ASSERT_CONTAINS(org, "[[https://venture.example/e/event/");
+	ASSERT_CONTAINS(org, "Room 4");
+}
+
+/* ==========================================================================
+ * Budget
+ * ========================================================================== */
+
+static void
+expense(
+	Fixture		*fixture,
+	VentureEntity	*event,
+	const gchar	*amount
+){
+	g_autoptr(VentureEntity) row = VENTURE_ENTITY(venture_expense_new());
+
+	g_object_set(row, "description", "Venue deposit", "event-id", ID(event), NULL);
+	field(row, "amount", amount);
+	field(row, "occurred-at", "2026-03-02");
+	save(fixture, row);
+}
+
+/*
+ * What breaks without these: an event's spend added across two
+ * currencies into one meaningless figure, the remainder converted on a
+ * guess, and an expense in one organization counted against another's
+ * event.
+ */
+static void
+test_budget(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) fair = NULL;
+	g_autoptr(VentureEntity) elsewhere = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(GPtrArray) spent = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureMoney) budget = NULL;
+	g_autoptr(VentureMoney) left = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *left_text = NULL;
+
+	(void)user_data;
+
+	fair = event_new(fixture, "Spring fair", "2026-04-01", NULL);
+	field(fair, "budget", "500.00 USD");
+	save(fixture, fair);
+
+	expense(fixture, fair, "120.00 USD");
+	expense(fixture, fair, "30.00 USD");
+	expense(fixture, fair, "50.00 EUR");
+
+	spent = venture_planner_event_spend(fixture->database, fair, &rows, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(spent->len, ==, 2);
+	g_assert_cmpuint(rows->len, ==, 3);
+	g_assert_cmpint(venture_money_get_amount(venture_money_totals_lookup(spent, "USD")), ==, 15000);
+	g_assert_cmpint(venture_money_get_amount(venture_money_totals_lookup(spent, "EUR")), ==, 5000);
+
+	/* Only the budget's own currency comes off it. */
+	g_object_get(fair, "budget", &budget, NULL);
+	left = venture_planner_budget_remaining(budget, spent, &error);
+	g_assert_no_error(error);
+	left_text = venture_money_to_string(left);
+	g_assert_cmpstr(left_text, ==, "350.00 USD");
+
+	/* A negative budget is no budget. */
+	field(fair, "budget", "-1.00 USD");
+	save_refused(fixture, fair, "negative");
+
+	/* Another organization's expense cannot name this event. */
+	organization = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(organization, "name", "Elsewhere Ltd", NULL);
+	save(fixture, organization);
+	elsewhere = VENTURE_ENTITY(venture_expense_new());
+	venture_entity_set_organization_id(elsewhere, ID(organization));
+	g_object_set(elsewhere, "description", "Stray", "event-id", ID(fair), NULL);
+	field(elsewhere, "amount", "9.00 USD");
+	field(elsewhere, "occurred-at", "2026-03-02");
+	save_refused(fixture, elsewhere, "another organization");
+}
+
+/* ==========================================================================
+ * The roadmap
+ * ========================================================================== */
+
+static VentureEntity *
+work_ticket(
+	Fixture			*fixture,
+	const gchar		*title,
+	VentureIssueType	 type,
+	gint64			 parent_id,
+	gint64			 milestone_id,
+	gint64			 goal_id,
+	VentureTicketStatus	 status
+){
+	VentureEntity *row = VENTURE_ENTITY(venture_ticket_new());
+
+	g_object_set(row, "title", title, "issue-type", type, "parent-id", parent_id,
+	             "milestone-id", milestone_id, "goal-id", goal_id, "status", status, NULL);
+	save(fixture, row);
+
+	return row;
+}
+
+static VentureEntity *
+goal_new(
+	Fixture			*fixture,
+	const gchar		*name,
+	VentureGoalStatus	 status
+){
+	VentureEntity *goal = VENTURE_ENTITY(venture_goal_new());
+
+	g_object_set(goal, "name", name, "start-value", 0.0, "target-value", 10.0,
+	             "status", status, NULL);
+	field(goal, "due-on", "2026-06-01");
+	save(fixture, goal);
+
+	return goal;
+}
+
+static VentureEntity *
+milestone_new(
+	Fixture		*fixture,
+	const gchar	*name,
+	gint64		 goal_id
+){
+	VentureEntity *milestone = VENTURE_ENTITY(venture_milestone_new());
+
+	g_object_set(milestone, "name", name, "goal-id", goal_id, NULL);
+	field(milestone, "due-on", "2026-05-01");
+	save(fixture, milestone);
+
+	return milestone;
+}
+
+static VenturePlannerRoadmap *
+roadmap(
+	Fixture		 *fixture,
+	gint64		  goal_id,
+	gboolean	  include_done,
+	GError		**error
+){
+	g_autoptr(GDateTime) now = at("2026-03-01");
+	VenturePlannerRoadmapQuery query;
+
+	venture_planner_roadmap_query_init(&query);
+	query.organization_id = fixture->organization_id;
+	query.goal_id = goal_id;
+	query.include_done = include_done;
+	query.now = now;
+
+	return venture_planner_roadmap(fixture->context, &query, error);
+}
+
+static VenturePlannerRoadmapRow *
+row_at(
+	VenturePlannerRoadmap	*map,
+	guint			 index
+){
+	g_assert_cmpuint(index, <, map->rows->len);
+
+	return g_ptr_array_index(map->rows, index);
+}
+
+/*
+ * What breaks without these: a roadmap whose epics float free of the
+ * milestones they are planned into, an epic drawn twice (under its
+ * milestone and again under its goal), progress that disagrees with the
+ * epic's own page, and a finished goal's milestones promoted to "no goal"
+ * as if they were orphans.
+ */
+static void
+test_roadmap(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) launch = NULL;
+	g_autoptr(VentureEntity) old_goal = NULL;
+	g_autoptr(VentureEntity) beta = NULL;
+	g_autoptr(VentureEntity) loose = NULL;
+	g_autoptr(VentureEntity) shipped = NULL;
+	g_autoptr(VentureEntity) onboarding = NULL;
+	g_autoptr(VentureEntity) billing = NULL;
+	g_autoptr(VentureEntity) stray = NULL;
+	g_autoptr(VentureEntity) story = NULL;
+	g_autoptr(VentureEntity) task = NULL;
+	g_autoptr(VenturePlannerRoadmap) map = NULL;
+	g_autoptr(VenturePlannerRoadmap) one = NULL;
+	g_autoptr(VenturePlannerRoadmap) all = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) json = NULL;
+
+	(void)user_data;
+
+	launch = goal_new(fixture, "Launch", VENTURE_GOAL_STATUS_ACTIVE);
+	old_goal = goal_new(fixture, "Last year", VENTURE_GOAL_STATUS_ACHIEVED);
+	beta = milestone_new(fixture, "Beta", ID(launch));
+	loose = milestone_new(fixture, "Housekeeping", 0);
+	shipped = milestone_new(fixture, "Old release", ID(old_goal));
+
+	/* In Beta, and naming the goal too: drawn once, under Beta. */
+	onboarding = work_ticket(fixture, "Onboarding", VENTURE_ISSUE_TYPE_EPIC, 0, ID(beta), ID(launch),
+	                         VENTURE_TICKET_STATUS_TODO);
+	story = work_ticket(fixture, "Sign-up", VENTURE_ISSUE_TYPE_STORY, ID(onboarding), 0, 0,
+	                    VENTURE_TICKET_STATUS_DONE);
+	task = work_ticket(fixture, "Emails", VENTURE_ISSUE_TYPE_TASK, ID(onboarding), 0, 0,
+	                   VENTURE_TICKET_STATUS_TODO);
+	billing = work_ticket(fixture, "Billing", VENTURE_ISSUE_TYPE_EPIC, 0, 0, ID(launch),
+	                      VENTURE_TICKET_STATUS_TODO);
+	stray = work_ticket(fixture, "Someday", VENTURE_ISSUE_TYPE_EPIC, 0, 0, 0, VENTURE_TICKET_STATUS_TODO);
+
+	map = roadmap(fixture, 0, FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(map->rows->len, ==, 6);
+	g_assert_cmpstr(row_at(map, 0)->title, ==, "Launch");
+	g_assert_cmpint(row_at(map, 0)->depth, ==, 0);
+	g_assert_cmpstr(row_at(map, 1)->title, ==, "Beta");
+	g_assert_cmpint(row_at(map, 1)->depth, ==, 1);
+	g_assert_cmpstr(row_at(map, 2)->title, ==, "Onboarding");
+	g_assert_cmpint(row_at(map, 2)->depth, ==, 2);
+	g_assert_cmpint(row_at(map, 2)->work_done, ==, 1);
+	g_assert_cmpint(row_at(map, 2)->work_total, ==, 2);
+	g_assert_cmpstr(row_at(map, 3)->title, ==, "Billing");
+	g_assert_cmpint(row_at(map, 3)->depth, ==, 1);
+	g_assert_cmpstr(row_at(map, 4)->title, ==, "Housekeeping");
+	g_assert_cmpint(row_at(map, 4)->depth, ==, 0);
+	g_assert_cmpstr(row_at(map, 5)->title, ==, "Someday");
+	g_assert_cmpstr(row_at(map, 5)->type, ==, "epic");
+
+	/* The window places a bar: the due date of Beta is inside it. */
+	g_assert_cmpfloat(venture_planner_roadmap_fraction(map, row_at(map, 1)->end), >, 0.0);
+	g_assert_cmpfloat(venture_planner_roadmap_fraction(map, row_at(map, 1)->end), <, 1.0);
+
+	json = venture_planner_roadmap_to_json(map);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(json), "rows")), ==, 6);
+
+	/* One goal: its own rows and nothing that serves none. */
+	one = roadmap(fixture, ID(launch), FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(one->rows->len, ==, 4);
+
+	/* Finished too: last year's goal comes back with its milestone. */
+	all = roadmap(fixture, 0, TRUE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(all->rows->len, ==, 8);
+
+	/* A goal that is not there is not an empty roadmap. */
+	g_assert_null(roadmap(fixture, 999999, FALSE, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+
+	(void)story;
+	(void)task;
+	(void)shipped;
+	(void)stray;
+}
+
+/* ==========================================================================
+ * The dashboard widget
+ * ========================================================================== */
+
+/*
+ * What breaks without these: a "coming up" card that disagrees with the
+ * calendar it links to, and a kinds option that is ignored.
+ */
+static void
+test_agenda_widget(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureDashboardWidget) widget = NULL;
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(VentureWidgetResult) tickets_only = NULL;
+	g_autoptr(VentureEntity) event = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) tomorrow = g_date_time_add_days(now, 1);
+	VentureWidgetScope scope;
+	JsonObject *data;
+
+	(void)user_data;
+
+	event = VENTURE_ENTITY(venture_event_new());
+	g_object_set(event, "name", "Supplier visit", "starts-at", tomorrow, NULL);
+	save(fixture, event);
+
+	memset(&scope, 0, sizeof(scope));
+	scope.organization_ids = &fixture->organization_id;
+	scope.n_organizations = 1;
+
+	widget = venture_dashboard_widget_new();
+	g_object_set(widget, "kind", "agenda", "options", "{\"days\": 3}", NULL);
+	result = venture_dashboard_render_widget(fixture->context, widget, &scope);
+	g_assert_null(result->error);
+	data = json_node_get_object(result->data);
+	g_assert_cmpint(json_object_get_int_member(data, "total"), ==, 1);
+	ASSERT_CONTAINS(result->html, "Supplier visit");
+
+	g_object_set(widget, "options", "{\"kinds\": [\"ticket\"]}", NULL);
+	tickets_only = venture_dashboard_render_widget(fixture->context, widget, &scope);
+	g_assert_null(tickets_only->error);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(tickets_only->data), "total"), ==, 0);
+}
+
 int
 main(
 	int	 argc,
@@ -1725,6 +2255,11 @@ main(
 	ADD("/planner/calendar/view-range", test_view_range);
 	ADD("/planner/calendar/money", test_money_source);
 	ADD("/planner/calendar/registry", test_source_registry);
+	ADD("/planner/reminders", test_reminders);
+	ADD("/planner/calendar/org", test_org);
+	ADD("/planner/budget", test_budget);
+	ADD("/planner/roadmap", test_roadmap);
+	ADD("/planner/agenda-widget", test_agenda_widget);
 	g_test_add("/planner/cli", CliFixture, NULL, cli_fixture_set_up,
 	           test_cli, cli_fixture_tear_down);
 	g_test_add("/planner/http", ServerFixture, NULL, server_fixture_set_up,

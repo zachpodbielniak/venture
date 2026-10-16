@@ -50,5 +50,16 @@ JsonNode *venture_calendar_sync_service_sweep(VentureCalendarSyncService *self, 
  * Returns: (transfer full): "<uuid>@venture"
  */
 gchar *venture_calendar_sync_event_uid(VentureEntity *activity);
+/**
+ * venture_calendar_sync_planner_uid:
+ * @event: a planner event
+ *
+ * The UID a planner event is pushed under: its UUID and "@venture-event",
+ * distinct from an activity's "@venture" so a lost link is never read back
+ * as an activity.
+ *
+ * Returns: (transfer full): the UID
+ */
+gchar *venture_calendar_sync_planner_uid(VentureEntity *event);
 G_END_DECLS
 #endif

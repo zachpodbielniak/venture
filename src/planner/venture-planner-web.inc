@@ -7,8 +7,8 @@
  * span, the items, which day a multi-day item covers, the run-sheet's
  * running times and the answers counted all come from core
  * (venture-calendar-view.c, venture-planner.c). This file only draws
- * them, so /calendar, /api/v1/calendar and /calendar.ics are one answer
- * in three shapes.
+ * them, so /calendar, /api/v1/calendar, /calendar.ics and /calendar.org
+ * are one answer in four shapes.
  *
  * The query names -- view, date, from, to, kind, venture_id, assignee,
  * done -- are read here and never handed to venture_query_apply_query_string(),
@@ -571,7 +571,13 @@ planner_calendar_page(
 	g_string_append(content, "&amp;to=");
 	venture_html_escape_append(content, last_text);
 	venture_html_escape_append(content, filters);
-	g_string_append(content, "\">Subscribe (.ics)</a> <a class=\"btn btn-primary\" href=\"/e/event/new\">New event</a></div></div>");
+	g_string_append(content, "\">Subscribe (.ics)</a> <a class=\"btn\" href=\"/calendar.org?from=");
+	venture_html_escape_append(content, first);
+	g_string_append(content, "&amp;to=");
+	venture_html_escape_append(content, last_text);
+	venture_html_escape_append(content, filters);
+	g_string_append(content, "\">Org agenda (.org)</a> <a class=\"btn\" href=\"/roadmap\">Roadmap</a> "
+	                         "<a class=\"btn btn-primary\" href=\"/e/event/new\">New event</a></div></div>");
 
 	planner_calendar_append_steps(content, ask);
 	planner_calendar_append_filters(self, content, ask);
@@ -598,11 +604,12 @@ planner_calendar_page(
 }
 
 /*
- * The one handler behind /calendar, /api/v1/calendar and /calendar.ics:
- * the same question read the same way, answered as a page, as JSON or as
- * a feed. Each door carries its own guard -- a session for the page, the
- * viewer role for the API and the feed, which a calendar client reaches
- * with a token.
+ * The one handler behind /calendar, /api/v1/calendar, /calendar.ics and
+ * /calendar.org: the same question read the same way, answered as a page,
+ * as JSON, as an iCalendar feed or as an org-agenda file. Each door
+ * carries its own guard -- a session for the page, the viewer role for
+ * the API and the two feeds, which a calendar client or an editor's
+ * fetch reaches with a token.
  */
 static HtmxResponse *
 venture_planner_web_calendar(
@@ -619,14 +626,16 @@ venture_planner_web_calendar(
 	const gchar *path;
 	gboolean api;
 	gboolean feed;
+	gboolean org;
 
 	(void)params;
 
 	path = htmx_request_get_path(request);
 	api = g_str_has_prefix(path, "/api/");
 	feed = g_str_has_suffix(path, ".ics");
+	org = g_str_has_suffix(path, ".org");
 
-	if (api || feed)
+	if (api || feed || org)
 	{
 		gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
@@ -651,6 +660,11 @@ venture_planner_web_calendar(
 		planner_calendar_ask_clear(&ask);
 		return gate;
 	}
+
+	/* Reminders due are sent before the page is drawn, as the inbox
+	 * does; a feed fetch on a timer is not a person looking. */
+	if (!api && !feed && !org)
+		planner_lazy_sweep(self);
 
 	result = venture_calendar_view_fetch(self->context, &ask.query, &error);
 
@@ -677,6 +691,25 @@ venture_planner_web_calendar(
 		htmx_response_set_bytes(response, bytes);
 		htmx_response_set_content_type(response, "text/calendar; charset=utf-8");
 	}
+	else if (org)
+	{
+		g_autofree gchar *base_url = NULL;
+		g_autofree gchar *first = venture_time_to_date_string(ask.from, NULL);
+		g_autoptr(GDateTime) last = g_date_time_add_days(ask.to, -1);
+		g_autofree gchar *last_text = venture_time_to_date_string(last, NULL);
+		g_autofree gchar *text = NULL;
+		g_autoptr(GBytes) bytes = NULL;
+
+		g_object_get(venture_context_get_config(self->context), "server-base-url", &base_url, NULL);
+		text = venture_calendar_result_to_org(result, venture_context_get_timezone(self->context),
+		                                      base_url, first, last_text);
+		bytes = g_bytes_new(text, strlen(text));
+
+		response = htmx_response_new();
+		htmx_response_set_status(response, 200);
+		htmx_response_set_bytes(response, bytes);
+		htmx_response_set_content_type(response, "text/x-org; charset=utf-8");
+	}
 	else
 	{
 		response = planner_calendar_page(self, request, &ask, result);
@@ -698,6 +731,133 @@ planner_web_clock(
 	g_autoptr(GDateTime) local = g_date_time_to_timezone(when, venture_context_get_timezone(self->context));
 
 	return g_date_time_format(local, "%H:%M");
+}
+
+/*
+ * The budget card: the budget, what was spent per currency and what is
+ * left in the budget's currency, all from venture-planner.c, then the
+ * expenses themselves, newest first. Spending in a currency the budget is
+ * not in is shown beside it, never converted into it.
+ */
+static void
+planner_web_append_budget(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record
+){
+	g_autoptr(VentureMoney) budget = NULL;
+	g_autoptr(VentureMoney) remaining = NULL;
+	g_autoptr(GPtrArray) spent = NULL;
+	g_autoptr(GPtrArray) expenses = NULL;
+	g_autoptr(GError) error = NULL;
+	guint i;
+
+	g_object_get(record, "budget", &budget, NULL);
+	spent = venture_planner_event_spend(venture_context_get_database(self->context),
+	                                    record, &expenses, &error);
+
+	g_string_append_printf(content, "<div class=\"card event-budget\"><div class=\"card-head\"><h2>Budget</h2>"
+	                                "<a class=\"btn btn-sm\" href=\"/e/expense/new?event_id=%" G_GINT64_FORMAT
+	                                "&amp;organization_id=%" G_GINT64_FORMAT "\">Record expense</a>"
+	                                "</div><div class=\"card-body\">", venture_entity_get_id(record),
+	                       venture_entity_get_organization_id(record));
+
+	if (NULL == spent)
+	{
+		g_string_append(content, "<div class=\"notice negative\" role=\"alert\">");
+		venture_html_escape_append(content, (NULL != error) ? error->message : "The spend could not be read.");
+		g_string_append(content, "</div></div></div>");
+		return;
+	}
+
+	if (NULL != budget)
+		remaining = venture_planner_budget_remaining(budget, spent, NULL);
+
+	g_string_append(content, "<dl class=\"event-budget-figures\">");
+
+	if (NULL != budget)
+	{
+		g_autofree gchar *text = venture_money_to_display_string(budget, TRUE);
+
+		g_string_append(content, "<dt>Budget</dt><dd>");
+		venture_html_escape_append(content, text);
+		g_string_append(content, "</dd>");
+	}
+
+	g_string_append(content, "<dt>Spent</dt><dd>");
+
+	if (0 == spent->len)
+		g_string_append(content, "Nothing yet");
+
+	for (i = 0; i < spent->len; i++)
+	{
+		g_autofree gchar *text = venture_money_to_display_string(g_ptr_array_index(spent, i), TRUE);
+
+		if (i > 0)
+			g_string_append(content, ", ");
+
+		venture_html_escape_append(content, text);
+	}
+
+	g_string_append(content, "</dd>");
+
+	if (NULL != remaining)
+	{
+		g_autofree gchar *text = venture_money_to_display_string(remaining, TRUE);
+
+		g_string_append_printf(content, "<dt>Left</dt><dd class=\"%s\">",
+		                       venture_money_is_negative(remaining) ? "negative" : "");
+		venture_html_escape_append(content, text);
+		g_string_append(content, "</dd>");
+	}
+
+	g_string_append(content, "</dl>");
+
+	if ((NULL != remaining) && venture_money_is_negative(remaining))
+		g_string_append(content, "<div class=\"notice warning\" role=\"status\">Over budget.</div>");
+
+	if ((NULL != budget) && (spent->len > 1))
+		g_string_append(content, "<p class=\"muted\">Spending in another currency than the budget's "
+		                         "is listed, not taken off it: nothing is converted.</p>");
+
+	if ((NULL != expenses) && (expenses->len > 0))
+	{
+		g_string_append(content, "<ul class=\"event-expenses\">");
+
+		for (i = 0; i < expenses->len; i++)
+		{
+			VentureEntity *expense = g_ptr_array_index(expenses, i);
+			g_autofree gchar *label = venture_entity_get_display_name(expense);
+			g_autoptr(VentureMoney) amount = NULL;
+			g_autofree gchar *text = NULL;
+
+			g_object_get(expense, "amount", &amount, NULL);
+			text = (NULL != amount) ? venture_money_to_display_string(amount, TRUE) : NULL;
+
+			g_string_append_printf(content, "<li><a href=\"/e/expense/%" G_GINT64_FORMAT "\">",
+			                       venture_entity_get_id(expense));
+			venture_html_escape_append(content, label);
+			g_string_append(content, "</a>");
+
+			if (NULL != text)
+			{
+				g_string_append(content, " <span class=\"muted\">");
+				venture_html_escape_append(content, text);
+				g_string_append(content, "</span>");
+			}
+
+			g_string_append(content, "</li>");
+		}
+
+		g_string_append(content, "</ul>");
+	}
+	else if (NULL == budget)
+	{
+		g_string_append(content, "<p class=\"muted\">No budget and no expenses. An expense naming "
+		                         "this event is counted here.</p>");
+	}
+
+	g_string_append(content, "</div></div>");
 }
 
 /*
@@ -860,6 +1020,11 @@ venture_planner_web_append_event_block(
 
 	g_string_append(content, "</div></div>");
 
+	/* --- What it costs: its budget against the expenses naming it --- */
+
+	if (venture_web_module_enabled(self, "finance"))
+		planner_web_append_budget(self, content, record);
+
 	/* --- The work to prepare it: ordinary tickets --- */
 
 	if (!venture_web_module_enabled(self, "tickets"))
@@ -916,6 +1081,439 @@ venture_planner_web_append_event_block(
 	g_string_append(content, "</ul></div></div>");
 }
 
+/* --- The roadmap ----------------------------------------------------------------- */
+
+/* A whole-number id from the query string, or 0 when absent; refused when
+ * it is not one. */
+static gboolean
+planner_web_query_id(
+	HtmxRequest	 *request,
+	const gchar	 *name,
+	gint64		 *out,
+	GError		**error
+){
+	const gchar *text = htmx_request_get_query_param(request, name);
+	gchar *end = NULL;
+
+	*out = 0;
+
+	if (venture_string_is_empty(text))
+		return TRUE;
+
+	*out = g_ascii_strtoll(text, &end, 10);
+
+	if ((NULL == end) || ('\0' != *end) || (*out < 0))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s \"%s\" is not a record id", name, text);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* A calendar date from the query string; @last_day makes it the exclusive
+ * end after that day. */
+static gboolean
+planner_web_query_day(
+	HtmxRequest	 *request,
+	const gchar	 *name,
+	gboolean	  last_day,
+	GDateTime	**out,
+	GError		**error
+){
+	const gchar *text = htmx_request_get_query_param(request, name);
+	g_autoptr(GDateTime) day = NULL;
+
+	*out = NULL;
+
+	if (venture_string_is_empty(text))
+		return TRUE;
+
+	day = venture_time_from_string(text, NULL);
+
+	if (NULL == day)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s \"%s\" is not a date", name, text);
+		return FALSE;
+	}
+
+	*out = last_day ? g_date_time_add_days(day, 1) : g_steal_pointer(&day);
+
+	return TRUE;
+}
+
+/* The month ticks above the lanes, each at its place in the window. */
+static void
+planner_roadmap_append_axis(
+	GString				*html,
+	const VenturePlannerRoadmap	*roadmap
+){
+	g_autoptr(GDateTime) utc = g_date_time_to_utc(roadmap->from);
+	g_autoptr(GDateTime) month = g_date_time_new_utc(g_date_time_get_year(utc),
+	                                                 g_date_time_get_month(utc), 1, 0, 0, 0);
+	guint steps;
+
+	g_string_append(html, "<div class=\"roadmap-axis\">");
+
+	for (steps = 0; (steps < 48) && (g_date_time_compare(month, roadmap->to) < 0); steps++)
+	{
+		GDateTime *next;
+
+		if (g_date_time_compare(month, roadmap->from) >= 0)
+		{
+			/* The year only where it changes, or the ticks run together
+			 * in a narrow window. */
+			g_autofree gchar *label = g_date_time_format(month,
+				((0 == steps) || (1 == g_date_time_get_month(month))) ? "%b %Y" : "%b");
+
+			g_string_append_printf(html, "<span class=\"roadmap-tick\" style=\"left:%.2f%%\">",
+			                       100.0 * venture_planner_roadmap_fraction(roadmap, month));
+			venture_html_escape_append(html, label);
+			g_string_append(html, "</span>");
+		}
+
+		next = g_date_time_add_months(month, 1);
+		g_date_time_unref(month);
+		month = next;
+	}
+
+	g_string_append(html, "</div>");
+}
+
+/* One row's lane: the bar from its start to its due date, filled as far
+ * as its work is done, and today's line. A row with no due date is a
+ * marker at its start. */
+static void
+planner_roadmap_append_lane(
+	GString				*html,
+	const VenturePlannerRoadmap	*roadmap,
+	const VenturePlannerRoadmapRow	*row
+){
+	gdouble start;
+	gdouble end;
+	gdouble filled;
+
+	start = venture_planner_roadmap_fraction(roadmap, (NULL != row->start) ? row->start : roadmap->from);
+	end = (NULL != row->end) ? venture_planner_roadmap_fraction(roadmap, row->end) : start;
+
+	/* Written down after it was due: the bar is the due date alone. */
+	if (end < start)
+		start = end;
+
+	filled = (row->work_total > 0) ? (100.0 * (gdouble)row->work_done / (gdouble)row->work_total) : 0.0;
+
+	g_string_append(html, "<div class=\"roadmap-lane\">");
+	g_string_append_printf(html, "<span class=\"roadmap-bar roadmap-%s%s%s%s\" style=\"left:%.2f%%;width:%.2f%%\">"
+	                             "<span class=\"roadmap-fill\" style=\"width:%.1f%%\"></span></span>",
+	                       row->type, row->done ? " is-done" : "", row->overdue ? " is-overdue" : "",
+	                       (NULL == row->end) ? " is-open" : "",
+	                       100.0 * start, MAX(100.0 * (end - start), 0.8), filled);
+	g_string_append_printf(html, "<span class=\"roadmap-today\" style=\"left:%.2f%%\"></span></div>",
+	                       100.0 * venture_planner_roadmap_fraction(roadmap, roadmap->now));
+}
+
+/* The question kept across the earlier and later links. */
+static gchar *
+planner_roadmap_filters(
+	gint64		goal_id,
+	gint64		venture_id,
+	gboolean	done
+){
+	GString *text = g_string_new(NULL);
+
+	if (goal_id > 0)
+		g_string_append_printf(text, "&goal_id=%" G_GINT64_FORMAT, goal_id);
+
+	if (venture_id > 0)
+		g_string_append_printf(text, "&venture_id=%" G_GINT64_FORMAT, venture_id);
+
+	if (done)
+		g_string_append(text, "&done=1");
+
+	return g_string_free(text, FALSE);
+}
+
+static HtmxResponse *
+planner_roadmap_page(
+	VentureWebServer		*self,
+	HtmxRequest			*request,
+	const VenturePlannerRoadmapQuery *query,
+	const VenturePlannerRoadmap	*roadmap
+){
+	g_autoptr(GString) content = NULL;
+	g_autofree gchar *filters = NULL;
+	g_autofree gchar *first = NULL;
+	g_autofree gchar *last = NULL;
+	g_autoptr(GDateTime) last_day = NULL;
+	g_autoptr(GDateTime) earlier = NULL;
+	g_autoptr(GDateTime) earlier_end = NULL;
+	g_autoptr(GDateTime) later = NULL;
+	g_autoptr(GDateTime) later_end = NULL;
+	guint i;
+
+	filters = planner_roadmap_filters(query->goal_id, query->venture_id, query->include_done);
+	first = venture_time_to_date_string(roadmap->from, NULL);
+	last_day = g_date_time_add_days(roadmap->to, -1);
+	last = venture_time_to_date_string(last_day, NULL);
+
+	content = g_string_new("<div class=\"planner-roadmap\"><div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h1>Roadmap</h1><span class=\"subtitle\">Goals, their milestones and the epics in them, ");
+	venture_html_escape_append(content, first);
+	g_string_append(content, " to ");
+	venture_html_escape_append(content, last);
+	g_string_append(content, "</span></div><div class=\"page-actions\"><a class=\"btn\" href=\"/calendar\">Calendar</a>"
+	                         "</div></div>");
+
+	/* --- Earlier, later, and the question --- */
+
+	earlier = g_date_time_add_months(roadmap->from, -3);
+	earlier_end = g_date_time_add_months(last_day, -3);
+	later = g_date_time_add_months(roadmap->from, 3);
+	later_end = g_date_time_add_months(last_day, 3);
+	{
+		g_autofree gchar *a = venture_time_to_date_string(earlier, NULL);
+		g_autofree gchar *b = venture_time_to_date_string(earlier_end, NULL);
+		g_autofree gchar *c = venture_time_to_date_string(later, NULL);
+		g_autofree gchar *d = venture_time_to_date_string(later_end, NULL);
+
+		g_string_append(content, "<nav class=\"cal-steps\" aria-label=\"Roadmap window\">"
+		                         "<a class=\"btn btn-sm\" href=\"/roadmap?from=");
+		venture_html_escape_append(content, a);
+		g_string_append(content, "&amp;to=");
+		venture_html_escape_append(content, b);
+		venture_html_escape_append(content, filters);
+		g_string_append(content, "\">Earlier</a> <a class=\"btn btn-sm\" href=\"/roadmap");
+
+		/* The filters without the window: "now" is the default one. */
+		if ('\0' != filters[0])
+		{
+			g_string_append_c(content, '?');
+			venture_html_escape_append(content, filters + 1);
+		}
+
+		g_string_append(content, "\">Now</a> <a class=\"btn btn-sm\" href=\"/roadmap?from=");
+		venture_html_escape_append(content, c);
+		g_string_append(content, "&amp;to=");
+		venture_html_escape_append(content, d);
+		venture_html_escape_append(content, filters);
+		g_string_append(content, "\">Later</a></nav>");
+	}
+
+	g_string_append(content, "<form class=\"cal-filters\" method=\"get\" action=\"/roadmap\">"
+	                         "<label class=\"field\"><span class=\"field-label\">From</span>"
+	                         "<input type=\"date\" name=\"from\" value=\"");
+	venture_html_escape_append(content, first);
+	g_string_append(content, "\"></label><label class=\"field\"><span class=\"field-label\">To</span>"
+	                         "<input type=\"date\" name=\"to\" value=\"");
+	venture_html_escape_append(content, last);
+	g_string_append(content, "\"></label>");
+
+	if (query->goal_id > 0)
+		g_string_append_printf(content, "<input type=\"hidden\" name=\"goal_id\" value=\"%" G_GINT64_FORMAT "\">",
+		                       query->goal_id);
+
+	if (query->venture_id > 0)
+		g_string_append_printf(content, "<input type=\"hidden\" name=\"venture_id\" value=\"%" G_GINT64_FORMAT "\">",
+		                       query->venture_id);
+
+	g_string_append_printf(content, "<label class=\"cal-kind-choice\"><input type=\"checkbox\" name=\"done\" value=\"1\"%s>"
+	                                " Finished too</label><button class=\"btn btn-sm\" type=\"submit\">Show</button></form>",
+	                       query->include_done ? " checked" : "");
+
+	for (i = 0; i < roadmap->notes->len; i++)
+	{
+		g_string_append(content, "<div class=\"notice info cal-note\" role=\"status\">");
+		venture_html_escape_append(content, g_ptr_array_index(roadmap->notes, i));
+		g_string_append(content, "</div>");
+	}
+
+	if (0 == roadmap->rows->len)
+	{
+		g_string_append(content, "<div class=\"card\"><div class=\"card-body\"><p class=\"muted\">Nothing "
+		                         "planned yet. Give a milestone or an epic a goal, and a due date, and it is drawn here.</p>"
+		                         "</div></div></div>");
+		return venture_web_html_response(venture_web_page(self, request, "/roadmap", "Roadmap", content->str), 200);
+	}
+
+	/* --- The rows: the order is the hierarchy, so nothing sorts it --- */
+
+	g_string_append(content, "<div class=\"card\"><div class=\"table-wrap\"><table class=\"data roadmap-table\" data-no-sort>"
+	                         "<thead><tr><th>Item</th><th class=\"num\">Work</th><th>Due</th><th class=\"roadmap-head\">");
+	planner_roadmap_append_axis(content, roadmap);
+	g_string_append(content, "</th></tr></thead><tbody>");
+
+	for (i = 0; i < roadmap->rows->len; i++)
+	{
+		VenturePlannerRoadmapRow *row = g_ptr_array_index(roadmap->rows, i);
+
+		g_string_append_printf(content, "<tr class=\"roadmap-row roadmap-depth-%d%s\"><td class=\"row-head\">"
+		                                "<span class=\"badge\">%s</span> <a href=\"",
+		                       MIN(row->depth, 3), row->overdue ? " overdue" : "", row->type);
+		venture_html_escape_append(content, row->url);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content, (NULL != row->title) ? row->title : "");
+		g_string_append(content, "</a></td><td class=\"num\">");
+
+		if (row->work_total > 0)
+			g_string_append_printf(content, "%" G_GINT64_FORMAT "/%" G_GINT64_FORMAT,
+			                       row->work_done, row->work_total);
+
+		g_string_append(content, "</td><td>");
+
+		if (NULL != row->end)
+		{
+			g_autofree gchar *due = venture_time_to_date_string(row->end,
+				venture_context_get_timezone(self->context));
+
+			venture_html_escape_append(content, due);
+		}
+
+		g_string_append(content, "</td><td class=\"roadmap-cell\">");
+		planner_roadmap_append_lane(content, roadmap, row);
+		g_string_append(content, "</td></tr>");
+	}
+
+	g_string_append(content, "</tbody></table></div></div><p class=\"muted\">A bar runs from when the record was "
+	                         "written down to when it is due, filled as far as its tickets are done. Dates change "
+	                         "on the record, not here.</p></div>");
+
+	return venture_web_html_response(venture_web_page(self, request, "/roadmap", "Roadmap", content->str), 200);
+}
+
+/*
+ * The one handler behind /roadmap and /api/v1/roadmap: the page for a
+ * session, the JSON for the viewer role. Everything drawn comes from
+ * venture_planner_roadmap().
+ */
+static HtmxResponse *
+venture_planner_web_roadmap(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(VenturePlannerRoadmap) roadmap = NULL;
+	g_autoptr(GDateTime) from = NULL;
+	g_autoptr(GDateTime) to = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePlannerRoadmapQuery query;
+	HtmxResponse *gate;
+	const gchar *done;
+	gboolean api;
+
+	(void)params;
+
+	api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
+
+	if (api)
+	{
+		gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+
+		if (NULL == gate)
+			gate = venture_web_require_module_api(self, "planner");
+	}
+	else
+	{
+		gate = venture_web_ui_require_session(self, request);
+
+		if (NULL == gate)
+			gate = venture_web_require_module_ui(self, request, "planner");
+	}
+
+	if (NULL != gate)
+		return gate;
+
+	venture_planner_roadmap_query_init(&query);
+
+	if (!venture_web_request_organization(self, request, NULL, &query.organization_id, &error) ||
+	    !planner_web_query_id(request, "goal_id", &query.goal_id, &error) ||
+	    !planner_web_query_id(request, "venture_id", &query.venture_id, &error) ||
+	    !planner_web_query_day(request, "from", FALSE, &from, &error) ||
+	    !planner_web_query_day(request, "to", TRUE, &to, &error))
+		return venture_web_error_response(error);
+
+	done = htmx_request_get_query_param(request, "done");
+	query.include_done = (0 == g_strcmp0(done, "1")) || (0 == g_strcmp0(done, "true"));
+	query.from = from;
+	query.to = to;
+
+	roadmap = venture_planner_roadmap(self->context, &query, &error);
+
+	if (NULL == roadmap)
+		return venture_web_error_response(error);
+
+	if (api)
+	{
+		g_autoptr(JsonNode) node = venture_planner_roadmap_to_json(roadmap);
+
+		return venture_web_json_response(node, 200);
+	}
+
+	return planner_roadmap_page(self, request, &query, roadmap);
+}
+
+/* --- Reminders ----------------------------------------------------------------- */
+
+/*
+ * The lazy reminder sweep the inbox, the board and the calendar run before
+ * they draw, as they run the service-level one. Every organization's
+ * events: a reminder is owed to a person whichever organization the event
+ * is filed under, and nobody need be looking at that one.
+ */
+static void
+planner_lazy_sweep(VentureWebServer *self)
+{
+	g_autoptr(GError) error = NULL;
+
+	if (!venture_context_module_enabled(self->context, "planner"))
+		return;
+
+	if (venture_planner_reminder_sweep(self->context, 0, NULL, &error) < 0)
+		g_message("planner: reminder sweep failed: %s", error->message);
+}
+
+/* POST /api/v1/calendar/reminders: the same sweep on demand, for a cron
+ * job or `venturectl calendar remind`. An editor's, like the SLA sweep. */
+static HtmxResponse *
+venture_planner_web_reminders(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 data
+){
+	VentureWebServer *self = data;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *gate;
+	gint reminded;
+
+	(void)params;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+
+	if (NULL == gate)
+		gate = venture_web_require_module_api(self, "planner");
+
+	if (NULL != gate)
+		return gate;
+
+	reminded = venture_planner_reminder_sweep(self->context, 0, NULL, &error);
+
+	if (reminded < 0)
+		return venture_web_error_response(error);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "reminded");
+	json_builder_add_int_value(builder, reminded);
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+
+	return venture_web_json_response(node, 200);
+}
+
 /* --- Routes -------------------------------------------------------------------- */
 
 /*
@@ -930,6 +1528,14 @@ venture_planner_web_register(VentureWebServer *self)
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_calendar, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/calendar.ics",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_calendar, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/calendar.org",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_calendar, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/calendar",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_calendar, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/roadmap",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_roadmap, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/roadmap",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_roadmap, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/calendar/reminders",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_planner_web_reminders, self);
 }

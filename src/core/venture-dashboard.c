@@ -5115,6 +5115,261 @@ venture_widget_kind_opportunities(
 	return g_steal_pointer(&result);
 }
 
+/* --- agenda: the planner's calendar, the next so many days ---------------- */
+
+/* The kinds an agenda widget asks for: options.kinds as a list or a
+ * comma-separated string, or every source when absent. */
+static GPtrArray *
+venture_widget_agenda_kinds(JsonNode *options)
+{
+	GPtrArray *kinds;
+	JsonObject *object;
+	JsonNode *node;
+
+	kinds = g_ptr_array_new_with_free_func(g_free);
+
+	if ((NULL == options) || !JSON_NODE_HOLDS_OBJECT(options))
+		return kinds;
+
+	object = json_node_get_object(options);
+	node = json_object_get_member(object, "kinds");
+
+	if ((NULL != node) && JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *array = json_node_get_array(node);
+		guint i;
+
+		for (i = 0; i < json_array_get_length(array); i++)
+		{
+			const gchar *name = json_array_get_string_element(array, i);
+
+			if (!venture_string_is_empty(name))
+				g_ptr_array_add(kinds, g_strdup(name));
+		}
+	}
+	else if ((NULL != node) && JSON_NODE_HOLDS_VALUE(node) &&
+	         (G_TYPE_STRING == json_node_get_value_type(node)))
+	{
+		g_auto(GStrv) names = g_strsplit(json_node_get_string(node), ",", -1);
+		guint i;
+
+		for (i = 0; NULL != names[i]; i++)
+		{
+			g_strstrip(names[i]);
+
+			if ('\0' != names[i][0])
+				g_ptr_array_add(kinds, g_strdup(names[i]));
+		}
+	}
+
+	return kinds;
+}
+
+/*
+ * agenda: what the unified calendar holds from today for options.days
+ * (default 14, at most 90), optionally only some kinds (options.kinds) and
+ * only the viewer's own (options.mine). The items, the notes and the
+ * refusals are the calendar's own -- venture_calendar_view_fetch() -- so
+ * the card and /calendar cannot disagree; the card shows at most `limit`
+ * and says how many more there are.
+ */
+static VentureWidgetResult *
+venture_widget_kind_agenda(
+	VentureContext			 *context,
+	VentureDashboardWidget		 *widget,
+	const VentureWidgetScope	 *scope,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(VentureWidgetResult) result = NULL;
+	g_autoptr(VentureCalendarResult) calendar = NULL;
+	g_autoptr(JsonNode) options = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GString) html = NULL;
+	g_autoptr(GPtrArray) kinds = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) from = NULL;
+	g_autoptr(GDateTime) to = NULL;
+	g_autofree gchar *today = NULL;
+	VentureCalendarQuery query;
+	GTimeZone *timezone;
+	gint64 fallback_organization;
+	const gchar *current_day;
+	gint64 days;
+	guint limit;
+	guint shown;
+	guint i;
+
+	(void)user_data;
+
+	options = venture_widget_get_options(widget, error);
+
+	if ((NULL == options) && (NULL != *error))
+		return NULL;
+
+	days = venture_widget_option_int(options, "days", 14);
+	days = CLAMP(days, 1, 90);
+	limit = venture_widget_get_limit(widget, 10);
+	kinds = venture_widget_agenda_kinds(options);
+
+	/* --- The span: from today's date, as the calendar counts days --- */
+
+	timezone = venture_context_get_timezone(context);
+	now = venture_time_now();
+	today = venture_time_to_date_string(now, timezone);
+	from = venture_time_from_string(today, NULL);
+	to = g_date_time_add_days(from, (gint)days);
+
+	venture_calendar_query_init(&query);
+	query.from = from;
+	query.to = to;
+	query.now = now;
+	query.venture_id = (NULL != scope) ? scope->venture_id : 0;
+
+	if (kinds->len > 0)
+	{
+		g_ptr_array_add(kinds, NULL);
+		query.kinds = (gchar **)kinds->pdata;
+	}
+
+	/* The scope's organizations, or the default one: never chosen here. */
+	if ((NULL != scope) && (NULL != scope->organization_ids) && (scope->n_organizations > 0))
+	{
+		query.organization_ids = scope->organization_ids;
+		query.n_organizations = scope->n_organizations;
+	}
+	else
+	{
+		fallback_organization = venture_context_get_default_organization_id(context);
+		query.organization_ids = &fallback_organization;
+		query.n_organizations = 1;
+	}
+
+	if (venture_widget_option_bool(options, "mine", FALSE))
+	{
+		if ((NULL == scope) || (scope->user_id <= 0))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "options.mine needs a signed-in user");
+			return NULL;
+		}
+
+		query.assignee_user_id = scope->user_id;
+		query.assignee_username = scope->username;
+	}
+
+	calendar = venture_calendar_view_fetch(context, &query, error);
+
+	if (NULL == calendar)
+		return NULL;
+
+	/* --- The card and its data, from one loop --- */
+
+	result = venture_widget_result_new();
+	result->title = g_strdup("Coming up");
+	result->link = g_strdup("/calendar?view=agenda");
+	result->link_label = g_strdup("Calendar");
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "days");
+	json_builder_add_int_value(builder, days);
+	json_builder_set_member_name(builder, "total");
+	json_builder_add_int_value(builder, calendar->items->len);
+	json_builder_set_member_name(builder, "notes");
+	json_builder_begin_array(builder);
+
+	html = g_string_new(NULL);
+
+	for (i = 0; i < calendar->notes->len; i++)
+	{
+		json_builder_add_string_value(builder, g_ptr_array_index(calendar->notes, i));
+		g_string_append(html, "<p class=\"muted\">");
+		venture_html_escape_append(html, g_ptr_array_index(calendar->notes, i));
+		g_string_append(html, "</p>");
+	}
+
+	json_builder_end_array(builder);
+	json_builder_set_member_name(builder, "items");
+	json_builder_begin_array(builder);
+
+	if (0 == calendar->items->len)
+		g_string_append_printf(html, "<p class=\"muted\">Nothing in the next %" G_GINT64_FORMAT
+		                             " days.</p>", days);
+
+	current_day = NULL;
+	shown = MIN(limit, calendar->items->len);
+
+	for (i = 0; i < shown; i++)
+	{
+		VentureCalendarItem *item = g_ptr_array_index(calendar->items, i);
+		g_autofree gchar *start = venture_time_to_string(item->start);
+		g_autofree gchar *clock = NULL;
+
+		if (!item->all_day)
+		{
+			g_autoptr(GDateTime) local = g_date_time_to_timezone(item->start, timezone);
+
+			clock = g_date_time_format(local, "%H:%M");
+		}
+
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "kind");
+		json_builder_add_string_value(builder, item->kind);
+		json_builder_set_member_name(builder, "title");
+		json_builder_add_string_value(builder, item->title);
+		json_builder_set_member_name(builder, "day");
+		json_builder_add_string_value(builder, item->day);
+		json_builder_set_member_name(builder, "start");
+		json_builder_add_string_value(builder, start);
+		json_builder_set_member_name(builder, "all_day");
+		json_builder_add_boolean_value(builder, item->all_day);
+		json_builder_set_member_name(builder, "overdue");
+		json_builder_add_boolean_value(builder, item->overdue);
+		json_builder_set_member_name(builder, "url");
+		json_builder_add_string_value(builder, item->url);
+		json_builder_end_object(builder);
+
+		/* A day heading each time the day changes; the items are in
+		 * order already. */
+		if (0 != g_strcmp0(item->day, current_day))
+		{
+			if (NULL != current_day)
+				g_string_append(html, "</ul>");
+
+			g_string_append(html, "<h3 class=\"agenda-day\">");
+			venture_html_escape_append(html, item->day);
+			g_string_append(html, "</h3><ul class=\"relation-list agenda-items\">");
+			current_day = item->day;
+		}
+
+		g_string_append_printf(html, "<li class=\"%s\"><span class=\"muted\">",
+		                       item->overdue ? "overdue" : "");
+		venture_html_escape_append(html, (NULL != clock) ? clock : "all day");
+		g_string_append(html, "</span> <span class=\"badge\">");
+		venture_html_escape_append(html, item->kind);
+		g_string_append(html, "</span> <a href=\"");
+		venture_html_escape_append(html, item->url);
+		g_string_append(html, "\">");
+		venture_html_escape_append(html, item->title);
+		g_string_append(html, "</a></li>");
+	}
+
+	if (NULL != current_day)
+		g_string_append(html, "</ul>");
+
+	if (calendar->items->len > shown)
+		g_string_append_printf(html, "<p class=\"muted\">And %u more on the calendar.</p>",
+		                       calendar->items->len - shown);
+
+	json_builder_end_array(builder);
+	json_builder_end_object(builder);
+	result->data = json_builder_get_root(builder);
+	result->html = g_string_free(g_steal_pointer(&html), FALSE);
+
+	return g_steal_pointer(&result);
+}
+
 static const gchar *const venture_widget_uses_body[] = { "body", NULL };
 static const gchar *const venture_widget_uses_search[] = {
 	"entity_type", NULL
@@ -5148,6 +5403,10 @@ static const gchar *const venture_widget_uses_external_pnl[] = {
 };
 static const gchar *const venture_widget_uses_opportunities[] = {
 	"record_id", "options", "limit", NULL
+};
+
+static const gchar *const venture_widget_uses_agenda[] = {
+	"options", "limit", NULL
 };
 
 static const gchar *const venture_widget_uses_forms[] = {
@@ -5192,6 +5451,13 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"What is due within the next so many days on a date field, "
 		"overdue first.",
 		NULL, venture_widget_uses_upcoming, venture_widget_kind_upcoming
+	},
+	{
+		"agenda", "Coming up",
+		"The planner's calendar for the next options.days (14): events, "
+		"due tickets, follow-ups, milestones and the rest, by day. "
+		"options.kinds narrows it, options.mine keeps only your own.",
+		"planner", venture_widget_uses_agenda, venture_widget_kind_agenda
 	},
 	{
 		"record", "Record",

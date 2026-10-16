@@ -373,6 +373,7 @@
 #include "forms/venture-forms.h"
 #include "planner/venture-planner.h"
 #include "planner/venture-calendar-view.h"
+#include "planner/venture-planner-roadmap.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

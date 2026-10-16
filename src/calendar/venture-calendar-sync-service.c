@@ -249,6 +249,170 @@ fail:
 	return FALSE;
 }
 
+/* --- Pushing planner events ------------------------------------------------ */
+/* A planner event the account's owner organizes is pushed to their calendar
+ * one way: VENTURE is where it is planned, so a change made on the calendar
+ * side is not read back (the link takes the server's new etag, so the next
+ * change here replaces it rather than failing its If-Match). A copy removed
+ * on the server stays removed until the event changes here again. Its UID
+ * ends "@venture-event", never "@venture", so a pass that has lost the link
+ * cannot mistake it for an activity's and import it as one. */
+static gint64 planner_link_event(VentureEntity *link)
+{
+	gint64 id = 0;
+	if (link) g_object_get(link, "planner-event-id", &id, NULL);
+	return id;
+}
+gchar *venture_calendar_sync_planner_uid(VentureEntity *event)
+{
+	g_return_val_if_fail(VENTURE_IS_ENTITY(event), NULL);
+	return g_strdup_printf("%s@venture-event", venture_entity_get_uuid(event));
+}
+/* RRULE for the planner's repeats. UNTIL is the whole last day: a DATE for
+ * an all-day series, the day's last second UTC for a timed one, as RFC 5545
+ * requires UNTIL to match DTSTART's value type. A monthly series on the
+ * 29th-31st is clamped by VENTURE and skipped by RRULE in a short month;
+ * the docs say so. */
+static gchar *planner_rrule(VentureEntity *event, gboolean all_day)
+{
+	static const gchar *const freq[] = { NULL, "DAILY", "WEEKLY", "MONTHLY", "YEARLY" };
+	g_autoptr(GDateTime) until = NULL;
+	gint recurrence = 0;
+	g_object_get(event, "recurrence", &recurrence, "recurs-until", &until, NULL);
+	if (recurrence <= 0 || recurrence >= (gint)G_N_ELEMENTS(freq)) return NULL;
+	if (until) {
+		g_autoptr(GDateTime) utc = g_date_time_to_utc(until);
+		g_autofree gchar *day = g_date_time_format(utc, "%Y%m%d");
+		return g_strdup_printf("FREQ=%s;UNTIL=%s%s", freq[recurrence], day, all_day ? "" : "T235959Z");
+	}
+	return g_strdup_printf("FREQ=%s", freq[recurrence]);
+}
+static VentureICalEvent *event_for_planner(VentureEntity *event)
+{
+	VentureICalEvent *ical = venture_ical_event_new();
+	g_autoptr(GDateTime) starts = NULL, ends = NULL;
+	g_autofree gchar *description = NULL, *address = NULL, *online = NULL, *where = NULL;
+	g_autoptr(GString) body = g_string_new(NULL);
+	gint status = 0;
+	gint64 remind = 0;
+	gboolean all_day = FALSE;
+	g_object_get(event, "name", &ical->summary, "description", &description, "address", &address,
+		"online-url", &online, "location", &where, "starts-at", &starts, "ends-at", &ends,
+		"status", &status, "all-day", &all_day, "remind-minutes", &remind, NULL);
+	ical->uid = venture_calendar_sync_planner_uid(event);
+	ical->all_day = all_day;
+	ical->starts = g_date_time_ref(starts);
+	/* The planner's all-day end is the last day; iCalendar's is the day after. */
+	if (ends) ical->ends = all_day ? g_date_time_add_days(ends, 1) : g_date_time_ref(ends);
+	else if (all_day) ical->ends = g_date_time_add_days(starts, 1);
+	if (description && *description) g_string_append(body, description);
+	if (online && *online) g_string_append_printf(body, "%s%s", body->len ? "\n\n" : "", online);
+	if (address && *address) g_string_append_printf(body, "%s%s", body->len ? "\n\n" : "", address);
+	ical->description = g_strdup(body->str);
+	ical->location = (where && *where) ? g_strdup(where) : NULL;
+	ical->rrule = planner_rrule(event, all_day);
+	ical->alarm_minutes = remind;
+	ical->status = g_strdup(venture_entity_is_deleted(event) || status == VENTURE_EVENT_STATUS_CANCELLED ? "CANCELLED"
+		: status == VENTURE_EVENT_STATUS_TENTATIVE ? "TENTATIVE" : "CONFIRMED");
+	ical->last_modified = venture_entity_get_updated_at(event) ? g_date_time_to_utc(venture_entity_get_updated_at(event)) : NULL;
+	ical->sequence = venture_entity_get_version(event);
+	return ical;
+}
+static gboolean push_planner(Pass *pass, VentureEntity *event, VentureEntity *link, GError **error)
+{
+	VentureDatabase *db = pass->self->database;
+	g_autoptr(VentureICalEvent) ical = event_for_planner(event);
+	g_autofree gchar *ics = venture_ical_event_format_dates(ical, NULL);
+	g_autofree gchar *etag = NULL, *have = NULL, *href = NULL;
+	g_autoptr(VentureEntity) created = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	gint status = 0;
+	if (link) g_object_get(link, "etag", &have, "href", &href, NULL);
+	else href = href_for(pass, ical->uid);
+	if (!venture_connector_session_validate(pass->connector, error)) return FALSE;
+	etag = venture_caldav_client_put(pass->self->client, href, ics, link && have && *have ? have : NULL, NULL, error);
+	if (!etag) return FALSE;
+	if (!venture_database_begin(db, error)) return FALSE;
+	if (!venture_connector_session_validate(pass->connector, error)) goto fail;
+	if (!link) {
+		g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT ":%s", venture_entity_get_id(pass->account), ical->uid);
+		created = g_object_new(VENTURE_TYPE_CALENDAR_EVENT, "organization-id", pass->org, "account-id", venture_entity_get_id(pass->account),
+			"planner-event-id", venture_entity_get_id(event), "uid", ical->uid, "uid-key", key, "href", href, NULL);
+		link = created;
+	}
+	g_object_get(event, "status", &status, NULL);
+	/* What the record views show of the copy: the event's own values. */
+	g_object_set(link, "subject", ical->summary, "body", ical->description, "starts-at", ical->starts, "ends-at", ical->ends,
+		"status", (venture_entity_is_deleted(event) || status == VENTURE_EVENT_STATUS_CANCELLED) ? VENTURE_ACTIVITY_STATUS_CANCELLED : VENTURE_ACTIVITY_STATUS_PLANNED,
+		"etag", etag, "local-version", venture_entity_get_version(event), "remote-modified-at", ical->last_modified, "synced-at", now, NULL);
+	if (!venture_database_save(db, link, pass->actor, error)) goto fail;
+	if (!venture_database_commit(db, error)) return FALSE;
+	pass->changes++;
+	return TRUE;
+fail:
+	venture_database_rollback(db);
+	return FALSE;
+}
+/* The owner's planner events: every one they organize, deleted ones too so
+ * a linked copy is cancelled once; each pushed when it changed since the
+ * link last recorded it. Only while the planner's types are registered. */
+static gboolean push_planner_events(Pass *pass, GError **error)
+{
+	VentureDatabase *db = pass->self->database;
+	VentureEntityRegistry *registry = venture_entity_registry_get_default();
+	g_autoptr(GPtrArray) links = NULL, events = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	guint i, j;
+	if (!venture_entity_registry_is_type_enabled(registry, "event")) return TRUE;
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_USER);
+		venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, pass->owner, NULL);
+		user = venture_database_find_one(db, query, NULL);
+		if (!user) return TRUE;
+	}
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CALENDAR_EVENT);
+		venture_query_set_organization(query, pass->org);
+		venture_query_add_filter_int(query, "account-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(pass->account), NULL);
+		venture_query_add_filter_int(query, "planner-event-id", VENTURE_FILTER_OP_GT, 0, NULL);
+		venture_query_set_include_deleted(query, TRUE);
+		venture_query_set_limit(query, 0);
+		links = venture_database_find(db, query, error);
+		if (!links) return FALSE;
+	}
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_EVENT);
+		venture_query_set_organization(query, pass->org);
+		venture_query_add_filter_int(query, "organizer-user-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(user), NULL);
+		venture_query_set_include_deleted(query, TRUE);
+		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 0);
+		events = venture_database_find(db, query, error);
+		if (!events) return FALSE;
+	}
+	for (i = 0; i < events->len; i++) {
+		VentureEntity *event = g_ptr_array_index(events, i);
+		VentureEntity *link = NULL;
+		gint64 local_version = -1;
+		gint status = 0;
+		for (j = 0; j < links->len && !link; j++)
+			if (planner_link_event(g_ptr_array_index(links, j)) == venture_entity_get_id(event)) link = g_ptr_array_index(links, j);
+		g_object_get(event, "status", &status, NULL);
+		if (link) g_object_get(link, "local-version", &local_version, NULL);
+		if (link && local_version == venture_entity_get_version(event)) continue;
+		if (!link && (venture_entity_is_deleted(event) || status == VENTURE_EVENT_STATUS_CANCELLED)) continue;
+		if (link && venture_entity_is_deleted(link)) {
+			/* Removed on the server and changed here since: it comes back,
+			 * as a new copy -- the old etag names nothing any more. */
+			if (venture_entity_is_deleted(event) || status == VENTURE_EVENT_STATUS_CANCELLED) continue;
+			if (!venture_database_restore(db, link, pass->actor, error)) return FALSE;
+			g_object_set(link, "etag", NULL, NULL);
+		}
+		if (!push_planner(pass, event, link, error)) return FALSE;
+	}
+	return TRUE;
+}
+
 /* Private calendars retain their own snapshot. A shared Activity would
  * expose its title through CRM reports, search and organization automation. */
 static gboolean pull_private(Pass *pass, VentureEntity *link, const VentureICalEvent *event,
@@ -293,6 +457,11 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 		if (link) g_object_get(link, "etag", &have, NULL);
 		if (link && !venture_entity_is_deleted(link) && !g_strcmp0(have, item->etag)) return TRUE; /* unchanged since the last pass */
 	}
+	if (link && planner_link_event(link) > 0) {
+		/* Ours, pushed one way: remember the server's version and leave it. */
+		g_object_set(link, "etag", item->etag, NULL);
+		return venture_database_save(db, link, pass->actor, error);
+	}
 	if (!venture_connector_session_validate(pass->connector, error)) return FALSE;
 	ics = venture_caldav_client_fetch(pass->self->client, item->href, &etag, NULL, error);
 	if (!ics || !venture_connector_session_validate(pass->connector, error)) return FALSE;
@@ -308,6 +477,13 @@ static gboolean pull_event(Pass *pass, const VentureCalDavItem *item, GError **e
 		link = link_by(pass, "uid", event->uid);
 		if (link) g_object_set(link, "href", item->href, NULL);
 	}
+	if (link && planner_link_event(link) > 0) {
+		g_hash_table_add(pass->seen, GINT_TO_POINTER((gint)venture_entity_get_id(link)));
+		g_object_set(link, "etag", etag, NULL);
+		return venture_database_save(db, link, pass->actor, error);
+	}
+	/* A planner event's copy whose link is gone is still never an activity. */
+	if (!link && g_str_has_suffix(event->uid, "@venture-event")) return TRUE;
 	if (pass->private_owner > 0) return pull_private(pass, link, event, item->href, etag, error);
 	if (link) {
 		g_hash_table_add(pass->seen, GINT_TO_POINTER((gint)venture_entity_get_id(link)));
@@ -378,7 +554,9 @@ static gboolean cancel_missing(Pass *pass, VentureEntity *link, GError **error)
 	g_autoptr(VentureEntity) activity = NULL;
 	gint64 activity_id = 0;
 	gint status;
-	if (pass->private_owner > 0) {
+	if (pass->private_owner > 0 || planner_link_event(link) > 0) {
+		/* A private copy, or a pushed planner event someone removed on the
+		 * server: the link goes, the event stays as it is. */
 		if (!venture_database_begin(db, error)) return FALSE;
 		if (!venture_connector_session_validate(pass->connector, error) || !venture_database_delete(db, link, pass->actor, error)) goto fail;
 		if (!venture_database_commit(db, error)) return FALSE;
@@ -456,12 +634,14 @@ static gboolean run_pass(Pass *pass, gchar **token_out, GError **error)
 		g_autoptr(VentureEntity) activity = NULL;
 		gint64 activity_id = 0, local_version = 0;
 		if (venture_entity_is_deleted(link)) continue;
+		if (planner_link_event(link) > 0) continue;
 		g_object_get(link, "activity-id", &activity_id, "local-version", &local_version, NULL);
 		activity = venture_database_get(db, VENTURE_TYPE_ACTIVITY, activity_id, NULL);
 		if (!activity || !venture_entity_is_deleted(activity)) continue;
 		if (local_version == venture_entity_get_version(activity)) continue;
 		if (!push_activity(pass, activity, link, NULL, error)) return FALSE;
 	}
+	if (!push_planner_events(pass, error)) return FALSE;
 	*token_out = g_steal_pointer(&token);
 	return TRUE;
 }

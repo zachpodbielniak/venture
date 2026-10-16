@@ -1287,6 +1287,7 @@ static const GEnumValue venture_notification_kind_values[] = {
 	VE(VENTURE_NOTIFICATION_KIND_SYSTEM,   "system"),
 	VE(VENTURE_NOTIFICATION_KIND_ALERT,    "alert"),
 	VE(VENTURE_NOTIFICATION_KIND_REPLY,    "reply"),
+	VE(VENTURE_NOTIFICATION_KIND_REMINDER, "reminder"),
 	VE_END
 };
 

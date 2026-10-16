@@ -5963,6 +5963,42 @@ table.cal-grid td.cal-today { outline: 2px solid var(--border-strong); outline-o
 .event-people li, .event-prep-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
 .event-people li:last-child, .event-prep-list li:last-child { border-bottom: 0; }
 
+/* The roadmap: one lane per goal, milestone and epic, bars placed by the
+ * server as percentages of the window. */
+table.roadmap-table { width: 100%; }
+table.roadmap-table th.roadmap-head, table.roadmap-table td.roadmap-cell { width: 55%; min-width: 320px; }
+tr.roadmap-depth-1 td.row-head { padding-left: calc(var(--space-2) + 1.25em); }
+tr.roadmap-depth-2 td.row-head { padding-left: calc(var(--space-2) + 2.5em); }
+tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
+.roadmap-axis { position: relative; height: 1.5em; }
+.roadmap-tick { position: absolute; top: 0; white-space: nowrap; border-left: 1px solid var(--border); padding-left: 4px; }
+.roadmap-lane { position: relative; height: 1.2em; }
+.roadmap-bar {
+	--cal-kind: var(--border-strong);
+	position: absolute;
+	top: 0.2em;
+	height: 0.8em;
+	border: 1px solid var(--cal-kind);
+	background: var(--surface-sunken);
+	overflow: hidden;
+}
+.roadmap-fill { display: block; height: 100%; background: var(--cal-kind); }
+.roadmap-goal { --cal-kind: var(--series-4); }
+.roadmap-milestone { --cal-kind: var(--series-2); }
+.roadmap-epic { --cal-kind: var(--series-1); }
+.roadmap-bar.is-done { opacity: 0.5; }
+.roadmap-bar.is-open { border-style: dashed; }
+.roadmap-bar.is-overdue { border-color: var(--accent); }
+.roadmap-today { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--accent); }
+
+.event-budget-figures { display: grid; grid-template-columns: max-content 1fr; gap: 4px var(--space-2); margin: 0 0 var(--space-2); }
+.event-budget-figures dd { margin: 0; }
+.event-budget-figures dd.negative { color: var(--accent); }
+.event-expenses { list-style: none; margin: 0; padding: 0; }
+.event-expenses li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.event-expenses li:last-child { border-bottom: 0; }
+.agenda-day { margin: var(--space-2) 0 4px; font-size: 0.875em; }
+
 @media (max-width: 900px) {
 	table.cal-grid td.cal-day { height: auto; }
 	table.cal-grid .cal-detail { display: none; }

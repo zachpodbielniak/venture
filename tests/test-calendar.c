@@ -219,6 +219,103 @@ static void test_push(Fixture *f, gconstpointer data)
 	g_assert_cmpint(run_sync(f, a), ==, 0);
 }
 
+/*
+ * Planner events the account's owner organizes are pushed one way. What
+ * breaks without each check: an event in the planner that never reaches
+ * the phone calendar; an all-day offsite that lands a day short (DTEND is
+ * exclusive); a weekly meeting pushed as a single one; a pushed copy read
+ * back as a brand-new activity, doubling every meeting; a copy removed on
+ * the phone that the next pass puts straight back; and a cancelled event
+ * left standing on the calendar.
+ */
+static void test_push_planner_events(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_CALDAV_SECRET");
+	g_autoptr(VentureEntity) ben = NULL, carol = NULL, weekly = NULL, offsite = NULL, theirs = NULL;
+	g_autofree gchar *uid = NULL, *href = NULL, *offsite_href = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *remote;
+	(void)data;
+	ben = g_object_new(VENTURE_TYPE_USER, "username", "ben", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	save(f, ben);
+	carol = g_object_new(VENTURE_TYPE_USER, "username", "carol", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	save(f, carol);
+	{
+		g_autoptr(GDateTime) s = venture_time_from_string("2026-09-23T10:00:00Z", NULL);
+		g_autoptr(GDateTime) e = venture_time_from_string("2026-09-23T11:00:00Z", NULL);
+		g_autoptr(GDateTime) until = venture_time_from_string("2026-10-14", NULL);
+		weekly = g_object_new(VENTURE_TYPE_EVENT, "organization-id", f->org, "name", "Stand-up, weekly", "starts-at", s, "ends-at", e,
+			"location", "Room 4", "remind-minutes", (gint64)15, "recurrence", VENTURE_EVENT_RECURRENCE_WEEKLY, "recurs-until", until,
+			"organizer-user-id", venture_entity_get_id(ben), NULL);
+		save(f, weekly);
+	}
+	{
+		g_autoptr(GDateTime) s = venture_time_from_string("2026-09-25", NULL);
+		g_autoptr(GDateTime) e = venture_time_from_string("2026-09-26", NULL);
+		offsite = g_object_new(VENTURE_TYPE_EVENT, "organization-id", f->org, "name", "Offsite", "starts-at", s, "ends-at", e,
+			"all-day", TRUE, "organizer-user-id", venture_entity_get_id(ben), NULL);
+		save(f, offsite);
+		theirs = g_object_new(VENTURE_TYPE_EVENT, "organization-id", f->org, "name", "Carol's review", "starts-at", s,
+			"organizer-user-id", venture_entity_get_id(carol), NULL);
+		save(f, theirs);
+	}
+	uid = venture_calendar_sync_planner_uid(weekly);
+	href = g_strdup_printf("/calendars/ben/default/%s.ics", uid);
+	{
+		g_autofree gchar *other = venture_calendar_sync_planner_uid(offsite);
+		offsite_href = g_strdup_printf("/calendars/ben/default/%s.ics", other);
+	}
+
+	/* Ben's two, not Carol's; written as what they are. */
+	g_assert_cmpint(run_sync(f, a), ==, 2);
+	g_assert_cmpint(venture_fake_caldav_client_get_puts(f->caldav), ==, 2);
+	remote = venture_fake_caldav_client_get_remote(f->caldav, href);
+	g_assert_nonnull(remote);
+	g_assert_nonnull(strstr(remote, "SUMMARY:Stand-up\\, weekly"));
+	g_assert_nonnull(strstr(remote, "LOCATION:Room 4"));
+	g_assert_nonnull(strstr(remote, "RRULE:FREQ=WEEKLY;UNTIL=20261014T235959Z"));
+	g_assert_nonnull(strstr(remote, "BEGIN:VALARM"));
+	g_assert_nonnull(strstr(remote, "TRIGGER:-PT15M"));
+	remote = venture_fake_caldav_client_get_remote(f->caldav, offsite_href);
+	g_assert_nonnull(strstr(remote, "DTSTART;VALUE=DATE:20260925"));
+	g_assert_nonnull(strstr(remote, "DTEND;VALUE=DATE:20260927"));
+	g_assert_cmpint(count_type(f, "activity"), ==, 0);
+
+	/* Nothing changed: nothing sent, nothing read back. */
+	g_assert_cmpint(run_sync(f, a), ==, 0);
+	g_assert_cmpint(venture_fake_caldav_client_get_puts(f->caldav), ==, 2);
+	g_assert_cmpint(venture_fake_caldav_client_get_fetches(f->caldav), ==, 0);
+
+	/* Edited on the phone: not read back, never an activity; the next
+	 * change here replaces it under the server's new etag. */
+	venture_fake_caldav_client_set_remote(f->caldav, href, "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nDTSTART:20260923T100000Z\r\nSUMMARY:Renamed on the phone\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+	run_sync(f, a);
+	g_assert_cmpint(count_type(f, "activity"), ==, 0);
+	g_object_set(weekly, "name", "Stand-up", NULL);
+	save(f, weekly);
+	g_assert_cmpint(run_sync(f, a), ==, 1);
+	g_assert_nonnull(strstr(venture_fake_caldav_client_get_remote(f->caldav, href), "SUMMARY:Stand-up\r\n"));
+
+	/* Removed on the phone: it stays removed... */
+	venture_fake_caldav_client_remove_remote(f->caldav, offsite_href);
+	run_sync(f, a);
+	run_sync(f, a);
+	g_assert_null(venture_fake_caldav_client_get_remote(f->caldav, offsite_href));
+	/* ...until the event changes here, when it comes back. */
+	g_object_set(offsite, "location", "The lake", NULL);
+	save(f, offsite);
+	g_assert_cmpint(run_sync(f, a), ==, 1);
+	g_assert_nonnull(strstr(venture_fake_caldav_client_get_remote(f->caldav, offsite_href), "LOCATION:The lake"));
+
+	/* Cancelled here: the copy is cancelled there. */
+	g_object_set(weekly, "status", VENTURE_EVENT_STATUS_CANCELLED, NULL);
+	save(f, weekly);
+	g_assert_cmpint(run_sync(f, a), ==, 1);
+	g_assert_nonnull(strstr(venture_fake_caldav_client_get_remote(f->caldav, href), "STATUS:CANCELLED"));
+	g_assert_cmpint(count_type(f, "activity"), ==, 0);
+	(void)error;
+}
+
 /* Rule 2b: new and changed VEVENTs become meetings, idempotently by UID. */
 static void test_pull(Fixture *f, gconstpointer data)
 {
@@ -857,6 +954,7 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/missing-secret", Fixture, NULL, setup, test_missing_secret, teardown);
 	g_test_add("/calendar/secret-env-prefix", Fixture, NULL, setup, test_secret_env_prefix, teardown);
 	g_test_add("/calendar/push", Fixture, NULL, setup, test_push, teardown);
+	g_test_add("/calendar/push-planner-events", Fixture, NULL, setup, test_push_planner_events, teardown);
 	g_test_add("/calendar/pull", Fixture, NULL, setup, test_pull, teardown);
 	g_test_add("/calendar/deletions-cancel", Fixture, NULL, setup, test_deletions_cancel, teardown);
 	g_test_add("/calendar/conflict-last-modified-wins", Fixture, NULL, setup, test_conflict_last_modified_wins, teardown);

@@ -1200,7 +1200,7 @@ test_web_navigation_links_all_resolve(
 		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting",
 		"/arbitrage/recipe-lists", "/arbitrage/plan", "/arbitrage/calc",
-		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", NULL
+		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", "/roadmap", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1352,7 +1352,7 @@ test_web_navigation_groups_by_question(
 		"/tickets", "/sprints", "/e/milestone", "/kb", NULL
 	};
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
-	static const gchar *const planner[] = { "/calendar", "/e/event", NULL };
+	static const gchar *const planner[] = { "/calendar", "/e/event", "/roadmap", NULL };
 	static const gchar *const trading_accounts[] = {
 		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};

@@ -485,75 +485,6 @@ event_item(
 	return item;
 }
 
-/* The nth start of a series, always from the first start so a month
- * that clamps to the 28th does not drag every later one with it. */
-static GDateTime *
-event_nth(
-	GDateTime		*starts,
-	VentureEventRecurrence	 recurrence,
-	gint64			 n
-){
-	switch (recurrence)
-	{
-		case VENTURE_EVENT_RECURRENCE_DAILY:
-			return g_date_time_add_days(starts, (gint)n);
-		case VENTURE_EVENT_RECURRENCE_WEEKLY:
-			return g_date_time_add_weeks(starts, (gint)n);
-		case VENTURE_EVENT_RECURRENCE_MONTHLY:
-			return g_date_time_add_months(starts, (gint)n);
-		case VENTURE_EVENT_RECURRENCE_YEARLY:
-			return g_date_time_add_years(starts, (gint)n);
-		case VENTURE_EVENT_RECURRENCE_NONE:
-		default:
-			return (0 == n) ? g_date_time_ref(starts) : NULL;
-	}
-}
-
-/*
- * The first occurrence index worth trying: far enough back that an
- * occurrence that began before the span and runs into it is not missed,
- * never before the first. Without it a weekly meeting begun ten years ago
- * would walk five hundred weeks to reach this month.
- */
-static gint64
-event_first_index(
-	GDateTime		*starts,
-	GTimeSpan		 length,
-	VentureEventRecurrence	 recurrence,
-	GDateTime		*from
-){
-	GTimeSpan behind;
-	gint64 n;
-
-	behind = g_date_time_difference(from, starts) - length;
-
-	if (behind <= 0)
-		return 0;
-
-	switch (recurrence)
-	{
-		case VENTURE_EVENT_RECURRENCE_DAILY:
-			n = behind / G_TIME_SPAN_DAY;
-			break;
-		case VENTURE_EVENT_RECURRENCE_WEEKLY:
-			n = behind / (7 * G_TIME_SPAN_DAY);
-			break;
-		case VENTURE_EVENT_RECURRENCE_MONTHLY:
-			/* A month is at most 31 days, so this undershoots. */
-			n = behind / (31 * G_TIME_SPAN_DAY);
-			break;
-		case VENTURE_EVENT_RECURRENCE_YEARLY:
-			n = behind / (366 * G_TIME_SPAN_DAY);
-			break;
-		case VENTURE_EVENT_RECURRENCE_NONE:
-		default:
-			return 0;
-	}
-
-	/* One step further back for the occurrence straddling the start. */
-	return MAX(n - 1, 0);
-}
-
 /* Expands one series into the span, at most
  * VENTURE_CALENDAR_MAX_OCCURRENCES; returns how many were added. */
 static guint
@@ -604,9 +535,9 @@ event_expand(
 	added = 0;
 	steps = 0;
 
-	for (n = event_first_index(starts, length, recurrence, ask->from); ; n++)
+	for (n = venture_planner_occurrence_first_index(starts, length, recurrence, ask->from); ; n++)
 	{
-		g_autoptr(GDateTime) occurrence = event_nth(starts, recurrence, n);
+		g_autoptr(GDateTime) occurrence = venture_planner_occurrence_nth(starts, recurrence, n);
 		VentureCalendarItem *item;
 
 		if ((NULL == occurrence) || (g_date_time_compare(occurrence, stop) >= 0))

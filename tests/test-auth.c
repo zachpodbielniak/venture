@@ -1187,6 +1187,9 @@ test_auth_pages_refuse_anonymous_requests(
 	 * at once: who meets whom, what is due, what money moves. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/calendar"),
 	                 ==, SOUP_STATUS_FOUND);
+	/* The roadmap is every goal, milestone and epic with its progress. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/roadmap"),
+	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/runs"),
 	                 ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/inbox/read",
@@ -1261,6 +1264,8 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_unmatched_senders/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_accounts/1/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/calendar/sync", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* The reminder sweep writes the inbox: an editor's, never anonymous. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/calendar/reminders", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/invoices/1/send", NULL, "", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webhooks"),
@@ -1517,6 +1522,8 @@ test_auth_api_refuses_anonymous_requests(
 		/* The calendar and its feed: the same answer as the page. */
 		"/api/v1/calendar",
 		"/calendar.ics",
+		"/calendar.org",
+		"/api/v1/roadmap",
 		"/api/v1/event",
 		"/api/v1/event_agenda_item",
 		"/api/v1/event_attendee",

@@ -4353,6 +4353,9 @@ main(
 		"  calendar sync [organization_id=N]  two-way CalDAV sweep\n"
 		"  calendar show [view=month|week|agenda] [date=D] [from=D to=D] [kind=K,..]\n"
 		"                [venture_id=N] [assignee=me] [done=1]  the unified calendar\n"
+		"  calendar org [same options]  the calendar as an org-agenda file\n"
+		"  calendar remind              send event reminders that are due\n"
+		"  roadmap [goal_id=N] [venture_id=N] [from=D to=D] [done=1]  goals, milestones, epics\n"
 		"  quote send|accept|decline|revise|start-subscription ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
@@ -4752,6 +4755,8 @@ main(
 		result = venture_cli_command_mail(&cli, args, mail_html, mail_limit, &error);
 	else if (0 == g_strcmp0(args[0], "calendar"))
 		result = venture_cli_command_calendar(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "roadmap"))
+		result = venture_cli_command_roadmap(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "quote"))
 		result = venture_cli_command_quote(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "compose"))

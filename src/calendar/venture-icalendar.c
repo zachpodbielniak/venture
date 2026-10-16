@@ -19,12 +19,15 @@ VentureICalEvent *venture_ical_event_copy(const VentureICalEvent *event)
 	copy->last_modified = event->last_modified ? g_date_time_ref(event->last_modified) : NULL;
 	copy->sequence = event->sequence;
 	copy->all_day = event->all_day;
+	copy->location = g_strdup(event->location);
+	copy->alarm_minutes = event->alarm_minutes;
 	return copy;
 }
 void venture_ical_event_free(VentureICalEvent *event)
 {
 	if (!event) return;
 	g_free(event->uid); g_free(event->summary); g_free(event->description); g_free(event->status); g_free(event->rrule);
+	g_free(event->location);
 	g_clear_pointer(&event->starts, g_date_time_unref);
 	g_clear_pointer(&event->ends, g_date_time_unref);
 	g_clear_pointer(&event->last_modified, g_date_time_unref);
@@ -151,6 +154,7 @@ VentureICalEvent *venture_ical_event_parse(const gchar *text, GError **error)
 		if (!g_strcmp0(name, "UID")) { g_free(event->uid); event->uid = g_strstrip(unescape(value)); }
 		else if (!g_strcmp0(name, "SUMMARY")) { g_free(event->summary); event->summary = unescape(value); }
 		else if (!g_strcmp0(name, "DESCRIPTION")) { g_free(event->description); event->description = unescape(value); }
+		else if (!g_strcmp0(name, "LOCATION")) { g_free(event->location); event->location = unescape(value); }
 		else if (!g_strcmp0(name, "STATUS")) { g_free(event->status); event->status = g_ascii_strup(g_strstrip(value), -1); }
 		else if (!g_strcmp0(name, "RRULE")) { g_free(event->rrule); event->rrule = g_strdup(g_strstrip(value)); }
 		else if (!g_strcmp0(name, "SEQUENCE")) event->sequence = g_ascii_strtoll(value, NULL, 10);
@@ -199,6 +203,7 @@ append_vevent(GString *calendar, const VentureICalEvent *event, GDateTime *stamp
 	}
 	venture_activity_calendar_append_line(calendar, "SUMMARY", event->summary ? event->summary : "", TRUE);
 	if (event->description && *event->description) venture_activity_calendar_append_line(calendar, "DESCRIPTION", event->description, TRUE);
+	if (event->location && *event->location) venture_activity_calendar_append_line(calendar, "LOCATION", event->location, TRUE);
 	venture_activity_calendar_append_line(calendar, "STATUS", event->status && *event->status ? event->status : "CONFIRMED", FALSE);
 	if (event->rrule && *event->rrule) venture_activity_calendar_append_line(calendar, "RRULE", event->rrule, FALSE);
 	if (event->last_modified) venture_activity_calendar_append_date(calendar, "LAST-MODIFIED", event->last_modified);
@@ -206,17 +211,37 @@ append_vevent(GString *calendar, const VentureICalEvent *event, GDateTime *stamp
 		g_autofree gchar *sequence = g_strdup_printf("%" G_GINT64_FORMAT, event->sequence);
 		venture_activity_calendar_append_line(calendar, "SEQUENCE", sequence, FALSE);
 	}
+	if (event->alarm_minutes > 0)
+	{
+		g_autofree gchar *trigger = g_strdup_printf("-PT%" G_GINT64_FORMAT "M", event->alarm_minutes);
+		g_string_append(calendar, "BEGIN:VALARM\r\n");
+		venture_activity_calendar_append_line(calendar, "ACTION", "DISPLAY", FALSE);
+		venture_activity_calendar_append_line(calendar, "TRIGGER", trigger, FALSE);
+		venture_activity_calendar_append_line(calendar, "DESCRIPTION", event->summary ? event->summary : "Reminder", TRUE);
+		g_string_append(calendar, "END:VALARM\r\n");
+	}
 	g_string_append(calendar, "END:VEVENT\r\n");
+}
+
+static gchar *format_calendar(const VentureICalEvent *event, GDateTime *stamp, gboolean dates)
+{
+	g_autoptr(GString) calendar = NULL;
+	calendar = g_string_new("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//VENTURE//Calendar sync//EN\r\nCALSCALE:GREGORIAN\r\n");
+	append_vevent(calendar, event, stamp, dates);
+	g_string_append(calendar, "END:VCALENDAR\r\n");
+	return g_string_free(g_steal_pointer(&calendar), FALSE);
 }
 
 gchar *venture_ical_event_format(const VentureICalEvent *event, GDateTime *stamp)
 {
-	g_autoptr(GString) calendar = NULL;
 	g_return_val_if_fail(event != NULL && event->uid != NULL && event->starts != NULL, NULL);
-	calendar = g_string_new("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//VENTURE//Calendar sync//EN\r\nCALSCALE:GREGORIAN\r\n");
-	append_vevent(calendar, event, stamp, FALSE);
-	g_string_append(calendar, "END:VCALENDAR\r\n");
-	return g_string_free(g_steal_pointer(&calendar), FALSE);
+	return format_calendar(event, stamp, FALSE);
+}
+
+gchar *venture_ical_event_format_dates(const VentureICalEvent *event, GDateTime *stamp)
+{
+	g_return_val_if_fail(event != NULL && event->uid != NULL && event->starts != NULL, NULL);
+	return format_calendar(event, stamp, TRUE);
 }
 
 void venture_ical_event_append(GString *calendar, const VentureICalEvent *event, GDateTime *stamp)

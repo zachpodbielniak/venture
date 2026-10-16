@@ -918,3 +918,266 @@ venture_calendar_result_to_ics(const VentureCalendarResult *result)
 
 	return g_string_free(g_steal_pointer(&calendar), FALSE);
 }
+
+/* --- org-mode -------------------------------------------------------------- */
+
+/* Kinds that are a due date rather than a time something happens: written
+ * as TODO headings with a DEADLINE, which org-agenda warns about ahead. */
+static gboolean
+calendar_org_is_deadline(const VentureCalendarItem *item)
+{
+	static const gchar *const deadlines[] = {
+		"ticket", "activity", "milestone", "goal", "deal", "money", NULL
+	};
+
+	return g_strv_contains(deadlines, item->kind);
+}
+
+/* Whether a due date is finished: the statuses every source uses for
+ * "over", whichever way it went. */
+static gboolean
+calendar_org_is_closed(const VentureCalendarItem *item)
+{
+	static const gchar *const closed[] = {
+		"done", "completed", "achieved", "won", "lost", "cancelled",
+		"abandoned", "paid", NULL
+	};
+
+	return (NULL != item->status) && g_strv_contains(closed, item->status);
+}
+
+/* One line of text with no newline in it, so a title or a detail cannot
+ * start a heading or a drawer of its own. */
+static void
+calendar_org_append_line_text(
+	GString		*org,
+	const gchar	*text
+){
+	const gchar *p;
+
+	for (p = (NULL != text) ? text : ""; '\0' != *p; p++)
+		g_string_append_c(org, (('\n' == *p) || ('\r' == *p)) ? ' ' : *p);
+}
+
+/* `<2026-10-16 Fri>` or `<2026-10-16 Fri 10:00>`. The day names are
+ * written out rather than taken from the locale: org reads English. */
+static void
+calendar_org_append_stamp(
+	GString		*org,
+	GDateTime	*when,
+	gboolean	 with_time,
+	const gchar	*until_clock
+){
+	static const gchar *const days[] = {
+		"", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
+	};
+
+	g_string_append_printf(org, "<%04d-%02d-%02d %s",
+	                       g_date_time_get_year(when), g_date_time_get_month(when),
+	                       g_date_time_get_day_of_month(when),
+	                       days[g_date_time_get_day_of_week(when)]);
+
+	if (with_time)
+		g_string_append_printf(org, " %02d:%02d", g_date_time_get_hour(when),
+		                       g_date_time_get_minute(when));
+
+	if (NULL != until_clock)
+		g_string_append_printf(org, "-%s", until_clock);
+
+	g_string_append_c(org, '>');
+}
+
+/* The item's time as org writes it: a day, a time, a time range within a
+ * day, or a range of days. An all-day item's dates are its stored
+ * calendar dates, read in UTC; its end is exclusive, so the range ends
+ * the day before. */
+static void
+calendar_org_append_when(
+	GString				*org,
+	const VentureCalendarItem	*item,
+	GTimeZone			*timezone
+){
+	g_autoptr(GDateTime) start = NULL;
+	g_autoptr(GDateTime) end = NULL;
+
+	if (item->all_day)
+	{
+		start = g_date_time_to_utc(item->start);
+
+		if (NULL != item->end)
+		{
+			g_autoptr(GDateTime) utc_end = g_date_time_to_utc(item->end);
+
+			end = g_date_time_add_days(utc_end, -1);
+		}
+
+		calendar_org_append_stamp(org, start, FALSE, NULL);
+
+		if ((NULL != end) && (g_date_time_compare(end, start) > 0))
+		{
+			g_string_append(org, "--");
+			calendar_org_append_stamp(org, end, FALSE, NULL);
+		}
+
+		return;
+	}
+
+	start = g_date_time_to_timezone(item->start, timezone);
+
+	if (NULL != item->end)
+		end = g_date_time_to_timezone(item->end, timezone);
+
+	if ((NULL == end) || venture_time_equal(start, end))
+	{
+		calendar_org_append_stamp(org, start, TRUE, NULL);
+		return;
+	}
+
+	if ((g_date_time_get_year(start) == g_date_time_get_year(end)) &&
+	    (g_date_time_get_day_of_year(start) == g_date_time_get_day_of_year(end)))
+	{
+		g_autofree gchar *clock = g_date_time_format(end, "%H:%M");
+
+		calendar_org_append_stamp(org, start, TRUE, clock);
+		return;
+	}
+
+	calendar_org_append_stamp(org, start, TRUE, NULL);
+	g_string_append(org, "--");
+	calendar_org_append_stamp(org, end, TRUE, NULL);
+}
+
+/* A tag org accepts: letters, digits, `_`, `@`; anything else becomes `_`. */
+static void
+calendar_org_append_tag(
+	GString		*org,
+	const gchar	*tag
+){
+	const gchar *p;
+
+	for (p = tag; '\0' != *p; p++)
+		g_string_append_c(org, (g_ascii_isalnum(*p) || ('_' == *p) || ('@' == *p)) ? *p : '_');
+
+	g_string_append_c(org, ':');
+}
+
+gchar *
+venture_calendar_result_to_org(
+	const VentureCalendarResult	*result,
+	GTimeZone			*timezone,
+	const gchar			*base_url,
+	const gchar			*from_day,
+	const gchar			*to_day
+){
+	g_autoptr(GString) org = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autofree gchar *made = NULL;
+	g_autofree gchar *prefix = NULL;
+	guint i;
+
+	g_return_val_if_fail(NULL != result, NULL);
+
+	zone = (NULL != timezone) ? g_time_zone_ref(timezone) : g_time_zone_new_utc();
+	now = g_date_time_new_now(zone);
+	made = g_date_time_format_iso8601(now);
+
+	/* Links are absolute when the install knows its address, so the file
+	 * still opens the record from wherever it was saved. */
+	if (!venture_string_is_empty(base_url))
+		prefix = g_str_has_suffix(base_url, "/") ? g_strndup(base_url, strlen(base_url) - 1)
+		                                          : g_strdup(base_url);
+	else
+		prefix = g_strdup("");
+
+	org = g_string_new("#+title: VENTURE calendar\n");
+	g_string_append_printf(org, "#+description: Every dated record from %s to %s\n",
+	                       (NULL != from_day) ? from_day : "", (NULL != to_day) ? to_day : "");
+	g_string_append_printf(org, "#+created: %s\n#+startup: overview\n", made);
+
+	/* What was left out, where a person reads it. */
+	for (i = 0; i < result->notes->len; i++)
+	{
+		g_string_append(org, "# note: ");
+		calendar_org_append_line_text(org, g_ptr_array_index(result->notes, i));
+		g_string_append_c(org, '\n');
+	}
+
+	g_string_append_c(org, '\n');
+
+	for (i = 0; i < result->items->len; i++)
+	{
+		VentureCalendarItem *item = g_ptr_array_index(result->items, i);
+		gboolean deadline = calendar_org_is_deadline(item);
+
+		/* --- The heading: a state for a due date, then tags --- */
+
+		g_string_append(org, "* ");
+
+		if (deadline)
+			g_string_append(org, calendar_org_is_closed(item) ? "DONE " : "TODO ");
+
+		calendar_org_append_line_text(org, venture_string_is_empty(item->title) ? "(untitled)" : item->title);
+		g_string_append(org, " :");
+		calendar_org_append_tag(org, item->kind);
+
+		if (!venture_string_is_empty(item->subkind) && (0 != g_strcmp0(item->subkind, item->kind)))
+			calendar_org_append_tag(org, item->subkind);
+
+		if (item->overdue)
+			g_string_append(org, "overdue:");
+
+		g_string_append_c(org, '\n');
+
+		/* --- When: a deadline, or a timestamp the agenda shows --- */
+
+		if (deadline)
+			g_string_append(org, "DEADLINE: ");
+
+		calendar_org_append_when(org, item, zone);
+		g_string_append_c(org, '\n');
+
+		/* --- The drawer: what ties the entry back to its record --- */
+
+		g_string_append(org, ":PROPERTIES:\n");
+
+		if (!venture_string_is_empty(item->uid))
+		{
+			g_string_append(org, ":ID: ");
+			calendar_org_append_line_text(org, item->uid);
+			g_string_append_c(org, '\n');
+		}
+
+		g_string_append_printf(org, ":VENTURE_TYPE: %s\n:VENTURE_RECORD: %" G_GINT64_FORMAT "\n",
+		                       (NULL != item->record_type) ? item->record_type : "", item->record_id);
+
+		if (!venture_string_is_empty(item->status))
+		{
+			g_string_append(org, ":VENTURE_STATUS: ");
+			calendar_org_append_line_text(org, item->status);
+			g_string_append_c(org, '\n');
+		}
+
+		if (NULL != item->url)
+			g_string_append_printf(org, ":VENTURE_URL: %s%s\n", prefix, item->url);
+
+		g_string_append(org, ":END:\n");
+
+		/* --- The body: the second line and a link --- */
+
+		if (!venture_string_is_empty(item->detail))
+		{
+			/* A line that starts with a star would be a heading. */
+			if ('*' == item->detail[0])
+				g_string_append_c(org, ',');
+
+			calendar_org_append_line_text(org, item->detail);
+			g_string_append_c(org, '\n');
+		}
+
+		if (NULL != item->url)
+			g_string_append_printf(org, "[[%s%s][Open in VENTURE]]\n", prefix, item->url);
+	}
+
+	return g_string_free(g_steal_pointer(&org), FALSE);
+}

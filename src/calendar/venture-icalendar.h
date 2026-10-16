@@ -31,6 +31,11 @@ typedef struct {
 	GDateTime *last_modified;
 	gint64 sequence;
 	gboolean all_day;
+	/* Appended: the place (LOCATION) and a display alarm this many minutes
+	 * before the start (a VALARM); 0 writes none. The activity sync sets
+	 * neither, so what it sends is unchanged. */
+	gchar *location;
+	gint64 alarm_minutes;
 } VentureICalEvent;
 #define VENTURE_TYPE_ICAL_EVENT (venture_ical_event_get_type())
 GType venture_ical_event_get_type(void) G_GNUC_CONST;
@@ -69,6 +74,9 @@ VentureICalEvent *venture_ical_event_parse(const gchar *text, GError **error);
  * Returns: (transfer full): the text
  */
 gchar *venture_ical_event_format(const VentureICalEvent *event, GDateTime *stamp);
+/* As venture_ical_event_format(), with an all-day event written as DATE
+ * values -- what a planner event pushed over CalDAV needs. */
+gchar *venture_ical_event_format_dates(const VentureICalEvent *event, GDateTime *stamp);
 /**
  * venture_ical_event_append:
  * @calendar: a VCALENDAR being written, between its BEGIN and END lines

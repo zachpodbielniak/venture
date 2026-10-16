@@ -124,7 +124,15 @@ static const VentureFieldDecl venture_event_fields[] = {
 	              VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tags", "Tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD("remind-minutes", "Remind (minutes before)", "Optional: minutes before it starts to remind the organizer "
+	              "and attendees who are users in their inbox; 0 for no reminder",
+	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("reminded-for", "Reminded for", "The start of the occurrence last reminded; "
+	              "stamped by the reminder sweep",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD_MONEY("budget", "Budget", "Optional: what it may cost; expenses naming the "
+	                    "event are counted against it in their own currency")
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureEvent, venture_event, venture_event_fields,

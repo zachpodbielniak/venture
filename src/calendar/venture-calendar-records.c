@@ -30,6 +30,9 @@ static const VentureFieldDecl event_fields[] = {
 	DATE("due-at", "Due"),
 	VENTURE_FIELD_REF("account-id", "Account", NULL, "calendar_account", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_REF("activity-id", "Activity", NULL, "activity", VENTURE_COLUMN_FLAG_NONE),
+	/* A planner event this account pushes. It is VENTURE's: the calendar's
+	 * copy is written from it and never read back into it. */
+	VENTURE_FIELD_REF("planner-event-id", "Event", "The planner event this copy was pushed from", "event", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("uid", "UID", "The VEVENT UID", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("uid-key", "UID key", "account:uid", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	STR("href", "Href", "The event's path on the server"),
