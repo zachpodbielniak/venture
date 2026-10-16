@@ -91,6 +91,7 @@ take `organization_id=N` to work outside the default organization.
 | `sequence enroll ID contact_id=`, `sequence run [--as-of]`, `sequence status ID` | follow-ups | [outreach.md](outreach.md) |
 | `mail list\|send\|test\|deliver\|retry\|sync\|contact\|dismiss` | transactional and inbound mail | [mail.md](mail.md) |
 | `calendar sync [organization_id=] [limit=]` | CalDAV sweep | [mail.md](mail.md) |
+| `calendar show [view=] [date=] [from=] [to=] [kind=a,b] [venture_id=] [assignee=me] [done=1]` | the unified calendar as an agenda; `-f json` the API's answer | [planner.md](planner.md) |
 
 ## Market data, accounts, arbitrage
 

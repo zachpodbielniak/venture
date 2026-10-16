@@ -2946,3 +2946,65 @@ and `docs/examples/wow-operations.org` have the rest.
   metadata; using only the type would persist queued answers in audit history.
   Erasure forgets known-not-in-flight mail content through the outbox service,
   retaining its idempotency identity, and includes soft-deleted form records.
+
+## The planner and its calendar
+
+`src/planner/` (module `planner`, requires core): `event`,
+`event_agenda_item`, `event_attendee`, a ticket's `event-id`, and one
+calendar over every dated record. `docs/planner.org` has the whole of it.
+
+- **The calendar's sources are a registry on the context, never a list.**
+  `venture_calendar_sources_add()` names the record type a source reads
+  (and optionally a module), and the fetch skips it while that type is
+  hidden -- so the milestone source follows the milestone type to
+  whichever module owns it, and no source checks a module name it does
+  not need. A plugin adds one the same way; the plugin manager's frame
+  takes it back on a failed load (`manager_calendar_names()`).
+- **Every source is bounded and refuses past the bound.** Each query is
+  scoped to the organizations, limited to `venture_aggregate_get_max_rows()`
+  + 1, and a source that finds more adds a note
+  (`venture_calendar_result_refuse()`) and no items. Never truncate: a
+  month showing the first N tickets looks complete. Test with
+  `venture_aggregate_set_max_rows()`.
+- **A narrowing a source cannot answer leaves it out, with a note.** A
+  venture filter on activities (no venture) or "only mine" on milestones
+  (no owner) is said in `result->notes`, never ignored. Declare what a
+  new source can answer with `VENTURE_CALENDAR_SOURCE_BY_VENTURE` /
+  `_BY_ASSIGNEE`; the fetch enforces it centrally.
+- **The money source asks the money calendar, it does not copy it.**
+  `venture_money_calendar_events()` per organization, filtered by
+  `venture_money_calendar_filter()`. Overdue items stay carried to today.
+- **A synced CalDAV event that became an activity is drawn once**, by the
+  activity source: the caldav source skips rows with an `activity-id`.
+- **An all-day event's end is its last day, inclusive**, normalised with
+  its start to midnight UTC in the configured zone by the save validator
+  (`planner_calendar_date()`); the calendar adds the day that makes the
+  exclusive end a feed wants. Do not store an exclusive end, and do not
+  read an all-day time in UTC: 23:30 in New York is tomorrow in UTC.
+- **A repeating event is one record; occurrences are computed, bounded,
+  and keyed by day.** `event_nth()` always counts from the first start
+  (a monthly on the 31st is the 28th in February and the 31st again in
+  March), `event_first_index()` skips ahead so a 2019 weekly meeting
+  does not walk six years, the span is at most `VENTURE_CALENDAR_MAX_DAYS`
+  and one series at most `VENTURE_CALENDAR_MAX_OCCURRENCES`. Each
+  occurrence's feed UID is the series' UUID plus its day.
+- **The run-sheet's times are computed, never stored.**
+  `venture_planner_agenda()` adds the minutes up on every read; a stored
+  start would go stale the moment an earlier item was lengthened.
+  Attendee counts and "N of M done" (cancelled tickets count as neither)
+  are core functions too; the web layer only draws.
+- **`/api/v1/calendar` is registered ahead of `/api/v1/:type`**
+  (`venture_planner_web_register()`), or the generic list would read
+  "calendar" as a type and `view`/`kind`/`from` as field filters. The
+  page, the API and `/calendar.ics` are one handler; the page answers for
+  the sidebar's pick and the API for `organization_id`, both through
+  `venture_web_request_organization()`.
+- **`assignee` takes only `me`, and a token with no user is refused.** An
+  API token acts as "API token #N" and owns nothing; tickets and
+  activities match the user's name, deals `owner-user-id`, events the
+  organizer or an attendee row.
+- **The feed writes all-day items as DATE values; the CalDAV push does
+  not.** `venture_ical_event_append()` honours `all_day`;
+  `venture_ical_event_format()` keeps writing DATE-TIMEs, because
+  changing what the sync sends would rewrite every all-day event on the
+  operator's server.

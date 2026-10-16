@@ -429,6 +429,13 @@ timezone=America/Chicago availability='{"mon":"09:00-17:00"}' active=true=;
 =venturectl list calendar_event= shows what the sync linked. See
 [[file:calendar.org][calendar sync]].
 
+=venturectl calendar show [view=month|week|agenda] [date=D] [from=D to=D]
+[kind=event,ticket,...] [venture_id=N] [assignee=me] [done=1]
+[organization_id=N]= reads the planner's unified calendar
+(=GET /api/v1/calendar=) and prints it as an agenda by day, each source's
+notes first; =-f json= prints the server's answer. An option it does not
+know is refused by name rather than sent. See [[file:planner.org][The planner]].
+
 * Quote actions
 
 =venturectl quote send ID= freezes and queues a proposal.

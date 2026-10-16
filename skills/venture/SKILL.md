@@ -156,6 +156,7 @@ and `~/.agents/skills/venture` by `make install-skill`.
 - [`references/factory.md`](references/factory.md) -- milestones to incidents, releases, forges and rules, coding runs, budgets, the harness
 - [`references/market-production.md`](references/market-production.md) -- price observations, listings, recipes and crafting
 - [`references/sessions-goals.md`](references/sessions-goals.md) -- sessions of effort and their yields, goals and their shopping list
+- [`references/planner.md`](references/planner.md) -- events, run-sheets, attendees, preparation tickets, and the one calendar over every dated record (page, JSON, .ics)
 - [`references/feeds.md`](references/feeds.md) -- data sources, sync and push, the series store and its upkeep, the position mirror, cross-cutting market traps
 - [`references/market-data.md`](references/market-data.md) -- venues, instruments, the price oracle, the Trading pages, alert rules
 - [`references/accounts.md`](references/accounts.md) -- the operator's accounts: where to log in, inventory, trading P&L, posting to the books
@@ -367,6 +368,7 @@ ids, notes) in words.
 | "Import the recipes my characters know" (WoW, TSM) | `tsmctl venture recipes`, or `act data_source ID import_recipes recipes="$(cat recipes.json)" create_products=true venture_id=N` | [feeds.md](references/feeds.md) |
 | "Craft from a recipe / what is a recipe's margin?" | `act recipe ID craft times=N`; `report recipe_margin` | [market-production.md](references/market-production.md) |
 | "Log a farming session / track a goal" | `session` + `session_yield`, `act session ID post`; `goal`, `report goal_progress` | [sessions-goals.md](references/sessions-goals.md) |
+| "What is on this week / put a meeting in the diary" | `calendar show view=week`; `create event ...`, `event_agenda_item`, `event_attendee`; read `notes` | [planner.md](references/planner.md) |
 | "Run X every day / when Y changes" | a pod in `automations.pod` or cron calling the sweep | [automation.md](references/automation.md) |
 | "Tell another system when records change" | `create webhook`, `webhook secret`, `webhook test` | [automation.md](references/automation.md) |
 | "Approve what an agent proposed" | `GET /api/v1/confirmations`, `POST .../approve\|reject` | [api.md](references/api.md) |
