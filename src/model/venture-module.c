@@ -935,11 +935,12 @@ static const gchar *const goals_reports[] = { "goal_progress", "goal_materials",
 
 /* Events and one calendar over every dated record. It requires only core:
  * a meeting names nothing else. It suggests the modules whose records the
- * calendar draws and an event may name -- goals, the factory's milestones
- * and sprints, crm's contacts and companies -- and the money calendar;
+ * calendar draws and an event may name -- goals, the tickets module's
+ * milestones and sprints, crm's contacts and companies -- and the money
+ * calendar;
  * each source is skipped while its type is hidden, so none is needed. */
 static const gchar *const planner_suggests[] = {
-	"goals", "tickets", "factory", "crm", "activities", "money_calendar", "calendar", NULL
+	"goals", "tickets", "crm", "activities", "money_calendar", "calendar", NULL
 };
 static GType (*const planner_types[]) (void) = {
 	venture_event_get_type, venture_event_agenda_item_get_type,
