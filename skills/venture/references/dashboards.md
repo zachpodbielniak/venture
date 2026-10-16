@@ -61,6 +61,7 @@ filter is the viewer's username, `{user_id}` their id.
 | `list` | newest records with chosen columns | `entity_type`, `filter`, `order`, `limit`, `columns` |
 | `breakdown` | counts per value of an enum field, as bars | `entity_type`, `field`, `filter` |
 | `upcoming` | due within N days on a date field, overdue first | `entity_type`, `field`, `filter`, `limit`, `options` `{"days":14}` |
+| `agenda` | "Coming up": the planner's calendar for N days, by day (planner module; [planner.md](planner.md)) | `limit`, `options` `{"days":14,"kinds":["event"],"mine":true}` |
 | `record`, `links` | one record's fields; its links | `entity_type`, `record_id`, `columns` |
 | `metric` | one report figure with change vs previous period | `report_name`, `period`, `field` (metric key), `options` |
 | `report` | a whole report (tiles and/or table) | `report_name`, `period`, `limit`, `options` (`tiles`, `table`, the report's own) |

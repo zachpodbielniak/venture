@@ -3004,9 +3004,10 @@ calendar over every dated record. `docs/planner.org` has the whole of it.
   exclusive end a feed wants. Do not store an exclusive end, and do not
   read an all-day time in UTC: 23:30 in New York is tomorrow in UTC.
 - **A repeating event is one record; occurrences are computed, bounded,
-  and keyed by day.** `event_nth()` always counts from the first start
-  (a monthly on the 31st is the 28th in February and the 31st again in
-  March), `event_first_index()` skips ahead so a 2019 weekly meeting
+  and keyed by day.** `venture_planner_occurrence_nth()` always counts
+  from the first start (a monthly on the 31st is the 28th in February and
+  the 31st again in March), `venture_planner_occurrence_first_index()`
+  skips ahead so a 2019 weekly meeting
   does not walk six years, the span is at most `VENTURE_CALENDAR_MAX_DAYS`
   and one series at most `VENTURE_CALENDAR_MAX_OCCURRENCES`. Each
   occurrence's feed UID is the series' UUID plus its day.
@@ -3025,8 +3026,58 @@ calendar over every dated record. `docs/planner.org` has the whole of it.
   API token acts as "API token #N" and owns nothing; tickets and
   activities match the user's name, deals `owner-user-id`, events the
   organizer or an attendee row.
-- **The feed writes all-day items as DATE values; the CalDAV push does
-  not.** `venture_ical_event_append()` honours `all_day`;
-  `venture_ical_event_format()` keeps writing DATE-TIMEs, because
-  changing what the sync sends would rewrite every all-day event on the
-  operator's server.
+- **The feed writes all-day items as DATE values; the activity push does
+  not.** `venture_ical_event_append()` and
+  `venture_ical_event_format_dates()` honour `all_day`;
+  `venture_ical_event_format()` keeps writing DATE-TIMEs for activities,
+  because changing what the sync sends would rewrite every all-day event
+  on the operator's server. A planner event is pushed with the `_dates`
+  variant: it never was pushed before.
+- **Occurrences have one implementation.** The calendar's expansion, the
+  reminder sweep and the CalDAV RRULE all start from
+  `venture_planner_occurrence_nth()` / `venture_planner_next_occurrence()`
+  in `venture-planner.c`; never step a series with a second loop.
+- **Reminders are a lazy sweep, stamped once per occurrence.**
+  `venture_planner_reminder_sweep()` runs before the inbox, the board and
+  the calendar page draw, and from `POST /api/v1/calendar/reminders`;
+  never from a timer or thread. It writes `reminded-for` (technical) as
+  the *system* actor so the inbox's audit handler does not report it, and
+  compares it with the occurrence -- dropping that check sends a reminder
+  on every page view (`/planner/reminders`). It reads every organization:
+  a reminder is owed to a person, not to whoever is looking. Recipients
+  must pass `venture_comment_user_can_read()`; an attendee who said no is
+  skipped. The feeds (`.ics`, `.org`) do not sweep -- a client polling is
+  not a person looking. A database flag stops a re-entrant sweep.
+- **A budget is per currency and never converted.**
+  `venture_planner_event_spend()` totals expenses with
+  `venture_money_totals_add()`; `venture_planner_budget_remaining()` takes
+  only the budget's own currency off. Past the aggregate bound it refuses.
+  An expense's `event-id` is held to its organization by a planner save
+  validator on `expense`; the event page's generic related walk skips
+  expenses because the Budget card lists them.
+- **The org feed is a fourth door of the same handler.**
+  `venture_calendar_result_to_org()` writes due dates (ticket, activity,
+  milestone, goal, deal, money) as `TODO`/`DONE` with `DEADLINE:` and the
+  rest as active timestamps, in the configured zone, the all-day end
+  inclusive. Titles lose their newlines so a record cannot start a
+  heading; a detail starting with `*` is comma-escaped. A new kind that is
+  a due date goes into `calendar_org_is_deadline()`.
+- **The roadmap reads each level once and draws each record once.**
+  `venture_planner_roadmap()` (goals, milestones, epics, each bounded by
+  `VENTURE_PLANNER_ROADMAP_MAX_ROWS` and refused past it) assembles goal
+  -> milestone -> epic in C and claims each `type:id`, so an epic in a
+  milestone of its goal is not drawn again under the goal. Progress is
+  the record's own page's function, never a new formula. A finished goal
+  left out hides its milestones rather than promoting them.
+- **Pushed planner events are one way, and their UID says so.**
+  `<uuid>@venture-event`, never `@venture`: `pull_event()` imports an
+  unlinked `@venture` UID as an activity, and a lost planner link must
+  not do that. A planner link (`calendar_event.planner-event-id`) takes
+  the server's etag on pull and is never read back; `cancel_missing()`
+  deletes it (the event stays); the push restores a deleted link only
+  when the event's version moved. The owner is the user named by the
+  account's `owner`, matched to `organizer-user-id`.
+- **The `agenda` widget kind is the calendar's fetch in the widget's
+  scope.** It lives in the dashboard kind table with module `planner` and
+  must keep calling `venture_calendar_view_fetch()`; `upcoming` is the
+  older single-type kind and is unrelated.

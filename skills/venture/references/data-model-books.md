@@ -13,7 +13,8 @@ is *financial*: organization finance/admin/owner to write.
   `occurred_at`, `venture_id`, `category`, `tax_category_id -> tax_category`,
   `deductibility` [none|full|partial|capital|review], `business_use_percent`,
   `cash_account_id -> account` (paid from; a holding when it has a location),
-  `campaign_id`, `acquisition`, `cost_of_revenue`, `reimbursable`,
+  `campaign_id`, `event_id -> event` (planner: counted against its budget;
+  same organization), `acquisition`, `cost_of_revenue`, `reimbursable`,
   `external_id`. Saving one with an amount posts a journal. *action*
   `batch_create (0,s)`.
 - `account` -- chart of accounts. **code**, **name**, `kind`

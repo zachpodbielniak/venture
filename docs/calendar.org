@@ -78,7 +78,18 @@ sweep. One pass over a shared business account:
    written, for the reason the =.ics= export gives none: each stored
    occurrence is a separate event and recurrence is advanced by completion,
    so a series would be duplicated by the next occurrence.
-5. Records the ctag and the outcome on the account.
+5. *Push planner events.* With the planner module on, every planner =event=
+   whose organizer is the account owner is pushed one way, under the UID
+   =<uuid>@venture-event=; its link carries =planner_event_id=. A change made
+   to that copy on the server is not read back -- the link takes the new
+   etag so the next change here replaces it -- a copy removed on the server
+   stays removed until the event changes here, and an event carrying an
+   =@venture-event= UID is never imported as an activity. Unlike an
+   activity, a repeating event is one record and is written with an RRULE,
+   an all-day event with DATE values, and its reminder as a VALARM. The
+   planner guide ([[file:planner.org][The planner]], "Pushing events to
+   CalDAV") has the details.
+6. Records the ctag and the outcome on the account.
 
 Each pulled event, cancellation and push is its own transaction, and the
 link row records the activity version and the server etag after it. A rerun

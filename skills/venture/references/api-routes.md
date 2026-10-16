@@ -102,7 +102,9 @@ in the repository lists today's.
 | `POST /crm_imports/preview`, `POST /crm_imports/:id/:action` | `crm preview\|import\|activate\|rollback` |
 | `POST /mail/:action` (send, test, deliver), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss` | `mail ...` |
 | `POST /calendar/sync` | `calendar sync` |
-| `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`); the same answer as the page `/calendar` and the feed `/calendar.ics`, both at the site root, not under `/api/v1` | `calendar show [k=v ...]` |
+| `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`); the same answer as the page `/calendar`, the feed `/calendar.ics` and the org-agenda file `/calendar.org`, all three at the site root, not under `/api/v1` | `calendar show [k=v ...]`, `calendar org [k=v ...]` |
+| `POST /calendar/reminders` (editor): the event reminder sweep, `{"reminded": N}` | `calendar remind` |
+| `GET /roadmap` (`goal_id`, `venture_id`, `from`, `to`, `done`, `organization_id`): goals, milestones and epics with progress; the page is `/roadmap` | `roadmap [k=v ...]` |
 
 ## Market data, accounts, arbitrage (answer for `organization_id`)
 

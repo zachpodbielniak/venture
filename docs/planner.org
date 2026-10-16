@@ -1,17 +1,20 @@
 #+title: The planner
-#+description: Events with run-sheets and attendees, and one calendar over every dated record -- month, week and agenda, JSON and a subscribable feed
+#+description: Events with run-sheets, attendees, reminders and budgets; one calendar over every dated record as a page, JSON, an iCalendar feed and an org-agenda file; and the roadmap of goals, milestones and epics
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-16]
 #+updated: [2026-10-16]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * What it is
 
 The =planner= module answers "what is happening, and when". It keeps two things:
 
 - *Events* -- a meeting, an appointment, a deadline, a conference, a trip, a launch -- each with an ordered run-sheet (=event_agenda_item=), the people expected (=event_attendee=) and the ordinary tickets that prepare it.
-- *One calendar* over every dated record VENTURE keeps: events, tickets by their due date, planned activities, milestones, goals, sprints, deals by their expected close, the money calendar's bills and invoices, and imported CalDAV events. It is a page (=/calendar=, month, week or agenda), the same answer as JSON (=/api/v1/calendar=) and as a feed a calendar application subscribes to (=/calendar.ics=).
+- *One calendar* over every dated record VENTURE keeps: events, tickets by their due date, planned activities, milestones, goals, sprints, deals by their expected close, the money calendar's bills and invoices, and imported CalDAV events. It is a page (=/calendar=, month, week or agenda), the same answer as JSON (=/api/v1/calendar=), as a feed a calendar application subscribes to (=/calendar.ics=) and as an org-mode file for org-agenda (=/calendar.org=).
+- *The roadmap* (=/roadmap=): every goal, the milestones toward it and the epics in those, drawn against time with each one's progress.
+
+Around them: an event can remind its organizer and attendees in their inbox, carries a budget its expenses are counted against, is pushed to its organizer's CalDAV calendar, and the dashboard's =agenda= widget shows what is coming up.
 
 The module requires only =core=: a meeting names nothing else. It suggests the modules whose records the calendar draws; each of those is a /source/ that is simply absent while its module is off.
 
@@ -40,6 +43,9 @@ Nothing on the calendar is edited there. A date is a fact on its record and chan
 | =recurrence= | =none= (the zero value), =daily=, =weekly=, =monthly=, =yearly=. |
 | =recurs_until= | The last day it may repeat on. Only on an event that repeats. |
 | =tags= | Comma separated. |
+| =remind_minutes= | Minutes before it starts to remind people in their inbox; =0= (the zero value) for none, at most 40320 (four weeks). |
+| =reminded_for= | Technical: the start of the occurrence last reminded about, stamped by the sweep. |
+| =budget= | Money: what it may cost. Expenses naming the event are counted against it. Not negative. |
 
 ** Why =confirmed= is the zero value
 
@@ -68,6 +74,18 @@ Each item's start is the event's start plus every earlier item's minutes, comput
 ** Preparation is tickets
 
 A ticket has an =event_id=. Booking the room or printing the slides is an ordinary ticket -- assigned, due and on the board like any other -- so the planner adds one reference rather than a second task list. The event's page lists them with "N of M done"; a cancelled ticket did not happen and counts as neither.
+
+** Reminders
+
+An event with =remind_minutes= set tells people it is about to start: its organizer, and every attendee who is a user and has not answered =no=, each once, each only if they may read the event (the same check a mention makes -- a reminder carries the event's name). The notification's kind is =reminder= (appended last to the stored enum), its target the event.
+
+The reminder sweep (=venture_planner_reminder_sweep()=) is lazy, like the service-level sweep: it runs before the inbox, the board and the calendar are drawn, and on demand from =POST /api/v1/calendar/reminders= (editor) or =venturectl calendar remind=, which a cron job can call. There is no timer and no thread, because nothing but the main thread writes the database. It reads every organization's events -- a reminder is owed to a person whichever organization the event is in -- in two bounded queries (upcoming one-off events within the four-week horizon, and repeating ones).
+
+For each, the next occurrence that has not begun is found from the series (=venture_planner_next_occurrence()=, the same arithmetic the calendar expands with). It is reminded about when it starts within the lead and =reminded_for= is not already that occurrence; then =reminded_for= is stamped, as the system, so a second look tells nobody twice and the inbox's audit handler does not report the stamp as a change. An occurrence already under way is not reminded about: a late reminder is noise. A repeating event is reminded about once per occurrence. An all-day event begins at midnight of its day in the configured zone, not at the midnight UTC its date is stored as. A cancelled event is never reminded about.
+
+** Budget
+
+=budget= is what an event may cost; an =expense= has an =event_id=. The event's page shows the budget, what was spent per currency (=venture_planner_event_spend()=, totals per currency, never across two) and what is left in the budget's own currency (=venture_planner_budget_remaining()=). Spending in another currency is listed beside it, not taken off -- nothing converts -- and the page says so. Over budget is a warning, never a refusal: the expense happened. An expense must be the event's own organization's, judged when written. Past =venture_aggregate_get_max_rows()= expenses the spend is refused, not totalled from a part. The expenses are the Budget card, so the generic related-records list leaves them out.
 
 * The calendar
 
@@ -121,13 +139,17 @@ Time comparisons are filters on date-time fields, which the query emitter normal
 
 =view=, =date=, =from=, =to=, =kind= (repeat it, or a comma list), =venture_id=, =assignee= (=me=), =done= (=1=), and on the API =organization_id=. They are read by the calendar's handler and never reach =venture_query_apply_query_string()=, so none of them can be mistaken for a field filter on a list page; =/api/v1/calendar= is registered ahead of =/api/v1/:type=, which would otherwise read "calendar" as a record type. A kind nobody registered is refused by name, so a typo is not an empty month.
 
-** Three doors, one answer
+** Four doors, one answer
 
-The page, the API and the feed run one handler. It reads the question, asks =venture_calendar_view_fetch()=, and draws the result:
+The page, the API and the two feeds run one handler. It reads the question, asks =venture_calendar_view_fetch()=, and draws the result:
 
 - =GET /calendar= (session): the month grid (Monday first, =data-no-sort=, because its rows are weeks and a sort would draw a wrong month), the week (the same grid, one row), or the agenda grouped by day. Kind checkboxes, a venture, "Only mine", "Include finished", previous, today and next. Each item is a link to its record, coloured by kind; an overdue one carries the accent and a badge.
 - =GET /api/v1/calendar= (viewer): ={from, to, view, venture_id, include_done, assignee, kinds, notes, count, items}=; each item has =kind=, =subkind=, =title=, =detail=, =start=, =end= (exclusive), =all_day=, =day=, =record_type=, =record_id=, =url=, =status=, =overdue= and =uid=.
 - =GET /calendar.ics= (viewer, so a calendar application subscribes with a token): one VEVENT per item, written by =venture_ical_event_append()= -- the CalDAV sync's folding and escaping -- with all-day items as =DATE= values and an exclusive end. Every item has a stable UID: the record's UUID, and for an occurrence of a repeating event the UUID and its day.
+
+- =GET /calendar.org= (viewer): the same items as an org-mode file for org-agenda (=venture_calendar_result_to_org()=). A due date -- a ticket, an activity, a milestone, a goal, a deal's close, a bill -- is a =TODO= heading (=DONE= when finished) with a =DEADLINE:=, so the agenda warns ahead; an event, a sprint or a synced meeting is a plain heading with an active timestamp the agenda shows on its day. Times are written in the configured zone, since org timestamps carry none; an all-day item is a date, and a range of days is =<a>--<b>= with the inclusive last day. Each heading has a =:PROPERTIES:= drawer with the item's stable =:ID:=, =:VENTURE_TYPE:=, =:VENTURE_RECORD:=, =:VENTURE_STATUS:= and =:VENTURE_URL:=, and a link to the record -- absolute when =server.base_url= is set. A title cannot start a heading of its own (newlines become spaces), and the calendar's notes are =#= comment lines at the top. Tags are the kind, the subkind and =overdue=.
+
+The page draws the reminder sweep first; the API and the feeds do not -- a calendar client polling on a timer is not a person looking.
 
 Which days a trip covers (=venture_calendar_item_covers_day()=), the run-sheet's times, the attendees' answers and "N of M done" all come from core. The web layer draws; it computes nothing.
 
@@ -135,6 +157,10 @@ Which days a trip covers (=venture_calendar_item_covers_day()=), the run-sheet's
 
 #+begin_src sh
 venturectl calendar show from=2026-03-01 to=2026-03-31
+venturectl calendar org from=2026-03-01 to=2026-04-30 > ~/Documents/notes/venture-calendar.org
+venturectl calendar remind
+venturectl roadmap
+venturectl roadmap goal_id=3 done=1
 venturectl calendar show view=week date=2026-03-09 kind=event,ticket assignee=me
 venturectl calendar show from=2026-03-01 to=2026-03-31 -f json
 venturectl create event name="Board meeting" starts_at=2026-03-09T09:00:00Z ends_at=2026-03-09T10:00:00Z
@@ -143,7 +169,49 @@ venturectl create event_attendee event_id=4 contact_id=12 rsvp=yes
 venturectl update ticket 31 event_id=4
 #+end_src
 
-=calendar show= is a convenience over =GET /api/v1/calendar=: every argument goes into the query string, and the agenda is printed by day. =-f json= prints the server's answer as it came.
+=calendar show= is a convenience over =GET /api/v1/calendar=: every argument goes into the query string, and the agenda is printed by day. =-f json= prints the server's answer as it came. =calendar org= takes the same options and prints =/calendar.org= untouched, for a file named in =org-agenda-files=. =calendar remind= runs the reminder sweep and prints how many events it reminded about. =roadmap= prints the roadmap as an indented tree.
+
+** In org-agenda
+
+The feed is meant to be fetched, not edited: a refresh replaces the file, and the =:ID:= of each heading stays the same. A cron line or an Emacs timer that runs =venturectl calendar org ... > file= and an =org-agenda-files= entry naming the file is the whole setup; =org-agenda= then shows events on their days and deadlines with their warning period. Closing a =TODO= there changes nothing in VENTURE -- the record is where a ticket is done.
+
+* The roadmap
+
+=/roadmap= (session), =/api/v1/roadmap= (viewer) and =venturectl roadmap= read one function, =venture_planner_roadmap()=. Its rows, in the order they are drawn:
+
+1. each goal (goals module), then the milestones naming it, each followed by the epics planned into it, then the goal's epics in none of its milestones;
+2. the milestones naming no goal shown, with their epics;
+3. the epics in no milestone and naming no goal.
+
+Each record is drawn once: an epic in a milestone of its goal is under the milestone, not again under the goal. A goal left out as finished takes its milestones and epics with it rather than promoting them to "no goal".
+
+A bar runs from the record's creation to its due date (a goal's and a milestone's =due_on=, an epic's =due_at=); with no due date it is a marker at its start, drawn open. Its fill is the record's own progress, the figure its page shows: a goal's work (=venture_goals_work_progress()=), a milestone's tickets (=venture_factory_milestone_progress()=), an epic's tree (=venture_ticket_tree_progress()=), cancelled work counted as neither. A row past due and unfinished is marked overdue. Nothing is stored.
+
+| Parameter | Meaning |
+|-----------+---------|
+| =goal_id= | one goal and what hangs off it; a goal that is not the organization's is not found |
+| =venture_id= | one venture's goals, milestones and epics |
+| =done=1= | also finished goals (achieved, abandoned), milestones (completed, cancelled) and epics (done, cancelled) |
+| =from=, =to= | the window, days inclusive; the default is the first of last month for seven months; at most 1096 days |
+| =organization_id= | on the API, as every planner route |
+
+Goals are read only while the goals module is on, milestones and epics only while tickets is; a hidden level is left out with a note. At most =VENTURE_PLANNER_ROADMAP_MAX_ROWS= (500) of each kind are read -- every epic row walks its tree -- and past it the roadmap is refused, saying to narrow it by goal or venture. The page's rows are the hierarchy, so its table is =data-no-sort=.
+
+* The dashboard widget
+
+The =agenda= widget kind ("Coming up", module =planner=) shows the calendar from today for =options.days= (14; 1 to 90), by day, at most =limit= items (10) with "and N more". =options.kinds= (a list or a comma string) narrows it to some sources; =options.mine= keeps the viewer's own, as =assignee=me= does. It asks =venture_calendar_view_fetch()= in the widget's scope, so the card and =/calendar= cannot disagree; the calendar's notes are drawn on the card. It is a different kind from =upcoming=, which looks ahead on one record type's date field.
+
+* Pushing events to CalDAV
+
+A shared calendar account (=calendar_account=, the =calendar= module) pushes its owner's planner events along with their calls and meetings: every event whose =organizer_user_id= is the user named by the account's =owner=. Private accounts only import, as before.
+
+- The push is one way. The event is planned in VENTURE; a change made to the copy on the calendar side is not read back. The link (=calendar_event= with =planner_event_id=) takes the server's new etag, so the next change here replaces the copy rather than failing its If-Match.
+- The UID is the event's UUID and =@venture-event=, never =@venture=: a pass that has lost a link must not read the copy back as a new activity, and one ending =@venture-event= is never imported.
+- A copy removed on the server stays removed -- its link is deleted -- until the event changes here again, when it comes back as a new copy under the same UID.
+- A cancelled or deleted event is pushed once with =STATUS:CANCELLED=.
+- What is written: =SUMMARY= (the name), =DESCRIPTION= (the description, the online link, the address), =LOCATION=, =STATUS= (=TENTATIVE= for tentative), an all-day event as =DATE= values with the exclusive end, an =RRULE= for a repeating event (=UNTIL= the whole last day: a =DATE= for all-day, =T235959Z= for timed), and a =VALARM= display alarm =remind_minutes= ahead.
+- A monthly series on the 29th to 31st is clamped to the month's last day by VENTURE and skipped in a short month by =RRULE=; the two disagree there.
+- Activities are pushed exactly as before: =venture_ical_event_format()= still writes all-day activities as =DATE-TIME=, and an activity sets neither a location nor an alarm.
 
 * Where the code is
 
@@ -151,6 +219,9 @@ venturectl update ticket 31 event_id=4
 - =src/planner/venture-planner.c= -- the validators, the run-sheet, attendees and preparation tickets.
 - =src/planner/venture-calendar-view.c= -- the source registry, the span, the fetch, JSON and the feed.
 - =src/planner/venture-calendar-sources.c= -- the built-in sources.
+- =src/planner/venture-planner-roadmap.c= -- the roadmap.
+- =src/calendar/venture-calendar-sync-service.c= -- the CalDAV push of planner events beside the activity sync.
 - =src/planner/venture-planner-web.inc= -- the page, its twins and the event's block.
-- =migrations/*/000914_planner_events.sql=, =000915_ticket_event.sql= -- additive schema checks; nothing is backfilled.
-- =tests/test-planner.c= -- the rules, the run-sheet, every source in and out of the span, the filters, the bound, recurrence, the feed and the three doors.
+- =migrations/*/000914_planner_events.sql=, =000915_ticket_event.sql=, =000916_event_reminders_budget.sql=, =000917_expense_event.sql=, =000918_calendar_event_planner.sql= -- additive schema checks; nothing is backfilled.
+- =tests/test-planner.c= -- the rules, the run-sheet, every source in and out of the span, the filters, the bound, recurrence, the feeds, the four doors, reminders, the budget, the roadmap and the widget.
+- =tests/test-calendar.c= =/calendar/push-planner-events= -- the push.

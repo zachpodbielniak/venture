@@ -92,6 +92,9 @@ take `organization_id=N` to work outside the default organization.
 | `mail list\|send\|test\|deliver\|retry\|sync\|contact\|dismiss` | transactional and inbound mail | [mail.md](mail.md) |
 | `calendar sync [organization_id=] [limit=]` | CalDAV sweep | [mail.md](mail.md) |
 | `calendar show [view=] [date=] [from=] [to=] [kind=a,b] [venture_id=] [assignee=me] [done=1]` | the unified calendar as an agenda; `-f json` the API's answer | [planner.md](planner.md) |
+| `calendar org [same options as show]` | the calendar as an org-agenda file, printed untouched | [planner.md](planner.md) |
+| `calendar remind` | send the event reminders that are due; `{"reminded": N}` | [planner.md](planner.md) |
+| `roadmap [goal_id=] [venture_id=] [from=] [to=] [done=1]` | goals, milestones and epics as an indented tree with progress | [planner.md](planner.md) |
 
 ## Market data, accounts, arbitrage
 

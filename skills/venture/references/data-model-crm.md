@@ -128,6 +128,6 @@ lookback/retention days; owner/admin only), `attribution_visitor`
   (filed message, read-only; `skip_reason` on a stub),
   `mail_unmatched_sender` (`dismissed`).
 - calendar (requires activities, crm, leads): `calendar_account` (CalDAV;
-  `private_owner_id` immutable), `calendar_event` (synced, read-only),
+  `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
   `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
   `timezone`, `availability` JSON, `horizon_days`; serves `/book/<slug>`).

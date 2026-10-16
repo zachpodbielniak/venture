@@ -41,7 +41,7 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   `capacity_points`), `routing_rule` (`strategy`
   [round_robin|least_busy|first], `assignees`, matching kind/priority/tag).
 
-## planner (requires core; suggests goals, tickets, factory, crm, activities, money_calendar, calendar) -- no reports
+## planner (requires core; suggests goals, tickets, crm, activities, money_calendar, calendar) -- no reports
 
 - `event` -- something at a time. **name**, `kind`
   [meeting|appointment|deadline|conference|trip|launch|personal|other],
@@ -50,16 +50,20 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   record type), `address`, `online_url`, `description`, `notes`,
   `organizer_user_id`, `venture_id`, `goal_id`, `milestone_id`,
   `contact_id`, `company_id`, `recurrence` [none|daily|weekly|monthly|yearly],
-  `recurs_until`, `tags`.
+  `recurs_until`, `tags`, `remind_minutes` (0-40320), `budget` (money),
+  `reminded_for` (technical, the reminder sweep's).
 - `event_agenda_item` -- one run-sheet line. **event_id**, `position`,
   **title**, `minutes`, `presenter`, `notes`, `done`. Start times are
   computed, never stored.
 - `event_attendee` -- **event_id**, one of `contact_id`/`user_id`/`name`/
   `email`, `role` [required|optional|organizer], `rsvp`
   [pending|yes|no|maybe].
-- A ticket's `event_id` makes it a preparation task of the event.
-- The calendar (`/calendar`, `/api/v1/calendar`, `/calendar.ics`) reads
-  every module's dated records: [planner.md](planner.md).
+- A ticket's `event_id` makes it a preparation task of the event; an
+  expense's `event_id` counts it against the event's budget.
+- The calendar (`/calendar`, `/api/v1/calendar`, `/calendar.ics`,
+  `/calendar.org`) reads every module's dated records, and the roadmap
+  (`/roadmap`, `/api/v1/roadmap`) draws goals, milestones and epics:
+  [planner.md](planner.md).
 
 ## kb (requires core) -- no reports
 

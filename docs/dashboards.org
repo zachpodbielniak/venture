@@ -53,6 +53,7 @@ Every widget has a kind, a title (or the kind supplies one), a width — one col
 | =list=           | the newest few records of a type matching a filter, with the columns you choose, each linking to its page | =entity_type=, =filter=, =order=, =limit=, =columns= |
 | =breakdown=      | counts per value of a field with a fixed set of values — tickets by status, deals by stage — as bars linking to their rows | =entity_type=, =field=, =filter=              |
 | =upcoming=       | what is due within the next so many days on a date field, overdue first        | =entity_type=, =field=, =filter=, =limit=, =options= (={"days": 14}=) |
+| =agenda=         | "Coming up": the planner's calendar for the next =days= (14), by day, from every source or =kinds=, only yours with =mine= (planner module) | =limit=, =options= (={"days": 14, "kinds": ["event","ticket"], "mine": true}=) |
 | =record=         | one record's fields                                                            | =entity_type=, =record_id=, =columns=         |
 | =links=          | everything linked to one record, read from it                                  | =entity_type=, =record_id=                    |
 | =metric=         | one headline figure from a report, with its change against the previous period | =report_name=, =period=, =field= (the metric's key; the first when blank), =options= (the report's own) |
