@@ -1200,7 +1200,7 @@ test_web_navigation_links_all_resolve(
 		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting",
 		"/arbitrage/recipe-lists", "/arbitrage/plan", "/arbitrage/calc",
-		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
+		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1349,9 +1349,10 @@ test_web_navigation_groups_by_question(
 		NULL
 	};
 	static const gchar *const support[] = {
-		"/tickets", "/sprints", "/kb", NULL
+		"/tickets", "/sprints", "/e/milestone", "/kb", NULL
 	};
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
+	static const gchar *const planner[] = { "/calendar", "/e/event", NULL };
 	static const gchar *const trading_accounts[] = {
 		"/accounts", "/accounts/inventory", "/accounts/pnl", NULL
 	};
@@ -1366,7 +1367,7 @@ test_web_navigation_groups_by_question(
 		"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge", NULL
 	};
 	static const gchar *const factory[] = {
-		"/factory", "/e/milestone", "/e/release", "/e/build",
+		"/factory", "/e/release", "/e/build",
 		"/e/environment", "/e/deployment", "/e/incident", NULL
 	};
 	static const gchar *const business[] = { "/e/venture", "/entities", "/modules", NULL };
@@ -1390,6 +1391,7 @@ test_web_navigation_groups_by_question(
 		{ "Growth", NULL, growth },
 		{ "Support", NULL, support },
 		{ "Operations", NULL, operations },
+		{ "Planner", NULL, planner },
 		{ "Your accounts", "Trading", trading_accounts },
 		{ "Markets", "Trading", trading },
 		{ "Ideas", "Build", ideas },

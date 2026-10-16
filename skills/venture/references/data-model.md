@@ -103,6 +103,7 @@ off by default. A module nobody configures is on.
 | `production` | sales | [trading](data-model-trading.md) |
 | `sessions` | core | [trading](data-model-trading.md) |
 | `goals` | core | [trading](data-model-trading.md) |
+| `planner` | core | [work](data-model-work.md) |
 | `feeds` (opt-in) | core | [trading](data-model-trading.md) |
 | `marketdata` | market | [trading](data-model-trading.md) |
 | `arbitrage` | marketdata, ledger | [trading](data-model-trading.md) |

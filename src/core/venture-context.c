@@ -161,6 +161,10 @@ venture_context_new(
 	venture_sla_install(self);
 	venture_desk_install(self);
 
+	/* Epics, stories and their pieces: which shapes may hang under which,
+	 * judged only when a parent or an issue type is written. */
+	venture_ticket_tree_install(self);
+
 	/* A comment stays on its record, in its record's organization, under
 	 * the author it was written by -- whichever door wrote it. */
 	venture_comment_install(self);
@@ -216,6 +220,11 @@ venture_context_new(
 	/* Goals whose target differs from their start, sub-goals that do not
 	 * loop, and achieved and done times that follow the status. */
 	venture_goals_install(self);
+
+	/* Events whose end is not before their start and whose all-day times
+	 * are dates, agenda items and attendees that belong to their event's
+	 * organization; and the calendar's built-in sources. */
+	venture_planner_install(self);
 
 	/* Arbitrage trades and legs: an executed leg posts on save through the
 	 * ledger's source registry, stock legs are executed by an action that

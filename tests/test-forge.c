@@ -194,11 +194,19 @@ test_forge_every_issue_type_round_trips(
 	gconstpointer	 user_data
 ){
 	g_autoptr(GEnumClass) klass = NULL;
+	g_autoptr(VentureTicket) task = NULL;
 	guint i;
 
 	(void)user_data;
 
 	klass = g_type_class_ref(VENTURE_TYPE_ISSUE_TYPE);
+
+	/* A subtask must be a piece of something (the ticket hierarchy), so
+	 * it gets a task to hang from. */
+	task = venture_ticket_new();
+	g_object_set(task, "title", "parent", NULL);
+	g_assert_true(venture_database_save(fixture->database,
+		VENTURE_ENTITY(task), NULL, NULL));
 
 	for (i = 0; i < klass->n_values; i++)
 	{
@@ -210,6 +218,11 @@ test_forge_every_issue_type_round_trips(
 		ticket = venture_ticket_new();
 		g_object_set(ticket, "title", klass->values[i].value_nick,
 		             "issue-type", klass->values[i].value, NULL);
+
+		if (VENTURE_ISSUE_TYPE_SUBTASK == klass->values[i].value)
+			g_object_set(ticket, "parent-id",
+			             venture_entity_get_id(VENTURE_ENTITY(task)), NULL);
+
 		g_assert_true(venture_database_save(fixture->database,
 			VENTURE_ENTITY(ticket), NULL, &error));
 		g_assert_no_error(error);

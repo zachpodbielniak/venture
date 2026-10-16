@@ -1194,6 +1194,37 @@ seed_activities () {
         due_at="$(day 5)" priority=normal status=planned company_id="${shop}"
 }
 
+# The planner: a trade fair with its run-sheet, who is coming and one
+# preparation ticket, and a weekly stand-up -- so /calendar shows events
+# beside the tickets, activities and money already seeded. Enum values
+# from `venturectl describe event` (kind conference/meeting, rsvp yes).
+seed_planner () {
+    local press="$1"
+    local shop="$2"
+    local buyer="$3"
+
+    step "The planner: a fair to prepare and a weekly stand-up"
+
+    local fair
+
+    fair="$(make_record event name="Spring book fair" kind=conference \
+        all_day=true starts_at="$(day 12)" ends_at="$(day 14)" \
+        location="Leipzig" venture_id="${press}" company_id="${shop}" \
+        description="Stand B4. Bring the spring catalogue.")"
+
+    add event_agenda_item event_id="${fair}" position=1 \
+        title="Set up the stand" minutes=90
+    add event_agenda_item event_id="${fair}" position=2 \
+        title="Reading from the new titles" minutes=45 presenter=owner
+    add event_attendee event_id="${fair}" contact_id="${buyer}" rsvp=yes
+    add ticket title="Print 200 catalogues for the fair" kind=internal \
+        event_id="${fair}" venture_id="${press}" due_at="$(day 8)" \
+        assignee=owner
+    add event name="Weekly stand-up" kind=meeting \
+        starts_at="$(day 1)T09:00:00Z" ends_at="$(day 1)T09:15:00Z" \
+        recurrence=weekly
+}
+
 seed_quotes () {
     local press="$1"
     local shop="$2"
@@ -3201,6 +3232,7 @@ do_start () {
     seed_pipelines
     seed_leads "${press}" "${studio}"
     seed_activities "${shop}" "${agency}" "${buyer}"
+    seed_planner "${press}" "${shop}" "${buyer}"
     seed_quotes "${press}" "${shop}" "${buyer}" "${book}"
 
     seed_billing "${studio}" "${agency}" "${shop}" "${press}"

@@ -37,7 +37,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =outreach=   | sales           | campaign, newsletter, subscriber, post; =campaigns=               |                       |
 | =ideas=      | core            | idea, research_note; =ideas=                                      |                       |
 | =kb=         | core            | knowledge_base, kb_article, kb_chunk, kb_link                     | =kb.enabled=          |
-| =tickets=    | core            | ticket, ticket_comment, ticket_relation, sla_policy, macro, worklog, sprint, routing_rule; =support= | |
+| =tickets=    | core            | ticket, ticket_comment, ticket_relation, sla_policy, macro, worklog, sprint, routing_rule, milestone; =support=, =support_rollup=, =epic_progress= | |
 | =webhooks=   | core            | webhook, webhook_delivery; the =/webhooks= page and its API        |                       |
 | =federation= | core            | federation_replica, federation_peer, federation_grant; explicit object sharing between authenticated servers | =federation.enabled= (opt-in) |
 | =ai=         | core            | the assistant and its tools                                       | =ai.enabled=          |
@@ -45,7 +45,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =automation= | core            | the podomation engine                                             | =automation.enabled=  |
 | =plugins=    | core            | plugins and declarative venture types                             | =plugins.enabled=     |
 | =forge=      | tickets, integrations | forge, forge_repo, forge_rule, ticket_link, forge_run, agent_session, agent_turn, agent_budget | =forge.enabled=     |
-| =factory=    | forge           | milestone, release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
+| =factory=    | forge           | release, build, environment, deployment, incident; =releases=, =lead_time=, =incidents=, =delivery= | |
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
@@ -105,6 +105,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =production= | sales (suggests market, goods) | recipe, recipe_component; the =craft= action on a recipe; =recipe_margin= (see [[file:production.org][Production]]) | |
 | =sessions= | core (suggests sales, market) | session, session_yield; the =post= action on a session; =session_performance= (see [[file:sessions.org][Sessions]]) | |
 | =goals= | core (suggests production, market) | goal, goal_step; =goal_progress=, =goal_materials= (see [[file:goals.org][Goals]]) | |
+| =planner= | core (suggests goals, tickets, crm, activities, money_calendar, calendar) | event, event_agenda_item, event_attendee, a ticket's =event_id=; =/calendar=, =/api/v1/calendar=, =/calendar.ics=, =calendar show= (see [[file:planner.org][The planner]]) | |
 | =feeds= | core | data_source, data_source_run; the =sync=, =test= and =purge_history= actions; the =feeds_sync= automation handler and the =feed_synced=/=feed_failed= events; the series worker thread; =/feeds= and =/api/v1/feeds/*=; the =source_health= widget (see [[file:market-data.org][Market data]]) | =feeds.enabled= (opt-in) |
 | =marketdata= | market (suggests feeds) | venue, instrument, watchlist, watchlist_entry, alert_rule, alert_hit; the =evaluate= action on an alert rule; =market_deals=, =venue_index=, =watchlist=; the price oracle and the =series:= price source; the =/market/*= pages and =/api/v1/market/*=; the =watchlist= and =market_alerts= widgets (see [[file:market-data.org][Market data]]) | |
 | =arbitrage= | marketdata, ledger (suggests production, goods) | arbitrage_trade, arbitrage_leg, arbitrage_strategy (scan presets), external_posting (an external ledger's days in the books); the =execute=, =close=, =reopen=, =abandon=, =record=, =record_flips= and =post_ledger= actions; =arbitrage_performance=, =arbitrage_scan=, =craft_arbitrage=, =external_books=; the =/arbitrage= pages (scan, calculators, export, record) and =/api/v1/arbitrage/*=; the =opportunities= widget (see [[file:arbitrage.org][Arbitrage]]) | |

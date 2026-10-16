@@ -1274,6 +1274,7 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "price_source")) &&
 				 (0 != g_strcmp0(parts[0], "category_id")) &&
 				 (0 != g_strcmp0(parts[0], "goal_id")) &&
+				 (0 != g_strcmp0(parts[0], "milestone_id")) &&
 				 (0 != g_strcmp0(parts[0], "form_id")) &&
 				 (0 != g_strcmp0(parts[0], "language")) &&
 				 (0 != g_strcmp0(parts[0], "location_id")) &&
@@ -1316,7 +1317,7 @@ venture_cli_command_report(
 				 (0 != g_strcmp0(parts[0], "login"))))
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, recipe_category_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login, form_id, language");
+					"Report options after the period: as_of, organization_id, customer_id, currency, venture_id, group_by, compare_to, account_id, vendor_id, pipeline_id, owner, basis, dimension, days, by, weeks, band_size, band, sort, min_tickets, company, product, bucket, model, details, type, measure, aggregate, date_field, filter, per, category_depth, product_id, source, price_source, category_id, goal_id, milestone_id, location_id, status, include_on_hand, data_source_id, venue, group_key, category_path, min_value, max_pct, top, watchlist_id, strategy, kind, buy_venues, sell_venues, instrument, sell_basis, total_stake, min_profit, min_roi, min_sale_rate, max_capital, max_buy_pct, min_confidence, share, preset_id, recipe_id, recipe_category_id, units, buy_sources, max_age_hours, account_key, place, expiring_hours, mail_days, stale_days, dead_days, login, form_id, language");
 				return -1;
 			}
 			g_string_append_c(path, '&');
@@ -4275,6 +4276,7 @@ main(
 		"                               session_performance takes group_by, category_depth, price_source, currency, venture_id;\n"
 		"                               goal_progress takes status, category_id, venture_id;\n"
 		"                               goal_materials takes goal_id, price_source, currency, include_on_hand, venture_id;\n"
+		"                               epic_progress takes milestone_id, goal_id, venture_id;\n"
 		"                               market_deals takes data_source_id, venue, group_key, category_path, min_value, max_pct, top;\n"
 		"                               venue_index takes data_source_id, group_key;\n"
 		"                               watchlist takes watchlist_id;\n"
@@ -4349,6 +4351,8 @@ main(
 		"  mail list|send|test|deliver|retry  transactional mail\n"
 		"  mail sync|contact|dismiss          inbound mail sync and unmatched senders\n"
 		"  calendar sync [organization_id=N]  two-way CalDAV sweep\n"
+		"  calendar show [view=month|week|agenda] [date=D] [from=D to=D] [kind=K,..]\n"
+		"                [venture_id=N] [assignee=me] [done=1]  the unified calendar\n"
 		"  quote send|accept|decline|revise|start-subscription ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
@@ -4498,6 +4502,7 @@ main(
 		"  venturectl act session 8 post\n"
 		"  venturectl report goal_progress all status=active category_id=4\n"
 		"  venturectl report goal_materials all goal_id=2 price_source=\"market value\"\n"
+		"  venturectl report epic_progress all milestone_id=3\n"
 		"  venturectl report market_deals group_key=eu min_value=\"10.00 GOLD\" max_pct=80 top=20\n"
 		"  venturectl report venue_index data_source_id=1\n"
 		"  venturectl report arbitrage_performance this_month group_by=venue_pair strategy=spread\n"

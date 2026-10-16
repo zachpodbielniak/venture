@@ -64,7 +64,7 @@ Every widget has a kind, a title (or the kind supplies one), a width — one col
 | =actions=        | buttons, one per line as =Label | /path=                                       | =body=                                        |
 | =search=         | a search box, for everything or for one type                                   | =entity_type=                                 |
 | =environments=   | each environment and the release it is running now (needs =factory=)           | =filter=, =order=, =limit=                    |
-| =milestone=      | one milestone's tickets done over planned; the soonest-due open one when no id is given (needs =factory=) | =record_id=                                   |
+| =milestone=      | one milestone's tickets done over planned; the soonest-due open one when no id is given (needs =tickets=) | =record_id=                                   |
 | =sum=            | the total of a money or number field over the records matching a filter, optionally within a period; money is one figure per currency | =entity_type=, =field=, =filter=, =period=, =options= (={"date_field": "occurred_at"}=) |
 | =progress=       | a value field against a target field as a percentage and a bar: of one record, or summed over a filter, per currency | =entity_type=, =field=, =record_id=, =filter=, =period=, =options= (={"target_field": "budget"}=, =start_field=, =date_field=) |
 | =watchlist=      | one market data watchlist priced now (the first by name with no id): each instrument's cheapest in-stock venue in the list's group, the price, and /buy/ or /sell/ against the targets (needs =marketdata=) | =record_id=, =limit= |

@@ -1496,6 +1496,16 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD("story-points", "Points", "Relative size, for the sprint",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	/*
+	 * The event this work prepares, from the planner module: booking the
+	 * room, printing the slides. A preparation task is an ordinary ticket
+	 * -- assigned, due and on the board -- so the planner adds this one
+	 * reference rather than a second task list, and the event's page
+	 * counts them done of total. Soft like the factory's: with the planner
+	 * off the reference is refused when written and the picker is empty.
+	 */
+	VENTURE_FIELD_REF("event-id", "Event", "The event this prepares",
+	                  "event", VENTURE_COLUMN_FLAG_NONE),
+	/*
 	 * The service-level clocks. The due times are set once, when the
 	 * ticket is first saved and a policy covers it, and left alone: a
 	 * deadline that moved every time the priority was edited would be
@@ -1533,7 +1543,17 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_TEXT("satisfaction-comment", "Satisfaction comment",
 	                   "What they said about it"),
 	VENTURE_FIELD_REF("owner-user-id", "Owner", "Responsible user", "user", VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED)
+	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * The goal this work moves, so a goal can say how much of its work
+	 * is done. Set on whatever is planned toward the goal -- usually the
+	 * epic -- and never copied down to the pieces: the goal walks the
+	 * epic's tree itself, and a derived write would bump every child's
+	 * version under whoever holds it. Soft like milestone-id, because the
+	 * goals module may be off.
+	 */
+	VENTURE_FIELD_REF("goal-id", "Goal", "The goal this work moves",
+	                  "goal", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,
@@ -1724,7 +1744,11 @@ static const VentureFieldDecl venture_milestone_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("completed-at", "Completed", NULL,
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	/* The goal this increment moves; read by the goal's page and its
+	 * work progress, never written by them. */
+	VENTURE_FIELD_REF("goal-id", "Goal", "The goal this increment moves",
+	                  "goal", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMilestone, venture_milestone, venture_milestone_fields,

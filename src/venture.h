@@ -138,6 +138,7 @@
 #include "marketdata/venture-marketdata-records.h"
 #include "arbitrage/venture-arbitrage-records.h"
 #include "forms/venture-forms-records.h"
+#include "planner/venture-planner-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -268,6 +269,7 @@
 #include "core/venture-routing.h"
 #include "core/venture-currency.h"
 #include "core/venture-category.h"
+#include "core/venture-ticket-tree.h"
 #include "core/venture-venture-type-check.h"
 #include "billing/venture-billing-service.h"
 #include "billing/venture-billing-usage.h"
@@ -369,6 +371,8 @@
 #include "arbitrage/venture-arbitrage-books.h"
 #include "arbitrage/venture-arbitrage-crafting.h"
 #include "forms/venture-forms.h"
+#include "planner/venture-planner.h"
+#include "planner/venture-calendar-view.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

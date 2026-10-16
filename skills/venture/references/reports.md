@@ -98,7 +98,8 @@ way.
   `sequence_engagement`. marketing: `marketing_performance`. outreach:
   `campaigns`. attribution: `attribution` (`model=first|last`,
   `details=true`). sales_performance: `sales_attainment`. ideas: `ideas`.
-- tickets: `support`, `support_rollup` (`group_by=product`). factory:
+- tickets: `support`, `support_rollup` (`group_by=product`),
+  `epic_progress` (`milestone_id`, `goal_id`, `venture_id`). factory:
   `releases`, `lead_time`, `incidents`, `delivery` (DORA's four keys
   beside the coding runs' cost).
 - market: `listing_performance`, `price_history`. production:

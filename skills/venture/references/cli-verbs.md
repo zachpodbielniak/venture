@@ -42,7 +42,7 @@ take `organization_id=N` to work outside the default organization.
 |---|---|---|
 | `factory`, `factory actions`, `factory briefing` | at a glance; what needs somebody (start here for "what next"); prose (AI) | [factory.md](factory.md) |
 | `release readiness\|changelog [--replace]\|publish [--prerelease]\|deploy ENV [NOTES]\|notes [AUDIENCE] ID` | release operations (publish cannot be undone or staged) | [factory.md](factory.md) |
-| `environment ID rollback [REASON]`, `milestone ID forecast`, `build ID ticket\|triage`, `incident ID ticket\|postmortem` | factory records | [factory.md](factory.md) |
+| `environment ID rollback [REASON]`, `milestone ID forecast`, `build ID ticket\|triage`, `incident ID ticket\|postmortem` | factory records (`milestone ID forecast` needs only the tickets module) | [factory.md](factory.md) |
 | `runs [--state S]`, `budgets` | coding runs with cost; agent budgets | [factory.md](factory.md) |
 | `forge settings ID` (JSON stdin), `forge verify ID`; `forge set-token\|set-secret` retired | forge credentials | [factory.md](factory.md) |
 | `webhooks`, `webhook test ID`, `webhook secret ID`, `webhook token ID` (stdin) | outbound webhooks (owner); token: a gotify/ntfy push's | [automation.md](automation.md) |
@@ -91,6 +91,7 @@ take `organization_id=N` to work outside the default organization.
 | `sequence enroll ID contact_id=`, `sequence run [--as-of]`, `sequence status ID` | follow-ups | [outreach.md](outreach.md) |
 | `mail list\|send\|test\|deliver\|retry\|sync\|contact\|dismiss` | transactional and inbound mail | [mail.md](mail.md) |
 | `calendar sync [organization_id=] [limit=]` | CalDAV sweep | [mail.md](mail.md) |
+| `calendar show [view=] [date=] [from=] [to=] [kind=a,b] [venture_id=] [assignee=me] [done=1]` | the unified calendar as an agenda; `-f json` the API's answer | [planner.md](planner.md) |
 
 ## Market data, accounts, arbitrage
 

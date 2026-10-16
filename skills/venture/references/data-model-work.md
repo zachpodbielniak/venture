@@ -6,7 +6,7 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
 [factory.md](factory.md), [dashboards.md](dashboards.md) and
 [automation.md](automation.md).
 
-## tickets (requires core; suggests crm, ideas, forge) -- reports `support`, `support_rollup`
+## tickets (requires core; suggests crm, ideas, forge) -- reports `support`, `support_rollup`, `epic_progress`
 
 - `ticket` -- one shape for internal work and external support. **title**,
   `description`, `kind` [internal|external] (whose problem; decides who
@@ -15,12 +15,20 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   [triage|todo|in_progress|blocked|review|done|cancelled], `priority`
   [low|normal|high|urgent], `assignee` (a username), `owner_user_id`,
   `team_id`, `contact_id`, `company_id`, `venture_id`, `idea_id`,
-  `parent_id -> ticket`, `repo_id -> forge_repo`, `milestone_id`,
-  `release_id`, `sprint_id`, `story_points`, `estimate_hours`, `due_at`,
+  `parent_id -> ticket` (shape held by the save: epic none; story under
+  an epic or none; task/bug/research under an epic, a story or none;
+  subtask under a task/story/bug/research, required -- judged only when
+  written), `repo_id -> forge_repo`, `milestone_id`, `goal_id -> goal`,
+  `release_id`, `sprint_id`, `event_id` (planner: the event it prepares),
+  `story_points`, `estimate_hours`, `due_at`,
   `resolution`, `tags`. Derived: `resolved_at`, SLA due times
   (`first_response_due_at`, `resolution_due_at`, `first_responded_at`,
   `sla_breached`), `logged_hours`. `satisfaction`
   [unrated|bad|neutral|good] + comment.
+- `milestone` -- a planned increment (moved here from the factory):
+  **name**, `status` [planned|active|completed|cancelled], `due_on`,
+  `completed_at` (derived from status), `venture_id`, `product_id`,
+  `goal_id -> goal`, `description`, `notes`.
 - `ticket_comment` -- the ticket's own conversation: `body`, `author`,
   `internal` (a note the requester never sees). Tickets take no generic
   `comment`.
@@ -32,6 +40,26 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   `sprint` (`status` [planned|active|completed], `starts_on`, `ends_on`,
   `capacity_points`), `routing_rule` (`strategy`
   [round_robin|least_busy|first], `assignees`, matching kind/priority/tag).
+
+## planner (requires core; suggests goals, tickets, factory, crm, activities, money_calendar, calendar) -- no reports
+
+- `event` -- something at a time. **name**, `kind`
+  [meeting|appointment|deadline|conference|trip|launch|personal|other],
+  `status` [confirmed|tentative|cancelled], **starts_at**, `ends_at` (all
+  day: the last day, inclusive), `all_day`, `location` (text, not the
+  record type), `address`, `online_url`, `description`, `notes`,
+  `organizer_user_id`, `venture_id`, `goal_id`, `milestone_id`,
+  `contact_id`, `company_id`, `recurrence` [none|daily|weekly|monthly|yearly],
+  `recurs_until`, `tags`.
+- `event_agenda_item` -- one run-sheet line. **event_id**, `position`,
+  **title**, `minutes`, `presenter`, `notes`, `done`. Start times are
+  computed, never stored.
+- `event_attendee` -- **event_id**, one of `contact_id`/`user_id`/`name`/
+  `email`, `role` [required|optional|organizer], `rsvp`
+  [pending|yes|no|maybe].
+- A ticket's `event_id` makes it a preparation task of the event.
+- The calendar (`/calendar`, `/api/v1/calendar`, `/calendar.ics`) reads
+  every module's dated records: [planner.md](planner.md).
 
 ## kb (requires core) -- no reports
 
@@ -68,8 +96,7 @@ hidden from the related-records walk).
 
 ## factory (requires forge) -- reports `releases`, `lead_time`, `incidents`, `delivery`
 
-`milestone` (`status` [planned|active|completed|cancelled], `due_on`,
-`completed_at` derived), `release` (**number** -- the version; `status`
+`release` (**number** -- the version; `status`
 [planned|in_progress|released|yanked], `tag`, `changelog`, `released_at`
 derived, `repo_id`, `external_id`), `build` (one CI run from the webhook:
 `status` [queued|running|succeeded|failed|cancelled], `trigger`

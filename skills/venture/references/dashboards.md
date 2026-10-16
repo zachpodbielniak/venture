@@ -69,7 +69,7 @@ filter is the viewer's username, `{user_id}` their id.
 | `note`, `actions`, `search` | text (`-` bullets, links); buttons `Label \| /path` per line; a search box | `body`, `entity_type` |
 | `sum` | total of a money/number field per currency | `entity_type`, `field`, `filter`, `period`, `options.date_field` |
 | `progress` | a value against a target field as a bar | `entity_type`, `field`, `record_id` or `filter`, `options.target_field`, `start_field`, `date_field` |
-| `environments`, `milestone` | running releases; a milestone's done/planned (factory) | `filter`, `record_id` |
+| `environments`, `milestone` | running releases (factory); a milestone's done/planned (tickets) | `filter`, `record_id` |
 | `watchlist`, `market_alerts`, `source_health` | market data (marketdata / feeds) | `record_id`, `limit` |
 | `opportunities` | top arbitrage opportunities from a preset or scan options | `record_id`, `options`, `limit` |
 | `accounts_attention`, `accounts_summary`, `holdings_value`, `external_pnl` | the operator's accounts; each takes `options.login` | `options` (`data_source_id`, `basis`, ...), `limit`, `period` |

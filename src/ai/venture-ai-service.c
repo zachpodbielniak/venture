@@ -2778,7 +2778,9 @@ venture_ai_service_register_tools(VentureAiService *self)
 	ai_tool_add_parameter(report, "status", "string",
 		"goal_progress: only goals with this status (active, paused, achieved, abandoned; several comma separated)", FALSE);
 	ai_tool_add_parameter(report, "goal_id", "integer",
-		"goal_materials: only this goal and its sub-goals", FALSE);
+		"goal_materials: only this goal and its sub-goals; epic_progress: only epics linked to this goal", FALSE);
+	ai_tool_add_parameter(report, "milestone_id", "integer",
+		"epic_progress: only epics planned into this milestone", FALSE);
 	ai_tool_add_parameter(report, "location_id", "integer",
 		"holdings: only this location (a wallet, till or character) and every location beneath it", FALSE);
 	ai_tool_add_parameter(report, "include_on_hand", "boolean",
