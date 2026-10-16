@@ -111,10 +111,14 @@ venture_factory_publish_release(
  * venture_factory_milestone_progress:
  * @database: the database
  * @milestone_id: the milestone
- * @out_total: (out): how many tickets are planned into it
- * @out_done: (out): how many of those are done or cancelled
+ * @out_total: (out): how many tickets are planned into it, cancelled
+ *   ones left out
+ * @out_done: (out): how many of those are done
  *
  * Counts a milestone's tickets, and how many of them are finished.
+ * Cancelled work is neither work left nor work done, as in the forecast.
+ * A milestone is the tickets module's; this is the one implementation of
+ * its progress, whatever module the caller belongs to.
  */
 void
 venture_factory_milestone_progress(

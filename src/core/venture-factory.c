@@ -402,16 +402,24 @@ venture_factory_milestone_progress(
 	if (NULL == tickets)
 		return;
 
-	*out_total = (gint64)tickets->len;
-
+	/*
+	 * Cancelled work is neither work left nor work done -- the rule the
+	 * forecast, the goal's work progress and the epic rollup all follow.
+	 * It used to count as done here, so a milestone whose plan was cut
+	 * read as further along than the forecast beside it said.
+	 */
 	for (i = 0; i < tickets->len; i++)
 	{
 		VentureTicketStatus status;
 
 		g_object_get(g_ptr_array_index(tickets, i), "status", &status, NULL);
 
-		if ((VENTURE_TICKET_STATUS_DONE == status) ||
-		    (VENTURE_TICKET_STATUS_CANCELLED == status))
+		if (VENTURE_TICKET_STATUS_CANCELLED == status)
+			continue;
+
+		(*out_total)++;
+
+		if (VENTURE_TICKET_STATUS_DONE == status)
 			(*out_done)++;
 	}
 }
