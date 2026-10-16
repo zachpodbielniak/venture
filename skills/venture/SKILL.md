@@ -92,7 +92,7 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`38b4f3161e800c504a309bfdd8f74c9e2f51dbf3` (2026-10-15, server version
+`f54f91123ed5e0b9bc78803cb340d21690dd842d` (2026-10-16, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
@@ -101,13 +101,14 @@ same commit and moves this baseline.
 
 Hosted browser sign-in for an enrolled owner is in the platform guide and
 the route index. Trusted sign-up requires `first_name` and `last_name`;
-the old five-member body is refused (operations.md). The baseline below
+the old five-member body is refused (operations.md). Events and the
+unified calendar are the planner guide. The baseline below
 remains the last full review.
 
-<!-- skill-baseline:start -- reviewed 2026-10-15 against 38b4f31 -->
+<!-- skill-baseline:start -- reviewed 2026-10-16 against f54f911 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=38b4f3161e800c504a309bfdd8f74c9e2f51dbf3
+base=f54f91123ed5e0b9bc78803cb340d21690dd842d
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -449,5 +450,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `38b4f31`; when the live server disagrees,
+- This skill describes baseline `f54f911`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.
