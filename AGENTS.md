@@ -235,6 +235,28 @@ order the data flows.
   Do not merge them. `VENTURE_ISSUE_TYPE_TASK` must stay the enum's zero
   value: the column was added to a populated table, so every historical row
   reads back as whatever is first.
+- **The ticket hierarchy is a save validator judged only when written.**
+  `venture_ticket_tree_install()` (`src/core/venture-ticket-tree.c`):
+  an epic takes no parent; a story's parent, if any, is an epic; a
+  task/bug/research hangs under an epic, a story or nothing; a subtask
+  needs a task/story/bug/research parent. It runs only when `parent-id` or
+  `issue-type` is written (new, or changed), so a legacy row that breaks
+  it stays editable; a retype that would strand a child is refused naming
+  the child; loops go through `venture_category_check_tree_node()`. A
+  child inherits nothing -- never copy an epic's `milestone-id` or
+  `goal-id` down (a derived write under the child's holder); the rollups
+  (`venture_ticket_tree_progress()`, `venture_goals_work_progress()`,
+  `epic_progress`) walk the tree, count each ticket once, and leave
+  cancelled tickets and epics out of both halves. A test that hangs a
+  ticket off another must give both the right `issue-type`.
+- **`milestone` is the tickets module's, not the factory's.** Its
+  validator, progress and forecast still live in `venture-factory.c`
+  (installed for every database), but anything about milestones alone --
+  its page block, `/api/v1/milestones/:id/forecast`, the `milestone`
+  widget, the sidebar row -- gates on `tickets`. A new milestone surface
+  must not gate on `factory` or `forge`. Its progress leaves cancelled
+  tickets out of both halves, like the forecast (it used to count them
+  done).
 - **References are checked at the save, but only when written.** A save
   that writes a reference field refuses a target that does not exist or is
   soft-deleted; a field keeping the value it already had is left alone, so

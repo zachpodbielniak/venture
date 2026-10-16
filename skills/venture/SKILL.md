@@ -152,8 +152,8 @@ and `~/.agents/skills/venture` by `make install-skill`.
 - [`references/forms.md`](references/forms.md) -- forms: questions, publishing, embeds, results, languages, quizzes, bookings, payments, uploads, Lightsite forms
 - [`references/outreach.md`](references/outreach.md) -- sequences, marketing sends and consent, attribution, campaigns
 - [`references/mail.md`](references/mail.md) -- the outbox, SMTP accounts, inbound IMAP, CalDAV, booking pages
-- [`references/desk.md`](references/desk.md) -- tickets, SLAs, macros, sprints, AI triage, comments on any record, knowledge bases, the assistant
-- [`references/factory.md`](references/factory.md) -- milestones to incidents, releases, forges and rules, coding runs, budgets, the harness
+- [`references/desk.md`](references/desk.md) -- tickets, epics and their hierarchy, milestones, SLAs, macros, sprints, AI triage, comments on any record, knowledge bases, the assistant
+- [`references/factory.md`](references/factory.md) -- releases to incidents, forges and rules, coding runs, budgets, the harness
 - [`references/market-production.md`](references/market-production.md) -- price observations, listings, recipes and crafting
 - [`references/sessions-goals.md`](references/sessions-goals.md) -- sessions of effort and their yields, goals and their shopping list
 - [`references/feeds.md`](references/feeds.md) -- data sources, sync and push, the series store and its upkeep, the position mirror, cross-cutting market traps
@@ -344,6 +344,8 @@ ids, notes) in words.
 | "Enroll in a sequence / send a newsletter" | `sequence enroll`; `marketing_send` preview -> approve -> run | [outreach.md](references/outreach.md) |
 | "Send / retry / sync mail" | `mail send\|deliver\|retry\|sync` | [mail.md](references/mail.md) |
 | "Open / triage / answer a ticket" | `create ticket`, `ticket ID triage\|draft\|macro\|worklog` | [desk.md](references/desk.md) |
+| "Break an epic into stories / how far along is it?" | `create ticket issue_type=story parent_id=EPIC`, `report epic_progress milestone_id=N` | [desk.md](references/desk.md) |
+| "Plan work toward a goal / milestone" | `create milestone ... goal_id=N`, `update ticket ID goal_id=N`, `report goal_progress` | [desk.md](references/desk.md), [sessions-goals.md](references/sessions-goals.md) |
 | "Comment on a record / mention someone" | `comments add TYPE ID BODY` (`-` for stdin) | [desk.md](references/desk.md) |
 | "What have I been told?" | `inbox`, `watch TYPE ID` | [automation.md](references/automation.md) |
 | "Search the knowledge base" | `kb search QUERY` (meaning), `list kb_article search=` (words) | [desk.md](references/desk.md) |

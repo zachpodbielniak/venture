@@ -106,6 +106,13 @@ Check `describe goal` and `describe goal_step`.
   to the goal), `recipe_id` (production module only; same organization),
   `repetitions` (**crafts/batches, not units**; >= 0, 0 = unsaid), `done`,
   `done_at`, `notes`.
+- **Linked work.** A `milestone` or a `ticket` may name `goal_id`. The goal
+  counts (never writes) every ticket naming it, everything beneath those
+  (an epic's whole tree -- children do not carry `goal_id` and must not be
+  given it), and every ticket on a milestone naming it: each once,
+  cancelled tickets and epics left out. Shown on the goal's page (*Work*
+  card) and as `goal_progress`'s `tickets_done`/`tickets_total`. It never
+  moves `current_value` or marks the goal achieved.
 
 ```bash
 venturectl create goal name="Alchemy 300" metric=level start_value=1 current_value=1 \
@@ -122,7 +129,8 @@ every status by default; unknown refused), `category_id` (and beneath),
 read an old `current_value`), `organization_id`. One row per goal, by path
 ("Alchemy 300 / Alchemy 150"): `start`, `current`, `target`, `percent` (a
 fraction, unclamped), `remaining` (in the goal's direction; negative = past
-it), `steps_done`/`steps_total`, `due_on`, `days_left` (negative =
+it), `steps_done`/`steps_total`, `tickets_done`/`tickets_total` (linked
+work; blank with tickets off), `due_on`, `days_left` (negative =
 overdue), `forecast` (straight line from `start_value` at creation to
 `current_value` at `as_of`; active goals with progress only), `status`,
 `note`.

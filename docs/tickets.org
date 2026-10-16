@@ -1,0 +1,112 @@
+#+title: Tickets: epics, stories, milestones and goals
+#+description: The ticket hierarchy and the save rule that holds it, an epic's rollup and the epic_progress report, milestones in the tickets module, and the work linked to a goal
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-16]
+#+updated: [2026-10-16]
+#+version: 0.6.0
+
+* What this is
+
+A ticket has two fields that together make a tree: =parent_id= (shown as "Part of") and =issue_type= (task, subtask, story, epic, bug, research). An epic is broken into stories and tasks, a story into tasks, a task into subtasks. Planning sits on top of the tree: a =milestone= is a set of tickets aimed at a date, and a milestone or a ticket can name the =goal= the work moves.
+
+This page covers the rule that keeps the tree a tree, the rollup an epic's page and the =epic_progress= report read, why milestones belong to the tickets module, and how a goal counts the work linked to it. The desk around tickets -- the inbox, service levels, sprints, macros -- is in [[file:workdesk.org][The workdesk]]; the release pipeline that milestones also serve is in [[file:factory.org][The software factory]].
+
+=ticket.kind= and =ticket.issue_type= stay separate questions. Kind is whose problem it is (internal or external, which decides who reads the replies); issue type is what shape the work is, which is what the hierarchy and the forge rules key on.
+
+* The hierarchy
+
+| Issue type                   | May sit under                                   |
+|------------------------------+-------------------------------------------------|
+| =epic=                       | nothing: an epic is the top of its tree         |
+| =story=                      | an epic, or nothing                             |
+| =task=, =bug=, =research=    | an epic, a story, or nothing                    |
+| =subtask=                    | a task, a story, a bug or a research ticket -- and it must sit under one |
+
+A story may stand alone (a request in the queue nobody has planned yet), but once it is part of something it is part of an epic. An epic under an epic would be a story that has not been called one, and every rollup would count it twice; a subtask under a subtask is a task's piece written one level too deep.
+
+The rule is one pure function, =venture_ticket_tree_parent_allowed()=, which a picker or a test can ask, and one save validator installed by =venture_ticket_tree_install()= (=src/core/venture-ticket-tree.c=) for every writer: the form, the API, an approved staged change, the assistant, the CLI.
+
+** Judged only when written
+
+The validator judges a ticket only when its =parent_id= or its =issue_type= is written -- a new ticket, or a value that differs from the stored one. This is the reference rule every reference follows: a ticket stored before the rule existed (a task under a task, say) can still be renamed, reassigned and closed, and is held to the rule the moment somebody moves it or retypes it.
+
+** What the save refuses
+
+- *A parent of the wrong shape*, naming it: "Part of: #12 is a task, and a story's parent must be an epic".
+- *A loop.* A parent that is the ticket itself or anything beneath it is refused by =venture_category_check_tree_node()=, the one definition of a loop for every self-nesting tree (categories, locations, goals). The same call refuses a parent in another organization and a tree deeper than =VENTURE_CATEGORY_MAX_DEPTH= (32).
+- *A type change that orphans a child.* Changing a ticket's issue type so that a ticket already under it may no longer be there is refused, naming one child: "Issue type: cannot become bug while task #41 (Wire the export) is part of it: its parent must be an epic or a story, or none. Move or retype the task first."
+
+Children never inherit anything. A story under an epic planned into milestone 1.2 is not itself planned into 1.2, and a task under an epic linked to a goal does not carry the goal. Copying either down would be a derived write: a second save nobody made, an audit entry for a change nobody asked for, and a version bump under whoever holds the child. The rollups walk the tree instead.
+
+* The rollup
+
+=venture_ticket_tree_progress()= walks everything beneath a ticket, at any depth, and counts:
+
+- tickets done of total;
+- story points done of total.
+
+Cancelled tickets are left out of both halves: neither work left nor work done, the rule the milestone forecast and the factory reports follow. An epic is a container and is never counted itself. The walk (=venture_ticket_tree_descendants()=) reads a level at a time, in batches of parent ids, remembers every ticket it has seen (so a loop written behind the validator's back by SQL ends rather than spins), stops at =VENTURE_CATEGORY_MAX_DEPTH= levels, and refuses past =VENTURE_TICKET_TREE_MAX_NODES= (10 000) tickets rather than counting part of a tree as the whole. It reads under the caller's access scope.
+
+** On an epic's or a story's page
+
+An epic's or a story's page opens with a *Pieces* card, ahead of the actions and the generic panels: the rollup (tickets, done, points done of points), a bar, and every ticket beneath it grouped by issue type -- stories, tasks, bugs, research, subtasks -- each group with its own count. Cancelled tickets are listed but not counted. The related-records panel still lists the direct children; this card is the whole tree and the number.
+
+** =epic_progress=
+
+One row per live epic of the organization, ordered by title.
+
+| Option            | Meaning                                                             |
+|-------------------+---------------------------------------------------------------------|
+| =milestone_id=    | only epics planned into this milestone                              |
+| =goal_id=         | only epics linked to this goal                                      |
+| =venture_id=      | only this venture's epics                                           |
+| =organization_id= | the legal entity; the default organization otherwise                |
+
+| Column        | What                                                           |
+|---------------+----------------------------------------------------------------|
+| =epic=        | "#id title"                                                    |
+| =status=      | the epic's own status                                          |
+| =done=, =total= | tickets beneath it done, of all counted                      |
+| =points_done=, =points= | their story points                                   |
+| =percent=     | done ÷ total; blank, never 0%, for an epic with nothing counted |
+
+The options narrow by the *epic's own* fields, in the query: a child planned into another milestone still counts under its epic. Past the aggregate row bound (=venture_aggregate_get_max_rows()=) the report refuses and asks to be narrowed. The options pass through all five report doors: the web API and report page, =venturectl report=, the MCP =venture_report= tool and the assistant's.
+
+#+begin_src sh
+venturectl report epic_progress all milestone_id=3
+venturectl report epic_progress all goal_id=2 venture_id=1
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
+	"$VENTURE_SERVER/api/v1/reports/epic_progress?period=all&milestone_id=3"
+#+end_src
+
+* Milestones belong to the tickets module
+
+A milestone is planning, not shipping. A set of tickets aimed at a date makes sense with no forge and no release pipeline, so =milestone= is one of the =tickets= module's types (it was the factory's, which requires the forge). Switching the factory and the forge off leaves milestones working:
+
+- the record type, its list, form and page, and its *Progress* card (tickets, finished, complete, and the forecast line);
+- its =completed_at=, stamped when the status becomes completed and cleared when it leaves it -- the validator is still =venture_factory_validate_milestone()= in =venture-factory.c=, which =venture_factory_install()= registers for every database whatever is switched on;
+- =GET /api/v1/milestones/:id/forecast= and =venturectl milestone ID forecast=, gated on tickets;
+- the =milestone= dashboard widget, whose module is now =tickets=;
+- the sidebar row, now under Support beside Sprints.
+
+What stays the factory's: the factory status page and the assistant's and MCP's factory tools (which also forecast a milestone, but only while the factory is on), release readiness's milestone check, and the =releases=, =lead_time=, =incidents= and =delivery= reports.
+
+A milestone's progress (=venture_factory_milestone_progress()=) leaves cancelled tickets out of both halves, like its forecast. Until 2026-10 it counted a cancelled ticket as done.
+
+* Goals
+
+A milestone and a ticket each have =goal_id=: the goal the work moves. =venture_goals_work_progress()= (=src/goals/venture-goals.c=) counts every ticket naming the goal, everything beneath those, and every ticket planned into a milestone naming the goal -- each once, cancelled tickets and epics left out -- and never writes the goal: its =current_value= is still its owner's reading, and a goal whose tickets are all done is not marked achieved. The goal's page shows a *Work* card with the milestones and epics naming it, and =goal_progress= gained =tickets_done= and =tickets_total= (blank with the tickets module off). See [[file:goals.org::*The work planned toward a goal][Goals: the work planned toward a goal]].
+
+* Storage
+
+=goal_id= on =tickets= and =milestones= is an indexed integer column the field table declares; reconciliation adds it. Migration =000913_planning_goal_links= (SQLite and PostgreSQL) verifies the tickets column and backfills nothing: which goal a past ticket served is not knowable from the rows. It declares =-- requires-table: tickets=, so an install that never had tickets on records it and moves on.
+
+* Traps
+
+- *The hierarchy is judged only when written.* Do not make the validator judge every save: every old ticket that broke the rule would become uneditable.
+- *Never copy a milestone or a goal down a tree.* The rollups walk the tree; a derived write bumps every child's version under its holder.
+- *A loop is =venture_category_check_tree_node()='s to find.* Do not write a second walk for tickets.
+- *Cancelled is neither half.* Every count here -- the rollup, a milestone's progress, a goal's work -- leaves it out of both done and total.
+- *An epic is never counted itself.* It is the plan; its pieces are the work.
+- *A milestone is the tickets module's.* A page, route or widget about milestones only gates on =tickets=, never =factory=.

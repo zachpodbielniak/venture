@@ -26,10 +26,10 @@ Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
 | Customers |                   | Companies, Contacts, My day, Duplicates                                                                                                            |
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts, Forms                                                                                           |
-| Support   |                   | Tickets, Sprints, Knowledge                                                                                                                        |
+| Support   |                   | Tickets, Sprints, Milestones, Knowledge                                                                                                            |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |
 | Trading   | Your accounts, Markets | Overview, Inventory, Profit and loss; Browse, Deals, Venues, Watchlists, Alerts, Arbitrage, Crafting, Recipe lists, Flip planner, Calculators, Trades, Market data |
-| Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Milestones, Releases, Builds, Environments, Deployments, Incidents |
+| Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Releases, Builds, Environments, Deployments, Incidents |
 | Settings  | Your business, People and access, System | Ventures, Entities, Modules; Your account, API tokens, Users, Assistant; Settings, Automations, Plugins, Webhooks, Federation, Mail outbox, Audit log |
 
 Every page is named once. Only the overview (Dashboard, Dashboards, Reports) keeps the heading its row carries; the old headings -- Business, Money, Accounting, Relations, Thinking, Code, Factory, System -- are gone. A section with a group is drawn inside that group's area with its heading as a label; the area is open when the current page is in it.

@@ -1,12 +1,13 @@
 # The software factory, forges, coding runs and the harness
 
-Read this for milestones, releases, builds, environments, deployments and
-incidents; for connecting a Forgejo/Gitea forge and letting an agent work
+Read this for releases, builds, environments, deployments and incidents
+(milestones are the tickets module's now -- [desk.md](desk.md) -- but the
+factory still plans with them); for connecting a Forgejo/Gitea forge and letting an agent work
 tickets; for budgets and mission control; and for the agent harness.
 Sources: `docs/factory.org`, `docs/forge.org`, `docs/harness.org`,
 `docs/workdesk.org` (runs, budgets).
 
-## The loop as records (module `factory`)
+## The loop as records (module `factory`; `milestone` is module `tickets`)
 
 A ticket is planned into a `milestone`, built by CI (every workflow run
 arrives through the forge webhook as a `build`), shipped in a `release`

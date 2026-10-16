@@ -48,6 +48,52 @@ venturectl incident 2 ticket                     # the bug for an incident, prio
   propose the pieces with `create`/`update --stage` instead. A worklog is
   one record and stages.
 
+### Epics, stories and their pieces
+
+`parent_id` ("Part of") and `issue_type` make a tree, and the save holds
+its shape (`docs/tickets.org`):
+
+| issue_type | parent_id may name |
+|---|---|
+| `epic` | nothing |
+| `story` | an epic, or nothing |
+| `task`, `bug`, `research` | an epic, a story, or nothing |
+| `subtask` | a task, story, bug or research ticket -- required |
+
+- Judged **only when `parent_id` or `issue_type` is written** (create, or a
+  changed value): an old ticket that breaks the rule still saves a title
+  change. A refusal is a 422 naming "Part of" or "Issue type".
+- A loop (a ticket under itself or under its own piece) and a parent in
+  another organization are refused.
+- Retyping a ticket so a child may no longer sit under it is refused,
+  naming the child: move or retype the child first.
+- **Nothing is inherited.** A story under an epic planned into a milestone
+  is not itself on the milestone, and a task under a goal-linked epic does
+  not carry `goal_id`; never copy them down -- the rollups walk the tree.
+- Rollup: an epic's or story's page has a *Pieces* card (every ticket
+  beneath it, grouped by type, done/total and points); report
+  `epic_progress` (`milestone_id`, `goal_id`, `venture_id`,
+  `organization_id`) has a row per epic with `done`, `total`,
+  `points_done`, `points`, `percent` (blank, not 0%, when nothing is
+  counted). Cancelled tickets and epics themselves are never counted.
+
+```bash
+venturectl create ticket title="Checkout v2" issue_type=epic milestone_id=3 goal_id=2
+venturectl create ticket title="Pay by card" issue_type=story parent_id=41
+venturectl create ticket title="Validate the card" issue_type=subtask parent_id=42
+venturectl report epic_progress all milestone_id=3
+```
+
+### Milestones (module `tickets`)
+
+A `milestone` is planning and belongs to the tickets module (moved from
+the factory in 2026-10): it works with forge and factory off. Its page
+shows progress and the forecast; `venturectl milestone ID forecast` and
+`GET /api/v1/milestones/:id/forecast` need only tickets.
+`completed_at` follows `status` on every writer. Progress counts
+cancelled tickets as neither done nor planned. A milestone may name a
+`goal_id`.
+
 ## The assistant at the desk (AI module and a configured provider)
 
 ```bash

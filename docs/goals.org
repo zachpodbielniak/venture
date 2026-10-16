@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-27]
-#+updated: [2026-10-04]
+#+updated: [2026-10-16]
 #+version: 0.2.1
 
 * A number, where it started, and where it should end
@@ -194,6 +194,7 @@ An unknown status is refused, not answered with every goal.
 | =percent=     | (current − start) ÷ (target − start), unclamped                             |
 | =remaining=   | (target − current) in the goal's own direction: positive is still to go, negative is past it |
 | =steps_done=, =steps_total= | the goal's own steps (not its sub-goals')                     |
+| =tickets_done=, =tickets_total= | the work linked to the goal (see [[*The work planned toward a goal][The work planned toward a goal]]); blank with the tickets module off |
 | =due_on=      | the due date                                                                |
 | =days_left=   | calendar days from as_of's date (today) to the due date; negative is overdue |
 | =forecast=    | the date the target is reached at the pace so far                           |
@@ -328,6 +329,32 @@ sub-goal still appears there, being a goal of its own. Whole numbers read
 without a trailing =.0= on this page and every other: a double field
 shows "140", not "140.0".
 
+Below them, with the tickets module on, a *Work* card: a bar of the
+tickets linked to the goal done of total, then the milestones naming the
+goal with their progress (=venture_factory_milestone_progress()=) and the
+epics naming it with their rollup (=venture_ticket_tree_progress()=:
+pieces done of total and story points). The card computes nothing itself.
+
+** The work planned toward a goal
+
+A milestone and a ticket each have a =goal_id=, the goal the work moves.
+=venture_goals_work_progress()= counts the tickets of all of it:
+
+- every ticket naming the goal;
+- every ticket beneath one of those, at any depth -- an epic's whole tree.
+  The pieces do not carry the goal themselves and must not have to: a
+  child never inherits its epic's goal or milestone, because copying it
+  down would be a derived write under whoever holds the child;
+- every ticket planned into a milestone naming the goal.
+
+Each ticket counts once however many ways it is linked. Cancelled tickets
+are neither work left nor work done, and an epic is not counted itself --
+it is done when its pieces are. Past
+=VENTURE_TICKET_TREE_MAX_NODES= (10 000) tickets the count is refused
+rather than given short. The figures are read every time and never move
+the goal: =current_value= is still the owner's reading of the metric, and
+a goal whose tickets are all done is not marked achieved.
+
 ** On a dashboard
 
 A =progress= widget on =goal= with =field= =current_value=,
@@ -432,3 +459,6 @@ order) or a savings plan (steps with no recipe, the forecast the question).
   priced lines only.
 - *=goal_materials= refuses with production off*; =goal_progress= needs
   nothing but core.
+- *Linked work never moves a goal.* =venture_goals_work_progress()= reads
+  tickets and milestones; it writes neither them nor the goal, and a child
+  ticket is counted through its epic, never by copying =goal_id= down.

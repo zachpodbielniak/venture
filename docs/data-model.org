@@ -177,7 +177,7 @@ Tickets gained two fields: =issue-type= (epic, story, task, subtask, research, b
 
 - *milestone*, *release*, *build*, *environment*, *deployment*, *incident*.
 
-The loop from a ticket to a running release and back, as records. A =milestone= is a planned increment; a =release= is a version that went out, with its changelog; a =build= is one CI run, written by the forge's webhook; an =environment= is somewhere a release runs; a =deployment= is a release arriving there; an =incident= is something going wrong there, pointing at the release and deployment it came from and the ticket that fixes it. Tickets gained =milestone-id= and =release-id=. See [[file:factory.org][The software factory]].
+The loop from a ticket to a running release and back, as records. A =milestone= is a planned increment; a =release= is a version that went out, with its changelog; a =build= is one CI run, written by the forge's webhook; an =environment= is somewhere a release runs; a =deployment= is a release arriving there; an =incident= is something going wrong there, pointing at the release and deployment it came from and the ticket that fixes it. Tickets gained =milestone-id= and =release-id=. A =milestone= belongs to the tickets module (planning needs no forge), and it and a ticket both carry =goal-id=, the goal the work moves. See [[file:factory.org][The software factory]] and [[file:tickets.org][Tickets: epics, stories, milestones and goals]].
 
 A release's version is the field =number=, because every record already has a =version= — the optimistic-concurrency counter. A field table may not reuse a name the entity spine owns (=id=, =uuid=, =created-at=, =updated-at=, =version=); the installer refuses one at class initialisation.
 

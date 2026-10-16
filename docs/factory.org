@@ -1,9 +1,9 @@
 #+title: The software factory
-#+description: Milestones, releases, builds, environments, deployments and incidents, and the loop they close
+#+description: Releases, builds, environments, deployments and incidents, and the loop they close; milestones are the tickets module's
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-09-19]
+#+updated: [2026-10-16]
 #+version: 0.6.0
 
 * What this is
@@ -20,11 +20,13 @@ Every step is a record, so every step is queryable, reportable, linkable and rea
 
 The module requires =forge=, which requires =tickets=. It suggests =sales= (a release belongs to a product) and =automation= (rules can react to every step). See [[file:modules.org][Modules]].
 
+*Milestones moved to the tickets module.* A milestone is planning, not shipping: a set of tickets aimed at a date makes sense with no forge and no release pipeline, so =milestone= is now one of the =tickets= module's types, beside sprints. Everything about it stays where it was implemented -- its =completed_at= validator, =venture_factory_milestone_progress()= and =venture_factory_milestone_forecast()= are still in =venture-factory.c=, installed for every database whatever is switched on -- but its page, its sidebar row (now under Support), =GET /api/v1/milestones/:id/forecast= and the =milestone= dashboard widget answer whenever tickets is on. The factory's own pages still use milestones when it is on. See [[file:tickets.org][Tickets: epics, stories, milestones and goals]].
+
 * The six records
 
 | Type          | What it is                                                          |
 |---------------+---------------------------------------------------------------------|
-| =milestone=   | A planned increment: what a set of tickets adds up to. Status, due date, product. |
+| =milestone=   | A planned increment: what a set of tickets adds up to. Status, due date, product, goal. The tickets module's since 2026-10; listed here because the factory plans with it. |
 | =release=     | A version that went, or will go, out. Its =number= is the version ("1.2.0"); =tag= and =external_id= are what the forge calls it. Carries the changelog. |
 | =build=       | One CI workflow run, or a build recorded by hand. Repository, branch, commit, status, what triggered it, when it ran. |
 | =environment= | Somewhere a release runs: development, staging, production. |
@@ -109,7 +111,7 @@ It advises and refuses nothing. A release with a failing check can still be publ
 
 * When a milestone lands
 
-=venture_factory_milestone_forecast()=: the tickets done in the last 28 days give a rate per week, and the tickets left divided by it give a date. =state= is one of =done=, =cancelled=, =empty=, =overdue= (past due with work left, whatever the pace), =stalled= (work left and none closed lately), =no_due_date=, =at_risk= (projected after the due date) or =on_track=. Cancelled tickets count neither as work left nor towards the pace.
+=venture_factory_milestone_forecast()=: the tickets done in the last 28 days give a rate per week, and the tickets left divided by it give a date. =state= is one of =done=, =cancelled=, =empty=, =overdue= (past due with work left, whatever the pace), =stalled= (work left and none closed lately), =no_due_date=, =at_risk= (projected after the due date) or =on_track=. Cancelled tickets count neither as work left nor towards the pace. The same rule holds for a milestone's progress (=venture_factory_milestone_progress()=, the page's and the widget's "done over planned"): a cancelled ticket used to count as done there, so a milestone whose plan was cut read as further along than its own forecast said.
 
 It is arithmetic, not a prediction: four weeks is long enough to smooth over one quiet week and short enough to notice the team changed.
 
