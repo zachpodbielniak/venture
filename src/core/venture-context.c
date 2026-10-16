@@ -161,6 +161,10 @@ venture_context_new(
 	venture_sla_install(self);
 	venture_desk_install(self);
 
+	/* Epics, stories and their pieces: which shapes may hang under which,
+	 * judged only when a parent or an issue type is written. */
+	venture_ticket_tree_install(self);
+
 	/* A comment stays on its record, in its record's organization, under
 	 * the author it was written by -- whichever door wrote it. */
 	venture_comment_install(self);

@@ -463,6 +463,7 @@ goals_progress_write(
 	VentureReportResult	*result,
 	GoalsProgressRow	*row,
 	GoalsStepCount		*steps,
+	VentureGoalWork		*work,
 	GDateTime		*as_of,
 	GDateTime		*day,
 	GTimeZone		*zone
@@ -513,6 +514,16 @@ goals_progress_write(
 	venture_report_result_set_number(result, "remaining", (target - current) * direction);
 	venture_report_result_set_number(result, "steps_done", (gdouble)steps->done);
 	venture_report_result_set_number(result, "steps_total", (gdouble)steps->total);
+
+	/* The linked work, blank when tickets are off: no tickets module is
+	 * not "none of the work is done". */
+	if (NULL != work)
+	{
+		venture_report_result_set_number(result, "tickets_done",
+		                                 (gdouble)work->tickets.done);
+		venture_report_result_set_number(result, "tickets_total",
+		                                 (gdouble)work->tickets.total);
+	}
 	venture_report_result_set_text(result, "status",
 		venture_enum_to_nick(VENTURE_TYPE_GOAL_STATUS, (gint)status));
 
@@ -595,12 +606,14 @@ venture_goals_progress(
 	gint64 organization_id;
 	gint64 venture_id;
 	gint64 category_id;
+	gboolean tickets_on;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
 	database = venture_context_get_database(context);
 	zone = venture_context_get_timezone(context);
+	tickets_on = venture_context_module_enabled(context, "tickets");
 
 	if (!goals_report_organization(context, options, &organization_id, error))
 		return NULL;
@@ -727,6 +740,8 @@ venture_goals_progress(
 	venture_report_result_add_column(result, "remaining", "Remaining", VENTURE_REPORT_COLUMN_NUMBER);
 	venture_report_result_add_column(result, "steps_done", "Steps done", VENTURE_REPORT_COLUMN_NUMBER);
 	venture_report_result_add_column(result, "steps_total", "Steps", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "tickets_done", "Tickets done", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "tickets_total", "Tickets", VENTURE_REPORT_COLUMN_NUMBER);
 	venture_report_result_add_column(result, "due_on", "Due", VENTURE_REPORT_COLUMN_DATE);
 	venture_report_result_add_column(result, "days_left", "Days left", VENTURE_REPORT_COLUMN_NUMBER);
 	venture_report_result_add_column(result, "forecast", "Forecast", VENTURE_REPORT_COLUMN_DATE);
@@ -738,13 +753,19 @@ venture_goals_progress(
 		GoalsProgressRow *row;
 		GoalsStepCount *count;
 		GoalsStepCount none = { 0, 0 };
+		VentureGoalWork work;
 		gint64 goal_id;
 
 		row = g_ptr_array_index(rows, i);
 		goal_id = venture_entity_get_id(row->goal);
 		count = g_hash_table_lookup(counts, &goal_id);
-		goals_progress_write(result, row, (NULL != count) ? count : &none, as_of, day,
-		                     zone);
+
+		if (tickets_on &&
+		    !venture_goals_work_progress(database, goal_id, &work, error))
+			return NULL;
+
+		goals_progress_write(result, row, (NULL != count) ? count : &none,
+		                     tickets_on ? &work : NULL, as_of, day, zone);
 	}
 
 	venture_report_result_append_note(result,
@@ -762,6 +783,13 @@ venture_goals_progress(
 	venture_report_result_append_note(result,
 		"Days left count calendar days from as_of's date (today by default) to "
 		"the due date; negative is overdue.");
+
+	if (tickets_on)
+		venture_report_result_append_note(result,
+			"Tickets count the work linked to each goal: tickets naming it, every "
+			"ticket beneath those (an epic's whole tree) and the tickets of "
+			"milestones naming it, each once, cancelled ones and epics left out. "
+			"They never move the goal's current value.");
 
 	return g_steal_pointer(&result);
 }
@@ -1742,7 +1770,7 @@ venture_goals_register_reports(VentureReportRegistry *registry)
 
 	goals_register(registry, "goal_progress", "Goal progress",
 		"How far along each goal is: percent covered, what remains, steps "
-		"done, days left and a straight-line forecast",
+		"done, linked tickets done, days left and a straight-line forecast",
 		venture_goals_progress,
 		"{\"type\":\"object\",\"properties\":{"
 		"\"venture_id\":{\"type\":\"integer\",\"description\":\"Only this "

@@ -364,6 +364,176 @@ venture_goals_validate_step(
 }
 
 /* ==========================================================================
+ * The work planned toward a goal
+ * ========================================================================== */
+
+/* Whether tickets (and so milestones) are on: both are the tickets
+ * module's, and a hidden type has no table to read. */
+static gboolean
+goals_tickets_enabled(void)
+{
+	return G_TYPE_INVALID != venture_entity_registry_lookup(
+		venture_entity_registry_get_default(), "ticket");
+}
+
+/*
+ * Adds @ticket to @counted unless it is there already. FALSE with @error
+ * set once the set would pass VENTURE_TICKET_TREE_MAX_NODES: a goal's
+ * work counted short and shown as the whole is the failure the bound
+ * exists for.
+ */
+static gboolean
+goals_work_take(
+	GHashTable	 *counted,
+	VentureEntity	 *ticket,
+	gint64		  goal_id,
+	GError		**error
+){
+	gint64 id;
+
+	id = venture_entity_get_id(ticket);
+
+	if (g_hash_table_contains(counted, &id))
+		return TRUE;
+
+	if (g_hash_table_size(counted) >= VENTURE_TICKET_TREE_MAX_NODES)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Goal #%" G_GINT64_FORMAT " has more than %d tickets of "
+		            "work linked to it; link a sub-goal instead", goal_id,
+		            VENTURE_TICKET_TREE_MAX_NODES);
+		return FALSE;
+	}
+
+	g_hash_table_insert(counted, g_memdup2(&id, sizeof(id)), g_object_ref(ticket));
+
+	return TRUE;
+}
+
+/* The live records of @type whose @field is @value, one past the bound so
+ * reaching it is seen. */
+static GPtrArray *
+goals_work_find(
+	VentureDatabase	 *database,
+	GType		  type,
+	const gchar	 *field,
+	gint64		  value,
+	GError		**error
+){
+	g_autoptr(VentureQuery) query = NULL;
+
+	query = venture_query_new(type);
+	venture_query_set_limit(query, VENTURE_TICKET_TREE_MAX_NODES + 1);
+
+	if (!venture_query_add_filter_int(query, field, VENTURE_FILTER_OP_EQ, value,
+	                                  error) ||
+	    !venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+		return NULL;
+
+	return venture_database_find(database, query, error);
+}
+
+gboolean
+venture_goals_work_progress(
+	VentureDatabase	 *database,
+	gint64		  goal_id,
+	VentureGoalWork	 *out,
+	GError		**error
+){
+	g_autoptr(GPtrArray) linked = NULL;
+	g_autoptr(GPtrArray) milestones = NULL;
+	g_autoptr(GHashTable) counted = NULL;
+	GHashTableIter iter;
+	gpointer value;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(database), FALSE);
+	g_return_val_if_fail(NULL != out, FALSE);
+
+	memset(out, 0, sizeof(*out));
+
+	if (!goals_tickets_enabled())
+		return TRUE;
+
+	counted = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
+	                                g_object_unref);
+
+	/* --- Tickets naming the goal, and everything beneath them --- */
+
+	linked = goals_work_find(database, VENTURE_TYPE_TICKET, "goal-id", goal_id,
+	                         error);
+
+	if (NULL == linked)
+		return FALSE;
+
+	for (i = 0; i < linked->len; i++)
+	{
+		VentureEntity *ticket;
+		g_autoptr(GPtrArray) beneath = NULL;
+		VentureIssueType type;
+		guint j;
+
+		ticket = g_ptr_array_index(linked, i);
+		g_object_get(ticket, "issue-type", &type, NULL);
+
+		if (VENTURE_ISSUE_TYPE_EPIC == type)
+			out->epics++;
+
+		if (!goals_work_take(counted, ticket, goal_id, error))
+			return FALSE;
+
+		/* A linked epic's whole tree is the goal's work: its children do
+		 * not carry the goal themselves, and must not have to. */
+		beneath = venture_ticket_tree_descendants(database,
+			venture_entity_get_id(ticket), error);
+
+		if (NULL == beneath)
+			return FALSE;
+
+		for (j = 0; j < beneath->len; j++)
+			if (!goals_work_take(counted, g_ptr_array_index(beneath, j), goal_id,
+			                     error))
+				return FALSE;
+	}
+
+	/* --- Tickets planned into a milestone naming the goal --- */
+
+	milestones = goals_work_find(database, VENTURE_TYPE_MILESTONE, "goal-id",
+	                             goal_id, error);
+
+	if (NULL == milestones)
+		return FALSE;
+
+	out->milestones = (gint64)milestones->len;
+
+	for (i = 0; i < milestones->len; i++)
+	{
+		g_autoptr(GPtrArray) planned = NULL;
+		guint j;
+
+		planned = goals_work_find(database, VENTURE_TYPE_TICKET, "milestone-id",
+			venture_entity_get_id(g_ptr_array_index(milestones, i)), error);
+
+		if (NULL == planned)
+			return FALSE;
+
+		for (j = 0; j < planned->len; j++)
+			if (!goals_work_take(counted, g_ptr_array_index(planned, j), goal_id,
+			                     error))
+				return FALSE;
+	}
+
+	/* --- Each once --- */
+
+	g_hash_table_iter_init(&iter, counted);
+
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+		venture_ticket_tree_progress_add(&out->tickets, VENTURE_ENTITY(value));
+
+	return TRUE;
+}
+
+/* ==========================================================================
  * Installation
  * ========================================================================== */
 

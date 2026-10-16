@@ -5260,7 +5260,7 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"milestone", "Milestone progress",
 		"One milestone's tickets done over planned; the soonest-due "
 		"open one when no id is given.",
-		"factory", venture_widget_uses_milestone,
+		"tickets", venture_widget_uses_milestone,
 		venture_widget_kind_milestone
 	},
 	{

@@ -1349,7 +1349,7 @@ test_web_navigation_groups_by_question(
 		NULL
 	};
 	static const gchar *const support[] = {
-		"/tickets", "/sprints", "/kb", NULL
+		"/tickets", "/sprints", "/e/milestone", "/kb", NULL
 	};
 	static const gchar *const operations[] = { "/e/category", "/e/location", "/e/recipe", "/e/session", "/e/goal", NULL };
 	static const gchar *const trading_accounts[] = {
@@ -1366,7 +1366,7 @@ test_web_navigation_groups_by_question(
 		"/e/forge_repo", "/e/forge_rule", "/harness", "/runs", "/e/forge", NULL
 	};
 	static const gchar *const factory[] = {
-		"/factory", "/e/milestone", "/e/release", "/e/build",
+		"/factory", "/e/release", "/e/build",
 		"/e/environment", "/e/deployment", "/e/incident", NULL
 	};
 	static const gchar *const business[] = { "/e/venture", "/entities", "/modules", NULL };

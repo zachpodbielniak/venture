@@ -44,7 +44,8 @@ time_from_now(
 /* --- Parsing, with no server ---------------------------------------------- */
 
 /*
- * The factory module owns its six types and requires the forge.
+ * The factory module owns its five types and requires the forge. A
+ * milestone is not one of them: it is planning, and the tickets module's.
  */
 static void
 test_factory_module_owns_its_types(void)
@@ -62,7 +63,8 @@ test_factory_module_owns_its_types(void)
 	                              "forge"));
 
 	types = venture_module_get_entity_names(factory);
-	g_assert_cmpuint(g_strv_length((gchar **)types), ==, 6);
+	g_assert_cmpuint(g_strv_length((gchar **)types), ==, 5);
+	g_assert_false(g_strv_contains(types, "milestone"));
 	g_assert_true(g_strv_contains(types, "release"));
 	g_assert_true(g_strv_contains(types, "incident"));
 

@@ -435,6 +435,10 @@ static GType (*const venture_module_tickets_types[]) (void) = {
 	venture_worklog_get_type,
 	venture_sprint_get_type,
 	venture_routing_rule_get_type,
+	/* A planned increment is planning, not shipping: a milestone groups
+	 * tickets whether or not a forge or a release pipeline exists. It
+	 * was the factory's until a tickets-only install needed one. */
+	venture_milestone_get_type,
 	NULL
 };
 
@@ -471,7 +475,6 @@ static GType (*const venture_module_forge_types[]) (void) = {
 };
 
 static GType (*const venture_module_factory_types[]) (void) = {
-	venture_milestone_get_type,
 	venture_release_get_type,
 	venture_build_get_type,
 	venture_environment_get_type,
@@ -539,7 +542,7 @@ static const gchar *const venture_module_reports_outreach[] = {
 };
 static const gchar *const venture_module_reports_ideas[] = { "ideas", NULL };
 static const gchar *const venture_module_reports_tickets[] = {
-	"support", "support_rollup", NULL
+	"support", "support_rollup", "epic_progress", NULL
 };
 static const gchar *const venture_module_reports_factory[] = {
 	"releases", "lead_time", "incidents", "delivery", NULL
@@ -1031,7 +1034,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"tickets", "Tickets",
 		"Internal tasks and external support requests, one shape, on a "
-		"kanban board.",
+		"kanban board; epics broken into stories and tasks, and the "
+		"milestones they are planned into.",
 		venture_module_requires_core, venture_module_suggests_tickets,
 		venture_module_tickets_types, venture_module_reports_tickets, NULL,
 		FALSE
@@ -1093,8 +1097,9 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	},
 	{
 		"factory", "Software factory",
-		"Milestones, releases, builds, environments, deployments and "
-		"incidents: the loop from a ticket to a running release and back.",
+		"Releases, builds, environments, deployments and incidents: the "
+		"loop from a ticket to a running release and back. Milestones are "
+		"the tickets module's.",
 		venture_module_requires_forge, venture_module_suggests_factory,
 		venture_module_factory_types, venture_module_reports_factory, NULL,
 		FALSE

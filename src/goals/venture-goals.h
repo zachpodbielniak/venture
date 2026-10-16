@@ -65,6 +65,49 @@ venture_goals_fraction(
 );
 
 /**
+ * VentureGoalWork:
+ * @milestones: live milestones naming the goal
+ * @epics: live epics naming the goal
+ * @tickets: the tickets counted, as #VentureTicketTreeProgress counts them
+ *
+ * How much of the work planned toward a goal is done. A separate figure
+ * from the goal's own fraction: the goal's current value is a person's
+ * reading of the metric, this is the tickets, and neither moves the other.
+ */
+typedef struct
+{
+	gint64				milestones;
+	gint64				epics;
+	VentureTicketTreeProgress	tickets;
+} VentureGoalWork;
+
+/**
+ * venture_goals_work_progress:
+ * @database: the database to read
+ * @goal_id: the goal
+ * @out: (out caller-allocates): where the figures go; zeroed first
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The work linked to a goal: every ticket naming it, every ticket beneath
+ * one of those (an epic's whole tree), and every ticket planned into a
+ * milestone naming it -- each counted once, however many ways it is
+ * linked, cancelled tickets and epics left out. Arithmetic over the rows,
+ * read under the caller's scope; it never writes the goal's current value
+ * or marks it achieved. With the tickets module off there is no work to
+ * count and @out stays zero.
+ *
+ * Returns: %TRUE with @out filled, %FALSE with @error set (a tree past
+ *   %VENTURE_TICKET_TREE_MAX_NODES tickets, or a failed read)
+ */
+gboolean
+venture_goals_work_progress(
+	VentureDatabase	 *database,
+	gint64		  goal_id,
+	VentureGoalWork	 *out,
+	GError		**error
+);
+
+/**
  * venture_goals_progress:
  * @context: the wiring
  * @period: (nullable): unused beyond the result's heading; goals are not
@@ -76,7 +119,9 @@ venture_goals_fraction(
  *
  * One row per goal: its path in the goal tree, metric and unit, the three
  * values, the percentage covered and what remains, its steps done of
- * total, its due date and the days left, and a forecast date -- a straight
+ * total, the tickets of its linked work done of total
+ * (venture_goals_work_progress(), blank with the tickets module off), its
+ * due date and the days left, and a forecast date -- a straight
  * line from the start value at the goal's creation through the current
  * value at @as_of (now by default) extended to the target. The forecast
  * is blank for a goal with no progress or already achieved, and a note

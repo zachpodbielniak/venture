@@ -813,7 +813,7 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_string_property(builder, "filter", "aggregate: a list-page query string, e.g. status=open.");
 		venture_mcp_catalog_add_string_property(builder, "per", "aggregate: hour or day, adding a rate over the elapsed window.");
 		/* The market reports' questions. */
-		venture_mcp_catalog_add_integer_property(builder, "venture_id", "Narrow to one venture (aggregate, listing_performance, recipe_margin, session_performance, goal_progress, goal_materials).");
+		venture_mcp_catalog_add_integer_property(builder, "venture_id", "Narrow to one venture (aggregate, listing_performance, recipe_margin, session_performance, goal_progress, goal_materials, epic_progress).");
 		venture_mcp_catalog_add_integer_property(builder, "product_id", "price_history: the product whose observed prices to show.");
 		venture_mcp_catalog_add_string_property(builder, "source", "price_history: only this price source, matched exactly. external_pnl: only ledger rows the source labels so, e.g. Auction.");
 		/* The production report's questions. */
@@ -821,7 +821,8 @@ venture_mcp_catalog_add_tool_extras(
 		venture_mcp_catalog_add_integer_property(builder, "category_id", "recipe_margin, goal_progress: only records in this category or beneath it.");
 		/* The goals reports' questions. */
 		venture_mcp_catalog_add_string_property(builder, "status", "goal_progress: active, paused, achieved or abandoned, or several comma separated.");
-		venture_mcp_catalog_add_integer_property(builder, "goal_id", "goal_materials: only this goal and its sub-goals.");
+		venture_mcp_catalog_add_integer_property(builder, "goal_id", "goal_materials: only this goal and its sub-goals. epic_progress: only epics linked to this goal.");
+		venture_mcp_catalog_add_integer_property(builder, "milestone_id", "epic_progress: only epics planned into this milestone.");
 		/* The ledger's holdings. */
 		venture_mcp_catalog_add_integer_property(builder, "location_id", "holdings: only this location and every location beneath it.");
 		venture_mcp_catalog_add_boolean_property(builder, "include_on_hand", "goal_materials: true (default) takes stock on hand off what is needed; false does not.");

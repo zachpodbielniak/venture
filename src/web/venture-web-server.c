@@ -1547,6 +1547,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		"tickets"
 	},
 	{
+		"/e/milestone", "Milestones",
+		VENTURE_ICON(
+			"<path d=\"M4 21V4\"/><path d=\"M4 5h13l-3 4 3 4H4\"/>"
+		),
+		NULL,
+		"tickets"
+	},
+	{
 		"/e/research_note", "Research",
 		VENTURE_ICON(
 			"<circle cx=\"11\" cy=\"11\" r=\"7\"/>"
@@ -1605,14 +1613,6 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M12 17h2\"/><path d=\"M17 17h2\"/>"
 		),
 		"Factory",
-		"factory"
-	},
-	{
-		"/e/milestone", "Milestones",
-		VENTURE_ICON(
-			"<path d=\"M4 21V4\"/><path d=\"M4 5h13l-3 4 3 4H4\"/>"
-		),
-		NULL,
 		"factory"
 	},
 	{
@@ -1898,7 +1898,7 @@ static const gchar *const venture_web_nav_growth[] = {
 };
 
 static const gchar *const venture_web_nav_support[] = {
-	"/tickets", "/sprints", "/kb",
+	"/tickets", "/sprints", "/e/milestone", "/kb",
 	NULL
 };
 
@@ -1941,7 +1941,7 @@ static const gchar *const venture_web_nav_code[] = {
 };
 
 static const gchar *const venture_web_nav_factory[] = {
-	"/factory", "/e/milestone", "/e/release", "/e/build",
+	"/factory", "/e/release", "/e/build",
 	"/e/environment", "/e/deployment", "/e/incident",
 	NULL
 };
@@ -3880,7 +3880,7 @@ venture_web_api_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", "language", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "milestone_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7926,7 +7926,7 @@ venture_web_ui_report(
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
 		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", "language", NULL };
-		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
+		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "milestone_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
 		guint i;
 		for (i = 0; strings[i] != NULL; i++)
 		{
@@ -7978,7 +7978,7 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = venture_json_object_get_string(report_options, "as_of", NULL);
-		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
+		static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "milestone_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
 		guint i;
 		for (i = 0; names[i] != NULL; i++)
 		{
@@ -8042,7 +8042,7 @@ venture_web_ui_report(
 				g_string_append_printf(content, "<input type=\"hidden\" name=\"organization_id\" value=\"%" G_GINT64_FORMAT "\">",
 					venture_json_object_get_int(report_options, "organization_id", 0));
 			{
-				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
+				static const gchar *const names[] = { "customer_id", "venture_id", "currency", "group_by", "vendor_id", "pipeline_id", "owner", "account_id", "compare_to", "band", "sort", "product", "min_tickets", "company", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "category_depth", "source", "product_id", "price_source", "category_id", "goal_id", "milestone_id", "status", "include_on_hand", "location_id", "venue", "group_key", "category_path", "min_value", "max_pct", "data_source_id", "watchlist_id", "top", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "basis", "account_key", "place", "expiring_hours", "mail_days", "stale_days", "dead_days", "login", "form_id", "language", NULL };
 				guint i;
 				/* Preserve the question when changing only its cutoff. */
 				for (i = 0; names[i] != NULL; i++)
@@ -11680,6 +11680,7 @@ venture_web_append_incident_block(
 #include "attribution/venture-attribution-settings-web.inc"
 #include "arbitrage/venture-arbitrage-web.inc"
 #include "web/venture-web-comments.inc"
+#include "web/venture-web-planning.inc"
 
 #ifdef VENTURE_HAVE_SQLITE
 /* In feeds/venture-feeds-web.inc, which comes in with the feeds routes. */
@@ -11825,16 +11826,24 @@ venture_web_ui_detail(
 	venture_web_mail_append_actions(self, content, record);
 	venture_web_connector_append_actions(self, content, record);
 
+	/* A milestone's progress: the tickets module's since milestones
+	 * moved there, so a tickets-only install sees it too. */
+	if ((VENTURE_TYPE_MILESTONE == entity_type) &&
+	    venture_web_module_enabled(self, "tickets"))
+		venture_web_append_milestone_block(self, content, record);
+
+	/* An epic's or a story's pieces, grouped by shape, with the rollup. */
+	if ((VENTURE_TYPE_TICKET == entity_type) &&
+	    venture_web_module_enabled(self, "tickets"))
+		venture_web_append_ticket_tree_block(self, content, record);
+
 	/* The factory's pages: what a release shipped and the actions on it,
-	 * a milestone's progress, what an environment is running. */
+	 * what an environment is running. */
 	if (venture_web_module_enabled(self, "factory"))
 	{
 		if (VENTURE_TYPE_RELEASE == entity_type)
 			venture_web_append_release_block(self, content, record,
 				htmx_request_get_query_param(request, "changelog"));
-
-		if (VENTURE_TYPE_MILESTONE == entity_type)
-			venture_web_append_milestone_block(self, content, record);
 
 		if (VENTURE_TYPE_ENVIRONMENT == entity_type)
 			venture_web_append_environment_block(self, content, record);
@@ -11854,7 +11863,13 @@ venture_web_ui_detail(
 	/* A goal's progress and its steps, in order. */
 	if ((VENTURE_TYPE_GOAL == entity_type) &&
 	    venture_web_module_enabled(self, "goals"))
+	{
 		venture_web_append_goal_block(self, content, record);
+
+		/* And the milestones and epics planned toward it. */
+		if (venture_web_module_enabled(self, "tickets"))
+			venture_web_append_goal_work_block(self, content, record);
+	}
 
 	/* A trade's result per currency, its position and its legs, with
 	 * Execute beside each leg that can be. */
@@ -23614,7 +23629,10 @@ venture_web_api_factory_load(
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *gate;
 
-	gate = venture_web_require_module_api(self, "factory");
+	/* A milestone is the tickets module's; everything else loaded here
+	 * is the factory's. */
+	gate = venture_web_require_module_api(self,
+		(VENTURE_TYPE_MILESTONE == type) ? "tickets" : "factory");
 
 	if (NULL != gate)
 		return gate;
