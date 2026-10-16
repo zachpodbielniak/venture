@@ -168,17 +168,35 @@ VentureICalEvent *venture_ical_event_parse(const gchar *text, GError **error)
 	if (event->all_day && !event->ends) event->ends = g_date_time_add_days(event->starts, 1);
 	return event;
 }
-gchar *venture_ical_event_format(const VentureICalEvent *event, GDateTime *stamp)
+/* Writes one VEVENT. @dates says whether an all-day event is written with
+ * DATE values: the unified calendar's feed does, while the CalDAV push
+ * keeps writing DATE-TIMEs as it always has, because changing what it
+ * sends would rewrite every all-day event on the operator's server. */
+static void
+append_vevent(GString *calendar, const VentureICalEvent *event, GDateTime *stamp, gboolean dates)
 {
-	g_autoptr(GString) calendar = NULL;
 	g_autoptr(GDateTime) now = NULL;
-	g_return_val_if_fail(event != NULL && event->uid != NULL && event->starts != NULL, NULL);
-	calendar = g_string_new("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//VENTURE//Calendar sync//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\n");
 	now = stamp ? g_date_time_ref(stamp) : venture_time_now();
+	g_string_append(calendar, "BEGIN:VEVENT\r\n");
 	venture_activity_calendar_append_line(calendar, "UID", event->uid, FALSE);
 	venture_activity_calendar_append_date(calendar, "DTSTAMP", now);
-	venture_activity_calendar_append_date(calendar, "DTSTART", event->starts);
-	if (event->ends) venture_activity_calendar_append_date(calendar, "DTEND", event->ends);
+	if (dates && event->all_day)
+	{
+		g_autoptr(GDateTime) start = g_date_time_to_utc(event->starts);
+		g_autofree gchar *first = g_date_time_format(start, "%Y%m%d");
+		venture_activity_calendar_append_line(calendar, "DTSTART;VALUE=DATE", first, FALSE);
+		if (event->ends)
+		{
+			g_autoptr(GDateTime) end = g_date_time_to_utc(event->ends);
+			g_autofree gchar *last = g_date_time_format(end, "%Y%m%d");
+			venture_activity_calendar_append_line(calendar, "DTEND;VALUE=DATE", last, FALSE);
+		}
+	}
+	else
+	{
+		venture_activity_calendar_append_date(calendar, "DTSTART", event->starts);
+		if (event->ends) venture_activity_calendar_append_date(calendar, "DTEND", event->ends);
+	}
 	venture_activity_calendar_append_line(calendar, "SUMMARY", event->summary ? event->summary : "", TRUE);
 	if (event->description && *event->description) venture_activity_calendar_append_line(calendar, "DESCRIPTION", event->description, TRUE);
 	venture_activity_calendar_append_line(calendar, "STATUS", event->status && *event->status ? event->status : "CONFIRMED", FALSE);
@@ -188,6 +206,21 @@ gchar *venture_ical_event_format(const VentureICalEvent *event, GDateTime *stamp
 		g_autofree gchar *sequence = g_strdup_printf("%" G_GINT64_FORMAT, event->sequence);
 		venture_activity_calendar_append_line(calendar, "SEQUENCE", sequence, FALSE);
 	}
-	g_string_append(calendar, "END:VEVENT\r\nEND:VCALENDAR\r\n");
+	g_string_append(calendar, "END:VEVENT\r\n");
+}
+
+gchar *venture_ical_event_format(const VentureICalEvent *event, GDateTime *stamp)
+{
+	g_autoptr(GString) calendar = NULL;
+	g_return_val_if_fail(event != NULL && event->uid != NULL && event->starts != NULL, NULL);
+	calendar = g_string_new("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//VENTURE//Calendar sync//EN\r\nCALSCALE:GREGORIAN\r\n");
+	append_vevent(calendar, event, stamp, FALSE);
+	g_string_append(calendar, "END:VCALENDAR\r\n");
 	return g_string_free(g_steal_pointer(&calendar), FALSE);
+}
+
+void venture_ical_event_append(GString *calendar, const VentureICalEvent *event, GDateTime *stamp)
+{
+	g_return_if_fail(calendar != NULL && event != NULL && event->uid != NULL && event->starts != NULL);
+	append_vevent(calendar, event, stamp, TRUE);
 }
