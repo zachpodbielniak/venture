@@ -930,6 +930,19 @@ static GType (*const goals_types[]) (void) = {
 };
 static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", NULL };
 
+/* Events and one calendar over every dated record. It requires only core:
+ * a meeting names nothing else. It suggests the modules whose records the
+ * calendar draws and an event may name -- goals, the factory's milestones
+ * and sprints, crm's contacts and companies -- and the money calendar;
+ * each source is skipped while its type is hidden, so none is needed. */
+static const gchar *const planner_suggests[] = {
+	"goals", "tickets", "factory", "crm", "activities", "money_calendar", "calendar", NULL
+};
+static GType (*const planner_types[]) (void) = {
+	venture_event_get_type, venture_event_agenda_item_get_type,
+	venture_event_attendee_get_type, NULL
+};
+
 /* Embeddable forms and their responses. It requires only core: a survey
  * or a signup names nothing else. It suggests leads, which a form may turn
  * each response into (the mapping notes and skips it while leads is off),
@@ -1411,6 +1424,15 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"the lead to a won customer, and the reward the referrer is given.",
 		referrals_requires, referrals_suggests, referrals_types,
 		referrals_reports, NULL, FALSE
+	},
+	{
+		"planner", "Planner",
+		"Events with their run-sheets and attendees, and one calendar over "
+		"every dated record -- events, tickets, activities, milestones, "
+		"goals, sprints, deals, money due and synced calendars -- as a "
+		"month, week or agenda, as JSON and as a subscribable feed.",
+		venture_module_requires_core, planner_suggests, planner_types,
+		NULL, NULL, FALSE
 	}
 };
 

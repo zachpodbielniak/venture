@@ -1496,6 +1496,16 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD("story-points", "Points", "Relative size, for the sprint",
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	/*
+	 * The event this work prepares, from the planner module: booking the
+	 * room, printing the slides. A preparation task is an ordinary ticket
+	 * -- assigned, due and on the board -- so the planner adds this one
+	 * reference rather than a second task list, and the event's page
+	 * counts them done of total. Soft like the factory's: with the planner
+	 * off the reference is refused when written and the picker is empty.
+	 */
+	VENTURE_FIELD_REF("event-id", "Event", "The event this prepares",
+	                  "event", VENTURE_COLUMN_FLAG_NONE),
+	/*
 	 * The service-level clocks. The due times are set once, when the
 	 * ticket is first saved and a policy covers it, and left alone: a
 	 * deadline that moved every time the priority was edited would be

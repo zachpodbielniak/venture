@@ -221,6 +221,10 @@ CORE_SRCS += src/arbitrage/venture-arbitrage-records.c
 SERVER_ONLY_SRCS += $(filter-out src/arbitrage/venture-arbitrage-records.c,$(wildcard src/arbitrage/*.c))
 CORE_SRCS += src/forms/venture-forms-records.c
 SERVER_ONLY_SRCS += $(filter-out src/forms/venture-forms-records.c,$(wildcard src/forms/*.c))
+# Events and the unified calendar: the records are core (venturectl
+# describes them); the rules, the sources and the calendar are the server's.
+CORE_SRCS += src/planner/venture-planner-records.c
+SERVER_ONLY_SRCS += $(filter-out src/planner/venture-planner-records.c,$(wildcard src/planner/*.c))
 
 PUBLIC_HDRS_AUTOJOURNAL := $(wildcard src/autojournal/*.h)
 SERVER_ONLY_SRCS += $(wildcard src/statements/*.c)
@@ -346,6 +350,7 @@ PUBLIC_HDRS += src/series/venture-series-accounts.h
 PUBLIC_HDRS += $(filter-out src/feeds/venture-feeds-records.h %-private.h,$(wildcard src/feeds/*.h))
 endif
 PUBLIC_HDRS += $(wildcard src/forms/*.h)
+PUBLIC_HDRS += $(wildcard src/planner/*.h)
 PUBLIC_HDRS += $(wildcard src/docs/*.h)
 
 # Private implementation fragments are included by their owning C source;
@@ -394,6 +399,7 @@ $(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-money-calendar: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-planner: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-deal-lines: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequence-tracking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dedupe: | $(OUTDIR)/venturectl
