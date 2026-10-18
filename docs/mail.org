@@ -410,7 +410,7 @@ What went wrong decides what happens next:
 ** Matching and threading
 
 Every From, To and Cc address is normalised the way lead deduplication does
-(=venture_lead_normalize_email()=: lower case, trimmed, +tag removed) and
+(=venture_lead_normalize_email()=: lower case, trimmed, +tag retained) and
 compared with each contact's email; the contacts are indexed once per sync,
 not queried per message. Each matched contact receives an =interaction= of
 kind =email= carrying the contact's company (only when that company is not

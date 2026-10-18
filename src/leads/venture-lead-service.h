@@ -144,8 +144,9 @@ gboolean venture_lead_service_apply_staged(VentureLeadService *self, VentureEnti
  * @value: (nullable): an address as typed
  *
  * The leads module's duplicate-detection normalisation for email: lower
- * case, trimmed, with a +tag removed. Exposed so inbound mail matches the
- * way lead deduplication does rather than reimplementing it.
+ * case and trimmed, retaining the complete local part including any +tag.
+ * This separate comparison key must not replace a stored delivery address.
+ * No domain is assumed to implement plus-address aliases.
  * Returns: (transfer full): the normalised address, possibly empty
  */
 gchar *venture_lead_normalize_email(const gchar *value);

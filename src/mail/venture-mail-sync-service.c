@@ -144,7 +144,13 @@ static gboolean capture_matches(const gchar *address, const gchar *capture)
 	if (!strcmp(have, wanted)) return TRUE;
 	at = strchr(wanted, '@');
 	if (!at || memchr(wanted, '+', (gsize)(at - wanted))) return FALSE;
-	normal = venture_lead_normalize_email(have);
+	normal = g_strdup(have);
+	{
+		gchar *separator = strchr(normal, '@');
+		gchar *tag = strchr(normal, '+');
+		if (separator != NULL && tag != NULL && tag < separator)
+			memmove(tag, separator, strlen(separator) + 1);
+	}
 	return !strcmp(normal, wanted);
 }
 static GPtrArray *split_list(const gchar *text, const gchar *separators)

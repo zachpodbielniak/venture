@@ -96,7 +96,7 @@ test_normalize(Fixture *f, gconstpointer data)
 		"website", "https://www.Example.COM/path", NULL);
 	save(f, lead);
 	g_object_get(lead, "email", &email, "phone", &phone, "website", &website, NULL);
-	g_assert_cmpstr(email, ==, "alice@example.com");
+	g_assert_cmpstr(email, ==, " Alice+form@EXAMPLE.COM ");
 	g_assert_cmpstr(phone, ==, "15551234567");
 	g_assert_cmpstr(website, ==, "example.com");
 }
@@ -140,7 +140,7 @@ test_duplicate_refused(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	(void)data;
 	g_object_set(a, "email", "alice@example.com", NULL);
-	g_object_set(b, "email", "ALICE+web@example.com", NULL);
+	g_object_set(b, "email", "ALICE@example.com", NULL);
 	save(f, a);
 	g_assert_false(venture_database_save(f->db, b, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
@@ -231,7 +231,7 @@ test_capture(Fixture *f, gconstpointer data)
 	f->require_auth = TRUE;
 	start_http(f);
 	g_assert_cmpuint(post(f, "/f/capture-test", "name=Alice&email=Alice%2Bweb%40example.com&organization_id=999&owner=intruder&status=converted", FALSE), ==, 200);
-	g_assert_cmpuint(post(f, "/f/capture-test", "{\"name\":\"Alice\",\"email\":\"alice@example.com\"}", TRUE), ==, 200);
+	g_assert_cmpuint(post(f, "/f/capture-test", "{\"name\":\"Alice\",\"email\":\"alice+web@example.com\"}", TRUE), ==, 200);
 	g_assert_cmpint(count(f, "lead"), ==, 1);
 	g_assert_cmpint(count(f, "interaction"), ==, 1);
 	g_assert_cmpuint(post(f, "/f/capture-test", "name=Robot&fax=spam", FALSE), ==, 200);
@@ -542,7 +542,7 @@ test_contact_company_duplicates(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_object_set(existing, "email", "Alice+old@EXAMPLE.com", NULL);
 	save(f, existing);
-	g_object_set(lead, "email", "alice@example.com", NULL);
+	g_object_set(lead, "email", "alice+old@example.com", NULL);
 	g_assert_false(venture_database_save(f->db, lead, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS);
 }
@@ -861,10 +861,14 @@ test_conversion_reentry(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count(f, "deal"), ==, 1);
 }
 
+#include "venture-test-lead-address.inc"
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/leads/address-keys", Fixture, NULL, setup, test_address_keys, teardown);
+	g_test_add("/leads/address-capture-convert", Fixture, NULL, setup, test_address_capture_convert, teardown);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add("/leads/deal-history", Fixture, NULL, setup, test_deal_history, teardown);
 	g_test_add("/leads/conversion-reentry", Fixture, NULL, setup, test_conversion_reentry, teardown);

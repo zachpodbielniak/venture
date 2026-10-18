@@ -136,7 +136,7 @@ each row carries its batch's =source=, because HubSpot and Zoho CRM both
 number records and a Zoho account 101 is not a HubSpot company 101. Otherwise companies are
 matched against live companies by normalised domain, website or email,
 and contacts against live contacts by normalised email, using the same
-normalisation as [[file:leads.org][leads]] (lower case, =+tag= removed,
+normalisation as [[file:leads.org][leads]] (lower case, =+tag= retained,
 host without =www.=). A match whose populated fields disagree (name,
 phone, industry, website for companies; name, phone, role for contacts)
 is recorded as an =exception= naming each difference; the existing
