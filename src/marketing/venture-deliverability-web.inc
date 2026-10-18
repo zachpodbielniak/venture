@@ -179,7 +179,12 @@ venture_web_deliverability_page_with(VentureWebServer *self, HtmxRequest *reques
 			venture_web_deliverability_stat(html, "Queued today", used, "no warm-up limit applies");
 		}
 		g_string_append(html, "</div><p>Mailbox providers distrust a new domain that suddenly sends a lot. Campaigns therefore start small and grow: ");
-		venture_html_escape_append(html, venture_string_is_empty(schedule) ? VENTURE_DELIVERABILITY_DEFAULT_RAMP : schedule);
+		{
+			/* Spaced after each comma so a phone can wrap it. */
+			g_auto(GStrv) pairs = g_strsplit(venture_string_is_empty(schedule) ? VENTURE_DELIVERABILITY_DEFAULT_RAMP : schedule, ",", 64);
+			g_autofree gchar *spaced = g_strjoinv(", ", pairs);
+			venture_html_escape_append(html, spaced);
+		}
 		g_string_append(html, " (<code>day:limit</code>; 0 is no limit). Day one is the sending domain's warm-up date, or the day your first campaign "
 			"message was accepted. Change it on the <a href=\"/e/marketing_sending_domain\">sending domain</a>; <code>off</code> turns it off.</p>");
 	} else {
@@ -456,10 +461,10 @@ venture_web_deliverability_report(HtmxRequest *request, GHashTable *params, gpoi
 			"<th scope=\"col\">Share</th><th scope=\"col\" class=\"num\">Machine clicks</th></tr></thead><tbody>");
 		for (i = 0; i < report->links->len; i++) {
 			const VentureMarketingLinkCount *link = g_ptr_array_index(report->links, i);
-			g_string_append_printf(html, "<tr><td class=\"num\">%" G_GINT64_FORMAT "</td><td style=\"overflow-wrap:anywhere\">", link->position);
+			g_string_append_printf(html, "<tr><td class=\"num\">%" G_GINT64_FORMAT "</td><td style=\"min-width:9rem;overflow-wrap:anywhere\">", link->position);
 			venture_html_escape_append(html, link->destination);
 			g_string_append_printf(html, "</td><td class=\"num\">%" G_GINT64_FORMAT "</td>"
-				"<td><div aria-hidden=\"true\" style=\"min-width:4rem;height:0.6rem;background:var(--surface-2,var(--border))\">"
+				"<td><div aria-hidden=\"true\" style=\"width:4rem;height:0.6rem;background:var(--border)\">"
 				"<div style=\"height:100%%;width:%" G_GINT64_FORMAT "%%;background:var(--accent)\"></div></div></td>"
 				"<td class=\"num\">%" G_GINT64_FORMAT "</td></tr>",
 				link->clicks, link->clicks * 100 / widest, link->machine_clicks);
