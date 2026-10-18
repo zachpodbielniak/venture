@@ -332,7 +332,7 @@ test_dedupe_and_links(Fixture *f, gconstpointer data)
 	g_object_set(acme, "name", "Acme Corp", "website", "http://WWW.acme.com/", NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(acme), f->org);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(acme), NULL, &error));
-	g_object_set(alice, "name", "Alice Adams", "email", "alice.adams@ACME.com", "phone", "+1 555 0101",
+	g_object_set(alice, "name", "Alice Adams", "email", "alice.adams+crm@ACME.com", "phone", "+1 555 0101",
 		"company-id", venture_entity_get_id(VENTURE_ENTITY(acme)), NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(alice), f->org);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(alice), NULL, &error));
@@ -345,8 +345,8 @@ test_dedupe_and_links(Fixture *f, gconstpointer data)
 	batch = preview(f, payload);
 	import(f, batch);
 
-	/* Acme matched by domain, Alice by email with the +tag and case
-	 * removed: neither is duplicated. */
+	/* Domain matching and the complete email key (case aside) retain
+	 * the existing records without removing a plus tag. */
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_CONTACT), ==, 4);
 	status = row_status(f, batch, "company", "101", &exception);
@@ -666,7 +666,7 @@ test_rollback_exact(Fixture *f, gconstpointer data)
 	venture_entity_set_organization_id(VENTURE_ENTITY(acme), f->org);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(acme), NULL, &error));
 	acme_id = venture_entity_get_id(VENTURE_ENTITY(acme));
-	g_object_set(alice, "name", "Alice Adams", "email", "alice.adams@acme.com", "phone", "+1 555 0101",
+	g_object_set(alice, "name", "Alice Adams", "email", "alice.adams+crm@acme.com", "phone", "+1 555 0101",
 		"company-id", acme_id, NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(alice), f->org);
 	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(alice), NULL, &error));

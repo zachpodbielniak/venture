@@ -44,7 +44,7 @@ pair matches when any of these hold:
 
 | Reason | Rule | Score |
 |--------+------+-------|
-| =email=, =phone=, =website= | Equal after the leads module's normalisation: lower case with the =+tag= removed; digits only; lower-case host without =www.=. Empty values never match | 100 |
+| =email=, =phone=, =website= | Equal after the leads module's normalisation: lower case with the =+tag= retained; digits only; lower-case host without =www.=. Empty values never match | 100 |
 | =domain+name= | The same email domain and a name similarity of at least 50 | 80 |
 | =name= | A name similarity of at least 75 | similarity × 0.7 |
 

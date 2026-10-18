@@ -1205,3 +1205,18 @@ It runs on SQLite normally. The order, outcome and upgrade binaries also use the
 =VENTURE_TEST_ACCOUNTING_POSTGRES_URI= opt-in, with an isolated schema per fixture.
 Run those against a disposable PostgreSQL database as well; they never reset its
 public schema. A failed assertion retains its fixture for diagnosis.
+
+* Lead delivery addresses
+
+=/leads/address-keys= first failed because =Visitor+Event@example.org=
+produced the untagged comparison key. It now checks separate tagged,
+untagged and differently tagged leads, plus case-insensitive duplicate
+rejection without replacing the supplied address.
+=/leads/address-capture-convert= first failed after a real HTTP form capture
+saved the untagged address. It checks capture, repeat capture, conversion,
+CSV export and subsequent mail delivery with the exact tagged recipient.
+Existing email-matching fixtures now use matching complete addresses;
+explicit capture-mailbox plus routing retains its separate regression.
+The CRM capture-to-collection and import/rollback fixtures also supply the
+same complete tagged address when they expect an existing contact to match;
+those workflow assertions remain unchanged.

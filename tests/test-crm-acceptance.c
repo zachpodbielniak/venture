@@ -139,7 +139,7 @@ test_capture_to_collection(Fixture *f, gconstpointer data)
 	json_object_set_string_member(fields, "company_name", "Example Client");
 	json_object_set_string_member(fields, "email", "alex+web@example.invalid");
 	g_assert_true(venture_lead_service_capture(venture_database_get_lead_service(f->db), "acceptance-form", fields, NULL, &error));
-	json_object_set_string_member(fields, "email", "alex@example.invalid");
+	json_object_set_string_member(fields, "email", "ALEX+WEB@example.invalid");
 	g_assert_true(venture_lead_service_capture(venture_database_get_lead_service(f->db), "acceptance-form", fields, NULL, &error));
 	g_assert_no_error(error);
 	g_assert_cmpint(count(f, VENTURE_TYPE_LEAD), ==, 1);
@@ -198,7 +198,7 @@ test_capture_to_collection(Fixture *f, gconstpointer data)
 		g_autoptr(VentureMailOutbox) outbox = venture_mail_outbox_new(f->db, VENTURE_MAILER(transport));
 		g_autoptr(VentureMailMessage) message = venture_mail_message_new();
 		g_autoptr(VentureMailMessage) queued = NULL, duplicate = NULL;
-		g_object_set(message, "organization-id", f->org, "to", "alex@example.invalid",
+		g_object_set(message, "organization-id", f->org, "to", "ALEX+WEB@example.invalid",
 			"subject", "Requested proposal", "text-body", "We will prepare the requested agreement.",
 			"related-type", "deal", "related-id", deal_id, "idempotency-key", "proposal-response", NULL);
 		queued = venture_mail_outbox_enqueue(outbox, message, NULL, &error);

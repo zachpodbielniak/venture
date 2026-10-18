@@ -63,7 +63,7 @@ static void setup(Fixture *f, gconstpointer data)
 	company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", f->org, "name", "Acme", NULL);
 	save(f, company);
 	f->company = venture_entity_get_id(company);
-	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Ada", "email", "Ada+crm@Example.test", "company-id", f->company, NULL);
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Ada", "email", "Ada@Example.test", "company-id", f->company, NULL);
 	save(f, contact);
 	f->contact = venture_entity_get_id(contact);
 	f->imap = venture_fake_imap_client_new();
@@ -687,7 +687,7 @@ static void test_outbound_recorded(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	gboolean outbound = FALSE;
 	gint64 contact = 0;
-	g_object_set(message, "organization-id", f->org, "to", "ada+crm@example.test", "subject", "Quote", "text-body", "Attached.", "idempotency-key", "q1", NULL);
+	g_object_set(message, "organization-id", f->org, "to", "ada@example.test", "subject", "Quote", "text-body", "Attached.", "idempotency-key", "q1", NULL);
 	queued = venture_mail_outbox_enqueue(outbox, message, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(count_type(f, "interaction"), ==, 0);
@@ -742,6 +742,22 @@ static void test_cursor_repairs_duplicate_uid(Fixture *f, gconstpointer data)
 	g_assert_cmpint(count_type(f, "mail_inbound"), ==, 1);
 	g_assert_cmpint(count_type(f, "interaction"), ==, 1);
 	g_assert_cmpint(cursor_member(a, "INBOX", "uid"), ==, 5);
+}
+
+/* An arbitrary domain's tagged sender is not the untagged CRM contact. */
+static void test_sender_tag_distinct(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 4,
+		"From: Ada <ada+other@example.test>\r\nTo: ops@venture.test\r\nSubject: Different address\r\n"
+		"Date: Tue, 15 Sep 2026 09:00:00 +0000\r\nMessage-ID: <distinct@example.test>\r\n"
+		"Content-Type: text/plain\r\n\r\nPlease retain my address.\r\n");
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "interaction"), ==, 0);
+	g_assert_cmpint(count_type(f, "mail_unmatched_sender"), ==, 1);
 }
 
 /* An untagged capture address still takes its +tag variants. */
@@ -1906,6 +1922,7 @@ int main(int argc, char **argv)
 	g_test_add("/mail-sync/matches-and-threads", Fixture, NULL, setup, test_sync_matches_and_threads, teardown);
 	g_test_add("/mail-sync/capture", Fixture, NULL, setup, test_capture, teardown);
 	g_test_add("/mail-sync/capture-plus-tag", Fixture, NULL, setup, test_capture_plus_tag, teardown);
+	g_test_add("/mail-sync/sender-tag-distinct", Fixture, NULL, setup, test_sender_tag_distinct, teardown);
 	g_test_add("/mail-sync/outbound", Fixture, NULL, setup, test_outbound_recorded, teardown);
 	g_test_add("/mail-sync/sweep", Fixture, NULL, setup, test_sweep, teardown);
 	g_test_add("/mail-sync/cursor-repairs-duplicate", Fixture, NULL, setup, test_cursor_repairs_duplicate_uid, teardown);

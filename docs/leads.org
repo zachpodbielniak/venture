@@ -90,9 +90,12 @@ at the save when it is anything else.
 
 * Duplicate handling and assignment
 
-=VentureLeadService= normalizes email to lowercase and removes the local
-part's =+tag=, phone to digits, and website to a lowercase host without
-=www.=. No country-code inference, provider-specific dot removal or fuzzy
+=VentureLeadService= preserves the supplied email as the delivery address,
+including its case and plus tag. Duplicate detection computes a separate,
+trimmed lowercase key without changing the saved value or removing tags.
+No mail domain is assumed to treat plus addresses as aliases. Phone is
+normalized to digits, and website to a lowercase host without =www.=.
+No country-code inference, provider-specific dot removal or fuzzy
 company-name matching is performed. Empty identifiers never match.
 
 Any equal normalized email, phone or website matches a live lead, contact
@@ -320,3 +323,10 @@ The optional [[file:sales-performance.org][sales performance module]] attaches a
 team to existing routing rules and retains assignment history. It reuses the
 same ordering and persisted round-robin cursor. Qualified lead conversion
 carries the resolved representative, team and territory into the deal.
+
+Capture, edits, conversion and CSV export keep the supplied email. Repeated
+capture with the same comparison key retains the existing record's address;
+untagged and differently tagged addresses are distinct email keys. A shared
+phone or website can still match under the documented duplicate policy.
+Existing records whose tags were removed by an older version cannot be
+reconstructed automatically; correct them from the original submission.
