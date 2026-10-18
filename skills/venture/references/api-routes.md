@@ -129,10 +129,11 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 `/book/:slug` (booking page), `/t/o/:token.gif`, `/t/c/:token/:n` and
 `/marketing/t|u/...` (tracking and unsubscribe), `/attribution.js` and
 `/attribution/:site/:operation`, `/hooks/lightsite/:site/:connection`,
-`/hooks/deliverability/:org/:provider` (signed bounce and complaint feed),
 `/federation/v1/identity|request` (signed), `/docs`. The web UI's own pages
 (`/e/TYPE`, `/e/TYPE/ID`, `/e/TYPE/import`, `/e/TYPE/export`, `/tickets`,
 `/books`, `/market/...`) need a session and are not an API.
+`/hooks/deliverability/:org/:provider` is public too: the signed bounce
+and complaint feed, refused without the organization's secret.
 
 ## Lightsite provisioning
 
