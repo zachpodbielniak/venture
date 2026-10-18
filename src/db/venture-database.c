@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "core/venture-business-events-private.h"
 #include "db/venture-database-snapshot-private.h"
 #include "sequences/venture-sequence-service-private.h"
 #include "ledger/venture-ledger-private.h"
@@ -1302,6 +1303,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 {
 	typedef gboolean (*WriteGuard)(VentureDatabase *, VentureEntity *, gboolean, GError **);
 	static const WriteGuard guards[] = {
+		venture_business_events_check_write,
 		venture_bank_check_write,
 		venture_cutover_check_write,
 		venture_setup_check_write,
@@ -1836,41 +1838,41 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 	venture_entity_touch(entity);
 
 	{
-		gboolean opened = FALSE;
-		if (self->transaction_depth == 0)
+		/* Balance a nested level too: an outbox refusal must poison an
+		 * enclosing operation even if its caller ignores the save error. */
+		if (!venture_database_begin(self, error))
 		{
-			if (!venture_database_begin(self, error))
-			{
-				g_rec_mutex_unlock(&self->lock);
-				return FALSE;
-			}
-			opened = TRUE;
+			g_rec_mutex_unlock(&self->lock);
+			return FALSE;
 		}
 		if (created)
 		{
 			if (!venture_database_insert(self, entity, error))
 			{
-				if (opened)
-					venture_database_rollback(self);
+				venture_database_rollback(self);
 				g_rec_mutex_unlock(&self->lock);
 				return FALSE;
 			}
 		}
 		else if (!venture_database_update(self, entity, expected_version, error))
 		{
-			if (opened)
-				venture_database_rollback(self);
+			venture_database_rollback(self);
 			g_rec_mutex_unlock(&self->lock);
 			return FALSE;
 		}
 		if (!venture_custom_fields_sync(self, entity, actor, error))
 		{
-			if (opened)
-				venture_database_rollback(self);
+			venture_database_rollback(self);
 			g_rec_mutex_unlock(&self->lock);
 			return FALSE;
 		}
-		if (opened && !venture_database_commit(self, error))
+		if (!venture_business_events_capture(self, entity, previous, error))
+		{
+			venture_database_rollback(self);
+			g_rec_mutex_unlock(&self->lock);
+			return FALSE;
+		}
+		if (!venture_database_commit(self, error))
 		{
 			g_rec_mutex_unlock(&self->lock);
 			return FALSE;

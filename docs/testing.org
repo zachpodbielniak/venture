@@ -1182,3 +1182,26 @@ and are never unloaded, so they use the cache.
 The compatibility regression changes persistence flags after the first lookup
 and modifies a returned container; neither operation contaminates later calls.
 This caches class metadata only, never record values or authorization decisions.
+
+* Durable business-event checks
+
+=make -j4 DEBUG=1 test-one T=test-business-events= exercises transaction rollback,
+replay after reopening, the HTTP route, organization access, eleven rejected
+HTTP deliveries followed by acceptance after reopening, module pauses, signing,
+and progress past paused subscriptions. The receiver compares the exact body
+and delivery UUID across retries; backoff is exercised with an explicit clock.
+
+=test-business-event-outcomes= drives the payment/refund, invoice, reservation,
+subscriber, quote and deal services. =test-business-event-retention= checks
+queue-write failure rolls back the source, generic mutations cannot forge or
+erase history, and a closed organization cannot block the queue.
+=test-business-event-upgrade= checks preserved historical
+rows, an empty initial feed, repeat migration and an absent webhooks module.
+
+=test-business-event-order= uses two connections and a bounded lock timeout:
+a later writer must wait rather than commit a cursor ahead of an uncommitted
+event. After the first commits, retry succeeds and replay sees both outcomes.
+It runs on SQLite normally. The order, outcome and upgrade binaries also use the existing
+=VENTURE_TEST_ACCOUNTING_POSTGRES_URI= opt-in, with an isolated schema per fixture.
+Run those against a disposable PostgreSQL database as well; they never reset its
+public schema. A failed assertion retains its fixture for diagnosis.

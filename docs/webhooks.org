@@ -134,3 +134,85 @@ Pointing a webhook at your own install to see what a body looks like works, whic
 Webhooks are owner-only everywhere — the page, the generic routes, the API — for the same reason a forge is: the row names the host this install's business data is posted to and holds the secret that signs it, and an editor who could change the URL could point every change in the books at a server they control, with the staged diff showing nothing but a URL moving.
 
 The assistant is not given webhooks at all. It has no tool that lists, makes or changes one, exactly as it has no way to read a forge's token.
+
+* Durable business outcomes
+
+For integrations that must replay business outcomes, set =business_events=true=
+on a =venture=-format webhook. This selects the retained business-event lane;
+it replaces ordinary audit notifications for that subscription. Existing
+subscriptions keep their previous behavior until explicitly changed. The
+immediate *Test* action remains a connectivity probe, not a retained outcome.
+
+| Event | Committed transition |
+|-------+----------------------|
+| =lead.created=, =subscriber.created= | First saved record |
+| =payment.received= | New non-bookkeeping payment |
+| =payment.refunded= | New refund |
+| =invoice.paid= | Invoice enters paid state |
+| =booking.created= | Held reservation becomes confirmed |
+| =booking.cancelled= | Confirmed reservation becomes cancelled |
+| =quote.sent=, =quote.accepted= | Quote enters that state |
+| =deal.won= | Deal enters won stage through the deal service |
+
+A reservation hold, an unrelated edit, and private working copies produce no
+outcome. Personal records outside an organization are excluded. A later genuine
+transition can produce another event; this is a transition history, not a
+current-state snapshot. The event and matching delivery obligations are saved
+in the source transaction. If either outbox write fails, the source write fails
+too, including inside an enclosing transaction. Rolled-back outcomes never
+become externally readable or deliverable.
+
+** Read and replay
+
+An authenticated organization owner or administrator can request:
+
+#+begin_src text
+GET /api/v1/business-events?organization_id=1&after=0&limit=100
+#+end_src
+
+The response contains =events= and =next_cursor=. Each event contains only:
+=id= (stable UUID), =cursor= (ordered integer), =organization_id=, =event=,
+=occurred_at=, =source_type=, =source_id= and =source_version=. Names, addresses,
+amounts, record bodies and audit diffs are absent. A source reference is an
+identity, not a promise that the source still exists or is readable.
+
+Start with =after=0=; process a page, durably save =next_cursor= in the consumer,
+and request the next page using that cursor. The limit is 1 through 1000,
+default 100. Empty pages retain the supplied cursor. There is no acknowledgement
+or deletion on the server. Repeating a request replays the same identities.
+Consumers should deduplicate UUIDs and retain their own cursor per database and
+organization. Gaps are valid; cursors are not counts or portable restore tokens.
+PostgreSQL serializes event allocation until transaction commit so a reader
+cannot advance past a lower uncommitted cursor. SQLite serializes writers.
+
+The feed and delivery evidence are service-owned: generic create, edit, delete
+and purge operations are refused. Removing a source record does not remove its
+minimal event history. Upgrades create an empty feed without manufacturing
+historical outcomes or converting existing webhook subscriptions.
+
+** Retained delivery
+
+Matching active subscriptions receive obligations at event creation. Adding a
+subscription later does not backfill it; use the replay API to catch up. The
+body is the minimal event object described above. =X-Venture-Event= names the
+transition, =X-Venture-Delivery= is the stable delivery UUID, and an optional
+=X-Venture-Signature= signs the exact body with HMAC-SHA256 as for ordinary
+webhooks. Redirects are not followed and response bodies are not retained.
+
+A bounded main-context sweep starts due deliveries every five seconds, outside
+business transactions. Only a 2xx response marks a delivery accepted. Transport
+errors, other statuses and invalid destination configuration retain the same
+obligation and identity. Backoff starts at 60 seconds and doubles to a cap of
+one hour, without an attempt limit or automatic subscription deactivation.
+A crash after remote acceptance but before recording it can deliver again:
+receivers must deduplicate. This is at-least-once delivery.
+
+Turning off the webhooks module pauses transport. Existing subscriptions still
+accumulate obligations, which resume when enabled; an installation that never
+enabled the module retains the replay feed without creating a webhook table.
+Inactive, removed or unsupported-format destinations and unavailable
+organizations remain pending and are rescheduled so they cannot monopolize the
+due page. Re-enabling the same
+subscription resumes it; creating a different subscription is not a replacement
+for its retained identity. =business_event_delivery= records expose attempts,
+next attempt, last response status and accepted state for diagnosis.
