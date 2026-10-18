@@ -22,9 +22,16 @@ venturectl sequence status 17
   recording a goal are `POST /api/v1/sequence_enrollment/:id/pause|resume|
   exit|goal`.
 - `sequence run` processes due steps for one organization (an ISO
-  timestamp with zone). Email steps create pending `sequence_delivery`
-  rows; this command does not send mail -- deliver the outbox. Completed
-  step identities survive restarts and sequence edits.
+  timestamp with zone). Email steps atomically create pending
+  `sequence_delivery` and `mail_message` rows. Run `mail deliver` for that
+  organization to submit them. Repeated sweeps recover older pending steps
+  and preserve the same outbox identity across restarts. Only committed
+  SMTP acceptance marks a sequence delivery sent.
+- Import a contact's reply with `mail sync`; it exits reply-sensitive
+  enrollments and cancels later pending deliveries, including a final email
+  still queued after the step list completed. The outbox rechecks eligibility
+  immediately before submission. Pauses defer a queued message; they do not
+  spend its retry budget.
 - Tracking (opt-in per sequence and organization): `/t/o/:token.gif` opens
   (at most one per delivery per UTC day), `/t/c/:token/:n` clicks.
   Reports `sequence_performance`, `sequence_failures`,

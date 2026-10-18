@@ -412,6 +412,8 @@ static void
 test_reports(Fixture *f, gconstpointer unused)
 {
 	VentureReportRegistry *registry = venture_context_get_report_registry(f->context);
+	g_autoptr(VentureLogMailer) mailer = venture_log_mailer_new();
+	g_autoptr(GDateTime) sent_at = g_date_time_new_from_iso8601("2026-09-14T13:00:00Z", NULL);
 	g_autoptr(VentureEntity) first = enrollment(f);
 	g_autoptr(VentureEntity) second = NULL;
 	g_autoptr(VentureEntity) interaction = NULL;
@@ -425,6 +427,13 @@ test_reports(Fixture *f, gconstpointer unused)
 	save(f, first);
 	g_assert_cmpint(run(f, "2026-09-14T13:00:00Z", &error), ==, 1);
 	g_assert_no_error(error);
+	/* This enrollment really completed delivery. A merely queued final
+	 * message must instead be cancelled when the contact replies. */
+	venture_context_set_mailer(f->context, VENTURE_MAILER(mailer));
+	g_assert_cmpint(venture_mail_outbox_deliver_due(venture_context_get_mail_outbox(f->context),
+		1, 10, sent_at, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_log_mailer_get_messages(mailer)->len, ==, 1);
 	second = enrollment(f);
 	g_object_set(f->sequence, "goal", 1, NULL);
 	save(f, f->sequence);

@@ -1182,3 +1182,19 @@ and are never unloaded, so they use the cache.
 The compatibility regression changes persistence flags after the first lookup
 and modifies a returned container; neither operation contaminates later calls.
 This caches class metadata only, never record values or authorization decisions.
+
+* Sequence outbox integration
+
+=test-sequence-mail= first failed on the base revision: running an email step
+produced zero outbox messages instead of one. It now exercises atomic enqueue,
+stable identities, delivery acknowledgement, restart and module re-enable,
+paused claims, and a reply arriving between claim and transport. RFC822 mail
+is parsed through the inbound sync service; both an active enrollment and a
+completed step list with its final email still queued exit before later mail
+can be submitted. Injected projection failure preserves SMTP acceptance and
+is repaired after reopening without a second submission. Private survey
+content stays private, and generic writers cannot forge a sequence source.
+
+The existing sequence report fixture delivers its first email before counting
+that enrollment as completed. A reply cancels an unsent final email; it does
+not rewrite already-sent history.
