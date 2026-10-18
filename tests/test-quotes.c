@@ -121,6 +121,14 @@ action(Fixture *f, VentureEntity *q, const gchar *verb)
 	save(f, r);
 }
 
+/* The action's outcome, for an action that may be refused. */
+static gboolean
+try_action(Fixture *f, VentureEntity *q, const gchar *verb, GError **error)
+{
+	g_autoptr(VentureEntity) r = request(f, q, verb);
+	return venture_database_save(f->db, r, NULL, error);
+}
+
 static gint64
 amount(VentureEntity *r, const gchar *key)
 {
@@ -163,6 +171,44 @@ rows(Fixture *f, const gchar *name)
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
 	return result;
+}
+
+/* A waiting quote can be resent as a reminder: the same private acceptance
+ * link, "Reminder" in the subject, once a day; only a sent quote. */
+static void
+test_delivery_remind(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) customer = fresh(f, "company", f->company);
+	g_autoptr(VentureEntity) q = quote(f, "MAIL-02");
+	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) draft = quote(f, "MAIL-03");
+	g_autoptr(GPtrArray) messages = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *subject = NULL, *private_body = NULL, *first_body = NULL, *related = NULL;
+	(void)data;
+	g_object_set(f->config, "server-base-url", "https://quotes.example.test", NULL);
+	g_object_set(customer, "email", "buyer@example.test", NULL);
+	save(f, customer);
+	action(f, q, "send");
+	g_clear_object(&q);
+	q = fresh(f, "quote", integer(l, "quote-id"));
+	action(f, q, "remind");
+	messages = rows(f, "mail_message");
+	g_assert_cmpuint(messages->len, ==, 2);
+	g_object_get(g_ptr_array_index(messages, 0), "private-text-body", &first_body, NULL);
+	g_object_get(g_ptr_array_index(messages, 1), "subject", &subject, "private-text-body", &private_body, "related-type", &related, NULL);
+	g_assert_cmpstr(subject, ==, "Reminder: Quote MAIL-02");
+	g_assert_cmpstr(related, ==, "quote");
+	g_assert_nonnull(strstr(private_body, "https://quotes.example.test/q/"));
+	g_assert_nonnull(strstr(first_body, strstr(private_body, "https://")));
+	g_clear_object(&q);
+	q = fresh(f, "quote", integer(l, "quote-id"));
+	action(f, q, "remind");
+	g_clear_pointer(&messages, g_ptr_array_unref);
+	messages = rows(f, "mail_message");
+	g_assert_cmpuint(messages->len, ==, 2);
+	g_assert_false(try_action(f, draft, "remind", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
 
 static void
@@ -1182,6 +1228,7 @@ main(int argc, char **argv)
 	venture_entity_registry_get_default();
 	g_test_add("/quotes/percentage-parts", Fixture, NULL, setup, test_percentage_parts, teardown);
 	g_test_add("/quotes/delivery-mail", Fixture, NULL, setup, test_delivery_mail, teardown);
+	g_test_add("/quotes/delivery-remind", Fixture, NULL, setup, test_delivery_remind, teardown);
 	g_test_add("/quotes/delivery-recipient-rollback", Fixture, NULL, setup, test_delivery_recipient_rollback, teardown);
 	g_test_add("/quotes/delivery-repeated-send", Fixture, NULL, setup, test_delivery_transaction, teardown);
 	g_test_add("/quotes/delivery-transaction-rollback", Fixture, GINT_TO_POINTER(1), setup, test_delivery_transaction, teardown);
