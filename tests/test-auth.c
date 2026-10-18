@@ -1429,6 +1429,13 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/runs/table"),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
 
+	/* Mail previews: the page and its test send redirect, the API 401s. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail/preview/invoice/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail/preview/message/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail/preview/invoice/1/test", NULL, "token=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail/preview/invoice/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail/preview/message/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+
 	/*
 	 * An unknown path redirects rather than 404s while anonymous: whether
 	 * a page exists is not information for people without a session, and

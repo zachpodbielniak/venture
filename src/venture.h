@@ -375,6 +375,8 @@
 #include "planner/venture-planner.h"
 #include "planner/venture-calendar-view.h"
 #include "planner/venture-planner-roadmap.h"
+/* After the context: a preview kind's builder is handed one. */
+#include "mail/venture-mail-preview.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
