@@ -94,6 +94,20 @@ VentureEntity *venture_dunning_service_retry(VentureDunningService *self, Ventur
  *
  * Returns: (transfer full) (nullable): the queued message
  */
+/**
+ * venture_dunning_service_remind:
+ *
+ * Send the customer of an open @invoice a reminder now: the latest reminder
+ * it was sent, or its policy's first email step, recorded as a dunning_event
+ * like a sweep's and never moving the schedule on. Asking twice in one day
+ * returns the first day's message and sends nothing more. Refused for an
+ * invoice that is settled, not issued, disputed, opted out, has no policy or
+ * whose customer has no email.
+ *
+ * Returns: (transfer full): the queued message, or %NULL with @error.
+ */
+VentureMailMessage *venture_dunning_service_remind(VentureDunningService *self, VentureEntity *invoice,
+	const VentureActor *actor, GError **error);
 VentureMailMessage *venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *policy,
 	gint64 invoice_id, gboolean has_offset, gint64 offset, const VentureActor *actor, GError **error);
 

@@ -4356,7 +4356,7 @@ main(
 		"  calendar org [same options]  the calendar as an org-agenda file\n"
 		"  calendar remind              send event reminders that are due\n"
 		"  roadmap [goal_id=N] [venture_id=N] [from=D to=D] [done=1]  goals, milestones, epics\n"
-		"  quote send|accept|decline|revise|start-subscription ID [by=NAME] [reason=TEXT]\n"
+		"  quote send|accept|decline|revise|remind|start-subscription ID [by=NAME] [reason=TEXT]\n"
 		"  compose invoice|quote JSON   lines, tax and optional send\n"
 		"  bank ACTION ID [JSON|@FILE] banking action; import map inbox bulk transfer\n"
 		"                               preview enable reverse; bank match AUTO ID\n"

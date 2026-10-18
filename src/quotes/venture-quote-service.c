@@ -797,6 +797,29 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		if (!venture_quote_mail_enqueue(self->database, q, delivery, self->base_url, actor, error)) goto done;
 		if (!write_record(self, delivery, actor, error)) goto done;
 	}
+	else if (g_strcmp0(verb, "remind") == 0 && state(q) == VENTURE_QUOTE_SENT)
+	{
+		/* The customer is reminded with the link they were sent; a quote that
+		 * was never mailed, or has lapsed, has nothing to remind them of. */
+		g_autoptr(GPtrArray) deliveries = find(self, VENTURE_TYPE_QUOTE_DELIVERY, org, "quote-id", venture_entity_get_id(q), error);
+		g_autofree gchar *day = g_date_time_format(now, "%Y-%m-%d");
+		VentureEntity *delivery = NULL;
+		guint i;
+		if (deliveries == NULL) goto done;
+		for (i = 0; i < deliveries->len; i++)
+		{
+			g_autofree gchar *channel = NULL;
+			g_object_get(g_ptr_array_index(deliveries, i), "channel", &channel, NULL);
+			if (!g_strcmp0(channel, "email")) delivery = g_ptr_array_index(deliveries, i);
+		}
+		if (delivery == NULL || until == NULL || g_date_time_compare(until, now) <= 0)
+		{
+			refuse(error, VENTURE_ERROR_VALIDATION, "only an unexpired quote that was emailed can be reminded");
+			goto done;
+		}
+		if (!venture_quote_mail_remind(self->database, q, delivery, self->base_url, day, actor, error) ||
+			!event(self, q, verb, request, method, ip, now, actor, error)) goto done;
+	}
 	else if (g_strcmp0(verb, "accept") == 0 && state(q) == VENTURE_QUOTE_SENT)
 	{
 		if (venture_string_is_empty(by) || strlen(by) > 200 || until == NULL || g_date_time_compare(until, now) <= 0)

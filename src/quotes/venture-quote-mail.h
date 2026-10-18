@@ -19,4 +19,9 @@
  */
 gboolean venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
 	VentureEntity *delivery, const gchar *base_url, const VentureActor *actor, GError **error);
+/* A reminder of a sent quote to its customer: the delivery's private link
+ * again, "Reminder" in the subject, keyed by day (YYYY-MM-DD) so a second
+ * request that day sends nothing more. Needs a public HTTPS base_url. */
+gboolean venture_quote_mail_remind(VentureDatabase *database, VentureEntity *quote, VentureEntity *delivery,
+	const gchar *base_url, const gchar *day, const VentureActor *actor, GError **error);
 #endif
