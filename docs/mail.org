@@ -805,7 +805,7 @@ send one. The overdue reminder's =test_send= action is the same send.
 | =reminder= | invoice | the step the sweep would send that day, else the next email step; holds and stops are noted |
 | =receipt= | payment | |
 | =campaign= | marketing recipient | one frozen recipient's message; run *Preview* on the send first |
-| =sequence= | sequence delivery | rendered; no adapter in this build sends sequence email yet, which the preview says |
+| =sequence= | sequence delivery | built by the same function the sequence outbox adapter enqueues with, so the preview is the stored message |
 | =portal-invitation= | customer portal access | |
 | =account-welcome=, =account-password-change= | user | |
 

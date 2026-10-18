@@ -49,7 +49,7 @@ is the only template mechanism.
 | Portal invitation | =venture_portal_service_send_invitation()=, =src/portal/venture-portal-service.c= | private plain text |
 | Account welcome and password reset | =venture_mail_save_user()=, =src/mail/venture-mail-outbox.c= | plain text |
 | Marketing campaign | =make_recipient()=, =src/marketing/venture-marketing-audience.inc=, via =venture_marketing_service_preview()= | operator-written text and HTML, frozen per recipient, unsubscribe appended |
-| Sequence step | =render()= and =venture_sequence_service_run_due()=, =src/sequences/venture-sequence-service.c= | rendered into =sequence_delivery=; no in-tree adapter enqueues it to the outbox |
+| Sequence step | =render()= and =venture_sequence_service_run_due()=, =src/sequences/venture-sequence-service.c= | rendered into =sequence_delivery=, then enqueued by =venture_sequence_mail_enqueue()= (=src/sequences/venture-sequence-mail.c=) |
 | Alerts | =src/core/venture-notify.c= | in-app inbox only; no email |
 
 =src/mail/venture-smtp-mailer.c= always sends a text part (empty when the

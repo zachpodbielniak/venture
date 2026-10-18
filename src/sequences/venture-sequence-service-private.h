@@ -19,6 +19,9 @@ gboolean venture_sequences_save_hook(VentureDatabase *database, VentureEntity *r
 	const VentureActor *actor, VentureSequenceSaveContinuation save, gboolean *handled, GError **error);
 
 void venture_sequence_mail_install(VentureSequenceService *service, VentureDatabase *database);
+/* The message the outbox would store for an email delivery; writes nothing.
+ * The enqueue path and the mail preview both build through it. */
+VentureMailMessage *venture_sequence_mail_build(VentureDatabase *database, VentureEntity *delivery, GError **error);
 gboolean venture_sequence_mail_enqueue(VentureDatabase *database, VentureEntity *delivery,
 	const VentureActor *actor, GError **error);
 gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organization, GDateTime *now,

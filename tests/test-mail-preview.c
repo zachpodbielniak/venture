@@ -492,6 +492,43 @@ static void test_campaign(Fixture *f, gconstpointer unused)
 }
 
 /* An unknown kind and another organization's record are refused alike. */
+/* A sequence step previews as the outbox stores it, and says nothing about
+ * mail that is never sent: sequence mail now goes through the outbox. */
+static void test_sequence(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) sequence = record(f, "sequence"), step = record(f, "sequence_step");
+	g_autoptr(VentureEntity) enrollment = record(f, "sequence_enrollment");
+	g_autoptr(VentureMailPreview) before = NULL, after = NULL;
+	g_autoptr(GPtrArray) mail = NULL, deliveries = NULL;
+	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autoptr(GError) error = NULL;
+	guint i;
+	(void)unused;
+	g_object_set(sequence, "name", "Welcome", "active", TRUE, "timezone", "UTC",
+		"send-window-start", (gint64)0, "send-window-end", (gint64)24, "weekdays", "1,2,3,4,5,6,7", NULL);
+	save(f, sequence);
+	g_object_set(step, "sequence-id", venture_entity_get_id(sequence), "position", (gint64)1, "active", TRUE,
+		"delay-hours", (gint64)0, "subject", "Hello {contact.name}", "body", "<p>Welcome aboard.</p>", NULL);
+	save(f, step);
+	g_object_set(enrollment, "sequence-id", venture_entity_get_id(sequence), "contact-id", f->contact,
+		"enrolled-at", now, "enrollment-reason", "Signed up", NULL);
+	save(f, enrollment);
+	g_assert_cmpint(venture_sequence_service_run_due(venture_sequence_service_get(f->db), f->org, now, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	deliveries = rows(f, "sequence_delivery");
+	g_assert_cmpuint(deliveries->len, ==, 1);
+	mail = rows(f, "mail_message");
+	g_assert_cmpuint(mail->len, ==, 1);
+	before = built(f, "sequence", venture_entity_get_id(g_ptr_array_index(deliveries, 0)), NULL);
+	for (i = 0; i < before->checks->len; i++)
+	{
+		VentureMailCheck *check = g_ptr_array_index(before->checks, i);
+		g_assert_null(strstr(check->message, "not yet sent"));
+	}
+	after = stored(f, g_ptr_array_index(mail, 0));
+	assert_same(before, after);
+}
+
 static void test_refusals(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -773,6 +810,7 @@ int main(int argc, char **argv)
 	g_test_add("/mail-preview/quote", Fixture, NULL, setup, test_quote, teardown);
 	g_test_add("/mail-preview/reminder", Fixture, NULL, setup, test_reminder, teardown);
 	g_test_add("/mail-preview/campaign", Fixture, NULL, setup, test_campaign, teardown);
+	g_test_add("/mail-preview/sequence", Fixture, NULL, setup, test_sequence, teardown);
 	g_test_add("/mail-preview/refusals", Fixture, NULL, setup, test_refusals, teardown);
 	g_test_add("/mail-preview/send-test", Fixture, NULL, setup, test_send_test, teardown);
 	g_test_add("/mail-preview/page", ServerFixture, NULL, server_setup, test_page, server_teardown);

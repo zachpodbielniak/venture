@@ -1305,58 +1305,6 @@ venture_sequence_service_record_click(VentureSequenceService *self, const gchar 
 
 /* --- Previews ------------------------------------------------------------- */
 
-/*
- * The outbox message for one email delivery. No adapter in this tree sends
- * sequence email yet (docs/marketing-sales-parity.org); this is the message
- * such an adapter is to enqueue, so a preview shows the step as it would
- * arrive. A body with markup is the HTML part and its text the plain part;
- * the personal-form body stays private, as the delivery row keeps it.
- */
-VentureMailMessage *
-venture_sequence_service_delivery_message(VentureSequenceService *self, VentureEntity *delivery, GError **error)
-{
-	gint64 org = venture_entity_get_organization_id(delivery);
-	g_autoptr(VentureEntity) enrollment = NULL;
-	g_autoptr(VentureEntity) contact = NULL;
-	g_autofree gchar *email = NULL, *subject = NULL, *body = NULL, *private_body = NULL, *key = NULL;
-	g_autofree gchar *text = NULL, *private_text = NULL;
-	VentureMailMessage *message;
-	gboolean markup;
-	g_return_val_if_fail(VENTURE_IS_SEQUENCE_SERVICE(self), NULL);
-	if (choice(delivery, "channel") != 0)
-	{
-		refuse(error, VENTURE_ERROR_VALIDATION, "This step is a call, text or wait task; it sends no email");
-		return NULL;
-	}
-	enrollment = reference(self, VENTURE_TYPE_SEQUENCE_ENROLLMENT, number(delivery, "enrollment-id"), org, error);
-	if (enrollment == NULL)
-		return NULL;
-	contact = reference(self, VENTURE_TYPE_CONTACT, number(enrollment, "contact-id"), org, error);
-	if (contact == NULL)
-		return NULL;
-	email = normalized_email(contact);
-	if (strchr(email, '@') == NULL)
-	{
-		refuse(error, VENTURE_ERROR_VALIDATION, "The contact has no email address");
-		return NULL;
-	}
-	subject = string(delivery, "subject");
-	body = string(delivery, "body");
-	private_body = string(delivery, "private-body");
-	markup = body != NULL && strchr(body, '<') != NULL;
-	text = markup ? venture_document_html_to_text(body, -1) : g_strdup(body != NULL ? body : "");
-	key = g_strdup_printf("sequence_delivery:%s", venture_entity_get_uuid(delivery));
-	message = venture_mail_message_new();
-	g_object_set(message, "organization-id", org, "to", email, "subject", subject != NULL ? subject : "",
-		"text-body", text, "html-body", markup ? body : NULL, "idempotency-key", key,
-		"related-type", "sequence_delivery", "related-id", venture_entity_get_id(delivery), NULL);
-	if (!venture_string_is_empty(private_body))
-	{
-		private_text = venture_document_html_to_text(private_body, -1);
-		g_object_set(message, "private-text-body", private_text, "private-html-body", private_body, NULL);
-	}
-	return message;
-}
 
 static VentureMailMessage *
 sequence_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now, GPtrArray *notes, GError **error)
@@ -1369,9 +1317,8 @@ sequence_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now,
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Sequence delivery not found");
 		return NULL;
 	}
-	if (notes != NULL)
-		g_ptr_array_add(notes, g_strdup("Sequence email is rendered but not yet sent by this build: no outbox adapter delivers it."));
-	return venture_sequence_service_delivery_message(self, delivery, error);
+	(void)notes;
+	return venture_sequence_mail_build(self->database, delivery, error);
 }
 
 static const VentureMailPreviewKind sequence_kind = {

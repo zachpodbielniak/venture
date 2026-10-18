@@ -204,30 +204,43 @@ void venture_sequence_mail_install(VentureSequenceService *service, VentureDatab
 	g_signal_connect_object(outbox, "before-transport", G_CALLBACK(before_transport), service, 0);
 }
 
-gboolean venture_sequence_mail_enqueue(VentureDatabase *database, VentureEntity *delivery,
-	const VentureActor *actor, GError **error)
+VentureMailMessage *venture_sequence_mail_build(VentureDatabase *database, VentureEntity *delivery, GError **error)
 {
-	SequenceMail *self = state(database);
 	gint64 org = venture_entity_get_organization_id(delivery);
 	g_autoptr(VentureEntity) enrollment = NULL, contact = NULL;
-	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
 	g_autofree gchar *key = NULL, *recipient = NULL, *subject = NULL, *body = NULL, *private_body = NULL;
-	if (choice(delivery, "channel") != 0 || choice(delivery, "state") != 0 ||
-		!venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message")) return TRUE;
+	g_autofree gchar *text = NULL, *private_text = NULL;
+	gboolean markup;
 	enrollment = reference(database, VENTURE_TYPE_SEQUENCE_ENROLLMENT, number(delivery, "enrollment-id"), org, error);
-	if (enrollment == NULL) return FALSE;
+	if (enrollment == NULL) return NULL;
 	contact = reference(database, VENTURE_TYPE_CONTACT, number(enrollment, "contact-id"), org, error);
-	if (contact == NULL) return FALSE;
+	if (contact == NULL) return NULL;
 	key = delivery_key(delivery);
 	recipient = string(contact, "email");
 	subject = string(delivery, "subject");
 	body = string(delivery, "body");
 	private_body = string(delivery, "private-body");
-	message = g_object_new(VENTURE_TYPE_MAIL_MESSAGE, "organization-id", org,
-		"to", recipient, "subject", subject, "text-body", body, "html-body", body,
-		"private-text-body", private_body, "private-html-body", private_body,
+	/* A step written with markup is the HTML part and its text the plain
+	 * part; plain words are only a text part, never HTML. */
+	markup = body != NULL && strchr(body, '<') != NULL;
+	text = markup ? venture_document_html_to_text(body, -1) : g_strdup(body);
+	if (!venture_string_is_empty(private_body))
+		private_text = venture_document_html_to_text(private_body, -1);
+	return g_object_new(VENTURE_TYPE_MAIL_MESSAGE, "organization-id", org,
+		"to", recipient, "subject", subject, "text-body", text, "html-body", markup ? body : NULL,
+		"private-text-body", private_text, "private-html-body", private_text != NULL ? private_body : NULL,
 		"related-type", "sequence_delivery", "related-id", venture_entity_get_id(delivery),
 		"idempotency-key", key, NULL);
+}
+gboolean venture_sequence_mail_enqueue(VentureDatabase *database, VentureEntity *delivery,
+	const VentureActor *actor, GError **error)
+{
+	SequenceMail *self = state(database);
+	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
+	if (choice(delivery, "channel") != 0 || choice(delivery, "state") != 0 ||
+		!venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message")) return TRUE;
+	message = venture_sequence_mail_build(database, delivery, error);
+	if (message == NULL) return FALSE;
 	self->enqueuing = delivery;
 	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(database), message, actor, error);
 	self->enqueuing = NULL;
