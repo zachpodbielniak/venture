@@ -298,6 +298,22 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 		if (!last) goto fail;
 		if (!g_strcmp0(state, "queued") || !g_strcmp0(state, "failed") || !g_strcmp0(state, "sending") || !g_strcmp0(state, "uncertain")) goto done;
 	}
+	/* The warm-up: once today's limit for the organization's sending
+	 * domain is reached, the send waits for the next UTC day rather than
+	 * skipping anybody (docs/deliverability.org). */
+	{
+		gint64 cap = 0, used = 0;
+		if (!venture_deliverability_ramp_status(self->database, org, now, NULL, &cap, &used, error)) goto fail;
+		if (cap > 0 && used >= cap) {
+			g_autoptr(GDateTime) utc = g_date_time_to_utc(now);
+			g_autoptr(GDateTime) midnight = g_date_time_new_utc(g_date_time_get_year(utc), g_date_time_get_month(utc), g_date_time_get_day_of_month(utc), 0, 0, 0);
+			g_autoptr(GDateTime) tomorrow = midnight ? g_date_time_add_days(midnight, 1) : NULL;
+			if (!tomorrow) { refuse(error, "Warm-up limit exceeds calendar bounds"); goto fail; }
+			g_object_set(send, "next-enqueue-at", tomorrow, NULL);
+			if (!save(self, send, actor, error)) goto fail;
+			goto done;
+		}
+	}
 	venture_query_set_organization(query, org); venture_query_set_limit(query, limit);
 	venture_query_add_filter_int(query, "send-id", VENTURE_FILTER_OP_EQ, send_id, NULL);
 	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_EQ, "eligible", NULL);

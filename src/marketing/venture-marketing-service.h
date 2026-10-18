@@ -112,29 +112,43 @@ gboolean venture_marketing_service_unsubscribe(VentureMarketingService *self, co
  * venture_marketing_service_record_open:
  * @self: service
  * @token: opaque tracking token
+ * @user_agent: (nullable): the request's User-Agent; judged, never stored
  * @now: observation time
  * @error: (out) (optional): unknown token or persistence failure
+ *
+ * An open venture_marketing_machine_reason() judges a machine's is kept
+ * as evidence with its reason and counted apart, never as an open.
+ *
  * Returns: whether the first open and bounded daily evidence were retained
  */
 gboolean venture_marketing_service_record_open(VentureMarketingService *self, const gchar *token,
-	GDateTime *now, GError **error);
+	const gchar *user_agent, GDateTime *now, GError **error);
 /**
  * venture_marketing_service_record_click:
  * @self: service
  * @token: opaque tracking token
  * @position: frozen destination number, starting at one
+ * @user_agent: (nullable): the request's User-Agent; judged, never stored
  * @now: observation time
  * @error: (out) (optional): unknown token/link or persistence failure
  * Returns: (transfer full) (nullable): original web destination
  */
 gchar *venture_marketing_service_record_click(VentureMarketingService *self, const gchar *token,
-	gint64 position, GDateTime *now, GError **error);
+	gint64 position, const gchar *user_agent, GDateTime *now, GError **error);
+/**
+ * venture_marketing_service_set_machine_seconds:
+ * @self: service
+ * @seconds: an open or click this soon after SMTP acceptance is judged a
+ *   machine's; 0 turns the timing rule off (default 10)
+ */
+void venture_marketing_service_set_machine_seconds(VentureMarketingService *self, gint64 seconds);
 /**
  * venture_marketing_service_feedback:
  * @self: service
  * @organization_id: exact organization
  * @recipient_id: recipient with an outbox attempt
- * @kind: hard_bounce, temporary_bounce or complaint
+ * @kind: hard_bounce, temporary_bounce, complaint, or delivered (a provider's
+ *   word that the receiving server accepted it; no suppression)
  * @source: evidence source and operator explanation
  * @event_key: organization-scoped input replay identity
  * @occurred_at: evidence time, no later than now

@@ -133,5 +133,28 @@ gboolean venture_mail_sync_record_outbound(VentureDatabase *database, VentureMai
  * address the account's own mail would match.
  */
 void venture_mail_sync_install_validators(VentureDatabase *database);
+/**
+ * VentureMailInboundHook:
+ * @database: the database
+ * @organization_id: the mailbox's organization
+ * @raw: the message's RFC 5322 bytes
+ * @error: (out) (optional): a failure that stops this message, classified
+ *   like any other per-message step
+ *
+ * Something a feature does with each new message filed from a shared
+ * (not private) mailbox, inside that message's transaction. Mail the hook
+ * has no interest in must return %TRUE untouched.
+ *
+ * Returns: whether the message may be filed
+ */
+typedef gboolean (*VentureMailInboundHook)(VentureDatabase *database, gint64 organization_id, GBytes *raw, GError **error);
+/**
+ * venture_mail_sync_add_inbound_hook:
+ * @hook: called for every new message; adding one twice adds it once
+ *
+ * How a feature reads synced mail without the sync knowing it exists:
+ * marketing reads delivery status notifications this way.
+ */
+void venture_mail_sync_add_inbound_hook(VentureMailInboundHook hook);
 G_END_DECLS
 #endif

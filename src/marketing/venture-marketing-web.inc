@@ -10,6 +10,12 @@ static HtmxResponse *marketing_response(gint status, const gchar *content)
 	htmx_response_add_header(response, "Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'");
 	return response;
 }
+/* Read for the machine-open judgement and never stored or logged. */
+static const gchar *venture_web_marketing_user_agent(HtmxRequest *request)
+{
+	SoupServerMessage *message = htmx_request_get_message(request);
+	return message ? soup_message_headers_get_one(soup_server_message_get_request_headers(message), "User-Agent") : NULL;
+}
 static HtmxResponse *venture_web_marketing_unsubscribe(HtmxRequest *request, GHashTable *params, gpointer data)
 {
 	VentureWebServer *self = data;
@@ -41,7 +47,8 @@ static HtmxResponse *venture_web_marketing_open(HtmxRequest *request, GHashTable
 	gsize length;
 	if (!token || !g_str_has_suffix(token, ".gif")) return marketing_response(404, "Not found");
 	token[strlen(token) - 4] = '\0';
-	if (!venture_marketing_service_record_open(venture_marketing_service_get(venture_context_get_database(self->context)), token, now, &error))
+	if (!venture_marketing_service_record_open(venture_marketing_service_get(venture_context_get_database(self->context)), token,
+		venture_web_marketing_user_agent(request), now, &error))
 		return marketing_response(404, "Not found");
 	pixel = venture_sequence_tracking_pixel(&length); bytes = g_bytes_new_static(pixel, length);
 	response = marketing_response(200, ""); htmx_response_set_bytes(response, bytes); htmx_response_set_content_type(response, "image/gif");
@@ -60,7 +67,8 @@ static HtmxResponse *venture_web_marketing_click(HtmxRequest *request, GHashTabl
 	if (!index || !*index) return marketing_response(404, "Not found");
 	position = g_ascii_strtoll(index, &end, 10);
 	if (!end || *end || position < 1 || position > 1000) return marketing_response(404, "Not found");
-	url = venture_marketing_service_record_click(venture_marketing_service_get(venture_context_get_database(self->context)), token, position, now, &error);
+	url = venture_marketing_service_record_click(venture_marketing_service_get(venture_context_get_database(self->context)), token, position,
+		venture_web_marketing_user_agent(request), now, &error);
 	if (!url || !venture_web_url_is_web(url)) return marketing_response(404, "Not found");
 	response = marketing_response(302, ""); htmx_response_add_header(response, "Location", url); return response;
 }

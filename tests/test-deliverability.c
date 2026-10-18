@@ -333,7 +333,7 @@ static void test_feed_replay(Fixture *f, gconstpointer data)
 	g_assert_nonnull(second);
 	events = rows_of(f, VENTURE_TYPE_MARKETING_EVENT);
 	g_assert_cmpuint(events->len, ==, 1);
-	g_test_expect_message(NULL, G_LOG_LEVEL_WARNING, "*refused*");
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*refused*");
 	stale = deliver(f, body, SECRET, VENTURE_DELIVERABILITY_TOLERANCE_SECONDS + 60, &error);
 	g_test_assert_expected_messages();
 	g_assert_null(stale);
@@ -675,6 +675,7 @@ static void test_ramp_enforced(Fixture *f, gconstpointer data)
 	g_autoptr(GDateTime) now = venture_time_now(), later = NULL, tomorrow = NULL, next = NULL, day_three = NULL;
 	g_autoptr(GError) error = NULL;
 	gint64 send_id, day = 0, limit = 0, used = 0;
+	/* The run's clock must not be earlier than the approval. */
 	(void)data;
 	member(f, second);
 	member(f, third);
@@ -686,6 +687,8 @@ static void test_ramp_enforced(Fixture *f, gconstpointer data)
 	persist(f, domain);
 	preview_and_approve(f);
 	send_id = venture_entity_get_id(f->send);
+	g_clear_pointer(&now, g_date_time_unref);
+	now = venture_time_now();
 	g_assert_cmpint(venture_marketing_service_run(f->service, 1, send_id, 100, now, NULL, &error), ==, 1);
 	g_assert_no_error(error);
 	g_assert_cmpint(venture_mail_outbox_deliver_due(f->outbox, 1, 1, now, NULL, &error), ==, 1);
@@ -989,12 +992,12 @@ static void test_http(Fixture *f, gconstpointer data)
 	body = fixture(FIXTURE("generic-hard-bounce.json"), message_id, "alice@example.net");
 	now = venture_time_now();
 	timestamp = g_strdup_printf("%" G_GINT64_FORMAT, g_date_time_to_unix(now));
-	g_test_expect_message(NULL, G_LOG_LEVEL_WARNING, "*refused*");
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*refused*");
 	g_assert_cmpuint(http(session, base, "POST", "/hooks/deliverability/1/generic", NULL, body, timestamp, "00", &text), ==, 401);
 	g_test_assert_expected_messages();
 	g_clear_pointer(&text, g_free);
 	g_assert_cmpuint(suppressions(f), ==, 0);
-	g_test_expect_message(NULL, G_LOG_LEVEL_WARNING, "*refused*");
+	g_test_expect_message("Venture", G_LOG_LEVEL_WARNING, "*refused*");
 	g_assert_cmpuint(http(session, base, "POST", "/hooks/deliverability/1/generic", NULL, body, NULL, NULL, &text), ==, 401);
 	g_test_assert_expected_messages();
 	g_clear_pointer(&text, g_free);
@@ -1002,7 +1005,8 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_clear_pointer(&text, g_free);
 	signature = sign(SECRET, timestamp, body);
 	g_assert_cmpuint(http(session, base, "POST", "/hooks/deliverability/1/generic", NULL, body, timestamp, signature, &text), ==, 200);
-	g_assert_nonnull(strstr(text, "\"accepted\":1"));
+	g_test_message("feed answered: %s", text);
+	g_assert_true(strstr(text, "\"accepted\":1") || strstr(text, "\"accepted\" : 1"));
 	g_clear_pointer(&text, g_free);
 	g_assert_cmpuint(suppressions(f), ==, 1);
 
@@ -1014,7 +1018,10 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(text, "\"dmarc\""));
 	g_assert_nonnull(strstr(text, "\"weak\""));
 	g_clear_pointer(&text, g_free);
-	g_assert_cmpuint(http(session, base, "POST", "/api/v1/marketing/feedback-secret", NULL, g_bytes_new_static("{\"organization_id\":1}", 21), NULL, NULL, NULL), ==, 401);
+	{
+		g_autoptr(GBytes) ask = g_bytes_new_static("{\"organization_id\":1}", 21);
+		g_assert_cmpuint(http(session, base, "POST", "/api/v1/marketing/feedback-secret", NULL, ask, NULL, NULL, NULL), ==, 401);
+	}
 
 	/* The send report. */
 	report_path = g_strdup_printf("/api/v1/marketing/sends/%" G_GINT64_FORMAT "/report", venture_entity_get_id(f->send));
@@ -1022,7 +1029,7 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(http(session, base, "GET", report_path, NULL, NULL, NULL, NULL, NULL), ==, 401);
 	g_assert_cmpuint(http(session, base, "GET", page_path, NULL, NULL, NULL, NULL, NULL), ==, 302);
 	g_assert_cmpuint(http(session, base, "GET", report_path, owner, NULL, NULL, NULL, &text), ==, 200);
-	g_assert_nonnull(strstr(text, "\"bounced\":1"));
+	g_assert_true(strstr(text, "\"bounced\":1") || strstr(text, "\"bounced\" : 1"));
 	g_clear_pointer(&text, g_free);
 
 	venture_deliverability_set_resolver(f->db, NULL);

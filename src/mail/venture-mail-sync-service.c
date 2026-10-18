@@ -946,6 +946,25 @@ static gboolean file_capture(SyncRun *run, Parsed *p, VentureEntity *inbound, GE
 	}
 	return TRUE;
 }
+/* Registered once at install, read on the main thread only. A GArray of
+ * the function type, so no function pointer passes through a gpointer. */
+static GArray *inbound_hooks;
+void venture_mail_sync_add_inbound_hook(VentureMailInboundHook hook)
+{
+	guint i;
+	g_return_if_fail(hook != NULL);
+	if (!inbound_hooks) inbound_hooks = g_array_new(FALSE, FALSE, sizeof(VentureMailInboundHook));
+	for (i = 0; i < inbound_hooks->len; i++)
+		if (g_array_index(inbound_hooks, VentureMailInboundHook, i) == hook) return;
+	g_array_append_val(inbound_hooks, hook);
+}
+static gboolean run_inbound_hooks(SyncRun *run, GBytes *raw, GError **error)
+{
+	guint i;
+	for (i = 0; inbound_hooks && i < inbound_hooks->len; i++)
+		if (!g_array_index(inbound_hooks, VentureMailInboundHook, i)(run->db, run->org, raw, error)) return FALSE;
+	return TRUE;
+}
 /* Every write for one message. Runs inside the caller's transaction. */
 static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidity, guint32 uid, GBytes *raw, const gchar *skip_reason, Parsed *p, GError **error)
 {
@@ -987,6 +1006,7 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	/* Private mail remains an inbox record and an owned raw document. Its
 	 * participants and receipt attachments are not organization CRM input. */
 	if (run->private_owner > 0) return venture_database_save(run->db, inbound, run->actor, error);
+	if (!skip_reason && !run_inbound_hooks(run, raw, error)) return FALSE;
 	body = timeline_body(p->from, p->message_id, thread, p->text, skip_reason);
 	/* A truncated capture message has lost its attachments; filing its
 	 * remains as a receipt would invent one, so it stays a row whose skip

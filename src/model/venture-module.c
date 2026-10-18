@@ -628,7 +628,8 @@ static const gchar *const marketing_requires[] = { "mail", "sequences", "leads",
 static GType (*const marketing_types[]) (void) = {
 	venture_marketing_list_get_type, venture_marketing_member_get_type,
 	venture_marketing_consent_get_type, venture_marketing_send_get_type,
-	venture_marketing_recipient_get_type, venture_marketing_event_get_type, NULL
+	venture_marketing_recipient_get_type, venture_marketing_event_get_type,
+	venture_marketing_sending_domain_get_type, NULL
 };
 static const gchar *const marketing_reports[] = { "marketing_performance", NULL };
 static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };

@@ -11,6 +11,7 @@ struct _VentureMarketingService {
 	VentureEntity *enqueue_recipient;
 	GWeakRef context;
 	gboolean installed;
+	gint64 machine_seconds;
 };
 G_DEFINE_FINAL_TYPE(VentureMarketingService, venture_marketing_service, G_TYPE_OBJECT)
 
@@ -140,6 +141,12 @@ static gboolean valid_time(GDateTime *at, GError **error)
 	return (at && g_date_time_get_year(at) >= 1970 && g_date_time_compare(at, now) <= 0) ||
 		refuse(error, "Evidence requires an actual nonfuture timestamp");
 }
+static gboolean has_stamp(VentureEntity *row, const gchar *field)
+{
+	g_autoptr(GDateTime) at = NULL;
+	g_object_get(row, field, &at, NULL);
+	return at != NULL;
+}
 static gboolean bounded(const gchar *value, gsize maximum)
 {
 	return value && *value && strlen(value) <= maximum && g_utf8_validate(value, -1, NULL);
@@ -234,6 +241,7 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 #include "venture-marketing-delivery.inc"
 #include "venture-marketing-tracking.inc"
 #include "venture-marketing-actions.inc"
+#include "venture-marketing-replies.inc"
 
 static void finalize(GObject *object)
 {
@@ -266,6 +274,12 @@ static void venture_marketing_service_class_init(VentureMarketingServiceClass *k
 static void venture_marketing_service_init(VentureMarketingService *self)
 {
 	g_weak_ref_init(&self->context, NULL);
+	self->machine_seconds = 10;
+}
+void venture_marketing_service_set_machine_seconds(VentureMarketingService *self, gint64 seconds)
+{
+	g_return_if_fail(VENTURE_IS_MARKETING_SERVICE(self));
+	self->machine_seconds = MAX(seconds, 0);
 }
 VentureMarketingService *venture_marketing_service_get(VentureDatabase *database)
 {
@@ -296,9 +310,11 @@ void venture_marketing_install(VentureDatabase *database)
 	for (i = 0; i < G_N_ELEMENTS(types); i++) venture_database_add_save_validator(database, types[i], validate, self, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_MAIL_MESSAGE, validate_mail, self, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_SUPPRESSION, validate_suppression, self, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_INTERACTION, validate_reply, self, NULL);
 	g_signal_connect_object(outbox, "before-claim", G_CALLBACK(before_claim), self, 0);
 	g_signal_connect_object(outbox, "before-send", G_CALLBACK(before_send), self, 0);
 	g_signal_connect_object(outbox, "before-transport", G_CALLBACK(before_transport), self, 0);
+	venture_deliverability_install(database);
 }
 gboolean venture_marketing_check_removal(VentureEntity *entity, GError **error)
 {

@@ -412,6 +412,15 @@ has_pending_email(VentureSequenceService *self, VentureEntity *enrollment, gbool
 	return TRUE;
 }
 
+gboolean
+venture_sequence_interaction_is_reply(VentureEntity *interaction, VentureEntity *previous)
+{
+	g_return_val_if_fail(VENTURE_IS_ENTITY(interaction), FALSE);
+	if (G_OBJECT_TYPE(interaction) != VENTURE_TYPE_INTERACTION || flag(interaction, "outbound"))
+		return FALSE;
+	return previous == NULL || flag(previous, "outbound");
+}
+
 static gboolean
 apply_exits(VentureSequenceService *self, VentureEntity *source,
 	VentureEntity *previous, const VentureActor *actor, GError **error)
@@ -420,7 +429,7 @@ apply_exits(VentureSequenceService *self, VentureEntity *source,
 	g_autoptr(GPtrArray) enrolled = NULL;
 	g_autofree gchar *email = NULL;
 	gboolean suppression = G_OBJECT_TYPE(source) == VENTURE_TYPE_SUPPRESSION;
-	gboolean reply = G_OBJECT_TYPE(source) == VENTURE_TYPE_INTERACTION && !flag(source, "outbound");
+	gboolean reply = venture_sequence_interaction_is_reply(source, NULL);
 	gboolean meeting = G_OBJECT_TYPE(source) == VENTURE_TYPE_INTERACTION && choice(source, "kind") == VENTURE_INTERACTION_KIND_MEETING;
 	gboolean won = G_OBJECT_TYPE(source) == VENTURE_TYPE_DEAL && choice(source, "stage") == VENTURE_DEAL_STAGE_WON;
 	guint i;
@@ -428,7 +437,7 @@ apply_exits(VentureSequenceService *self, VentureEntity *source,
 		return TRUE;
 	if (won && previous != NULL && choice(previous, "stage") == VENTURE_DEAL_STAGE_WON)
 		return TRUE;
-	if (reply && previous != NULL && !flag(previous, "outbound"))
+	if (reply && !venture_sequence_interaction_is_reply(source, previous))
 		return TRUE;
 	if (suppression)
 		email = normalized_email(source);

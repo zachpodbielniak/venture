@@ -94,5 +94,17 @@ gboolean venture_sequence_service_record_open(VentureSequenceService *self, cons
  */
 gchar *venture_sequence_service_record_click(VentureSequenceService *self, const gchar *token,
 	gint64 position, GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_sequence_interaction_is_reply:
+ * @interaction: a record being saved
+ * @previous: (nullable): its stored version, %NULL when new
+ *
+ * The one reply rule: an interaction that is not outbound, counted when it
+ * is written as one (new, or turned inbound). Sequences exit on it and
+ * campaigns count it (src/marketing/venture-marketing-replies.inc).
+ *
+ * Returns: whether this save is a reply
+ */
+gboolean venture_sequence_interaction_is_reply(VentureEntity *interaction, VentureEntity *previous);
 G_END_DECLS
 #endif

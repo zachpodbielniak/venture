@@ -16,6 +16,8 @@ VENTURE_DECLARE_ENTITY(VentureMarketingSend, venture_marketing_send, MARKETING_S
 VENTURE_DECLARE_ENTITY(VentureMarketingRecipient, venture_marketing_recipient, MARKETING_RECIPIENT)
 #define VENTURE_TYPE_MARKETING_EVENT (venture_marketing_event_get_type())
 VENTURE_DECLARE_ENTITY(VentureMarketingEvent, venture_marketing_event, MARKETING_EVENT)
+#define VENTURE_TYPE_MARKETING_SENDING_DOMAIN (venture_marketing_sending_domain_get_type())
+VENTURE_DECLARE_ENTITY(VentureMarketingSendingDomain, venture_marketing_sending_domain, MARKETING_SENDING_DOMAIN)
 /**
  * venture_marketing_list_mode_get_type:
  * Returns: the static/segment audience mode enumeration

@@ -32922,6 +32922,7 @@ venture_web_api_ticket_draft(
 #include "mail/venture-mail-web.inc"
 #include "mail/venture-mail-preview-web.inc"
 #include "emaildesign/venture-email-design-web.inc"
+#include "marketing/venture-deliverability-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
 
@@ -33529,6 +33530,9 @@ venture_web_server_new(
 	venture_marketdata_pages_register(self);
 	/* The email builder, image upload and the public image address. */
 	venture_email_design_pages_register(self);
+	/* Deliverability: the domain check, a send's report and the signed
+	 * bounce and complaint feed. */
+	venture_deliverability_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);
 	/* And /api/v1/arbitrage: the scan, recording, export and the
 	 * calculators, not a type. */

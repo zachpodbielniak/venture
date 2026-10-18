@@ -85,12 +85,30 @@ static const VentureFieldDecl recipient_fields[] = {
 	VENTURE_FIELD("state","Campaign queue state","Once enqueued, the linked outbox message and performance report are authoritative for SMTP outcome",VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_NONE),
 	DATE("opened-at","First observed open"), DATE("clicked-at","First observed click"),
 	DATE("bounced-at","Hard bounce evidence at"), DATE("unsubscribed-at","Unsubscribed at"),
-	UNIQUE("recipient-key","Retained audience identity")
+	UNIQUE("recipient-key","Retained audience identity"),
+	/* Deliverability evidence (docs/deliverability.org). opened-at stays
+	 * "first open not judged a machine's", so rows from before the
+	 * heuristic keep counting as they always did. */
+	DATE("delivered-at","Provider reported delivered at"), DATE("replied-at","First reply at"),
+	DATE("complained-at","Complaint at"), DATE("machine-opened-at","First machine-judged open")
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingRecipient, venture_marketing_recipient, recipient_fields)
 static const VentureFieldDecl event_fields[] = {
 	REF("recipient-id","Recipient","marketing_recipient"), STR("kind","Evidence kind"),
 	INT("link-position","Link position"), DATE("occurred-at","Occurred at"),
-	VENTURE_FIELD_TEXT("source","Evidence source",NULL), UNIQUE("event-key","Evidence identity")
+	VENTURE_FIELD_TEXT("source","Evidence source",NULL), UNIQUE("event-key","Evidence identity"),
+	STR("machine-reason","Judged a machine's because")
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingEvent, venture_marketing_event, event_fields)
+/* A sending domain is a setting: it decides how much every campaign may
+ * send and which DKIM key the check looks for, so only an owner or
+ * administrator changes it (read by venture_access_policy_can()). */
+static const VentureFieldDecl sending_domain_fields[] = {
+	VENTURE_FIELD("domain","Domain","The domain in your campaigns' From address, for example example.com",VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("dkim-selector","DKIM selector","The name your mail provider gave the DKIM key: the part before ._domainkey",VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("warmup-started-on","Warm-up started","Day one of this domain's sending; empty is the day the first campaign message was accepted",VENTURE_FIELD_KIND_DATE,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("ramp-schedule","Daily limits","day:limit pairs, for example 1:50,3:100,30:0 (0 is no limit); empty is the default; off turns the warm-up off",VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("notes","Notes",NULL,VENTURE_FIELD_KIND_TEXT,VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMarketingSendingDomain, venture_marketing_sending_domain, sending_domain_fields,
+	g_type_set_qdata(G_TYPE_FROM_CLASS(klass), g_quark_from_static_string("venture-access-manager-write"), GINT_TO_POINTER(1));)

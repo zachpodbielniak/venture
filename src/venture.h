@@ -380,6 +380,9 @@
 #include "mail/venture-mail-preview.h"
 /* After the context and the mail records: a design renders a mail_template. */
 #include "emaildesign/venture-email-design.h"
+/* After the marketing service, the integrations and the mail sync: the
+ * provider feed, DSNs, domain check, warm-up and per-send report. */
+#include "marketing/venture-deliverability.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

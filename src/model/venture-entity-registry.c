@@ -963,6 +963,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_hosted_image_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_email_section_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_email_design_version_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_marketing_sending_domain_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};
