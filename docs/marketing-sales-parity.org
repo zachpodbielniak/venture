@@ -57,17 +57,20 @@ sender gave none) and drops the public HTML when a private text body is set.
 
 * Lane 1 — one preview for every outgoing email
 
+Closed by 16a07ba2 (feat(mail): preview every outgoing email). Every row below is =have=; the alert part of the first
+row has nothing to close, because alerts send no email.
+
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Preview of every outgoing kind (invoices, quotes, reminders, receipts, sequences, campaigns, invitations, alerts) | partial | Campaigns: =venture_marketing_service_preview()= freezes rendered content on =marketing_recipient= (=src/marketing/venture-marketing-audience.inc=). Reminders: the dunning sweep's =dry_run= plan (=src/dunning/venture-dunning-service.c=). No other kind has one | One preview service fed by each sender's render step, so the preview is the bytes that would be enqueued |
-| Desktop, tablet and phone widths | missing | No rendered-email view exists | Preview frame at three widths |
-| Light and dark | missing | — | Preview in both schemes, with dark-mode colour handling |
-| Send me a test | partial | =venture_dunning_service_test_send()= (=src/dunning/venture-dunning-service.h=) sends one reminder step to the actor with a =[TEST]= subject; *Send test message* in =src/mail/venture-mail-settings-web.inc= tests only the SMTP connection | Test send of any kind to the acting user, pay and private links replaced |
-| Check: plain-text part present | missing | =src/mail/venture-smtp-mailer.c= sends an empty text part rather than refusing | Pre-send check that a meaningful text alternative exists |
-| Check: image alt text | missing | — | Check every image has alt text |
-| Check: links resolve | missing | Campaign preview only counts destinations (at most 1,000, =src/marketing/venture-marketing-audience.inc=) | Bounded link check before approval |
-| Check: size under the ~102 KB clipping limit of a major webmail client | partial | Campaign bodies are capped at 64 KiB each and subjects at 998 bytes (=src/marketing/venture-marketing-audience.inc=); no other sender measures size | Measure the final HTML and warn before clipping |
-| Check: unsubscribe where required | partial | Campaigns append a per-recipient link and RFC 8058 headers (=src/marketing/venture-marketing-audience.inc=, =src/mail/venture-smtp-mailer.c=); sequence mail has none and nothing checks for it | Required-unsubscribe rule per kind, enforced as a pre-send check |
+| Preview of every outgoing kind (invoices, quotes, reminders, receipts, sequences, campaigns, invitations, alerts) | have | Registered kinds in =src/mail/venture-mail-preview.c= built by each sender's own builder: =venture_mail_invoice_message()=, =venture_quote_mail_message()=, =venture_dunning_service_build_reminder()=, =venture_financial_documents_receipt_message()=, =recipient_message()= (=src/marketing/venture-marketing-delivery.inc=), =venture_sequence_service_delivery_message()=, =venture_portal_service_invitation_message()=, =venture_mail_user_message()=; any queued row by id. Notices, bookings, forms and report packs preview once queued. Alerts are in-app only: no email, nothing to preview | — |
+| Desktop, tablet and phone widths | have | =/mail/preview/KIND/ID= frames at 390, 768 and 1440 pixels (=src/mail/venture-mail-preview-web.inc=) | — |
+| Light and dark | have | Each width in light and dark; dark sets the frame's colour scheme, a simulation documented in =docs/mail.org= | — |
+| Send me a test | have | =venture_mail_preview_send_test()= / =venture_mail_preview_enqueue_test()=, shared with =venture_dunning_service_test_send()=: the acting user only, =[TEST]= subject, private links replaced, through the outbox | — |
+| Check: plain-text part present | have | =plain-text= check (=src/mail/venture-mail-preview.c=) | — |
+| Check: image alt text | have | =image-alt= check | — |
+| Check: links resolve | have | =links= check: syntax always; reachability through =VentureMailLinkChecker= only when asked, at most ten =HEAD= requests | — |
+| Check: size under the ~102 KB clipping limit of a major webmail client | have | =size= check warns above =VENTURE_MAIL_PREVIEW_CLIP_BYTES= | — |
+| Check: unsubscribe where required | have | =unsubscribe= check: campaigns and sequence steps need a body link and =List-Unsubscribe=; sequence steps have neither yet, which the check reports | — |
 
 * Lane 2 — rich email design
 
@@ -166,8 +169,7 @@ sender gave none) and drops the public HTML when a private text body is set.
 
 Only the =partial= and =missing= rows above.
 
-- Lane 1: preview for every kind; widths; light and dark; test send of any
-  kind; plain-text, alt-text, link, size and unsubscribe checks.
+- Lane 1: done (see its table).
 - Lane 2: AI design from a brief; edits by words with undo; grounded plain
   fallback; block builder; brand settings; saved designs beside text
   templates; reusable sections; hosted images; video block; client

@@ -707,3 +707,113 @@ through the organization settings service and sends using the outbox. It checks
 refusal without the operator exception, credential and endpoint refusal,
 uncertain delivery recovery, actual sender/body bytes, and revocation of the
 plaintext exception. No public mail server is contacted.
+
+* Previews and pre-send checks
+
+Every kind of email Venture sends can be looked at before it goes, as the
+customer will get it. An organization owner or administrator opens
+=/mail/preview/KIND/ID= -- for example =/mail/preview/invoice/41= -- or
+=/mail/preview/message/ID= for a message already in the outbox, in any
+state. The same preview is =GET /api/v1/mail/preview/KIND/ID= and
+=venturectl mail preview KIND ID=, which print it as JSON with its checks.
+
+** What is shown
+
+- The recipient, subject, any headers the transport adds and the names of
+  the attachments.
+- The HTML part in six frames: phone (390 pixels wide), tablet (768) and
+  desktop (1440), each in a light and a dark colour scheme. Each frame can
+  be opened alone with =?frame=390&scheme=dark=.
+- The plain-text part, exactly as sent.
+- The pre-send checks.
+
+The bodies are the ones the SMTP transport would send, by its own rule: a
+private text body replaces both public bodies, and a private HTML body
+replaces the HTML. The transport and the preview call the same function
+(=venture_mail_visible_bodies()=), so they cannot disagree.
+
+Private links are never shown. A pay link, a quote acceptance link, a
+portal invitation, a campaign's unsubscribe and tracking links and a
+personal form link are each replaced by
+=https://private-link.invalid/withheld-in-preview=. A link counts as
+private when it is only in the private bodies, when it is the message's
+unsubscribe endpoint, or when it carries a 32-digit hex token anywhere (the
+form every token here takes); a public link that happens to carry one, such
+as a commit hash, is withheld too.
+
+The email's HTML runs in an iframe with an empty =sandbox= and =srcdoc=: no
+script in a message runs and nothing in it can reach the page, its session
+or the API.
+
+** Dark mode is a simulation
+
+A dark frame sets the frame's colour scheme to dark, so the message's own
+=prefers-color-scheme: dark= rules apply, and a text-only message is shown
+light-on-dark the way most mail apps show one. Nothing else is changed. Real
+mail apps differ: some honour those rules, some ignore them, and some
+invert the colours of a message by themselves, which no preview can
+predict.
+
+** The checks
+
+Each check is =ok=, =warn= or =fail=, with a sentence saying what was found.
+
+| Check | Passes when | Fails or warns when |
+|-------+-------------+---------------------|
+| =plain-text= | there is a plain-text part of at least 20 characters | it is missing or shorter (fail): text-only mail apps, some screen readers and many spam filters read only that part |
+| =image-alt= | every image has non-empty alt text (one-pixel tracking images excepted) | an image has none (fail): with images off, the reader sees nothing there |
+| =links= | every link is a well-formed http, https, mailto or tel address with a host | a link cannot work from a mail app -- =javascript:=, a relative path, no host (fail); with reachability asked for, a web link that does not answer (warn) |
+| =size= | the HTML is under about 102 KB | it is over (warn): a major webmail client cuts the message off there, often hiding the footer and the unsubscribe link |
+| =unsubscribe= | transactional mail; or bulk mail with an unsubscribe link in the body and the one-click =List-Unsubscribe= header | bulk mail with neither (fail), or with the link but no header (warn); the header needs a public HTTPS address |
+| =source= | -- | a warning from the sender about how this preview may differ from the real send (a draft invoice, a step not yet due, a recipient whose permission lapsed) |
+
+Bulk mail is campaigns and sequence steps: the law in most places requires
+them to carry a way out, and large mailbox providers require the header.
+Invoices, quotes, reminders, receipts, invitations and account notices are
+transactional and need neither.
+
+Whether a link answers is not checked unless asked for, on the page with
+*Also ask each web link whether it answers* (=?reachability=1=). Then each
+distinct web link, at most ten, gets one =HEAD= request with a three-second
+timeout and no redirects followed, from this server; private links and
+addresses the assistant's fetch guard refuses (loopback, link-local,
+site-local) are never asked about. Tests use a fake checker and never touch
+the network.
+
+** Send me a test
+
+The page's *Send me a test* button queues one copy to the signed-in
+person's own email address and nobody else: subject prefixed =[TEST] =,
+every private link replaced by the placeholder, no Cc or Bcc, the
+attachments kept. It goes through the ordinary outbox, keyed by the kind,
+the record and the button's one-time token, so a double click sends once,
+and is delivered at once like the SMTP settings test. Its row is filed
+under =mail_preview=, so no sender's eligibility hook acts on it and nothing
+about the source record is decided. A user with no email address cannot
+send one. The overdue reminder's =test_send= action is the same send.
+
+** Which kinds
+
+| Kind | Source record | Notes |
+|------+---------------+-------|
+| =invoice= | invoice | a draft is previewed as it stands; sending issues it first, which can change its dates |
+| =quote= | quote | a draft has no acceptance link yet; it is withheld either way |
+| =reminder= | invoice | the step the sweep would send that day, else the next email step; holds and stops are noted |
+| =receipt= | payment | |
+| =campaign= | marketing recipient | one frozen recipient's message; run *Preview* on the send first |
+| =sequence= | sequence delivery | rendered; no adapter in this build sends sequence email yet, which the preview says |
+| =portal-invitation= | customer portal access | |
+| =account-welcome=, =account-password-change= | user | |
+
+Subscription and collection notices, booking confirmations, form
+confirmations, opt-in and resume links and report packs compute their
+content inside the transaction that queues them, so they are previewed once
+queued, as =/mail/preview/message/ID=. Alerts are in-app only: they send no
+email, so there is nothing to preview.
+
+A kind is a registration: the sending module declares a function that
+builds the unsaved message it would enqueue, writing nothing, and its own
+enqueue path calls that same function. =test-mail-preview= holds the
+preview to the stored row for invoices, quotes, reminders and campaigns,
+covers each check passing and failing, the private-link rule, the test
+send and the page's access and frames.

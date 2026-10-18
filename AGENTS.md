@@ -498,6 +498,16 @@ order the data flows.
   copy hold emits no business event; confirming it creates the ordinary meeting.
   Management URLs are signed capabilities and belong only in private mail bodies.
 
+- **A mail preview is the message, so a sender builds it once.** Each
+  previewable kind registers a builder (`venture_mail_preview_register()`,
+  `src/mail/venture-mail-preview.h`) that returns the unsaved message and
+  writes nothing, and the sender's own enqueue path calls that builder. A
+  second composition beside it is how the preview an operator approves and
+  the mail a customer reads drift apart; `tests/test-mail-preview.c` holds
+  the two to the same bytes. A bearer link goes in the private bodies (or
+  carries a 32-hex-digit token) so the preview and the test send withhold
+  it; a link put only in a public body would be shown.
+
 ## The CLI, and its skill
 
 `venturectl` is generic over record types: `list`, `get`, `create`,

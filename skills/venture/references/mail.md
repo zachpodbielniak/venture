@@ -26,6 +26,30 @@ venturectl mail retry 88                        # deliberate resend, same Messag
 - Subscription notices are queued inside the billing instruction and keyed
   for once-only delivery ([billing.md](billing.md)).
 
+### Previews and test sends
+
+```bash
+venturectl mail preview invoice 41      # what Send would queue, with checks, as JSON
+venturectl mail preview reminder 41     # the overdue step the sweep would send today
+venturectl mail preview message 88      # a row already in the outbox
+```
+
+- Kinds: `invoice`, `quote`, `reminder`, `receipt`, `campaign` (a
+  `marketing_recipient` id), `sequence` (a `sequence_delivery` id),
+  `portal-invitation`, `account-welcome`, `account-password-change`. Other
+  mail (notices, bookings, forms, report packs) previews once queued, as
+  `message`. Alerts send no email.
+- Owner or administrator of the record's organization only; the page is
+  `/mail/preview/KIND/ID` (three widths, light and dark, plain text,
+  checks) with *Send me a test*: one copy to the signed-in user's own
+  address, `[TEST]` subject, private links replaced, through the outbox.
+- Checks: `plain-text`, `image-alt`, `links` (syntax always; reachability
+  only with `?reachability=1`), `size` (warns above about 102 KB),
+  `unsubscribe` (required for campaigns and sequences), `source` (sender
+  notes). Private bearer links never appear in a preview or a test send.
+- A sender's enqueue path must call its preview builder; a second
+  composition beside it is how a preview and the real mail drift apart.
+
 ## Who sends it: organization SMTP accounts
 
 Outbound `mail test`, `mail send` and `mail deliver` use the explicit

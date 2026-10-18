@@ -391,6 +391,7 @@ ids, notes) in words.
 | "Share records with another server" | `federation '{"action":...}'` | [operations.md](references/operations.md) |
 | "Add a venture type / provider / plugin" | YAML type, `*.plugin.yaml`, `plugins list` | [plugins.md](references/plugins.md) |
 | "Print a receipt" | `print payment\|invoice ID [PRINTER]` | [platform.md](references/platform.md) |
+| "Show me this email before it goes" | `mail preview KIND ID` or `/mail/preview/KIND/ID`; *Send me a test* mails only you | [mail.md](references/mail.md) |
 
 ## Output Format
 
