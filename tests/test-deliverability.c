@@ -512,6 +512,46 @@ static void test_dsn_match(Fixture *f, gconstpointer data)
 	}
 }
 
+/* The wiring: a bounce synced from the organization's shared mailbox is
+ * read by the mailbox sync's inbound hook and suppresses the recipient,
+ * while the message is still filed like any other mail. */
+static void test_dsn_mailbox(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureFakeImapClient) imap = venture_fake_imap_client_new();
+	g_autoptr(VentureMailSyncService) sync = NULL;
+	g_autoptr(VentureEntity) recipient = NULL, fresh = NULL, account = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL;
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(GBytes) dsn = NULL;
+	g_autofree gchar *message_id = NULL, *root = g_dir_make_tmp("venture-deliverability-sync-XXXXXX", NULL), *text = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	permit(f, f->contact, "mailbox-permission");
+	preview_and_approve(f);
+	recipient = send_next(f);
+	message_id = mail_message_id(f, recipient);
+	g_object_set(config, "imap-allowed-endpoints", "imap.example.com:993", NULL);
+	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", (gint64)1, "address", "news@example.com",
+		"imap-host", "imap.example.com", "imap-port", (gint64)993, "imap-tls", "tls", "username", "news@example.com",
+		"folders", "INBOX", "active", TRUE, NULL);
+	persist(f, account);
+	json_object_set_string_member(values, "password", "app-password");
+	binding = venture_connector_configure(f->db, config, account, values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	dsn = fixture(FIXTURE("dsn-hard.eml"), message_id, "alice@example.net");
+	text = g_strndup(g_bytes_get_data(dsn, NULL), g_bytes_get_size(dsn));
+	venture_fake_imap_client_add_message(imap, "INBOX", 3, text);
+	sync = venture_mail_sync_service_new(f->db, VENTURE_IMAP_CLIENT(imap));
+	g_object_set(sync, "attachment-root", root, "config", config, NULL);
+	g_assert_cmpint(venture_mail_sync_service_sync(sync, account, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	fresh = reread(f, recipient);
+	g_assert_true(has_date(fresh, "bounced-at"));
+	g_assert_cmpuint(suppressions(f), ==, 1);
+	venture_test_remove_tree(root);
+}
+
 /* A reply is what sequences call one: an inbound interaction for the
  * contact. It counts for the most recent campaign message sent to them,
  * once, and an outbound one or one from before the send never counts. */
@@ -1050,6 +1090,7 @@ int main(int argc, char **argv)
 	g_test_add("/deliverability/feed-mismatch", Fixture, NULL, setup, test_feed_mismatch, teardown);
 	g_test_add_func("/deliverability/dsn-parse", test_dsn_parse);
 	g_test_add("/deliverability/dsn-match", Fixture, NULL, setup, test_dsn_match, teardown);
+	g_test_add("/deliverability/dsn-mailbox", Fixture, NULL, setup, test_dsn_mailbox, teardown);
 	g_test_add("/deliverability/replies", Fixture, NULL, setup, test_replies, teardown);
 	g_test_add_func("/deliverability/dns-pass", test_dns_pass);
 	g_test_add_func("/deliverability/dns-missing", test_dns_missing);
