@@ -564,6 +564,7 @@ static void ensure_kinds(void)
 		venture_marketing_preview_register();
 		venture_sequence_preview_register();
 		venture_portal_preview_register();
+		venture_email_design_preview_register();
 		g_once_init_leave(&done, 1);
 	}
 }

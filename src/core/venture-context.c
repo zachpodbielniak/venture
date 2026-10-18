@@ -341,6 +341,11 @@ venture_context_new(
 	 * hook makes a run's accounts into places first. */
 	venture_arbitrage_books_install(self);
 
+	/* Designed email: a template's bodies built from its blocks, brands
+	 * and hosted images checked, design history kept by its service, and
+	 * the designer's actions for the assistant. */
+	venture_email_design_install(self);
+
 	return self;
 }
 

@@ -611,7 +611,10 @@ static GType (*const billing_types[]) (void) = {
 	NULL
 };
 static GType (*const venture_module_mail_types[]) (void) = {
-	venture_mail_message_get_type, venture_mail_template_get_type, NULL
+	venture_mail_message_get_type, venture_mail_template_get_type,
+	/* Designed email: brand, hosted images, shared sections, design history. */
+	venture_email_brand_get_type, venture_hosted_image_get_type,
+	venture_email_section_get_type, venture_email_design_version_get_type, NULL
 };
 static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
 static const gchar *const attribution_requires[] = { "leads", "integrations", NULL };

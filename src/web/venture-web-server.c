@@ -15736,7 +15736,8 @@ venture_web_metrics_class(const gchar *path)
 	 * the customer and supplier portals, published pages. */
 	if (g_str_has_prefix(path, "/pub/") || g_str_has_prefix(path, "/portal/") ||
 	    g_str_has_prefix(path, "/supplier/") || g_str_has_prefix(path, "/q/") ||
-	    g_str_has_prefix(path, "/t/") || g_str_has_prefix(path, "/forms/"))
+	    g_str_has_prefix(path, "/t/") || g_str_has_prefix(path, "/forms/") ||
+	    g_str_has_prefix(path, "/i/"))
 		return "public";
 
 	return "page";
@@ -32920,6 +32921,7 @@ venture_web_api_ticket_draft(
 
 #include "mail/venture-mail-web.inc"
 #include "mail/venture-mail-preview-web.inc"
+#include "emaildesign/venture-email-design-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
 
@@ -33525,6 +33527,8 @@ venture_web_server_new(
 	 * pages' twins, not a type. */
 	venture_marketdata_web_register(self);
 	venture_marketdata_pages_register(self);
+	/* The email builder, image upload and the public image address. */
+	venture_email_design_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);
 	/* And /api/v1/arbitrage: the scan, recording, export and the
 	 * calculators, not a type. */

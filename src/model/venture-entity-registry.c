@@ -959,6 +959,10 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_referral_code_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_referral_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_referral_reward_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_email_brand_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_hosted_image_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_email_section_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_email_design_version_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

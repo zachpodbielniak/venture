@@ -45,6 +45,12 @@ static const VentureFieldDecl template_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD_NAME("subject", "Subject", NULL),
 	VENTURE_FIELD_TEXT("text-body", "Text body", "Record fields in {braces}"),
-	VENTURE_FIELD_TEXT("html-body", "HTML body", "Substituted record values are HTML escaped")
+	VENTURE_FIELD_TEXT("html-body", "HTML body", "Substituted record values are HTML escaped"),
+	/* With a design, both bodies are built from it on every save
+	 * (src/emaildesign/): the design is the source, the bodies derived. */
+	VENTURE_FIELD("design", "Design", "Email blocks as JSON; when set, the text and HTML bodies are built from it",
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("design-version", "Design version", "The saved design version the template shows",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY(VentureMailTemplate, venture_mail_template, template_fields)
