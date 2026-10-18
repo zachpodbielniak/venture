@@ -115,6 +115,7 @@
 #include "marketing/venture-marketing-records.h"
 #include "referrals/venture-referral-records.h"
 #include "mail/venture-mail-sync-records.h"
+#include "emaildesign/venture-email-design-records.h"
 
 #include "leads/venture-lead-records.h"
 #include "activities/venture-activity-records.h"
@@ -377,6 +378,8 @@
 #include "planner/venture-planner-roadmap.h"
 /* After the context: a preview kind's builder is handed one. */
 #include "mail/venture-mail-preview.h"
+/* After the context and the mail records: a design renders a mail_template. */
+#include "emaildesign/venture-email-design.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

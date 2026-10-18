@@ -260,6 +260,8 @@ CORE_SRCS += src/ai/venture-ai-organization-records.c
 SERVER_ONLY_SRCS := $(filter-out src/ai/venture-ai-organization-records.c,$(SERVER_ONLY_SRCS))
 SERVER_ONLY_SRCS += $(filter-out src/oidc/venture-oidc-records.c,$(wildcard src/oidc/*.c))
 SERVER_ONLY_SRCS += $(wildcard src/printing/*.c)
+CORE_SRCS += src/emaildesign/venture-email-design-records.c
+SERVER_ONLY_SRCS += $(filter-out src/emaildesign/venture-email-design-records.c,$(wildcard src/emaildesign/*.c))
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -362,6 +364,7 @@ PUBLIC_HDRS += $(wildcard src/ocr/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/leads/*.h))
 PUBLIC_HDRS += $(wildcard src/activities/*.h)
 PUBLIC_HDRS += $(wildcard src/calendar/*.h)
+PUBLIC_HDRS += $(wildcard src/emaildesign/*.h)
 PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
 
 TEST_SRCS := $(wildcard tests/test-*.c)

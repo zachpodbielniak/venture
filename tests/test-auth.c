@@ -1436,6 +1436,20 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail/preview/invoice/1"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail/preview/message/1"), ==, SOUP_STATUS_UNAUTHORIZED);
 
+	/* The email builder and image upload redirect; a hosted image is
+	 * public by design (mail apps send no cookie), so an unknown one is
+	 * simply not found. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/email-design"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/email-design/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/blocks", NULL, "op=add&type=divider", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/brief", NULL, "brief=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/edit", NULL, "instruction=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/undo", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/new", NULL, "name=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/images", NULL, "x=y", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/logo-ask/dismiss", NULL, "organization_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/i/1/ghjkmnpqrstvwxyzghjkmnpqrstvwxyz.png"), ==, SOUP_STATUS_NOT_FOUND);
+
 	/*
 	 * An unknown path redirects rather than 404s while anonymous: whether
 	 * a page exists is not information for people without a session, and
