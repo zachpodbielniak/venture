@@ -150,3 +150,27 @@ venturectl webhook test 4
 A test against this very install works (the test waits in a nested main
 loop). Turning the module off stops every delivery without deleting
 anything.
+
+## Durable business events
+
+For retained business outcomes, opt a `venture`-format subscription into
+`business_events=true`. It then receives semantic events instead of ordinary
+audit notifications. The source transaction writes both event and delivery;
+failure rolls back the source. Events include payments/refunds, paid invoices,
+confirmed/cancelled bookings, new leads/subscribers, sent/accepted quotes and
+won deals. Bodies contain identities, type, time and source version, never the
+record or audit diff.
+
+Organization owners/admins replay with
+`GET /api/v1/business-events?organization_id=N&after=0&limit=100`.
+Save `next_cursor` only after processing, deduplicate event UUIDs, and keep cursors
+per database/organization. No server acknowledgement. Existing history is not
+backfilled on upgrade or when a subscription is added.
+
+This lane has a bounded five-second asynchronous sweep. Only 2xx accepts a
+delivery; capped exponential backoff retains failures indefinitely with the
+same delivery UUID. Module-off pauses transport while existing subscriptions
+accumulate obligations. Receiver acceptance followed by a crash may repeat a
+delivery. Inspect `business_event_delivery` for attempts, next attempt, response
+status and acceptance. These service-owned records cannot be edited or purged.
+The legacy audit lane's ten-failure cutoff does not apply to this lane.

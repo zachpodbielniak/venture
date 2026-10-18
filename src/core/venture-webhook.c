@@ -1065,9 +1065,12 @@ venture_webhook_on_audit(
 	{
 		VentureEntity *webhook;
 		g_autofree gchar *events = NULL;
+		gboolean business_events = FALSE;
 
 		webhook = g_ptr_array_index(webhooks, i);
-		g_object_get(webhook, "events", &events, NULL);
+		g_object_get(webhook, "events", &events, "business-events", &business_events, NULL);
+		if (business_events)
+			continue;
 
 		if (!venture_webhook_matches(events, event))
 			continue;

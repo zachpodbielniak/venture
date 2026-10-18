@@ -141,6 +141,9 @@ from the bundled example plugin and exists only where that plugin loads.
   [owner|admin|editor|viewer|service], `active`, `timezone`; *action*
   `mfa_reset` (owner). `api_token` -- `name`, `role`, `prefix`,
   `expires_at`, `user_id`, `membership_snapshot`. Both owner-only.
+- `business_event`, `business_event_delivery` -- retained outcome history
+  (core, always on): service-owned, organization owner/admin readable.
+  See [data-model-work.md](data-model-work.md) and [automation.md](automation.md).
 - `audit_entry` -- read-only trail: `action`
   [create|update|delete|login|logout|tool_call|confirm|reject|automation|export],
   `actor`, `actor_kind` [system|user|ai|automation|plugin|import],

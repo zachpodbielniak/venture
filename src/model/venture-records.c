@@ -2442,6 +2442,7 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSprint, venture_sprint, venture_sprint_fi
  * ========================================================================== */
 
 static const VentureFieldDecl venture_webhook_fields[] = {
+	VENTURE_FIELD("business-events", "Durable business events", "Deliver retained semantic events with retry instead of ordinary record notifications", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("name", "Name", "e.g. Ops chat, Billing sync"),
 	VENTURE_FIELD("url", "URL",
 	              "Where the POST goes; for gotify the server's address, for ntfy the topic's",

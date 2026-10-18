@@ -339,6 +339,8 @@ venture_module_to_json(VentureModule *self)
 	((const gchar *const []){ __VA_ARGS__, NULL })
 
 static GType (*const venture_module_core_types[]) (void) = {
+	venture_business_event_get_type,
+	venture_business_event_delivery_get_type,
 	venture_tenant_workspace_get_type,
 	venture_tenant_membership_get_type,
 	venture_tenant_invitation_get_type,
