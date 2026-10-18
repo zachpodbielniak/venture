@@ -73,6 +73,10 @@ record. =venture_mail_template_render_values()= renders from an explicit
 value set instead, for a message composed from several records; the caller
 owns what enters it.
 
+A literal brace is written ={{=; a single ={= always opens a placeholder.
+A template with a =design= has its text and HTML bodies built from its
+blocks on every save; see [[file:email-design.org][Designed email]].
+
 * SMTP configuration
 
 The operator first enables =mail= and =integrations= and provides the

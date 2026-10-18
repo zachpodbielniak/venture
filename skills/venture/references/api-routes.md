@@ -102,6 +102,7 @@ in the repository lists today's.
 | `POST /sequence/:id/enroll`, `POST /sequence_enrollment/:id/:action` (pause, resume, exit, goal), `POST /sequences/run` | `sequence ...` |
 | `POST /crm_imports/preview`, `POST /crm_imports/:id/:action` | `crm preview\|import\|activate\|rollback` |
 | `POST /mail/:action` (send, test, deliver), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss`, `GET /mail/preview/:kind/:id` (owner/admin: the email a sender would queue, with its checks; `kind=message` for a queued row) | `mail ...`, `mail preview KIND ID` |
+| `GET /email-design`, `GET /email-design/:id` (builder, owner/admin), `POST /email-design/new\|images\|logo-ask/dismiss`, `POST /email-design/:id/blocks\|brief\|edit\|undo`, public `GET /i/:org/:file` (hosted image, no cookie) | `act mail_template design_email\|edit_design\|undo_design\|rebuild_designs` |
 | `POST /calendar/sync` | `calendar sync` |
 | `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`); the same answer as the page `/calendar`, the feed `/calendar.ics` and the org-agenda file `/calendar.org`, all three at the site root, not under `/api/v1` | `calendar show [k=v ...]`, `calendar org [k=v ...]` |
 | `POST /calendar/reminders` (editor): the event reminder sweep, `{"reminded": N}` | `calendar remind` |

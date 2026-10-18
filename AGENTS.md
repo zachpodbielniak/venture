@@ -508,6 +508,18 @@ order the data flows.
   carries a 32-hex-digit token) so the preview and the test send withhold
   it; a link put only in a public body would be shown.
 
+- **A designed template's bodies are derived; its design is the source.**
+  A `mail_template` with a `design` has `text-body` and `html-body` rebuilt
+  from the blocks by a save validator (`src/emaildesign/`), so the one
+  template renderer sends the design; do not write a second renderer or
+  edit the bodies of a designed template. The style sheet's braces are
+  written `{{` (a literal brace in template syntax); only `{{` collapses,
+  never `}}`, because existing HTML templates carry CSS ending in `}}`.
+  Hosted image tokens use an alphabet with no hex digit, so the preview's
+  32-hex-digit bearer rule never withholds a public picture. The AI
+  designer's grounding rule is code (`venture-email-ground.c`): a number or
+  "free" not in the brief or the records is removed or refuses the design.
+
 ## The CLI, and its skill
 
 `venturectl` is generic over record types: `list`, `get`, `create`,

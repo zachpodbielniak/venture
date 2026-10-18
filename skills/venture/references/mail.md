@@ -47,6 +47,14 @@ venturectl mail preview message 88      # a row already in the outbox
   only with `?reachability=1`), `size` (warns above about 102 KB),
   `unsubscribe` (required for campaigns and sequences), `source` (sender
   notes). Private bearer links never appear in a preview or a test send.
+- `email-design` previews a `mail_template` with a design. Designed email
+  (docs/email-design.org): `/email-design` (builder, owner/admin),
+  `POST /email-design/images` (upload, sniffed, 5 MB), public
+  `GET /i/ORG/TOKEN.EXT`; actions on `mail_template`: `design_email`
+  (type-level: `brief`, `organization_id`, optional `template_id`),
+  `edit_design` (`instruction`), `undo_design`, `rebuild_designs`. The AI
+  never invents a price, percentage, date or "free": they must be in the
+  brief or the records, or the sentence is removed / the design refused.
 - A sender's enqueue path must call its preview builder; a second
   composition beside it is how a preview and the real mail drift apart.
 

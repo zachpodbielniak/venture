@@ -121,7 +121,15 @@ lookback/retention days; owner/admin only), `attribution_visitor`
 - mail (requires core): `mail_message` -- the durable outbox: `to`,
   `subject`, bodies, `attachments`, `related_type/related_id`, `state`
   (incl. `uncertain`, `dead`), `attempts`, `last_error`, `message_id`,
-  `idempotency_key`, `connection_id/connection_version`. `mail_template`.
+  `idempotency_key`, `connection_id/connection_version`. `mail_template`
+  (`design`: block JSON; with one, `text_body`/`html_body` are rebuilt
+  from it on every save; `design_version`). Designed email (owner/admin
+  write, docs/email-design.org): `email_brand` (one per organization:
+  `logo_image_id`, `*_color` as `#rrggbb`, `font` sans/serif/rounded/
+  system/mono, `website_url`, `footer_address`, `logo_ask`),
+  `hosted_image` (made only by upload; `token`, sniffed `content_type`,
+  `width`/`height`), `email_section` (shared blocks, cycles refused),
+  `email_design_version` (written only by the design service).
 - mail_sync (requires mail, crm, leads): `mail_account` (IMAP mailbox;
   `address`, `imap_host`, `folders`, `capture_address`,
   `private_owner_id`; sync state fields are the sweep's), `mail_inbound`

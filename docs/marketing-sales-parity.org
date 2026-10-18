@@ -74,18 +74,22 @@ row has nothing to close, because alerts send no email.
 
 * Lane 2 — rich email design
 
+Closed by lane 2 (feat(mail): designed email). The design lives on the
+existing =mail_template= and is rendered by its renderer; see
+[[file:email-design.org][Designed email]].
+
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| AI designs an email from a plain brief using the organization's logo, colours, fonts, products, photos and prices | missing | No AI tool touches mail (=src/ai/=); the assistant's writes are generic staged record changes (=docs/ai.org=, Tools) | Brief-to-design tool that reads brand and product records |
-| Edits by words, undoable | missing | — | Instruction edits as versions of a design, each undoable |
-| No assets gives a plain design, asks for the logo once, never invents prices, offers or claims | missing | — | Fallback layout and a grounding rule: prices and offers come only from records |
-| Block builder (header, text, image, button, columns, divider, social, footer) | missing | =mail_template= is free text and HTML (=src/mail/venture-mail-records.c=) | Block model rendered to email-safe HTML and text |
-| Brand settings | missing | No logo, colour or font fields on the organization (=src/model/venture-records.c=); =ui.accent= in =src/config/venture-config.c= themes the application, not mail; invoice and quote print style is fixed CSS (=src/quotes/venture-document-print-style.h=) | Organization brand record used by every email kind |
-| Saved templates | partial | =mail_template= with ={field}= substitution, used by invoices, reminders and report packs (=src/mail/venture-mail-template.c=, =src/mail/venture-mail-consumers.c=, =src/dunning/venture-dunning-service.c=) | Saved block designs alongside the existing text templates |
-| Reusable sections | missing | — | Shared header, footer and signature blocks |
-| Hosted image upload | missing | =document= attachments and =form_upload= files are private (=src/model/venture-records.c=, =src/forms/venture-forms-uploads.c=); no public image route | Public, organization-scoped image hosting with size limits |
-| Video block (poster with play button linking to a video page) | missing | — | Poster image plus link block |
-| Renders in major clients, light and dark | missing | No rendering tests for mail HTML | Table-based output and a rendering check set |
+| AI designs an email from a plain brief using the organization's logo, colours, fonts, products, photos and prices | have | =venture_email_design_from_brief()= (=src/emaildesign/venture-email-design-ai.c=): brand, hosted images and products sent as records on the toolless path; offered to the assistant as the staged =mail_template= action =design_email=; brief box on =/email-design/ID= | — |
+| Edits by words, undoable | have | =venture_email_design_edit()= and =venture_email_design_undo()=; every change an =email_design_version=, undo byte-exact (=tests/test-email-design.c= =/email-design/ai/edit-undo=) | — |
+| No assets gives a plain design, asks for the logo once, never invents prices, offers or claims | have | Default look; =logo_ask= on =email_brand= asked once per organization; =venture_email_design_ground()= (=src/emaildesign/venture-email-ground.c=) removes or refuses any number or "free" not in the brief or records, and addresses and images must come from the records | Claims beyond numbers and "free" (a made-up guarantee in words) are not detected |
+| Block builder (header, text, image, button, columns, divider, social, footer) | have | Strict validator and renderer (=src/emaildesign/venture-email-blocks.c=); builder page with htmx add, remove, reorder and JSON edit per block (=src/emaildesign/venture-email-design-web.inc=) | A visual editor per field; blocks are edited as JSON |
+| Brand settings | have | =email_brand= record: logo, colours with dark variants or derived ones, a web-safe font stack (=src/emaildesign/venture-email-design-records.c=), owner/admin write | Used by designed templates; invoices, quotes and the other built-in kinds keep their own bodies until they move to designed templates |
+| Saved templates | have | =mail_template.design=; bodies rebuilt from it on every save, so every sender using the template sends the design | — |
+| Reusable sections | have | =email_section=, rendered in place by =section= blocks; cycles and missing ones refused when saved | A changed section reaches templates on their next save or =rebuild_designs=, not at once |
+| Hosted image upload | have | =POST /email-design/images= and =venture_hosted_image_store()= into the attachment store; type and size sniffed from bytes, 5 MB cap; public =GET /i/ORG/TOKEN.EXT= with cache headers, no cookie, organization-scoped | — |
+| Video block (poster with play button linking to a video page) | have | =video= block: poster with a drawn play button linking to the video page; plain linked poster for Outlook | — |
+| Renders in major clients, light and dark | partial | Table layout, inline styles, 600 px, dark-mode block, MSO conditionals; structural assertions in =tests/test-email-design.c= | A real client render farm; the check is structural only |
 
 * Lane 3 — deliverability
 

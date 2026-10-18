@@ -408,7 +408,8 @@ static void test_render_video(void)
 	assert_email_safe(html, text);
 	g_assert_nonnull(strstr(html, "href=\"https://video.example.com/watch/1\""));
 	g_assert_nonnull(strstr(html, "https://cdn.example.com/poster.jpg"));
-	g_assert_nonnull(strstr(html, "&#9654;"));
+	/* The play button is drawn with borders, not a glyph a font may lack. */
+	g_assert_nonnull(strstr(html, "class=\"ve-play\""));
 	g_assert_nonnull(strstr(html, "alt=\"How a tune-up works\""));
 	g_assert_nonnull(strstr(text, "Watch the video (How a tune-up works): https://video.example.com/watch/1"));
 	g_assert_null(strstr(html, "<video"));
@@ -644,8 +645,8 @@ static gchar *heating_reply(Fixture *f, const gchar *button_size, const gchar *e
 		"{\"type\":\"text\",\"heading\":\"Get your furnace ready for fall\",\"body\":\"Cold nights are coming. A tune-up now keeps your home warm and your heating running smoothly.%s\\n\\nBook a fall furnace tune-up by Nov 15 and save 10%%.\"},"
 		"{\"type\":\"button\",\"label\":\"Book your tune-up\",\"url\":\"https://brightside.example.com/tune-up\",\"size\":\"%s\"},"
 		"{\"type\":\"columns\",\"columns\":["
-		"{\"blocks\":[{\"type\":\"text\",\"heading\":\"Furnace tune-up\",\"body\":\"Full inspection, cleaning and safety check. $129.00\"}]},"
-		"{\"blocks\":[{\"type\":\"text\",\"heading\":\"Filter replacement\",\"body\":\"A fresh filter for cleaner air. $39.00\"}]}]},"
+		"{\"blocks\":[{\"type\":\"text\",\"heading\":\"Furnace tune-up: $129.00\",\"body\":\"Full inspection, cleaning and safety check.\"}]},"
+		"{\"blocks\":[{\"type\":\"text\",\"heading\":\"Filter replacement: $39.00\",\"body\":\"A fresh filter for cleaner air.\"}]}]},"
 		"{\"type\":\"divider\"},"
 		"{\"type\":\"social\",\"links\":[{\"network\":\"website\",\"url\":\"https://brightside.example.com\"}]},"
 		"{\"type\":\"footer\",\"text\":\"You are receiving this because you are a customer of Brightside Heating & Air.\"}"
@@ -658,7 +659,7 @@ static const gchar brief[] = "fall furnace tune-up, 10% off, ends Nov 15";
  * existing renderer turns them into the message with placeholders filled. */
 static void test_template(Fixture *f, gconstpointer unused)
 {
-	const gchar *design = "{\"blocks\":[{\"type\":\"text\",\"heading\":\"Hello {first_name}\",\"body\":\"Your {{gift}} awaits.\"},"
+	const gchar *design = "{\"blocks\":[{\"type\":\"text\",\"heading\":\"Hello {first_name}\",\"body\":\"Your {{gift} awaits.\"},"
 		"{\"type\":\"button\",\"label\":\"Open\",\"url\":\"https://shop.example.com/\"}]}";
 	g_autoptr(VentureEntity) template = NULL, plain = record(f, "mail_template");
 	g_autoptr(VentureMailMessage) message = NULL;
@@ -1350,7 +1351,7 @@ static void test_page_builder(ServerFixture *s, gconstpointer unused)
 	g_assert_cmpuint(http(s, "POST", blocks, owner, "op=remove&index=0", NULL, NULL), ==, SOUP_STATUS_SEE_OTHER);
 	g_assert_cmpuint(version_count(s), ==, before + 5);
 	/* A bad edit is refused and changes nothing. */
-	g_assert_cmpuint(http(s, "POST", blocks, owner, "op=edit&index=0&block=%7B%22type%22%3A%22blink%22%7D", NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	g_assert_cmpuint(http(s, "POST", blocks, owner, "op=edit&index=0&block=%7B%22type%22%3A%22blink%22%7D", NULL, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
 	g_assert_cmpuint(version_count(s), ==, before + 5);
 	template = venture_database_get(s->base.db, VENTURE_TYPE_MAIL_TEMPLATE, s->template, NULL);
 	design = string(template, "design");
