@@ -328,7 +328,8 @@ static void check_image_alt(VentureMailPreview *preview, const gchar *html)
 		add_check(preview, "image-alt", VENTURE_MAIL_CHECK_FAIL, g_strdup_printf(
 			"%u of %u images have no alt text, so a reader with images off sees nothing there: %s.", bad, counted, missing->str));
 	else
-		add_check(preview, "image-alt", VENTURE_MAIL_CHECK_OK, g_strdup_printf("All %u images have alt text.", counted));
+		add_check(preview, "image-alt", VENTURE_MAIL_CHECK_OK, counted == 1 ? g_strdup("The image has alt text.") :
+			g_strdup_printf("All %u images have alt text.", counted));
 }
 static gboolean well_formed(const gchar *url)
 {
@@ -411,9 +412,10 @@ static void check_links(VentureMailPreview *preview, const gchar *text, const gc
 	else if (g_hash_table_size(seen) == 0)
 		add_check(preview, "links", VENTURE_MAIL_CHECK_OK, g_strdup("There are no links."));
 	else if (checker == NULL)
-		add_check(preview, "links", VENTURE_MAIL_CHECK_OK, g_strdup_printf(
-			"All %u links are well formed; whether they answer was not checked (that is off unless asked for).",
-			g_hash_table_size(seen)));
+		add_check(preview, "links", VENTURE_MAIL_CHECK_OK, g_hash_table_size(seen) == 1 ?
+			g_strdup("The link is well formed; whether it answers was not checked (that is off unless asked for).") :
+			g_strdup_printf("All %u links are well formed; whether they answer was not checked (that is off unless asked for).",
+				g_hash_table_size(seen)));
 	else
 		add_check(preview, "links", VENTURE_MAIL_CHECK_OK, g_strdup_printf(
 			"All %u links are well formed and the %u web link%s checked answered%s.", g_hash_table_size(seen), asked,
