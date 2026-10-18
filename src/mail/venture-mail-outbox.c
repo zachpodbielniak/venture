@@ -512,7 +512,7 @@ gboolean venture_mail_save_user(VentureMailOutbox *self, VentureEntity *user, co
 {
 	g_autoptr(VentureEntity) previous = NULL, original = NULL;
 	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
-	g_autofree gchar *email = NULL, *old_hash = NULL, *new_hash = NULL, *key = NULL;
+	g_autofree gchar *email = NULL, *old_hash = NULL, *new_hash = NULL;
 	gboolean reset, ok;
 	*handled = FALSE;
 	if (self->user_permit == user) { self->user_permit = NULL; return TRUE; }
@@ -534,12 +534,7 @@ gboolean venture_mail_save_user(VentureMailOutbox *self, VentureEntity *user, co
 	ok = venture_database_save(self->database, user, actor, error);
 	self->user_permit = NULL;
 	if (!ok) goto fail_user;
-	message = venture_mail_message_new();
-	key = g_strdup_printf("user:%s:%s:%" G_GINT64_FORMAT, venture_entity_get_uuid(user), reset ? "reset" : "welcome", venture_entity_get_version(user));
-	g_object_set(message, "organization-id", venture_entity_get_organization_id(user), "to", email,
-		"subject", reset ? "Your password was reset" : "Welcome to Venture",
-		"text-body", reset ? "Your Venture password was changed. Contact your administrator if you did not request this change." : "Your Venture account is ready. Contact your administrator for sign-in instructions.",
-		"idempotency-key", key, "related-type", "user", "related-id", venture_entity_get_id(user), NULL);
+	message = venture_mail_user_message(user, reset);
 	queued = venture_mail_outbox_enqueue(self, message, actor, error);
 	if (!queued) goto fail_user;
 	return venture_database_commit(self->database, error);

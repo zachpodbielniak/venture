@@ -479,6 +479,9 @@ static void test_campaign(Fixture *f, gconstpointer unused)
 	g_object_get(g_ptr_array_index(recipients, 0), "unsubscribe-hash", &hash, NULL);
 	g_assert_true(venture_marketing_service_transition(service, f->org, venture_entity_get_id(send), "approve", NULL, &error));
 	g_assert_no_error(error);
+	/* The run's clock must not be earlier than the approval. */
+	g_clear_pointer(&now, g_date_time_unref);
+	now = venture_time_now();
 	g_assert_cmpint(venture_marketing_service_run(service, f->org, venture_entity_get_id(send), 100, now, NULL, &error), ==, 1);
 	g_assert_no_error(error);
 	mail = rows(f, "mail_message");

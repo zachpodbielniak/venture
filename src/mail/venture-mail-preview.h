@@ -294,19 +294,21 @@ gchar *venture_mail_preview_actor_email(VentureDatabase *database, const Venture
  * @database: the database whose outbox queues it
  * @message: the unsaved message the sender built
  * @key: idempotency key; the same key returns the same row
+ * @related_type: (nullable): what the copy is filed under, "mail_preview" when %NULL;
+ *   never a sender's own type, whose outbox hooks would judge it as real mail
+ * @related_id: the record it is filed under, or zero
  * @actor: the acting user, whose own email receives it
  * @error: (out) (optional): refusal
  *
  * Queues a copy of @message to the acting user's own address only, through
  * the ordinary outbox: subject prefixed "[TEST] ", the visible bodies with
  * every private bearer link replaced by the placeholder, no private bodies
- * and no unsubscribe endpoint, no Cc or Bcc, attachments kept. It is related
- * to no source record, so no sender's eligibility hook acts on it.
+ * and no unsubscribe endpoint, no Cc or Bcc, attachments kept.
  *
  * Returns: (transfer full) (nullable): the queued row
  */
 VentureMailMessage *venture_mail_preview_enqueue_test(VentureDatabase *database, VentureMailMessage *message,
-	const gchar *key, const VentureActor *actor, GError **error);
+	const gchar *key, const gchar *related_type, gint64 related_id, const VentureActor *actor, GError **error);
 
 /**
  * venture_mail_preview_send_test:

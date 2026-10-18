@@ -34,4 +34,30 @@ gboolean venture_mail_save_user(VentureMailOutbox *outbox, VentureEntity *user, 
  */
 gboolean venture_mail_confirm_money(VentureDatabase *database, VentureEntity *record,
     const VentureActor *actor, GError **error);
+/**
+ * venture_mail_invoice_message:
+ * @context: application context
+ * @invoice: the invoice, as it will be when sent
+ * @error: (out) (optional): no customer email, a void invoice, or a rendering failure
+ *
+ * Builds the invoice mail the Send button queues, writing nothing: the
+ * organization's =invoice= template (or the default, unsaved), the line
+ * table and the PDF. venture_mail_send_invoice() and the preview both call it.
+ *
+ * Returns: (transfer full) (nullable): the unsaved message
+ */
+VentureMailMessage *venture_mail_invoice_message(VentureContext *context, VentureEntity *invoice, GError **error);
+/**
+ * venture_mail_user_message:
+ * @user: a user with an email address
+ * @reset: the password-change notice rather than the welcome
+ * Returns: (transfer full): the unsaved account notice venture_mail_save_user() queues
+ */
+VentureMailMessage *venture_mail_user_message(VentureEntity *user, gboolean reset);
+/**
+ * venture_mail_consumers_preview_register:
+ *
+ * Registers the invoice and account mail preview kinds.
+ */
+void venture_mail_consumers_preview_register(void);
 #endif

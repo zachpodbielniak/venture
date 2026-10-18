@@ -98,6 +98,31 @@ VentureMailMessage *venture_dunning_service_test_send(VentureDunningService *sel
 	gint64 invoice_id, gboolean has_offset, gint64 offset, const VentureActor *actor, GError **error);
 
 /**
+ * venture_dunning_service_build_reminder:
+ * @self: the service
+ * @invoice: a live invoice
+ * @as_of: the sweep's clock
+ * @notes: (nullable) (element-type utf8): where reasons the sweep would hold
+ *   back are added, in plain words
+ * @error: (out) (optional): no policy, no due date, no email step or no recipient
+ *
+ * Builds the reminder the sweep would queue for @invoice on @as_of -- the
+ * step its plan sends, or else the next email step to come -- writing
+ * nothing. The sweep builds each step the same way.
+ *
+ * Returns: (transfer full) (nullable): the unsaved message, pay link in its private bodies
+ */
+VentureMailMessage *venture_dunning_service_build_reminder(VentureDunningService *self, VentureEntity *invoice,
+	GDateTime *as_of, GPtrArray *notes, GError **error);
+
+/**
+ * venture_dunning_preview_register:
+ *
+ * Registers the overdue reminder mail preview kind.
+ */
+void venture_dunning_preview_register(void);
+
+/**
  * venture_dunning_check_write: (skip)
  * @database: the database
  * @record: record being written or removed

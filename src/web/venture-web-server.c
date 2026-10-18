@@ -32919,6 +32919,7 @@ venture_web_api_ticket_draft(
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
+#include "mail/venture-mail-preview-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
 
@@ -33472,6 +33473,9 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_open, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mail/preview/:kind/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail/preview/:kind/:id/test", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_preview_test, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/mail/preview/:kind/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_mail_preview, self);
 	htmx_router_post(router, "/api/v1/reconciliation/suggest", venture_web_api_reconciliation_suggest, self);
 	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
 	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);

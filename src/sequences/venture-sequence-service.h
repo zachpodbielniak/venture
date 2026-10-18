@@ -53,6 +53,23 @@ gboolean venture_sequence_service_transition(VentureSequenceService *self, gint6
 	gint64 enrollment_id, const gchar *action, const gchar *reason,
 	const VentureActor *actor, GError **error);
 /**
+ * venture_sequence_service_delivery_message:
+ * @self: the service
+ * @delivery: an email sequence_delivery
+ * @error: (out) (optional): not an email step, or no recipient
+ *
+ * The outbox message an adapter enqueues for @delivery, writing nothing.
+ *
+ * Returns: (transfer full) (nullable): the unsaved message
+ */
+VentureMailMessage *venture_sequence_service_delivery_message(VentureSequenceService *self, VentureEntity *delivery, GError **error);
+/**
+ * venture_sequence_preview_register:
+ *
+ * Registers the sequence step mail preview kind.
+ */
+void venture_sequence_preview_register(void);
+/**
  * venture_sequences_register_reports:
  * @registry: the report registry
  *

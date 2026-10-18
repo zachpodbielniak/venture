@@ -278,6 +278,25 @@ static void test_organization_settings(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(page, "Disconnected"));
 	g_assert_nonnull(strstr(page, "Organization mail is unconfigured"));
 }
+/* `venturectl mail preview KIND ID` is the preview service over the API: a
+ * queued row previews by id, with its checks, and a private link in it
+ * never reaches the terminal. */
+static void test_cli_preview(Fixture *f, gconstpointer unused)
+{
+	const gchar *send[] = { "mail", "send", "to=reader@example.com", "subject=Receipt", "body=Thank you for your payment; your receipt follows.", NULL };
+	const gchar *preview[] = { "mail", "preview", "message", NULL, NULL };
+	g_autofree gchar *sent = cli(f, send), *shown = NULL, *id = NULL, *page = NULL;
+	g_autoptr(JsonNode) node = json_from_string(sent, NULL);
+	(void)unused;
+	id = g_strdup_printf("%" G_GINT64_FORMAT, venture_json_object_get_int(json_node_get_object(node), "id", 0));
+	preview[3] = id;
+	shown = cli(f, preview);
+	g_assert_nonnull(strstr(shown, "\"checks\""));
+	g_assert_nonnull(strstr(shown, "\"plain-text\""));
+	g_assert_nonnull(strstr(shown, "\"unsubscribe\""));
+	g_assert_cmpuint(request(f, "GET", "/api/v1/mail/preview/alert/1", NULL, &page), ==, 404);
+	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
+}
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -287,5 +306,6 @@ int main(int argc, char **argv)
 	g_test_add("/mail-surfaces/smtp-policy", Fixture, NULL, setup, test_smtp_policy, teardown);
 	g_test_add("/mail-surfaces/inbound-actions", Fixture, NULL, setup, test_inbound_actions, teardown);
 	g_test_add("/mail-surfaces/organization-settings", Fixture, NULL, setup, test_organization_settings, teardown);
+	g_test_add("/mail-surfaces/cli-preview", Fixture, NULL, setup, test_cli_preview, teardown);
 	return g_test_run();
 }

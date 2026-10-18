@@ -16,37 +16,34 @@ customer_record(VentureDatabase *database, GType type, gint64 id, gint64 org, GE
 	return record;
 }
 
-gboolean
-venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
-	VentureEntity *delivery, const gchar *base_url, const VentureActor *actor, GError **error)
+VentureMailMessage *
+venture_quote_mail_message(VentureDatabase *database, VentureEntity *quote, const gchar *base_url,
+	const gchar *acceptance_url, GError **error)
 {
 	g_autoptr(GUri) origin = NULL;
 	g_autoptr(VentureEntity) company = NULL, contact = NULL;
-	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
+	g_autoptr(VentureMailMessage) message = NULL;
 	g_autoptr(VentureMoney) total = NULL;
-	g_autofree gchar *email = NULL, *number = NULL, *relative = NULL, *url = NULL;
+	g_autofree gchar *email = NULL, *number = NULL, *url = NULL;
 	g_autofree gchar *key = NULL, *subject = NULL, *body = NULL, *formatted = NULL;
 	gint64 company_id, contact_id, contact_company, org = venture_entity_get_organization_id(quote);
-	/* Offline quote ledgers may have no public address. Their retained
-	 * delivery intent remains available to a separately configured sender. */
-	if (!base_url || !*base_url) return TRUE;
-	origin = g_uri_parse(base_url, G_URI_FLAGS_NONE, NULL);
+	origin = !venture_string_is_empty(base_url) ? g_uri_parse(base_url, G_URI_FLAGS_NONE, NULL) : NULL;
 	if (!origin || g_strcmp0(g_uri_get_scheme(origin), "https") || !g_uri_get_host(origin) ||
 		g_uri_get_userinfo(origin) || g_uri_get_query(origin) || g_uri_get_fragment(origin)) {
 		venture_set_error_validation(error, "base-url", "Quote delivery needs a configured public HTTPS address");
-		return FALSE;
+		return NULL;
 	}
 	g_object_get(quote, "company-id", &company_id, "contact-id", &contact_id,
 		"number", &number, "total", &total, NULL);
 	company = customer_record(database, VENTURE_TYPE_COMPANY, company_id, org, error);
-	if (!company) return FALSE;
+	if (!company) return NULL;
 	if (contact_id > 0) {
 		contact = customer_record(database, VENTURE_TYPE_CONTACT, contact_id, org, error);
-		if (!contact) return FALSE;
+		if (!contact) return NULL;
 		g_object_get(contact, "company-id", &contact_company, "email", &email, NULL);
 		if (contact_company != company_id) {
 			venture_set_error_validation(error, "contact", "Quote contact must belong to its customer");
-			return FALSE;
+			return NULL;
 		}
 	}
 	if (venture_string_is_empty(email)) {
@@ -55,11 +52,10 @@ venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
 	}
 	if (venture_string_is_empty(email)) {
 		venture_set_error_validation(error, "customer", "Add a customer email before sending this quote");
-		return FALSE;
+		return NULL;
 	}
-	g_object_get(delivery, "acceptance-url", &relative, NULL);
-	url = g_uri_resolve_relative(base_url, relative, G_URI_FLAGS_NONE, error);
-	if (!url) return FALSE;
+	url = g_uri_resolve_relative(base_url, acceptance_url, G_URI_FLAGS_NONE, error);
+	if (!url) return NULL;
 	formatted = total ? venture_money_to_display_string(total, TRUE) : g_strdup("");
 	subject = g_strdup_printf("Quote %s", number);
 	body = g_strdup_printf("Your quote %s totals %s.\n\nReview the full quote and accept it here:\n%s\n", number, formatted, url);
@@ -69,8 +65,58 @@ venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
 		"text-body", "A private quote acceptance link is included in this message.",
 		"private-text-body", body, "idempotency-key", key,
 		"related-type", "quote", "related-id", venture_entity_get_id(quote), NULL);
+	return g_steal_pointer(&message);
+}
+
+gboolean
+venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
+	VentureEntity *delivery, const gchar *base_url, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
+	g_autofree gchar *relative = NULL, *email = NULL;
+	/* Offline quote ledgers may have no public address. Their retained
+	 * delivery intent remains available to a separately configured sender. */
+	if (!base_url || !*base_url) return TRUE;
+	g_object_get(delivery, "acceptance-url", &relative, NULL);
+	message = venture_quote_mail_message(database, quote, base_url, relative, error);
+	if (!message) return FALSE;
 	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(database), message, actor, error);
 	if (!queued) return FALSE;
+	g_object_get(message, "to", &email, NULL);
 	g_object_set(delivery, "recipient", email, NULL);
 	return TRUE;
+}
+
+/* A draft has no acceptance link yet: the token is minted by the send. The
+ * preview withholds the link anyway, so any path stands in for it. */
+static VentureMailMessage *
+quote_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now, GPtrArray *notes, GError **error)
+{
+	VentureDatabase *database = venture_context_get_database(context);
+	g_autoptr(VentureEntity) quote = venture_database_get(database, VENTURE_TYPE_QUOTE, id, NULL);
+	g_autofree gchar *base = NULL;
+	gint status = 0;
+	(void)now;
+	if (!quote || venture_entity_is_deleted(quote) || venture_entity_get_organization_id(quote) != org) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Quote not found");
+		return NULL;
+	}
+	g_object_get(venture_database_get_quote_service(database), "base-url", &base, NULL);
+	if (venture_string_is_empty(base)) {
+		venture_set_error_validation(error, "base-url",
+			"This install has no public HTTPS address (server.base_url), so quotes are recorded as sent but not emailed");
+		return NULL;
+	}
+	g_object_get(quote, "status", &status, NULL);
+	if (status != VENTURE_QUOTE_DRAFT && notes)
+		g_ptr_array_add(notes, g_strdup("Only a draft quote is emailed; this one has already left draft, so this shows how it reads today."));
+	return venture_quote_mail_message(database, quote, base, "/q/preview", error);
+}
+static const VentureMailPreviewKind quote_kind = {
+	"quote", "Quote", "quotes", "quote", "quote", FALSE, quote_preview
+};
+void
+venture_quote_mail_preview_register(void)
+{
+	venture_mail_preview_register(&quote_kind);
 }

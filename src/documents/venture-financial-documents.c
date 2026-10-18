@@ -665,35 +665,20 @@ receipt_sender_free(gpointer data)
 }
 
 /*
- * One receipt for one payment. Keyed by the payment's identity, so however
- * often the payment is re-saved, the customer gets one receipt. Nothing is
- * sent to a customer with no email address, and nothing is an error: a
- * receipt that cannot be sent must never stop money being recorded.
+ * Who a payment's receipt goes to, or NULL for nobody: a customer with no
+ * email address, or one whose receipts the hosted application sends. That
+ * is never a failure, because a receipt that cannot be sent must never stop
+ * money being recorded.
  */
 static void
-send_receipt(VentureReceiptSender *sender, gint64 payment_id)
+receipt_addressee(VentureDatabase *db, VentureEntity *payment, gchar **out_email)
 {
-	VentureContext *context = sender->context;
-	VentureDatabase *db = sender->database;
-	g_autoptr(VentureEntity) payment = NULL;
 	g_autoptr(VentureEntity) company = NULL;
-	g_autoptr(VentureMailMessage) message = NULL;
-	g_autoptr(VentureMailMessage) queued = NULL;
-	g_autoptr(GBytes) pdf = NULL;
-	g_autoptr(JsonBuilder) builder = NULL;
-	g_autoptr(JsonNode) root = NULL;
 	g_autoptr(VentureMoney) amount = NULL;
-	g_autoptr(GError) error = NULL;
-	g_autofree gchar *email = NULL, *key = NULL, *name = NULL, *encoded = NULL, *attachments = NULL;
-	g_autofree gchar *amount_text = NULL, *subject = NULL, *body = NULL, *customer = NULL, *external = NULL;
+	g_autofree gchar *email = NULL, *external = NULL;
 	gint64 customer_id = 0;
-	gconstpointer data;
-	gsize size;
 
-	payment = venture_database_get(db, VENTURE_TYPE_PAYMENT, payment_id, NULL);
-	if (NULL == payment || venture_entity_is_deleted(payment))
-		return;
-
+	*out_email = NULL;
 	g_object_get(payment, "customer-id", &customer_id, "amount", &amount, NULL);
 	company = venture_database_get(db, VENTURE_TYPE_COMPANY, customer_id, NULL);
 	if (NULL == company)
@@ -705,12 +690,51 @@ send_receipt(VentureReceiptSender *sender, gint64 payment_id)
 	if (venture_string_is_empty(email))
 		return;
 
-	pdf = venture_financial_documents_receipt_pdf(context, payment, &error);
-	if (NULL == pdf)
+	*out_email = g_steal_pointer(&email);
+}
+
+/*
+ * The receipt mail for one payment, writing nothing. Keyed by the payment's
+ * identity, so however often the payment is re-saved, the customer gets one
+ * receipt.
+ */
+VentureMailMessage *
+venture_financial_documents_receipt_message(
+	VentureContext	*context,
+	VentureEntity	*payment,
+	GError		**error
+){
+	VentureDatabase *db = venture_context_get_database(context);
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureMailMessage) message = NULL;
+	g_autoptr(GBytes) pdf = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) root = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autofree gchar *email = NULL, *key = NULL, *name = NULL, *encoded = NULL, *attachments = NULL;
+	g_autofree gchar *amount_text = NULL, *subject = NULL, *body = NULL, *customer = NULL;
+	gint64 customer_id = 0;
+	gconstpointer data;
+	gsize size;
+
+	receipt_addressee(db, payment, &email);
+	if (NULL == email)
 	{
-		g_message("Receipt for payment %" G_GINT64_FORMAT " not drawn: %s", payment_id, error->message);
-		return;
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			"No receipt is sent: the customer has no email address, or the hosted application sends its receipts");
+		return NULL;
 	}
+	g_object_get(payment, "customer-id", &customer_id, "amount", &amount, NULL);
+	company = venture_database_get(db, VENTURE_TYPE_COMPANY, customer_id, NULL);
+	if (NULL == company)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "The payment's customer is gone");
+		return NULL;
+	}
+
+	pdf = venture_financial_documents_receipt_pdf(context, payment, error);
+	if (NULL == pdf)
+		return NULL;
 
 	data = g_bytes_get_data(pdf, &size);
 	encoded = g_base64_encode(data, size);
@@ -742,11 +766,58 @@ send_receipt(VentureReceiptSender *sender, gint64 payment_id)
 	venture_entity_set_organization_id(VENTURE_ENTITY(message), venture_entity_get_organization_id(payment));
 	g_object_set(message, "to", email, "subject", subject, "text-body", body,
 	             "attachments", attachments, "idempotency-key", key,
-	             "related-type", "payment", "related-id", payment_id, NULL);
+	             "related-type", "payment", "related-id", venture_entity_get_id(payment), NULL);
+	return g_steal_pointer(&message);
+}
 
-	queued = venture_mail_outbox_enqueue(venture_context_get_mail_outbox(context), message, NULL, &error);
+static void
+send_receipt(VentureReceiptSender *sender, gint64 payment_id)
+{
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureMailMessage) message = NULL;
+	g_autoptr(VentureMailMessage) queued = NULL;
+	g_autoptr(GError) error = NULL;
+
+	payment = venture_database_get(sender->database, VENTURE_TYPE_PAYMENT, payment_id, NULL);
+	if (NULL == payment || venture_entity_is_deleted(payment))
+		return;
+	message = venture_financial_documents_receipt_message(sender->context, payment, &error);
+	if (NULL == message)
+	{
+		if (!g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))
+			g_message("Receipt for payment %" G_GINT64_FORMAT " not drawn: %s", payment_id, error->message);
+		return;
+	}
+	queued = venture_mail_outbox_enqueue(venture_context_get_mail_outbox(sender->context), message, NULL, &error);
 	if (NULL == queued)
 		g_message("Receipt for payment %" G_GINT64_FORMAT " not queued: %s", payment_id, error->message);
+}
+
+static VentureMailMessage *
+receipt_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now, GPtrArray *notes, GError **error)
+{
+	g_autoptr(VentureEntity) payment = venture_database_get(venture_context_get_database(context), VENTURE_TYPE_PAYMENT, id, NULL);
+	gboolean enabled = TRUE;
+	(void)now;
+	if (NULL == payment || venture_entity_is_deleted(payment) || venture_entity_get_organization_id(payment) != org)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Payment not found");
+		return NULL;
+	}
+	g_object_get(venture_context_get_config(context), "mail-receipts", &enabled, NULL);
+	if (!enabled && NULL != notes)
+		g_ptr_array_add(notes, g_strdup("Receipts are switched off (mail.receipts), so this is not sent."));
+	return venture_financial_documents_receipt_message(context, payment, error);
+}
+
+static const VentureMailPreviewKind receipt_kind = {
+	"receipt", "Payment receipt", "receivables", "payment", "payment", FALSE, receipt_preview
+};
+
+void
+venture_financial_documents_preview_register(void)
+{
+	venture_mail_preview_register(&receipt_kind);
 }
 
 static void

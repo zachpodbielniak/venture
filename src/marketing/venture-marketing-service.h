@@ -150,6 +150,12 @@ gboolean venture_marketing_service_feedback(VentureMarketingService *self, gint6
 	gint64 recipient_id, const gchar *kind, const gchar *source, const gchar *event_key,
 	GDateTime *occurred_at, const VentureActor *actor, GError **error);
 /**
+ * venture_marketing_preview_register:
+ *
+ * Registers the campaign mail preview kind: one frozen recipient's message.
+ */
+void venture_marketing_preview_register(void);
+/**
  * venture_marketing_register_reports:
  * @registry: report registry
  *

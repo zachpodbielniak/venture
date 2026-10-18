@@ -223,6 +223,57 @@ gboolean venture_marketing_service_transition(VentureMarketingService *self, gin
 fail:
 	venture_database_rollback(self->database); return FALSE;
 }
+/* The outbox message for one frozen recipient: exactly the approved
+ * snapshot, which validate_mail() holds the enqueue to. The run and the
+ * preview both build it here. */
+static VentureMailMessage *recipient_message(VentureEntity *recipient)
+{
+	const gchar *fields[] = { "subject", "text-body", "html-body", "private-text-body", "private-html-body" };
+	VentureMailMessage *message = venture_mail_message_new();
+	g_autofree gchar *email = string(recipient, "email"), *url = string(recipient, "unsubscribe-url");
+	g_autofree gchar *key = g_strconcat("marketing:", venture_entity_get_uuid(recipient), NULL);
+	guint j;
+	for (j = 0; j < G_N_ELEMENTS(fields); j++) {
+		g_autofree gchar *value = string(recipient, fields[j]);
+		g_object_set(message, fields[j], value, NULL);
+	}
+	g_object_set(message, "organization-id", venture_entity_get_organization_id(recipient), "to", email,
+		"private-unsubscribe-url", url, "related-type", "marketing_recipient",
+		"related-id", venture_entity_get_id(recipient), "idempotency-key", key, NULL);
+	return message;
+}
+static VentureMailMessage *campaign_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now,
+	GPtrArray *notes, GError **error)
+{
+	VentureMarketingService *self = venture_marketing_service_get(venture_context_get_database(context));
+	g_autoptr(VentureEntity) recipient = NULL;
+	g_autofree gchar *state = NULL;
+	const gchar *reason = NULL;
+	(void)now;
+	recipient = get_row(self, VENTURE_TYPE_MARKETING_RECIPIENT, org, id, NULL);
+	if (!recipient) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Campaign recipient not found");
+		return NULL;
+	}
+	state = string(recipient, "state");
+	if (!g_strcmp0(state, "excluded")) {
+		g_autofree gchar *why = string(recipient, "eligibility");
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "This recipient is excluded (%s), so nothing is sent to it", why ? why : "excluded");
+		return NULL;
+	}
+	if (notes && g_strcmp0(state, "eligible") && g_strcmp0(state, "queued"))
+		g_ptr_array_add(notes, g_strdup_printf("This recipient is %s; nothing more will be sent to it.", state));
+	else if (notes && !recipient_allowed(self, recipient, &reason, NULL))
+		g_ptr_array_add(notes, g_strdup_printf("The run would not send this now: %s.", reason ? reason : "permission is no longer valid"));
+	return recipient_message(recipient);
+}
+static const VentureMailPreviewKind campaign_kind = {
+	"campaign", "Campaign (one recipient)", "marketing", "marketing_recipient", "marketing_recipient", TRUE, campaign_preview
+};
+void venture_marketing_preview_register(void)
+{
+	venture_mail_preview_register(&campaign_kind);
+}
 gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gint64 send_id,
 	guint limit, GDateTime *now, const VentureActor *actor, GError **error)
 {
@@ -257,26 +308,15 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 	for (i = 0; i < rows->len; i++) {
 		VentureEntity *recipient = g_ptr_array_index(rows, i);
 		g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
-		g_autofree gchar *email = NULL, *key = NULL, *url = NULL;
 		const gchar *reason = NULL;
-		const gchar *fields[] = { "subject", "text-body", "html-body", "private-text-body", "private-html-body" };
-		guint j;
 		if (!recipient_allowed(self, recipient, &reason, error)) {
 			if (error && *error) goto fail;
 			g_object_set(recipient, "state", "cancelled", NULL);
 			if (!save(self, recipient, actor, error)) goto fail;
 			continue;
 		}
-		message = venture_mail_message_new();
-		for (j = 0; j < G_N_ELEMENTS(fields); j++) {
-			g_autofree gchar *value = string(recipient, fields[j]);
-			g_object_set(message, fields[j], value, NULL);
-		}
-		email = string(recipient, "email"); url = string(recipient, "unsubscribe-url");
-		key = g_strconcat("marketing:", venture_entity_get_uuid(recipient), NULL);
-		g_object_set(message, "organization-id", org, "to", email, "private-unsubscribe-url", url,
-			"related-type", "marketing_recipient", "related-id", venture_entity_get_id(recipient),
-			"idempotency-key", key, "next-attempt-at", now, NULL);
+		message = recipient_message(recipient);
+		g_object_set(message, "next-attempt-at", now, NULL);
 		self->enqueue_recipient = recipient;
 		queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
 		self->enqueue_recipient = NULL;

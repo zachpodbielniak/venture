@@ -75,18 +75,111 @@ static gchar *invoice_html(VentureDatabase *db, VentureEntity *invoice, GError *
 	g_string_append(html, "</p></body></html>");
 	return g_string_free(g_steal_pointer(&html), FALSE);
 }
+/* The customer an invoice is mailed to, refused when there is none. */
+static gchar *invoice_recipient(VentureDatabase *db, VentureEntity *invoice, GError **error)
+{
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *email = NULL;
+	gint64 company_id, org = venture_entity_get_organization_id(invoice);
+	gint status;
+	g_object_get(invoice, "company-id", &company_id, "status", &status, NULL);
+	company = venture_database_get(db, VENTURE_TYPE_COMPANY, company_id, error);
+	if (!company || venture_entity_is_deleted(company)) {
+		if (!error || !*error) g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Invoice customer not found");
+		return NULL;
+	}
+	g_object_get(company, "email", &email, NULL);
+	if (venture_entity_get_organization_id(company) != org || !email || !*email) {
+		venture_set_error_validation(error, "company", "Invoice needs a customer email in the same organization"); return NULL;
+	}
+	if (status == VENTURE_INVOICE_STATUS_VOID) {
+		venture_set_error_validation(error, "invoice", "Cannot send a void invoice"); return NULL;
+	}
+	return g_steal_pointer(&email);
+}
+static VentureMailTemplate *invoice_template(VentureDatabase *db, gint64 org, gboolean *stored, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_TEMPLATE);
+	g_autoptr(VentureEntity) found = NULL;
+	VentureMailTemplate *template;
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ, "invoice", NULL);
+	found = venture_database_find_one(db, query, error);
+	if (error && *error) return NULL;
+	*stored = found != NULL;
+	if (found) return VENTURE_MAIL_TEMPLATE(g_steal_pointer(&found));
+	template = venture_mail_template_new();
+	g_object_set(template, "organization-id", org, "name", "invoice", "subject", "Invoice {number}",
+		"text-body", "Please find invoice {number} below. {terms}", "html-body", "", NULL);
+	return template;
+}
+VentureMailMessage *venture_mail_invoice_message(VentureContext *context, VentureEntity *invoice, GError **error)
+{
+	VentureDatabase *db = venture_context_get_database(context);
+	g_autoptr(VentureMailTemplate) template = NULL;
+	g_autoptr(VentureMailMessage) message = NULL;
+	g_autofree gchar *email = NULL, *html = NULL, *key = NULL;
+	gint64 org = venture_entity_get_organization_id(invoice);
+	gboolean stored = FALSE;
+	email = invoice_recipient(db, invoice, error);
+	if (!email) return NULL;
+	template = invoice_template(db, org, &stored, error);
+	if (!template) return NULL;
+	message = venture_mail_template_render(template, invoice, error);
+	if (!message) return NULL;
+	html = invoice_html(db, invoice, error);
+	if (!html) return NULL;
+	key = g_strdup_printf("invoice:%s", venture_entity_get_uuid(invoice));
+	{
+		g_autofree gchar *intro = NULL, *body = NULL;
+		g_object_get(message, "html-body", &intro, NULL);
+		{
+			g_autoptr(GString) composed = g_string_new(html);
+			const gchar *start = strstr(html, "<body>");
+			g_string_insert(composed, start ? start - html + 6 : 0, intro ? intro : "");
+			body = g_string_free(g_steal_pointer(&composed), FALSE);
+		}
+		g_object_set(message, "to", email, "html-body", body, "idempotency-key", key,
+			"related-type", "invoice", "related-id", venture_entity_get_id(invoice), NULL);
+	}
+	/* The invoice itself, as a PDF the customer can print and file. */
+	{
+		g_autoptr(GBytes) pdf = venture_financial_documents_invoice_pdf(context, invoice, error);
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+		g_autoptr(JsonNode) root = NULL;
+		g_autofree gchar *name = NULL, *encoded = NULL, *attachments = NULL;
+		gconstpointer bytes;
+		gsize size;
+		if (!pdf) return NULL;
+		bytes = g_bytes_get_data(pdf, &size);
+		encoded = g_base64_encode(bytes, size);
+		name = venture_financial_documents_filename(invoice);
+		json_builder_begin_array(builder);
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "type"); json_builder_add_string_value(builder, "inline");
+		json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, name);
+		json_builder_set_member_name(builder, "mime"); json_builder_add_string_value(builder, "application/pdf");
+		json_builder_set_member_name(builder, "data"); json_builder_add_string_value(builder, encoded);
+		json_builder_end_object(builder);
+		json_builder_end_array(builder);
+		root = json_builder_get_root(builder);
+		attachments = json_to_string(root, FALSE);
+		g_object_set(message, "attachments", attachments, NULL);
+	}
+	return g_steal_pointer(&message);
+}
 VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 org, gint64 invoice_id, const VentureActor *actor, GError **error)
 {
 	VentureDatabase *db = venture_context_get_database(context);
 	VentureMailOutbox *outbox = venture_context_get_mail_outbox(context);
 	VentureSettlementService *settlement = venture_settlement_service_get(db);
-	g_autoptr(VentureEntity) invoice = NULL, company = NULL, stored_template = NULL, existing = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, existing = NULL;
 	g_autoptr(VentureMailTemplate) template = NULL;
 	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
-	g_autoptr(VentureQuery) query = NULL, keys = NULL;
+	g_autoptr(VentureQuery) keys = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
-	g_autofree gchar *email = NULL, *html = NULL, *key = NULL;
-	gint64 company_id;
+	g_autofree gchar *email = NULL, *key = NULL;
+	gboolean stored = FALSE;
 	gint status;
 	if (!outbox || !venture_context_module_enabled(context, "invoicing")) {
 		venture_set_error_validation(error, "mail", "Mail and invoicing modules must be enabled"); return NULL;
@@ -107,69 +200,17 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
 		if (!venture_database_commit(db, error)) return NULL;
 		return VENTURE_MAIL_MESSAGE(g_steal_pointer(&existing));
 	}
-	g_object_get(invoice, "company-id", &company_id, "status", &status, NULL);
-	company = venture_database_get(db, VENTURE_TYPE_COMPANY, company_id, error);
-	if (!company || venture_entity_is_deleted(company)) { if (!error || !*error) g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Invoice customer not found"); goto fail; }
-	g_object_get(company, "email", &email, NULL);
-	if (venture_entity_get_organization_id(company) != org || !email || !*email) {
-		venture_set_error_validation(error, "company", "Invoice needs a customer email in the same organization"); goto fail;
-	}
-	if (status == VENTURE_INVOICE_STATUS_VOID) {
-		venture_set_error_validation(error, "invoice", "Cannot send a void invoice"); goto fail;
-	}
+	email = invoice_recipient(db, invoice, error);
+	if (!email) goto fail;
+	g_object_get(invoice, "status", &status, NULL);
 	if (status == VENTURE_INVOICE_STATUS_DRAFT && !venture_settlement_service_transition(settlement, VENTURE_INVOICE(invoice), "sent", now, actor, error)) goto fail;
-	query = venture_query_new(VENTURE_TYPE_MAIL_TEMPLATE);
-	venture_query_set_organization(query, org);
-	venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_EQ, "invoice", NULL);
-	stored_template = venture_database_find_one(db, query, error);
-	if (error && *error) goto fail;
-	if (stored_template) template = g_object_ref(VENTURE_MAIL_TEMPLATE(stored_template));
-	else {
-		template = venture_mail_template_new();
-		g_object_set(template, "organization-id", org, "name", "invoice", "subject", "Invoice {number}",
-			"text-body", "Please find invoice {number} below. {terms}", "html-body", "", NULL);
-		if (!venture_database_save(db, VENTURE_ENTITY(template), actor, error)) goto fail;
-	}
-	message = venture_mail_template_render(template, invoice, error);
+	/* The default template is saved on first use so the operator can edit
+	 * it; the message is then built exactly as a preview builds it. */
+	template = invoice_template(db, org, &stored, error);
+	if (!template) goto fail;
+	if (!stored && !venture_database_save(db, VENTURE_ENTITY(template), actor, error)) goto fail;
+	message = venture_mail_invoice_message(context, invoice, error);
 	if (!message) goto fail;
-	html = invoice_html(db, invoice, error);
-	if (!html) goto fail;
-	{
-		g_autofree gchar *intro = NULL, *body = NULL;
-		g_object_get(message, "html-body", &intro, NULL);
-		{
-			g_autoptr(GString) composed = g_string_new(html);
-			const gchar *start = strstr(html, "<body>");
-			g_string_insert(composed, start ? start - html + 6 : 0, intro ? intro : "");
-			body = g_string_free(g_steal_pointer(&composed), FALSE);
-		}
-		g_object_set(message, "to", email, "html-body", body, "idempotency-key", key,
-			"related-type", "invoice", "related-id", invoice_id, NULL);
-	}
-	/* The invoice itself, as a PDF the customer can print and file. */
-	{
-		g_autoptr(GBytes) pdf = venture_financial_documents_invoice_pdf(context, invoice, error);
-		g_autoptr(JsonBuilder) builder = json_builder_new();
-		g_autoptr(JsonNode) root = NULL;
-		g_autofree gchar *name = NULL, *encoded = NULL, *attachments = NULL;
-		gconstpointer bytes;
-		gsize size;
-		if (!pdf) goto fail;
-		bytes = g_bytes_get_data(pdf, &size);
-		encoded = g_base64_encode(bytes, size);
-		name = venture_financial_documents_filename(invoice);
-		json_builder_begin_array(builder);
-		json_builder_begin_object(builder);
-		json_builder_set_member_name(builder, "type"); json_builder_add_string_value(builder, "inline");
-		json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, name);
-		json_builder_set_member_name(builder, "mime"); json_builder_add_string_value(builder, "application/pdf");
-		json_builder_set_member_name(builder, "data"); json_builder_add_string_value(builder, encoded);
-		json_builder_end_object(builder);
-		json_builder_end_array(builder);
-		root = json_builder_get_root(builder);
-		attachments = json_to_string(root, FALSE);
-		g_object_set(message, "attachments", attachments, NULL);
-	}
 	queued = venture_mail_outbox_enqueue(outbox, message, actor, error);
 	if (!queued || !venture_settlement_service_record_mail(settlement, VENTURE_INVOICE(invoice), actor, error)) goto fail;
 	if (!venture_database_commit(db, error)) return NULL;
@@ -177,4 +218,79 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
 fail:
 	venture_database_rollback(db);
 	return NULL;
+}
+
+/* --- Previews ---------------------------------------------------------------- */
+
+static VentureEntity *preview_source(VentureContext *context, GType type, gint64 org, gint64 id, const gchar *what, GError **error)
+{
+	VentureEntity *row = venture_database_get(venture_context_get_database(context), type, id, NULL);
+	if (!row || venture_entity_is_deleted(row) || venture_entity_get_organization_id(row) != org) {
+		g_clear_object(&row);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "%s not found", what);
+	}
+	return row;
+}
+static VentureMailMessage *invoice_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now,
+	GPtrArray *notes, GError **error)
+{
+	g_autoptr(VentureEntity) invoice = preview_source(context, VENTURE_TYPE_INVOICE, org, id, "Invoice", error);
+	gint status = 0;
+	(void)now;
+	if (!invoice) return NULL;
+	g_object_get(invoice, "status", &status, NULL);
+	if (status == VENTURE_INVOICE_STATUS_DRAFT && notes)
+		g_ptr_array_add(notes, g_strdup("This invoice is a draft: sending issues it first, which can change the dates shown."));
+	return venture_mail_invoice_message(context, invoice, error);
+}
+VentureMailMessage *venture_mail_user_message(VentureEntity *user, gboolean reset)
+{
+	VentureMailMessage *message = venture_mail_message_new();
+	g_autofree gchar *email = NULL, *key = NULL;
+	g_object_get(user, "email", &email, NULL);
+	key = g_strdup_printf("user:%s:%s:%" G_GINT64_FORMAT, venture_entity_get_uuid(user), reset ? "reset" : "welcome", venture_entity_get_version(user));
+	g_object_set(message, "organization-id", venture_entity_get_organization_id(user), "to", email,
+		"subject", reset ? "Your password was reset" : "Welcome to Venture",
+		"text-body", reset ? "Your Venture password was changed. Contact your administrator if you did not request this change." : "Your Venture account is ready. Contact your administrator for sign-in instructions.",
+		"idempotency-key", key, "related-type", "user", "related-id", venture_entity_get_id(user), NULL);
+	return message;
+}
+static VentureMailMessage *account_preview(VentureContext *context, gint64 org, gint64 id, gboolean reset, GError **error)
+{
+	g_autoptr(VentureEntity) user = preview_source(context, VENTURE_TYPE_USER, org, id, "User", error);
+	g_autofree gchar *email = NULL;
+	if (!user) return NULL;
+	g_object_get(user, "email", &email, NULL);
+	if (venture_string_is_empty(email)) {
+		venture_set_error_validation(error, "email", "This user has no email address, so no account mail is sent");
+		return NULL;
+	}
+	return venture_mail_user_message(user, reset);
+}
+static VentureMailMessage *welcome_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now,
+	GPtrArray *notes, GError **error)
+{
+	(void)now; (void)notes;
+	return account_preview(context, org, id, FALSE, error);
+}
+static VentureMailMessage *reset_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now,
+	GPtrArray *notes, GError **error)
+{
+	(void)now; (void)notes;
+	return account_preview(context, org, id, TRUE, error);
+}
+static const VentureMailPreviewKind invoice_kind = {
+	"invoice", "Invoice", "invoicing", "invoice", "invoice", FALSE, invoice_preview
+};
+static const VentureMailPreviewKind welcome_kind = {
+	"account-welcome", "Account welcome", "mail", "user", "user", FALSE, welcome_preview
+};
+static const VentureMailPreviewKind reset_kind = {
+	"account-password-change", "Password change notice", "mail", "user", "user", FALSE, reset_preview
+};
+void venture_mail_consumers_preview_register(void)
+{
+	venture_mail_preview_register(&invoice_kind);
+	venture_mail_preview_register(&welcome_kind);
+	venture_mail_preview_register(&reset_kind);
 }
