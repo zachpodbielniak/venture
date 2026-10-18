@@ -1,0 +1,1 @@
+{"events":[{"id":"evt-complaint-0001","type":"complaint","message_id":"{{MESSAGE_ID}}","recipient":"{{RECIPIENT}}","occurred_at":"{{OCCURRED_AT}}","detail":"abuse report via feedback loop"}]}

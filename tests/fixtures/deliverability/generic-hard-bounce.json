@@ -1,0 +1,1 @@
+{"events":[{"id":"evt-hard-0001","type":"bounce","bounce":"hard","message_id":"<{{MESSAGE_ID}}>","recipient":"{{RECIPIENT}}","occurred_at":"{{OCCURRED_AT}}","status":"5.1.1","detail":"550 5.1.1 The email account that you tried to reach does not exist"}]}

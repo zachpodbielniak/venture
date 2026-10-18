@@ -2175,6 +2175,16 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* Deliverability: the domain check, its API, the send report and the
+	 * feed secret need a session or a token; the provider feed has no
+	 * session by design and refuses an organization with no secret. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/deliverability"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/sends/1/report"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing/domain-health?domain=example.com"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing/sends/1/report"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing/feedback-secret", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/marketing/deliverability/secret", NULL, "organization_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/hooks/deliverability/1/generic", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	/* The documentation site is public by design -- it is the shipped
 	 * shipped documentation, not this install's data -- so it answers
 	 * anonymously rather than redirecting. Pinned here so a route added

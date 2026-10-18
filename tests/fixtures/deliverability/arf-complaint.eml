@@ -1,0 +1,31 @@
+Date: Sun, 18 Oct 2026 12:00:00 +0000
+From: Feedback Loop <fbl@example.net>
+To: abuse@example.com
+Subject: Abuse report
+Message-ID: <arf-0001@example.net>
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=feedback-report; boundary="arf-b"
+
+--arf-b
+Content-Type: text/plain
+
+This is an email abuse report for an email message received.
+
+--arf-b
+Content-Type: message/feedback-report
+
+Feedback-Type: abuse
+User-Agent: ExampleFBL/1.0
+Version: 1
+Original-Rcpt-To: <{{RECIPIENT}}>
+Arrival-Date: Sun, 18 Oct 2026 11:00:00 +0000
+
+--arf-b
+Content-Type: text/rfc822-headers
+
+From: News <news@example.com>
+To: {{RECIPIENT}}
+Subject: Autumn
+Message-ID: <{{MESSAGE_ID}}>
+
+--arf-b--

@@ -1,0 +1,1 @@
+{"events":[{"id":"evt-delivered-0001","type":"delivered","message_id":"<{{MESSAGE_ID}}>","recipient":"{{RECIPIENT}}","occurred_at":"{{OCCURRED_AT}}","detail":"250 2.0.0 OK queued as 4Fq1"},{"id":"evt-unknown-0001","type":"delivered","message_id":"<nothing-we-sent@example.net>","recipient":"someone@example.net","occurred_at":"{{OCCURRED_AT}}"}]}
