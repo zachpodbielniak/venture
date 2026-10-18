@@ -32,6 +32,7 @@ in the repository lists today's.
 | `GET /reports`, `GET /reports/:name` (`?format=csv`) | reports | `report` |
 | `GET /dashboards`, `/dashboards/:slug`, `/dashboards/:slug/export`, `POST /dashboards/import`, `POST /dashboards/from-template`, `GET /widget-kinds`, `GET /dashboard-templates` | dashboards | `dashboards`, `dashboard ...` |
 | `GET /webhooks`, `POST /webhooks/:id/test`, `POST /webhooks/:id/secret`, `POST /webhooks/:id/token` (`{"token"}`, gotify/ntfy) | webhooks out (owner) | `webhooks`, `webhook ...` |
+| `GET /business-events?organization_id=N&after=0&limit=100` | retained business outcomes (organization owner/admin); saves no acknowledgement | -- |
 | `GET /printers`, `GET /printers/:name/status`, `POST /printers/:name/test`, `POST /print/:type/:id` | receipt printers | `printers`, `print` |
 | `POST /federation` | federation operations (owner) | `federation JSON` |
 | `GET /account-identity/:id` | hosted organization identity check | -- |

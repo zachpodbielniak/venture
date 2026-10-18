@@ -41,6 +41,11 @@
 
 G_BEGIN_DECLS
 
+#define VENTURE_TYPE_BUSINESS_EVENT (venture_business_event_get_type())
+VENTURE_DECLARE_ENTITY(VentureBusinessEvent, venture_business_event, BUSINESS_EVENT)
+#define VENTURE_TYPE_BUSINESS_EVENT_DELIVERY (venture_business_event_delivery_get_type())
+VENTURE_DECLARE_ENTITY(VentureBusinessEventDelivery, venture_business_event_delivery, BUSINESS_EVENT_DELIVERY)
+
 /* --- Structure ----------------------------------------------------------- */
 
 #define VENTURE_TYPE_ORGANIZATION (venture_organization_get_type())

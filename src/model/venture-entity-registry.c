@@ -732,6 +732,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_federation_replica_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_federation_peer_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_federation_grant_get_type, VENTURE_DATA_CLASS_PLATFORM },
+		{ venture_business_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_business_event_delivery_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_webhook_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_webhook_delivery_get_type, VENTURE_DATA_CLASS_PLATFORM },
 		{ venture_routing_rule_get_type, VENTURE_DATA_CLASS_TENANT },

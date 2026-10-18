@@ -282,7 +282,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/periods/*.h) \
 	$(filter-out %-print-style.h,$(wildcard src/quotes/*.h)) \
 	$(wildcard src/config/*.h) \
-	$(wildcard src/core/*.h) \
+	$(filter-out %-private.h,$(wildcard src/core/*.h)) \
 	$(wildcard src/db/*.h) \
 	$(wildcard src/report/*.h) \
 	$(wildcard src/ai/*.h) \
