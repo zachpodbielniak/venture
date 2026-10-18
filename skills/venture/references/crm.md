@@ -54,6 +54,11 @@ venturectl update lead 31 status=recycled unqualified_reason="Budget next year" 
   never create a `lead_score_history` row: both are refused.
 - Reports `lead_sources`, `lead_response_time`, `leads_recycled_due`,
   `lead_routing`, `lead_scoring` (`band_size=N`, default 25).
+- A stored email keeps the supplied case and plus tag. Duplicate matching
+  lowercases and trims a separate key and keeps the tag, so `a+billing@`
+  and `a@` are different mailboxes. Conversion and CSV export use the
+  stored address. Capture-mailbox plus routing stays a separate rule
+  (`docs/mail.org`).
 
 ## Referrals (module `referrals`)
 

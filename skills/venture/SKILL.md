@@ -92,7 +92,7 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`7517c9d07a516f802feb7591538b39cb12471ab9` (2026-10-18, server version
+`8a138154a3885948902ce526d97a5670cc66865d` (2026-10-18, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
@@ -103,13 +103,14 @@ Hosted browser sign-in for an enrolled owner is in the platform guide and
 the route index. Trusted sign-up requires `first_name` and `last_name`;
 the old five-member body is refused (operations.md). Events and the
 unified calendar are the planner guide. Durable business outcomes and
-their replay route are in the automation guide. The baseline below
+their replay route are in the automation guide. A lead email keeps its
+plus tag; matching uses a separate key (crm.md). The baseline below
 remains the last full review.
 
-<!-- skill-baseline:start -- reviewed 2026-10-18 against 7517c9d0 -->
+<!-- skill-baseline:start -- reviewed 2026-10-18 against 8a138154 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=7517c9d07a516f802feb7591538b39cb12471ab9
+base=8a138154a3885948902ce526d97a5670cc66865d
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -457,5 +458,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `7517c9d0`; when the live server disagrees,
+- This skill describes baseline `8a138154`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.
