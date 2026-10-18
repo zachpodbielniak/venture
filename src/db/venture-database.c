@@ -2920,7 +2920,10 @@ venture_sequence_service_get(VentureDatabase *database)
 {
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	if (database->sequence_service == NULL)
+	{
 		database->sequence_service = g_object_new(VENTURE_TYPE_SEQUENCE_SERVICE, "database", database, NULL);
+		venture_sequence_mail_install(database->sequence_service, database);
+	}
 	return database->sequence_service;
 }
 

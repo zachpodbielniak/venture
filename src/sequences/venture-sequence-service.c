@@ -399,6 +399,20 @@ exit_row(VentureSequenceService *self, VentureEntity *row, const gchar *reason,
 }
 
 static gboolean
+has_pending_email(VentureSequenceService *self, VentureEntity *enrollment, gboolean *pending, GError **error)
+{
+	g_autoptr(GPtrArray) found = rows(self, VENTURE_TYPE_SEQUENCE_DELIVERY,
+		venture_entity_get_organization_id(enrollment), "enrollment-id", venture_entity_get_id(enrollment), error);
+	guint i;
+	*pending = FALSE;
+	if (found == NULL) return FALSE;
+	for (i = 0; i < found->len; i++)
+		if (choice(g_ptr_array_index(found, i), "channel") == 0 && choice(g_ptr_array_index(found, i), "state") == 0)
+			*pending = TRUE;
+	return TRUE;
+}
+
+static gboolean
 apply_exits(VentureSequenceService *self, VentureEntity *source,
 	VentureEntity *previous, const VentureActor *actor, GError **error)
 {
@@ -429,7 +443,13 @@ apply_exits(VentureSequenceService *self, VentureEntity *source,
 		gboolean goal = FALSE;
 		const gchar *reason = NULL;
 		if (choice(row, "status") > 1 && !suppression)
-			continue;
+		{
+			gboolean pending = FALSE;
+			/* Completing the step list does not mean its last email was sent. */
+			if (choice(row, "status") != 2) continue;
+			if (!has_pending_email(self, row, &pending, error)) return FALSE;
+			if (!pending) continue;
+		}
 		sequence = reference(self, VENTURE_TYPE_SEQUENCE, number(row, "sequence-id"), org, error);
 		if (sequence == NULL)
 			return FALSE;
@@ -457,7 +477,7 @@ apply_exits(VentureSequenceService *self, VentureEntity *source,
 			matches = flag(sequence, "exit-on-deal-won") || goal;
 			reason = "deal_won";
 		}
-		if (matches && choice(row, "status") > 1)
+		if (matches && choice(row, "status") > 2)
 		{
 			if (!cancel_pending(self, row, reason, actor, error))
 				return FALSE;
@@ -828,6 +848,46 @@ tracking_allowed(VentureSequenceService *self, VentureEntity *sequence, gboolean
 	return TRUE;
 }
 
+gboolean
+venture_sequence_delivery_eligible(VentureDatabase *database, VentureEntity *delivery,
+	GDateTime *now, gboolean *defer, GError **error)
+{
+	VentureSequenceService *self = venture_sequence_service_get(database);
+	gint64 org = venture_entity_get_organization_id(delivery);
+	g_autoptr(VentureEntity) enrollment = NULL, sequence = NULL, contact = NULL;
+	g_autoptr(GDateTime) scheduled = NULL, window = NULL;
+	gboolean suppressed = FALSE;
+	*defer = FALSE;
+	if (!venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") ||
+		!venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message"))
+	{
+		*defer = TRUE;
+		return TRUE;
+	}
+	if (choice(delivery, "channel") != 0 || choice(delivery, "state") != 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Sequence delivery is no longer pending");
+	enrollment = reference(self, VENTURE_TYPE_SEQUENCE_ENROLLMENT, number(delivery, "enrollment-id"), org, error);
+	if (enrollment == NULL) return FALSE;
+	sequence = reference(self, VENTURE_TYPE_SEQUENCE, number(enrollment, "sequence-id"), org, error);
+	if (sequence == NULL) return FALSE;
+	contact = reference(self, VENTURE_TYPE_CONTACT, number(enrollment, "contact-id"), org, error);
+	if (contact == NULL) return FALSE;
+	if (venture_entity_is_deleted(sequence) || venture_entity_is_deleted(contact) || choice(enrollment, "status") > 2)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Sequence or contact no longer permits delivery");
+	if (!is_suppressed(self, contact, &suppressed, error)) return FALSE;
+	if (suppressed) return refuse(error, VENTURE_ERROR_VALIDATION, "Contact is suppressed");
+	if (choice(enrollment, "status") == 1 || !flag(sequence, "active"))
+	{
+		*defer = TRUE;
+		return TRUE;
+	}
+	g_object_get(delivery, "scheduled-at", &scheduled, NULL);
+	window = window_time(sequence, now, error);
+	if (window == NULL) return FALSE;
+	*defer = (scheduled != NULL && g_date_time_compare(now, scheduled) < 0) || g_date_time_compare(window, now) > 0;
+	return TRUE;
+}
+
 static gboolean
 execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *sequence, VentureEntity *step,
 	GDateTime *scheduled, GDateTime *as_of, const VentureActor *actor, gboolean *failed, GError **error)
@@ -960,7 +1020,7 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 				return FALSE;
 		}
 	}
-	return TRUE;
+	return venture_sequence_mail_enqueue(self->database, delivery, actor, error);
 }
 
 static gint
@@ -1070,6 +1130,9 @@ venture_sequence_service_run_due(VentureSequenceService *self, gint64 organizati
 		refuse(error, VENTURE_ERROR_INVALID_ARGUMENT, "An execution timestamp is required");
 		return -1;
 	}
+	/* Pick up retained deliveries from installations that had no mail adapter. */
+	if (!venture_sequence_mail_recover(self->database, organization_id, as_of, actor, error))
+		return -1;
 	query = venture_query_new(VENTURE_TYPE_SEQUENCE_ENROLLMENT);
 	venture_query_set_limit(query, 1000);
 	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, organization_id, NULL);

@@ -30,10 +30,36 @@ transaction. Already sent messages remain evidence.
 
 * Mail adapter seam
 
-A mail adapter picks up =sequence_delivery= rows with =channel=email= and
-=state=pending=, sends, and sets state/external id. The sequence engine does
-not send mail or depend on a mail implementation. The adapter must recheck
-pending state before sending, since an exit can cancel a queued delivery.
+The built-in adapter enqueues an email =sequence_delivery= in =mail_message=
+inside the step's transaction. It copies the rendered content and exact
+contact address, uses a delivery-UUID-derived idempotency key, and retains
+=related_type=sequence_delivery= and =related_id=. A failed enqueue rolls back
+the step and its progress. No network operation runs in that transaction.
+
+Run =POST /api/v1/sequences/run= (or =venturectl sequence run=), then
+=POST /api/v1/mail/deliver= (or =venturectl mail deliver=), with the same
+organization. The latter uses that organization's configured SMTP account.
+The sequence sweep also picks up retained pending email deliveries created
+before the adapter existed. If =mail= is disabled, the sequence retains its
+pending delivery; enable mail and run the sequence sweep to enqueue it.
+
+The outbox owns leases, retries and uncertain SMTP outcomes. A sequence
+delivery becomes =sent= with the outbox's Message-ID only after SMTP
+acceptance is committed. Failure to update the sequence projection cannot
+roll back that acceptance; another sequence sweep repairs the projection
+without sending again. Failed or uncertain outbox rows retain their normal
+retry policy and identity. Inspect their related =mail_message= for errors;
+enqueueing alone never means the sequence email was sent.
+
+Before a claim, paused enrollments, inactive sequences, disabled modules and
+closed sending windows defer the same message without spending an attempt.
+Eligibility is checked again immediately before transport. An exited or
+suppressed contact, deleted source, cancelled delivery, or changed recipient
+address cannot send the queued message. A reply imported by mail sync exits
+matching enrollments and cancels pending sequence deliveries, including a
+final email whose step list was already marked completed. Already sent
+history remains completed. A later mail sweep cancels the corresponding
+unsent outbox row without submitting it.
 
 For a step with =survey_form_id=, the forms service appends a seven-day
 personal form link to =sequence_delivery.private_body=. The in-process

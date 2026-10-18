@@ -47,6 +47,16 @@ idempotency key and call enqueue. The source lane owns eligibility and
 content; the outbox owns submission. Those source-row adapters remain a
 cross-lane integration function, not additional SMTP implementations.
 
+Sequence email is wired into the supported sequence sweep: run
+=POST /api/v1/sequences/run= for the organization, then
+=POST /api/v1/mail/deliver=. The first action durably enqueues new and retained
+pending email steps; the second submits their outbox messages. Pauses defer
+claims, while a final eligibility check prevents sending after a contact's
+reply or suppression. Imported inbound mail drives the existing sequence
+exit rules. SMTP acceptance is retained before the sequence result is updated,
+so a projection failure cannot cause another submission. See
+[[file:sequences.org][Sequences, Mail adapter seam]] for restart and retry behavior.
+
 A scheduled =report_pack= with =deliver=email= is one more such source: the
 pack sweep enqueues the run's retained output with its JSON and CSV files
 attached, keyed by pack and delivery clock, and records the outcome on the

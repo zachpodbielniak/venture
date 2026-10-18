@@ -92,7 +92,7 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`8a138154a3885948902ce526d97a5670cc66865d` (2026-10-18, server version
+`9c97a87a02ecc0fce669040557997f0e7d22e87f` (2026-10-18, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
@@ -104,13 +104,14 @@ the route index. Trusted sign-up requires `first_name` and `last_name`;
 the old five-member body is refused (operations.md). Events and the
 unified calendar are the planner guide. Durable business outcomes and
 their replay route are in the automation guide. A lead email keeps its
-plus tag; matching uses a separate key (crm.md). The baseline below
-remains the last full review.
+plus tag; matching uses a separate key (crm.md). Sequence email steps
+enqueue in the mail outbox; `mail deliver` submits them (outreach.md). The
+baseline below remains the last full review.
 
-<!-- skill-baseline:start -- reviewed 2026-10-18 against 8a138154 -->
+<!-- skill-baseline:start -- reviewed 2026-10-18 against 9c97a87a -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=8a138154a3885948902ce526d97a5670cc66865d
+base=9c97a87a02ecc0fce669040557997f0e7d22e87f
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -345,7 +346,7 @@ ids, notes) in words.
 | "Which customers are at risk? / merge duplicates" | `report customer_health`, `customers health-sweep`; `dedupe scan\|merge` | [crm.md](references/crm.md) |
 | "Migrate from HubSpot/Salesforce/Zoho" | `crm preview\|import\|activate` | [crm.md](references/crm.md) |
 | "Build / publish / embed a form, read its answers" | `create form`, `form_field`, `act form ID publish`, `report form_summary` | [forms.md](references/forms.md) |
-| "Enroll in a sequence / send a newsletter" | `sequence enroll`; `marketing_send` preview -> approve -> run | [outreach.md](references/outreach.md) |
+| "Enroll in a sequence / send a newsletter" | `sequence enroll`, then `mail deliver` for queued email steps; `marketing_send` preview -> approve -> run | [outreach.md](references/outreach.md) |
 | "Send / retry / sync mail" | `mail send\|deliver\|retry\|sync` | [mail.md](references/mail.md) |
 | "Open / triage / answer a ticket" | `create ticket`, `ticket ID triage\|draft\|macro\|worklog` | [desk.md](references/desk.md) |
 | "Break an epic into stories / how far along is it?" | `create ticket issue_type=story parent_id=EPIC`, `report epic_progress milestone_id=N` | [desk.md](references/desk.md) |
@@ -458,5 +459,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `8a138154`; when the live server disagrees,
+- This skill describes baseline `9c97a87a`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.

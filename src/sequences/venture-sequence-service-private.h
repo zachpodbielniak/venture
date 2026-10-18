@@ -18,4 +18,12 @@ typedef gboolean (*VentureSequenceSaveContinuation)(VentureDatabase *database,
 gboolean venture_sequences_save_hook(VentureDatabase *database, VentureEntity *record,
 	const VentureActor *actor, VentureSequenceSaveContinuation save, gboolean *handled, GError **error);
 
+void venture_sequence_mail_install(VentureSequenceService *service, VentureDatabase *database);
+gboolean venture_sequence_mail_enqueue(VentureDatabase *database, VentureEntity *delivery,
+	const VentureActor *actor, GError **error);
+gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organization, GDateTime *now,
+	const VentureActor *actor, GError **error);
+gboolean venture_sequence_delivery_eligible(VentureDatabase *database, VentureEntity *delivery,
+	GDateTime *now, gboolean *defer, GError **error);
+
 #endif
