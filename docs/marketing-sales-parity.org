@@ -1,0 +1,190 @@
+#+title: Marketing, sales, phone and text parity — the gap audit
+
+This page is lane 0 of the epic "marketing, sales, phone and text that
+replace separate tools", worked on =feat/191-marketing-sales=. It compares
+what Venture already does against three kinds of tool a small business
+otherwise pays for separately: an email-marketing tool (designed campaigns,
+audiences, journeys, deliverability), a CRM (pipelines, scoring,
+assignment, booking, mailbox sync) and a phone/text tool (calls, texts and a
+shared inbox). The phone and text lane names its first connectors: a 3CX PBX
+for calls and VoIP.ms for SMS/MMS.
+
+Each table below is one lane of the epic, one row per capability. *Venture
+today* is =have=, =partial= or =missing=. A =have= or =partial= cites the
+code that was read to confirm it, not only the module page. Paths are
+relative to the repository root. *What the later lane builds* is the gap
+that lane closes; nothing here re-implements what already exists.
+
+* How work lands here
+
+- Take one lane. Branch from =feat/191-marketing-sales=, not =master=.
+- Tests first, then the change, then this page: move the lane's rows to
+  =have= with the commit that closes them.
+- Lanes run in order 1 to 9; each lane builds on the previous lane's
+  services rather than adding a parallel path.
+
+* Where outgoing email is built today
+
+Every outgoing message is an unsaved =VentureMailMessage= handed to
+=venture_mail_outbox_enqueue()= (=src/mail/venture-mail-outbox.h=). Each
+sender composes its own subject and bodies inline; there is no shared
+renderer, layout, brand or preview step. The =mail_template= record
+(=src/mail/venture-mail-records.c=: name, subject, text body, HTML body with
+={field}= substitution, rendered by =venture_mail_template_render()= and
+=venture_mail_template_render_values()= in =src/mail/venture-mail-template.c=)
+is the only template mechanism.
+
+| Email kind | Function that builds it | Body today |
+|------------+-------------------------+------------|
+| Invoice | =venture_mail_send_invoice()= and =invoice_html()=, =src/mail/venture-mail-consumers.c= | =invoice= template text plus a hand-built HTML table, PDF attached |
+| Quote | =venture_quote_mail_enqueue()=, =src/quotes/venture-quote-mail.c= | plain text; acceptance link in the private text body, so no HTML part |
+| Quote acceptance confirmation | =venture_mail_confirm_money()=, =src/mail/venture-money-mail.c= | text and minimal HTML |
+| Overdue reminder | =render_message()= and =send_step()=, =src/dunning/venture-dunning-service.c= | organization =mail_template= per step; private HTML twin for the pay link |
+| Payment receipt | =send_receipt()=, =src/documents/venture-financial-documents.c= | plain text, PDF attached |
+| Subscription notice | =queue_notice()=, =src/billing/venture-billing-service.c= | plain text |
+| Collection notice | =queue_notice()=, =src/recurring/venture-recurring-service.c= | plain text, empty HTML |
+| Report pack | =enqueue_output()=, =src/report/venture-report-pack-delivery.c= | built-in template, files attached |
+| Booking confirmation | =booking_mail()=, =src/calendar/venture-booking-reservations.inc= | private plain text |
+| Form confirmation, opt-in, resume link | =forms_queue_confirmation()= (=src/forms/venture-forms.c=), =forms_optin_store()= (=src/forms/venture-forms-optin.inc=), =forms_resume_save()= (=src/forms/venture-forms-resume.inc=) | plain text |
+| Portal invitation | =venture_portal_service_send_invitation()=, =src/portal/venture-portal-service.c= | private plain text |
+| Account welcome and password reset | =venture_mail_save_user()=, =src/mail/venture-mail-outbox.c= | plain text |
+| Marketing campaign | =make_recipient()=, =src/marketing/venture-marketing-audience.inc=, via =venture_marketing_service_preview()= | operator-written text and HTML, frozen per recipient, unsubscribe appended |
+| Sequence step | =render()= and =venture_sequence_service_run_due()=, =src/sequences/venture-sequence-service.c= | rendered into =sequence_delivery=; no in-tree adapter enqueues it to the outbox |
+| Alerts | =src/core/venture-notify.c= | in-app inbox only; no email |
+
+=src/mail/venture-smtp-mailer.c= always sends a text part (empty when the
+sender gave none) and drops the public HTML when a private text body is set.
+
+* Lane 1 — one preview for every outgoing email
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Preview of every outgoing kind (invoices, quotes, reminders, receipts, sequences, campaigns, invitations, alerts) | partial | Campaigns: =venture_marketing_service_preview()= freezes rendered content on =marketing_recipient= (=src/marketing/venture-marketing-audience.inc=). Reminders: the dunning sweep's =dry_run= plan (=src/dunning/venture-dunning-service.c=). No other kind has one | One preview service fed by each sender's render step, so the preview is the bytes that would be enqueued |
+| Desktop, tablet and phone widths | missing | No rendered-email view exists | Preview frame at three widths |
+| Light and dark | missing | — | Preview in both schemes, with dark-mode colour handling |
+| Send me a test | partial | =venture_dunning_service_test_send()= (=src/dunning/venture-dunning-service.h=) sends one reminder step to the actor with a =[TEST]= subject; *Send test message* in =src/mail/venture-mail-settings-web.inc= tests only the SMTP connection | Test send of any kind to the acting user, pay and private links replaced |
+| Check: plain-text part present | missing | =src/mail/venture-smtp-mailer.c= sends an empty text part rather than refusing | Pre-send check that a meaningful text alternative exists |
+| Check: image alt text | missing | — | Check every image has alt text |
+| Check: links resolve | missing | Campaign preview only counts destinations (at most 1,000, =src/marketing/venture-marketing-audience.inc=) | Bounded link check before approval |
+| Check: size under the ~102 KB clipping limit of a major webmail client | partial | Campaign bodies are capped at 64 KiB each and subjects at 998 bytes (=src/marketing/venture-marketing-audience.inc=); no other sender measures size | Measure the final HTML and warn before clipping |
+| Check: unsubscribe where required | partial | Campaigns append a per-recipient link and RFC 8058 headers (=src/marketing/venture-marketing-audience.inc=, =src/mail/venture-smtp-mailer.c=); sequence mail has none and nothing checks for it | Required-unsubscribe rule per kind, enforced as a pre-send check |
+
+* Lane 2 — rich email design
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| AI designs an email from a plain brief using the organization's logo, colours, fonts, products, photos and prices | missing | No AI tool touches mail (=src/ai/=); the assistant's writes are generic staged record changes (=docs/ai.org=, Tools) | Brief-to-design tool that reads brand and product records |
+| Edits by words, undoable | missing | — | Instruction edits as versions of a design, each undoable |
+| No assets gives a plain design, asks for the logo once, never invents prices, offers or claims | missing | — | Fallback layout and a grounding rule: prices and offers come only from records |
+| Block builder (header, text, image, button, columns, divider, social, footer) | missing | =mail_template= is free text and HTML (=src/mail/venture-mail-records.c=) | Block model rendered to email-safe HTML and text |
+| Brand settings | missing | No logo, colour or font fields on the organization (=src/model/venture-records.c=); =ui.accent= in =src/config/venture-config.c= themes the application, not mail; invoice and quote print style is fixed CSS (=src/quotes/venture-document-print-style.h=) | Organization brand record used by every email kind |
+| Saved templates | partial | =mail_template= with ={field}= substitution, used by invoices, reminders and report packs (=src/mail/venture-mail-template.c=, =src/mail/venture-mail-consumers.c=, =src/dunning/venture-dunning-service.c=) | Saved block designs alongside the existing text templates |
+| Reusable sections | missing | — | Shared header, footer and signature blocks |
+| Hosted image upload | missing | =document= attachments and =form_upload= files are private (=src/model/venture-records.c=, =src/forms/venture-forms-uploads.c=); no public image route | Public, organization-scoped image hosting with size limits |
+| Video block (poster with play button linking to a video page) | missing | — | Poster image plus link block |
+| Renders in major clients, light and dark | missing | No rendering tests for mail HTML | Table-based output and a rendering check set |
+
+* Lane 3 — deliverability
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Authenticated provider feed for bounces and complaints (signed notifications, DSN parsing) into suppression | partial | Operator *Record delivery feedback* and =venture_marketing_service_feedback()= create retained suppression (=src/marketing/venture-marketing-service.h=, =src/marketing/venture-marketing-tracking.inc=); no webhook and no DSN parsing | Signed provider webhook and DSN parser feeding the same service seam |
+| Campaign reply detection, as sequences do | missing | Sequences exit on an inbound interaction (=src/sequences/venture-sequence-service.c=); campaigns record no replies (=src/marketing/=) | Match inbound mail to campaign recipients |
+| SPF, DKIM and DMARC domain check | missing | Only a comment that the relay must DKIM-sign (=src/mail/venture-smtp-mailer.c=) | DNS check of the sending domain in mail settings |
+| Ramp-up limits | partial | Per-send pacing interval of 1 to 86,400 seconds, default 60 (=src/marketing/venture-marketing-service.c=), applied per queued recipient (=src/marketing/venture-marketing-delivery.inc=) | Daily caps and a warm-up schedule per sending domain |
+| Per-send report (delivered, opened, clicked, replied, unsubscribed, bounced, complained, click map, machine-open flag) | partial | =marketing_performance= reports accepted, hard-bounced, uniquely opened, clicked and unsubscribed (=src/marketing/venture-marketing-reports.c=) | Replied and complained columns, per-link click map, machine-open flag |
+
+* Lane 4 — audiences and journeys
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Tags | partial | Comma-separated =tags= on contact and company (=src/model/venture-records.c=); no tag-added event | Tag operations that segments and triggers can use |
+| Behaviour segments (opened, clicked, replied, bought, booked) | missing | Segments are saved field filters over one record type (=src/marketing/venture-marketing-records.c=, =filters=) | Segment conditions over events and related records |
+| Embeddable signup forms with double opt-in | have | =forms_optin_store()= requires an explicit consent question and creates =marketing_consent= and a list member on confirmation (=src/forms/venture-forms-optin.inc=) | — |
+| Preference centre | partial | One organization-wide stop at =/marketing/u/<token>= (=src/marketing/venture-marketing-web.inc=) | Topics and frequency choices |
+| Multi-step journeys with branches and waits | partial | Sequences have ordered email, call-task, SMS-task and wait steps with delays, send windows and goal exits (=src/sequences/venture-sequence-records.c=); no branches | Branch steps on conditions and events |
+| Triggers (form submitted, tag added, deal stage changed, quote sent not accepted, invoice paid, booking made) | partial | Generic =on_created= / =on_updated= record events with a =create= handler (=src/automation/=, =docs/automation.org=); no named triggers and no enrolment handler | Named triggers that enrol a contact into a journey |
+| A/B subject and content with automatic winner | missing | — | Variants on a send and a winner rule |
+| Recipient local-time send | partial | A sequence has one IANA timezone and send window (=src/sequences/venture-sequence-records.c=); contacts carry no timezone | Per-recipient timezone for sequences and campaigns |
+| Resend to non-openers | missing | — | Follow-up send built from the first send's non-openers |
+
+* Lane 5 — sales
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Drag-and-drop pipeline board | partial | =venture_web_deals_board()= groups cards by stage with a stage selector and Move button (=src/pipelines/venture-pipeline-web.inc=) | Drag and drop through =venture_deal_service_move_stage()= |
+| Stage probabilities and forecasts | have | Stage probability and =forecast= report with =open_weighted= and committed (=src/pipelines/venture-pipeline-reports.c=) | — |
+| Lead scoring, rules and AI | partial | Rule formula and score history (=src/leads/venture-lead-service.c=); the only lead AI tool converts leads (=src/leads/venture-lead-ai.inc=) | AI score proposal with its reasons, beside the rules |
+| Round-robin assignment | have | =VENTURE_LEAD_ROUTING_ROUND_ROBIN= with a persisted cursor (=src/leads/venture-lead-routing.c=) | — |
+| Meeting booking links | have | Public =/book/<slug>= pages and reservations (=src/calendar/venture-booking-service.c=, =src/calendar/venture-calendar-web.inc=) | — |
+| Products on deals flowing to quotes | have | =deal_line= and =venture_deal_service_create_quote()= (=src/pipelines/venture-deal-service.h=) | — |
+| Two-way email sync onto the contact timeline | partial | IMAP inbound sync onto interactions, sent mail recorded as outbound with Sent-folder dedupe (=src/mail/venture-mail-sync-service.c=, =docs/mail.org= Outbound on the timeline); password IMAP only, token sign-in noted as not implemented (=src/mail/venture-imap-client.c=) | Token-based mailbox sign-in and replying from the timeline |
+
+* Lane 6 — phone and text
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Pluggable telephony connector (3CX PBX, VoIP.ms SMS/MMS first) | missing | The connector layer covers IMAP and CalDAV only (=src/core/venture-connector.h=) | Telephony connector interface with 3CX and VoIP.ms adapters |
+| Click-to-call | partial | Phone fields render as =tel:= links (=src/web/venture-web-record-view.inc=) | Dial through the connected PBX |
+| Automatic call logging on existing call-log records | partial | =log_call= with =call-external-source= / =call-external-id= replay identity for an adapter (=src/activities/venture-activity-records.c=); no adapter calls it | PBX events written through =log_call= |
+| Inbound match and missed calls | missing | Call outcomes include =no_answer= and =voicemail= (=src/activities/venture-activity-records.c=); nothing matches an inbound number | Caller lookup and missed-call records |
+| Two-way SMS with delivery status | missing | — | SMS send, receive and delivery status records |
+| Inbound webhook | missing | — | Signed inbound webhook per connector |
+| STOP/HELP, consent and quiet hours | missing | Email consent and sequence send windows exist (=src/marketing/venture-marketing-consent.inc=, =src/sequences/venture-sequence-records.c=); nothing for texts | SMS keywords, text consent and quiet hours |
+| Text steps in sequences and campaigns | partial | =sms_task= steps create an owner notification and send nothing (=src/sequences/venture-sequence-service.c=) | Real text steps through the connector |
+
+* Lane 7 — one inbox
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| One thread per contact (email, texts, calls, voicemail, web chat) | partial | Interactions of kind email, call and message on the contact timeline (=src/venture-enums.h=, =src/activities/venture-activity-timeline.c=); no texts or web chat | Conversation thread per contact across channels |
+| Assignable | missing | Workdesk tickets are routed and assigned (=src/core/venture-routing.c=); contact conversations are not | Conversation owner and reassignment |
+| Status | missing | — | Open, waiting and closed per conversation |
+
+* Lane 8 — AI on messages
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Inbound classify, extract, draft and route | partial | Ticket triage, summary and draft reply on the toolless path (=src/ai/venture-ai-assist.c=); not applied to inbound mail or texts | The same judgements on inbound messages |
+| Configured auto-replies (after-hours, missed-call text-back) | missing | — | Auto-reply rules |
+| Call and voicemail summaries | missing | A supplied =call_transcript= is stored only (=src/activities/venture-activity-records.c=) | Summary from a transcript or recording |
+| Outbound drafts and next step | partial | =venture_ai_assist_draft_reply()= for tickets (=src/ai/venture-ai-assist.c=) | Drafts and suggested next step for contacts and deals |
+| Draft-and-approve by default, per-rule auto-send | partial | AI writes are staged for approval under =ai.policy= (=src/config/venture-config.c=, =docs/ai.org=); no per-rule auto-send | Per-rule auto-send switch |
+| Consent and quiet hours | missing | — | AI sends obey the lane 6 consent and quiet hours |
+| Logged with reason | partial | AI changes are audited with model, diff and prompt (=docs/ai.org=, The audit trail) | Message-level log with the rule and reason |
+| One off switch | partial | The =ai= module and =ai.policy= =read_only= (=src/config/venture-config.c=) | One switch for AI messaging alone |
+
+* Lane 9 — settings
+
+| Capability | Venture today | Evidence | What the later lane builds |
+|------------+---------------+----------+----------------------------|
+| Sensible defaults | partial | Tracking off by default (=src/model/venture-records.c=, =sequence-tracking= and =marketing-tracking=); 60-second campaign pacing (=docs/marketing.org=) | Documented defaults for every workflow in this epic |
+| Each workflow changeable on a settings screen | partial | Mail and AI have settings pages (=src/mail/venture-mail-settings-web.inc=, =src/ai/venture-ai-settings-web.inc=); other switches are fields on the organization record | Marketing, sales, phone and AI-message settings screen |
+| Same settings through chat and AI tools, one settings API, audit trail | partial | Generic staged =venture_update= with audit (=docs/ai.org=, Tools); no settings API | One settings API used by the screen, REST, CLI and the assistant |
+
+* What later lanes build
+
+Only the =partial= and =missing= rows above.
+
+- Lane 1: preview for every kind; widths; light and dark; test send of any
+  kind; plain-text, alt-text, link, size and unsubscribe checks.
+- Lane 2: AI design from a brief; edits by words with undo; grounded plain
+  fallback; block builder; brand settings; saved designs beside text
+  templates; reusable sections; hosted images; video block; client
+  rendering.
+- Lane 3: provider bounce and complaint feed with DSN parsing; campaign
+  reply detection; SPF, DKIM and DMARC check; warm-up caps; replied,
+  complained, click map and machine-open in the send report.
+- Lane 4: tag operations; behaviour segments; topic preferences; journey
+  branches; named triggers that enrol; A/B with winner; recipient local
+  time; resend to non-openers.
+- Lane 5: drag and drop on the board; AI lead scoring; token mailbox
+  sign-in and replying from the timeline.
+- Lane 6: telephony connector with 3CX and VoIP.ms; click-to-call; call
+  logging from the PBX; inbound match and missed calls; two-way SMS;
+  inbound webhook; STOP/HELP, consent and quiet hours; real text steps.
+- Lane 7: conversation thread per contact; assignment; status.
+- Lane 8: inbound judgements on messages; auto-replies; call summaries;
+  drafts and next step; per-rule auto-send; consent and quiet hours;
+  message log with reason; one off switch.
+- Lane 9: defaults; one settings screen; one settings API with audit.
