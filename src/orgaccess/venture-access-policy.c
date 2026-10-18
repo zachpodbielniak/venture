@@ -543,6 +543,14 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 	org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
 	if (self->organization_id != 0 && org != self->organization_id)
 		return refuse(error, TRUE);
+	/* This feed combines outcomes from several permission domains. Only
+	 * the organization's administrators may consume its complete stream. */
+	if (VENTURE_IS_BUSINESS_EVENT(entity) || VENTURE_IS_BUSINESS_EVENT_DELIVERY(entity))
+	{
+		static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+		if (!venture_access_policy_has_organization_role(self, actor, org, roles, G_N_ELEMENTS(roles)))
+			return refuse(error, TRUE);
+	}
 	if (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database))) {
 		VentureDataClass classification = venture_data_class_for_type(G_OBJECT_TYPE(entity));
 		if (!venture_tenant_service_check_principal(venture_tenant_service_get(self->database), actor, error)) return FALSE;

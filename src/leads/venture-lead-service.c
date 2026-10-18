@@ -123,14 +123,7 @@ normalize(const gchar *value, guint kind)
 {
 	g_autofree gchar *text = g_ascii_strdown(value != NULL ? value : "", -1);
 	g_strstrip(text);
-	if (kind == 0)
-	{
-		gchar *at = strchr(text, '@');
-		gchar *plus = strchr(text, '+');
-		if (at != NULL && plus != NULL && plus < at)
-			memmove(plus, at, strlen(at) + 1);
-	}
-	else if (kind == 1)
+	if (kind == 1)
 	{
 		gchar *p;
 		gchar *out = text;
@@ -138,7 +131,7 @@ normalize(const gchar *value, guint kind)
 			if (g_ascii_isdigit(*p)) *out++ = *p;
 		*out = '\0';
 	}
-	else if (*text != '\0')
+	else if (kind == 2 && *text != '\0')
 	{
 		g_autofree gchar *uri_text = NULL;
 		g_autoptr(GUri) uri = NULL;
@@ -414,7 +407,8 @@ save_lead(VentureLeadService *self, VentureEntity *entity, const gchar *policy,
 		changed = old != state || g_strcmp0(owner, old_owner) != 0;
 	}
 	if (!validate_state(entity, previous, self->rerouting, error)) goto fail;
-	for (i = 0; i < G_N_ELEMENTS(fields); i++)
+	/* Email is the supplied delivery address; normalise only comparison keys. */
+	for (i = 1; i < G_N_ELEMENTS(fields); i++)
 	{
 		g_autofree gchar *raw = string_field(entity, fields[i]);
 		g_autofree gchar *normal = normalize(raw, i);

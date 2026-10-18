@@ -92,7 +92,7 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 ## Skill baseline -- maintained
 
 This skill was reviewed against VENTURE commit
-`4d4107415aab9576cd2314d6770e2db95a5487f4` (2026-10-16, server version
+`8a138154a3885948902ce526d97a5670cc66865d` (2026-10-18, server version
 0.6.0): every verb, route, record type, module and report it names was read
 from that source or checked against a running server built from it. The rule
 that keeps it current is in `AGENTS.md` ("The CLI, and its skill"): a change
@@ -102,13 +102,15 @@ same commit and moves this baseline.
 Hosted browser sign-in for an enrolled owner is in the platform guide and
 the route index. Trusted sign-up requires `first_name` and `last_name`;
 the old five-member body is refused (operations.md). Events and the
-unified calendar are the planner guide. The baseline below
+unified calendar are the planner guide. Durable business outcomes and
+their replay route are in the automation guide. A lead email keeps its
+plus tag; matching uses a separate key (crm.md). The baseline below
 remains the last full review.
 
-<!-- skill-baseline:start -- reviewed 2026-10-16 against 4d41074 -->
+<!-- skill-baseline:start -- reviewed 2026-10-18 against 8a138154 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=4d4107415aab9576cd2314d6770e2db95a5487f4
+base=8a138154a3885948902ce526d97a5670cc66865d
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -377,6 +379,7 @@ ids, notes) in words.
 | "Where do the goals stand / the roadmap" | `roadmap` (or `goal_id=N`); `/roadmap` page | [planner.md](references/planner.md) |
 | "Run X every day / when Y changes" | a pod in `automations.pod` or cron calling the sweep | [automation.md](references/automation.md) |
 | "Tell another system when records change" | `create webhook`, `webhook secret`, `webhook test` | [automation.md](references/automation.md) |
+| "Replay retained business outcomes" | `update webhook ID business_events=true`; `GET /api/v1/business-events?organization_id=N&after=CURSOR` (owner/admin) | [automation.md](references/automation.md) |
 | "Approve what an agent proposed" | `GET /api/v1/confirmations`, `POST .../approve\|reject` | [api.md](references/api.md) |
 | "Give an AI agent access" | a token + `venturectl mcp` (writes staged) | [cli.md](references/cli.md) |
 | "Add a user / token / membership" | `create user ... password=`, `/account/tokens`, `organization_membership` | [platform.md](references/platform.md) |
@@ -455,5 +458,5 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `4d41074`; when the live server disagrees,
+- This skill describes baseline `8a138154`; when the live server disagrees,
   trust the server's generated answers and say the skill is behind.

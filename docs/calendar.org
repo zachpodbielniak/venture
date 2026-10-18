@@ -143,7 +143,7 @@ the owner's zone and submitted as UTC. =?format=json= returns the slots as
 =POST /book/<slug>= with =start=, =name=, =email= and optional =notes=, as a
 form or JSON, books one. The contact is found by normalised email the way
 lead deduplication and inbound mail match (lower case, trimmed, +tag
-removed) or created with =source=booking=; a planned meeting owned by the
+retained) or created with =source=booking=; a planned meeting owned by the
 page owner, related to that contact, is written in the same transaction,
 with the customer's notes and address in its body. The slot is recomputed
 under the save lock, so a booking beyond the target's capacity — or a time that was never

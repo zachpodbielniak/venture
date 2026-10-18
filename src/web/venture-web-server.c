@@ -9423,6 +9423,32 @@ venture_web_request_organization(
 	return TRUE;
 }
 
+static HtmxResponse *
+venture_web_api_business_events(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	HtmxResponse *gate;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) page = NULL;
+	const gchar *after_text = htmx_request_get_query_param(request, "after");
+	const gchar *limit_text = htmx_request_get_query_param(request, "limit");
+	gint64 organization = 0, after = 0, limit = 100;
+	(void)params;
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	if (gate != NULL) return gate;
+	if ((after_text != NULL && !g_ascii_string_to_signed(after_text, 10, 0, G_MAXINT64, &after, NULL)) ||
+		(limit_text != NULL && !g_ascii_string_to_signed(limit_text, 10, 1, 1000, &limit, NULL)))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Use a nonnegative after cursor and a limit from 1 to 1000");
+		return venture_web_error_response(error);
+	}
+	if (!venture_web_request_organization(self, request, NULL, &organization, &error))
+		return venture_web_error_response(error);
+	page = venture_business_events_read(venture_context_get_database(self->context), organization, after, (guint)limit, &error);
+	return page != NULL ? venture_web_json_response(page, 200) : venture_web_error_response(error);
+}
+
 /*
  * Whether the viewer has picked an entity in the sidebar at all -- "all"
  * included. Before a pick, a page that belongs to one business may choose
@@ -33249,6 +33275,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/chat/confirm/:id/reject", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_chat_reject, self);
 
 	/* API */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/business-events", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_business_events, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/metrics", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_metrics, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);

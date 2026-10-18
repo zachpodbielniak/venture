@@ -42,7 +42,7 @@ static void setup(Fixture *f, gconstpointer data)
 		g_autoptr(VentureEntity) org = venture_database_find_one(f->db, query, &error);
 		f->org = venture_entity_get_id(org);
 	}
-	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Ada", "email", "Ada+crm@Example.test", NULL);
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Ada", "email", "Ada@Example.test", NULL);
 	save(f, contact);
 	f->contact = venture_entity_get_id(contact);
 	f->caldav = venture_fake_caldav_client_new();
@@ -628,7 +628,7 @@ static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data
 		g_assert_cmpint(contact_id, >, 0);
 		contact = venture_database_get(f->db, VENTURE_TYPE_CONTACT, contact_id, NULL);
 		g_object_get(contact, "email", &email, NULL);
-		g_assert_cmpstr(email, ==, "grace@hopper.test");
+		g_assert_cmpstr(email, ==, "grace+x@hopper.test");
 		g_assert_cmpint(count_type(f, "contact"), ==, 2);
 	}
 	/* The same slot again is refused, and nothing is written. */

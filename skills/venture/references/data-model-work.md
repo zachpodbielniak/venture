@@ -130,6 +130,15 @@ never a field) -- owner-only; and
 `status_code`, `duration_ms`, `request_body`, `response_excerpt`) --
 read-only evidence.
 
+## Durable business-event history (core)
+
+`business_event` (`event`, `occurred_at`, `source_type`, `source_id`,
+`source_version`, plus UUID/organization) and `business_event_delivery`
+(`event_id`, `webhook_id`, `delivered`, `attempts`, `next_attempt_at`,
+`status_code`) are service-owned, organization owner/admin readable. Generic
+mutations are denied. A webhook's `business_events` switch opts into this
+minimal retained lane. See [automation.md](automation.md) for replay and retry.
+
 ## ai, chat, automation
 
 - `ai` has no types: the assistant, its tools and `ai.policy`
