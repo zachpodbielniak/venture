@@ -229,3 +229,5 @@ screen's ordinary sync-and-import test.
 - [[file:evidence/forms-consent.org][Forms consent demonstration]] — built-server capture of explicitly checked marketing permission.
 
 - [[file:email-design.org][Designed email]] — brand settings, hosted images, blocks, shared sections, the AI designer and its grounding rule, dark mode and undo.
+
+- [[file:deliverability.org][Deliverability]] — signed bounce and complaint feed, DSNs from synced mail, campaign replies, the SPF/DKIM/DMARC check, warm-up limits and the per-send report with machine opens and click map.

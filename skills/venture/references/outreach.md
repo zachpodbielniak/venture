@@ -80,6 +80,31 @@ consent and delivery evidence are service-owned.
   approval cohorts and current outcomes; acceptance is not inbox delivery,
   and observed opens/clicks are not proof of reading.
 
+### Deliverability (`docs/deliverability.org`)
+
+- Bounces and complaints also arrive by themselves: DSNs and abuse reports
+  in a synced shared mailbox are read on sync, and a provider can post to
+  `POST /hooks/deliverability/ORG/generic` signed with the organization's
+  secret (`X-Venture-Timestamp`, `X-Venture-Signature` = hex
+  HMAC-SHA256 of `timestamp + "\n" + body`, 300 s window). Set the secret
+  with `POST /api/v1/marketing/feedback-secret {"organization_id": N}`
+  (owner/admin; shown once). No secret means every delivery is refused.
+- Replies are counted by the sequence reply rule (an inbound interaction
+  for the contact) onto the latest accepted campaign message within 30 days.
+- Domain check: `GET /api/v1/marketing/domain-health?organization_id=N&domain=D&selector=S`
+  (owner/admin) gives SPF, DKIM and DMARC as pass/weak/missing/error with
+  what to change. It reads public DNS only.
+- Warm-up: `marketing_sending_domain` (`domain`, `dkim_selector`,
+  `warmup_started_on`, `ramp_schedule` = `day:limit` pairs, empty for the
+  default 50 rising to no limit at day 30, `off`). A run that reaches the
+  day's limit waits for the next UTC day; that is not an error.
+- One send: `GET /api/v1/marketing/sends/ID/report` (also
+  `report marketing_performance` with option `send_id`): delivered,
+  opened, machine_opened, clicked, replied, unsubscribed, bounced,
+  soft_bounced, complained and `links` (the click map). Machine-judged
+  opens are never in `opened`; Apple privacy proxies cannot be detected,
+  so `opened` is an upper bound.
+
 ## First-party source attribution (module `attribution`)
 
 `describe attribution_site` exposes the organization-owned site

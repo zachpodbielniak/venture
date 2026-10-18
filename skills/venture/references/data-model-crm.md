@@ -82,7 +82,11 @@ contact/company/lead), `marketing_consent` (evidence: `source`,
 `marketing_send` (`state` [draft|preview|approved|paused|cancelled|complete];
 *actions* `preview`, `approve`, `pause`, `resume`, `cancel`, `run` --
 none stage), `marketing_recipient` (frozen per-recipient copy; *action*
-`feedback`), `marketing_event`.
+`feedback`; evidence stamps `bounced_at`, `opened_at`, `clicked_at`,
+`unsubscribed_at`, `delivered_at`, `replied_at`, `complained_at`,
+`machine_opened_at`), `marketing_event` (`machine_reason` when an
+observation was judged a machine's), `marketing_sending_domain` (owner/admin
+setting: `domain`, `dkim_selector`, `warmup_started_on`, `ramp_schedule`).
 
 ## outreach, ideas (requires sales / core) -- reports `campaigns`, `ideas`
 

@@ -95,11 +95,11 @@ existing =mail_template= and is rendered by its renderer; see
 
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Authenticated provider feed for bounces and complaints (signed notifications, DSN parsing) into suppression | partial | Operator *Record delivery feedback* and =venture_marketing_service_feedback()= create retained suppression (=src/marketing/venture-marketing-service.h=, =src/marketing/venture-marketing-tracking.inc=); no webhook and no DSN parsing | Signed provider webhook and DSN parser feeding the same service seam |
-| Campaign reply detection, as sequences do | missing | Sequences exit on an inbound interaction (=src/sequences/venture-sequence-service.c=); campaigns record no replies (=src/marketing/=) | Match inbound mail to campaign recipients |
-| SPF, DKIM and DMARC domain check | missing | Only a comment that the relay must DKIM-sign (=src/mail/venture-smtp-mailer.c=) | DNS check of the sending domain in mail settings |
-| Ramp-up limits | partial | Per-send pacing interval of 1 to 86,400 seconds, default 60 (=src/marketing/venture-marketing-service.c=), applied per queued recipient (=src/marketing/venture-marketing-delivery.inc=) | Daily caps and a warm-up schedule per sending domain |
-| Per-send report (delivered, opened, clicked, replied, unsubscribed, bounced, complained, click map, machine-open flag) | partial | =marketing_performance= reports accepted, hard-bounced, uniquely opened, clicked and unsubscribed (=src/marketing/venture-marketing-reports.c=) | Replied and complained columns, per-link click map, machine-open flag |
+| Authenticated provider feed for bounces and complaints (signed notifications, DSN parsing) into suppression | have | Signed per-organization =POST /hooks/deliverability/:org/:provider= (HMAC-SHA256, 300-second replay window, sealed secret) with a provider adapter interface and the =generic= adapter; RFC 3464 DSN and RFC 5965 abuse reports read from synced mail; both through =venture_marketing_service_feedback()= (=src/marketing/venture-deliverability.c=, =docs/deliverability.org=) | -- |
+| Campaign reply detection, as sequences do | have | Inbound interactions counted by the shared =venture_sequence_interaction_is_reply()= rule onto the latest accepted campaign message within 30 days (=src/marketing/venture-marketing-replies.inc=) | -- |
+| SPF, DKIM and DMARC domain check | have | =/marketing/deliverability= and =GET /api/v1/marketing/domain-health= through the injectable =VentureDnsResolver= with plain-words results and fixes; configurable DKIM selector on =marketing_sending_domain= (=src/marketing/venture-deliverability-dns.c=) | -- |
+| Ramp-up limits | have | Daily warm-up schedule by day of sending (default 50 rising to no limit at day 30), per organization through =marketing_sending_domain.ramp_schedule=, held by the bounded delivery until the next UTC day (=src/marketing/venture-marketing-delivery.inc=, =docs/deliverability.org= Warm-up) | -- |
+| Per-send report (delivered, opened, clicked, replied, unsubscribed, bounced, complained, click map, machine-open flag) | have | =venture_marketing_send_report()= behind =marketing_performance=, =/marketing/sends/:id/report= and its API: delivered, replied, complained and temporary-bounce columns, per-link click map, machine-judged opens counted apart with the heuristic documented (=src/marketing/venture-marketing-reports.c=) | -- |
 
 * Lane 4 — audiences and journeys
 
@@ -178,9 +178,8 @@ Only the =partial= and =missing= rows above.
   fallback; block builder; brand settings; saved designs beside text
   templates; reusable sections; hosted images; video block; client
   rendering.
-- Lane 3: provider bounce and complaint feed with DSN parsing; campaign
-  reply detection; SPF, DKIM and DMARC check; warm-up caps; replied,
-  complained, click map and machine-open in the send report.
+- Lane 3: done (see its table and [[file:deliverability.org][Deliverability]]). Only the
+  =generic= feed adapter ships; a named provider's shape is a new adapter.
 - Lane 4: tag operations; behaviour segments; topic preferences; journey
   branches; named triggers that enrol; A/B with winner; recipient local
   time; resend to non-openers.

@@ -94,7 +94,9 @@ only enqueues; applications may deliver through =VentureMailOutbox= themselves.
 A missing organization SMTP binding is a visible outbox failure, never a
 fallback to installation-wide credentials.
 
-The interval is 1–86,400 seconds, with a 60-second default. Both enqueue and
+The interval is 1–86,400 seconds, with a 60-second default. A daily warm-up
+limit per organization holds delivery until the next UTC day once reached
+(see [[file:deliverability.org][Deliverability]], "Warm-up"). Both enqueue and
 actual submission retain their next permitted time. There is at most one
 unresolved outbox identity per send. A repeat sweep, process restart or
 transport retry uses the same recipient key, outbox key and Message-ID.
@@ -160,9 +162,10 @@ Use a recipient's *Record delivery feedback* action with =hard_bounce=,
 organization-scoped event identity. The recipient must have an actual outbox
 attempt and the evidence cannot predate approval. Replays retain one event;
 conflicting reuse of an identity is refused. Record the reviewed DSN/provider
-reference in the source. This is an implemented operator workflow and a typed
-service seam for a future authenticated provider consumer; no unauthenticated
-provider bounce webhook is installed.
+reference in the source. The same service seam takes bounces and complaints
+from delivery status notifications in a synced mailbox and from a signed,
+per-organization provider feed; no unauthenticated feed exists. See
+[[file:deliverability.org][Deliverability]] for both, and for =delivered= evidence.
 
 A hard bounce or complaint creates retained address suppression and stops
 pending outreach. A temporary bounce records evidence without suppression.
@@ -191,6 +194,11 @@ scanners, image proxies and bots can produce these requests: an observation
 is not proof a human read a message. Turning off organization tracking stops
 new observations and prevents queued tracked snapshots from being delivered;
 create a new untracked send rather than silently changing approved content.
+
+Opens and clicks judged a machine's (a known scanner or prefetching proxy,
+or within seconds of acceptance) are retained with their reason and counted
+apart, never as opens; replies are counted by the sequence reply rule. Both
+are described, with their limits, in [[file:deliverability.org][Deliverability]].
 
 =marketing_performance= is an approval cohort: its period selects
 =approved_at=. Each send reports its approved eligible count, preview
