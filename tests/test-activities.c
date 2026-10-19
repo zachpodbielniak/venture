@@ -426,6 +426,7 @@ test_disabled(Fixture *f, gconstpointer data)
 	g_autofree gchar *body = NULL;
 	venture_config_set_module_enabled(f->config, "activities", FALSE);
 	venture_config_set_module_enabled(f->config, "telephony", FALSE); /* requires activities */
+	venture_config_set_module_enabled(f->config, "inbox", FALSE); /* requires activities */
 	g_assert_cmpuint(request(f, "GET", "/worklist", NULL, NULL, &body), ==, 404);
 	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "activity"), ==, G_TYPE_INVALID);
 	venture_config_set_module_enabled(f->config, "activities", TRUE);
@@ -478,6 +479,7 @@ test_upgrade_restart(void)
 	gint64 id;
 	venture_config_set_module_enabled(config, "activities", FALSE);
 	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires activities */
+	venture_config_set_module_enabled(config, "inbox", FALSE); /* requires activities */
 	venture_config_set_module_enabled(config, "customer_health", FALSE);
 	venture_config_set_module_enabled(config, "calendar", FALSE); /* requires activities */
 	/* crm_import requires activities; a fresh context with a dependency
@@ -1124,6 +1126,7 @@ test_call_report_and_timeline(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "logged a call"));
 	venture_config_set_module_enabled(f->config, "activities", FALSE);
 	venture_config_set_module_enabled(f->config, "telephony", FALSE); /* requires activities */
+	venture_config_set_module_enabled(f->config, "inbox", FALSE); /* requires activities */
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "calls"));
 	venture_config_set_module_enabled(f->config, "activities", TRUE);
 	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "calls"));

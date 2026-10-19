@@ -292,7 +292,9 @@ static gboolean fake_verify(VentureTelephonyConnector *self, VentureTelephonyLin
 static GPtrArray *fake_parse(VentureTelephonyConnector *self, VentureTelephonyLink *link,
 	const VentureTelephonyWebhook *hook, GError **error)
 {
-	g_autoptr(JsonNode) root = json_from_string(g_bytes_get_data(hook->body, NULL), error);
+	/* The body is bytes, not a string: it has no terminating NUL. */
+	g_autofree gchar *text = g_strndup(g_bytes_get_data(hook->body, NULL), g_bytes_get_size(hook->body));
+	g_autoptr(JsonNode) root = json_from_string(text, error);
 	GPtrArray *events = g_ptr_array_new_with_free_func((GDestroyNotify)venture_telephony_event_free);
 	JsonArray *list;
 	guint i;
