@@ -29,6 +29,13 @@ gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organiz
 gboolean venture_sequence_delivery_eligible(VentureDatabase *database, VentureEntity *delivery,
 	GDateTime *now, gboolean *defer, GError **error);
 
+/* The registered executor for a channel, if any. */
+gboolean venture_sequence_channel_lookup(gint channel, VentureSequenceChannelExecute *execute, gpointer *data);
+/* Whether a branch step's condition held on the enrollment's latest email
+ * by @deadline, the end of its wait. Opens and clicks judged a machine's
+ * do not count. */
+gboolean venture_sequence_branch_taken(VentureDatabase *database, VentureEntity *enrollment, VentureEntity *step,
+	GPtrArray *history, GDateTime *deadline, gboolean *taken, GError **error);
 /* Each installed VentureSequenceEmailGate in turn; the first skip wins. */
 gboolean venture_sequence_email_gates_ask(VentureDatabase *database, VentureEntity *sequence, VentureEntity *contact,
 	GDateTime *as_of, gchar **skip_reason, GError **error);

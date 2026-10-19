@@ -272,6 +272,14 @@ venture_web_sequence_tracking_missing(void)
 	return response;
 }
 
+/* Read for the machine-open judgement and never stored or logged. */
+static const gchar *
+venture_web_sequence_user_agent(HtmxRequest *request)
+{
+	SoupServerMessage *message = htmx_request_get_message(request);
+	return message ? soup_message_headers_get_one(soup_server_message_get_request_headers(message), "User-Agent") : NULL;
+}
+
 static HtmxResponse *
 venture_web_sequence_open(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -287,8 +295,8 @@ venture_web_sequence_open(HtmxRequest *request, GHashTable *params, gpointer dat
 	if (!venture_web_module_enabled(self, "sequences") || token == NULL || !g_str_has_suffix(token, ".gif"))
 		return venture_web_sequence_tracking_missing();
 	token[strlen(token) - 4] = '\0';
-	if (!venture_sequence_service_record_open(venture_sequence_service_get(venture_context_get_database(self->context)),
-		token, now, NULL, &error))
+	if (!venture_sequence_service_record_open_full(venture_sequence_service_get(venture_context_get_database(self->context)),
+		token, venture_web_sequence_user_agent(request), now, NULL, &error))
 		return venture_web_sequence_tracking_missing();
 	pixel = venture_sequence_tracking_pixel(&length);
 	bytes = g_bytes_new_static(pixel, length);
@@ -316,8 +324,8 @@ venture_web_sequence_click(HtmxRequest *request, GHashTable *params, gpointer da
 	position = g_ascii_strtoll(text, &end, 10);
 	if (position <= 0 || end == text || *end != '\0')
 		return venture_web_sequence_tracking_missing();
-	url = venture_sequence_service_record_click(venture_sequence_service_get(venture_context_get_database(self->context)),
-		token, position, now, NULL, &error);
+	url = venture_sequence_service_record_click_full(venture_sequence_service_get(venture_context_get_database(self->context)),
+		token, position, venture_web_sequence_user_agent(request), now, NULL, &error);
 	if (url == NULL)
 		return venture_web_sequence_tracking_missing();
 	return venture_web_redirect_to(url);
