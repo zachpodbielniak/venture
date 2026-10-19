@@ -161,3 +161,16 @@ email and role claims do not grant membership. Signed sessions retain local
 MFA and identity-revision checks. Record returns select an authorized business;
 a portfolio without a specific record stays on the existing all-business view.
 See `docs/lightsite-accounts.org` for setup, refusal and revocation behavior.
+
+## Workflow settings (docs/settings.org)
+
+One registry of the epic's workflow settings, each registered by its
+feature with a default, limits and where it is stored (the organization,
+the email brand, the first sending domain, each auto-reply rule, each web
+chat). The screen `/organizations/:id/settings/workflows`, `GET`/`PUT
+/api/v1/workflow-settings[/KEY]`, `venturectl settings` and the assistant's
+`settings_list`/`settings_get`/`settings_set` all go through
+`venture_settings_set()`; the assistant's set always stages, and approving
+it needs an owner or administrator. One audit entry per change, on the
+record that holds it. Do not confuse with `GET /api/v1/settings`, the
+install configuration (owner only).

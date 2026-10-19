@@ -27,6 +27,7 @@ take `organization_id=N` to work outside the default organization.
 | Verb | What it does | Guide |
 |---|---|---|
 | `inbox [--all]`, `inbox read ID\|all` | what you have been told; mark read | [desk.md](desk.md) |
+| `settings list\|get KEY\|set KEY VALUE\|reset KEY [organization_id=N]` | workflow settings (quiet hours, warm-up, A/B defaults, AI messages switch, ...); same API and audit as the settings screen | [platform.md](platform.md) |
 | `watch TYPE ID`, `unwatch TYPE ID` | follow a record | [desk.md](desk.md) |
 | `activity TYPE ID` | a record's timeline: changes, comments, worklogs | [desk.md](desk.md) |
 | `comments list\|add\|reply\|edit\|delete\|get ...` | discussion on any record; BODY `-` reads stdin | [desk.md](desk.md) |

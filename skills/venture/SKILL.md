@@ -307,6 +307,7 @@ ids, notes) in words.
 
 | Request | Answer | Guide |
 |---|---|---|
+| "Change the text quiet hours" (or any workflow default) | `venturectl settings set telephony.quiet-hours 20:00-07:00`; `settings list` names every key; one audit entry | [platform.md](references/platform.md) |
 | "Provision a Lightsite owner" | `POST /api/v1/lightsite/signups`: seven strings, including `first_name` and `last_name`; the old five-member body is 422 | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
