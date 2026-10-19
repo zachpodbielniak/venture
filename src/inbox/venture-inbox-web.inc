@@ -444,7 +444,8 @@ venture_web_inbox_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	items = venture_inbox_service_thread(inbox, contact, NULL, 200, &error);
 	if (items == NULL)
 		return venture_web_inbox_error(error);
-	g_string_append(html, "<p><a href=\"/conversations\">← Conversations</a></p><h1>");
+	/* One block, so the page arrives whole rather than card by card. */
+	g_string_append(html, "<div class=\"inbox-page\"><p><a href=\"/conversations\">← Conversations</a></p><h1>");
 	venture_html_escape_append(html, name);
 	g_string_append(html, "</h1><p class=\"inbox-meta\">");
 	if (!venture_string_is_empty(email))
@@ -501,6 +502,7 @@ venture_web_inbox_page(HtmxRequest *request, GHashTable *params, gpointer data)
 		g_string_append(html, "</ol>");
 	venture_web_inbox_reply_form(self, html, row, contact);
 	venture_web_inbox_history(self, html, row);
+	g_string_append(html, "</div>");
 	title = g_strdup_printf("Conversation with %s", name != NULL ? name : "a contact");
 	return venture_web_html_response(venture_web_page(self, request, "/conversations", title, html->str), 200);
 }
@@ -845,7 +847,7 @@ venture_web_inbox_chat_settings(HtmxRequest *request, GHashTable *params, gpoint
 		return venture_web_error_response(error);
 	}
 	venture_auth_to_actor(principal, &actor);
-	g_string_append(html, "<h1>Web chat</h1>");
+	g_string_append(html, "<div class=\"inbox-page\"><h1>Web chat</h1>");
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
 	{
 		const gchar *operation = htmx_request_get_form_value(request, "operation");
@@ -915,7 +917,7 @@ venture_web_inbox_chat_settings(HtmxRequest *request, GHashTable *params, gpoint
 		"placeholder=\"Website chat\"></label><button class=\"btn btn-primary\" type=\"submit\">Add</button></form>"
 		"<p class=\"muted\">Limits: a name up to 100 characters, a message up to 2,000; one address may start 5 chats and one chat "
 		"take 20 messages in 10 minutes. The visitor's page needs no cookie and no account; its address is the key, so they should keep it to themselves.</p>"
-		"</div></section>");
+		"</div></section></div>");
 	return venture_web_html_response(venture_web_page(self, request, "/organizations", "Web chat", html->str), error != NULL ? 400 : 200);
 }
 
