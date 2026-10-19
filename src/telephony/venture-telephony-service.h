@@ -223,6 +223,20 @@ gint venture_telephony_service_deliver_due(VentureTelephonyService *self, gint64
 GDateTime *venture_telephony_service_quiet_until(VentureTelephonyService *self, VentureEntity *contact,
 	GDateTime *now, GError **error);
 /**
+ * venture_telephony_service_keyword_reply:
+ * @self: the service
+ * @organization_id: the organization
+ * @keyword: `stop`, `start` or `help`
+ *
+ * The answer to a text keyword: the organization's words for it (the
+ * `telephony.*-reply` settings) or the default, with `{business}`
+ * replaced by the organization's name.
+ *
+ * Returns: (transfer full) (nullable): the answer, %NULL for another word
+ */
+gchar *venture_telephony_service_keyword_reply(VentureTelephonyService *self, gint64 organization_id,
+	const gchar *keyword);
+/**
  * venture_telephony_service_record_consent:
  * @self: the service
  * @contact: the contact

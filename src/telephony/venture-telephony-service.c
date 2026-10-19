@@ -1611,3 +1611,10 @@ venture_telephony_install(VentureContext *context)
 	venture_sequence_channel_register(5, sequence_text, NULL);
 	venture_marketing_text_channel_register(&campaign_channel, NULL);
 }
+
+gchar *
+venture_telephony_service_keyword_reply(VentureTelephonyService *self, gint64 organization_id, const gchar *keyword)
+{
+	(void)self; (void)organization_id; (void)keyword;
+	return NULL;
+}

@@ -408,3 +408,9 @@ void venture_marketing_actions_register(VentureDatabase *database)
 {
 	register_actions(venture_marketing_service_get(database));
 }
+
+gint64 venture_marketing_service_default_resend_days(VentureMarketingService *self, gint64 organization_id)
+{
+	(void)self; (void)organization_id;
+	return -1;
+}

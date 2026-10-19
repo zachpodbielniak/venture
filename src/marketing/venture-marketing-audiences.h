@@ -151,6 +151,17 @@ GDateTime *venture_marketing_local_due(const gchar *zone, gint hour, const gchar
  */
 VentureMarketingSend *venture_marketing_service_resend(VentureMarketingService *self, gint64 organization_id,
 	gint64 send_id, gint64 days, const gchar *subject, const VentureActor *actor, GError **error);
+/**
+ * venture_marketing_service_default_resend_days:
+ * @self: the service
+ * @organization_id: the organization
+ *
+ * The days a resend to non-openers waits when it names none: the
+ * organization's `marketing.resend-days` setting, 3 when unset.
+ *
+ * Returns: days, 0 to 365
+ */
+gint64 venture_marketing_service_default_resend_days(VentureMarketingService *self, gint64 organization_id);
 
 G_END_DECLS
 #endif

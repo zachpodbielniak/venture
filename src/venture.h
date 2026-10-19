@@ -409,6 +409,8 @@
 #include "inbox/venture-inbox-service.h"
 /* AI on inbound and outbound messages (docs/ai-messages.org). */
 #include "aimessages/venture-ai-messages.h"
+/* One settings API for the workflow settings (docs/settings.org). */
+#include "settings/venture-settings.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
