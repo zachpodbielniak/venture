@@ -983,8 +983,10 @@ venture_billing_service_cancel_credit(VentureBillingService *self, VentureCustom
  * subscription any other way is refused by the save hook, so this is the
  * service's own instruction rather than a caller setting the field.
  */
-VentureMoney *
-venture_billing_service_grant_free_period(VentureBillingService *self, VentureCustomerSubscription *subscription,
+/* The next renewal credited with what it will charge, or with one month's
+ * worth of it (month): a twelfth of a yearly charge, all of a monthly one. */
+static VentureMoney *
+grant(VentureBillingService *self, VentureCustomerSubscription *subscription, gboolean month,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) sub = NULL;
@@ -1031,6 +1033,14 @@ venture_billing_service_grant_free_period(VentureBillingService *self, VentureCu
 		refuse(error, VENTURE_ERROR_VALIDATION, "the next period is already free");
 		return NULL;
 	}
+	if (month)
+	{
+		VentureMoney *share = venture_money_multiply_rational(charge, 1, venture_billing_interval_months(choice(price, "interval")), error);
+		if (share == NULL)
+			return NULL;
+		g_clear_pointer(&charge, venture_money_free);
+		charge = share;
+	}
 	g_object_get(sub, "pending-adjustment", &pending, NULL);
 	if (pending == NULL)
 		pending = venture_money_new_zero(venture_money_get_currency(charge));
@@ -1041,6 +1051,20 @@ venture_billing_service_grant_free_period(VentureBillingService *self, VentureCu
 	if (!write_record(self, sub, actor, error))
 		return NULL;
 	return g_steal_pointer(&charge);
+}
+
+VentureMoney *
+venture_billing_service_grant_free_period(VentureBillingService *self, VentureCustomerSubscription *subscription,
+	const VentureActor *actor, GError **error)
+{
+	return grant(self, subscription, FALSE, actor, error);
+}
+
+VentureMoney *
+venture_billing_service_grant_free_month(VentureBillingService *self, VentureCustomerSubscription *subscription,
+	const VentureActor *actor, GError **error)
+{
+	return grant(self, subscription, TRUE, actor, error);
 }
 
 /* --- Customer notices ----------------------------------------------------

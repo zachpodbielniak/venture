@@ -30,8 +30,9 @@ attributed.
 A program belongs to one organization. Its =reward_kind= is =none= (track,
 give nothing -- the zero value, so a program written without choosing
 pays nobody), =credit= (a credit note of =reward_amount=, which must be
-positive) or =free_period= (the referrer's next subscription invoice is
-credited in full). =landing_url= is an http or https address; a code's
+positive), =free_period= (the referrer's next subscription invoice is
+credited in full) or =free_month= (one month of the referrer's own plan is
+credited on their next subscription invoice). =landing_url= is an http or https address; a code's
 link is that page with =ref=CODE= added. Only an =active= program's codes
 attribute anything.
 
@@ -92,7 +93,10 @@ A referral may also be recorded by hand, for a customer who never was a
 lead: name a referrer (a company, a contact, or a =code_id=, which then
 decides the referrer and program) and who was referred (=lead_id=,
 =company_id= or =contact_id=). A customer cannot be recorded as referring
-themselves, and a lead is referred at most once.
+themselves, and a lead is referred at most once. A customer recorded by hand
+(=company_id=, no lead) is likewise referred at most once, whoever sent them
+first, and a hand-recorded referral saved as =won= gets its reward exactly as
+a converted lead's does.
 
 * Status follows the lead
 
@@ -123,6 +127,11 @@ deleted rows, is what makes it once only.
   service. The credit is carried as the subscription's pending adjustment,
   so the renewal invoice is issued and paid by a credit note in the same
   step. The reward records the =subscription_id= and the amount.
+- =free_month= is =free_period= for one month of the plan: the renewal is
+  credited with its next charge scaled to one month -- all of a monthly
+  charge, a twelfth of a yearly one, a third of a quarterly one -- the same
+  way, through the pending adjustment. It suits a program whose referrers
+  are on different terms: each earns a month of their own plan.
 
 The reward is given after the transaction that won the customer commits,
 in a transaction of its own. A credit note can be refused by the books or
