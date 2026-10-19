@@ -391,6 +391,23 @@ typedef struct {
 } VentureMarketingLinkCount;
 
 /**
+ * VentureMarketingArmCount:
+ * @arm: a, b or rest
+ * @subject: the arm's subject (the winner's, for the rest once picked)
+ * @recipients: approved recipients in the arm
+ * @accepted: SMTP accepted
+ * @opened: recipients with an open not judged a machine's
+ * @clicked: recipients with a click not judged a machine's
+ *
+ * One arm of an A/B test.
+ */
+typedef struct {
+	gchar *arm;
+	gchar *subject;
+	gint64 recipients, accepted, opened, clicked;
+} VentureMarketingArmCount;
+
+/**
  * VentureMarketingSendReport:
  * @send_id: the send
  * @name: its name
@@ -411,6 +428,8 @@ typedef struct {
  * @soft_bounced: temporary bounce evidence
  * @complained: complaints
  * @links: (element-type VentureMarketingLinkCount): the click map
+ * @winner: (nullable): an A/B test's winning arm, once picked
+ * @arms: (element-type VentureMarketingArmCount): an A/B test's arms; empty for none
  *
  * What happened to one send. The marketing_performance report and the
  * send's report page both read this.
@@ -422,6 +441,8 @@ typedef struct {
 	gint64 delivered, opened, machine_opened, clicked, replied, unsubscribed;
 	gint64 bounced, soft_bounced, complained;
 	GPtrArray *links;
+	gchar *winner;
+	GPtrArray *arms;
 } VentureMarketingSendReport;
 
 /**

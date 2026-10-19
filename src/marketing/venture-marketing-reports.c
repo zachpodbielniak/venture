@@ -23,10 +23,19 @@ static void link_free(gpointer data)
 	g_free(link->destination);
 	g_free(link);
 }
+static void arm_free(gpointer data)
+{
+	VentureMarketingArmCount *arm = data;
+	g_free(arm->arm);
+	g_free(arm->subject);
+	g_free(arm);
+}
 void venture_marketing_send_report_free(VentureMarketingSendReport *report)
 {
 	if (!report) return;
 	g_free(report->name);
+	g_free(report->winner);
+	g_clear_pointer(&report->arms, g_ptr_array_unref);
 	g_clear_pointer(&report->links, g_ptr_array_unref);
 	g_free(report);
 }
@@ -108,6 +117,7 @@ static VentureMarketingSendReport *build_report(VentureDatabase *database, gint6
 	guint j;
 	report->send_id = venture_entity_get_id(send);
 	report->links = g_ptr_array_new_with_free_func(link_free);
+	report->arms = g_ptr_array_new_with_free_func(arm_free);
 	g_object_get(send, "name", &report->name, "eligible-count", &report->eligible, "excluded-count", &report->excluded, NULL);
 	venture_query_set_organization(audience, org); venture_query_set_limit(audience, 0);
 	venture_query_add_filter_int(audience, "send-id", VENTURE_FILTER_OP_EQ, report->send_id, NULL);

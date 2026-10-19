@@ -383,6 +383,11 @@
 /* After the marketing service, the integrations and the mail sync: the
  * provider feed, DSNs, domain check, warm-up and per-send report. */
 #include "marketing/venture-deliverability.h"
+/* Audiences and journeys: tags, segments, preferences, A/B, local time,
+ * resends, branches and triggers (docs/journeys.org). */
+#include "core/venture-tags.h"
+#include "marketing/venture-marketing-audiences.h"
+#include "sequences/venture-sequence-journeys.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
