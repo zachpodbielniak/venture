@@ -550,7 +550,7 @@ test_waive(Fixture *f, gconstpointer unused)
 	audit = rows(f, "audit_entry");
 	for (i = 0; i < audit->len; i++)
 	{
-		g_autofree gchar *type = text_of(g_ptr_array_index(audit, i), "entity-type");
+		g_autofree gchar *type = text_of(g_ptr_array_index(audit, i), "target-type");
 		if (g_strcmp0(type, "late_fee") == 0)
 			trail++;
 	}
@@ -862,7 +862,7 @@ test_schedule_change(Fixture *f, gconstpointer unused)
 	audit = rows(f, "audit_entry");
 	for (i = 0; i < audit->len; i++)
 	{
-		g_autofree gchar *type = text_of(g_ptr_array_index(audit, i), "entity-type");
+		g_autofree gchar *type = text_of(g_ptr_array_index(audit, i), "target-type");
 		g_autofree gchar *diff = text_of(g_ptr_array_index(audit, i), "diff");
 		if (g_strcmp0(type, "invoice") == 0 && diff != NULL && strstr(diff, "late_fee_schedule_id") != NULL)
 			moved++;
