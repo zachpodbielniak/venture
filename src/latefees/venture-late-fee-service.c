@@ -1137,6 +1137,36 @@ running_add(Running *r, Case *c, const Tier *t, gint64 amount)
 	r->committed->amount += amount;
 }
 
+/* "1.5", "10", "0.125": parts per million as a person writes a percent. */
+static gchar *
+percent_display(gint64 ppm)
+{
+	gint64 frac = ppm % 10000;
+	gchar digits[8];
+	gint end;
+	if (frac == 0)
+		return g_strdup_printf("%" G_GINT64_FORMAT, ppm / 10000);
+	g_snprintf(digits, sizeof(digits), "%04" G_GINT64_FORMAT, frac);
+	for (end = 3; end > 0 && digits[end] == '0'; end--)
+		digits[end] = '\0';
+	return g_strdup_printf("%" G_GINT64_FORMAT ".%s", ppm / 10000, digits);
+}
+
+/* How a tier reaches its amount, the same words wherever it is shown. */
+static gchar *
+tier_basis(const Tier *t)
+{
+	g_autofree gchar *percent = NULL;
+	if (t->type == FEE_FLAT)
+	{
+		g_autofree gchar *shown = venture_money_to_display_string(t->amount, TRUE);
+		return g_strdup_printf("flat %s", shown);
+	}
+	percent = percent_display(t->ppm);
+	return g_strdup_printf("%s%% of %s", percent,
+		t->type == FEE_PERCENT_ORIGINAL ? "the original invoice" : (t->type == FEE_MARKUP ? "everything outstanding" : "the open balance"));
+}
+
 /*
  * What @o would charge with @r committed before it: the raw amount, then
  * the tier cap, the schedule's absolute cap and its percent-of-original
@@ -1174,12 +1204,7 @@ occurrence_amount(Case *c, Running *r, const Occurrence *o, gchar **basis, GErro
 		return -1;
 	fee = minor_of(raw);
 	if (basis != NULL)
-	{
-		g_autofree gchar *shown = venture_money_to_display_string(raw, TRUE);
-		*basis = t->type == FEE_FLAT ? g_strdup_printf("flat %s", shown) :
-			g_strdup_printf("%" G_GINT64_FORMAT ".%04" G_GINT64_FORMAT "%% of %s", t->ppm / 10000, t->ppm % 10000,
-				t->type == FEE_PERCENT_ORIGINAL ? "the original invoice" : (t->type == FEE_MARKUP ? "everything outstanding" : "the open balance"));
-	}
+		*basis = tier_basis(t);
 	if (t->cap != NULL)
 		fee = MIN(fee, MAX(0, minor_of(t->cap) - tier_total(r, c, t)));
 	if (max_total != NULL && same_currency(max_total, c->original))
@@ -1340,6 +1365,17 @@ venture_late_fee_service_preview(VentureLateFeeService *self, gint64 invoice_id,
 				amount = money(fee, "amount");
 				basis = text(fee, "basis");
 				reason = NULL;
+				if (venture_string_is_empty(basis))
+				{
+					g_free(basis);
+					basis = tier_basis(o->tier);
+				}
+				/* A recorded fee still to come holds its room under the caps
+				 * exactly as it will when charged; applied and proposed ones
+				 * are already in the running total. Leaving it out is how a
+				 * preview showed 115.00 of fees under a 100.00 cap. */
+				if ((status_is(fee, ST_SCHEDULED) || status_is(fee, ST_AWAITING)) && amount != NULL)
+					running_add(&r, &c, o->tier, minor_of(amount));
 			}
 			else if (o->day < c.start_day)
 			{
@@ -1520,8 +1556,11 @@ venture_late_fee_service_record_notice(VentureLateFeeService *self, VentureEntit
 	else
 		fee = new_fee(&c, o, ST_SCHEDULED);
 	m = fee_money(&c, amount);
-	g_object_set(fee, "notice-event-id", venture_entity_get_id(event), "noticed-amount", m, "amount", m,
-		"status", ST_SCHEDULED, NULL);
+	{
+		g_autofree gchar *basis = tier_basis(o->tier);
+		g_object_set(fee, "notice-event-id", venture_entity_get_id(event), "noticed-amount", m, "amount", m,
+			"status", ST_SCHEDULED, "basis", basis, NULL);
+	}
 	return save_fee(self, fee, actor, error);
 }
 
