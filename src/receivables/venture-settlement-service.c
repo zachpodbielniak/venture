@@ -883,6 +883,28 @@ add_late_fees(VentureSettlementService *self, gint64 invoice_id, VentureMoney **
 			!accumulate_record(total, g_ptr_array_index(events, i), FALSE, error))
 			return FALSE;
 	}
+	/* A waiver cancels its fee rather than paying it: what it applied
+	 * comes off what was charged, so a waived invoice reads exactly as it
+	 * did before the fee, not as part paid. */
+	{
+		g_autoptr(GPtrArray) allocations = find_rows(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id", invoice_id, NULL, error);
+		if (allocations == NULL)
+			return FALSE;
+		for (i = 0; i < allocations->len; i++)
+		{
+			VentureEntity *allocation = g_ptr_array_index(allocations, i);
+			g_autoptr(VentureEntity) credit = NULL;
+			g_autofree gchar *kind = NULL;
+			if (get_id(allocation, "credit-id") == 0)
+				continue;
+			credit = venture_database_get(self->database, VENTURE_TYPE_CUSTOMER_CREDIT, get_id(allocation, "credit-id"), error);
+			if (credit == NULL)
+				return FALSE;
+			g_object_get(credit, "kind", &kind, NULL);
+			if (g_strcmp0(kind, VENTURE_CREDIT_KIND_LATE_FEE_WAIVER) == 0 && !accumulate_record(total, allocation, TRUE, error))
+				return FALSE;
+		}
+	}
 	return TRUE;
 }
 
