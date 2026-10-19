@@ -136,9 +136,7 @@ VentureMarketingSend *venture_marketing_service_preview(VentureMarketingService 
 	segment = choice(list, "mode") == 1;
 	tracking = flag(send, "tracking") && flag(organization, "marketing-tracking");
 	if (segment) {
-		g_autoptr(VentureQuery) query = segment_query(list, error);
-		if (!query) goto fail;
-		audience = venture_database_find(self->database, query, error);
+		audience = segment_members(self, list, now, error);
 	} else audience = children(self, VENTURE_TYPE_MARKETING_MEMBER, org, "list-id", venture_entity_get_id(list), 10001, error);
 	if (!audience) goto fail;
 	if (audience->len > 10000) { refuse(error, "Preview is bounded to 10000 source records; narrow the segment or list"); goto fail; }

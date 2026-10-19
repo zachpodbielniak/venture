@@ -3,6 +3,7 @@
 #include <libsoup/soup.h>
 #include <string.h>
 #include "sequences/venture-sequence-tracking-private.h"
+#include "marketing/venture-marketing-segments.h"
 
 struct _VentureMarketingService {
 	GObject parent_instance;
@@ -151,15 +152,20 @@ static gboolean bounded(const gchar *value, gsize maximum)
 {
 	return value && *value && strlen(value) <= maximum && g_utf8_validate(value, -1, NULL);
 }
-static VentureQuery *segment_query(VentureEntity *list, GError **error)
+/* A saved search: its field filters as an ordinary query, with the tag
+ * and behaviour criteria taken out into @criteria (src/marketing/
+ * venture-marketing-segments.c) for segment_members() to apply. */
+static VentureQuery *segment_query(VentureEntity *list, VentureMarketingCriteria *criteria, GError **error)
 {
 	GType types[] = { VENTURE_TYPE_CONTACT, VENTURE_TYPE_COMPANY, VENTURE_TYPE_LEAD };
 	g_autofree gchar *filters = string(list, "filters");
 	g_autoptr(GHashTable) params = NULL;
 	g_autoptr(VentureQuery) query = NULL;
+	VentureMarketingCriteria local;
 	GHashTableIter iter;
 	gpointer key;
 	gint target = choice(list, "target");
+	gboolean ok;
 	if (target < 0 || target >= (gint)G_N_ELEMENTS(types) || (filters && strlen(filters) > 4096)) {
 		refuse(error, "Invalid segment type or oversized filters"); return NULL;
 	}
@@ -173,11 +179,49 @@ static VentureQuery *segment_query(VentureEntity *list, GError **error)
 			refuse(error, "A segment cannot override organization, history or pagination"); return NULL;
 		}
 	}
-	if (!venture_query_apply_query_string(query, params, error)) return NULL;
+	{
+		GObjectClass *klass = g_type_class_ref(types[target]);
+		gboolean tagged = g_object_class_find_property(klass, "tags") != NULL;
+		g_type_class_unref(klass);
+		ok = venture_marketing_criteria_take(params, target == 0, tagged, criteria ? criteria : &local, error);
+	}
+	if (!criteria && ok) venture_marketing_criteria_clear(&local);
+	if (!ok) return NULL;
+	if (!venture_query_apply_query_string(query, params, error)) {
+		if (criteria) venture_marketing_criteria_clear(criteria);
+		return NULL;
+	}
 	venture_query_set_organization(query, venture_entity_get_organization_id(list));
 	venture_query_set_limit(query, 10001);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	return g_steal_pointer(&query);
+}
+/* What a saved search selects at @now, bounded like every preview. */
+static GPtrArray *segment_members(VentureMarketingService *self, VentureEntity *list, GDateTime *now, GError **error)
+{
+	VentureMarketingCriteria criteria;
+	g_autoptr(VentureQuery) query = segment_query(list, &criteria, error);
+	g_autoptr(GPtrArray) found = NULL;
+	GPtrArray *kept;
+	gboolean empty = FALSE;
+	guint i;
+	if (!query) return NULL;
+	if (!venture_marketing_criteria_narrow(self->database, venture_entity_get_organization_id(list), &criteria, now, query, &empty, error)) {
+		venture_marketing_criteria_clear(&criteria); return NULL;
+	}
+	kept = g_ptr_array_new_with_free_func(g_object_unref);
+	if (!empty) {
+		found = venture_database_find(self->database, query, error);
+		if (!found) { venture_marketing_criteria_clear(&criteria); g_ptr_array_unref(kept); return NULL; }
+		for (i = 0; i < found->len; i++)
+			if (venture_marketing_criteria_keep(&criteria, g_ptr_array_index(found, i)))
+				g_ptr_array_add(kept, g_object_ref(g_ptr_array_index(found, i)));
+		/* The bound is judged on what the query fetched, before the exact
+		 * tag check: a segment past it is refused, never truncated. */
+		if (found->len > 10000) g_ptr_array_add(kept, g_object_ref(g_ptr_array_index(found, 0)));
+	}
+	venture_marketing_criteria_clear(&criteria);
+	return kept;
 }
 static gboolean machine_empty(VentureEntity *row)
 {
@@ -202,7 +246,7 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 		return refuse(error, "Marketing records cannot change organization");
 	if (permitted) return TRUE;
 	if (VENTURE_IS_MARKETING_LIST(row)) {
-		g_autoptr(VentureQuery) query = segment_query(row, error);
+		g_autoptr(VentureQuery) query = segment_query(row, NULL, error);
 		g_autofree gchar *filters = string(row, "filters");
 		if (!query) return FALSE;
 		return choice(row, "mode") != 0 || !filters || !*filters || refuse(error, "Static lists use member records, not search filters");

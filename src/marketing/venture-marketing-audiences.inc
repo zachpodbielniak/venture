@@ -1,7 +1,19 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 GPtrArray *venture_marketing_service_segment_members(VentureMarketingService *self,
 	gint64 organization_id, gint64 list_id, GDateTime *now, GError **error)
-{ (void)self; (void)organization_id; (void)list_id; (void)now; refuse(error, "Not implemented"); return NULL; }
+{
+	g_autoptr(VentureEntity) list = NULL;
+	GPtrArray *rows;
+	g_return_val_if_fail(VENTURE_IS_MARKETING_SERVICE(self), NULL);
+	if (!allowed(self, organization_id, error)) return NULL;
+	if (!now) { refuse(error, "A segment needs a clock"); return NULL; }
+	list = get_row(self, VENTURE_TYPE_MARKETING_LIST, organization_id, list_id, error);
+	if (!list) return NULL;
+	if (choice(list, "mode") != 1) { refuse(error, "Only a saved-search segment has members by search"); return NULL; }
+	rows = segment_members(self, list, now, error);
+	if (rows && rows->len > 10000) { g_ptr_array_unref(rows); refuse(error, "The segment selects more than 10000 records; narrow it"); return NULL; }
+	return rows;
+}
 gboolean venture_marketing_service_set_preferences(VentureMarketingService *self, const gchar *token,
 	const gchar *topics_off, const gchar *frequency, GError **error)
 { (void)self; (void)token; (void)topics_off; (void)frequency; return refuse(error, "Not implemented"); }

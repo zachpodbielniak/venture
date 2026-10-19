@@ -23,8 +23,9 @@ typedef struct {
 static void persist(Fixture *f, gpointer row)
 {
 	g_autoptr(GError) error = NULL;
-	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(row), NULL, &error));
+	gboolean saved = venture_database_save(f->db, VENTURE_ENTITY(row), NULL, &error);
 	g_assert_no_error(error);
+	g_assert_true(saved);
 }
 static VentureEntity *reread(Fixture *f, VentureEntity *row)
 {
@@ -352,7 +353,8 @@ static void test_behaviour_segments(Fixture *f, gconstpointer data)
 	{
 		g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", (gint64)1, "name", "Example Co", NULL);
 		g_autoptr(VentureEntity) invoice = NULL, line = NULL, payment = NULL;
-		g_autofree gchar *today = g_date_time_format(now, "%Y-%m-%d");
+		g_autoptr(GDateTime) yesterday = g_date_time_add_days(now, -1);
+		g_autofree gchar *today = g_date_time_format(yesterday, "%Y-%m-%d");
 		persist(f, company);
 		invoice = g_object_new(VENTURE_TYPE_INVOICE, "organization-id", (gint64)1, "number", "INV-AUD-1",
 			"company-id", venture_entity_get_id(company), "contact-id", venture_entity_get_id(eve), NULL);
