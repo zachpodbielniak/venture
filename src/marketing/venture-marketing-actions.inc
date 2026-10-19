@@ -42,6 +42,11 @@ static VentureEntity *invoke(VentureAction *action, VentureEntity *entity, GHash
 		if (context) g_object_get(venture_context_get_config(context), "server-base-url", &base, NULL);
 		return VENTURE_ENTITY(venture_marketing_service_preview(self, org, id, base, actor, error));
 	}
+	if (!strcmp(name, "resend_non_openers")) {
+		JsonNode *value = g_hash_table_lookup(params, "days");
+		gint64 days = value && !JSON_NODE_HOLDS_NULL(value) ? json_node_get_int(value) : 3;
+		return VENTURE_ENTITY(venture_marketing_service_resend(self, org, id, days, parameter(params, "subject"), actor, error));
+	}
 	if (!strcmp(name, "run")) {
 		JsonNode *value = g_hash_table_lookup(params, "limit");
 		gint64 limit = value && !JSON_NODE_HOLDS_NULL(value) ? json_node_get_int(value) : 100;
@@ -63,6 +68,8 @@ static void add_parameter(GPtrArray *parameters, const gchar *name, const gchar 
 	field->required = required;
 	if (kind == VENTURE_FIELD_KIND_TEXT) field->max_length = 8192;
 	else if (kind == VENTURE_FIELD_KIND_STRING) field->max_length = 128;
+	if (!strcmp(name, "days")) { field->has_min = TRUE; field->min_value = 0; field->has_max = TRUE; field->max_value = 365; }
+	if (!strcmp(name, "subject")) field->max_length = 998;
 	if (!strcmp(name, "limit")) { field->has_min = TRUE; field->min_value = 1; field->has_max = TRUE; field->max_value = 100; }
 	if (!strcmp(name, "kind")) {
 		field->choices = g_strsplit("hard_bounce,temporary_bounce,complaint", ",", -1);
@@ -83,7 +90,8 @@ static void register_actions(VentureMarketingService *self)
 		{ "marketing_send", "resume", "Resume delivery", "Continue the same approved audience and delivery identities" },
 		{ "marketing_send", "cancel", "Cancel pending delivery", "Stop future work; sending and uncertain SMTP outcomes remain retained" },
 		{ "marketing_send", "run", "Execute bounded delivery", "Queue at most one due recipient and attempt its retained outbox identity" },
-		{ "marketing_recipient", "feedback", "Record delivery feedback", "Retain operator-verified bounce or complaint evidence; temporary failures never imply hard bounce" }
+		{ "marketing_recipient", "feedback", "Record delivery feedback", "Retain operator-verified bounce or complaint evidence; temporary failures never imply hard bounce" },
+		{ "marketing_send", "resend_non_openers", "Resend to non-openers", "Make a new draft for this send's recipients with no human open after the days given; preview and approve it like any send" }
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(definitions); i++) {
@@ -102,6 +110,10 @@ static void register_actions(VentureMarketingService *self)
 			}
 		}
 		if (i == 9) add_parameter(parameters, "limit", "Maximum recipients examined", VENTURE_FIELD_KIND_INTEGER, FALSE);
+		if (i == 11) {
+			add_parameter(parameters, "days", "Days after the first message", VENTURE_FIELD_KIND_INTEGER, FALSE);
+			add_parameter(parameters, "subject", "New subject (empty keeps the first)", VENTURE_FIELD_KIND_STRING, FALSE);
+		}
 		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", definitions[i].type, "name", definitions[i].name,
 			"label", definitions[i].label, "description", definitions[i].description, "parameters", parameters,
 			"stageable", FALSE, "service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);

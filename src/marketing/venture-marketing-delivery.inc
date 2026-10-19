@@ -205,6 +205,8 @@ gboolean venture_marketing_service_transition(VentureMarketingService *self, gin
 	state = choice(send, "state"); next = state;
 	if (!g_strcmp0(transition, "approve") && state == 1 && number(send, "eligible-count") > 0) {
 		next = 2; g_object_set(send, "approved-at", now, "approved-by", actor && actor->name ? actor->name : "system", NULL);
+		/* Local time: each recipient's due moment, from the approval on. */
+		if (flag(send, "local-time") && !schedule_local(self, send, now, actor, error)) goto fail;
 	} else if (!g_strcmp0(transition, "pause") && state == 2) next = 3;
 	else if (!g_strcmp0(transition, "resume") && state == 3) next = 2;
 	else if (!g_strcmp0(transition, "cancel") && state >= 1 && state <= 4) {
@@ -294,6 +296,7 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 	g_autoptr(GDateTime) next = NULL, approved = NULL;
 	guint i;
 	gint count = 0;
+	gboolean arms_only = FALSE;
 	g_return_val_if_fail(VENTURE_IS_MARKETING_SERVICE(self), -1);
 	if (!allowed(self, org, error)) return -1;
 	if (!now || limit < 1 || limit > 100) { refuse(error, "Run requires a clock and limit 1 through 100"); return -1; }
@@ -325,13 +328,42 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 			goto done;
 		}
 	}
+	/* An A/B test: the arms first, then the rest wait for the winner. */
+	{
+		gboolean hold = FALSE;
+		if (!ab_gate(self, send, now, &hold, &arms_only, actor, error)) goto fail;
+		if (hold) goto done;
+	}
 	venture_query_set_organization(query, org); venture_query_set_limit(query, limit);
 	venture_query_add_filter_int(query, "send-id", VENTURE_FILTER_OP_EQ, send_id, NULL);
 	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_EQ, "eligible", NULL);
+	if (arms_only) {
+		g_autoptr(GPtrArray) arms = g_ptr_array_new_with_free_func(g_free);
+		g_ptr_array_add(arms, g_strdup("a")); g_ptr_array_add(arms, g_strdup("b"));
+		venture_query_add_filter(query, "variant", VENTURE_FILTER_OP_IN, arms, NULL);
+	}
+	if (flag(send, "local-time")) {
+		/* Due in the recipient's own zone; the soonest first. */
+		g_autofree gchar *cutoff = venture_time_to_string(now);
+		venture_query_add_filter_string(query, "due-at", VENTURE_FILTER_OP_LTE, cutoff, NULL);
+		venture_query_add_order(query, "due-at", VENTURE_SORT_ASCENDING, NULL);
+	}
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	rows = venture_database_find(self->database, query, error);
 	if (!rows) goto fail;
-	if (!rows->len) { g_object_set(send, "state", 5, NULL); if (!save(self, send, actor, error)) goto fail; }
+	if (!rows->len) {
+		g_autoptr(GPtrArray) left = NULL;
+		/* Nobody due yet is not finished: later zones, or the rest. */
+		if (flag(send, "local-time") || arms_only) {
+			g_autoptr(VentureQuery) remaining = venture_query_new(VENTURE_TYPE_MARKETING_RECIPIENT);
+			venture_query_set_organization(remaining, org); venture_query_set_limit(remaining, 1);
+			venture_query_add_filter_int(remaining, "send-id", VENTURE_FILTER_OP_EQ, send_id, NULL);
+			venture_query_add_filter_string(remaining, "state", VENTURE_FILTER_OP_EQ, "eligible", NULL);
+			left = venture_database_find(self->database, remaining, error);
+			if (!left) goto fail;
+		}
+		if (!left || !left->len) { g_object_set(send, "state", 5, NULL); if (!save(self, send, actor, error)) goto fail; }
+	}
 	for (i = 0; i < rows->len; i++) {
 		VentureEntity *recipient = g_ptr_array_index(rows, i);
 		g_autoptr(VentureMailMessage) message = NULL, queued = NULL;

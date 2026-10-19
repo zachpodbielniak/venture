@@ -155,6 +155,41 @@ static VentureMarketingSendReport *build_report(VentureDatabase *database, gint6
 		}
 		if (mail_id) g_ptr_array_add(ids, g_memdup2(&id, sizeof id));
 	}
+	{
+		/* An A/B test's arms: each counted from its own recipients. */
+		gint64 percent = 0;
+		g_object_get(send, "test-percent", &percent, "winner", &report->winner, NULL);
+		if (report->winner && !*report->winner) g_clear_pointer(&report->winner, g_free);
+		if (percent > 0) {
+			const gchar *names[] = { "a", "b", "rest" };
+			guint k;
+			for (k = 0; k < G_N_ELEMENTS(names); k++) {
+				VentureMarketingArmCount *arm = g_new0(VentureMarketingArmCount, 1);
+				arm->arm = g_strdup(names[k]);
+				g_ptr_array_add(report->arms, arm);
+			}
+			for (j = 0; j < recipients->len; j++) {
+				VentureEntity *recipient = g_ptr_array_index(recipients, j);
+				g_autofree gchar *variant = NULL, *state = NULL;
+				VentureMarketingArmCount *arm = NULL;
+				gint64 mail_id = 0;
+				g_object_get(recipient, "variant", &variant, "mail-id", &mail_id, NULL);
+				for (k = 0; k < report->arms->len; k++)
+					if (!g_strcmp0(variant, ((VentureMarketingArmCount *)g_ptr_array_index(report->arms, k))->arm))
+						arm = g_ptr_array_index(report->arms, k);
+				if (!arm) continue;
+				arm->recipients++;
+				if (!arm->subject) g_object_get(recipient, "subject", &arm->subject, NULL);
+				if (mail_id) {
+					g_autoptr(VentureEntity) mail = venture_database_get(database, VENTURE_TYPE_MAIL_MESSAGE, mail_id, NULL);
+					if (mail) g_object_get(mail, "state", &state, NULL);
+					if (!g_strcmp0(state, "sent")) arm->accepted++;
+				}
+				if (stamped(recipient, "opened-at")) arm->opened++;
+				if (stamped(recipient, "clicked-at")) arm->clicked++;
+			}
+		}
+	}
 	if (!tally_events(database, org, ids, links, soft, error)) return NULL;
 	report->soft_bounced = g_hash_table_size(soft);
 	{
@@ -234,6 +269,23 @@ JsonNode *venture_marketing_send_report_to_json(const VentureMarketingSendReport
 		json_builder_set_member_name(builder, "destination"); json_builder_add_string_value(builder, link->destination);
 		json_builder_set_member_name(builder, "clicks"); json_builder_add_int_value(builder, link->clicks);
 		json_builder_set_member_name(builder, "machine_clicks"); json_builder_add_int_value(builder, link->machine_clicks);
+		json_builder_end_object(builder);
+	}
+	json_builder_end_array(builder);
+	json_builder_set_member_name(builder, "winner");
+	if (report->winner) json_builder_add_string_value(builder, report->winner);
+	else json_builder_add_null_value(builder);
+	json_builder_set_member_name(builder, "arms");
+	json_builder_begin_array(builder);
+	for (i = 0; report->arms && i < report->arms->len; i++) {
+		const VentureMarketingArmCount *arm = g_ptr_array_index(report->arms, i);
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "arm"); json_builder_add_string_value(builder, arm->arm);
+		json_builder_set_member_name(builder, "subject"); json_builder_add_string_value(builder, arm->subject ? arm->subject : "");
+		json_builder_set_member_name(builder, "recipients"); json_builder_add_int_value(builder, arm->recipients);
+		json_builder_set_member_name(builder, "accepted"); json_builder_add_int_value(builder, arm->accepted);
+		json_builder_set_member_name(builder, "opened"); json_builder_add_int_value(builder, arm->opened);
+		json_builder_set_member_name(builder, "clicked"); json_builder_add_int_value(builder, arm->clicked);
 		json_builder_end_object(builder);
 	}
 	json_builder_end_array(builder);

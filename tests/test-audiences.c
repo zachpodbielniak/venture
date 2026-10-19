@@ -944,7 +944,7 @@ static void test_local_warmup(Fixture *f, gconstpointer data)
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(GDateTime) later = g_date_time_add_seconds(now, 5);
 	g_autoptr(GDateTime) next = NULL;
-	g_autofree gchar *today = g_date_time_format(now, "%Y-%m-%d"), *text = NULL, *expected = NULL;
+	g_autofree gchar *today = g_date_time_format(now, "%Y-%m-%d"), *text = NULL;
 	(void)data;
 	ada = reader(f, "Ada", "ada@example.com");
 	bob = reader(f, "Bob", "bob@example.com");
@@ -957,6 +957,9 @@ static void test_local_warmup(Fixture *f, gconstpointer data)
 	g_object_set(f->send, "local-time", TRUE, "local-hour", (gint64)0, NULL);
 	persist(f, f->send);
 	approved = preview_and_approve(f, f->send);
+	g_clear_pointer(&now, g_date_time_unref); g_clear_pointer(&later, g_date_time_unref);
+	now = venture_time_now();
+	later = g_date_time_add_seconds(now, 5);
 	g_assert_cmpint(run_at(f, approved, now), ==, 1);
 	g_assert_cmpint(run_at(f, approved, later), ==, 0);
 	fresh = reread(f, approved);
@@ -965,7 +968,6 @@ static void test_local_warmup(Fixture *f, gconstpointer data)
 	text = g_date_time_format(next, "%H:%M:%S");
 	g_assert_cmpstr(text, ==, "00:00:00");
 	g_assert_cmpint(g_date_time_compare(next, now), >, 0);
-	(void)expected;
 }
 
 /* ------------------------------------------------------------------ */

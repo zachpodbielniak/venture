@@ -2,6 +2,7 @@
 #include <venture.h>
 #include <libsoup/soup.h>
 #include <string.h>
+#include <stdio.h>
 #include "sequences/venture-sequence-tracking-private.h"
 #include "marketing/venture-marketing-segments.h"
 
@@ -226,15 +227,21 @@ static GPtrArray *segment_members(VentureMarketingService *self, VentureEntity *
 static gboolean machine_empty(VentureEntity *row)
 {
 	const gchar *dates[] = { "previewed-at", "approved-at", "next-enqueue-at", "next-delivery-at" };
-	g_autofree gchar *by = string(row, "approved-by"), *base = string(row, "public-base");
+	const gchar *more[] = { "winner-at", "test-sent-at" };
+	g_autofree gchar *by = string(row, "approved-by"), *base = string(row, "public-base"), *winner = string(row, "winner");
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(dates); i++) {
 		g_autoptr(GDateTime) at = NULL;
 		g_object_get(row, dates[i], &at, NULL);
 		if (at) return FALSE;
 	}
+	for (i = 0; i < G_N_ELEMENTS(more); i++) {
+		g_autoptr(GDateTime) at = NULL;
+		g_object_get(row, more[i], &at, NULL);
+		if (at) return FALSE;
+	}
 	return !choice(row, "state") && !number(row, "eligible-count") && !number(row, "excluded-count") &&
-		!number(row, "last-mail-id") && (!by || !*by) && (!base || !*base);
+		!number(row, "last-mail-id") && (!by || !*by) && (!base || !*base) && (!winner || !*winner);
 }
 static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
 	gpointer data, GError **error)
@@ -274,6 +281,19 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 			return refuse(error, "Send requires a bounded subject and message body");
 		if (!interval) { interval = 60; g_object_set(row, "interval-seconds", interval, NULL); }
 		if (interval < 1 || interval > 86400) return refuse(error, "Delivery interval must be 1 through 86400 seconds");
+		{
+			g_autofree gchar *b_subject = string(row, "variant-subject");
+			gint64 percent = number(row, "test-percent"), wait = number(row, "winner-wait-hours"), days = number(row, "resend-after-days");
+			if (percent < 0 || percent > 100) return refuse(error, "An A/B test share is 0 (no test) to 100 percent");
+			if (wait < 0 || wait > 168) return refuse(error, "The A/B winner is picked 1 to 168 hours after the test arms; empty is 4");
+			if (b_subject && *b_subject && (!bounded(b_subject, 998) || strpbrk(b_subject, "\r\n")))
+				return refuse(error, "The B subject is one line");
+			if (flag(row, "local-time") && (number(row, "local-hour") < 0 || number(row, "local-hour") > 23))
+				return refuse(error, "The local hour is 0 to 23");
+			if (flag(row, "local-time") && percent > 0)
+				return refuse(error, "An A/B test and a local-time send cannot be combined: the arms would go out hours apart");
+			if (days < 0 || days > 365) return refuse(error, "Resend after 0 to 365 days");
+		}
 		list = get_row(self, VENTURE_TYPE_MARKETING_LIST, venture_entity_get_organization_id(row), number(row, "list-id"), error);
 		return list != NULL;
 	}
@@ -282,12 +302,12 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 
 #include "venture-marketing-consent.inc"
 #include "venture-marketing-audience.inc"
+#include "venture-marketing-preferences.inc"
+#include "venture-marketing-audiences.inc"
 #include "venture-marketing-delivery.inc"
 #include "venture-marketing-tracking.inc"
 #include "venture-marketing-actions.inc"
 #include "venture-marketing-replies.inc"
-#include "venture-marketing-preferences.inc"
-#include "venture-marketing-audiences.inc"
 
 static void finalize(GObject *object)
 {
