@@ -141,6 +141,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_module_registry_register_builtins(registry);
 	config = venture_config_new();
 	venture_config_set_module_enabled(config, "crm", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires crm */
 
 	g_assert_false(venture_module_registry_configure(registry, config, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
@@ -172,10 +173,12 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "referrals", FALSE);
 	venture_config_set_module_enabled(config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(config, "activities", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires activities */
 	venture_config_set_module_enabled(config, "payables", FALSE);
 	venture_config_set_module_enabled(config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(config, "pipelines", FALSE);
 	venture_config_set_module_enabled(config, "marketing", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires marketing */
 	venture_config_set_module_enabled(config, "attribution", FALSE);
 	venture_config_set_module_enabled(config, "sequences", FALSE);
 	venture_config_set_module_enabled(config, "projects", FALSE);
@@ -288,6 +291,7 @@ test_module_unknown_name_is_reported(void)
 
 	venture_config_set_module_enabled(config, "crn", FALSE);
 	venture_config_set_module_enabled(config, "crm", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires crm */
 
 	g_assert_false(venture_module_registry_check_configured(registry, config,
 	                                                        &error));
@@ -625,6 +629,7 @@ fixture_set_up(
 
 	fixture->config = venture_config_new();
 	venture_config_set_module_enabled(fixture->config, "crm", FALSE);
+	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires crm */
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "billing", FALSE);
@@ -633,10 +638,12 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "referrals", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
+	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires activities */
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "marketing", FALSE);
+	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires marketing */
 	venture_config_set_module_enabled(fixture->config, "attribution", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);
@@ -1029,6 +1036,7 @@ server_fixture_set_up(
 	             "security-password-iterations", (gint64)100000,
 	             NULL);
 	venture_config_set_module_enabled(fixture->config, "crm", FALSE);
+	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires crm */
 	venture_config_set_module_enabled(fixture->config, "invoicing", FALSE);
 	venture_config_set_module_enabled(fixture->config, "receivables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "billing", FALSE);
@@ -1037,10 +1045,12 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "referrals", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
+	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires activities */
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
 	venture_config_set_module_enabled(fixture->config, "supplier_portal", FALSE);
 	venture_config_set_module_enabled(fixture->config, "pipelines", FALSE);
 	venture_config_set_module_enabled(fixture->config, "marketing", FALSE);
+	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires marketing */
 	venture_config_set_module_enabled(fixture->config, "attribution", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sequences", FALSE);
 	venture_config_set_module_enabled(fixture->config, "projects", FALSE);

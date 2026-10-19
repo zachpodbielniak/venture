@@ -244,6 +244,7 @@ static void test_mail_disabled(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	(void)unused;
 	venture_config_set_module_enabled(f->config, "marketing", FALSE);
+	venture_config_set_module_enabled(f->config, "telephony", FALSE); /* requires marketing */
 	venture_config_set_module_enabled(f->config, "recurring", FALSE);
 	venture_config_set_module_enabled(f->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(f->config, "dunning", FALSE);

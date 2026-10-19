@@ -744,6 +744,7 @@ test_module_upgrade(void)
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *name = NULL;
 	venture_config_set_module_enabled(config, "marketing", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires marketing */
 	venture_config_set_module_enabled(config, "sequences", FALSE);
 	db = venture_database_new(uri, &error);
 	g_assert_no_error(error);

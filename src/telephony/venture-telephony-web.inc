@@ -15,7 +15,7 @@ static const gchar venture_web_telephony_style[] =
 	".text-thread .in{align-self:flex-start;background:var(--surface-sunken)}"
 	".text-thread .out{align-self:flex-end;background:var(--accent-soft)}"
 	".text-thread .meta{display:block;font-size:.8em;color:var(--text-muted);margin-top:.25rem}"
-	".phone-card textarea{width:100%;box-sizing:border-box}"
+	".phone-card textarea{width:100%;box-sizing:border-box}.phone-card form.row+p{margin-top:.75rem}"
 	".telephony-settings table{width:100%}.telephony-settings code{overflow-wrap:anywhere}</style>";
 
 static gboolean
@@ -75,12 +75,19 @@ venture_web_telephony_lines(VentureWebServer *self, GString *html, gint64 org)
 		venture_html_escape_append(html, connector != NULL ? venture_telephony_connector_get_label(connector) : provider);
 		g_string_append(html, "</td><td>");
 		venture_html_escape_append(html, !venture_string_is_empty(phone) ? phone : "—");
-		g_string_append_printf(html, "</td><td>%s%s%s%s</td><td>%s",
-			(can & VENTURE_TELEPHONY_CAPABILITY_CLICK_TO_CALL) ? "calls " : "",
-			(can & VENTURE_TELEPHONY_CAPABILITY_SMS) ? "texts " : "",
-			(can & VENTURE_TELEPHONY_CAPABILITY_MMS) ? "pictures " : "",
-			(can & VENTURE_TELEPHONY_CAPABILITY_DELIVERY_STATUS) ? "receipts" : "",
-			active ? "Connected" : "Disconnected");
+		{
+			g_autoptr(GPtrArray) abilities = g_ptr_array_new();
+			if (can & VENTURE_TELEPHONY_CAPABILITY_CLICK_TO_CALL) g_ptr_array_add(abilities, (gpointer)"calls");
+			if (can & VENTURE_TELEPHONY_CAPABILITY_CALL_EVENTS) g_ptr_array_add(abilities, (gpointer)"call log");
+			if (can & VENTURE_TELEPHONY_CAPABILITY_SMS) g_ptr_array_add(abilities, (gpointer)"texts");
+			if (can & VENTURE_TELEPHONY_CAPABILITY_MMS) g_ptr_array_add(abilities, (gpointer)"pictures");
+			if (can & VENTURE_TELEPHONY_CAPABILITY_DELIVERY_STATUS) g_ptr_array_add(abilities, (gpointer)"delivery receipts");
+			g_ptr_array_add(abilities, NULL);
+			{
+				g_autofree gchar *joined = g_strjoinv(", ", (gchar **)abilities->pdata);
+				g_string_append_printf(html, "</td><td>%s</td><td>%s", joined, active ? "Connected" : "Disconnected");
+			}
+		}
 		if (!venture_string_is_empty(problem))
 		{
 			g_string_append(html, "<br><span class=\"muted\">Last refusal: ");
