@@ -243,6 +243,45 @@ static gboolean machine_empty(VentureEntity *row)
 	return !choice(row, "state") && !number(row, "eligible-count") && !number(row, "excluded-count") &&
 		!number(row, "last-mail-id") && (!by || !*by) && (!base || !*base) && (!winner || !*winner);
 }
+/* The organization's send defaults (docs/settings.org): text fields, empty
+ * for the default, so that 0 can be a value. Anything unreadable is the
+ * default. */
+static gint64 org_default(VentureMarketingService *self, gint64 org, const gchar *field, gint64 fallback,
+	gint64 minimum, gint64 maximum)
+{
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+	g_autoptr(VentureEntity) row = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, org, NULL);
+	GParamSpec *spec = row ? g_object_class_find_property(G_OBJECT_GET_CLASS(row), field) : NULL;
+	gint64 value = 0;
+	if (!spec) return fallback;
+	if (spec->value_type == G_TYPE_INT64) {
+		g_object_get(row, field, &value, NULL);
+		return value >= minimum && value <= maximum && value != 0 ? value : fallback;
+	} else {
+		g_autofree gchar *text = string(row, field);
+		if (!text || !g_ascii_string_to_signed(g_strstrip(text), 10, minimum, maximum, &value, NULL)) return fallback;
+		return value;
+	}
+}
+gint64 venture_marketing_service_default_resend_days(VentureMarketingService *self, gint64 organization_id)
+{
+	g_return_val_if_fail(VENTURE_IS_MARKETING_SERVICE(self), 3);
+	return org_default(self, organization_id, "marketing-resend-days", 3, 0, 365);
+}
+/* A new send starts from the organization's defaults: the hour of a
+ * local-time send left at 0, and the A/B metric left at opens. */
+static void apply_send_defaults(VentureMarketingService *self, VentureEntity *row)
+{
+	gint64 org = venture_entity_get_organization_id(row);
+	if (flag(row, "local-time") && number(row, "local-hour") == 0)
+		g_object_set(row, "local-hour", org_default(self, org, "marketing-local-hour", 9, 0, 23), NULL);
+	if (choice(row, "winner-metric") == 0) {
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+		g_autoptr(VentureEntity) organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, org, NULL);
+		g_autofree gchar *metric = organization ? string(organization, "marketing-ab-metric") : NULL;
+		if (!g_strcmp0(metric, "clicks")) g_object_set(row, "winner-metric", 1, NULL);
+	}
+}
 static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
 	gpointer data, GError **error)
 {
@@ -280,6 +319,7 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 			(text && strlen(text) > 65536) || (html && strlen(html) > 65536))
 			return refuse(error, "Send requires a bounded subject and message body");
 		if (!interval) { interval = 60; g_object_set(row, "interval-seconds", interval, NULL); }
+		if (!previous) apply_send_defaults(self, row);
 		if (choice(row, "channel") == 1 && (!bounded(text, 1600) || g_utf8_strlen(text, -1) > 1600))
 			return refuse(error, "A text campaign needs a text body of at most 1600 characters");
 		if (interval < 1 || interval > 86400) return refuse(error, "Delivery interval must be 1 through 86400 seconds");
@@ -407,10 +447,4 @@ gboolean venture_marketing_check_removal(VentureEntity *entity, GError **error)
 void venture_marketing_actions_register(VentureDatabase *database)
 {
 	register_actions(venture_marketing_service_get(database));
-}
-
-gint64 venture_marketing_service_default_resend_days(VentureMarketingService *self, gint64 organization_id)
-{
-	(void)self; (void)organization_id;
-	return -1;
 }

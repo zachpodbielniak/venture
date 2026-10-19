@@ -188,11 +188,15 @@ static gboolean
 validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
 {
 	VentureInboxService *self = data;
-	(void)database;
 	if (previous != NULL && venture_entity_get_organization_id(previous) != venture_entity_get_organization_id(row))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Inbox records cannot move to another organization");
 	if (self->writing > 0)
 		return TRUE;
+	/* The web chat switch is a setting (inbox.webchat.ID): the settings
+	 * API, or its approved staged change, may turn a chat on or off. */
+	if (VENTURE_IS_INBOX_CHAT_WIDGET(row) && venture_settings_only_change(previous, row, "active"))
+		return venture_settings_require_manager(database, venture_settings_lookup("inbox.webchat", NULL),
+			venture_entity_get_organization_id(row), error);
 	return refuse(error, VENTURE_ERROR_PERMISSION_DENIED,
 		"Conversations and web chat are written only by the inbox; assign, set a status or reply from the conversation");
 }

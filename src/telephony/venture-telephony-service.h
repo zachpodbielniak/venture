@@ -27,6 +27,24 @@ G_BEGIN_DECLS
  */
 #define VENTURE_TELEPHONY_QUIET_HOURS "21:00-08:00"
 /**
+ * VENTURE_TELEPHONY_STOP_REPLY:
+ *
+ * The answer to STOP when an organization sets none; {business} is its name.
+ */
+#define VENTURE_TELEPHONY_STOP_REPLY "{business}: you are unsubscribed and will get no more texts from us. Reply START to resubscribe."
+/**
+ * VENTURE_TELEPHONY_START_REPLY:
+ *
+ * The answer to START when an organization sets none.
+ */
+#define VENTURE_TELEPHONY_START_REPLY "{business}: you will get our texts again. Reply STOP to opt out."
+/**
+ * VENTURE_TELEPHONY_HELP_REPLY:
+ *
+ * The answer to HELP when an organization sets none.
+ */
+#define VENTURE_TELEPHONY_HELP_REPLY "{business}: reply STOP to stop our texts or START to get them again. Message and data rates may apply."
+/**
  * VENTURE_TELEPHONY_WEBHOOK_MAX_BODY:
  *
  * The largest webhook body accepted, in bytes.

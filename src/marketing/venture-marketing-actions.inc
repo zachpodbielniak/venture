@@ -44,7 +44,7 @@ static VentureEntity *invoke(VentureAction *action, VentureEntity *entity, GHash
 	}
 	if (!strcmp(name, "resend_non_openers")) {
 		JsonNode *value = g_hash_table_lookup(params, "days");
-		gint64 days = value && !JSON_NODE_HOLDS_NULL(value) ? json_node_get_int(value) : 3;
+		gint64 days = value && !JSON_NODE_HOLDS_NULL(value) ? json_node_get_int(value) : venture_marketing_service_default_resend_days(self, org);
 		return VENTURE_ENTITY(venture_marketing_service_resend(self, org, id, days, parameter(params, "subject"), actor, error));
 	}
 	if (!strcmp(name, "run")) {

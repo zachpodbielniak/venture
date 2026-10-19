@@ -66,9 +66,17 @@ venture_web_mail_preview_make(VentureWebServer *self, HtmxRequest *request, cons
 	gint64 org, gint64 id, GError **error)
 {
 	g_autoptr(VentureHttpLinkChecker) checker = NULL;
-	/* Reachability is asked for explicitly, never by default: it makes
-	 * requests to other people's servers from this one. */
-	if (g_strcmp0(htmx_request_get_query_param(request, "reachability"), "1") == 0)
+	const gchar *asked = htmx_request_get_query_param(request, "reachability");
+	gboolean reach = g_strcmp0(asked, "1") == 0;
+	/* Reachability is asked for, never assumed: it makes requests to other
+	 * people's servers from this one. An organization may ask for it on
+	 * every preview (mail.preview-link-check, off by default); ?reachability=0
+	 * still turns it off for one look. */
+	if (asked == NULL) {
+		g_autoptr(VentureSettingValue) setting = venture_settings_get(self->context, org, "mail.preview-link-check", NULL);
+		reach = setting != NULL && g_strcmp0(setting->value, "true") == 0;
+	}
+	if (reach)
 		checker = venture_http_link_checker_new();
 	if (kind == NULL)
 		return venture_mail_preview_message(self->context, org, id, VENTURE_MAIL_LINK_CHECKER(checker), error);

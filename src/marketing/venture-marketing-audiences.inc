@@ -110,7 +110,8 @@ static gboolean ab_gate(VentureMarketingService *self, VentureEntity *send, GDat
 		if (!save(self, send, actor, error)) return FALSE;
 		started = g_date_time_ref(now);
 	}
-	due = g_date_time_add_hours(started, (gint)(hours > 0 ? hours : VENTURE_MARKETING_AB_WAIT_HOURS));
+	due = g_date_time_add_hours(started, (gint)(hours > 0 ? hours : org_default(self, venture_entity_get_organization_id(send),
+		"marketing-ab-wait-hours", VENTURE_MARKETING_AB_WAIT_HOURS, 1, 168)));
 	if (!due || g_date_time_compare(now, due) < 0) { *hold = TRUE; return TRUE; }
 	return pick_winner(self, send, now, actor, error);
 }

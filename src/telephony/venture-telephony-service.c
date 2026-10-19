@@ -1199,6 +1199,31 @@ org_name(VentureTelephonyService *self, gint64 org)
 	return g_strdup(venture_string_is_empty(name) ? "We" : name);
 }
 
+/* The answers to STOP, START and HELP: the organization's words
+ * (telephony.*-reply, docs/settings.org) or these, {business} replaced. */
+gchar *
+venture_telephony_service_keyword_reply(VentureTelephonyService *self, gint64 organization_id, const gchar *keyword)
+{
+	g_autoptr(VentureEntity) org = NULL;
+	g_autofree gchar *name = NULL, *words = NULL;
+	g_auto(GStrv) parts = NULL;
+	const gchar *field, *fallback;
+	g_return_val_if_fail(VENTURE_IS_TELEPHONY_SERVICE(self), NULL);
+	if (g_strcmp0(keyword, "stop") == 0)
+		field = "telephony-stop-reply", fallback = VENTURE_TELEPHONY_STOP_REPLY;
+	else if (g_strcmp0(keyword, "start") == 0)
+		field = "telephony-start-reply", fallback = VENTURE_TELEPHONY_START_REPLY;
+	else if (g_strcmp0(keyword, "help") == 0)
+		field = "telephony-help-reply", fallback = VENTURE_TELEPHONY_HELP_REPLY;
+	else
+		return NULL;
+	org = organization(self, organization_id);
+	words = org != NULL ? string(org, field) : NULL;
+	name = org_name(self, organization_id);
+	parts = g_strsplit(!venture_string_is_empty(words) ? words : fallback, "{business}", -1);
+	return g_strjoinv(name != NULL ? name : "", parts);
+}
+
 static gboolean
 recent_help(VentureTelephonyService *self, VentureEntity *contact, GDateTime *now)
 {
@@ -1247,7 +1272,7 @@ keyword_action(VentureTelephonyService *self, VentureEntity *contact, VentureEnt
 		key = g_strdup_printf("text-keyword:%s", venture_entity_get_uuid(message));
 		if (!consent_change(self, contact, FALSE, "Text keyword", evidence, key, now, system_actor(), error))
 			return FALSE;
-		reply = g_strdup_printf("%s: you are unsubscribed and will get no more texts from us. Reply START to resubscribe.", name);
+		reply = venture_telephony_service_keyword_reply(self, org, "stop");
 		return auto_reply(self, contact, reply, "keyword:stop", now, error);
 	}
 	if (keyword == KEYWORD_START)
@@ -1257,14 +1282,14 @@ keyword_action(VentureTelephonyService *self, VentureEntity *contact, VentureEnt
 		key = g_strdup_printf("text-keyword:%s", venture_entity_get_uuid(message));
 		if (!consent_change(self, contact, TRUE, "Text keyword", evidence, key, now, system_actor(), error))
 			return FALSE;
-		reply = g_strdup_printf("%s: you will get our texts again. Reply STOP to opt out.", name);
+		reply = venture_telephony_service_keyword_reply(self, org, "start");
 		return auto_reply(self, contact, reply, "keyword:start", now, error);
 	}
 	if (keyword == KEYWORD_HELP)
 	{
 		if (recent_help(self, contact, now))
 			return TRUE;
-		reply = g_strdup_printf("%s: reply STOP to stop our texts or START to get them again. Message and data rates may apply.", name);
+		reply = venture_telephony_service_keyword_reply(self, org, "help");
 		return auto_reply(self, contact, reply, "keyword:help", now, error);
 	}
 	return TRUE;
@@ -1610,11 +1635,4 @@ venture_telephony_install(VentureContext *context)
 	 * database's service. Channel 5 is the sequence channel "text". */
 	venture_sequence_channel_register(5, sequence_text, NULL);
 	venture_marketing_text_channel_register(&campaign_channel, NULL);
-}
-
-gchar *
-venture_telephony_service_keyword_reply(VentureTelephonyService *self, gint64 organization_id, const gchar *keyword)
-{
-	(void)self; (void)organization_id; (void)keyword;
-	return NULL;
 }

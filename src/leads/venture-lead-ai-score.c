@@ -497,3 +497,19 @@ fail:
 	venture_database_rollback(database);
 	return FALSE;
 }
+
+/* --- The switch as a setting (docs/settings.org) ------------------------------- */
+
+static const VentureSettingInfo ai_scoring_setting = {
+	"leads.ai-scoring", "Sales", "leads", "AI lead score proposals",
+	"The assistant proposes a lead score with its reasons beside the rule score; a person accepts or dismisses each. "
+	"Needs the organization's AI.",
+	VENTURE_SETTING_BOOLEAN, "false", 0, 0, NULL, VENTURE_SETTING_PERMISSION_ADMIN,
+	"organization: ai-lead-scoring", "ai-lead-scoring", NULL, NULL, NULL, NULL
+};
+
+void
+venture_lead_ai_score_settings_register(void)
+{
+	venture_settings_register(&ai_scoring_setting);
+}

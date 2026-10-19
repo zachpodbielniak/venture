@@ -357,6 +357,20 @@ gboolean venture_settings_check_approval(VentureDatabase *database, VentureEntit
 	GError **error);
 
 /**
+ * venture_settings_only_change:
+ * @previous: (nullable): the row as stored
+ * @row: the row about to be saved
+ * @field: a property name
+ *
+ * Whether saving @row changes nothing but @field. A feature whose records
+ * are written only by its own service lets its settings through with
+ * this, after venture_settings_require_manager().
+ *
+ * Returns: whether @field is the only change
+ */
+gboolean venture_settings_only_change(VentureEntity *previous, VentureEntity *row, const gchar *field);
+
+/**
  * venture_setting_value_to_json:
  * @value: a setting
  *

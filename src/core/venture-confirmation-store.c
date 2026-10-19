@@ -695,6 +695,12 @@ venture_confirmation_store_approve_as(
 	actor.request_id = confirmation->id;
 	actor.approved_by = approver;
 
+	/* A settings change needs an approver allowed to change that setting,
+	 * whoever proposed it (docs/settings.org). */
+	if (NULL != confirmation->via && g_str_has_prefix(confirmation->via, "settings:") &&
+	    !venture_settings_check_approval(self->database, confirmation->staged, confirmation->via, error))
+		return FALSE;
+
 	if (NULL != confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))
 		ok = venture_orgaccess_apply_post(self->database, confirmation->original, confirmation->via, &actor, role, &local_error);
 	else

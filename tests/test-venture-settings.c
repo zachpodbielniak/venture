@@ -243,13 +243,11 @@ audit_change(VentureEntity *entry)
 {
 	g_autofree gchar *type = text_of(entry, "target-type"), *label = text_of(entry, "target-label");
 	g_autofree gchar *diff = NULL;
-	JsonNode *node = NULL;
 	gint action = 0;
 	gint64 target = 0;
-	g_object_get(entry, "action", &action, "target-id", &target, "diff", &node, NULL);
-	diff = node != NULL ? venture_json_to_string(node, FALSE) : g_strdup("");
-	if (node != NULL)
-		json_node_unref(node);
+	g_object_get(entry, "action", &action, "target-id", &target, "diff", &diff, NULL);
+	if (diff == NULL)
+		diff = g_strdup("");
 	return g_strdup_printf("%d %s %" G_GINT64_FORMAT " %s %s", action, type, target, label, diff);
 }
 
@@ -441,7 +439,6 @@ test_set_and_reset(Fixture *f, gconstpointer data)
 	g_autofree gchar *stored = NULL, *actor = NULL, *diff = NULL, *type = NULL;
 	VentureActor owner = person("settings-owner");
 	gint64 since = last_audit_id(f);
-	JsonNode *node = NULL;
 	(void)data;
 	set = venture_settings_set(f->context, f->org, "telephony.quiet-hours", "20:00-07:00", &owner, &error);
 	g_assert_no_error(error);
@@ -456,9 +453,7 @@ test_set_and_reset(Fixture *f, gconstpointer data)
 	type = text_of(g_ptr_array_index(entries, 0), "target-type");
 	g_assert_cmpstr(actor, ==, "settings-owner");
 	g_assert_cmpstr(type, ==, "organization");
-	g_object_get(g_ptr_array_index(entries, 0), "diff", &node, NULL);
-	diff = venture_json_to_string(node, FALSE);
-	json_node_unref(node);
+	g_object_get(g_ptr_array_index(entries, 0), "diff", &diff, NULL);
 	g_assert_nonnull(strstr(diff, "telephony_quiet_hours"));
 	g_assert_nonnull(strstr(diff, "20:00-07:00"));
 
@@ -695,7 +690,7 @@ test_feature_effects(Fixture *f, gconstpointer data)
 	list = g_object_new(VENTURE_TYPE_MARKETING_LIST, "organization-id", f->org, "name", "Customers", NULL);
 	persist(f, list);
 	send = g_object_new(VENTURE_TYPE_MARKETING_SEND, "organization-id", f->org, "list-id", venture_entity_get_id(list),
-		"subject", "Hello", "text-body", "Body", "local-time", TRUE, NULL);
+		"name", "Hello", "subject", "Hello", "text-body", "Body", "local-time", TRUE, NULL);
 	persist(f, send);
 	g_object_get(send, "local-hour", &hour, "winner-metric", &metric, NULL);
 	g_assert_cmpint(hour, ==, 10);
