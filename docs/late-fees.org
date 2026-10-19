@@ -1,0 +1,217 @@
+#+title: Late fees
+#+description: Tiered, pausable late-fee schedules: announced by reminders, approved by the owner, added and waived through settlement
+#+authors: Ben Doty
+#+categories: projects docs
+#+created: [2026-10-19]
+#+updated: [2026-10-19]
+#+version: 0.6.0
+
+* Late fees
+
+The =late_fees= module requires =dunning= and =receivables=. It is *off by
+default*: until an owner switches it on, nothing is proposed, charged or
+mentioned to a customer. Its three records are field tables, so the same
+declarations produce the tables, the forms, the REST resources, the CLI
+commands, the assistant's tools and the audit entries.
+
+| Record | Meaning |
+|--------+---------|
+| =late_fee_setting= | One per organization: on/off, =auto_apply= (explicit opt-in), the default schedule, =enabled_at=, and the organization-wide pause |
+| =late_fee_schedule= | A named, ordered list of tiers ("Residential", "Commercial net 30") with grace days, a minimum balance and schedule-level caps |
+| =late_fee= | One occurrence of one tier for one invoice and every decision about it; written only by the sweep and the fee actions |
+
+*Late-fee limits vary by jurisdiction.* The schedule supports a cap per tier,
+a cap as a percent of the original invoice and an absolute maximum; set them
+for your location, and say which rule the schedule follows in its =notes=.
+
+** Which schedule
+
+The invoice's =late_fee_schedule_id=, else its customer's, else the first
+schedule whose =invoice_types= (comma separated) names the invoice's
+=invoice_type=, else the setting's =default_schedule_id=. =late_fee_exempt=
+on the invoice or the customer means no fee at all.
+
+** Tiers
+
+=tiers= is a JSON array, judged at the save; at most 20.
+
+#+begin_src json
+[{"day": 15, "type": "flat", "amount": "25.00 USD"},
+ {"day": 30, "type": "percent_open", "percent": "1.5"},
+ {"after": 30, "every": 30, "type": "percent_open", "percent": "1.5", "round": "half_even"}]
+#+end_src
+
+With =grace_days= 14 and =max_percent= "10" this is the example from the
+issue: days 1-14 grace; on day 15 $25 once; on day 30 1.5% of the open
+balance; every 30 days after, 1.5% again; never more than 10% of the original
+invoice.
+
+| Member | Meaning |
+|--------+---------|
+| =day= | The first occurrence, in days late (1-365); day N is the due date plus N calendar days, UTC |
+| =every= | Recurring: again every N days after =day= |
+| =after= | With =every= and no =day=: "every N days after day M", first on M + N |
+| =times= | At most this many occurrences |
+| =type= | =flat= (=amount=), =percent_open= (of the open balance, fees excluded), =percent_original= (of the original invoice), =markup= (a percent added to everything outstanding, fees included, so it compounds) |
+| =percent= | Decimal *text* ("1.5", at most four places) or a JSON integer; a JSON fraction is refused, never read through a double |
+| =amount=, =cap= | Money with its currency, "25.00 USD"; =cap= is the most this tier charges on one invoice |
+| =round= | =half_even= (default), =up=, =down= or =whole= (whole currency units, half to even) |
+| =conditions= | All must hold: =balance_above=, =balance_below= (money), =customer_tags= (any of the customer's comma-separated tags; =customer_groups= is the same), =invoice_types=, =product_ids= (a service line on the invoice), =currency=, =min_prior_late= (other invoices of the customer due earlier and paid late or still overdue), =skip_if_promise= (a reminder pause, or a held, disputed or promised collection case) |
+
+A fee is computed in integer minor units, once, by the tier's rule, then cut
+by the room left under the tier cap, the schedule's =max_total= and its
+=max_percent= of the original invoice. A fee a cap reduces to nothing is
+recorded =capped=. A flat amount or a cap in another currency is not charged:
+cross-currency is refused, never converted.
+
+** Identity and replays
+
+An occurrence is =(invoice, schedule, trigger, day)=, pinned by the
+per-organization unique =occurrence_key= - the trigger, not the tier's
+position, so inserting a tier never makes an occurrence chargeable twice.
+Rerunning the sweep for the same day writes nothing, and a skipped, waived,
+cancelled or capped occurrence never comes back.
+
+Occurrences before =enabled_at= (set when late fees are switched on) or the
+schedule's =adopted_at= are never charged: switching late fees on over an
+existing ledger does not bill every old invoice for every day it passed.
+Moving an invoice or customer to another schedule keeps every fee already
+charged; the new schedule only governs days after the last day the old one
+decided, and the old schedule's pending fees are cancelled with reason
+=schedule changed=. The move itself is in the audit log like any field.
+
+* The sweep: one stage of the dunning sweep
+
+There is no second sweep. =venture_dunning_service_sweep_detailed()= (the
+REST action, =venturectl dunning sweep=, the assistant's tool and the
+automation handler) runs a late-fee stage for each invoice it visits, before
+the reminder stage and in its own transaction. With late fees on it visits
+every issued invoice due before today, not only those with a reminder step
+due. The answer carries a =late_fees= object (=enabled=, =proposed=,
+=applied=, =awaiting_notice=, =capped=, =cancelled=, =failed=), and a dry run
+adds =stage: late_fee= entries to its =plan=.
+
+For each due occurrence the stage, in order: skips it while a pause holds;
+cancels pending fees of a settled, exempt or reassigned invoice; checks the
+tier's conditions and the schedule's minimum balance; computes the amount and
+the caps; then
+
+1. *Notice.* No fee proceeds unless a reminder that stated it was *sent*
+   before its day, or the owner explicitly skipped the notice
+   (=skip_notice=). Otherwise it waits as =awaiting_notice=, visible in the
+   approval queue.
+2. *Approval.* The fee is =proposed=. Only with =auto_apply= does the sweep
+   approve it itself, one fee per transaction after the proposal committed.
+
+A fee is never more than the amount the notice stated; a percent fee
+recomputed on its day can only be lower.
+
+** Advance notice in reminders
+
+When a reminder renders and a fee would follow, the sentence "A $25.00 late
+fee will be added on 2026-01-25." is placed at ={late_fee_notice}= in the
+template, or appended to the text and HTML bodies of a template that does not
+name it - a fee must never follow a reminder that did not state it. The fee
+row records the reminder (=notice_event_id=) and the amount stated
+(=noticed_amount=, status =scheduled=). While late fees are off, paused or
+exempt no fee wording reaches the customer, and a fee already proposed is not
+re-announced. Each tier's fee needs a reminder step before its day: a policy
+with steps at 7, 25, 40, 55 and 85 days announces fees on days 15, 30, 45,
+60 and 90.
+
+* Pausing
+
+| Scope | Fields |
+|-------+--------|
+| An invoice | =late_fees_paused=, =late_fees_paused_until=, =late_fees_pause_reason= on the invoice |
+| A customer | the same three on the company; covers all of its invoices |
+| The organization | =paused=, =paused_until=, =pause_reason= on =late_fee_setting= |
+
+=paused_until= is the first day fees may apply again; empty while paused is
+indefinitely. A pause is not a decision about any fee: nothing is proposed,
+added or announced while it holds, and when it ends the due occurrences
+proceed - each still needs its notice. The invoice page, its fee timeline,
+the Late fees page and the invoice's timeline say "late fees paused for this
+customer until <date>" wherever a fee would otherwise apply.
+
+* Decisions
+
+| Action | On | Does |
+|--------+----+------|
+| =approve= | a proposed =late_fee= | Adds it through =venture_settlement_service_add_late_fee()=: a separate =late_fee= invoice event, receivables debited, income credited, dated the fee's day (or the invoice's latest event when later) |
+| =skip= | a fee not yet added | Records the decision not to charge; nothing reaches the balance |
+| =skip_notice= | a =scheduled= or =awaiting_notice= fee | The owner lets it proceed without the advance notice |
+| =waive= | an applied fee | =reason= required, optional =note= to the customer; a =late_fee_waiver= credit (income debited, receivables credited) applied to the invoice up to its open balance, any rest left as the customer's credit; the note is queued through the mail outbox, keyed by the fee |
+| =decide= | type-level on =late_fee= | =ids= (comma separated) and =decision= =approve= or =skip=: each its own transaction, one refusal does not undo the others |
+| =pause_late_fees=, =resume_late_fees= | =invoice=, =company=, =late_fee_setting= | =until= and =reason=; an ordinary audited save |
+| =late_fee_preview= | =invoice= | The full timeline, writing nothing; the answer is on the returned record's =note= |
+
+All writing actions are stageable, so =?stage=1=, =venturectl --stage act= and
+the assistant (its generated tools =venture_late_fee_waive=,
+=venture_company_pause_late_fees=, ...) go through the existing staged-change
+approval. "Pause late fees for this customer" and "waive this fee" are those
+two tools; under the default =confirm_writes= policy a person approves each.
+
+The invoice's lines are never edited. A void is refused while an unwaived
+late fee stands ("Waive the invoice's late fees before voiding it"). Late
+fee history cannot be deleted, restored or purged, and a =late_fee= cannot be
+written by any generic writer.
+
+* Preview
+
+=venture_late_fee_service_preview()=, the =late_fee_preview= action and
+=/invoices/<id>/late-fees= show "what this schedule would charge" on any
+invoice: every occurrence up to 365 days late with its date, tier, basis,
+exact amount, state (a recorded fee's status, or =upcoming=, =due=,
+=capped=, =skipped_condition= with the reason, =before_start=) and the
+notice state, assuming today's balance. The page at =/late-fees= shows the
+settings, every schedule's tiers in words, the organization pause, the paused
+customers and invoices, and links to the approval queue at
+=/late-fees/queue= (bulk approve or skip with checkboxes). Schedules and
+settings are edited through the generated forms. Owner or administrator only.
+
+* Where fees show
+
+- The invoice page's Late fees panel: each fee, its state and basis, the
+  waive form on an applied one, and the pause form.
+- The customer statement: "Late fee #N" debits and "Late fee waiver #N"
+  credits; the balance and aging include them through
+  =venture_settlement_service_invoice_balance()=.
+- The invoice's and the customer's timeline: "late fee $25.00 applied
+  (tier 1, 2026-01-25)", "... proposed for approval", "... announced for",
+  "... waived: goodwill", and for an invoice a computed "next: a $25.00 late
+  fee will be added on ..." or the pause in force.
+- The =late_fees= report: per currency, fees applied (by the fee's day),
+  waived (by the decision), collected (on invoices paid in the period) and
+  awaiting approval or notice.
+
+#+begin_src sh
+venturectl create late_fee_schedule name=Residential grace_days=14 max_percent=10 \
+  'tiers=[{"day":15,"type":"flat","amount":"25.00 USD"},{"day":30,"every":30,"type":"percent_open","percent":"1.5"}]'
+venturectl create late_fee_setting enabled=true default_schedule_id=1
+venturectl act invoice 42 late_fee_preview
+venturectl dunning sweep as_of=2026-01-25 organization_id=1 dry_run=true
+venturectl act late_fee 7 approve
+venturectl act late_fee 0 decide organization_id=1 ids=7,8,9 decision=approve
+venturectl act company 3 pause_late_fees until=2026-02-01 reason='promised by phone'
+venturectl act late_fee 7 waive reason=goodwill note='We removed the fee.'
+venturectl report late_fees all
+#+end_src
+
+* Migrations
+
+=000921_late_fees= verifies the three late-fee tables and the six invoice and
+five customer columns are each wholly present, or absent with the module off.
+
+* Verification
+
+=test-late-fees= covers off by default, grace and the day before and day of
+each trigger, the stated notice, approval by default and auto-apply, replays
+of the same day, notice-required (queued but unsent reminders) and
+skip_notice, bulk approve and skip, waive with reason, note, credit and audit
+trail, recurring and markup tiers, caps cut mid-schedule (tier, absolute,
+percent of original), every pause scope, condition combinations, a schedule
+change mid-invoice, the preview timeline with the issue's example schedule,
+rounding rules, currency refusal, settled and exempt invoices, the
+statement, timelines and report, generic-writer and removal refusals, and the
+stageable actions. =test-auth= pins the pages' and routes' guards.

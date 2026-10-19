@@ -116,7 +116,9 @@ the current status.
 Overdue reminder cadence lives in the =recurring= module and enqueues through
 the mail outbox. See [[file:recurring.org][recurring documents]]. Templated,
 per-customer reminder policies with escalation and an effectiveness report are
-the =dunning= module; see [[file:dunning.org][overdue reminders]].
+the =dunning= module; see [[file:dunning.org][overdue reminders]]. Tiered,
+pausable late fees announced by those reminders are the =late_fees= module;
+see [[file:late-fees.org][late fees]].
 
 * Posting boundary
 
@@ -156,6 +158,18 @@ recoverable flag) instead of an integer =tax-percent=. Frozen
 =tax-exempt= still freeze tax at zero. Lines without a tax code take the
 jurisdiction rate the customer's address selects and freeze it alongside;
 see [[file:sales-tax.org][sales tax by jurisdiction]].
+
+A late fee is a separate adjustment, never an edit of the invoice's lines:
+=venture_settlement_service_add_late_fee()= writes a =late_fee= invoice event
+(receivables debited, income credited) under the accounting approval, and
+=venture_settlement_service_waive_late_fee()= reverses one with a
+=late_fee_waiver= credit (income debited, receivables credited) applied to the
+invoice up to its open balance; any rest stays as the customer's credit. The
+invoice balance, the customer balance, aging and the statement count late fee
+events; a fee on top of the issue is not a part payment, so the status stays
+=sent=. Voiding an invoice is refused while an unwaived late fee stands. The
+schedules, notice and approval rules are in [[file:late-fees.org][Late fees]];
+late-fee limits vary by jurisdiction, so set the caps for your location.
 
 Remaining AR is written off through =venture_settlement_service_write_off()=
 (the invoice Write off action). That records a =write_off= credit and

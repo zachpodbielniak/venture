@@ -327,6 +327,7 @@ ids, notes) in words.
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
 | "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
+| "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
