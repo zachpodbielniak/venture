@@ -1301,6 +1301,63 @@ static void test_test_send(Fixture *f, gconstpointer unused)
 	g_assert_false(stageable);
 }
 
+/* An owner's one-off reminder for one open invoice: the latest reminder it
+ * was sent (or the first), to the customer, recorded like a sweep's without
+ * moving the schedule on; twice in a day sends one. A draft is refused. */
+static void test_remind(Fixture *f, gconstpointer unused)
+{
+	VentureDunningService *service = venture_dunning_service_get(f->db);
+	VentureActionRegistry *registry = venture_database_get_action_registry(f->db);
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE, f->invoice, NULL);
+	g_autoptr(VentureEntity) draft = record(f, "invoice");
+	g_autoptr(VentureMailMessage) first = NULL, again = NULL, refused = NULL;
+	g_autoptr(GPtrArray) events = NULL, messages = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *to = NULL, *subject = NULL, *related = NULL;
+	gboolean stageable = FALSE;
+	gint64 offset = 0;
+	VentureActor actor;
+	(void)unused;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "owner";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	first = venture_dunning_service_remind(service, invoice, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(first);
+	g_object_get(first, "to", &to, "subject", &subject, "related-type", &related, NULL);
+	g_assert_cmpstr(to, ==, "alice@example.test");
+	g_assert_cmpstr(subject, ==, "Invoice INV-DUN");
+	g_assert_cmpstr(related, ==, "dunning_event");
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 1);
+	g_object_get(g_ptr_array_index(events, 0), "offset-days", &offset, NULL);
+	g_assert_cmpint(offset, ==, -3);
+	again = venture_dunning_service_remind(service, invoice, &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(again);
+	messages = rows(f, "mail_message");
+	g_assert_cmpuint(messages->len, ==, 1);
+	g_clear_pointer(&events, g_ptr_array_unref);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, ==, 1);
+	/* The one-off row is the step already reached. A later sweep still has
+	 * a step to send; recording the reminder must not finish the policy. */
+	g_assert_cmpint(sweep(f, "2026-10-19"), ==, 1);
+	g_clear_pointer(&events, g_ptr_array_unref);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, >, 1);
+	g_object_set(draft, "number", "INV-DRAFT", "company-id", f->company, "contact-id", f->contact, NULL);
+	save(f, draft);
+	refused = venture_dunning_service_remind(service, draft, &actor, &error);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(venture_action_registry_lookup(registry, "invoice", "remind"));
+	g_object_get(venture_action_registry_lookup(registry, "invoice", "remind"), "stageable", &stageable, NULL);
+	g_assert_true(stageable);
+}
+
 /* A policy naming invoice whose policy was deleted falls back to the next
  * level, with one warning, instead of silently leaving dunning. */
 static void test_policy_fallback(Fixture *f, gconstpointer unused)
@@ -1568,6 +1625,7 @@ int main(int argc, char **argv)
 	g_test_add("/dunning/worklist", Fixture, NULL, setup, test_worklist, teardown);
 	g_test_add("/dunning/next-reminder", Fixture, NULL, setup, test_next_reminder, teardown);
 	g_test_add("/dunning/test-send", Fixture, NULL, setup, test_test_send, teardown);
+	g_test_add("/dunning/remind", Fixture, NULL, setup, test_remind, teardown);
 	g_test_add("/dunning/policy-fallback", Fixture, NULL, setup, test_policy_fallback, teardown);
 	g_test_add("/dunning/policy-validation", Fixture, NULL, setup, test_policy_validation, teardown);
 	g_test_add("/dunning/report-period", Fixture, NULL, setup, test_report_period, teardown);

@@ -64,6 +64,12 @@ they are being saved.
   discounts and taxes, issues it through =VentureSettlementService=, moves
   the attached deal to =won= and marks the quote accepted. Any failure,
   including posting or invoice validation, rolls everything back.
+- =remind= on a sent, unexpired quote that was emailed mails the customer
+  again with the same private acceptance link, subject =Reminder: Quote
+  <number>=, and records the action on the quote's timeline. Its outbox key
+  is =quote-reminder:<uuid>:<YYYY-MM-DD>=, so a second reminder the same day
+  sends nothing more. It needs the public HTTPS =server.base_url=, like the
+  first send.
 - =decline= requires a reason. =venture_quote_service_sweep()= expires sent
   quotes whose validity elapsed, within one exact organization.
 
@@ -98,11 +104,12 @@ venturectl quote send 1
 venturectl quote accept 1 'by=Alex Buyer'
 venturectl quote decline 1 'reason=Budget deferred'
 venturectl quote revise 1
+venturectl quote remind 1
 venturectl quote start-subscription 1
 #+end_src
 
-REST actions are =POST /api/v1/quotes/:id/send=, =accept=, =decline= and
-=revise=. JSON uses =accepted_by= and =reason=. Add =?stage=1= to propose
+REST actions are =POST /api/v1/quotes/:id/send=, =accept=, =decline=,
+=revise= and =remind=. JSON uses =accepted_by= and =reason=. Add =?stage=1= to propose
 an action for approval. The quote detail page has the same buttons and
 =/quotes/:id/print= shares the invoice print stylesheet.
 

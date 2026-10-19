@@ -59,7 +59,8 @@ in the repository lists today's.
 |---|---|
 | `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON` |
 | `POST /invoices/:id/send`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID` |
-| `POST /quotes/:id/:action` (send, accept, decline, revise, start-subscription) | `quote ACTION ID` |
+| `POST /quotes/:id/:action` (send, accept, decline, revise, remind, start-subscription) | `quote ACTION ID` |
+| `POST /invoice/:id/actions/remind` (editor, stageable) | `act invoice ID remind` |
 | `POST /deals/:id/move`, `POST /deals/:id/quote` | `deal move\|quote` |
 | `POST /leads/:id/:action` (convert, reassign, reroute, rescore) | `lead ...`, `leads ...` |
 | `POST /billing/start`, `POST /billing/renew-sweep\|dunning-sweep`, `POST /customer_subscriptions/:id/:action` (renew, change, change-seats, cancel, pause, resume, mark-payment-failed, recover); metered use is `POST /usage_record` | `billing ...` |
