@@ -69,7 +69,10 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	/* Phone and text (docs/telephony.org). */
 	VENTURE_FIELD("telephony-country", "Phone country", "Two-letter country for numbers written without a country code, for example GB; empty is US", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-quiet-hours", "Text quiet hours", "No texts between these times in the recipient's own time, for example 21:00-08:00 (the default when empty); off for none", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("telephony-recording-links", "Keep call recording links", "Store the phone system's recording link on each logged call; off by default, see the recording note", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("telephony-recording-links", "Keep call recording links", "Store the phone system's recording link on each logged call; off by default, see the recording note", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/* AI on messages (docs/ai-messages.org). */
+	VENTURE_FIELD("ai-messages-off", "AI messages off", "The one switch: nothing is drafted, summarised or sent by the AI while it is on", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("business-hours", "Business hours", "For after-hours replies, in the organization's time zone, for example Mon-Fri 09:00-17:00; Sat 10:00-14:00; empty for none", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,

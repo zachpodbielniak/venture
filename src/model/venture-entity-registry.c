@@ -976,6 +976,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_inbox_chat_widget_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_inbox_chat_session_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_inbox_chat_message_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ai_message_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ai_message_rule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_ai_message_route_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

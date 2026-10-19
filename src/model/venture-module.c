@@ -995,6 +995,14 @@ static GType (*const inbox_types[]) (void) = {
 	venture_inbox_conversation_get_type, venture_inbox_chat_widget_get_type,
 	venture_inbox_chat_session_get_type, venture_inbox_chat_message_get_type, NULL
 };
+/* AI on messages (docs/ai-messages.org): drafts, rules and their log hang
+ * off conversations; the AI itself is asked only when it is on and
+ * configured, so it is a suggestion rather than a requirement. */
+static const gchar *const ai_messages_requires[] = { "inbox", NULL };
+static const gchar *const ai_messages_suggests[] = { "ai", NULL };
+static GType (*const ai_messages_types[]) (void) = {
+	venture_ai_message_get_type, venture_ai_message_rule_get_type, venture_ai_message_route_get_type, NULL
+};
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1475,6 +1483,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"One inbox: every customer's email, texts, calls and web chat in one "
 		"thread per contact, with an owner, a status and replies.",
 		inbox_requires, inbox_suggests, inbox_types, NULL, NULL, FALSE
+	},
+	{
+		"ai_messages", "AI on messages",
+		"Drafted replies, routing, auto-reply rules, call summaries and "
+		"follow-ups, each approved by a person unless its rule sends on its own.",
+		ai_messages_requires, ai_messages_suggests, ai_messages_types, NULL, NULL, FALSE
 	}
 };
 

@@ -354,6 +354,10 @@ venture_context_new(
 	 * reopens conversations (docs/inbox.org). */
 	venture_inbox_install(self);
 
+	/* AI on messages: the observer that reads each new inbound message
+	 * once its transaction commits (docs/ai-messages.org). */
+	venture_ai_messages_install(self);
+
 	return self;
 }
 

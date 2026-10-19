@@ -7205,6 +7205,39 @@ test_auth_inbox_routes(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/webchat", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 }
 
+/* Lane 8, AI on messages: drafts, approval, follow-ups and the rules page
+ * refuse the anonymous; a viewer reads but cannot approve, discard, draft
+ * or change rules; the rules page is an administrator's. */
+static void
+test_auth_ai_messages_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ai-messages/1/approve", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ai-messages/1/discard", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/ai-draft", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/contacts/1/ai-follow-up", NULL, "channel=text", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/ai-follow-up", NULL, "channel=text", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/ai-messages"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai-messages", NULL, "action=off", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/conversations/1/ai-messages"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/ai-draft", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/discard", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/ai-follow-up", NULL, "{\"channel\":\"text\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/ai-follow-up", NULL, "{\"channel\":\"text\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/ai_message"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/ai_message_rule"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	server_fixture_create_member(fixture, "aim-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "aim-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/approve", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/discard", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/ai-draft", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/ai-follow-up", viewer, "{\"channel\":\"text\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai-messages", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -7462,5 +7495,6 @@ main(
 	g_test_add("/auth/sales-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_sales_routes, server_fixture_tear_down);
 	g_test_add("/auth/telephony-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_telephony_routes, server_fixture_tear_down);
 	g_test_add("/auth/inbox-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_inbox_routes, server_fixture_tear_down);
+	g_test_add("/auth/ai-messages-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_ai_messages_routes, server_fixture_tear_down);
 	return g_test_run();
 }

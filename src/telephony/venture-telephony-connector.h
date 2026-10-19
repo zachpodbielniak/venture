@@ -108,6 +108,7 @@ typedef enum {
  * @duration: seconds talked
  * @occurred_at: (nullable): when it started
  * @recording_url: (nullable): the provider's recording page
+ * @transcript: (nullable): the provider's transcript of the call or voicemail
  * @body: (nullable): a text's words
  * @media: (nullable) (element-type utf8): picture addresses
  * @status: (nullable): delivered or failed, for a status event
@@ -127,6 +128,7 @@ typedef struct {
 	gint64 duration;
 	GDateTime *occurred_at;
 	gchar *recording_url;
+	gchar *transcript;
 	gchar *body;
 	GPtrArray *media;
 	gchar *status;

@@ -143,6 +143,7 @@
 #include "leads/venture-lead-ai-score-records.h"
 #include "telephony/venture-telephony-records.h"
 #include "inbox/venture-inbox-records.h"
+#include "aimessages/venture-ai-messages-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -406,6 +407,8 @@
  * (docs/inbox.org). */
 #include "inbox/venture-inbox-source.h"
 #include "inbox/venture-inbox-service.h"
+/* AI on inbound and outbound messages (docs/ai-messages.org). */
+#include "aimessages/venture-ai-messages.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

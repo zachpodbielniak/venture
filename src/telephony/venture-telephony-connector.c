@@ -40,6 +40,7 @@ venture_telephony_event_free(VentureTelephonyEvent *event)
 	g_free(event->extension);
 	g_clear_pointer(&event->occurred_at, g_date_time_unref);
 	g_free(event->recording_url);
+	g_free(event->transcript);
 	g_free(event->body);
 	g_clear_pointer(&event->media, g_ptr_array_unref);
 	g_free(event->status);

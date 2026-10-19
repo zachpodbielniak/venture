@@ -704,6 +704,7 @@ test_sweep(Fixture *f, gconstpointer unused)
 	venture_config_set_module_enabled(f->config, "activities", FALSE);
 	venture_config_set_module_enabled(f->config, "telephony", FALSE); /* requires activities */
 	venture_config_set_module_enabled(f->config, "inbox", FALSE); /* requires activities */
+	venture_config_set_module_enabled(f->config, "ai_messages", FALSE); /* requires inbox */
 	g_assert_cmpint(venture_customer_health_sweep(f->context, f->org, at, 0, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_clear_error(&error);
