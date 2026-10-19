@@ -500,6 +500,17 @@ venture_web_inbox_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	}
 	if (items->len > 0)
 		g_string_append(html, "</ol>");
+	/* Features' own cards (AI drafts, for one), each from its own file. */
+	{
+		g_autoptr(GPtrArray) panels = venture_inbox_panels();
+		gboolean may_edit = principal != NULL && venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, NULL);
+		for (i = 0; i < panels->len; i++)
+		{
+			const VentureInboxPanel *panel = g_ptr_array_index(panels, i);
+			if (panel->module == NULL || venture_context_module_enabled(context, panel->module))
+				panel->render(context, row, contact, may_edit, html);
+		}
+	}
 	venture_web_inbox_reply_form(self, html, row, contact);
 	venture_web_inbox_history(self, html, row);
 	g_string_append(html, "</div>");

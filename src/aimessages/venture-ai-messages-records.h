@@ -25,6 +25,7 @@ typedef enum {
  * Returns: the reply/auto_reply/summary/follow_up enumeration
  */
 GType venture_ai_message_kind_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_AI_MESSAGE_KIND (venture_ai_message_kind_get_type())
 
 /**
  * VentureAiMessageState:
@@ -51,6 +52,7 @@ typedef enum {
  * Returns: the draft/sent/held/refused/discarded/note enumeration
  */
 GType venture_ai_message_state_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_AI_MESSAGE_STATE (venture_ai_message_state_get_type())
 
 /**
  * VentureAiMessageTrigger:
@@ -69,6 +71,7 @@ typedef enum {
  * Returns: the after_hours/missed_call enumeration
  */
 GType venture_ai_message_trigger_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_AI_MESSAGE_TRIGGER (venture_ai_message_trigger_get_type())
 
 /**
  * VentureAiMessageWording:
@@ -86,6 +89,7 @@ typedef enum {
  * Returns: the template/ai enumeration
  */
 GType venture_ai_message_wording_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_AI_MESSAGE_WORDING (venture_ai_message_wording_get_type())
 
 #define VENTURE_TYPE_AI_MESSAGE (venture_ai_message_get_type())
 VENTURE_DECLARE_ENTITY(VentureAiMessage, venture_ai_message, AI_MESSAGE)

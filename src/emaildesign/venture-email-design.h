@@ -379,6 +379,19 @@ VentureEmailDesignResult *venture_email_design_edit(VentureContext *context, gin
  * Returns: (transfer full) (nullable): the grounded design
  */
 gchar *venture_email_design_ground(const gchar *design, const gchar *const *sources, GPtrArray *stripped, GError **error);
+/**
+ * venture_email_ground_text:
+ * @text: plain words a model wrote, such as a reply or a follow-up
+ * @sources: (array zero-terminated=1): the message and the records, as text
+ * @stripped: (element-type utf8) (nullable): where removed sentences are added
+ *
+ * The same grounding rule for plain words: a sentence naming a price, an
+ * amount, a percentage, a date or "free" that @sources do not hold is
+ * removed and reported.
+ *
+ * Returns: (transfer full): what is left, possibly empty
+ */
+gchar *venture_email_ground_text(const gchar *text, const gchar *const *sources, GPtrArray *stripped);
 
 /**
  * venture_email_design_dismiss_logo_ask:

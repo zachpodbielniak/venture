@@ -174,5 +174,51 @@ GPtrArray *venture_inbox_sources(void);
 	static void symbol##_register(void) __attribute__((constructor)); \
 	static void symbol##_register(void) { venture_inbox_source_register(&symbol); }
 
+/**
+ * VentureInboxPanelFunc:
+ * @context: the wiring
+ * @conversation: the conversation being shown
+ * @contact: its contact
+ * @may_edit: whether the viewer may change things (an editor)
+ * @html: where the panel's HTML goes; everything escaped
+ *
+ * Adds a card to the conversation page, above the reply box.
+ */
+typedef void (*VentureInboxPanelFunc)(VentureContext *context, VentureEntity *conversation, VentureEntity *contact,
+	gboolean may_edit, GString *html);
+/**
+ * VentureInboxPanel:
+ * @id: a stable id, for ordering
+ * @module: (nullable): the module that must be on for it to show
+ * @render: renders the card
+ *
+ * A feature's card on the conversation page, such as AI drafts.
+ */
+typedef struct {
+	const gchar *id;
+	const gchar *module;
+	VentureInboxPanelFunc render;
+} VentureInboxPanel;
+/**
+ * venture_inbox_panel_register:
+ * @panel: a static panel; registering it twice changes nothing
+ */
+void venture_inbox_panel_register(const VentureInboxPanel *panel);
+/**
+ * venture_inbox_panels:
+ * Returns: (transfer container) (element-type VentureInboxPanel): every
+ *   registered panel, by id
+ */
+GPtrArray *venture_inbox_panels(void);
+/**
+ * VENTURE_INBOX_PANEL:
+ * @symbol: a static #VentureInboxPanel
+ *
+ * Put once at the end of the feature's file, like VENTURE_INBOX_SOURCE().
+ */
+#define VENTURE_INBOX_PANEL(symbol) \
+	static void symbol##_register(void) __attribute__((constructor)); \
+	static void symbol##_register(void) { venture_inbox_panel_register(&symbol); }
+
 G_END_DECLS
 #endif

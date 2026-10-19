@@ -743,6 +743,14 @@ record_call(VentureTelephonyService *self, VentureEntity *account, const Venture
 	 * recording note in docs/telephony.org), and only a stable address. */
 	if (org_row != NULL && flag(org_row, "telephony-recording-links") && stable_https(event->recording_url))
 		json_object_set_string_member(details, "call_recording_url", event->recording_url);
+	/* A transcript is the recording in words, so it is kept under the
+	 * same switch; log_call bounds its length. */
+	if (org_row != NULL && flag(org_row, "telephony-recording-links") && !venture_string_is_empty(event->transcript) &&
+		g_utf8_validate(event->transcript, -1, NULL))
+	{
+		g_autofree gchar *bounded = g_utf8_substring(event->transcript, 0, MIN(g_utf8_strlen(event->transcript, -1), 65536));
+		json_object_set_string_member(details, "call_transcript", bounded);
+	}
 	logged = venture_activity_service_log_call(venture_database_get_activity_service(self->database), contact,
 		details, system_actor(), error);
 	return logged != NULL ? 1 : -1;

@@ -277,6 +277,18 @@ gchar *venture_email_design_ground(const gchar *design, const gchar *const *sour
 	return json_to_string(node, FALSE);
 }
 
+gchar *venture_email_ground_text(const gchar *text, const gchar *const *sources, GPtrArray *stripped)
+{
+	VentureEmailGrounds grounds;
+	gchar *kept;
+	if (text == NULL)
+		return g_strdup("");
+	venture_email_grounds_init(&grounds, sources);
+	kept = strip(&grounds, text, stripped);
+	venture_email_grounds_clear(&grounds);
+	return kept != NULL ? kept : g_strdup(text);
+}
+
 /* --- Addresses and images a design uses ------------------------------------------- */
 
 void venture_email_collect_urls(GHashTable *into, const gchar *text)

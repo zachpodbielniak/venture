@@ -71,6 +71,23 @@ VentureAiService *venture_ai_service_for_organization(VentureAiService *self,
  */
 gchar *venture_ai_service_complete_for_organization(VentureAiService *self, gint64 organization_id,
 	const gchar *system_prompt, const gchar *user_text, GError **error);
+/**
+ * venture_ai_service_complete_attributed:
+ * @self: prototype or trusted injected service
+ * @organization_id: organization of the verified source records
+ * @system_prompt: trusted task instructions
+ * @user_text: bounded source data
+ * @provider: (out) (optional) (transfer full): the provider's name, for a log
+ * @model: (out) (optional) (transfer full): the model's name, for a log
+ * @error: (out) (optional): redacted refusal
+ *
+ * venture_ai_service_complete_for_organization(), saying which provider and
+ * model answered, for a caller that keeps a record of what the AI wrote.
+ *
+ * Returns: (transfer full) (nullable): the toolless reply
+ */
+gchar *venture_ai_service_complete_attributed(VentureAiService *self, gint64 organization_id,
+	const gchar *system_prompt, const gchar *user_text, gchar **provider, gchar **model, GError **error);
 
 /**
  * venture_ai_service_new:
