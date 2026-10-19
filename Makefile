@@ -183,6 +183,7 @@ SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wil
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/latefees/venture-late-fee-records.c,$(wildcard src/latefees/*.c))
 CORE_SRCS += src/tax/venture-sales-tax-records.c
 SERVER_ONLY_SRCS += src/tax/venture-sales-tax-service.c
 CORE_SRCS += src/dedupe/venture-dedupe-records.c
@@ -329,6 +330,7 @@ PUBLIC_HDRS += $(wildcard src/progress/*.h)
 PUBLIC_HDRS += $(wildcard src/portal/*.h)
 PUBLIC_HDRS += $(wildcard src/fields/*.h)
 PUBLIC_HDRS += $(wildcard src/dunning/*.h)
+PUBLIC_HDRS += $(wildcard src/latefees/*.h)
 PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
@@ -395,6 +397,7 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-late-fees: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl
