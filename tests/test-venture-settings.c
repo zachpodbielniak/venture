@@ -1097,8 +1097,11 @@ test_screen(Fixture *f, gconstpointer data)
 		g_queue_push_tail(f->provider->answers, g_strdup("TOOL settings_set {\"key\":\"telephony.quiet-hours\",\"value\":\"20:00-07:00\"}"));
 		g_queue_push_tail(f->provider->answers, g_strdup("Texts are quiet from 21:00 to 08:00 now, in each person's own time. "
 			"I have staged 20:00 to 07:00; nothing changes until you press Apply on the card below."));
-		g_assert_cmpuint(web_request(server, "POST", "/ui/chat", NULL, NULL,
-			"message=Make+the+text+quiet+hours+8pm+to+7am", &exchange), ==, 200);
+		{
+			g_autofree gchar *form = g_strdup_printf("organization_id=%" G_GINT64_FORMAT "&message=Make+the+text+quiet+hours+8pm+to+7am", f->org);
+			if (web_request(server, "POST", "/ui/chat", NULL, NULL, form, &exchange) != 200)
+				g_error("the chat refused: %s", exchange);
+		}
 		g_object_set(f->config, "ui-chat-dock-expanded", TRUE, NULL);
 		g_assert_cmpuint(web_request(server, "GET", path, NULL, NULL, NULL, &screen), ==, 200);
 		log = strstr(screen, "id=\"chat-log\">");

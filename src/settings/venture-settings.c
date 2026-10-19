@@ -15,6 +15,9 @@
 #include <string.h>
 
 static GPtrArray *registry;
+/* Saves by the settings API in progress on this thread. The database is
+ * only ever written from the main thread, so the count is never shared. */
+static GPrivate writing_depth;
 static GMutex registry_lock;
 
 VentureSettingMember *venture_setting_member_new(gint64 id, const gchar *label)
@@ -456,6 +459,7 @@ static VentureSettingValue *change(VentureContext *context, gint64 organization_
 	g_autoptr(GError) local = NULL;
 	const VentureSettingInfo *info = NULL;
 	gint64 member = 0;
+	gboolean saved;
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	if (!prepare(context, organization_id, key, value, reset, &info, &member, &record, NULL, &local)) {
 		if (local != NULL) {
@@ -464,7 +468,10 @@ static VentureSettingValue *change(VentureContext *context, gint64 organization_
 		}
 		return venture_settings_get(context, organization_id, key, error);
 	}
-	if (!venture_database_save(venture_context_get_database(context), record, actor, error))
+	venture_settings_write_begin();
+	saved = venture_database_save(venture_context_get_database(context), record, actor, error);
+	venture_settings_write_end();
+	if (!saved)
 		return NULL;
 	return venture_settings_get(context, organization_id, key, error);
 }
@@ -515,6 +522,19 @@ gboolean venture_settings_check_approval(VentureDatabase *database, VentureEntit
 	return venture_settings_require_manager(database, info, organization_id, error);
 }
 
+void venture_settings_write_begin(void)
+{
+	g_private_set(&writing_depth, GINT_TO_POINTER(GPOINTER_TO_INT(g_private_get(&writing_depth)) + 1));
+}
+void venture_settings_write_end(void)
+{
+	gint depth = GPOINTER_TO_INT(g_private_get(&writing_depth));
+	g_private_set(&writing_depth, GINT_TO_POINTER(depth > 0 ? depth - 1 : 0));
+}
+gboolean venture_settings_writing(void)
+{
+	return GPOINTER_TO_INT(g_private_get(&writing_depth)) > 0;
+}
 gboolean venture_settings_only_change(VentureEntity *previous, VentureEntity *row, const gchar *field)
 {
 	g_autoptr(JsonNode) diff = NULL;

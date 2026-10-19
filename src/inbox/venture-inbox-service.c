@@ -194,7 +194,7 @@ validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
 		return TRUE;
 	/* The web chat switch is a setting (inbox.webchat.ID): the settings
 	 * API, or its approved staged change, may turn a chat on or off. */
-	if (VENTURE_IS_INBOX_CHAT_WIDGET(row) && venture_settings_only_change(previous, row, "active"))
+	if (VENTURE_IS_INBOX_CHAT_WIDGET(row) && venture_settings_writing() && venture_settings_only_change(previous, row, "active"))
 		return venture_settings_require_manager(database, venture_settings_lookup("inbox.webchat", NULL),
 			venture_entity_get_organization_id(row), error);
 	return refuse(error, VENTURE_ERROR_PERMISSION_DENIED,

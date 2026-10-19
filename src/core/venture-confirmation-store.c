@@ -752,8 +752,14 @@ venture_confirmation_store_approve_as(
 	}
 	else
 	{
+		gboolean setting = NULL != confirmation->via && g_str_has_prefix(confirmation->via, "settings:");
+
+		if (setting)
+			venture_settings_write_begin();
 		ok = venture_database_save(self->database, confirmation->staged,
 		                           &actor, &local_error);
+		if (setting)
+			venture_settings_write_end();
 	}
 
 	if (ok)

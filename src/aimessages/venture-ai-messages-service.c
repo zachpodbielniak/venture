@@ -214,7 +214,7 @@ validate(VentureDatabase *database, VentureEntity *row, VentureEntity *previous,
 		return TRUE;
 	/* A rule's auto-send is a setting (ai-messages.auto-send.ID): the
 	 * settings API, or its approved staged change, may flip it. */
-	if (VENTURE_IS_AI_MESSAGE_RULE(row) && venture_settings_only_change(previous, row, "auto-send"))
+	if (VENTURE_IS_AI_MESSAGE_RULE(row) && venture_settings_writing() && venture_settings_only_change(previous, row, "auto-send"))
 		return venture_settings_require_manager(database, venture_settings_lookup("ai-messages.auto-send", NULL),
 			venture_entity_get_organization_id(row), error);
 	return refuse(error, VENTURE_ERROR_PERMISSION_DENIED,

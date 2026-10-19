@@ -357,14 +357,37 @@ gboolean venture_settings_check_approval(VentureDatabase *database, VentureEntit
 	GError **error);
 
 /**
+ * venture_settings_write_begin:
+ *
+ * Marks the start of a save the settings API makes (directly, or by
+ * approving its staged change). Balanced by venture_settings_write_end().
+ */
+void venture_settings_write_begin(void);
+
+/**
+ * venture_settings_write_end:
+ *
+ * Ends what venture_settings_write_begin() began.
+ */
+void venture_settings_write_end(void);
+
+/**
+ * venture_settings_writing:
+ *
+ * Returns: whether the settings API is saving right now, on this thread
+ */
+gboolean venture_settings_writing(void);
+
+/**
  * venture_settings_only_change:
  * @previous: (nullable): the row as stored
  * @row: the row about to be saved
  * @field: a property name
  *
  * Whether saving @row changes nothing but @field. A feature whose records
- * are written only by its own service lets its settings through with
- * this, after venture_settings_require_manager().
+ * are written only by its own service lets the settings API's save of its
+ * setting through with this, venture_settings_writing() and
+ * venture_settings_require_manager(); anybody else is still refused.
  *
  * Returns: whether @field is the only change
  */
