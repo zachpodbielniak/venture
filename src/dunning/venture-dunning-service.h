@@ -94,22 +94,28 @@ VentureEntity *venture_dunning_service_retry(VentureDunningService *self, Ventur
  *
  * Returns: (transfer full) (nullable): the queued message
  */
+VentureMailMessage *venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *policy,
+	gint64 invoice_id, gboolean has_offset, gint64 offset, const VentureActor *actor, GError **error);
+
 /**
  * venture_dunning_service_remind:
+ * @self: the service
+ * @invoice: a saved open invoice
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
  *
- * Send the customer of an open @invoice a reminder now: the latest reminder
- * it was sent, or its policy's first email step, recorded as a dunning_event
- * like a sweep's and never moving the schedule on. Asking twice in one day
- * returns the first day's message and sends nothing more. Refused for an
- * invoice that is settled, not issued, disputed, opted out, has no policy or
- * whose customer has no email.
+ * Send the customer of @invoice a reminder now: the latest email step already
+ * decided for it, or its policy's first email step when none was. Recorded as
+ * a dunning_event the way a sweep records one, and never at a later offset
+ * than the schedule has already reached. Asking twice in one day returns that
+ * day's message and sends nothing more. Refused when the invoice is settled,
+ * not issued, disputed, opted out or disabled, has no policy or email step,
+ * or the customer has no email address.
  *
- * Returns: (transfer full): the queued message, or %NULL with @error.
+ * Returns: (transfer full) (nullable): the queued message
  */
 VentureMailMessage *venture_dunning_service_remind(VentureDunningService *self, VentureEntity *invoice,
 	const VentureActor *actor, GError **error);
-VentureMailMessage *venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *policy,
-	gint64 invoice_id, gboolean has_offset, gint64 offset, const VentureActor *actor, GError **error);
 
 /**
  * venture_dunning_check_write: (skip)

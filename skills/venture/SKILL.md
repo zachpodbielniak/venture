@@ -105,7 +105,10 @@ the old five-member body is refused (operations.md). Events and the
 unified calendar are the planner guide. Durable business outcomes and
 their replay route are in the automation guide. A lead email keeps its
 plus tag; matching uses a separate key (crm.md). Sequence email steps
-enqueue in the mail outbox; `mail deliver` submits them (outreach.md). The
+enqueue in the mail outbox; `mail deliver` submits them (outreach.md).
+`act invoice ID remind` and `quote remind` send one customer a reminder
+today without moving the dunning schedule or the quote's validity
+(billing.md, receivables.md). The
 baseline below remains the last full review.
 
 <!-- skill-baseline:start -- reviewed 2026-10-18 against 9c97a87a -->
@@ -320,10 +323,10 @@ ids, notes) in words.
 | "Invoice a customer" | draft + lines + `update invoice ID status=sent`, or `compose invoice JSON` | [receivables.md](references/receivables.md) |
 | "Record a payment / credit / refund" | `create payment ...`; `customer_credit`; `refund` | [receivables.md](references/receivables.md) |
 | "What does this customer owe?" | `report receivables`, `report customer_statement ... customer_id=` | [receivables.md](references/receivables.md) |
-| "Send / accept a quote" | `quote send\|accept\|decline\|revise ID` | [receivables.md](references/receivables.md) |
+| "Send / accept / remind a quote" | `quote send\|accept\|decline\|revise\|remind ID` | [receivables.md](references/receivables.md) |
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
-| "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver` | [billing.md](references/billing.md) |
+| "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |

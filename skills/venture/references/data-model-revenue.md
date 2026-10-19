@@ -36,7 +36,7 @@ headline metrics, Stripe and commerce connectors. Conventions are in
   `draft -> sent` is yours; paid states come from settlement), `issued_at`,
   `due_at`, `paid_at`, `workflow_state`, `tax_exempt`, `dunning_policy_id`,
   `dunning_paused_until`, `owner`, `external_id`. *actions*
-  `batch_create (0,s)`, `payment_link`, `collect` (stripe).
+  `batch_create (0,s)`, `remind (s)`, `payment_link`, `collect` (stripe).
 - `invoice_line` -- `invoice_id`, `description`, `quantity` (double),
   `unit_price`, `discount_percent`, `tax_code_id -> tax_code`,
   `tax_jurisdiction_id` (frozen at issue), `product_id`. Amount is computed
@@ -58,7 +58,7 @@ headline metrics, Stripe and commerce connectors. Conventions are in
   totals, `invoice_id`, `subscription_id`; *actions* `progress_invoice (s)`,
   `handoff (s)`); `quote_line` (`plan_price_id` for a subscription line);
   `quote_event`, `quote_delivery`, `quote_action` (a staged
-  send/accept/decline/revise: `action`, `expected_version`, `accepted_by`);
+  send/accept/decline/revise/remind: `action`, `expected_version`, `accepted_by`);
   `progress_billing`, `customer_retainer` (*action* `release`),
   `contract_retention`.
 

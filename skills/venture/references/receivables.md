@@ -74,6 +74,7 @@ venturectl quote send 7
 venturectl quote accept 7 'by=Full Name'
 venturectl quote decline 7 'reason=Explanation'
 venturectl quote revise 7
+venturectl quote remind 7                      # the same acceptance link, once a day
 venturectl quote start-subscription 7          # the accepted quote's plan line, once
 venturectl deal quote 12                       # a draft quote from the deal's lines (or revise it)
 ```
@@ -83,6 +84,11 @@ is HTTPS and the contact or customer has an address; the acceptance link
 stays in that sensitive body. A missing address or a non-HTTPS origin
 leaves the quote in draft. An empty base URL still marks the quote sent
 and keeps the delivery row, without queueing mail.
+`quote remind` is only for a sent, unexpired quote that was emailed: the
+customer gets that same link again, subject `Reminder: Quote <number>`,
+once per day (`quote-reminder:<uuid>:<YYYY-MM-DD>`). It needs the public
+HTTPS `server.base_url`, like the first send, and shows on the quote's
+timeline. `POST /api/v1/quotes/:id/remind`; `?stage=1` proposes it.
 Acceptance queues a confirmation in the same transaction and does not fail
 when the address is missing. Neither call speaks SMTP. Acceptance creates
 and issues the invoice in the same transaction unless

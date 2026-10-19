@@ -1342,6 +1342,12 @@ static void test_remind(Fixture *f, gconstpointer unused)
 	g_clear_pointer(&events, g_ptr_array_unref);
 	events = rows(f, "dunning_event");
 	g_assert_cmpuint(events->len, ==, 1);
+	/* The one-off row is the step already reached. A later sweep still has
+	 * a step to send; recording the reminder must not finish the policy. */
+	g_assert_cmpint(sweep(f, "2026-10-19"), ==, 1);
+	g_clear_pointer(&events, g_ptr_array_unref);
+	events = rows(f, "dunning_event");
+	g_assert_cmpuint(events->len, >, 1);
 	g_object_set(draft, "number", "INV-DRAFT", "company-id", f->company, "contact-id", f->contact, NULL);
 	save(f, draft);
 	refused = venture_dunning_service_remind(service, draft, &actor, &error);
