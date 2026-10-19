@@ -142,9 +142,10 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /lightsite/billing/enroll` | fourteen-day deferred enrollment, no invoice | -- |
 | `POST /lightsite/billing/prepay` | frozen 24-month prepaid terms, no invoice until publication | -- |
 | `POST /lightsite/billing/setup` | hosted saved-method setup, no charge | -- |
-| `POST /lightsite/billing/publish` | record first go-live; may start the first charge | -- |
+| `POST /lightsite/billing/publish` | record first go-live (`published_at` optional, stored once as `go_live_at`); may start the first charge | -- |
 | `POST /lightsite/billing/first-charge` | idempotent first collection at publication or day fourteen | -- |
 | `POST /lightsite/billing/cancel` | no-charge cancel before the deadline, else period end | -- |
+| `POST /lightsite/billing/money-back` | within 30 days of go-live, cancel now and refund settled card payments | -- |
 | `POST /lightsite/billing/guarantee` | one-time capped account credit from a retained measurement | -- |
 | `GET /lightsite/billing/:organization_id/made-back` | won, invoiced and overlap since go-live | -- |
 | `GET /lightsite/billing/:organization_id/notifications` | owner notification facts, no payment credentials | -- |
