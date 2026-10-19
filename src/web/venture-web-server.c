@@ -33461,6 +33461,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals/board.js", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence/:id/enroll", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
@@ -33496,6 +33497,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
 	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
 	htmx_router_get(router, "/deals", venture_web_deals_board, self);
+	htmx_router_get(router, "/deals/board.js", venture_web_deals_board_script, self);
 	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
 	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
