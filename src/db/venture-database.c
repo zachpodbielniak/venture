@@ -270,6 +270,7 @@ venture_database_init(VentureDatabase *self)
 	venture_marketing_install(self);
 	venture_attribution_install(self);
 	venture_referrals_install(self);
+	venture_sequence_journeys_install(self);
 }
 
 VentureQuoteService *

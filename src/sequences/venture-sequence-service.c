@@ -640,7 +640,10 @@ process_save(VentureSequenceService *self, VentureEntity *row, const VentureActo
 	 * Re-entering the dispatcher would spend a consumed permit twice. Keep
 	 * validators and signals in the ordinary downstream write, within this
 	 * sequence transaction. */
-	if (type == VENTURE_TYPE_DEAL || type == VENTURE_TYPE_INTERACTION)
+	if (type == VENTURE_TYPE_DEAL)
+		return save(self->database, row, actor, error) && apply_exits(self, row, previous, actor, error) &&
+			venture_sequence_triggers_deal(self, row, previous, error);
+	if (type == VENTURE_TYPE_INTERACTION)
 		return save(self->database, row, actor, error) && apply_exits(self, row, previous, actor, error);
 	return persist(self, row, actor, error) && apply_exits(self, row, previous, actor, error);
 }
@@ -697,6 +700,77 @@ venture_sequence_service_enroll(VentureSequenceService *self, VentureEntity *enr
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") == G_TYPE_INVALID)
 		return refuse(error, VENTURE_ERROR_NOT_FOUND, "The sequences module is disabled");
 	return venture_database_save(self->database, enrollment, actor, error);
+}
+
+gint
+venture_sequence_trigger_enroll(VentureSequenceService *self, VentureEntity *trigger, gint64 contact_id,
+	gint64 deal_id, const gchar *identity, const gchar *reason, GDateTime *at, GError **error)
+{
+	gint64 org = venture_entity_get_organization_id(trigger);
+	gint64 sequence_id = number(trigger, "sequence-id");
+	g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT ":%s:%" G_GINT64_FORMAT, sequence_id, identity, contact_id);
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_ENROLLMENT);
+	g_autoptr(VentureEntity) existing = NULL, sequence = NULL, contact = NULL, row = NULL;
+	g_autoptr(GError) refused = NULL;
+	gboolean outer = self->busy, ok;
+	if (contact_id <= 0 || sequence_id <= 0)
+		return 0;
+	/* The journey's own enrollment, made as the system: whoever saved the
+	 * contact or paid the invoice need not be allowed to enrol anybody. */
+	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, org, NULL);
+	venture_query_add_filter_string(query, "trigger-key", VENTURE_FILTER_OP_EQ, key, NULL);
+	existing = venture_database_find_one(self->database, query, error);
+	if (existing != NULL)
+		return 0;
+	if (error != NULL && *error != NULL)
+		return -1;
+	sequence = venture_database_get(self->database, VENTURE_TYPE_SEQUENCE, sequence_id, NULL);
+	contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, contact_id, NULL);
+	if (sequence == NULL || contact == NULL || venture_entity_is_deleted(sequence) || venture_entity_is_deleted(contact) ||
+		venture_entity_get_organization_id(sequence) != org || venture_entity_get_organization_id(contact) != org ||
+		!flag(sequence, "active"))
+		return 0;
+	row = g_object_new(VENTURE_TYPE_SEQUENCE_ENROLLMENT, "organization-id", org, "sequence-id", sequence_id,
+		"contact-id", contact_id, "enrolled-at", at, "enrollment-reason", reason,
+		"owner-id", number(trigger, "owner-id"), "trigger-id", venture_entity_get_id(trigger), NULL);
+	if (deal_id > 0)
+	{
+		g_autoptr(VentureEntity) deal = venture_database_get(self->database, VENTURE_TYPE_DEAL, deal_id, NULL);
+		if (deal != NULL && number(deal, "contact-id") == contact_id)
+			g_object_set(row, "deal-id", deal_id, NULL);
+	}
+	if (!outer && !venture_database_begin(self->database, error))
+		return -1;
+	self->busy = TRUE;
+	/* The ordinary enrollment rules: an active sequence, no suppression,
+	 * no active or paused enrollment already. Refused is "not enrolled". */
+	ok = prepare_enrollment(self, row, NULL, &refused);
+	if (ok)
+	{
+		g_object_set(row, "trigger-key", key, NULL);
+		ok = persist(self, row, NULL, error);
+		self->busy = outer;
+		if (!ok)
+		{
+			if (!outer) venture_database_rollback(self->database);
+			return -1;
+		}
+		if (!outer && !venture_database_commit(self->database, error))
+			return -1;
+		return 1;
+	}
+	self->busy = outer;
+	if (!outer) venture_database_rollback(self->database);
+	if (!g_error_matches(refused, VENTURE_ERROR, VENTURE_ERROR_VALIDATION) &&
+		!g_error_matches(refused, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS))
+	{
+		g_propagate_error(error, g_steal_pointer(&refused));
+		return -1;
+	}
+	return 0;
 }
 
 gboolean
@@ -1218,6 +1292,10 @@ venture_sequence_service_run_due(VentureSequenceService *self, gint64 organizati
 		refuse(error, VENTURE_ERROR_INVALID_ARGUMENT, "An execution timestamp is required");
 		return -1;
 	}
+	/* Triggers read the business-event feed first, so an enrollment the
+	 * feed makes now is due in this same sweep. */
+	if (venture_sequence_service_run_triggers(self, organization_id, as_of, actor, error) < 0)
+		return -1;
 	/* Pick up retained deliveries from installations that had no mail adapter. */
 	if (!venture_sequence_mail_recover(self->database, organization_id, as_of, actor, error))
 		return -1;
