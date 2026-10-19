@@ -153,6 +153,7 @@ typedef struct {
 	VentureEntity *carol;
 	VentureEntity *stranger;
 	gchar *line_token;
+	gchar *visitor;
 	gchar *root;
 	gint64 org;
 } Fixture;
@@ -300,6 +301,7 @@ teardown(Fixture *f, gconstpointer data)
 	g_clear_object(&f->sync);
 	g_clear_object(&f->imap);
 	g_clear_pointer(&f->line_token, g_free);
+	g_clear_pointer(&f->visitor, g_free);
 	g_clear_object(&f->context);
 	venture_test_accounting_database_cleanup(f->db);
 	g_clear_object(&f->db);
@@ -416,9 +418,9 @@ all_channels(Fixture *f)
 {
 	g_autoptr(VentureEntity) chat = widget(f, f->org);
 	g_autoptr(VentureEntity) session = NULL, voicemail = NULL, missed = NULL;
-	g_autofree gchar *token = NULL;
+	g_clear_pointer(&f->visitor, g_free);
 	session = chat_in(f, chat, "Ada", "ADA@example.com", NULL, "Is the shop open on Sunday?", "192.0.2.10",
-		"2026-09-15T12:00:00Z", &token);
+		"2026-09-15T12:00:00Z", &f->visitor);
 	voicemail = call_in(f, f->ada, "voicemail", "2026-09-15T11:00:00Z", "Hi, it is Ada, please call me back.");
 	text_in(f, "t1", "+15550100123", "Running ten minutes late", "2026-09-15T10:00:00Z");
 	mail_in(f, mail_question);
@@ -1195,6 +1197,16 @@ test_pages(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(web_request(server, "POST", path, NULL, "body=We+are+open+ten+to+four.", NULL, NULL), ==, 302);
 	fresh = reread(f, row);
 	g_assert_cmpint(number_of(fresh, "owner-id"), ==, venture_entity_get_id(f->bob));
+	/* For looking at the pages in a browser (docs/inbox.org screenshots):
+	 * VENTURE_TEST_INBOX_HOLD=SECONDS keeps this server up that long. */
+	if (g_getenv("VENTURE_TEST_INBOX_HOLD") != NULL)
+	{
+		gint64 until = g_get_monotonic_time() + g_ascii_strtoll(g_getenv("VENTURE_TEST_INBOX_HOLD"), NULL, 10) * G_USEC_PER_SEC;
+		g_printerr("inbox pages on http://127.0.0.1:%u conversation %" G_GINT64_FORMAT " visitor /webchat/c/%s\n",
+			venture_web_server_get_port(server), venture_entity_get_id(row), f->visitor);
+		while (g_get_monotonic_time() < until)
+			g_main_context_iteration(NULL, FALSE), g_usleep(2000);
+	}
 	g_assert_cmpint(enum_of(fresh, "status"), ==, VENTURE_INBOX_STATUS_WAITING);
 	/* The API. */
 	g_free(path);
