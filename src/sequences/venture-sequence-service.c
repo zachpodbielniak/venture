@@ -922,6 +922,19 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 	contact = reference(self, VENTURE_TYPE_CONTACT, number(row, "contact-id"), org, error);
 	if (contact == NULL)
 		return FALSE;
+	if (channel == 0)
+	{
+		/* A marketing journey asks the preference centre first; a skipped
+		 * email is history like any other step, and the journey goes on. */
+		g_autofree gchar *skip = NULL;
+		if (!venture_sequence_email_gates_ask(self->database, sequence, contact, as_of, &skip, error))
+			return FALSE;
+		if (skip != NULL)
+		{
+			g_object_set(delivery, "state", 3, "error", skip, NULL);
+			return persist(self, delivery, actor, error);
+		}
+	}
 	contact_json = venture_serializable_to_json(VENTURE_SERIALIZABLE(contact), FALSE);
 	if (number(contact, "company-id") != 0)
 	{

@@ -29,4 +29,8 @@ gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organiz
 gboolean venture_sequence_delivery_eligible(VentureDatabase *database, VentureEntity *delivery,
 	GDateTime *now, gboolean *defer, GError **error);
 
+/* Each installed VentureSequenceEmailGate in turn; the first skip wins. */
+gboolean venture_sequence_email_gates_ask(VentureDatabase *database, VentureEntity *sequence, VentureEntity *contact,
+	GDateTime *as_of, gchar **skip_reason, GError **error);
+
 #endif

@@ -25,6 +25,17 @@ static gboolean recipient_allowed(VentureMarketingService *self, VentureEntity *
 		if (withdrawn || g_strcmp0(address, email) || g_strcmp0(purpose, "marketing") ||
 			number(consent, subject_field(G_OBJECT_TYPE(source))) != venture_entity_get_id(source)) return FALSE;
 	}
+	{
+		/* A topic turned off after approval stops the message; how often
+		 * is judged before queueing, where the run's clock is known. */
+		g_autoptr(VentureEntity) send = get_row(self, VENTURE_TYPE_MARKETING_SEND, org, number(recipient, "send-id"), error);
+		const gchar *why = NULL;
+		if (!send) return FALSE;
+		if (!venture_marketing_preference_allows(self->database, org, email, number(send, "topic-id"), NULL, &why, error)) {
+			*reason = "The recipient turned this topic off";
+			return FALSE;
+		}
+	}
 	tracking = string(recipient, "tracking-hash");
 	if (tracking && *tracking) {
 		organization = get_row(self, VENTURE_TYPE_ORGANIZATION, org, org, error);
@@ -330,6 +341,16 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 			g_object_set(recipient, "state", "cancelled", NULL);
 			if (!save(self, recipient, actor, error)) goto fail;
 			continue;
+		}
+		{
+			g_autofree gchar *email = string(recipient, "email");
+			const gchar *why = NULL;
+			if (!venture_marketing_preference_allows(self->database, org, email, number(send, "topic-id"), now, &why, error)) {
+				if (error && *error) goto fail;
+				g_object_set(recipient, "state", "cancelled", NULL);
+				if (!save(self, recipient, actor, error)) goto fail;
+				continue;
+			}
 		}
 		message = recipient_message(recipient);
 		g_object_set(message, "next-attempt-at", now, NULL);

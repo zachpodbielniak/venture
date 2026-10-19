@@ -34,9 +34,18 @@ static gboolean make_recipient(VentureMarketingService *self, VentureEntity *sen
 		if (blocked) reason = "suppressed";
 		else if (g_hash_table_contains(seen, email)) reason = "duplicate_address";
 		else {
-			consent = permission(self, source, email, error);
-			if (error && *error) return FALSE;
-			if (!consent) reason = "no_marketing_permission";
+			g_autoptr(GDateTime) now = venture_time_now();
+			const gchar *why = NULL;
+			/* The preference centre: a topic turned off, or more mail than
+			 * the person asked for (venture-marketing-preferences.inc). */
+			if (!venture_marketing_preference_allows(self->database, org, email, number(send, "topic-id"), now, &why, error)) {
+				if (error && *error) return FALSE;
+				reason = why;
+			} else {
+				consent = permission(self, source, email, error);
+				if (error && *error) return FALSE;
+				if (!consent) reason = "no_marketing_permission";
+			}
 		}
 	}
 	g_object_set(recipient, "organization-id", org, "send-id", venture_entity_get_id(send),

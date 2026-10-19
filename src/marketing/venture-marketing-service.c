@@ -286,6 +286,7 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 #include "venture-marketing-tracking.inc"
 #include "venture-marketing-actions.inc"
 #include "venture-marketing-replies.inc"
+#include "venture-marketing-preferences.inc"
 #include "venture-marketing-audiences.inc"
 
 static void finalize(GObject *object)
@@ -346,7 +347,8 @@ void venture_marketing_service_configure(VentureMarketingService *self, VentureC
 void venture_marketing_install(VentureDatabase *database)
 {
 	GType types[] = { VENTURE_TYPE_MARKETING_LIST, VENTURE_TYPE_MARKETING_MEMBER,
-		VENTURE_TYPE_MARKETING_CONSENT, VENTURE_TYPE_MARKETING_SEND, VENTURE_TYPE_MARKETING_RECIPIENT, VENTURE_TYPE_MARKETING_EVENT };
+		VENTURE_TYPE_MARKETING_CONSENT, VENTURE_TYPE_MARKETING_SEND, VENTURE_TYPE_MARKETING_RECIPIENT, VENTURE_TYPE_MARKETING_EVENT,
+		VENTURE_TYPE_MARKETING_PREFERENCE };
 	VentureMarketingService *self = venture_marketing_service_get(database);
 	VentureMailOutbox *outbox = venture_database_get_mail_outbox(database);
 	guint i;
@@ -360,10 +362,13 @@ void venture_marketing_install(VentureDatabase *database)
 	g_signal_connect_object(outbox, "before-send", G_CALLBACK(before_send), self, 0);
 	g_signal_connect_object(outbox, "before-transport", G_CALLBACK(before_transport), self, 0);
 	venture_deliverability_install(database);
+	/* A marketing journey asks the preference centre before each email. */
+	venture_sequence_add_email_gate(database, journey_gate, self);
 }
 gboolean venture_marketing_check_removal(VentureEntity *entity, GError **error)
 {
 	if (VENTURE_IS_MARKETING_CONSENT(entity) || VENTURE_IS_MARKETING_RECIPIENT(entity) || VENTURE_IS_MARKETING_EVENT(entity) ||
+		VENTURE_IS_MARKETING_PREFERENCE(entity) ||
 		(VENTURE_IS_MARKETING_SEND(entity) && choice(entity, "state")))
 		return refuse(error, "Marketing evidence and approved snapshots cannot be removed");
 	return TRUE;

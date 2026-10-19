@@ -74,6 +74,21 @@ gboolean venture_marketing_service_record_preferences(VentureMarketingService *s
 VentureEntity *venture_marketing_service_preferences_for(VentureMarketingService *self,
 	gint64 organization_id, const gchar *email, GError **error);
 /**
+ * venture_marketing_service_preference_view:
+ * @self: service
+ * @token: the recipient's preference capability
+ * @topics: (out) (transfer full) (element-type VentureEntity): the offered topics
+ * @preference: (out) (transfer full) (nullable): the address's choices
+ * @error: (out) (optional): unknown capability
+ *
+ * What the preference page shows. Neither the address nor the person is
+ * returned: the page must not disclose who the link belongs to.
+ *
+ * Returns: whether the capability is known
+ */
+gboolean venture_marketing_service_preference_view(VentureMarketingService *self, const gchar *token,
+	GPtrArray **topics, VentureEntity **preference, GError **error);
+/**
  * venture_marketing_preference_allows:
  * @database: repository
  * @organization_id: organization
