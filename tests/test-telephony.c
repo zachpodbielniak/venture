@@ -1278,8 +1278,9 @@ test_text_campaign(Fixture *f, gconstpointer data)
 	VentureMarketingService *marketing = venture_marketing_service_get(f->db);
 	g_autoptr(VentureEntity) list = NULL, send = NULL, a = NULL, b = NULL;
 	g_autoptr(VentureMarketingSend) previewed = NULL;
-	g_autoptr(GDateTime) night = at("2026-09-14T03:00:00Z");
-	g_autoptr(GDateTime) morning = at("2026-09-14T09:00:00Z");
+	/* After the approval, which is stamped by the real clock. */
+	g_autoptr(GDateTime) night = at("2030-01-15T03:00:00Z");
+	g_autoptr(GDateTime) morning = at("2030-01-15T09:00:00Z");
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GPtrArray) texts = NULL;
 	g_autofree gchar *state = NULL, *origin = NULL, *body = NULL;

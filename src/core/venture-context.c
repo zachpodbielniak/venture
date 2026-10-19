@@ -346,6 +346,10 @@ venture_context_new(
 	 * the designer's actions for the assistant. */
 	venture_email_design_install(self);
 
+	/* Phone and text: the write guards, and the text channels for
+	 * sequences and campaigns (docs/telephony.org). */
+	venture_telephony_install(self);
+
 	return self;
 }
 
