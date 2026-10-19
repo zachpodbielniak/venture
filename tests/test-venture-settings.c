@@ -1080,6 +1080,36 @@ test_screen(Fixture *f, gconstpointer data)
 		g_assert_true(value->is_default);
 	}
 	g_assert_nonnull(venture_settings_set(f->context, f->org, "marketing.ab-wait-hours", "6", &owner, &error));
+	/* VENTURE_TEST_SETTINGS_CHAT_HTML=FILE also saves the settings screen
+	 * with the assistant's panel open on a chat that changes the quiet
+	 * hours, its staged change waiting: the screenshot in docs/settings.org. */
+	if (g_getenv("VENTURE_TEST_SETTINGS_CHAT_HTML") != NULL)
+	{
+		g_autofree gchar *exchange = NULL, *screen = NULL, *saved = NULL;
+		g_autoptr(GRegex) scripts = g_regex_new("<script\\b.*?</script>", G_REGEX_DOTALL, 0, NULL);
+		const gchar *log;
+		g_assert_true(venture_settings_reset(f->context, f->org, "telephony.quiet-hours", &owner, &error) != NULL);
+		f->provider = g_object_new(TYPE_SCRIPTED_PROVIDER, NULL);
+		f->ai = venture_ai_service_new_with_provider(f->context, AI_PROVIDER(f->provider), &error);
+		g_assert_no_error(error);
+		venture_context_set_ai_service(f->context, f->ai);
+		g_queue_push_tail(f->provider->answers, g_strdup("TOOL settings_get {\"key\":\"telephony.quiet-hours\"}"));
+		g_queue_push_tail(f->provider->answers, g_strdup("TOOL settings_set {\"key\":\"telephony.quiet-hours\",\"value\":\"20:00-07:00\"}"));
+		g_queue_push_tail(f->provider->answers, g_strdup("Texts are quiet from 21:00 to 08:00 now, in each person's own time. "
+			"I have staged 20:00 to 07:00; nothing changes until you press Apply on the card below."));
+		g_assert_cmpuint(web_request(server, "POST", "/ui/chat", NULL, NULL,
+			"message=Make+the+text+quiet+hours+8pm+to+7am", &exchange), ==, 200);
+		g_object_set(f->config, "ui-chat-dock-expanded", TRUE, NULL);
+		g_assert_cmpuint(web_request(server, "GET", path, NULL, NULL, NULL, &screen), ==, 200);
+		log = strstr(screen, "id=\"chat-log\">");
+		g_assert_nonnull(log);
+		log += strlen("id=\"chat-log\">");
+		saved = g_strdup_printf("%.*s%s%s", (gint)(log - screen), screen, exchange, log);
+		{
+			g_autofree gchar *still = g_regex_replace(scripts, saved, -1, 0, "", 0, NULL);
+			g_assert_true(g_file_set_contents(g_getenv("VENTURE_TEST_SETTINGS_CHAT_HTML"), still, -1, NULL));
+		}
+	}
 	hold(server, path);
 }
 
