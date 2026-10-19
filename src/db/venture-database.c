@@ -2958,6 +2958,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_attribution_actions_register(self);
 		venture_referrals_actions_register(self);
 		venture_close_actions_register(self);
+		venture_tags_actions_register(self);
 	}
 	return self->actions;
 }
