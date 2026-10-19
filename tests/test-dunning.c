@@ -442,6 +442,7 @@ static void test_module_off(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	(void)unused;
 	venture_config_set_module_enabled(f->config, "dunning", FALSE);
+	venture_config_set_module_enabled(f->config, "late_fees", FALSE);
 	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "dunning_policy"), ==, G_TYPE_INVALID);
 	g_assert_cmpint(venture_dunning_service_sweep(venture_dunning_service_get(f->db), f->org, at, 100, NULL, &error), ==, -1);
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
@@ -1222,6 +1223,7 @@ static void test_worklist(Fixture *f, gconstpointer unused)
 	g_assert_cmpstr(json_object_get_string_member(row, "next_date"), ==, "2026-01-17");
 	g_assert_cmpstr(json_object_get_string_member(row, "owner"), ==, "alice");
 	venture_config_set_module_enabled(f->config, "dunning", FALSE);
+	venture_config_set_module_enabled(f->config, "late_fees", FALSE);
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "dunning_worklist"));
 	venture_config_set_module_enabled(f->config, "dunning", TRUE);
 }
@@ -1505,6 +1507,7 @@ static void test_module_off_queued(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(error);
 	g_clear_error(&error);
 	venture_config_set_module_enabled(f->config, "dunning", FALSE);
+	venture_config_set_module_enabled(f->config, "late_fees", FALSE);
 	deliver(f, "2026-01-07");
 	venture_config_set_module_enabled(f->config, "dunning", TRUE);
 	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
@@ -1557,6 +1560,8 @@ static void test_migrate_disabled(void)
 	g_autoptr(VentureModuleRegistry) registry = NULL;
 
 	venture_config_set_module_enabled(config, "dunning", FALSE);
+
+	venture_config_set_module_enabled(config, "late_fees", FALSE);
 	db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	context = venture_context_new(config, db);
