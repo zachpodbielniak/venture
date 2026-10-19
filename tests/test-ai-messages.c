@@ -1234,6 +1234,13 @@ test_pages(Fixture *f, gconstpointer data)
 	g_autofree gchar *page = NULL, *path = NULL, *api = NULL, *what = NULL;
 	VentureActor owner = person("owner");
 	(void)data;
+	/* The page approves at the real time of day; without quiet hours the
+	 * text goes whatever that is (the held case is test_send_quiet_hours). */
+	{
+		g_autoptr(VentureEntity) org = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->org, NULL);
+		g_object_set(org, "telephony-quiet-hours", "off", NULL);
+		persist(f, org);
+	}
 	consent(f, f->ada);
 	business_hours(f, "Mon-Fri 09:00-17:00");
 	add_rule(f, "After hours", VENTURE_AI_MESSAGE_TRIGGER_AFTER_HOURS, "", VENTURE_AI_MESSAGE_WORDING_TEMPLATE,
@@ -1288,7 +1295,8 @@ test_pages(Fixture *f, gconstpointer data)
 	g_free(path);
 	path = g_strdup_printf("/api/v1/conversations/%" G_GINT64_FORMAT "/ai-messages", venture_entity_get_id(row));
 	g_assert_cmpuint(web_request(server, "GET", path, NULL, NULL, &api), ==, 200);
-	g_assert_nonnull(strstr(api, "\"state\":\"sent\""));
+	g_assert_nonnull(strstr(api, "\"sent\""));
+	g_assert_nonnull(strstr(api, "\"drafting\""));
 	g_clear_pointer(&api, g_free);
 	g_free(path);
 	path = g_strdup_printf("/api/v1/deals/%" G_GINT64_FORMAT "/ai-follow-up", venture_entity_get_id(deal));
