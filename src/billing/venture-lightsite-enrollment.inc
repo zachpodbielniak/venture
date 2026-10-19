@@ -384,9 +384,9 @@ enrollment_first_invoice(VentureDatabase *db, gint64 billing, gint64 subscriptio
 	return event ? number(event, "invoice-id") : 0;
 }
 
-JsonNode *
-venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, gint64 business,
-	gboolean published, GError **error)
+static JsonNode *
+first_charge(VentureContext *context, gint64 billing, gint64 business,
+	gboolean published, GDateTime *published_at, GError **error)
 {
 	g_autoptr(GError) discarded = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
@@ -416,6 +416,14 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 		venture_database_rollback(db);
 		return g_steal_pointer(&cancellation);
 	}
+	/* Money back ended the subscription: later notices change nothing. */
+	g_clear_pointer(&cancellation, json_node_unref);
+	cancellation = enrollment_read(db, billing, business, "money-back", error);
+	if (error && *error) goto fail;
+	if (cancellation) {
+		venture_database_rollback(db);
+		return g_steal_pointer(&cancellation);
+	}
 	enrollment = enrollment_read(db, billing, business, "enroll", error);
 	if (!enrollment) {
 		if (!error || !*error) refuse(error, VENTURE_ERROR_NOT_FOUND, "business is not enrolled");
@@ -425,9 +433,21 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 	publication = enrollment_read(db, billing, business, "publish", error);
 	if (error && *error) goto fail;
 	if (published && !publication) {
+		/* The clock starts when the site actually went live, if told. */
+		if (published_at) {
+			g_autoptr(GDateTime) enrolled_at = venture_time_from_string(
+				json_object_get_string_member(json_node_get_object(enrollment), "enrolled_at"), error);
+			if (!enrolled_at) goto fail;
+			if (g_date_time_compare(published_at, now) > 0) {
+				refuse(error, VENTURE_ERROR_VALIDATION, "published_at is in the future"); goto fail;
+			}
+			if (g_date_time_compare(published_at, enrolled_at) < 0) {
+				refuse(error, VENTURE_ERROR_VALIDATION, "published_at is before enrollment"); goto fail;
+			}
+		}
 		publication = json_node_new(JSON_NODE_OBJECT);
 		json_node_take_object(publication, json_object_new());
-		set_time(json_node_get_object(publication), "go_live_at", now);
+		set_time(json_node_get_object(publication), "go_live_at", published_at ? published_at : now);
 		if (!enrollment_write(db, billing, business, "publish", publication, &actor, error)) goto fail;
 	}
 	if (json_object_has_member(json_node_get_object(enrollment), "payment_path")) {
@@ -505,6 +525,20 @@ venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, 
 fail:
 	venture_database_rollback(db);
 	return NULL;
+}
+
+JsonNode *
+venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing, gint64 business,
+	gboolean published, GError **error)
+{
+	return first_charge(context, billing, business, published, NULL, error);
+}
+
+JsonNode *
+venture_lightsite_billing_publish(VentureContext *context, gint64 billing, gint64 business,
+	GDateTime *published_at, GError **error)
+{
+	return first_charge(context, billing, business, TRUE, published_at, error);
 }
 
 static VentureMoney *

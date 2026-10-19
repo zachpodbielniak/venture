@@ -588,7 +588,9 @@ static gboolean
 subscription_not_cancelled(VentureDatabase *database, gint64 billing, gint64 business, GError **error)
 {
 	g_autofree gchar *key = g_strdup_printf("hosted:%" G_GINT64_FORMAT ":cancel", business);
+	g_autofree gchar *refunded = g_strdup_printf("hosted:%" G_GINT64_FORMAT ":money-back", business);
 	g_autoptr(VentureEntity) cancellation = find_receipt(database, billing, key, error);
+	if (!cancellation && (!error || !*error)) cancellation = find_receipt(database, billing, refunded, error);
 	if (cancellation) return refuse(error, VENTURE_ERROR_CONFLICT, "cancelled enrollment cannot subscribe again");
 	return !error || !*error;
 }
@@ -772,5 +774,6 @@ venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_or
 
 #include "venture-lightsite-enrollment.inc"
 #include "venture-lightsite-cancel.inc"
+#include "venture-lightsite-money-back.inc"
 #include "venture-lightsite-made-back.inc"
 #include "venture-lightsite-notifications.inc"
