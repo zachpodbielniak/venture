@@ -5304,6 +5304,9 @@ venture_web_ui_invoice_status(
  */
 static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_mail_oauth_block(VentureWebServer *self, GString *content, VentureEntity *record);
 
 static HtmxResponse *
 venture_web_ui_invoice_print(
@@ -12060,6 +12063,10 @@ venture_web_ui_detail(
 	venture_plan_web_panel(self, content, record, principal);
 	/* A sequence's journey map: its steps, branches and where each goes. */
 	venture_web_sequence_journey_block(self, content, record);
+	/* Sales: a lead's AI score proposal, a contact's mail with replies. */
+	venture_web_lead_ai_score_block(self, content, record);
+	venture_web_mail_reply_block(self, content, record);
+	venture_web_mail_oauth_block(self, content, record);
 
 	/*
 	 * The discussion, after the type's own block and before the tabs: it
@@ -32929,6 +32936,9 @@ venture_web_api_ticket_draft(
 #include "pipelines/venture-pipeline-web.inc"
 
 #include "leads/venture-lead-web.inc"
+#include "leads/venture-lead-ai-score-web.inc"
+#include "mail/venture-mail-reply-web.inc"
+#include "mail/venture-mail-oauth-web.inc"
 #include "forms/venture-forms-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
@@ -33462,6 +33472,13 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals/board.js", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board_script, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lead_score_proposals/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_ai_score_decide, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/lead_score_proposals/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_ai_score_decide, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/interactions/:id/reply", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_reply, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/interactions/:id/reply", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_reply, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mail_accounts/:id/oauth/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_oauth_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mail/oauth/callback", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_oauth_callback, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_oauth_providers/:id/client", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_oauth_client, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence/:id/enroll", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
@@ -33498,6 +33515,13 @@ venture_web_server_new(
 	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
 	htmx_router_get(router, "/deals", venture_web_deals_board, self);
 	htmx_router_get(router, "/deals/board.js", venture_web_deals_board_script, self);
+	htmx_router_post(router, "/api/v1/lead_score_proposals/:id/:action", venture_web_lead_ai_score_decide, self);
+	htmx_router_post(router, "/lead_score_proposals/:id/:action", venture_web_lead_ai_score_decide, self);
+	htmx_router_post(router, "/api/v1/interactions/:id/reply", venture_web_mail_reply, self);
+	htmx_router_post(router, "/interactions/:id/reply", venture_web_mail_reply, self);
+	htmx_router_get(router, "/mail_accounts/:id/oauth/start", venture_web_mail_oauth_start, self);
+	htmx_router_get(router, "/mail/oauth/callback", venture_web_mail_oauth_callback, self);
+	htmx_router_post(router, "/mail_oauth_providers/:id/client", venture_web_mail_oauth_client, self);
 	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
 	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);

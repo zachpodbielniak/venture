@@ -135,6 +135,17 @@ venture_web_lead_action(HtmxRequest *request, GHashTable *params, gpointer data)
 		if (!ok) return venture_web_error_response(error);
 		converted = g_object_ref(lead);
 	}
+	else if (g_strcmp0(action, "ai_score") == 0)
+	{
+		/* A proposal beside the rule score; the lead itself is not written. */
+		g_autoptr(VentureEntity) proposal = venture_lead_ai_score_propose(self->context, lead, &actor, &error);
+		if (proposal == NULL) return venture_web_error_response(error);
+		if (!ui)
+		{
+			result = venture_serializable_to_json(VENTURE_SERIALIZABLE(proposal), FALSE);
+			return venture_web_json_response(result, 201);
+		}
+	}
 	else return venture_web_lead_ack(404);
 	if (ui)
 	{
