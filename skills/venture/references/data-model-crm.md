@@ -177,3 +177,16 @@ text campaign; sequence step channel `text` sends a real text. The
 organization carries `telephony_country`, `telephony_quiet_hours`
 (empty is 21:00-08:00 recipient time, `off` for none) and
 `telephony_recording_links` (off).
+
+## One inbox (`inbox` module; docs/inbox.org)
+
+Requires `crm` and `activities`. `inbox_conversation` (one per contact:
+`contact_id`, `status` open/waiting/closed, `owner_id`, `last_message_at`,
+`last_inbound_at`, `last_inbound_channel`, `channels`; written only by the
+inbox service, never a message body), `inbox_chat_widget` (a web chat:
+public `token`, `greeting`, `allowed_origins`, `active`),
+`inbox_chat_session` (a visitor's chat: `contact_id`, what they gave,
+`token_hash` of their link) and `inbox_chat_message` (`session_id`,
+`contact_id`, `inbound`, `body`, `author`, `sent_at`). The thread is read
+from each channel's own records through registered sources (email
+interactions, text messages, call activities, chat messages).

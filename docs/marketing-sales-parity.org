@@ -139,7 +139,7 @@ there.
 | Pluggable telephony connector (3CX PBX, VoIP.ms SMS/MMS first) | have | =VentureTelephonyConnector= with capabilities and a registry a provider joins from its own file (=src/telephony/venture-telephony-connector.h=); 3CX and VoIP.ms adapters (=src/telephony/venture-telephony-3cx.c=, =src/telephony/venture-telephony-voipms.c=); credentials in the integration vault per organization | -- |
 | Click-to-call | have | Call button on contact, deal and ticket pages and =POST /api/v1/telephony/call=; rings the user's extension (=telephony_extension=) first; plain-words refusals (=src/telephony/venture-telephony-service.c=, =src/telephony/venture-telephony-web.inc=) | -- |
 | Automatic call logging on existing call-log records | have | Each reported call through =log_call= with =call_external_source= =3cx-v1= and the provider call id; recording link only when the organization turns it on | -- |
-| Inbound match and missed calls | have | E.164 normaliser with the organization's country (=src/telephony/venture-phone.c=); missed calls with outcome =missed= and =call_inbox_ready=; unknown callers become contacts | Shared inbox (lane 7) |
+| Inbound match and missed calls | have | E.164 normaliser with the organization's country (=src/telephony/venture-phone.c=); missed calls with outcome =missed= and =call_inbox_ready=; unknown callers become contacts | -- (in the inbox since lane 7) |
 | Two-way SMS with delivery status | have | =text_message= thread per contact, send, receive, delivery receipts where the provider reports them; outbound pictures as hosted images, inbound kept as private documents | -- |
 | Inbound webhook | have | =/hooks/telephony/:token= per line: unguessable token, allowed senders, provider signature where it exists, idempotent on the provider's id | -- |
 | STOP/HELP, consent and quiet hours | have | Keywords and synonyms answered once; text consent as =marketing_consent= evidence (purpose =text=); quiet hours 21:00-08:00 recipient time, enforced in the one send path | -- |
@@ -147,11 +147,13 @@ there.
 
 * Lane 7 — one inbox
 
+Closed by the inbox commits on this lane ([[file:inbox.org][Conversations: one inbox]]).
+
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| One thread per contact (email, texts, calls, voicemail, web chat) | partial | Interactions of kind email, call and message on the contact timeline (=src/venture-enums.h=, =src/activities/venture-activity-timeline.c=); no texts or web chat | Conversation thread per contact across channels |
-| Assignable | missing | Workdesk tickets are routed and assigned (=src/core/venture-routing.c=); contact conversations are not | Conversation owner and reassignment |
-| Status | missing | — | Open, waiting and closed per conversation |
+| One thread per contact (email, texts, calls, voicemail, web chat) | have | Sources registered from each channel's own file (=src/inbox/venture-inbox-source.h=, =src/mail/venture-mail-inbox.c=, =src/telephony/venture-telephony-inbox.c=, =src/activities/venture-activity-inbox.c=, =src/inbox/venture-inbox-chat.c=); the thread is assembled by reference, nothing copied; web chat intake at =/webchat/:token= | -- |
+| Assignable | have | Conversation owner, reassign and unassign through =venture_inbox_service_assign()=, audited; mine and unassigned views (=src/inbox/venture-inbox-service.c=) | -- |
+| Status | have | Open, waiting and closed; new conversations open and unassigned; anything inbound reopens; replies in the channel last used | -- |
 
 * Lane 8 — AI on messages
 
@@ -191,7 +193,7 @@ Only the =partial= and =missing= rows above.
   [[file:mail.org][Mail]]). SMTP token sign-in waits on mail-glib.
 - Lane 6: done (see its table and [[file:telephony.org][Phone calls and text messages]]).
   The adapters' field names wait on confirmation against live accounts.
-- Lane 7: conversation thread per contact; assignment; status.
+- Lane 7: done (see its table and [[file:inbox.org][Conversations: one inbox]]).
 - Lane 8: inbound judgements on messages; auto-replies; call summaries;
   drafts and next step; per-rule auto-send; consent and quiet hours;
   message log with reason; one off switch.

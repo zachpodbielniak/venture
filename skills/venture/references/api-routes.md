@@ -71,6 +71,9 @@ in the repository lists today's.
 | `GET`/`POST /organizations/:id/settings/telephony` (owner/admin: lines, webhook address shown once, extensions, quiet hours, recording links) | -- |
 | `GET`/`POST /hooks/telephony/:token` (provider webhook; no session; token, allowed senders, signature where offered; idempotent) | -- |
 | `POST /api/v1/telephony/call`, `GET`/`POST /api/v1/contacts/:id/texts`, `POST /api/v1/contacts/:id/text-consent`, `POST /api/v1/telephony/run?organization_id=` | -- |
+| `GET /conversations` (`view` mine/unassigned/all, `status`, `channel`), `GET /conversations/:id`, `POST /conversations/:id/assign\|status\|reply`, `GET /contacts/:id/conversation` (one inbox; docs/inbox.org) | -- |
+| `GET /api/v1/conversations`, `GET /api/v1/conversations/:id` (conversation, `items`, `reply_channel`), `POST /api/v1/conversations/:id/assign` (`{"owner_id"}`), `/status` (`{"status"}`), `/reply` (`{"body","channel"}`), `GET /api/v1/contacts/:id/conversation` | -- |
+| `GET`/`POST /organizations/:id/settings/webchat` (owner/admin), public `GET`/`POST /webchat/:token`, `GET`/`POST /webchat/c/:token`, `GET /webchat/c/:token/messages?after=`, `GET /webchat.js` (no session, no cookie; rate-limited) | -- |
 | `POST /billing/start`, `POST /billing/renew-sweep\|dunning-sweep`, `POST /customer_subscriptions/:id/:action` (renew, change, change-seats, cancel, pause, resume, mark-payment-failed, recover); metered use is `POST /usage_record` | `billing ...` |
 | `POST /vendor_bill/:id/:action` (approve, pay, void), `POST /payables/pay` | `bill ...`, `bill pay-bulk` |
 | `POST /purchase_order/:id/:action`, `POST /sales_order/:id/:action` | `purchase ...`, `sales-order ...` |

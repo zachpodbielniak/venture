@@ -1,0 +1,139 @@
+#+title: Conversations: one inbox for every customer
+#+description: Email, texts, calls, voicemail and web chat in one thread per contact, with an owner, a status and replies in the channel the customer used
+
+The =inbox= module gives every contact one conversation: their email, their
+texts, their calls (missed ones too), their voicemail and their web chat,
+oldest first, in one thread. Each conversation has an owner and a status,
+and you answer from it in the channel the customer last used. The module
+requires =crm= and =activities=; mail and telephony are channels it reads
+when they are on.
+
+Open *Conversations* in the sidebar, under Customers, or =/conversations=.
+On a contact's page, *Conversation* opens theirs.
+
+* What is in a conversation
+
+A conversation shows what is already recorded about the contact. Nothing is
+copied into the inbox: each message is read from its own record every time
+the conversation is shown, so a message corrected or removed in its own
+place is corrected or removed here too.
+
+| Channel   | Where it comes from                                                                                          |
+|-----------+--------------------------------------------------------------------------------------------------------------|
+| Email     | The contact's email history: mail the mailbox sync filed, and mail you sent once the mail relay accepted it ([[file:mail.org][Mail]]) |
+| Text      | The contact's text messages, both ways ([[file:telephony.org][Phone calls and text messages]])                                  |
+| Call      | Every logged call on the contact: answered, missed and voicemail ([[file:activities.org][Activities]], Logging calls)               |
+| Voicemail | A call whose result is voicemail. Its recording link and transcript show only when the call holds them, which is only when your organization turned recording links on |
+| Web chat  | Messages from the chat on your website (below)                                                                |
+
+Each channel adds itself to the inbox from its own code; a new channel adds
+one file and changes nothing else.
+
+* Statuses and defaults
+
+| Status  | Means                                   |
+|---------+-----------------------------------------|
+| Open    | It needs an answer from you             |
+| Waiting | You answered; it waits on the customer  |
+| Closed  | Nothing more to do                      |
+
+- The first message from or to a contact starts their conversation, *open*
+  and *unassigned*.
+- Anything new *from the customer*, on any channel, reopens a waiting or
+  closed conversation.
+- Your own replies never change the status. Set it with the buttons on the
+  conversation (*Waiting on them*, *Close*, *Reopen*).
+- Mail and calls from before the inbox was switched on are already in the
+  thread. The contact's conversation is made when they next write, or when
+  someone opens it from their page.
+
+* Owners
+
+A conversation has at most one owner: a person who is an active member of
+the organization (or runs the whole installation). Choose one on the
+conversation, or *Assign to me*. Every change of owner and status is saved
+in the audit log with who made it, and the conversation lists that history.
+
+The list has three views: *Mine* (you own it), *Unassigned* and *All*,
+each filtered by status (open by default) and by channel.
+
+* Replying
+
+The reply box answers in the channel of the customer's latest message:
+
+- *Email* goes through the outbox as a threaded reply to their message, the
+  same as replying from the contact's timeline. It appears in the
+  conversation once the mail relay accepts it.
+- *Text* goes through the one text send path, so text consent and quiet
+  hours apply: without their agreement the reply is refused, and during
+  their quiet hours it is held and sent when they end.
+- *Web chat* appears on the visitor's chat page.
+- After a *call*, the conversation offers *Call back* (through the phone
+  system, ringing your own extension first) and the number itself. You may
+  still write by choosing another channel under *Send by*.
+
+* Web chat
+
+An owner or administrator adds a chat under
+=/organizations/ID/settings/webchat=. Each chat has a public address,
+=https://your-venture/webchat/TOKEN=: link to it, or put it on your site in a
+frame (the settings page shows the code). List the sites that may frame it,
+or leave the list empty to allow any.
+
+The visitor gives their name, an email address or a phone number, and a
+message. Venture finds the contact with that email (compared the way lead
+capture compares addresses), then that phone number, or makes a new contact
+with source "Web chat". The visitor is sent to their own chat page,
+=/webchat/c/SECRET=, which shows only that chat: their messages and your
+replies, never anything else about the contact. The page works without
+script; with script it checks for replies every ten seconds.
+
+Limits:
+
+- a name of up to 100 characters, an email of up to 254, a phone of up to 32,
+  a message of up to 2,000 characters, a request of up to 16 KiB;
+- one address may start 5 chats on one chat in 10 minutes, and one chat
+  takes 20 messages in 10 minutes;
+- a hidden field a person leaves empty: a form robot that fills it is
+  thanked and nothing is kept.
+
+The visitor's page needs no account and no cookie. Its address is the key:
+a long random secret that Venture keeps only as a hash, so the address
+cannot be recovered from the database. Anyone with the address can read
+that chat, so it is the visitor's to keep. The pages send no referrer and
+are not cached. A switched-off chat answers "not available" at once.
+
+* What is not in it
+
+- *Your notifications.* The sidebar's *Inbox* (=/inbox=) is your own
+  notifications -- mentions, watched records, reminders. It is about you,
+  not about a customer, and stays separate.
+- *A second timeline.* The contact's page keeps its own timeline; the
+  conversation reads the same records.
+- *Notes, meetings and tasks.* Only what a customer said or was told.
+- *Automatic replies and summaries.* Not yet.
+
+* API
+
+| Method | Path                                   | Role   | Does                                                          |
+|--------+----------------------------------------+--------+---------------------------------------------------------------|
+| GET    | =/api/v1/conversations=                | viewer | List: =view= (mine, unassigned, all), =status= (open, waiting, closed, any), =channel=, =organization_id= |
+| GET    | =/api/v1/conversations/:id=            | viewer | The conversation, its =items= oldest first and the =reply_channel= |
+| POST   | =/api/v1/conversations/:id/assign=     | editor | ={"owner_id": N}=, ="me"= or =0= to unassign                  |
+| POST   | =/api/v1/conversations/:id/status=     | editor | ={"status": "waiting"}=                                       |
+| POST   | =/api/v1/conversations/:id/reply=      | editor | ={"body": "...", "channel": "text"}=; =channel= is optional   |
+| GET    | =/api/v1/contacts/:id/conversation=    | viewer | A contact's thread and conversation                           |
+
+Each item names its =channel=, the =record_type= and =record_id= it is, when
+it happened, whether it came from the customer and a one-line =summary=.
+The records themselves are read through the ordinary record API.
+
+* Upgrades and tests
+
+Migration =000930_inbox_conversations_and_web_chat= checks the four new
+tables; they start empty. =test-inbox= covers source registration, the
+thread's order across channels and its cursor, that the inbox stores no
+message words, defaults, assignment and its audit, statuses and reopening,
+the reply channel, consent and quiet hours on a text reply, web chat
+bounds, limits, matching and link secrecy, organization isolation and the
+pages; =test-auth= the sign-in and role refusals of every route.
