@@ -502,6 +502,49 @@ test_bulk_and_skip(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(fees_for(f, third)->len, ==, 1);
 }
 
+/* The first member named @name anywhere in @node, as exact minor units:
+ * a report renders money either as an object with "amount" or as text. */
+static gboolean
+find_minor(JsonNode *node, const gchar *name, gint64 *out)
+{
+	if (JSON_NODE_HOLDS_OBJECT(node))
+	{
+		JsonObject *o = json_node_get_object(node);
+		g_autoptr(GList) members = json_object_get_members(o);
+		GList *m;
+		if (json_object_has_member(o, name))
+		{
+			JsonNode *v = json_object_get_member(o, name);
+			if (JSON_NODE_HOLDS_OBJECT(v) && json_object_has_member(json_node_get_object(v), "amount"))
+			{
+				*out = json_object_get_int_member(json_node_get_object(v), "amount");
+				return TRUE;
+			}
+			if (JSON_NODE_HOLDS_VALUE(v) && json_node_get_value_type(v) == G_TYPE_STRING)
+			{
+				g_autoptr(VentureMoney) money = venture_money_from_string(json_node_get_string(v), "USD", NULL);
+				if (money != NULL)
+				{
+					*out = venture_money_get_amount(money);
+					return TRUE;
+				}
+			}
+		}
+		for (m = members; m != NULL; m = m->next)
+			if (find_minor(json_object_get_member(o, m->data), name, out))
+				return TRUE;
+	}
+	else if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *a = json_node_get_array(node);
+		guint i;
+		for (i = 0; i < json_array_get_length(a); i++)
+			if (find_minor(json_array_get_element(a, i), name, out))
+				return TRUE;
+	}
+	return FALSE;
+}
+
 /* One action, a reason, an audit trail, a note to the customer, and the
  * balance and the report move with it. */
 static void
@@ -564,9 +607,36 @@ test_waive(Fixture *f, gconstpointer unused)
 			trail++;
 	}
 	g_assert_cmpuint(trail, >=, 2);
+	/* Paid in full afterwards: the report shows the fee waived and nothing
+	 * collected, because nothing of it was. */
+	{
+		g_autoptr(GDateTime) paid = venture_settlement_service_today(venture_settlement_service_get(f->db));
+		g_autoptr(VentureReportResult) result = NULL;
+		g_autofree gchar *json = NULL;
+		g_autoptr(JsonNode) root = NULL;
+		gint64 waived = -1, collected = -1, applied = -1;
+		gboolean settled;
+		g_clear_error(&error);
+		settled = venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), f->invoice, paid, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_true(settled);
+		g_assert_cmpint(balance(f, f->invoice), ==, 0);
+		result = venture_report_generate(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "late_fees"),
+			f->context, NULL, NULL, &error);
+		g_assert_no_error(error);
+		json = venture_report_result_render(result, VENTURE_OUTPUT_FORMAT_JSON);
+		root = json_from_string(json, &error);
+		g_assert_no_error(error);
+		g_assert_true(find_minor(root, "waived", &waived));
+		g_assert_true(find_minor(root, "collected", &collected));
+		g_assert_true(find_minor(root, "applied", &applied));
+		g_assert_cmpint(applied, ==, 2500);
+		g_assert_cmpint(waived, ==, 2500);
+		g_assert_cmpint(collected, ==, 0);
+	}
 	/* The waived occurrence is decided: no replay charges it again. */
 	days(f, 15, 20);
-	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
+	g_assert_cmpint(balance(f, f->invoice), ==, 0);
 	g_assert_cmpuint(fees_for(f, f->invoice)->len, ==, 1);
 }
 
