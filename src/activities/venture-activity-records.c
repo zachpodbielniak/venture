@@ -87,6 +87,7 @@ venture_call_outcome_get_type(void)
 			{ VENTURE_CALL_OUTCOME_VOICEMAIL, "VENTURE_CALL_OUTCOME_VOICEMAIL", "voicemail" },
 			{ VENTURE_CALL_OUTCOME_NO_ANSWER, "VENTURE_CALL_OUTCOME_NO_ANSWER", "no_answer" },
 			{ VENTURE_CALL_OUTCOME_CALLBACK, "VENTURE_CALL_OUTCOME_CALLBACK", "callback" },
+			{ VENTURE_CALL_OUTCOME_MISSED, "VENTURE_CALL_OUTCOME_MISSED", "missed" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureCallOutcome", values);
@@ -131,7 +132,9 @@ static const VentureFieldDecl activity_fields[] = {
 	VENTURE_FIELD("call-followup-due-at", "Followup due", "Optional; creates one planned followup", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("call-followup-remind-at", "Followup reminder", "Defaults to followup due time", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("call-interaction-id", "Call history", "Service-owned historical interaction", "interaction", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("call-followup-id", "Scheduled followup", "Service-owned planned activity", "activity", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("call-followup-id", "Scheduled followup", "Service-owned planned activity", "activity", VENTURE_COLUMN_FLAG_NONE),
+	/* Phone calls (docs/telephony.org): a missed call waits in the inbox. */
+	VENTURE_FIELD("call-inbox-ready", "For the inbox", "A missed call nobody has returned yet", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureActivity, venture_activity, activity_fields)
 

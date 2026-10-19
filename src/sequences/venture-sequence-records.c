@@ -31,6 +31,7 @@ venture_sequence_channel_get_type(void)
 			{ 2, "SEQUENCE_CHANNEL_SMS_TASK", "sms_task" },
 			{ 3, "SEQUENCE_CHANNEL_WAIT", "wait" },
 			{ 4, "SEQUENCE_CHANNEL_BRANCH", "branch" },
+			{ 5, "SEQUENCE_CHANNEL_TEXT", "text" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureSequenceChannel", values);

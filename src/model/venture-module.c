@@ -979,6 +979,13 @@ static GType (*const referrals_types[]) (void) = {
 };
 static const gchar *const referrals_reports[] = { "referrals", NULL };
 
+/* Phone and text (docs/telephony.org): calls are logged as activities and
+ * text consent is marketing evidence, so both come first. */
+static const gchar *const telephony_requires[] = { "crm", "activities", "integrations", "marketing", NULL };
+static GType (*const telephony_types[]) (void) = {
+	venture_telephony_account_get_type, venture_telephony_extension_get_type,
+	venture_text_message_get_type, NULL
+};
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1447,6 +1454,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"month, week or agenda, as JSON and as a subscribable feed.",
 		venture_module_requires_core, planner_suggests, planner_types,
 		NULL, NULL, FALSE
+	},
+	{
+		"telephony", "Phone and text",
+		"Click-to-call through the phone system, every call logged on the "
+		"contact, and two-way texts with consent and quiet hours.",
+		telephony_requires, NULL, telephony_types, NULL, NULL, FALSE
 	}
 };
 

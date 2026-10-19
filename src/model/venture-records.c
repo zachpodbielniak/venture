@@ -65,7 +65,11 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("sequence-tracking", "Sequence mail tracking", "Allow open and click tracking on sequence mail; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("marketing-tracking", "Marketing mail tracking", "Allow marketing open and click observations; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("timezone", "Time zone", "IANA zone, for example America/Chicago: a local-time campaign uses it for a contact who has none; empty is UTC", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("ai-lead-scoring", "AI lead score proposals", "Allow the assistant to propose a lead score beside the rule score; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("ai-lead-scoring", "AI lead score proposals", "Allow the assistant to propose a lead score beside the rule score; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/* Phone and text (docs/telephony.org). */
+	VENTURE_FIELD("telephony-country", "Phone country", "Two-letter country for numbers written without a country code, for example GB; empty is US", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-quiet-hours", "Text quiet hours", "No texts between these times in the recipient's own time, for example 21:00-08:00 (the default when empty); off for none", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-recording-links", "Keep call recording links", "Store the phone system's recording link on each logged call; off by default, see the recording note", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,

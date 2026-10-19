@@ -969,6 +969,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_sequence_trigger_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_lead_score_proposal_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_mail_oauth_provider_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_telephony_account_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_telephony_extension_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_text_message_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

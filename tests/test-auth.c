@@ -7136,6 +7136,37 @@ test_auth_sales_routes(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/mail/oauth/callback?state=unknown&code=y", editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 }
 
+/* Lane 6, phone and text: every route refuses the anonymous, a viewer can
+ * neither dial nor text, and the webhook answers an unknown address token
+ * with not found rather than a sign-in redirect. */
+static void
+test_auth_telephony_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/telephony"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/telephony", NULL, "operation=connect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/telephony/call", NULL, "contact_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/telephony/call", NULL, "{\"contact_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/contacts/1/texts", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/texts", NULL, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/contacts/1/texts"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/contacts/1/text-consent", NULL, "evidence=yes", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/text-consent", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/telephony/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/telephony_account"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/text_message"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/hooks/telephony/not-a-real-token-not-a-real-token-xx", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/hooks/telephony/not-a-real-token-not-a-real-token-xx?message=hi"), ==, SOUP_STATUS_NOT_FOUND);
+
+	server_fixture_create_member(fixture, "phone-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "phone-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/telephony/call", viewer, "{\"contact_id\":1}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/texts", viewer, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/text-consent", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/telephony", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -7391,5 +7422,6 @@ main(
 	g_test_add("/auth/forms-upload-viewer", ServerFixture, NULL, server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	g_test_add("/auth/forms-resume-session-authority", ServerFixture, NULL, server_fixture_set_up, test_forms_resume_session_authority, server_fixture_tear_down);
 	g_test_add("/auth/sales-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_sales_routes, server_fixture_tear_down);
+	g_test_add("/auth/telephony-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_telephony_routes, server_fixture_tear_down);
 	return g_test_run();
 }

@@ -264,6 +264,8 @@ SERVER_ONLY_SRCS += $(filter-out src/oidc/venture-oidc-records.c,$(wildcard src/
 SERVER_ONLY_SRCS += $(wildcard src/printing/*.c)
 CORE_SRCS += src/emaildesign/venture-email-design-records.c
 SERVER_ONLY_SRCS += $(filter-out src/emaildesign/venture-email-design-records.c,$(wildcard src/emaildesign/*.c))
+CORE_SRCS += src/telephony/venture-telephony-records.c
+SERVER_ONLY_SRCS += $(filter-out src/telephony/venture-telephony-records.c,$(wildcard src/telephony/*.c))
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -367,6 +369,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/leads/*.h))
 PUBLIC_HDRS += $(wildcard src/activities/*.h)
 PUBLIC_HDRS += $(wildcard src/calendar/*.h)
 PUBLIC_HDRS += $(wildcard src/emaildesign/*.h)
+PUBLIC_HDRS += $(wildcard src/telephony/*.h)
 PUBLIC_HDRS := $(filter-out %-private.h,$(PUBLIC_HDRS))
 
 TEST_SRCS := $(wildcard tests/test-*.c)

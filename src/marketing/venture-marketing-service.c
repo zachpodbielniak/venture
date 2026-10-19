@@ -308,6 +308,7 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 #include "venture-marketing-tracking.inc"
 #include "venture-marketing-actions.inc"
 #include "venture-marketing-replies.inc"
+#include "venture-marketing-text.inc"
 
 static void finalize(GObject *object)
 {

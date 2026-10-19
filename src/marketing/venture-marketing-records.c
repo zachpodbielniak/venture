@@ -46,6 +46,15 @@ GType venture_marketing_frequency_get_type(void)
 	}
 	return type;
 }
+GType venture_marketing_channel_get_type(void)
+{
+	static gsize type = 0;
+	if (g_once_init_enter(&type)) {
+		static const GEnumValue values[] = { { 0,"MARKETING_CHANNEL_EMAIL","email" }, { 1,"MARKETING_CHANNEL_TEXT","text" }, { 0,NULL,NULL } };
+		g_once_init_leave(&type, g_enum_register_static("VentureMarketingChannel", values));
+	}
+	return type;
+}
 GType venture_marketing_send_state_get_type(void)
 {
 	static gsize type = 0;
@@ -74,7 +83,9 @@ static const VentureFieldDecl consent_fields[] = {
 	VENTURE_FIELD_TEXT("source","Permission source",NULL),
 	VENTURE_FIELD_TEXT("evidence","Permission evidence",NULL),
 	DATE("recorded-at","Recorded at"), DATE("withdrawn-at","Withdrawn at"),
-	UNIQUE("evidence-key","Consent evidence identity")
+	UNIQUE("evidence-key","Consent evidence identity"),
+	/* Text consent (docs/telephony.org): purpose text, keyed by number. */
+	VENTURE_FIELD("phone","Normalized number","E.164, for text consent",VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingConsent, venture_marketing_consent, consent_fields)
 static const VentureFieldDecl send_fields[] = {
@@ -104,7 +115,10 @@ static const VentureFieldDecl send_fields[] = {
 	VENTURE_FIELD("local-hour","Local hour","0 to 23, in the recipient's time zone (the contact's, else the organization's, else UTC)",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("local-date","Local day","The day to send on; empty is the next time that hour comes round after approval",VENTURE_FIELD_KIND_DATE,VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("resend-of-id","Resend of","The audience is that send's recipients with no human open","marketing_send",VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD("resend-after-days","Resend after","Days after the first message before someone counts as a non-opener",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("resend-after-days","Resend after","Days after the first message before someone counts as a non-opener",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE),
+	/* A text campaign (docs/telephony.org): the text body goes by text
+	 * message to people with text consent, through the telephony send path. */
+	VENTURE_FIELD_ENUM("channel","Channel","email, or text for a text message campaign",venture_marketing_channel_get_type,VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingSend, venture_marketing_send, send_fields)
 static const VentureFieldDecl recipient_fields[] = {

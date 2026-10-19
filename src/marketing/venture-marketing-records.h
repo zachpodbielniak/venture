@@ -43,6 +43,11 @@ GType venture_marketing_list_mode_get_type(void) G_GNUC_CONST;
  */
 GType venture_marketing_target_get_type(void) G_GNUC_CONST;
 /**
+ * venture_marketing_channel_get_type:
+ * Returns: the email/text campaign channel enumeration
+ */
+GType venture_marketing_channel_get_type(void) G_GNUC_CONST;
+/**
  * venture_marketing_send_state_get_type:
  * Returns: the draft/preview/approved/paused/cancelled/complete enumeration
  */

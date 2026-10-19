@@ -141,6 +141,7 @@
 #include "forms/venture-forms-records.h"
 #include "planner/venture-planner-records.h"
 #include "leads/venture-lead-ai-score-records.h"
+#include "telephony/venture-telephony-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -394,6 +395,12 @@
 #include "leads/venture-lead-ai-score.h"
 #include "mail/venture-mail-oauth.h"
 #include "mail/venture-mail-reply.h"
+/* Phone and text: the provider interface, numbers, the service and the
+ * text channel for campaigns (docs/telephony.org). */
+#include "telephony/venture-phone.h"
+#include "telephony/venture-telephony-connector.h"
+#include "telephony/venture-telephony-service.h"
+#include "marketing/venture-marketing-text.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 
