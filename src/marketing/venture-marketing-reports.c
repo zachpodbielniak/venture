@@ -163,9 +163,16 @@ static VentureMarketingSendReport *build_report(VentureDatabase *database, gint6
 		if (percent > 0) {
 			const gchar *names[] = { "a", "b", "rest" };
 			guint k;
+			g_autofree gchar *first = NULL, *second = NULL;
+			/* The subject as written, never one recipient's rendered copy:
+			 * a merged name is somebody's personal data. */
+			g_object_get(send, "subject", &first, "variant-subject", &second, NULL);
+			if (!second || !*second) { g_free(second); second = g_strdup(first); }
 			for (k = 0; k < G_N_ELEMENTS(names); k++) {
 				VentureMarketingArmCount *arm = g_new0(VentureMarketingArmCount, 1);
 				arm->arm = g_strdup(names[k]);
+				arm->subject = g_strdup(k == 0 ? first : k == 1 ? second :
+					(report->winner && !g_strcmp0(report->winner, "b") ? second : report->winner ? first : ""));
 				g_ptr_array_add(report->arms, arm);
 			}
 			for (j = 0; j < recipients->len; j++) {
@@ -179,7 +186,7 @@ static VentureMarketingSendReport *build_report(VentureDatabase *database, gint6
 						arm = g_ptr_array_index(report->arms, k);
 				if (!arm) continue;
 				arm->recipients++;
-				if (!arm->subject) g_object_get(recipient, "subject", &arm->subject, NULL);
+
 				if (mail_id) {
 					g_autoptr(VentureEntity) mail = venture_database_get(database, VENTURE_TYPE_MAIL_MESSAGE, mail_id, NULL);
 					if (mail) g_object_get(mail, "state", &state, NULL);

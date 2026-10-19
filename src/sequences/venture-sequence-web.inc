@@ -397,7 +397,7 @@ venture_web_sequence_journey_block(VentureWebServer *self, GString *content, Ven
 		g_string_append_printf(content, "<li style=\"border:1px solid var(--border);padding:0.75rem;%s\">"
 			"<div style=\"display:flex;flex-wrap:wrap;gap:0.5rem;align-items:baseline\">"
 			"<span class=\"badge\">Step %" G_GINT64_FORMAT "</span><strong>%s</strong>",
-			channel == 4 ? "border-left:4px solid var(--accent)" : "", position, channels[CLAMP(channel, 0, 4)]);
+			channel == 4 ? "border-left:4px solid currentColor" : "", position, channels[CLAMP(channel, 0, 4)]);
 		if (days || hours)
 		{
 			g_string_append(content, "<span class=\"muted\">after ");

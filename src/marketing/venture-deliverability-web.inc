@@ -463,7 +463,7 @@ venture_web_deliverability_report(HtmxRequest *request, GHashTable *params, gpoi
 			gboolean won = report->winner && !g_strcmp0(report->winner, arm->arm);
 			g_string_append_printf(html, "<tr><td class=\"row-head\">%s%s</td><td style=\"min-width:9rem;overflow-wrap:anywhere\">",
 				!g_strcmp0(arm->arm, "a") ? "A" : !g_strcmp0(arm->arm, "b") ? "B" : "Rest", won ? " <span class=\"badge positive\">winner</span>" : "");
-			venture_html_escape_append(html, arm->subject ? arm->subject : "");
+			venture_html_escape_append(html, arm->subject && *arm->subject ? arm->subject : "The winner's subject, once it is picked");
 			g_string_append_printf(html, "</td><td class=\"num\">%" G_GINT64_FORMAT "</td><td class=\"num\">%" G_GINT64_FORMAT "</td>"
 				"<td class=\"num\">%" G_GINT64_FORMAT "%s%s%s</td><td class=\"num\">%" G_GINT64_FORMAT "</td></tr>",
 				arm->recipients, arm->accepted, arm->opened, opened ? " <span class=\"muted\">(" : "", opened ? opened : "", opened ? ")</span>" : "", arm->clicked);
