@@ -602,6 +602,11 @@ chat_reply(VentureContext *context, VentureEntity *contact, const VentureInboxIt
 	VentureInboxService *self = venture_inbox_service_get(database);
 	g_autoptr(VentureEntity) session = NULL, message = NULL;
 	(void)contact;
+	if (answering == NULL)
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "They have not written by web chat, so there is no chat to answer in");
+		return NULL;
+	}
 	session = venture_database_get(database, VENTURE_TYPE_INBOX_CHAT_SESSION, number(answering->record, "session-id"), error);
 	if (session == NULL)
 	{

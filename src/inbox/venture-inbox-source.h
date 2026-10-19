@@ -94,7 +94,8 @@ typedef gchar *(*VentureInboxSummaryFunc)(VentureContext *context, const Venture
  * VentureInboxReplyFunc:
  * @context: the wiring
  * @contact: the contact
- * @answering: the customer's latest message in this channel
+ * @answering: (nullable): the customer's latest message in this channel;
+ *   %NULL when someone chose the channel and they have not written in it
  * @body: the reply, already checked to have words
  * @now: the clock
  * @actor: (nullable): who wrote it

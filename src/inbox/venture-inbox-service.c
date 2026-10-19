@@ -594,7 +594,16 @@ venture_inbox_service_reply(VentureInboxService *self, VentureEntity *conversati
 		refuse(error, VENTURE_ERROR_NOT_FOUND, "This conversation's contact is gone");
 		return NULL;
 	}
-	source = venture_inbox_service_reply_channel(self, contact, channel, &answering, error);
+	if (!venture_string_is_empty(channel) && venture_inbox_source_lookup(channel) != NULL)
+	{
+		/* A chosen channel need not be one they wrote in: a text after a
+		 * missed call. The source decides whether it can start one. */
+		source = venture_inbox_service_reply_channel(self, contact, channel, &answering, NULL);
+		if (source == NULL)
+			source = venture_inbox_source_lookup(channel);
+	}
+	else
+		source = venture_inbox_service_reply_channel(self, contact, channel, &answering, error);
 	if (source == NULL)
 		return NULL;
 	if (source->reply == NULL)

@@ -108,6 +108,12 @@ mail_reply(VentureContext *context, VentureEntity *contact, const VentureInboxIt
 {
 	g_autoptr(VentureMailMessage) message = NULL;
 	(void)contact; (void)now;
+	if (answering == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Nothing has come from them by email to answer; write to them from their contact page instead");
+		return NULL;
+	}
 	message = venture_mail_reply_enqueue(context, answering->record, body, actor, error);
 	if (message == NULL)
 		return NULL;

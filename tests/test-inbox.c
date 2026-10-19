@@ -604,11 +604,9 @@ audit_count(Fixture *f, VentureEntity *row, const gchar *needle)
 	g_assert_no_error(error);
 	for (i = 0; i < rows->len; i++)
 	{
-		g_autoptr(JsonNode) diff = NULL;
 		g_autofree gchar *text = NULL;
-		g_object_get(g_ptr_array_index(rows, i), "diff", &diff, NULL);
-		text = diff != NULL ? json_to_string(diff, FALSE) : g_strdup("");
-		if (strstr(text, needle) != NULL)
+		g_object_get(g_ptr_array_index(rows, i), "diff", &text, NULL);
+		if (text != NULL && strstr(text, needle) != NULL)
 			n++;
 	}
 	return n;
