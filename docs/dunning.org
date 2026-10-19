@@ -308,6 +308,27 @@ reminder), when the invoice has left dunning or is on hold, or when the
 policy no longer has a step at that offset. Retrying an =uncertain= row may
 duplicate a message the relay did accept; that is the operator's call.
 
+* Remind now
+
+=invoice= has a =remind= action (editor, stageable) for the owner who wants
+one customer reminded today, outside the schedule:
+
+#+begin_src sh
+venturectl act invoice 42 remind
+# REST: POST /api/v1/invoice/42/actions/remind   (?stage=1 to propose it)
+#+end_src
+
+It sends the customer the latest reminder the invoice was already sent, or
+the policy's first email step when none was, rendered and recorded exactly as
+a sweep records a step (a =dunning_event= with the pay link and balance), and
+returns the queued =mail_message=. The step it repeats is at or below the
+newest step already decided, so the sweep's schedule is not moved on: the
+next scheduled reminder still goes when it falls due. Its key is
+=dunning:remind:inv:<id>:<YYYY-MM-DD>=; asking again the same day returns
+that day's message and sends nothing more. It is refused, with the reason,
+for an invoice that is settled, not issued, disputed, opted out or disabled,
+that has no policy, or whose customer has no email address.
+
 * Test send
 
 =dunning_policy= has a =test_send= action (editor, not stageable) taking

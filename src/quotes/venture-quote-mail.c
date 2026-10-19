@@ -16,9 +16,11 @@ customer_record(VentureDatabase *database, GType type, gint64 id, gint64 org, GE
 	return record;
 }
 
-gboolean
-venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
-	VentureEntity *delivery, const gchar *base_url, const VentureActor *actor, GError **error)
+/* The quote's mail; a reminder (day set) carries the same private link,
+ * says so in its subject and is keyed by the day it was asked for. */
+static gboolean
+quote_mail(VentureDatabase *database, VentureEntity *quote, VentureEntity *delivery, const gchar *base_url,
+	const gchar *day, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GUri) origin = NULL;
 	g_autoptr(VentureEntity) company = NULL, contact = NULL;
@@ -61,9 +63,12 @@ venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
 	url = g_uri_resolve_relative(base_url, relative, G_URI_FLAGS_NONE, error);
 	if (!url) return FALSE;
 	formatted = total ? venture_money_to_display_string(total, TRUE) : g_strdup("");
-	subject = g_strdup_printf("Quote %s", number);
-	body = g_strdup_printf("Your quote %s totals %s.\n\nReview the full quote and accept it here:\n%s\n", number, formatted, url);
-	key = g_strdup_printf("quote:%s", venture_entity_get_uuid(quote));
+	subject = day ? g_strdup_printf("Reminder: Quote %s", number) : g_strdup_printf("Quote %s", number);
+	body = day ? g_strdup_printf("A reminder about your quote %s, which totals %s and is still waiting for your answer.\n\n"
+			"Review the full quote and accept it here:\n%s\n", number, formatted, url)
+		: g_strdup_printf("Your quote %s totals %s.\n\nReview the full quote and accept it here:\n%s\n", number, formatted, url);
+	key = day ? g_strdup_printf("quote-reminder:%s:%s", venture_entity_get_uuid(quote), day)
+		: g_strdup_printf("quote:%s", venture_entity_get_uuid(quote));
 	message = venture_mail_message_new();
 	g_object_set(message, "organization-id", org, "to", email, "subject", subject,
 		"text-body", "A private quote acceptance link is included in this message.",
@@ -73,4 +78,23 @@ venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
 	if (!queued) return FALSE;
 	g_object_set(delivery, "recipient", email, NULL);
 	return TRUE;
+}
+
+gboolean
+venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
+	VentureEntity *delivery, const gchar *base_url, const VentureActor *actor, GError **error)
+{
+	return quote_mail(database, quote, delivery, base_url, NULL, actor, error);
+}
+
+gboolean
+venture_quote_mail_remind(VentureDatabase *database, VentureEntity *quote, VentureEntity *delivery,
+	const gchar *base_url, const gchar *day, const VentureActor *actor, GError **error)
+{
+	g_return_val_if_fail(day != NULL, FALSE);
+	if (!base_url || !*base_url) {
+		venture_set_error_validation(error, "base-url", "A quote reminder needs a configured public HTTPS address");
+		return FALSE;
+	}
+	return quote_mail(database, quote, delivery, base_url, day, actor, error);
 }

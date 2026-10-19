@@ -111,6 +111,14 @@ venturectl mail deliver --limit 50                       # then deliver the outb
 - The escalating final step creates a `collect: <invoice>` activity owned
   by `invoice.owner`, else the customer's owner, else the policy's
   `escalation_owner`; an opted-out customer still escalates.
+- `act invoice ID remind` (editor, stageable) mails that one customer
+  today: the latest email step already recorded, or the policy's first
+  email step when none was. It is a `dunning_event` like a sweep's and does
+  not move the schedule on to a later step. The same day returns that
+  message and sends nothing more (`dunning:remind:inv:<id>:<YYYY-MM-DD>`).
+  Refused, with the reason, when the invoice is settled, not issued,
+  disputed, opted out or disabled, has no policy, or the customer has no
+  email. `POST /api/v1/invoice/:id/actions/remind` (`?stage=1` to propose).
 - `act dunning_event ID retry` re-runs a `failed`, `dead` or `uncertain`
   step under a new key (stageable; refused once a later step or attempt
   exists). `act dunning_policy ID test_send invoice_id=N [offset=N]` mails

@@ -1687,6 +1687,96 @@ venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *po
 	return venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
 }
 
+/* The reminder an owner asks for now, for one open invoice: the latest
+ * reminder it was sent again, or its first email step, to the customer,
+ * recorded as a sweep records it. It never moves the schedule on: the step
+ * repeated is at or below the newest one already decided. Keyed by the day,
+ * so asking twice in a day sends one. */
+static VentureEntity *
+event_by_key(VentureDunningService *self, gint64 org, const gchar *key)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DUNNING_EVENT);
+	g_autoptr(GPtrArray) rows = NULL;
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "dunning-key", VENTURE_FILTER_OP_EQ, key, NULL);
+	venture_query_set_limit(query, 1);
+	rows = venture_database_find(self->database, query, NULL);
+	return rows != NULL && rows->len > 0 ? g_object_ref(g_ptr_array_index(rows, 0)) : NULL;
+}
+
+VentureMailMessage *
+venture_dunning_service_remind(VentureDunningService *self, VentureEntity *invoice, const VentureActor *actor, GError **error)
+{
+	g_auto(Dossier) d;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureEntity) event = NULL;
+	g_autofree gchar *day = NULL, *key = NULL, *recipient = NULL;
+	const gchar *reason;
+	Tally tally;
+	gint64 org;
+	gint index = -1;
+	guint i;
+	memset(&d, 0, sizeof(d));
+	memset(&tally, 0, sizeof(tally));
+	g_return_val_if_fail(VENTURE_IS_DUNNING_SERVICE(self), NULL);
+	if (!enabled(error))
+		return NULL;
+	if (!VENTURE_IS_INVOICE(invoice) || venture_entity_get_id(invoice) <= 0)
+		return refuse(error, "A saved invoice is required") ? NULL : NULL;
+	org = venture_entity_get_organization_id(invoice);
+	if (!dossier_open(self, NULL, &d, invoice, now, TRUE, error))
+		return NULL;
+	reason = stop_reason(self, &d);
+	if (reason != NULL)
+	{
+		g_autofree gchar *why = g_strdup_printf("This invoice gets no reminder: %s", reason);
+		return refuse(error, why) ? NULL : NULL;
+	}
+	if (d.policy == NULL || d.steps == NULL)
+		return refuse(error, "No reminder policy applies to this invoice") ? NULL : NULL;
+	if (!load_history(self, &d, error))
+		return NULL;
+	for (i = 0; i < d.steps->len; i++)
+	{
+		const Step *step = &g_array_index(d.steps, Step, i);
+		if (escalating(&d, i) || step->template_id <= 0)
+			continue;
+		if (index < 0 || (d.recorded && step->offset <= d.top_offset))
+			index = (gint)i;
+	}
+	if (index < 0)
+		return refuse(error, "The reminder policy has no email step") ? NULL : NULL;
+	recipient = recipient_for(&d);
+	if (recipient == NULL)
+		return refuse(error, "The customer has no email address for a reminder") ? NULL : NULL;
+	day = g_date_time_format(now, "%Y-%m-%d");
+	key = g_strdup_printf("dunning:remind:inv:%" G_GINT64_FORMAT ":%s", venture_entity_get_id(invoice), day);
+	event = event_by_key(self, org, key);
+	if (event == NULL)
+	{
+		if (!send_step(self, &d, now, (guint)index + 1, &g_array_index(d.steps, Step, index), key, actor, &tally, error))
+			return NULL;
+		event = event_by_key(self, org, key);
+	}
+	if (event == NULL || number(event, "mail-message-id") <= 0)
+		return refuse(error, "The reminder could not be queued") ? NULL : NULL;
+	return VENTURE_MAIL_MESSAGE(venture_database_get(self->database, VENTURE_TYPE_MAIL_MESSAGE, number(event, "mail-message-id"), error));
+}
+
+static gboolean
+remind_allowed(VentureAction *action, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	(void)action; (void)actor;
+	return enabled(error) && VENTURE_IS_INVOICE(entity);
+}
+
+static VentureEntity *
+remind_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
+{
+	(void)params;
+	return VENTURE_ENTITY(venture_dunning_service_remind(venture_action_get_data(action), entity, actor, error));
+}
+
 /* --- Outbox hooks --------------------------------------------------------- */
 
 static VentureEntity *
@@ -1995,6 +2085,9 @@ venture_dunning_actions_register(VentureDatabase *database)
 	register_action(registry, "dunning_event", "retry", "Retry reminder",
 		"Run a failed, dead or uncertain reminder step again under a new key",
 		parameters, TRUE, FALSE, retry_allowed, retry_invoke, self);
+	register_action(registry, "invoice", "remind", "Send a reminder now",
+		"Send the customer the latest reminder this invoice was sent, or its first, once a day; the schedule is unchanged",
+		parameters, TRUE, FALSE, remind_allowed, remind_invoke, self);
 	invoice_spec = venture_field_spec_new("invoice_id", "Invoice", VENTURE_FIELD_KIND_INTEGER);
 	invoice_spec->required = TRUE;
 	g_ptr_array_add(parameters, invoice_spec);

@@ -54,7 +54,7 @@ take `organization_id=N` to work outside the default organization.
 |---|---|---|
 | `compose invoice\|quote JSON` | lines, tax and optional send in one call | [receivables.md](receivables.md) |
 | `invoice checkout ID` | hosted Stripe Checkout URL for a sent invoice | [billing.md](billing.md) |
-| `quote send\|accept\|decline\|revise\|start-subscription ID [by=] [reason=]` | quote service | [receivables.md](receivables.md) |
+| `quote send\|accept\|decline\|revise\|remind\|start-subscription ID [by=] [reason=]` | quote service | [receivables.md](receivables.md) |
 | `deal move ID STAGE [NOTE]`, `deal quote ID` | pipeline transition; quote from deal lines | [crm.md](crm.md) |
 | `billing start\|change\|change-seats\|cancel\|pause\|resume\|mark-payment-failed\|recover\|collect\|usage ...`, `billing renew\|dunning [--as-of] [--dry-run]` | SaaS subscriptions | [billing.md](billing.md) |
 | `recurring run`, `collections run`, `batch invoice\|expense format=csv\|json payload=...` | schedules, reminders, batch entry | [billing.md](billing.md) |
