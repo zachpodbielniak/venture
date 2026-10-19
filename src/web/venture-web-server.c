@@ -1871,6 +1871,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
 	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
+	{ "/conversations", "Conversations", VENTURE_ICON("<path d=\"M4 5h16v10H9l-5 4z\"/><path d=\"M8 9h8M8 12h5\"/>"), "Sales pipelines", "inbox" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -5308,6 +5309,7 @@ static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *con
 static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_oauth_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_telephony_block(VentureWebServer *self, GString *content, VentureEntity *record, const VentureAuthPrincipal *principal);
+static void venture_web_inbox_block(VentureWebServer *self, GString *content, VentureEntity *record);
 
 static HtmxResponse *
 venture_web_ui_invoice_print(
@@ -12070,6 +12072,8 @@ venture_web_ui_detail(
 	venture_web_mail_oauth_block(self, content, record);
 	/* Phone and text: the Call button and a contact's texts. */
 	venture_web_telephony_block(self, content, record, principal);
+	/* One inbox: the way into a contact's conversation. */
+	venture_web_inbox_block(self, content, record);
 
 	/*
 	 * The discussion, after the type's own block and before the tabs: it
@@ -32943,6 +32947,7 @@ venture_web_api_ticket_draft(
 #include "mail/venture-mail-reply-web.inc"
 #include "mail/venture-mail-oauth-web.inc"
 #include "telephony/venture-telephony-web.inc"
+#include "inbox/venture-inbox-web.inc"
 #include "forms/venture-forms-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
@@ -33567,6 +33572,8 @@ venture_web_server_new(
 	venture_deliverability_pages_register(self);
 	/* Phone and text: settings, click-to-call, texts and the webhook. */
 	venture_telephony_pages_register(self);
+	/* One inbox: conversations, their API and the public web chat. */
+	venture_inbox_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);
 	/* And /api/v1/arbitrage: the scan, recording, export and the
 	 * calculators, not a type. */

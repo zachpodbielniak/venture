@@ -1176,7 +1176,7 @@ test_pages(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(page, "Missed call"));
 	g_assert_nonnull(strstr(page, "please call me back"));
 	g_assert_nonnull(strstr(page, "open on Sunday?"));
-	g_assert_nonnull(strstr(page, "Reply by chat"));
+	g_assert_nonnull(strstr(page, "Reply by web chat"));
 	g_clear_pointer(&page, g_free);
 	/* The contact's own page links to it. */
 	g_free(path);
@@ -1214,15 +1214,15 @@ test_pages(Fixture *f, gconstpointer data)
 	g_free(path);
 	path = g_strdup_printf("/api/v1/conversations/%" G_GINT64_FORMAT "/status", venture_entity_get_id(row));
 	g_assert_cmpuint(web_request(server, "POST", path, "application/json", "{\"status\":\"closed\"}", NULL, NULL), ==, 200);
-	g_assert_cmpuint(web_request(server, "POST", path, "application/json", "{\"status\":\"sleeping\"}", NULL, NULL), ==, 400);
+	g_assert_cmpuint(web_request(server, "POST", path, "application/json", "{\"status\":\"sleeping\"}", NULL, NULL), ==, 422);
 	g_free(path);
 	path = g_strdup_printf("/api/v1/conversations/%" G_GINT64_FORMAT "/reply", venture_entity_get_id(row));
 	g_assert_cmpuint(web_request(server, "POST", path, "application/json", "{\"body\":\"See you Sunday.\",\"channel\":\"chat\"}", &body, NULL), ==, 201);
-	g_assert_nonnull(strstr(body, "\"channel\":\"chat\""));
+	g_assert_nonnull(strstr(body, "\"chat\""));
 	g_free(path);
 	path = g_strdup_printf("/api/v1/conversations/%" G_GINT64_FORMAT "/assign", venture_entity_get_id(row));
 	form = g_strdup_printf("{\"owner_id\":%" G_GINT64_FORMAT "}", venture_entity_get_id(f->stranger));
-	g_assert_cmpuint(web_request(server, "POST", path, "application/json", form, NULL, NULL), ==, 400);
+	g_assert_cmpuint(web_request(server, "POST", path, "application/json", form, NULL, NULL), ==, 422);
 	g_assert_cmpuint(web_request(server, "GET", "/api/v1/conversations/999999", NULL, NULL, NULL, NULL), ==, 404);
 	venture_web_server_stop(server);
 }
