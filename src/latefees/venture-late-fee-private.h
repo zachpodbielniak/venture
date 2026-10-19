@@ -7,5 +7,6 @@ gboolean venture_late_fee_service_sweep_settled(VentureLateFeeService *self, gin
 	gboolean dry_run, JsonArray *plan, VentureLateFeeSweepTally *tally, const VentureActor *actor, GError **error);
 VentureDatabase *venture_late_fee_service_get_database(VentureLateFeeService *self);
 gboolean venture_late_fee_service_claim_actions(VentureLateFeeService *self);
+const gchar *venture_late_fee_service_pause_scope(VentureLateFeeService *self, VentureEntity *invoice, GDateTime *at);
 
 #endif

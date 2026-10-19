@@ -32957,6 +32957,7 @@ venture_web_api_ticket_draft(
 #include "calendar/venture-calendar-web.inc"
 #include "core/venture-connector-web.inc"
 #include "money-calendar/venture-money-calendar-web.inc"
+#include "latefees/venture-late-fee-private.h"
 #include "latefees/venture-late-fees-web.inc"
 #include "planner/venture-planner-web.inc"
 #include "crm-import/venture-crm-import-web.inc"

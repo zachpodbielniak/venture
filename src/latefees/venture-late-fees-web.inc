@@ -266,14 +266,14 @@ late_fees_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (setting != NULL && late_fees_flag(setting, "paused"))
 	{
 		g_autofree gchar *reason = late_fees_text(setting, "pause-reason");
-		g_string_append(html, "<p class=\"notice\" role=\"status\"><strong>Paused for the whole organization</strong> until ");
+		g_string_append(html, "<p class=\"notice\" role=\"status\"><span><strong>Paused for the whole organization</strong> until ");
 		late_fees_append_date(html, setting, "paused-until");
 		if (!venture_string_is_empty(reason))
 		{
 			g_string_append(html, ": ");
 			venture_html_escape_append(html, reason);
 		}
-		g_string_append(html, ". Nothing is added and reminders carry no fee wording.</p>");
+		g_string_append(html, ". Nothing is added and reminders carry no fee wording.</span></p>");
 	}
 	late_fees_append_pause_form(html, "organization", org, setting != NULL && late_fees_flag(setting, "paused"), "/late-fees");
 	g_string_append(html, "</div></div><div class=\"card\"><div class=\"card-head\"><h2>Paused customers and invoices</h2></div><div class=\"card-body\">");
@@ -369,7 +369,7 @@ late_fees_queue_page(HtmxRequest *request, GHashTable *params, gpointer data)
 		venture_html_escape_append(html, done);
 		g_string_append(html, "</div>");
 	}
-	g_string_append(html, "<form method=\"post\" action=\"/late-fees/decide\"><div class=\"card\"><div class=\"card-body\"><div class=\"table-wrap\"><table class=\"data\">"
+	g_string_append(html, "<form method=\"post\" action=\"/late-fees/decide\"><div class=\"card\"><div class=\"card-body\"><div class=\"table-wrap\"><table class=\"data stack-cards\">"
 		"<thead><tr><th><span class=\"sr-only\">Select</span></th><th>Invoice</th><th>Customer</th><th>Due on</th><th>Amount</th><th>Basis</th><th>State</th><th>Decide</th></tr></thead><tbody>");
 	for (s = 0; states[s] != NULL; s++)
 	{
@@ -387,15 +387,15 @@ late_fees_queue_page(HtmxRequest *request, GHashTable *params, gpointer data)
 			g_string_append_printf(html, "<tr><td><input type=\"checkbox\" name=\"ids\" value=\"%" G_GINT64_FORMAT "\" aria-label=\"Select fee %" G_GINT64_FORMAT "\"%s></td>"
 				"<td class=\"row-head\"><a href=\"/e/invoice/%" G_GINT64_FORMAT "\">", id, id, s == 0 ? "" : " disabled", late_fees_number(fee, "invoice-id"));
 			venture_html_escape_append(html, number ? number : "");
-			g_string_append(html, "</a></td><td>");
+			g_string_append(html, "</a></td><td data-label=\"Customer\">");
 			venture_html_escape_append(html, name ? name : "");
-			g_string_append(html, "</td><td>");
+			g_string_append(html, "</td><td data-label=\"Due on\">");
 			late_fees_append_date(html, fee, "due-on");
-			g_string_append(html, "</td><td class=\"num\">");
+			g_string_append(html, "</td><td class=\"num\" data-label=\"Amount\">");
 			late_fees_append_money(html, fee, "amount");
-			g_string_append(html, "</td><td>");
+			g_string_append(html, "</td><td data-label=\"Basis\">");
 			venture_html_escape_append(html, basis ? basis : "");
-			g_string_append(html, "</td><td>");
+			g_string_append(html, "</td><td data-label=\"State\">");
 			late_fees_append_badge(html, states[s]);
 			g_string_append(html, "</td><td class=\"actions\">");
 			if (s == 0)
@@ -586,11 +586,12 @@ late_fees_pause_post(HtmxRequest *request, GHashTable *params, gpointer data)
 static void
 late_fees_append_waive_form(GString *html, gint64 fee_id, gint64 invoice_id)
 {
-	g_string_append_printf(html, "<form method=\"post\" action=\"/late-fees/%" G_GINT64_FORMAT "/waive\" class=\"waive-form\">"
+	g_string_append_printf(html, "<details class=\"late-fee-waive\"><summary class=\"btn btn-sm\">Waive</summary>"
+		"<form method=\"post\" action=\"/late-fees/%" G_GINT64_FORMAT "/waive\" class=\"waive-form\">"
 		"<input type=\"hidden\" name=\"return\" value=\"/e/invoice/%" G_GINT64_FORMAT "\">"
 		"<label>Reason <input name=\"reason\" required placeholder=\"Goodwill, error, agreement\"></label>"
 		"<label>Note to the customer <input name=\"note\" placeholder=\"Optional; sent by email\"></label>"
-		"<button class=\"btn btn-sm\" type=\"submit\">Waive</button></form>", fee_id, invoice_id);
+		"<button class=\"btn btn-sm\" type=\"submit\">Waive this fee</button></form></details>", fee_id, invoice_id);
 }
 
 /* The fee panel on an invoice's page: what was charged, with its waive
@@ -603,20 +604,29 @@ venture_late_fees_web_append_invoice(VentureWebServer *self, GString *html, Vent
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autofree gchar *paused = NULL;
 	g_autofree gchar *next = NULL;
+	const gchar *scope = NULL;
 	gint64 id = venture_entity_get_id(invoice);
 	guint i;
 	if (!venture_context_module_enabled(self->context, "late_fees"))
 		return;
 	fees = late_fees_find(self, VENTURE_TYPE_LATE_FEE, venture_entity_get_organization_id(invoice), "invoice-id", NULL, id, 200);
 	paused = venture_late_fee_service_pause_state(venture_late_fee_service_get(db), invoice, now);
+	scope = venture_late_fee_service_pause_scope(venture_late_fee_service_get(db), invoice, now);
 	next = venture_late_fee_service_notice_text(venture_late_fee_service_get(db), invoice, now);
 	g_string_append_printf(html, "<div class=\"card late-fee-panel\"><div class=\"card-head\"><h2>Late fees</h2>"
 		"<a class=\"btn btn-sm\" href=\"/invoices/%" G_GINT64_FORMAT "/late-fees\">Preview timeline</a></div><div class=\"card-body\">", id);
 	if (paused != NULL)
 	{
-		g_string_append(html, "<p class=\"notice\" role=\"status\"><strong>");
+		/* One child, so the notice's flex row cannot split the sentence. */
+		g_string_append(html, "<p class=\"notice\" role=\"status\"><span><strong>");
 		venture_html_escape_append(html, paused);
-		g_string_append(html, "</strong>. Nothing is added and reminders carry no fee wording.</p>");
+		g_string_append(html, "</strong>. Nothing is added and reminders carry no fee wording.");
+		if (g_strcmp0(scope, "company") == 0)
+			g_string_append_printf(html, " <a href=\"/e/company/%" G_GINT64_FORMAT "\">Change it on the customer's page.</a>",
+				late_fees_number(invoice, "company-id"));
+		else if (g_strcmp0(scope, "organization") == 0)
+			g_string_append(html, " <a href=\"/late-fees\">Change it on the Late fees page.</a>");
+		g_string_append(html, "</span></p>");
 	}
 	else if (!g_str_equal(next, ""))
 	{
@@ -628,18 +638,18 @@ venture_late_fees_web_append_invoice(VentureWebServer *self, GString *html, Vent
 		g_string_append(html, "<p class=\"muted\">No late fees on this invoice.</p>");
 	else
 	{
-		g_string_append(html, "<div class=\"table-wrap\"><table class=\"data\"><thead><tr><th>Due on</th><th>Amount</th><th>State</th><th>Basis</th><th>Action</th></tr></thead><tbody>");
+		g_string_append(html, "<div class=\"table-wrap\"><table class=\"data stack-cards\"><thead><tr><th>Due on</th><th>Amount</th><th>State</th><th>Basis</th><th>Action</th></tr></thead><tbody>");
 		for (i = 0; i < fees->len; i++)
 		{
 			VentureEntity *fee = g_ptr_array_index(fees, i);
 			g_autofree gchar *status = late_fees_text(fee, "status");
 			g_autofree gchar *basis = late_fees_text(fee, "basis");
 			g_autofree gchar *reason = late_fees_text(fee, "reason");
-			g_string_append(html, "<tr><td>");
+			g_string_append(html, "<tr><td data-label=\"Due on\">");
 			late_fees_append_date(html, fee, "due-on");
-			g_string_append(html, "</td><td class=\"num\">");
+			g_string_append(html, "</td><td class=\"num\" data-label=\"Amount\">");
 			late_fees_append_money(html, fee, "amount");
-			g_string_append(html, "</td><td>");
+			g_string_append(html, "</td><td data-label=\"State\">");
 			late_fees_append_badge(html, status);
 			if (!venture_string_is_empty(reason) && (g_strcmp0(status, "waived") == 0 || g_strcmp0(status, "skipped") == 0 ||
 				g_strcmp0(status, "cancelled") == 0))
@@ -648,7 +658,7 @@ venture_late_fees_web_append_invoice(VentureWebServer *self, GString *html, Vent
 				venture_html_escape_append(html, reason);
 				g_string_append(html, "</span>");
 			}
-			g_string_append(html, "</td><td>");
+			g_string_append(html, "</td><td data-label=\"Basis\">");
 			venture_html_escape_append(html, basis ? basis : "");
 			g_string_append(html, "</td><td>");
 			if (g_strcmp0(status, "applied") == 0)
@@ -659,9 +669,13 @@ venture_late_fees_web_append_invoice(VentureWebServer *self, GString *html, Vent
 		}
 		g_string_append(html, "</tbody></table></div>");
 	}
+	/* Only the control that means something: resume a pause of this
+	 * invoice, pause an unpaused one; under a customer's or the
+	 * organization's pause an invoice pause would change nothing. */
+	if (scope == NULL || g_strcmp0(scope, "invoice") == 0)
 	{
 		g_autofree gchar *back = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, id);
-		late_fees_append_pause_form(html, "invoice", id, late_fees_flag(invoice, "late-fees-paused"), back);
+		late_fees_append_pause_form(html, "invoice", id, scope != NULL, back);
 	}
 	g_string_append(html, "</div></div>");
 }
@@ -711,12 +725,12 @@ late_fees_invoice_page(HtmxRequest *request, GHashTable *params, gpointer data)
 		g_string_append(html, "<div class=\"notice\">Late fees are off for this organization: nothing below is charged.</div>");
 	if (json_object_get_boolean_member(p, "paused"))
 	{
-		g_string_append(html, "<div class=\"notice\" role=\"status\"><strong>Paused</strong> for the ");
+		g_string_append(html, "<div class=\"notice\" role=\"status\"><span><strong>Paused</strong> for the ");
 		venture_html_escape_append(html, json_object_get_string_member(p, "pause_scope"));
 		g_string_append(html, ", until ");
 		venture_html_escape_append(html, venture_string_is_empty(json_object_get_string_member_with_default(p, "paused_until", "")) ?
 			"further notice" : json_object_get_string_member(p, "paused_until"));
-		g_string_append(html, ". Nothing below is added while it holds.</div>");
+		g_string_append(html, ". Nothing below is added while it holds.</span></div>");
 	}
 	if (json_object_get_boolean_member(p, "exempt"))
 		g_string_append(html, "<div class=\"notice\">This invoice or its customer is exempt from late fees.</div>");
@@ -729,21 +743,21 @@ late_fees_invoice_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_string_append(html, "</span><span class=\"stat-label\">Original invoice</span></div><div class=\"stat\"><span class=\"stat-value\">");
 	venture_html_escape_append(html, json_object_get_string_member_with_default(p, "charged", ""));
 	g_string_append(html, "</span><span class=\"stat-label\">Fees charged</span></div></div>");
-	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Timeline</h2></div><div class=\"card-body\"><div class=\"table-wrap\"><table class=\"data late-fee-timeline\">"
+	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Timeline</h2></div><div class=\"card-body\"><div class=\"table-wrap\"><table class=\"data late-fee-timeline stack-cards\">"
 		"<thead><tr><th>Day</th><th>Date</th><th>Tier</th><th>Charge</th><th>Amount</th><th>State</th><th>Notice</th></tr></thead><tbody>");
 	for (i = 0; entries != NULL && i < json_array_get_length(entries) && i < 60; i++)
 	{
 		JsonObject *e = json_array_get_object_element(entries, i);
 		const gchar *status = json_object_get_string_member_with_default(e, "status", "");
-		g_string_append_printf(html, "<tr><td class=\"num\">%" G_GINT64_FORMAT "</td><td>", json_object_get_int_member(e, "day"));
+		g_string_append_printf(html, "<tr><td class=\"num\" data-label=\"Day\">%" G_GINT64_FORMAT "</td><td data-label=\"Date\">", json_object_get_int_member(e, "day"));
 		venture_html_escape_append(html, json_object_get_string_member_with_default(e, "date", ""));
-		g_string_append_printf(html, "</td><td>%" G_GINT64_FORMAT "%s</td><td>", json_object_get_int_member(e, "tier"),
+		g_string_append_printf(html, "</td><td data-label=\"Tier\">%" G_GINT64_FORMAT "%s</td><td data-label=\"Charge\">", json_object_get_int_member(e, "tier"),
 			json_object_get_boolean_member_with_default(e, "recurring", FALSE) ? " (recurring)" : "");
 		venture_html_escape_append(html, json_object_get_string_member_with_default(e, "basis",
 			json_object_get_string_member_with_default(e, "type", "")));
-		g_string_append(html, "</td><td class=\"num\">");
+		g_string_append(html, "</td><td class=\"num\" data-label=\"Amount\">");
 		venture_html_escape_append(html, json_object_get_string_member_with_default(e, "display", "\xe2\x80\x94"));
-		g_string_append(html, "</td><td>");
+		g_string_append(html, "</td><td data-label=\"State\">");
 		late_fees_append_badge(html, status);
 		if (json_object_has_member(e, "reason"))
 		{
@@ -751,7 +765,7 @@ late_fees_invoice_page(HtmxRequest *request, GHashTable *params, gpointer data)
 			venture_html_escape_append(html, json_object_get_string_member(e, "reason"));
 			g_string_append(html, "</span>");
 		}
-		g_string_append(html, "</td><td>");
+		g_string_append(html, "</td><td data-label=\"Notice\">");
 		venture_html_escape_append(html, json_object_get_string_member_with_default(e, "notice", ""));
 		g_string_append(html, "</td></tr>");
 	}

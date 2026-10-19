@@ -1935,14 +1935,29 @@ venture_late_fee_service_pause_state(VentureLateFeeService *self, VentureEntity 
 	case_pause(&c, at);
 	if (!c.paused)
 		return NULL;
-	if (c.paused_until == NULL)
-		return g_strdup_printf("late fees paused for this %s indefinitely",
-			g_strcmp0(c.pause_scope, "company") == 0 ? "customer" : c.pause_scope);
 	{
-		g_autofree gchar *day = date_text(c.paused_until);
-		return g_strdup_printf("late fees paused for this %s until %s",
-			g_strcmp0(c.pause_scope, "company") == 0 ? "customer" : c.pause_scope, day);
+		const gchar *whose = g_strcmp0(c.pause_scope, "company") == 0 ? "this customer" :
+			(g_strcmp0(c.pause_scope, "invoice") == 0 ? "this invoice" : "the organization");
+		g_autofree gchar *day = c.paused_until != NULL ? date_text(c.paused_until) : NULL;
+		return day != NULL ? g_strdup_printf("Late fees paused for %s until %s", whose, day) :
+			g_strdup_printf("Late fees paused for %s indefinitely", whose);
 	}
+}
+
+/* Which scope holds the pause on @invoice at @at, or NULL. */
+const gchar *
+venture_late_fee_service_pause_scope(VentureLateFeeService *self, VentureEntity *invoice, GDateTime *at)
+{
+	g_auto(Case) c;
+	memset(&c, 0, sizeof(c));
+	g_return_val_if_fail(VENTURE_IS_LATE_FEE_SERVICE(self), NULL);
+	if (!module_on() || invoice == NULL)
+		return NULL;
+	c.invoice = g_object_ref(invoice);
+	c.company = load(self, VENTURE_TYPE_COMPANY, number(invoice, "company-id"), venture_entity_get_organization_id(invoice));
+	c.settings = settings_for(self, venture_entity_get_organization_id(invoice));
+	case_pause(&c, at);
+	return c.pause_scope;
 }
 
 /* --- The sweep stage ------------------------------------------------------ */
