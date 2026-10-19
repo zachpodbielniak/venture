@@ -11,7 +11,8 @@ static const gchar venture_web_ai_messages_style[] =
 	".aim-item{border:1px solid var(--border);border-radius:.6rem;padding:.75rem;background:var(--surface);overflow-wrap:anywhere}"
 	".aim-item.draft{border-color:var(--accent)}"
 	".aim-head{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-size:.85em;color:var(--text-muted);margin-bottom:.4rem}"
-	".aim-badge{display:inline-block;padding:.05rem .5rem;border-radius:999px;border:1px solid var(--border);font-size:.8em}"
+	".aim-badge{display:inline-block;padding:.05rem .5rem;border-radius:999px;border:1px solid var(--border);font-size:.8em;white-space:nowrap}"
+	".aim-card h3{margin:1.25rem 0 .5rem}"
 	".aim-badge.wait{background:var(--accent-soft);border-color:var(--accent);color:inherit;font-weight:600}"
 	".aim-why{margin:.3rem 0;font-size:.9em}.aim-meta{font-size:.8em;color:var(--text-muted);margin:.2rem 0}"
 	".aim-body{white-space:pre-wrap;margin:.3rem 0}"
@@ -600,7 +601,7 @@ venture_web_ai_messages_rules(VentureDatabase *db, gint64 org, GString *html)
 	venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	rows = venture_database_find(db, query, NULL);
-	g_string_append(html, "<section class=\"card\"><div class=\"card-head\"><h2>Auto-reply rules</h2></div><div class=\"card-body\">");
+	g_string_append(html, "<section class=\"card aim-card\"><div class=\"card-head\"><h2>Auto-reply rules</h2></div><div class=\"card-body\">");
 	if (rows == NULL || rows->len == 0)
 		g_string_append(html, "<p class=\"muted\">No rules: nothing answers on its own.</p>");
 	else
@@ -641,7 +642,7 @@ venture_web_ai_messages_rules(VentureDatabase *db, gint64 org, GString *html)
 	}
 	g_string_append(html, "<h3>Add a rule</h3><form method=\"post\" class=\"aim-form\"><input type=\"hidden\" name=\"action\" value=\"add_rule\">"
 		"<label>Name<input name=\"name\" maxlength=\"100\" required placeholder=\"After hours\"></label>"
-		"<label>When<select name=\"trigger\"><option value=\"after_hours\">They write outside business hours</option>"
+		"<label>When<select name=\"trigger\"><option value=\"after_hours\">Outside business hours</option>"
 		"<option value=\"missed_call\">A call is missed</option></select></label>"
 		"<label>Answer by<select name=\"channel\"><option value=\"\">The channel they used</option><option value=\"text\">Text</option>"
 		"<option value=\"email\">Email</option><option value=\"chat\">Web chat</option></select></label>"

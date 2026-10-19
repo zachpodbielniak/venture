@@ -1200,7 +1200,14 @@ web_start(Fixture *f)
 {
 	g_autoptr(GError) error = NULL;
 	VentureWebServer *server;
-	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)0, "security-require-auth", FALSE, NULL);
+	gboolean held;
+	/* Held open for screenshots, it listens where a local instance would
+	 * and draws the theme asked for. */
+	held = g_getenv("VENTURE_TEST_AI_MESSAGES_HOLD") != NULL;
+	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)(held ? 8748 : 0),
+		"security-require-auth", FALSE, NULL);
+	if (g_getenv("VENTURE_TEST_AI_MESSAGES_THEME") != NULL)
+		g_object_set(f->config, "ui-theme", g_getenv("VENTURE_TEST_AI_MESSAGES_THEME"), NULL);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
