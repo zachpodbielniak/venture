@@ -71,7 +71,14 @@ subject/body), `sequence_enrollment` (`status`
 progress service-owned), `sequence_delivery` (`state`
 [pending|sent|failed|skipped]), `suppression` (`reason`
 [unsubscribed|bounced|complained|manual]), `sequence_link`,
-`sequence_tracking_event` (`kind` [open|click]).
+`sequence_tracking_event` (`kind` [open|click], `machine_reason`),
+`sequence_trigger` (journey triggers: `kind` [form_submitted|tag_added|
+deal_stage_changed|quote_not_accepted|invoice_paid|booking_made], `tag`,
+`form_id`, `deal_stage`, `days`; `feed_cursor` derived). Steps add
+`channel` branch with `branch_on` [none|opened|clicked|replied],
+`yes_position`, `no_position`, `then_position`, `end_after`; an enrollment
+a trigger made carries `trigger_id` and a unique `trigger_key`. See
+`docs/journeys.org`.
 
 ## marketing (requires mail, sequences, leads) -- report `marketing_performance`
 
@@ -86,7 +93,15 @@ none stage), `marketing_recipient` (frozen per-recipient copy; *action*
 `unsubscribed_at`, `delivered_at`, `replied_at`, `complained_at`,
 `machine_opened_at`), `marketing_event` (`machine_reason` when an
 observation was judged a machine's), `marketing_sending_domain` (owner/admin
-setting: `domain`, `dkim_selector`, `warmup_started_on`, `ramp_schedule`).
+setting: `domain`, `dkim_selector`, `warmup_started_on`, `ramp_schedule`),
+`marketing_topic` (what the preference page offers), `marketing_preference`
+(service-owned per address: `topics_off`, `frequency` [any|weekly|monthly]).
+A send adds `topic_id`, A/B (`variant_subject`, `variant_text_body`,
+`variant_html_body`, `test_percent`, `winner_metric` [opens|clicks],
+`winner_wait_hours`; `winner` derived), local time (`local_time`,
+`local_hour`, `local_date`) and `resend_of_id`/`resend_after_days`
+(*action* `resend_non_openers`). Contacts and companies have *actions*
+`add_tag`/`remove_tag`; contacts and organizations a `timezone`.
 
 ## outreach, ideas (requires sales / core) -- reports `campaigns`, `ideas`
 

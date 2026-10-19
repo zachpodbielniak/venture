@@ -105,6 +105,21 @@ consent and delivery evidence are service-owned.
   opens are never in `opened`; Apple privacy proxies cannot be detected,
   so `opened` is an upper bound.
 
+### Audiences and journeys (`docs/marketing.org`, `docs/journeys.org`)
+
+- Segment filters beyond fields: `tag=vip`, `opened_within_days=N`,
+  `clicked_within_days`, `replied_within_days`, `bought_within_days`,
+  `booked_within_days` (contacts only; people's opens, not machines').
+- Tags: `act contact ID add_tag tag=vip` / `remove_tag`.
+- Preference page `/marketing/u/<token>`: topics, weekly/monthly, stop all.
+  A send with `topic_id` leaves out `topic_turned_off` and `frequency`.
+- A/B: `test_percent` + B fields; arms on the send report (`arms`, `winner`).
+- Local time: `local_time=true local_hour=9 [local_date=YYYY-MM-DD]`.
+- Resend: `act marketing_send ID resend_non_openers days=3 subject=...`
+  makes a draft; preview, approve and run it as usual.
+- Journeys: branch steps and `sequence_trigger` records; feed triggers run
+  with `sequence run`.
+
 ## First-party source attribution (module `attribution`)
 
 `describe attribution_site` exposes the organization-owned site
