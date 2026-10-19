@@ -278,7 +278,7 @@ customer_statement(VentureContext *context, VentureDateRange *period, JsonObject
 			if (t == 0)
 			{
 				g_object_get(event, "kind", &kind, NULL);
-				if (g_strcmp0(kind, "issue") != 0 && g_strcmp0(kind, "void") != 0)
+				if (!venture_invoice_event_kind_moves_balance(kind))
 					continue;
 				subtract = g_strcmp0(kind, "void") == 0;
 			}
@@ -330,7 +330,16 @@ customer_statement(VentureContext *context, VentureDateRange *period, JsonObject
 		 * type as a person names it, never its table name. */
 		{
 			g_autofree gchar *kind = venture_entity_type_dup_label(G_OBJECT_TYPE(row->record), FALSE);
-			source = g_strdup_printf("%s #%" G_GINT64_FORMAT, kind, venture_entity_get_id(row->record));
+			g_autofree gchar *event_kind = NULL;
+			const gchar *label = kind;
+			/* A late fee and its waiver are named as the customer knows them. */
+			if (g_object_class_find_property(G_OBJECT_GET_CLASS(row->record), "kind") != NULL)
+				g_object_get(row->record, "kind", &event_kind, NULL);
+			if (g_strcmp0(event_kind, VENTURE_INVOICE_EVENT_LATE_FEE) == 0)
+				label = "Late fee";
+			else if (g_strcmp0(event_kind, VENTURE_CREDIT_KIND_LATE_FEE_WAIVER) == 0)
+				label = "Late fee waiver";
+			source = g_strdup_printf("%s #%" G_GINT64_FORMAT, label, venture_entity_get_id(row->record));
 		}
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "date", date);
