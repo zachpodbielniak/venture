@@ -2185,6 +2185,16 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing/feedback-secret", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/marketing/deliverability/secret", NULL, "organization_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/hooks/deliverability/1/generic", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* Audiences and journeys: the tag and resend actions, topics and
+	 * triggers need a token; the preference page answers only a known
+	 * capability, saving included. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contact/1/actions/add_tag", NULL, "{\"tag\":\"vip\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/resend_non_openers", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/sequence_trigger"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing_topic"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing_preference"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/sequence/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/marketing/u/0000000000000000000000000000000000000000000000000000000000000000", NULL, "action=save&frequency=weekly", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	/* The documentation site is public by design -- it is the shipped
 	 * shipped documentation, not this install's data -- so it answers
 	 * anonymously rather than redirecting. Pinned here so a route added
