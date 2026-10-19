@@ -231,3 +231,5 @@ screen's ordinary sync-and-import test.
 - [[file:email-design.org][Designed email]] — brand settings, hosted images, blocks, shared sections, the AI designer and its grounding rule, dark mode and undo.
 
 - [[file:deliverability.org][Deliverability]] — signed bounce and complaint feed, DSNs from synced mail, campaign replies, the SPF/DKIM/DMARC check, warm-up limits and the per-send report with machine opens and click map.
+
+- [[file:journeys.org][Journeys]] — sequences with branches and waits, named triggers that enrol once per event, and the preference centre they honour.

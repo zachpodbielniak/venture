@@ -105,15 +105,15 @@ existing =mail_template= and is rendered by its renderer; see
 
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Tags | partial | Comma-separated =tags= on contact and company (=src/model/venture-records.c=); no tag-added event | Tag operations that segments and triggers can use |
-| Behaviour segments (opened, clicked, replied, bought, booked) | missing | Segments are saved field filters over one record type (=src/marketing/venture-marketing-records.c=, =filters=) | Segment conditions over events and related records |
-| Embeddable signup forms with double opt-in | have | =forms_optin_store()= requires an explicit consent question and creates =marketing_consent= and a list member on confirmation (=src/forms/venture-forms-optin.inc=) | — |
-| Preference centre | partial | One organization-wide stop at =/marketing/u/<token>= (=src/marketing/venture-marketing-web.inc=) | Topics and frequency choices |
-| Multi-step journeys with branches and waits | partial | Sequences have ordered email, call-task, SMS-task and wait steps with delays, send windows and goal exits (=src/sequences/venture-sequence-records.c=); no branches | Branch steps on conditions and events |
-| Triggers (form submitted, tag added, deal stage changed, quote sent not accepted, invoice paid, booking made) | partial | Generic =on_created= / =on_updated= record events with a =create= handler (=src/automation/=, =docs/automation.org=); no named triggers and no enrolment handler | Named triggers that enrol a contact into a journey |
-| A/B subject and content with automatic winner | missing | — | Variants on a send and a winner rule |
-| Recipient local-time send | partial | A sequence has one IANA timezone and send window (=src/sequences/venture-sequence-records.c=); contacts carry no timezone | Per-recipient timezone for sequences and campaigns |
-| Resend to non-openers | missing | — | Follow-up send built from the first send's non-openers |
+| Tags | have | One model: the existing =tags= field, read as whole tags with any capitals (=src/core/venture-tags.c=); =add_tag= / =remove_tag= actions on contacts and companies; =tag== in saved searches; the tag-added journey trigger | -- |
+| Behaviour segments (opened, clicked, replied, bought, booked) | have | Saved-search criteria =opened_within_days=, =clicked_within_days=, =replied_within_days=, =bought_within_days=, =booked_within_days= over people's opens and clicks only (lane 3's machine flag), the reply rule, paid invoices and =booking.created= (=src/marketing/venture-marketing-segments.c=) | -- |
+| Embeddable signup forms with double opt-in | have | =forms_optin_store()= requires an explicit consent question and creates =marketing_consent= and a list member on confirmation (=src/forms/venture-forms-optin.inc=) | -- |
+| Preference centre | have | =/marketing/u/<token>= now offers topics (=marketing_topic=), how often (any, weekly, monthly) and stop everything; one =marketing_preference= per address, honoured at campaign preview and run and by marketing journeys (=src/marketing/venture-marketing-preferences.inc=) | -- |
+| Multi-step journeys with branches and waits | have | Sequences gain branch steps on opened, clicked or replied by the end of a wait, jumps and path ends, in the one sequence engine; a channel hook for later channels (=src/sequences/venture-sequence-service.c=, =src/sequences/venture-sequence-journeys.c=, =docs/journeys.org=) | Text steps through the hook (lane 6) |
+| Triggers (form submitted, tag added, deal stage changed, quote sent not accepted, invoice paid, booking made) | have | =sequence_trigger= records; feed events (invoice paid, booking made, quote not accepted after N days) and save hooks (form, tag, deal stage); once per event per journey by =sequence_enrollment.trigger_key= (=src/sequences/venture-sequence-journeys.c=) | -- |
+| A/B subject and content with automatic winner | have | =test_percent= split deterministically, winner by people's opens or clicks after =winner_wait_hours=, sent to the rest; both arms on the send report (=src/marketing/venture-marketing-audiences.inc=, =src/marketing/venture-marketing-reports.c=) | -- |
+| Recipient local-time send | have | =local_time= / =local_hour= / =local_date= on a send: due at that hour in the contact's zone, else the organization's, else UTC, through the bounded delivery and the warm-up (=src/marketing/venture-marketing-audiences.inc=) | Local time for journeys (they keep the sequence's own zone and window) |
+| Resend to non-openers | have | =resend_non_openers= action: a new draft whose preview takes the first send's recipients with no human open after N days, never unsubscribed, suppressed or complained (=src/marketing/venture-marketing-audience.inc=) | -- |
 
 * Lane 5 — sales
 
@@ -180,9 +180,8 @@ Only the =partial= and =missing= rows above.
   rendering.
 - Lane 3: done (see its table and [[file:deliverability.org][Deliverability]]). Only the
   =generic= feed adapter ships; a named provider's shape is a new adapter.
-- Lane 4: tag operations; behaviour segments; topic preferences; journey
-  branches; named triggers that enrol; A/B with winner; recipient local
-  time; resend to non-openers.
+- Lane 4: done (see its table, [[file:journeys.org][Journeys]] and
+  [[file:marketing.org][Marketing]]). Text steps wait for lane 6's channel.
 - Lane 5: drag and drop on the board; AI lead scoring; token mailbox
   sign-in and replying from the timeline.
 - Lane 6: telephony connector with 3CX and VoIP.ms; click-to-call; call
