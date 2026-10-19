@@ -6009,7 +6009,7 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
  * marked with attributes the board's script sets (data/static/deal-board.js). */
 .deal-board { display: flex; gap: 1rem; align-items: flex-start; overflow-x: auto; padding-bottom: 0.75rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
 .deal-board > .deal-column { flex: 0 0 17rem; max-width: 85vw; margin: 0; scroll-snap-align: start; }
-.deal-column > h2 { display: flex; justify-content: space-between; gap: 0.5rem; }
+.deal-column > h2 { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin: 0; padding: 0.75rem 0.75rem 0.25rem; font-size: 1.1rem; }
 .deal-cards { display: grid; gap: 0.5rem; min-height: 3rem; padding: 0.5rem; }
 .deal-card { border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
 .deal-card[draggable="true"] { cursor: grab; }
@@ -6020,3 +6020,8 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 .board-status:empty { display: none; }
 .board-status { margin: 0 0 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; background: var(--positive-soft); color: var(--text); }
 .board-status[data-refused="true"] { background: var(--warning-soft); }
+.lead-ai-score .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
+.lead-ai-score .actions form { margin: 0; }
+.mail-thread .reply-composer { margin-top: 0.75rem; }
+.mail-thread .reply-composer form { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+.mail-thread .reply-composer textarea { width: 100%; }
