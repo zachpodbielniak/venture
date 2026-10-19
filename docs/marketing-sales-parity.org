@@ -170,30 +170,39 @@ Closed by the inbox commits on this lane ([[file:inbox.org][Conversations: one i
 
 * Lane 9 — settings
 
+Closed by the settings commits on this lane ([[file:settings.org][Settings: marketing, sales, phone and AI]]).
+
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Sensible defaults | partial | Tracking off by default (=src/model/venture-records.c=, =sequence-tracking= and =marketing-tracking=); 60-second campaign pacing (=docs/marketing.org=) | Documented defaults for every workflow in this epic |
-| Each workflow changeable on a settings screen | partial | Mail and AI have settings pages (=src/mail/venture-mail-settings-web.inc=, =src/ai/venture-ai-settings-web.inc=); other switches are fields on the organization record | Marketing, sales, phone and AI-message settings screen |
-| Same settings through chat and AI tools, one settings API, audit trail | partial | Generic staged =venture_update= with audit (=docs/ai.org=, Tools); no settings API | One settings API used by the screen, REST, CLI and the assistant |
+| Sensible defaults | have | Every workflow setting of this epic registered with a documented default and limit: link checks, the email brand, warm-up, local-time hour, A/B wait and metric, resend delay, AI lead scores, quiet hours, recording links, phone country, the STOP/START/HELP answers, each web chat, the AI messages switch, business hours and each rule's auto-send (=src/settings/venture-settings.h=, each feature's =*-settings.c=, [[file:settings.org][Settings]]) | -- |
+| Each workflow changeable on a settings screen | have | =/organizations/ID/settings/workflows=, drawn from the registry and grouped by workflow, with now, default, help and reset; stacks at phone width (=src/settings/venture-settings-web.inc=) | -- |
+| Same settings through chat and AI tools, one settings API, audit trail | have | =venture_settings_set()= behind the screen, =/api/v1/workflow-settings= and =venturectl settings=; the assistant's =settings_set= stages the same record change through the confirmation queue, approved by an owner or administrator; one audit entry each, identical but for the actor (=tests/test-venture-settings.c= =/settings/channels=) | -- |
 
 * What later lanes build
 
 Only the =partial= and =missing= rows above.
 
 - Lane 1: done (see its table).
-- Lane 2: AI design from a brief; edits by words with undo; grounded plain
-  fallback; block builder; brand settings; saved designs beside text
-  templates; reusable sections; hosted images; video block; client
-  rendering.
+- Lane 2: done (see its table and [[file:email-design.org][Designed email]]). Rendering is checked
+  structurally; a render farm of real mail clients is not built. Blocks
+  are edited as JSON; a made-up claim in words (not a number or "free")
+  is not detected; a changed shared section reaches templates on their
+  next save.
 - Lane 3: done (see its table and [[file:deliverability.org][Deliverability]]). Only the
   =generic= feed adapter ships; a named provider's shape is a new adapter.
 - Lane 4: done (see its table, [[file:journeys.org][Journeys]] and
-  [[file:marketing.org][Marketing]]). Text steps arrived with lane 6.
+  [[file:marketing.org][Marketing]]). Text steps arrived with lane 6. Journeys keep the
+  sequence's own zone and window rather than each recipient's local time.
 - Lane 5: done (see its table, [[file:pipelines.org][Sales pipelines]], [[file:leads.org][Leads]] and
   [[file:mail.org][Mail]]). SMTP token sign-in waits on mail-glib.
 - Lane 6: done (see its table and [[file:telephony.org][Phone calls and text messages]]).
   The adapters' field names wait on confirmation against live accounts.
 - Lane 7: done (see its table and [[file:inbox.org][Conversations: one inbox]]).
-- Lane 8: done (see its table and [[file:ai-messages.org][AI on messages]]). Settings
-  live on the organization and the rules until lane 9.
-- Lane 9: defaults; one settings screen; one settings API with audit.
+- Lane 8: done (see its table and [[file:ai-messages.org][AI on messages]]).
+- Lane 9: done (see its table and [[file:settings.org][Settings]]). The settings stay where
+  each feature kept them; the registry stores nothing.
+
+Still partial after the epic, honestly: real-client rendering of designed
+email (structural checks only), SMTP sign-in by token (XOAUTH2 waits on
+mail-glib; IMAP has it), and the 3CX and VoIP.ms field names, which wait
+on confirmation against live accounts.

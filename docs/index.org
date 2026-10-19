@@ -239,3 +239,5 @@ screen's ordinary sync-and-import test.
 - [[file:inbox.org][Conversations: one inbox]] — every customer's email, texts, calls, voicemail and web chat in one thread per contact, with an owner, open/waiting/closed, replies in their channel and an embeddable web chat.
 
 - [[file:ai-messages.org][AI on messages]] — drafted replies, intent and details from the message only, routing, after-hours and missed-call auto-replies, call summaries, grounded follow-ups, approval, and one switch; every send through consent and quiet hours.
+
+- [[file:settings.org][Settings: marketing, sales, phone and AI]] — every workflow setting with its default and limit, the settings screen, and changing one from chat, the API or venturectl through one audited path.
