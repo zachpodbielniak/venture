@@ -118,6 +118,21 @@ VentureMailMessage *venture_dunning_service_remind(VentureDunningService *self, 
 	const VentureActor *actor, GError **error);
 
 /**
+ * venture_dunning_service_hold_reason:
+ * @self: the service
+ * @invoice: an invoice
+ * @at: the day judged
+ *
+ * Whether a promise to pay or a payment plan holds the invoice on @at: its
+ * own or its customer's reminder pause, or a held, disputed or promised
+ * collection case. Late-fee tiers that skip while a promise is active ask
+ * this, so the two modules agree on what a promise is.
+ *
+ * Returns: (nullable): "paused", "collection_case", or %NULL
+ */
+const gchar *venture_dunning_service_hold_reason(VentureDunningService *self, VentureEntity *invoice, GDateTime *at);
+
+/**
  * venture_dunning_check_write: (skip)
  * @database: the database
  * @record: record being written or removed

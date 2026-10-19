@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "latefees/venture-late-fee-private.h"
 #include <string.h>
 
 /*
@@ -331,6 +332,9 @@ typedef struct
 	JsonArray *failed_invoices;
 	JsonArray *warnings;
 	JsonArray *plan;
+	/* The late-fee stage of the same sweep, when late fees are on. */
+	gboolean late_fees;
+	VentureLateFeeSweepTally late;
 } Sweep;
 
 static void
@@ -636,6 +640,16 @@ hold_reason(VentureDunningService *self, Dossier *d, GDateTime *at, GDateTime **
 	return NULL;
 }
 
+const gchar *
+venture_dunning_service_hold_reason(VentureDunningService *self, VentureEntity *invoice, GDateTime *at)
+{
+	g_auto(Dossier) d;
+	g_return_val_if_fail(VENTURE_IS_DUNNING_SERVICE(self), NULL);
+	if (invoice == NULL || at == NULL || !dossier_open(self, NULL, &d, invoice, at, FALSE, NULL))
+		return NULL;
+	return hold_reason(self, &d, at, NULL);
+}
+
 static gboolean
 superseded_like(const gchar *reason)
 {
@@ -837,6 +851,52 @@ escalation_owner(VentureDunningService *self, Dossier *d)
 	return g_strdup("");
 }
 
+/* The reminder's own day: the due date plus the days it is judged at. */
+static GDateTime *
+dossier_day(Dossier *d)
+{
+	return d->due != NULL ? day_after(d->due, d->days) : venture_time_now();
+}
+
+/* The advance notice of the next late fee, or "" while late fees are off,
+ * paused or nothing follows; never fee wording otherwise. */
+static gchar *
+late_fee_notice(VentureDunningService *self, Dossier *d)
+{
+	g_autoptr(GDateTime) day = NULL;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "late_fee") == G_TYPE_INVALID)
+		return g_strdup("");
+	day = dossier_day(d);
+	return venture_late_fee_service_notice_text(venture_late_fee_service_get(self->database), d->invoice, day);
+}
+
+/* A template written before late fees existed has no {late_fee_notice};
+ * the notice is appended so that no fee follows a reminder that did not
+ * state it. */
+static void
+append_notice(VentureMailMessage *message, VentureEntity *template, const gchar *notice)
+{
+	g_autofree gchar *template_text = NULL;
+	g_autofree gchar *template_html = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *html = NULL;
+	if (venture_string_is_empty(notice))
+		return;
+	g_object_get(template, "text-body", &template_text, "html-body", &template_html, NULL);
+	g_object_get(message, "text-body", &body, "html-body", &html, NULL);
+	if (body != NULL && (template_text == NULL || strstr(template_text, "{late_fee_notice}") == NULL))
+	{
+		g_autofree gchar *next = g_strdup_printf("%s\n\n%s", body, notice);
+		g_object_set(message, "text-body", next, NULL);
+	}
+	if (!venture_string_is_empty(html) && (template_html == NULL || strstr(template_html, "{late_fee_notice}") == NULL))
+	{
+		g_autofree gchar *escaped = g_markup_escape_text(notice, -1);
+		g_autofree gchar *next = g_strdup_printf("%s<p>%s</p>", html, escaped);
+		g_object_set(message, "html-body", next, NULL);
+	}
+}
+
 /* The values a reminder template may name. Only public invoice fields
  * enter, plus the customer, the balance and the pay link; the link is a
  * bearer credential and is only ever placed in the private bodies. */
@@ -867,6 +927,10 @@ render_values(VentureDunningService *self, Dossier *d, const Step *step, guint s
 	json_object_set_int_member(values, "days_until_due", d->days < 0 ? -d->days : 0);
 	json_object_set_int_member(values, "step", step_no);
 	json_object_set_int_member(values, "offset_days", step->offset);
+	{
+		g_autofree gchar *notice = late_fee_notice(self, d);
+		json_object_set_string_member(values, "late_fee_notice", notice);
+	}
 	return values;
 }
 
@@ -879,8 +943,10 @@ render_message(VentureDunningService *self, Dossier *d, VentureEntity *template,
 {
 	g_autoptr(JsonObject) public_values = render_values(self, d, step, step_no, private_link ? NULL : pay_link);
 	g_autoptr(VentureMailMessage) message = venture_mail_template_render_values(VENTURE_MAIL_TEMPLATE(template), public_values, error);
+	const gchar *notice = json_object_get_string_member_with_default(public_values, "late_fee_notice", "");
 	if (message == NULL)
 		return NULL;
+	append_notice(message, template, notice);
 	if (private_link && pay_link != NULL)
 	{
 		g_autoptr(JsonObject) private_values = render_values(self, d, step, step_no, pay_link);
@@ -889,6 +955,7 @@ render_message(VentureDunningService *self, Dossier *d, VentureEntity *template,
 		g_autofree gchar *private_html = NULL;
 		if (private_message == NULL)
 			return NULL;
+		append_notice(private_message, template, notice);
 		g_object_get(private_message, "text-body", &private_text, "html-body", &private_html, NULL);
 		g_object_set(message, "private-text-body", private_text,
 			"private-html-body", venture_string_is_empty(private_html) ? NULL : private_html, NULL);
@@ -999,6 +1066,13 @@ send_step(VentureDunningService *self, Dossier *d, GDateTime *now, guint step_no
 	g_object_set(event, "rendered-balance", (gpointer)dossier_balance(self, d), NULL);
 	if (!save_event(self, event, actor, error))
 		return FALSE;
+	/* The reminder stated the next fee; it may follow once this is sent. */
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "late_fee") != G_TYPE_INVALID)
+	{
+		g_autoptr(GDateTime) day = dossier_day(d);
+		if (!venture_late_fee_service_record_notice(venture_late_fee_service_get(self->database), d->invoice, event, day, actor, error))
+			return FALSE;
+	}
 	g_object_set(message, "to", recipient, "idempotency-key", key,
 		"related-type", "dunning_event", "related-id", venture_entity_get_id(event), NULL);
 	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
@@ -1237,6 +1311,22 @@ sweep_invoice(VentureDunningService *self, Sweep *sweep, VentureEntity *invoice,
 	g_autoptr(GArray) pending = NULL;
 	g_autoptr(GArray) planned = NULL;
 	const gchar *reason;
+	if (sweep->late_fees)
+	{
+		/* Before the reminder, so a reminder sent today shows a fee added
+		 * today; its own transaction, so a refused fee never costs the
+		 * reminder. */
+		g_autoptr(GError) late_error = NULL;
+		if (venture_late_fee_service_sweep_invoice(venture_late_fee_service_get(self->database), invoice, sweep->as_of,
+			sweep->dry_run, sweep->plan, &sweep->late, actor, &late_error))
+			*touched = TRUE;
+		else if (late_error != NULL)
+		{
+			sweep->late.failed++;
+			sweep_note(sweep, TRUE, "invoice #%" G_GINT64_FORMAT " late fees could not be evaluated: %s",
+				venture_entity_get_id(invoice), late_error->message);
+		}
+	}
 	if (!dossier_open(self, sweep, &d, invoice, sweep->as_of, TRUE, &error))
 		goto fail;
 	if (d.policy == NULL || d.due == NULL || d.steps == NULL || d.steps->len == 0)
@@ -1368,6 +1458,15 @@ venture_dunning_service_sweep_detailed(VentureDunningService *self, gint64 organ
 			VENTURE_DUNNING_STALE_DAYS);
 	if (!earliest_offset(self, &sweep, &any, &earliest, error))
 		return NULL;
+	sweep.late_fees = venture_entity_registry_lookup(venture_entity_registry_get_default(), "late_fee") != G_TYPE_INVALID &&
+		venture_late_fee_service_sweep_needed(venture_late_fee_service_get(self->database), organization_id);
+	/* A late fee is due from the day after the due date, whatever the
+	 * reminder policy's first step is. */
+	if (sweep.late_fees)
+	{
+		earliest = any ? MIN(earliest, 1) : 1;
+		any = TRUE;
+	}
 	if (any)
 	{
 		/* Only invoices due on or before (as_of - earliest offset) can have a
@@ -1396,6 +1495,9 @@ venture_dunning_service_sweep_detailed(VentureDunningService *self, gint64 organ
 			}
 		}
 	}
+	if (sweep.late_fees && !venture_late_fee_service_sweep_settled(venture_late_fee_service_get(self->database), organization_id,
+		sweep.as_of, dry_run, sweep.plan, &sweep.late, actor, error))
+		return NULL;
 	as_of_text = venture_time_to_string(sweep.as_of);
 	answer = json_object_new();
 	json_object_set_int_member(answer, "organization_id", organization_id);
@@ -1408,6 +1510,17 @@ venture_dunning_service_sweep_detailed(VentureDunningService *self, gint64 organ
 	json_object_set_int_member(answer, "failed", sweep.failed);
 	json_object_set_array_member(answer, "failed_invoice_ids", json_array_ref(sweep.failed_invoices));
 	json_object_set_array_member(answer, "warnings", json_array_ref(sweep.warnings));
+	{
+		JsonObject *late = json_object_new();
+		json_object_set_boolean_member(late, "enabled", sweep.late_fees);
+		json_object_set_int_member(late, "proposed", sweep.late.proposed);
+		json_object_set_int_member(late, "applied", sweep.late.applied);
+		json_object_set_int_member(late, "awaiting_notice", sweep.late.awaiting_notice);
+		json_object_set_int_member(late, "capped", sweep.late.capped);
+		json_object_set_int_member(late, "cancelled", sweep.late.cancelled);
+		json_object_set_int_member(late, "failed", sweep.late.failed);
+		json_object_set_object_member(answer, "late_fees", late);
+	}
 	if (dry_run)
 		json_object_set_array_member(answer, "plan", json_array_ref(sweep.plan));
 	node = json_node_new(JSON_NODE_OBJECT);
