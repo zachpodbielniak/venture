@@ -8,6 +8,7 @@
  * advance notice.
  */
 #include <venture.h>
+#include <libsoup/soup.h>
 #include <string.h>
 #include "venture-test-util.h"
 
@@ -525,6 +526,14 @@ test_waive(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
 	g_assert_cmpuint(count_status(f, f->invoice, "waived", NULL), ==, 1);
+	/* A waiver cancels the fee; it is not a payment. The invoice reads
+	 * exactly as it did before the fee: issued, unpaid. */
+	{
+		g_autoptr(VentureEntity) invoice = reload(f, "invoice", f->invoice);
+		gint status = 0;
+		g_object_get(invoice, "status", &status, NULL);
+		g_assert_cmpint(status, ==, VENTURE_INVOICE_STATUS_SENT);
+	}
 	g_clear_object(&fee);
 	fee = first_fee(f, f->invoice, "waived");
 	g_assert_false(venture_late_fee_service_waive(venture_late_fee_service_get(f->db), fee, "again", NULL, NULL, NULL, &error));
@@ -1156,6 +1165,101 @@ test_cap_with_announced_fee(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(balance(f, f->invoice), ==, 110000);
 }
 
+/* --- The invoice page ----------------------------------------------------- */
+
+typedef struct
+{
+	gboolean done;
+	GBytes *bytes;
+	GError *error;
+} PageResult;
+
+static void
+page_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	PageResult *r = data;
+	r->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &r->error);
+	r->done = TRUE;
+}
+
+static gchar *
+page(VentureWebServer *server, const gchar *path)
+{
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
+	PageResult r;
+	gchar *body;
+	memset(&r, 0, sizeof(r));
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, page_done, &r);
+	while (!r.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(r.error);
+	g_assert_cmpuint(soup_message_get_status(message), ==, 200);
+	body = g_strndup(g_bytes_get_data(r.bytes, NULL), g_bytes_get_size(r.bytes));
+	g_bytes_unref(r.bytes);
+	return body;
+}
+
+/* The invoice's fee panel says which pause holds, at which scope and until
+ * when, in one line; it offers only the control that means something; and
+ * an applied fee's waive form folds away so a phone never scrolls sideways
+ * to reach it. */
+static void
+test_invoice_panel(Fixture *f, gconstpointer unused)
+{
+	VentureLateFeeService *service;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) until = venture_time_from_string("2099-11-15", NULL);
+	g_autofree gchar *state_dir = g_dir_make_tmp("venture-late-fees-XXXXXX", NULL);
+	g_autofree gchar *path = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, f->invoice);
+	g_autofree gchar *body = NULL;
+	VentureWebServer *server;
+	(void)unused;
+	enable(f, schedule(f, "Residential", FLAT_15, 14, NULL, NULL), TRUE);
+	days(f, 1, 15);
+	service = venture_late_fee_service_get(f->db);
+	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)0, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	body = page(server, path);
+	g_assert_nonnull(strstr(body, "<details class=\"late-fee-waive\""));
+	g_assert_nonnull(strstr(body, "name=\"scope\" value=\"invoice\""));
+	g_clear_pointer(&body, g_free);
+	/* The customer is paused: the panel names that scope and its end, and
+	 * offers no invoice pause beneath it. */
+	g_assert_true(venture_late_fee_service_pause(service, "company", f->company, until, "payment plan", NULL, &error));
+	g_assert_no_error(error);
+	body = page(server, path);
+	g_assert_nonnull(strstr(body, "<p class=\"notice\" role=\"status\"><span><strong>Late fees paused for this customer until 2099-11-15</strong>"));
+	g_assert_null(strstr(body, "name=\"scope\" value=\"invoice\""));
+	g_clear_pointer(&body, g_free);
+	g_assert_true(venture_late_fee_service_resume(service, "company", f->company, NULL, &error));
+	g_assert_no_error(error);
+	/* The organization, indefinitely. */
+	g_assert_true(venture_late_fee_service_pause(service, "organization", f->org, NULL, "year end", NULL, &error));
+	g_assert_no_error(error);
+	body = page(server, path);
+	g_assert_nonnull(strstr(body, "Late fees paused for the organization indefinitely"));
+	g_assert_null(strstr(body, "name=\"scope\" value=\"invoice\""));
+	g_clear_pointer(&body, g_free);
+	g_assert_true(venture_late_fee_service_resume(service, "organization", f->org, NULL, &error));
+	g_assert_no_error(error);
+	/* The invoice itself: the one control is to resume it. */
+	g_assert_true(venture_late_fee_service_pause(service, "invoice", f->invoice, NULL, "disputed", NULL, &error));
+	g_assert_no_error(error);
+	body = page(server, path);
+	g_assert_nonnull(strstr(body, "Late fees paused for this invoice indefinitely"));
+	g_assert_nonnull(strstr(body, "Resume late fees"));
+	venture_web_server_stop(server);
+	g_object_unref(server);
+	venture_test_remove_tree(state_dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1182,6 +1286,7 @@ main(int argc, char **argv)
 	ADD("/late-fees/history-guarded", test_history_guarded);
 	ADD("/late-fees/actions", test_actions);
 	ADD("/late-fees/cap-with-announced-fee", test_cap_with_announced_fee);
+	ADD("/late-fees/invoice-panel", test_invoice_panel);
 #undef ADD
 	return g_test_run();
 }
