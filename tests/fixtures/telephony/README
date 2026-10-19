@@ -1,0 +1,13 @@
+Recorded protocol fixtures for the telephony connectors (docs/telephony.org).
+
+They are written from the providers' public API documentation, not captured
+from a live account, and use only fictional numbers (555-01xx) and
+example.com hosts. Field names that still need confirming against a live
+account are listed in docs/telephony.org, "What is from public documentation".
+
+3cx-*.json        3CX call control API (token, makecall) and the CRM
+                  integration's call journal posted to Venture's webhook.
+voipms-*.json     VoIP.ms REST API answers (sendSMS, sendMMS, an error).
+voipms-*.query    VoIP.ms SMS/MMS URL callback query strings, as the
+                  callback URL placeholders fill them in. {MEDIA_ORIGIN}
+                  is replaced by the test's fake media server.
