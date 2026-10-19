@@ -1197,7 +1197,7 @@ test_web_navigation_links_all_resolve(
 		"/dashboards", "/overview", "/sprints", "/runs", "/webhooks", "/federation", "/deals",
 		"/harness", "/assistant", "/accounting", "/payables", "/close", "/capture",
 		"/invoices/compose", "/quotes/compose", "/bankfeed", "/setup", "/purchasing", "/sales-orders", "/budgets", "/equity", "/group", "/claims", "/payroll", "/tax-filings",
-		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
+		"/money/calendar", "/late-fees", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting",
 		"/arbitrage/recipe-lists", "/arbitrage/plan", "/arbitrage/calc",
 		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", "/roadmap", NULL
@@ -1324,7 +1324,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const money_in[] = {
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-		"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
+		"/e/refund", "/e/collection_case", "/late-fees", "/e/customer_subscription", "/e/plan",
 		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 		"/e/listing", "/e/price_observation", NULL
 	};
