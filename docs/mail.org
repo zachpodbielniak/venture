@@ -589,12 +589,81 @@ injectable connect and fetch errors, sizes, internal dates and UIDVALIDITY.
 GMime, already a server dependency through mail-glib, parses the fetched
 bytes.
 
-OAuth (XOAUTH2 for Google and Microsoft) is not implemented. A future
-provider must refresh tokens through the same account-bound encrypted
-credential service and preserve completion-time revocation checks; it must
-not reintroduce environment credentials. The current IMAP transport uses
-passwords or provider app tokens. CalDAV uses its separate typed client and
-the shared credential lifecycle documented in [[file:connectors.org][mailbox and calendar connectors]].
+Token sign-in (XOAUTH2) is described next. CalDAV uses its separate typed
+client and the shared credential lifecycle documented in
+[[file:connectors.org][mailbox and calendar connectors]].
+
+** Token sign-in
+
+A mailbox can sign in with OAuth 2.0 tokens instead of a password. Venture
+ships no provider and no vendor credentials: the operator describes one as
+a =mail_oauth_provider= record (name, authorize URL, token URL, scopes,
+active) in the mailbox's organization, then sets its client ID and secret
+on the provider's page (=POST /mail_oauth_providers/:id/client=,
+organization owner or admin). The secret is an encrypted integration
+credential, never a field, and is never shown again. Both addresses must be
+HTTPS; plain HTTP is accepted only to 127.0.0.1 or ::1 with
+=connectors.allow_plaintext_loopback= (the tests' fake server). The scopes
+are sent as written, so include whatever the provider needs for IMAP and
+for a refresh token.
+
+On a mail account, choose the provider in =oauth_provider_id= and press
+*Sign in with ...* on the account's page (=/mail_accounts/:id/oauth/start=,
+the same people who may manage its connector settings). The browser goes
+to the provider with the authorization-code flow and PKCE (S256): a
+one-time =state= and a fresh verifier, held in memory for 10 minutes, at
+most 256 waiting at once. The provider sends the browser back to
+=<server.base_url>/mail/oauth/callback=, which must be registered with the
+provider. Only the person who started the sign-in can finish it; a state
+is used once, and a restart forgets waiting ones (start again).
+
+The code is exchanged at the token URL (client secret in the body,
+redirects refused, at most 15 seconds, at most 64 KiB of reply). The access
+token, refresh token and expiry become the account's connector credential
+in place of the password, so rotation, disconnect, private ownership and
+in-flight revocation checks are the connector's. Before each sync a token
+within 2 minutes of expiry (or with no expiry given: one hour) is refreshed;
+a rotated refresh token replaces the old one. The IMAP session then
+authenticates with =AUTHENTICATE XOAUTH2= (SASL-IR when offered, the
+refusal continuation answered with an empty line); a server that does not
+advertise =AUTH=XOAUTH2= is refused without sending anything.
+
+A refused exchange or refresh (revoked, expired, wrong client) says "sign
+in again" and names at most the OAuth error code, never the provider's
+description. In a sync it is a refused login: the sync stops, backs off,
+and five in a row switch the account off as for a wrong password. An
+unreachable provider is a network failure and only backs off.
+
+Limits: SMTP is not signed in with tokens. Replies and all other outbound
+mail go through the organization's outbox relay as before; mail-glib's
+SMTP transport offers PLAIN and LOGIN only.
+
+=test-mail-oauth= drives PKCE, the one-time and per-person state, the
+endpoint policy, refresh with rotation, a revoked grant and a sync that
+refreshes and signs in with XOAUTH2, against a fake OAuth server on
+loopback in its own thread and the fake IMAP client. =test-mail-sync=
+drives XOAUTH2 against the scripted IMAP server.
+
+** Replying from the timeline
+
+A contact's page lists its mail newest first (up to 20 messages) with
+what came in and what went out. Under a message the sync filed there is a
+*Reply* composer; the newest one is open. Sending it
+(=POST /interactions/:id/reply=, or =POST /api/v1/interactions/:id/reply=
+with ={"body": "..."}=, editor role) queues an ordinary outbox message to
+the sender's address with "Re: " before the subject (once),
+=In-Reply-To= naming the message and =References= naming the thread root
+and the message, so the customer's mail client threads it. Bodies are
+plain text, up to 64 KiB. A note, a call or a message Venture sent itself
+cannot be answered this way.
+
+Nothing is sent by the request: the delivery sweep sends it, and once the
+relay accepts it records it on the contact's timeline as outbound, like
+any other send. The SMTP transport refuses a threading header that is not
+a list of =<id>= tokens. =test-mail-reply= covers the headers, the
+timeline entry, the refusals, the wire headers and the page. Migration
+=000926_sales_mail_sign_in= checks the provider table, the account field
+and the two message fields.
 
 ** Upgrades and tests
 

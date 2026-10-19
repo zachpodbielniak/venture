@@ -61,7 +61,11 @@ in the repository lists today's.
 | `POST /invoices/:id/send`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID` |
 | `POST /quotes/:id/:action` (send, accept, decline, revise, start-subscription) | `quote ACTION ID` |
 | `POST /deals/:id/move`, `POST /deals/:id/quote` | `deal move\|quote` |
-| `POST /leads/:id/:action` (convert, reassign, reroute, rescore) | `lead ...`, `leads ...` |
+| `POST /deals/:id/move` also takes `version` (the board's drag; stale is 409); `GET /deals/board.js` | -- |
+| `POST /leads/:id/:action` (convert, reassign, reroute, rescore, ai_score) | `lead ...`, `leads ...` |
+| `POST /lead_score_proposals/:id/accept\|dismiss` (AI score proposal; docs/leads.org) | -- |
+| `GET /mail_accounts/:id/oauth/start`, `GET /mail/oauth/callback`, `POST /mail_oauth_providers/:id/client` (token mailbox sign-in) | -- |
+| `POST /interactions/:id/reply` (`{"body"}`; threaded reply through the outbox) | -- |
 | `POST /billing/start`, `POST /billing/renew-sweep\|dunning-sweep`, `POST /customer_subscriptions/:id/:action` (renew, change, change-seats, cancel, pause, resume, mark-payment-failed, recover); metered use is `POST /usage_record` | `billing ...` |
 | `POST /vendor_bill/:id/:action` (approve, pay, void), `POST /payables/pay` | `bill ...`, `bill pay-bulk` |
 | `POST /purchase_order/:id/:action`, `POST /sales_order/:id/:action` | `purchase ...`, `sales-order ...` |

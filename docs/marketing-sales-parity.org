@@ -119,13 +119,13 @@ existing =mail_template= and is rendered by its renderer; see
 
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Drag-and-drop pipeline board | partial | =venture_web_deals_board()= groups cards by stage with a stage selector and Move button (=src/pipelines/venture-pipeline-web.inc=) | Drag and drop through =venture_deal_service_move_stage()= |
+| Drag-and-drop pipeline board | have | Cards drag between stage columns through the move route and =venture_deal_service_move_stage()= at the drawn version; stale drops refused; columns scroll on a phone; Move stays as the keyboard path (=data/static/deal-board.js=, =src/pipelines/venture-pipeline-web.inc=, [[file:pipelines.org][The board]]) | — |
 | Stage probabilities and forecasts | have | Stage probability and =forecast= report with =open_weighted= and committed (=src/pipelines/venture-pipeline-reports.c=) | — |
-| Lead scoring, rules and AI | partial | Rule formula and score history (=src/leads/venture-lead-service.c=); the only lead AI tool converts leads (=src/leads/venture-lead-ai.inc=) | AI score proposal with its reasons, beside the rules |
+| Lead scoring, rules and AI | have | Rule formula and score history (=src/leads/venture-lead-service.c=); AI score proposal with grounded reasons beside it, accepted or dismissed by a person, organization switch, audited (=src/leads/venture-lead-ai-score.c=, [[file:leads.org][AI score proposals]]) | — |
 | Round-robin assignment | have | =VENTURE_LEAD_ROUTING_ROUND_ROBIN= with a persisted cursor (=src/leads/venture-lead-routing.c=) | — |
 | Meeting booking links | have | Public =/book/<slug>= pages and reservations (=src/calendar/venture-booking-service.c=, =src/calendar/venture-calendar-web.inc=) | — |
 | Products on deals flowing to quotes | have | =deal_line= and =venture_deal_service_create_quote()= (=src/pipelines/venture-deal-service.h=) | — |
-| Two-way email sync onto the contact timeline | partial | IMAP inbound sync onto interactions, sent mail recorded as outbound with Sent-folder dedupe (=src/mail/venture-mail-sync-service.c=, =docs/mail.org= Outbound on the timeline); password IMAP only, token sign-in noted as not implemented (=src/mail/venture-imap-client.c=) | Token-based mailbox sign-in and replying from the timeline |
+| Two-way email sync onto the contact timeline | have | IMAP inbound sync and outbound recording (=src/mail/venture-mail-sync-service.c=); operator-configured OAuth 2.0 + PKCE sign-in with refresh and IMAP XOAUTH2 (=src/mail/venture-mail-oauth.c=); threaded replies from the contact timeline through the outbox (=src/mail/venture-mail-reply.c=, [[file:mail.org][Token sign-in, Replying from the timeline]]). SMTP stays the organization relay, without XOAUTH2 | — |
 
 * Lane 6 — phone and text
 
@@ -182,8 +182,8 @@ Only the =partial= and =missing= rows above.
   =generic= feed adapter ships; a named provider's shape is a new adapter.
 - Lane 4: done (see its table, [[file:journeys.org][Journeys]] and
   [[file:marketing.org][Marketing]]). Text steps wait for lane 6's channel.
-- Lane 5: drag and drop on the board; AI lead scoring; token mailbox
-  sign-in and replying from the timeline.
+- Lane 5: done (see its table, [[file:pipelines.org][Sales pipelines]], [[file:leads.org][Leads]] and
+  [[file:mail.org][Mail]]). SMTP token sign-in waits on mail-glib.
 - Lane 6: telephony connector with 3CX and VoIP.ms; click-to-call; call
   logging from the PBX; inbound match and missed calls; two-way SMS;
   inbound webhook; STOP/HELP, consent and quiet hours; real text steps.
