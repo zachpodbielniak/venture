@@ -629,7 +629,8 @@ static GType (*const marketing_types[]) (void) = {
 	venture_marketing_list_get_type, venture_marketing_member_get_type,
 	venture_marketing_consent_get_type, venture_marketing_send_get_type,
 	venture_marketing_recipient_get_type, venture_marketing_event_get_type,
-	venture_marketing_sending_domain_get_type, NULL
+	venture_marketing_sending_domain_get_type, venture_marketing_topic_get_type,
+	venture_marketing_preference_get_type, NULL
 };
 static const gchar *const marketing_reports[] = { "marketing_performance", NULL };
 static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
@@ -740,7 +741,7 @@ static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
 	venture_suppression_get_type, venture_sequence_link_get_type,
-	venture_sequence_tracking_event_get_type, NULL
+	venture_sequence_tracking_event_get_type, venture_sequence_trigger_get_type, NULL
 };
 static const gchar *const sequence_requires[] = { "crm", NULL };
 static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", "sequence_engagement", NULL };

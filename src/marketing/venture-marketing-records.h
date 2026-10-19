@@ -18,6 +18,20 @@ VENTURE_DECLARE_ENTITY(VentureMarketingRecipient, venture_marketing_recipient, M
 VENTURE_DECLARE_ENTITY(VentureMarketingEvent, venture_marketing_event, MARKETING_EVENT)
 #define VENTURE_TYPE_MARKETING_SENDING_DOMAIN (venture_marketing_sending_domain_get_type())
 VENTURE_DECLARE_ENTITY(VentureMarketingSendingDomain, venture_marketing_sending_domain, MARKETING_SENDING_DOMAIN)
+#define VENTURE_TYPE_MARKETING_TOPIC (venture_marketing_topic_get_type())
+VENTURE_DECLARE_ENTITY(VentureMarketingTopic, venture_marketing_topic, MARKETING_TOPIC)
+#define VENTURE_TYPE_MARKETING_PREFERENCE (venture_marketing_preference_get_type())
+VENTURE_DECLARE_ENTITY(VentureMarketingPreference, venture_marketing_preference, MARKETING_PREFERENCE)
+/**
+ * venture_marketing_winner_metric_get_type:
+ * Returns: the opens/clicks A/B winner rule enumeration
+ */
+GType venture_marketing_winner_metric_get_type(void) G_GNUC_CONST;
+/**
+ * venture_marketing_frequency_get_type:
+ * Returns: the any/weekly/monthly preference enumeration
+ */
+GType venture_marketing_frequency_get_type(void) G_GNUC_CONST;
 /**
  * venture_marketing_list_mode_get_type:
  * Returns: the static/segment audience mode enumeration

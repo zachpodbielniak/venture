@@ -27,6 +27,25 @@ GType venture_marketing_target_get_type(void)
 	}
 	return type;
 }
+GType venture_marketing_winner_metric_get_type(void)
+{
+	static gsize type = 0;
+	if (g_once_init_enter(&type)) {
+		static const GEnumValue values[] = { { 0,"MARKETING_WINNER_OPENS","opens" }, { 1,"MARKETING_WINNER_CLICKS","clicks" }, { 0,NULL,NULL } };
+		g_once_init_leave(&type, g_enum_register_static("VentureMarketingWinnerMetric", values));
+	}
+	return type;
+}
+GType venture_marketing_frequency_get_type(void)
+{
+	static gsize type = 0;
+	if (g_once_init_enter(&type)) {
+		static const GEnumValue values[] = { { 0,"MARKETING_FREQUENCY_ANY","any" }, { 1,"MARKETING_FREQUENCY_WEEKLY","weekly" },
+			{ 2,"MARKETING_FREQUENCY_MONTHLY","monthly" }, { 0,NULL,NULL } };
+		g_once_init_leave(&type, g_enum_register_static("VentureMarketingFrequency", values));
+	}
+	return type;
+}
 GType venture_marketing_send_state_get_type(void)
 {
 	static gsize type = 0;
@@ -68,7 +87,24 @@ static const VentureFieldDecl send_fields[] = {
 	DATE("previewed-at","Previewed at"), DATE("approved-at","Approved at"), STR("approved-by","Approved by"),
 	INT("eligible-count","Eligible recipients"), INT("excluded-count","Excluded records"),
 	DATE("next-enqueue-at","Next enqueue"), DATE("next-delivery-at","Next submission"),
-	REF("last-mail-id","Latest outbox identity","mail_message"), STR("public-base","Frozen public origin")
+	REF("last-mail-id","Latest outbox identity","mail_message"), STR("public-base","Frozen public origin"),
+	/* Audiences and journeys (docs/marketing.org): the topic a person can
+	 * turn off, an A/B test of subject or content, a send at each
+	 * recipient's own local hour, and a resend to the first send's
+	 * non-openers. The winner and its stamps are the service's to write. */
+	VENTURE_FIELD_REF("topic-id","Topic","Recipients who turned this topic off on the preference page are left out","marketing_topic",VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("variant-subject","B subject","A/B test: the second subject; empty keeps the first",VENTURE_FIELD_KIND_STRING,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("variant-text-body","B text body","A/B test: the second text; empty keeps the first"),
+	VENTURE_FIELD_TEXT("variant-html-body","B HTML body","A/B test: the second HTML; empty keeps the first"),
+	VENTURE_FIELD("test-percent","Test share","A/B test: percent of the audience split between A and B before the rest get the winner; 0 is no test",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("winner-metric","Winner by","A/B test: opens or clicks, people not machines",venture_marketing_winner_metric_get_type,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("winner-wait-hours","Winner after","A/B test: hours after the test arms are queued before the winner is picked; 4 when empty",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE),
+	STR("winner","Winning arm"), DATE("winner-at","Winner picked at"), DATE("test-sent-at","Test arms queued at"),
+	VENTURE_FIELD("local-time","Send at local time","Each recipient gets it at the chosen hour in their own time zone",VENTURE_FIELD_KIND_BOOLEAN,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("local-hour","Local hour","0 to 23, in the recipient's time zone (the contact's, else the organization's, else UTC)",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("local-date","Local day","The day to send on; empty is the next time that hour comes round after approval",VENTURE_FIELD_KIND_DATE,VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("resend-of-id","Resend of","The audience is that send's recipients with no human open","marketing_send",VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("resend-after-days","Resend after","Days after the first message before someone counts as a non-opener",VENTURE_FIELD_KIND_INTEGER,VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingSend, venture_marketing_send, send_fields)
 static const VentureFieldDecl recipient_fields[] = {
@@ -90,7 +126,14 @@ static const VentureFieldDecl recipient_fields[] = {
 	 * "first open not judged a machine's", so rows from before the
 	 * heuristic keep counting as they always did. */
 	DATE("delivered-at","Provider reported delivered at"), DATE("replied-at","First reply at"),
-	DATE("complained-at","Complaint at"), DATE("machine-opened-at","First machine-judged open")
+	DATE("complained-at","Complaint at"), DATE("machine-opened-at","First machine-judged open"),
+	/* A/B arm (a, b or rest) and the second arm's frozen content, which a
+	 * rest recipient takes if B wins; and the local-time due moment. */
+	STR("variant","A/B arm"), STR("variant-subject","Rendered B subject"),
+	VENTURE_FIELD_TEXT("variant-text-body","Rendered B text",NULL), VENTURE_FIELD_TEXT("variant-html-body","Rendered B HTML",NULL),
+	SECRET("variant-private-text-body","Private B delivery text"), SECRET("variant-private-html-body","Private B delivery HTML"),
+	SECRET("variant-links","Original B tracking destinations"),
+	DATE("due-at","Due at")
 };
 VENTURE_DEFINE_ENTITY(VentureMarketingRecipient, venture_marketing_recipient, recipient_fields)
 static const VentureFieldDecl event_fields[] = {
@@ -112,3 +155,20 @@ static const VentureFieldDecl sending_domain_fields[] = {
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMarketingSendingDomain, venture_marketing_sending_domain, sending_domain_fields,
 	g_type_set_qdata(G_TYPE_FROM_CLASS(klass), g_quark_from_static_string("venture-access-manager-write"), GINT_TO_POINTER(1));)
+/* What a person can turn off on the preference page. */
+static const VentureFieldDecl topic_fields[] = {
+	VENTURE_FIELD_NAME("name","Name","What people choose, for example Product news"),
+	VENTURE_FIELD_TEXT("description","Description","Shown beside the choice on the preference page"),
+	VENTURE_FIELD("active","Offered","Shown on the preference page",VENTURE_FIELD_KIND_BOOLEAN,VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY(VentureMarketingTopic, venture_marketing_topic, topic_fields)
+/* One address's choices, written only from its preference page or by an
+ * operator recording what the person asked for. Absent is "everything". */
+static const VentureFieldDecl preference_fields[] = {
+	UNIQUE("email","Normalized address"),
+	STR("topics-off","Topics turned off"),
+	VENTURE_FIELD_ENUM("frequency","How often","At most one marketing message a week or a month; any is no limit",venture_marketing_frequency_get_type,VENTURE_COLUMN_FLAG_NONE),
+	DATE("chosen-at","Chosen at"),
+	VENTURE_FIELD_TEXT("source","Recorded from",NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureMarketingPreference, venture_marketing_preference, preference_fields)
