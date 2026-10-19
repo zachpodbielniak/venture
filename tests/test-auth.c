@@ -7167,6 +7167,44 @@ test_auth_telephony_routes(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/telephony", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 }
 
+/* Lane 7, one inbox: the conversation pages and API refuse the anonymous,
+ * a viewer can read but not assign, set a status or reply, the chat
+ * settings are an administrator's, and the public chat answers an unknown
+ * token with not found rather than a sign-in redirect. */
+static void
+test_auth_inbox_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/conversations"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/conversations/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/contacts/1/conversation"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/assign", NULL, "owner_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/status", NULL, "status=closed", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/reply", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/conversations"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/conversations/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/contacts/1/conversation"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/assign", NULL, "{\"owner_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/status", NULL, "{\"status\":\"closed\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/reply", NULL, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/webchat"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/inbox_conversation"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/inbox_chat_message"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webchat/not-a-real-token-not-a-real-token-xxxxxx"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webchat/c/00000000000000000000000000000000000000000000000000000000000000aa"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/webchat/c/00000000000000000000000000000000000000000000000000000000000000aa", NULL, "message=hi", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webchat.js"), ==, SOUP_STATUS_OK);
+
+	server_fixture_create_member(fixture, "inbox-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "inbox-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/conversations", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/assign", viewer, "{\"owner_id\":1}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/status", viewer, "{\"status\":\"closed\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/reply", viewer, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/webchat", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -7423,5 +7461,6 @@ main(
 	g_test_add("/auth/forms-resume-session-authority", ServerFixture, NULL, server_fixture_set_up, test_forms_resume_session_authority, server_fixture_tear_down);
 	g_test_add("/auth/sales-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_sales_routes, server_fixture_tear_down);
 	g_test_add("/auth/telephony-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_telephony_routes, server_fixture_tear_down);
+	g_test_add("/auth/inbox-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_inbox_routes, server_fixture_tear_down);
 	return g_test_run();
 }

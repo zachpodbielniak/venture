@@ -142,6 +142,7 @@
 #include "planner/venture-planner-records.h"
 #include "leads/venture-lead-ai-score-records.h"
 #include "telephony/venture-telephony-records.h"
+#include "inbox/venture-inbox-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -401,6 +402,10 @@
 #include "telephony/venture-telephony-connector.h"
 #include "telephony/venture-telephony-service.h"
 #include "marketing/venture-marketing-text.h"
+/* One inbox: the channel interface and the conversation service
+ * (docs/inbox.org). */
+#include "inbox/venture-inbox-source.h"
+#include "inbox/venture-inbox-service.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

@@ -350,6 +350,10 @@ venture_context_new(
 	 * sequences and campaigns (docs/telephony.org). */
 	venture_telephony_install(self);
 
+	/* One inbox: the write guards and the observer that opens and
+	 * reopens conversations (docs/inbox.org). */
+	venture_inbox_install(self);
+
 	return self;
 }
 

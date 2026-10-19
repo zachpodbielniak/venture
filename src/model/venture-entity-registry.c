@@ -972,6 +972,10 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_telephony_account_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_telephony_extension_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_text_message_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inbox_conversation_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inbox_chat_widget_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inbox_chat_session_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_inbox_chat_message_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

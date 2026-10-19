@@ -986,6 +986,15 @@ static GType (*const telephony_types[]) (void) = {
 	venture_telephony_account_get_type, venture_telephony_extension_get_type,
 	venture_text_message_get_type, NULL
 };
+/* One inbox (docs/inbox.org): conversations are kept per contact and a
+ * call is an activity; mail and texts are channels it reads when they are
+ * on, not requirements. */
+static const gchar *const inbox_requires[] = { "crm", "activities", NULL };
+static const gchar *const inbox_suggests[] = { "mail", "telephony", NULL };
+static GType (*const inbox_types[]) (void) = {
+	venture_inbox_conversation_get_type, venture_inbox_chat_widget_get_type,
+	venture_inbox_chat_session_get_type, venture_inbox_chat_message_get_type, NULL
+};
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1460,6 +1469,12 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Click-to-call through the phone system, every call logged on the "
 		"contact, and two-way texts with consent and quiet hours.",
 		telephony_requires, NULL, telephony_types, NULL, NULL, FALSE
+	},
+	{
+		"inbox", "Conversations",
+		"One inbox: every customer's email, texts, calls and web chat in one "
+		"thread per contact, with an owner, a status and replies.",
+		inbox_requires, inbox_suggests, inbox_types, NULL, NULL, FALSE
 	}
 };
 
