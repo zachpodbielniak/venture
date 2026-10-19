@@ -39,9 +39,14 @@ The existing provider verification/webhook path activates permission.
 
 * First charge
 
-=POST /api/v1/lightsite/billing/publish= accepts exactly =organization_id=.
-The trusted client calls it when the business first goes live. Its server receipt
-time becomes the immutable =go_live_at=. Retrying never restarts the clock.
+=POST /api/v1/lightsite/billing/publish= accepts =organization_id= and an
+optional =published_at=, the time the site actually went live. The trusted
+client calls it when the business first goes live. =published_at=, or the
+server receipt time without it, becomes the immutable =go_live_at=: the billing
+clock starts at actual publication, not when the request arrives. A time in
+the future or before enrollment is refused. Retrying never restarts the clock,
+whatever time a later request carries. The C API is
+=venture_lightsite_billing_publish()=.
 Publication is recorded even when the owner has not completed payment setup.
 
 =POST /api/v1/lightsite/billing/first-charge= accepts the same object. The client
@@ -191,6 +196,37 @@ compensation, expired setup, payment identity checks and manual-payment conflict
 =test-hosted-billing= covers the HTTP contract, authority, replay and frozen shares.
 These fixtures do not claim live-provider payment verification.
 
+* Money back
+
+=POST /api/v1/lightsite/billing/money-back= accepts exactly =organization_id=,
+with the same trusted service authority as cancellation. It keeps the
+thirty-day money-back promise: within thirty days of =go_live_at= it ends the
+subscription now and refunds, in full, every settled payment received against
+the subscription's invoices.
+
+- The decision, the immediate cancellation and the list of payments commit
+  together as the =money-back= receipt (=state: refunding=). Each card payment
+  is then refunded through the provider with the idempotency key
+  =hosted:<business>:money-back:<payment>=. An existing refund for the payment
+  intent is looked up first, so a retry after a lost provider answer finds it
+  instead of making a second one.
+- Each refund is booked once against the payment's receipt, with reference
+  =stripe:<refund id>=, and appears in the business's notifications as a
+  =refund=.
+- When every refund is made, a =money-back-done= receipt (=state: refunded=)
+  records the refund ids. A retry returns it verbatim. A failure part way
+  leaves =refunding=; the next request finishes the same refunds.
+- A payment that did not come through the card provider is listed with
+  =by_hand: true= for staff to return; it is not refunded automatically.
+- Before go-live nothing was charged, and after thirty days the promise has
+  ended: both are refused (=409=) and nothing changes. Later =publish= and
+  =first-charge= requests return the money-back receipt, and the business
+  cannot subscribe again.
+
+=test-stripe /stripe/hosted-money-back=, =/stripe/hosted-money-back-lost= and
+=/stripe/hosted-money-back-late= cover a settled monthly payment, a lost
+refund answer, and day thirty-one. All provider calls use fixtures.
+
 * Cancel an enrollment
 
 =POST /api/v1/lightsite/billing/cancel= accepts exactly =organization_id=.
@@ -214,7 +250,8 @@ Publication takes precedence over the unpaid trial, even within the first
 fourteen days. At or after the deadline, or after publication, the response
 instead reports =cancel_at_period_end= and =no_charge: false=. Existing
 monthly invoices and prepaid installment obligations remain; cancellation
-creates no automatic refund or credit. A published prepaid enrollment that
+creates no automatic refund or credit (money back, above, is the separate
+request that refunds within thirty days of go-live). A published prepaid enrollment that
 has not yet been invoiced stores =go_live_at= plus twenty-four months as the
 subscription's period end and reports that stored date. Prepaid terms still
 end after their original twenty-four months, with no renewal. Payment setup

@@ -11,6 +11,7 @@ venture_referral_reward_kind_get_type(void)
 			{ VENTURE_REFERRAL_REWARD_NONE, "VENTURE_REFERRAL_REWARD_NONE", "none" },
 			{ VENTURE_REFERRAL_REWARD_CREDIT, "VENTURE_REFERRAL_REWARD_CREDIT", "credit" },
 			{ VENTURE_REFERRAL_REWARD_FREE_PERIOD, "VENTURE_REFERRAL_REWARD_FREE_PERIOD", "free_period" },
+			{ VENTURE_REFERRAL_REWARD_FREE_MONTH, "VENTURE_REFERRAL_REWARD_FREE_MONTH", "free_month" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureReferralRewardKind", values);

@@ -468,6 +468,7 @@ stripe_event_exception(VentureStripeService *self, VentureStripeEvent *event,
 #include "venture-stripe-runner.inc"
 #include "venture-stripe-settlement.inc"
 #include "venture-stripe-prepay.inc"
+#include "venture-stripe-refund.inc"
 #include "venture-stripe-invoice-events.inc"
 #include "venture-stripe-events.inc"
 

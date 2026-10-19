@@ -56,6 +56,20 @@ VentureMoney *venture_billing_service_cancel_credit(VentureBillingService *self,
  */
 VentureMoney *venture_billing_service_grant_free_period(VentureBillingService *self, VentureCustomerSubscription *subscription, const VentureActor *actor, GError **error);
 /**
+ * venture_billing_service_grant_free_month:
+ * @self: the service
+ * @subscription: a trialing, active or past-due subscription that will renew
+ * @actor: (nullable): the audit actor
+ * @error: (out) (optional): error location
+ *
+ * As venture_billing_service_grant_free_period(), but credits one month's
+ * worth of the next renewal: all of a monthly charge, a twelfth of a yearly
+ * one, a third of a quarterly one. Joins the caller's transaction.
+ *
+ * Returns: (transfer full) (nullable): the amount credited, or %NULL on error
+ */
+VentureMoney *venture_billing_service_grant_free_month(VentureBillingService *self, VentureCustomerSubscription *subscription, const VentureActor *actor, GError **error);
+/**
  * venture_billing_service_move_customers:
  * @self: the service
  * @from: the price its customers are on, usually retired

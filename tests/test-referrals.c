@@ -457,6 +457,82 @@ test_free_period(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_money_get_amount(balance), ==, 0);
 }
 
+/* A subscription on a plan billed every interval ("month" or "year"). */
+static gint64
+subscribe_every(Fixture *f, VentureEntity *customer, const gchar *code, gint interval, const gchar *amount)
+{
+	g_autoptr(VentureEntity) plan = record(f, "plan");
+	g_autoptr(VentureEntity) price = record(f, "plan_price");
+	g_autoptr(VentureEntity) start = record(f, "billing_request");
+	g_object_set(plan, "name", code, "code", code, "active", TRUE, NULL);
+	save(f, plan);
+	g_object_set(price, "plan-id", venture_entity_get_id(plan), "currency", "USD", "active", TRUE, "interval", interval, NULL);
+	field(price, "amount", amount);
+	save(f, price);
+	g_object_set(start, "action", "start", "company-id", venture_entity_get_id(customer),
+		"plan-price-id", venture_entity_get_id(price), "seats", (gint64)1, NULL);
+	field(start, "at", "2026-01-01");
+	save(f, start);
+	return number(start, "subscription-id");
+}
+/* One business recorded by hand as referred by another, and won. */
+static VentureEntity *
+won_by_hand(Fixture *f, VentureEntity *referrer, VentureEntity *referred)
+{
+	VentureEntity *r = record(f, "referral");
+	g_object_set(r, "referrer-company-id", venture_entity_get_id(referrer), "company-id", venture_entity_get_id(referred),
+		"status", VENTURE_REFERRAL_WON, NULL);
+	save(f, r);
+	return r;
+}
+
+/* A free month credits one month of the referrer's own plan on their next
+ * bill: the whole next charge on a monthly plan, a twelfth of it on a yearly
+ * one. A business recorded by hand, then won, earns it, as a lead does. */
+static void
+test_free_month(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = program(f, VENTURE_REFERRAL_REWARD_FREE_MONTH, NULL);
+	g_autoptr(VentureEntity) yearly = company(f, "Yearly Co");
+	g_autoptr(VentureEntity) monthly = company(f, "Monthly Co");
+	g_autoptr(VentureEntity) first = company(f, "First Referred");
+	g_autoptr(VentureEntity) second = company(f, "Second Referred");
+	gint64 year_sub = subscribe_every(f, yearly, "annual", 1 /* year */, "360 USD");
+	gint64 month_sub = subscribe_every(f, monthly, "monthly", 0 /* month */, "45 USD");
+	g_autoptr(VentureEntity) a = won_by_hand(f, yearly, first);
+	g_autoptr(VentureEntity) b = won_by_hand(f, monthly, second);
+	g_autoptr(VentureEntity) ra = reward_of(f, a);
+	g_autoptr(VentureEntity) rb = reward_of(f, b);
+	g_autoptr(VentureEntity) sub = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_assert_cmpint(choice(ra, "status"), ==, VENTURE_REFERRAL_REWARD_APPLIED);
+	g_assert_cmpint(number(ra, "subscription-id"), ==, year_sub);
+	money_is(ra, "amount", 3000, "USD");
+	sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, year_sub, &error);
+	g_assert_no_error(error);
+	money_is(sub, "pending-adjustment", -3000, "USD");
+	g_assert_cmpint(choice(rb, "status"), ==, VENTURE_REFERRAL_REWARD_APPLIED);
+	g_assert_cmpint(number(rb, "subscription-id"), ==, month_sub);
+	money_is(rb, "amount", 4500, "USD");
+	(void)p;
+}
+
+/* A business recorded by hand is referred at most once, whoever sent it first. */
+static void
+test_referred_once(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = program(f, VENTURE_REFERRAL_REWARD_NONE, NULL);
+	g_autoptr(VentureEntity) acme = company(f, "Acme");
+	g_autoptr(VentureEntity) zeta = company(f, "Zeta");
+	g_autoptr(VentureEntity) bea = company(f, "Bea Works");
+	g_autoptr(VentureEntity) first = won_by_hand(f, acme, bea);
+	g_autoptr(VentureEntity) again = record(f, "referral");
+	(void)data; (void)p; (void)first;
+	g_object_set(again, "referrer-company-id", venture_entity_get_id(zeta), "company-id", venture_entity_get_id(bea), NULL);
+	refused(f, again, "already recorded as referred");
+}
+
 /* A reward that cannot be given does not undo winning the customer. It is
  * recorded with the reason, and given once the cause is fixed -- once. */
 static void
@@ -790,6 +866,8 @@ main(int argc, char **argv)
 	ADD("/referrals/status-follows", test_status_follows);
 	ADD("/referrals/credit-reward", test_credit_reward);
 	ADD("/referrals/free-period", test_free_period);
+	ADD("/referrals/free-month", test_free_month);
+	ADD("/referrals/referred-once", test_referred_once);
 	ADD("/referrals/reward-failure", test_reward_failure);
 	ADD("/referrals/capture", test_capture);
 	ADD("/referrals/form-and-relay", test_form_and_relay);

@@ -107,6 +107,41 @@ JsonNode *venture_lightsite_billing_setup(VentureContext *context, gint64 billin
 JsonNode *venture_lightsite_billing_first_charge(VentureContext *context, gint64 billing,
 	gint64 business, gboolean published, GError **error);
 /**
+ * venture_lightsite_billing_publish:
+ * @context: hosted application context
+ * @billing: configured billing organization
+ * @business: enrolled customer business
+ * @published_at: (nullable): when the site actually went live; %NULL is now
+ * @error: return location for an error
+ *
+ * venture_lightsite_billing_first_charge() as a publication notice, with the
+ * moment the site actually went live. That moment becomes go-live, the start
+ * of the billing clock, the first time only: a later notice never moves it.
+ * A moment in the future or before enrollment is refused.
+ *
+ * Returns: (transfer full) (nullable): go-live, invoice identity and current state
+ */
+JsonNode *venture_lightsite_billing_publish(VentureContext *context, gint64 billing,
+	gint64 business, GDateTime *published_at, GError **error);
+/**
+ * venture_lightsite_billing_money_back:
+ * @context: hosted application context
+ * @billing: configured billing organization
+ * @business: enrolled and published business
+ * @error: return location for an error
+ *
+ * The money-back promise. Within thirty days of go-live, ends the business's
+ * subscription now and refunds every settled hosted card payment in full
+ * through the provider, booking each refund against its receipt. The decision
+ * and its refunds are kept as one receipt: a retry, including one after a lost
+ * provider answer, finishes the same refunds and never makes another. After
+ * thirty days, or before go-live, it is refused and nothing changes.
+ *
+ * Returns: (transfer full) (nullable): the cancellation and the refunds made
+ */
+JsonNode *venture_lightsite_billing_money_back(VentureContext *context, gint64 billing,
+	gint64 business, GError **error);
+/**
  * venture_lightsite_billing_made_back:
  * @database: hosted database
  * @billing: configured billing organization

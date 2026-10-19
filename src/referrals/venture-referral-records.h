@@ -8,6 +8,7 @@ G_BEGIN_DECLS
  * @VENTURE_REFERRAL_REWARD_NONE: referrals are tracked and nothing is given
  * @VENTURE_REFERRAL_REWARD_CREDIT: a credit note of the program's amount
  * @VENTURE_REFERRAL_REWARD_FREE_PERIOD: the referrer's next subscription invoice is credited in full
+ * @VENTURE_REFERRAL_REWARD_FREE_MONTH: one month of the referrer's plan is credited on their next subscription invoice
  *
  * What a referrer is given when somebody they sent becomes a customer.
  * None is the zero value, so a program written without choosing gives
@@ -16,7 +17,9 @@ G_BEGIN_DECLS
 typedef enum {
 	VENTURE_REFERRAL_REWARD_NONE,
 	VENTURE_REFERRAL_REWARD_CREDIT,
-	VENTURE_REFERRAL_REWARD_FREE_PERIOD
+	VENTURE_REFERRAL_REWARD_FREE_PERIOD,
+	/* Appended, never inserted: stored programs read back by value. */
+	VENTURE_REFERRAL_REWARD_FREE_MONTH
 } VentureReferralRewardKind;
 /**
  * venture_referral_reward_kind_get_type:

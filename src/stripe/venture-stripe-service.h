@@ -295,6 +295,23 @@ gboolean venture_stripe_service_link_payout_item(VentureStripeService *self, gin
 VentureProcessorDispute *venture_stripe_service_open_dispute(VentureStripeService *self, const gchar *provider_id,
 	gint64 payment_id, GDateTime *date, const VentureMoney *amount, const VentureActor *actor, GError **error);
 /**
+ * venture_stripe_service_refund_payment:
+ * @self: Stripe service of the organization that received the payment
+ * @payment_id: a payment settled through Stripe
+ * @key: the provider idempotency key, stable for this refund
+ * @refund_id: (out) (optional) (transfer full): the provider's refund id
+ * @actor: (nullable): actor recorded on the booked refund
+ * @error: return location for an error
+ *
+ * Refunds the payment in full, once. An existing refund for the payment intent
+ * is found and kept, so a retry after a lost answer makes no second refund.
+ * The refund is booked against the payment's receipt once, by refund id.
+ *
+ * Returns: %TRUE once the provider refund exists and is booked
+ */
+gboolean venture_stripe_service_refund_payment(VentureStripeService *self, gint64 payment_id, const gchar *key,
+	gchar **refund_id, const VentureActor *actor, GError **error);
+/**
  * venture_stripe_service_lose_chargeback:
  * @self: provider
  * @dispute_id: open dispute

@@ -134,6 +134,9 @@ charged, is applied to it: the period costs nothing and the books say why.
 It refuses a subscription that is cancelled or ends at renewal, and one
 whose next period already costs nothing. A referral reward is its caller
 (see [[file:referrals.org][Referrals]]); nothing else writes it.
+=venture_billing_service_grant_free_month()= is the same for one month of
+the plan: the next period's charge is scaled to one month (a twelfth of a
+yearly charge) with =venture_money_multiply_rational= before it is carried.
 
 Changes compare the discounted prices while the discount covers the current
 period, including its last covered invoice. Keeping the same plan retains its

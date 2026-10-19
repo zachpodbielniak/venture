@@ -314,7 +314,7 @@ ids, notes) in words.
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
-| "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish`, `first-charge`, `cancel`, `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
+| "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish` (`published_at` optional), `first-charge`, `cancel`, `money-back` (thirty days from go-live), `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |
 | "What fields does X have?" | `describe X`; actions from `/api/v1/schema/X` | [records.md](references/records.md) |
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |
@@ -345,6 +345,7 @@ ids, notes) in words.
 | "Total anything by anything" | `report aggregate PERIOD type= measure= group_by= date_field=` | [reports.md](references/reports.md) |
 | "Build / read / export a dashboard" | `dashboard create TEMPLATE`, `dashboard SLUG`, `dashboard export` | [dashboards.md](references/dashboards.md) |
 | "Convert / route / score a lead" | `lead convert`, `leads reroute\|rescore` | [crm.md](references/crm.md) |
+| "Refer a customer" | `act company ID referral_code`; reward `none`, `credit`, `free_period`, or `free_month` (one month of the referrer's plan). A hand-recorded customer is referred once | [crm.md](references/crm.md) |
 | "Move a deal / log a call / plan a follow-up" | `deal move ID STAGE`, `act contact ID log_call`, `activity complete` | [crm.md](references/crm.md) |
 | "Which customers are at risk? / merge duplicates" | `report customer_health`, `customers health-sweep`; `dedupe scan\|merge` | [crm.md](references/crm.md) |
 | "Migrate from HubSpot/Salesforce/Zoho" | `crm preview\|import\|activate` | [crm.md](references/crm.md) |

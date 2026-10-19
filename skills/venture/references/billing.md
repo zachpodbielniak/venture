@@ -211,12 +211,22 @@ page load is not payment evidence.
 Hosted self-serve enrollment is a trusted bearer call, not `billing start`
 and not `POST /lightsite/billing/subscriptions` (that binding still starts
 immediately). The routes are `enroll`, `prepay`, `setup`, `publish`,
-`first-charge`, `cancel`, `guarantee`, and GET `made-back` and
+`first-charge`, `cancel`, `money-back`, `guarantee`, and GET `made-back` and
 `notifications` ([api-routes.md](api-routes.md)). Enrollment and prepay
 issue no invoice; setup charges nothing; the first charge is `paid` only
 after signed settlement; cancel before day fourteen charges nothing; a published
 prepaid cancel stores the twenty-four-month end and the renewal sweep ends it
-then without another invoice. Split shares are minor units of the total, scaled
+then without another invoice. `publish` accepts optional `published_at`
+(ISO 8601 with an offset). The first accepted time, or the receipt time
+when it is omitted, is the immutable `go_live_at`; a future time, a time
+before enrollment, or `published_at` on any other billing route is refused.
+`POST /api/v1/lightsite/billing/money-back` takes exactly `organization_id`:
+within thirty days of `go_live_at` it cancels now and refunds each settled
+card payment in full (idempotency key `hosted:<business>:money-back:<payment>`).
+A payment that did not come through the card provider is listed `by_hand`
+and is not refunded here. Before go-live and after day thirty are 409. A
+completed refund answers the same receipt, and a later publish or
+first-charge returns it instead of charging again. Split shares are minor units of the total, scaled
 to Stripe charge units (ISK and UGX use two charge decimals). The
 guarantee is one capped credit, including zero. `stripe_prepayment` is
 service-owned, and checkout is refused while a non-failed prepayment owns

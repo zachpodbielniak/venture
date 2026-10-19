@@ -205,8 +205,10 @@ venture_web_lightsite_billing_transition(HtmxRequest *request, GHashTable *param
 	gsize length = 0;
 	const gchar *bytes = body ? g_bytes_get_data(body, &length) : NULL;
 	const gchar *path = htmx_request_get_path(request);
-	JsonNode *root, *business;
+	JsonNode *root, *business, *published;
 	JsonObject *object;
+	g_autoptr(GDateTime) published_at = NULL;
+	gboolean publish = g_str_has_suffix(path, "/publish");
 	HtmxResponse *response = lightsite_billing_gate(self, request, &principal);
 	(void)params;
 	if (response) return lightsite_billing_finish(response);
@@ -216,19 +218,30 @@ venture_web_lightsite_billing_transition(HtmxRequest *request, GHashTable *param
 	if (!root || !JSON_NODE_HOLDS_OBJECT(root)) goto malformed;
 	object = json_node_get_object(root);
 	business = json_object_get_member(object, "organization_id");
-	if (json_object_get_size(object) != 1 || !business || !JSON_NODE_HOLDS_VALUE(business) ||
+	/* Publication alone may say when the site actually went live: a full
+	 * ISO 8601 time with its offset, nothing looser. */
+	published = publish ? json_object_get_member(object, "published_at") : NULL;
+	if (published && (!JSON_NODE_HOLDS_VALUE(published) || json_node_get_value_type(published) != G_TYPE_STRING ||
+		!(published_at = g_date_time_new_from_iso8601(json_node_get_string(published), NULL)))) goto malformed;
+	if (json_object_get_size(object) != (published ? 2u : 1u) || !business || !JSON_NODE_HOLDS_VALUE(business) ||
 		json_node_get_value_type(business) != G_TYPE_INT64 || json_node_get_int(business) <= 0 ||
 		json_node_get_int(business) == G_MAXINT64) goto malformed;
 	scope = venture_access_policy_enter(venture_database_get_access_policy(db), principal);
-	if (g_str_has_suffix(path, "/cancel"))
+	if (g_str_has_suffix(path, "/money-back"))
+		result = venture_lightsite_billing_money_back(self->context, lightsite_billing_organization(self), json_node_get_int(business), &error);
+	else if (g_str_has_suffix(path, "/cancel"))
 		result = venture_lightsite_billing_cancel(db, lightsite_billing_organization(self), json_node_get_int(business), &error);
 	else if (g_str_has_suffix(path, "/setup"))
 		result = venture_lightsite_billing_setup(self->context, lightsite_billing_organization(self), json_node_get_int(business), &error);
+	else if (publish)
+		result = venture_lightsite_billing_publish(self->context, lightsite_billing_organization(self),
+			json_node_get_int(business), published_at, &error);
 	else result = venture_lightsite_billing_first_charge(self->context, lightsite_billing_organization(self),
-		json_node_get_int(business), g_str_has_suffix(path, "/publish"), &error);
+		json_node_get_int(business), FALSE, &error);
 	return lightsite_billing_finish(result ? venture_web_json_response(result, 200) : venture_web_error_response(error));
 malformed:
-	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Expected exactly one positive organization_id");
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		publish ? "Expected one positive organization_id and an optional published_at time" : "Expected exactly one positive organization_id");
 	return lightsite_billing_finish(venture_web_error_response(error));
 }
 
@@ -285,6 +298,8 @@ venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *sel
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/billing/:organization_id/notifications",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_view, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/cancel",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/money-back",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/prepay",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_enroll, self);
