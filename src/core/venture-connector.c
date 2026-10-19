@@ -23,6 +23,7 @@ struct _VentureConnectorSession {
 	gchar *identity;
 	gchar *selection;
 	gchar *password;
+	const gchar *mechanism;
 	gint64 binding;
 	gint64 version;
 };
@@ -220,15 +221,56 @@ JsonNode *venture_connector_settings_schema(void)
 {
 	return json_from_string("{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"password\"],\"properties\":{\"password\":{\"type\":\"string\",\"title\":\"Password or app token\",\"x-sensitive\":true}}}", NULL);
 }
-static const gchar *password_value(JsonObject *settings, GError **error)
+/* A token sign-in (src/mail/venture-mail-oauth.c) stores its tokens where
+ * a password would be: the same binding, the same encryption, rotation and
+ * revocation checks. Only these members, and the access token is what the
+ * transport presents. */
+static gboolean token_settings_valid(JsonObject *settings)
 {
-	JsonNode *node = json_object_get_member(settings, "password");
+	static const gchar *const strings[] = { "oauth_access_token", "oauth_refresh_token", NULL };
+	static const gchar *const numbers[] = { "oauth_expires_at", "oauth_provider_id", NULL };
+	GList *members = json_object_get_members(settings), *l;
+	gboolean ok = TRUE;
+	guint i;
+	for (l = members; l && ok; l = l->next)
+	{
+		gboolean known = FALSE;
+		for (i = 0; strings[i]; i++) if (!strcmp(l->data, strings[i])) known = TRUE;
+		for (i = 0; numbers[i]; i++) if (!strcmp(l->data, numbers[i])) known = TRUE;
+		ok = known;
+	}
+	g_list_free(members);
+	for (i = 0; ok && strings[i]; i++)
+	{
+		JsonNode *node = json_object_get_member(settings, strings[i]);
+		if (node && (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING ||
+			strlen(json_node_get_string(node)) > 16384)) ok = FALSE;
+	}
+	for (i = 0; ok && numbers[i]; i++)
+	{
+		JsonNode *node = json_object_get_member(settings, numbers[i]);
+		if (node && (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_INT64)) ok = FALSE;
+	}
+	return ok;
+}
+static const gchar *secret_value(JsonObject *settings, const gchar **mechanism, GError **error)
+{
+	JsonNode *node = json_object_get_member(settings, "oauth_access_token");
 	const gchar *password;
+	if (node)
+	{
+		if (!token_settings_valid(settings) || venture_string_is_empty(json_object_get_string_member(settings, "oauth_access_token")))
+		{ refuse(error, VENTURE_ERROR_CONFIG, "Connector token settings are malformed"); return NULL; }
+		if (mechanism) *mechanism = "xoauth2";
+		return json_object_get_string_member(settings, "oauth_access_token");
+	}
+	node = json_object_get_member(settings, "password");
 	if (json_object_get_size(settings) != 1 || !node || !JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING)
 	{ refuse(error, VENTURE_ERROR_CONFIG, "Connector settings require only a password string"); return NULL; }
 	password = json_node_get_string(node);
 	if (venture_string_is_empty(password) || strlen(password) > 16384)
 	{ refuse(error, VENTURE_ERROR_CONFIG, "Connector password is empty or exceeds its limit"); return NULL; }
+	if (mechanism) *mechanism = "password";
 	return password;
 }
 static VentureIntegrationConnection *binding_for(VentureDatabase *database, VentureEntity *account, GError **error)
@@ -257,7 +299,7 @@ VentureIntegrationConnection *venture_connector_configure(VentureDatabase *datab
 	g_return_val_if_fail(VENTURE_IS_CONFIG(config), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(account), NULL);
 	g_return_val_if_fail(settings != NULL, NULL);
-	if (!password_value(settings, error)) return NULL;
+	if (!secret_value(settings, NULL, error)) return NULL;
 	if (!venture_database_begin(database, error)) return NULL;
 	current = current_account(database, account, error);
 	if (!current || !owner_active(database, current, error) || !venture_connector_can_manage(database, current, error) || !endpoint_allowed(config, current, error)) goto fail;
@@ -305,6 +347,7 @@ VentureConnectorSession *venture_connector_open(VentureDatabase *database,
 	g_autoptr(JsonNode) settings = NULL;
 	g_autofree gchar *identity = NULL, *retained = NULL;
 	const gchar *password;
+	const gchar *mechanism = "password";
 	g_return_val_if_fail(VENTURE_IS_DATABASE(database), NULL);
 	g_return_val_if_fail(VENTURE_IS_CONFIG(config), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(account), NULL);
@@ -320,7 +363,7 @@ VentureConnectorSession *venture_connector_open(VentureDatabase *database,
 		venture_entity_get_organization_id(current), venture_entity_get_id(VENTURE_ENTITY(binding)),
 		venture_entity_get_version(VENTURE_ENTITY(binding)), FALSE, error);
 	if (!settings) return NULL;
-	password = password_value(json_node_get_object(settings), error);
+	password = secret_value(json_node_get_object(settings), &mechanism, error);
 	if (!password) return NULL;
 	session = g_object_new(VENTURE_TYPE_CONNECTOR_SESSION, NULL);
 	session->database = database;
@@ -328,6 +371,7 @@ VentureConnectorSession *venture_connector_open(VentureDatabase *database,
 	session->config = g_object_ref(config);
 	session->account = g_steal_pointer(&current);
 	session->password = g_strdup(password);
+	session->mechanism = mechanism;
 	session->identity = g_steal_pointer(&identity);
 	session->selection = account_selection(session->account);
 	session->binding = venture_entity_get_id(VENTURE_ENTITY(binding));
@@ -347,7 +391,7 @@ const gchar *venture_connector_session_get_password(VentureConnectorSession *sel
 const gchar *venture_connector_session_get_mechanism(VentureConnectorSession *self)
 {
 	g_return_val_if_fail(VENTURE_IS_CONNECTOR_SESSION(self), NULL);
-	return "password";
+	return self->mechanism != NULL ? self->mechanism : "password";
 }
 gboolean venture_connector_session_validate(VentureConnectorSession *self, GError **error)
 {

@@ -77,6 +77,31 @@ static gboolean addresses(MailMessage *message, GMimeAddressType type, const gch
 	g_object_unref(list);
 	return ok;
 }
+/* "<a@b> <c@d>": angle-bracketed ids separated by single spaces. */
+static gboolean thread_header_valid(const gchar *value)
+{
+	const gchar *p = value;
+	if (strlen(value) > 4000) return FALSE;
+	while (*p) {
+		const gchar *end;
+		if (*p != '<') return FALSE;
+		end = strchr(p, '>');
+		if (!end || end == p + 1) return FALSE;
+		{
+			const gchar *q;
+			gboolean at = FALSE;
+			for (q = p + 1; q < end; q++) {
+				if ((guchar)*q <= ' ' || *q == '<' || *q == 0x7f) return FALSE;
+				if (*q == '@') at = TRUE;
+			}
+			if (!at) return FALSE;
+		}
+		p = end + 1;
+		if (*p == ' ' && p[1] == '<') p++;
+		else if (*p) return FALSE;
+	}
+	return TRUE;
+}
 static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GCancellable *cancellable, GError **error)
 {
 	VentureSmtpMailer *self = VENTURE_SMTP_MAILER(mailer);
@@ -161,6 +186,18 @@ static gboolean smtp_send(VentureMailer *mailer, VentureMailMessage *message, GC
 			g_set_error_literal(&local, MAIL_ERROR, MAIL_ERROR_MESSAGE, "Invalid Message-ID"); goto out;
 		}
 		g_mime_message_set_message_id(mime, id);
+	}
+	{
+		/* A reply's threading headers. Each is one or more <id> tokens and
+		 * nothing else: a line break would start a header of its own. */
+		g_autofree gchar *in_reply_to = NULL, *references = NULL;
+		g_object_get(message, "in-reply-to", &in_reply_to, "reply-references", &references, NULL);
+		if ((in_reply_to && *in_reply_to && !thread_header_valid(in_reply_to)) ||
+			(references && *references && !thread_header_valid(references))) {
+			g_set_error_literal(&local, MAIL_ERROR, MAIL_ERROR_MESSAGE, "Invalid threading header"); goto out;
+		}
+		if (in_reply_to && *in_reply_to) g_mime_object_set_header(GMIME_OBJECT(mime), "In-Reply-To", in_reply_to, NULL);
+		if (references && *references) g_mime_object_set_header(GMIME_OBJECT(mime), "References", references, NULL);
 	}
 	if (unsubscribe && *unsubscribe) {
 		g_autoptr(GUri) uri = g_uri_parse(unsubscribe, G_URI_FLAGS_NONE, NULL);

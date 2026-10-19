@@ -1251,6 +1251,14 @@ static gboolean prepare(SyncRun *run, GError **error)
 	g_autofree gchar *folders = NULL, *address = NULL, *ignore = NULL, *internal = NULL;
 	g_autoptr(GPtrArray) patterns = NULL;
 	guint i;
+	{
+		/* A token sign-in is refreshed before the snapshot is taken, so the
+		 * session presents a current token; a refused refresh is a refused
+		 * login and counts toward switching the account off. */
+		gint64 provider_id = 0;
+		g_object_get(run->account, "oauth-provider-id", &provider_id, NULL);
+		if (provider_id > 0 && !venture_mail_oauth_refresh(run->db, run->self->config, run->account, FALSE, error)) return FALSE;
+	}
 	run->connector = venture_connector_open(run->db, run->self->config, run->account, error);
 	if (!run->connector) return FALSE;
 	run->org = venture_entity_get_organization_id(venture_connector_session_get_account(run->connector));
@@ -1375,8 +1383,13 @@ static gboolean sync_account(VentureMailSyncService *self, VentureEntity *accoun
 		return FALSE;
 	}
 	venture_imap_client_set_deadline(self->client, budget->deadline);
-	if (!prepare(&run, &stopped)) session_failed = TRUE;
-	else if (!venture_imap_client_connect(self->client, run.host, (guint16)run.port, run.security, run.username, run.secret, NULL, &stopped)) {
+	if (!prepare(&run, &stopped)) {
+		session_failed = TRUE;
+		auth_failed = g_error_matches(stopped, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
+	}
+	else if (!(g_strcmp0(venture_connector_session_get_mechanism(run.connector), "xoauth2") == 0
+		? venture_imap_client_connect_xoauth2(self->client, run.host, (guint16)run.port, run.security, run.username, run.secret, NULL, &stopped)
+		: venture_imap_client_connect(self->client, run.host, (guint16)run.port, run.security, run.username, run.secret, NULL, &stopped))) {
 		session_failed = TRUE;
 		auth_failed = g_error_matches(stopped, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
 	} else {
