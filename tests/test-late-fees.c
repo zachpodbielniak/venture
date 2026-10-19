@@ -222,7 +222,7 @@ schedule(Fixture *f, const gchar *name, const gchar *tiers, gint64 grace, const 
 static gint64
 enable(Fixture *f, gint64 default_schedule, gboolean auto_apply)
 {
-	g_autoptr(VentureEntity) row = record(f, "late_fee_settings");
+	g_autoptr(VentureEntity) row = record(f, "late_fee_setting");
 	g_object_set(row, "enabled", TRUE, "auto-apply", auto_apply, "default-schedule-id", default_schedule, NULL);
 	field(row, "enabled-at", "2026-01-01");
 	save(f, row);
@@ -1057,7 +1057,7 @@ test_history_guarded(Fixture *f, gconstpointer unused)
 	g_clear_error(&error);
 	/* A second organization-wide settings row is refused. */
 	{
-		g_autoptr(VentureEntity) again = record(f, "late_fee_settings");
+		g_autoptr(VentureEntity) again = record(f, "late_fee_setting");
 		g_object_set(again, "enabled", FALSE, NULL);
 		g_assert_false(venture_database_save(f->db, again, NULL, &error));
 		g_assert_nonnull(error);
@@ -1092,7 +1092,7 @@ test_actions(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(venture_action_registry_lookup(registry, "company", "pause_late_fees"));
 	g_assert_nonnull(venture_action_registry_lookup(registry, "invoice", "pause_late_fees"));
 	g_assert_nonnull(venture_action_registry_lookup(registry, "invoice", "late_fee_preview"));
-	g_assert_nonnull(venture_action_registry_lookup(registry, "late_fee_settings", "pause_late_fees"));
+	g_assert_nonnull(venture_action_registry_lookup(registry, "late_fee_setting", "pause_late_fees"));
 	g_assert_nonnull(venture_action_registry_lookup(registry, "company", "resume_late_fees"));
 }
 

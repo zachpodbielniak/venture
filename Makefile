@@ -182,6 +182,7 @@ CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
+CORE_SRCS += src/latefees/venture-late-fee-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/latefees/venture-late-fee-records.c,$(wildcard src/latefees/*.c))
 CORE_SRCS += src/tax/venture-sales-tax-records.c

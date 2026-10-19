@@ -124,6 +124,7 @@
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
+#include "latefees/venture-late-fee-records.h"
 #include "leads/venture-lead-routing-records.h"
 #include "tax/venture-sales-tax-records.h"
 #include "calendar/venture-calendar-records.h"

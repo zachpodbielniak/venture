@@ -288,7 +288,7 @@ gboolean venture_late_fee_check_write(VentureDatabase *database, VentureEntity *
  *
  * Registers =approve=, =skip=, =skip_notice= and =waive= on =late_fee=,
  * the type-level =decide= (bulk) on =late_fee=, =pause_late_fees= and
- * =resume_late_fees= on =invoice=, =company= and =late_fee_settings=, and
+ * =resume_late_fees= on =invoice=, =company= and =late_fee_setting=, and
  * =late_fee_preview= on =invoice=. The writing ones are stageable, so the
  * assistant reaches them through the staged-change approval.
  */
