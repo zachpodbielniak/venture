@@ -1096,6 +1096,66 @@ test_actions(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(venture_action_registry_lookup(registry, "company", "resume_late_fees"));
 }
 
+/* A schedule cap is never overrun, in the preview or in the books, when an
+ * announced (recorded, not yet charged) fee sits in the timeline: the
+ * preview used to leave it out of the running total and showed 115.00 of
+ * fees under a 100.00 cap. And a percent reads "1.5%", never "1.5000%". */
+static void
+test_cap_with_announced_fee(Fixture *f, gconstpointer unused)
+{
+	JsonArray *entries;
+	gint64 sum = 0, total = 0;
+	guint i;
+	gint n;
+	(void)unused;
+	enable(f, schedule(f, "Residential",
+		"[{\"day\":15,\"type\":\"flat\",\"amount\":\"25.00 USD\"},"
+		"{\"day\":30,\"type\":\"percent_open\",\"percent\":\"1.5\"},"
+		"{\"after\":30,\"every\":30,\"type\":\"percent_open\",\"percent\":\"1.5\"}]", 14, "10", NULL), TRUE);
+	days(f, 1, 40);
+	/* Day 15 and 30 charged; the day-40 reminder announced day 60. */
+	g_assert_cmpuint(count_status(f, f->invoice, "applied", NULL), ==, 2);
+	g_assert_cmpuint(count_status(f, f->invoice, "scheduled", NULL), ==, 1);
+	{
+		g_autoptr(JsonNode) p = preview(f, f->invoice, 40);
+		JsonObject *announced = entry_on(p, 60, 0);
+		g_assert_nonnull(announced);
+		g_assert_cmpstr(json_object_get_string_member(announced, "status"), ==, "scheduled");
+		g_assert_cmpstr(json_object_get_string_member_with_default(announced, "basis", ""), ==, "1.5% of the open balance");
+		g_assert_cmpstr(json_object_get_string_member(entry_on(p, 30, 0), "basis"), ==, "1.5% of the open balance");
+		entries = json_object_get_array_member(json_node_get_object(p), "entries");
+		for (i = 0; i < json_array_get_length(entries); i++)
+		{
+			JsonObject *e = json_array_get_object_element(entries, i);
+			const gchar *status = json_object_get_string_member(e, "status");
+			g_autoptr(VentureMoney) m = NULL;
+			if (g_strcmp0(status, "capped") == 0 || g_strcmp0(status, "skipped") == 0 || g_strcmp0(status, "cancelled") == 0)
+				continue;
+			m = venture_money_from_string(json_object_get_string_member(e, "amount"), "USD", NULL);
+			sum += venture_money_get_amount(m);
+		}
+		g_assert_cmpint(sum, ==, 10000);
+	}
+	/* The books agree: whatever the owner decides about notices, the total
+	 * charged stops at exactly 10% of 1,000.00. */
+	for (n = 41; n <= 240; n++)
+	{
+		g_autoptr(VentureEntity) waiting = NULL;
+		day(f, n);
+		while ((waiting = first_fee(f, f->invoice, "awaiting_notice")) != NULL)
+		{
+			g_autoptr(GError) error = NULL;
+			g_assert_true(venture_late_fee_service_skip_notice(venture_late_fee_service_get(f->db), waiting, "test", NULL, &error));
+			g_assert_no_error(error);
+			g_clear_object(&waiting);
+			day(f, n);
+		}
+	}
+	count_status(f, f->invoice, "applied", &total);
+	g_assert_cmpint(total, ==, 10000);
+	g_assert_cmpint(balance(f, f->invoice), ==, 110000);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1121,6 +1181,7 @@ main(int argc, char **argv)
 	ADD("/late-fees/visibility", test_visibility);
 	ADD("/late-fees/history-guarded", test_history_guarded);
 	ADD("/late-fees/actions", test_actions);
+	ADD("/late-fees/cap-with-announced-fee", test_cap_with_announced_fee);
 #undef ADD
 	return g_test_run();
 }
