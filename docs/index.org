@@ -233,3 +233,5 @@ screen's ordinary sync-and-import test.
 - [[file:deliverability.org][Deliverability]] — signed bounce and complaint feed, DSNs from synced mail, campaign replies, the SPF/DKIM/DMARC check, warm-up limits and the per-send report with machine opens and click map.
 
 - [[file:journeys.org][Journeys]] — sequences with branches and waits, named triggers that enrol once per event, and the preference centre they honour.
+
+- [[file:telephony.org][Phone calls and text messages]] — click-to-call through 3CX, every call logged on the contact, missed calls, two-way texts through VoIP.ms with consent, STOP/HELP and quiet hours, text steps and text campaigns.

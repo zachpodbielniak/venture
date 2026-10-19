@@ -109,7 +109,7 @@ existing =mail_template= and is rendered by its renderer; see
 | Behaviour segments (opened, clicked, replied, bought, booked) | have | Saved-search criteria =opened_within_days=, =clicked_within_days=, =replied_within_days=, =bought_within_days=, =booked_within_days= over people's opens and clicks only (lane 3's machine flag), the reply rule, paid invoices and =booking.created= (=src/marketing/venture-marketing-segments.c=) | -- |
 | Embeddable signup forms with double opt-in | have | =forms_optin_store()= requires an explicit consent question and creates =marketing_consent= and a list member on confirmation (=src/forms/venture-forms-optin.inc=) | -- |
 | Preference centre | have | =/marketing/u/<token>= now offers topics (=marketing_topic=), how often (any, weekly, monthly) and stop everything; one =marketing_preference= per address, honoured at campaign preview and run and by marketing journeys (=src/marketing/venture-marketing-preferences.inc=) | -- |
-| Multi-step journeys with branches and waits | have | Sequences gain branch steps on opened, clicked or replied by the end of a wait, jumps and path ends, in the one sequence engine; a channel hook for later channels (=src/sequences/venture-sequence-service.c=, =src/sequences/venture-sequence-journeys.c=, =docs/journeys.org=) | Text steps through the hook (lane 6) |
+| Multi-step journeys with branches and waits | have | Sequences gain branch steps on opened, clicked or replied by the end of a wait, jumps and path ends, in the one sequence engine; a channel hook for later channels (=src/sequences/venture-sequence-service.c=, =src/sequences/venture-sequence-journeys.c=, =docs/journeys.org=) | -- (text steps arrived in lane 6) |
 | Triggers (form submitted, tag added, deal stage changed, quote sent not accepted, invoice paid, booking made) | have | =sequence_trigger= records; feed events (invoice paid, booking made, quote not accepted after N days) and save hooks (form, tag, deal stage); once per event per journey by =sequence_enrollment.trigger_key= (=src/sequences/venture-sequence-journeys.c=) | -- |
 | A/B subject and content with automatic winner | have | =test_percent= split deterministically, winner by people's opens or clicks after =winner_wait_hours=, sent to the rest; both arms on the send report (=src/marketing/venture-marketing-audiences.inc=, =src/marketing/venture-marketing-reports.c=) | -- |
 | Recipient local-time send | have | =local_time= / =local_hour= / =local_date= on a send: due at that hour in the contact's zone, else the organization's, else UTC, through the bounded delivery and the warm-up (=src/marketing/venture-marketing-audiences.inc=) | Local time for journeys (they keep the sequence's own zone and window) |
@@ -129,16 +129,21 @@ existing =mail_template= and is rendered by its renderer; see
 
 * Lane 6 — phone and text
 
+Closed by the telephony commits on this lane ([[file:telephony.org][Phone calls and text messages]]).
+The 3CX and VoIP.ms adapters are written from public documentation and
+tested against fakes; the fields to confirm on a live account are listed
+there.
+
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Pluggable telephony connector (3CX PBX, VoIP.ms SMS/MMS first) | missing | The connector layer covers IMAP and CalDAV only (=src/core/venture-connector.h=) | Telephony connector interface with 3CX and VoIP.ms adapters |
-| Click-to-call | partial | Phone fields render as =tel:= links (=src/web/venture-web-record-view.inc=) | Dial through the connected PBX |
-| Automatic call logging on existing call-log records | partial | =log_call= with =call-external-source= / =call-external-id= replay identity for an adapter (=src/activities/venture-activity-records.c=); no adapter calls it | PBX events written through =log_call= |
-| Inbound match and missed calls | missing | Call outcomes include =no_answer= and =voicemail= (=src/activities/venture-activity-records.c=); nothing matches an inbound number | Caller lookup and missed-call records |
-| Two-way SMS with delivery status | missing | — | SMS send, receive and delivery status records |
-| Inbound webhook | missing | — | Signed inbound webhook per connector |
-| STOP/HELP, consent and quiet hours | missing | Email consent and sequence send windows exist (=src/marketing/venture-marketing-consent.inc=, =src/sequences/venture-sequence-records.c=); nothing for texts | SMS keywords, text consent and quiet hours |
-| Text steps in sequences and campaigns | partial | =sms_task= steps create an owner notification and send nothing (=src/sequences/venture-sequence-service.c=) | Real text steps through the connector |
+| Pluggable telephony connector (3CX PBX, VoIP.ms SMS/MMS first) | have | =VentureTelephonyConnector= with capabilities and a registry a provider joins from its own file (=src/telephony/venture-telephony-connector.h=); 3CX and VoIP.ms adapters (=src/telephony/venture-telephony-3cx.c=, =src/telephony/venture-telephony-voipms.c=); credentials in the integration vault per organization | -- |
+| Click-to-call | have | Call button on contact, deal and ticket pages and =POST /api/v1/telephony/call=; rings the user's extension (=telephony_extension=) first; plain-words refusals (=src/telephony/venture-telephony-service.c=, =src/telephony/venture-telephony-web.inc=) | -- |
+| Automatic call logging on existing call-log records | have | Each reported call through =log_call= with =call_external_source= =3cx-v1= and the provider call id; recording link only when the organization turns it on | -- |
+| Inbound match and missed calls | have | E.164 normaliser with the organization's country (=src/telephony/venture-phone.c=); missed calls with outcome =missed= and =call_inbox_ready=; unknown callers become contacts | Shared inbox (lane 7) |
+| Two-way SMS with delivery status | have | =text_message= thread per contact, send, receive, delivery receipts where the provider reports them; outbound pictures as hosted images, inbound kept as private documents | -- |
+| Inbound webhook | have | =/hooks/telephony/:token= per line: unguessable token, allowed senders, provider signature where it exists, idempotent on the provider's id | -- |
+| STOP/HELP, consent and quiet hours | have | Keywords and synonyms answered once; text consent as =marketing_consent= evidence (purpose =text=); quiet hours 21:00-08:00 recipient time, enforced in the one send path | -- |
+| Text steps in sequences and campaigns | have | Sequence channel =text= through =venture_sequence_channel_register()=; marketing sends with channel =text= (=src/marketing/venture-marketing-text.inc=) | -- |
 
 * Lane 7 — one inbox
 
@@ -181,12 +186,11 @@ Only the =partial= and =missing= rows above.
 - Lane 3: done (see its table and [[file:deliverability.org][Deliverability]]). Only the
   =generic= feed adapter ships; a named provider's shape is a new adapter.
 - Lane 4: done (see its table, [[file:journeys.org][Journeys]] and
-  [[file:marketing.org][Marketing]]). Text steps wait for lane 6's channel.
+  [[file:marketing.org][Marketing]]). Text steps arrived with lane 6.
 - Lane 5: done (see its table, [[file:pipelines.org][Sales pipelines]], [[file:leads.org][Leads]] and
   [[file:mail.org][Mail]]). SMTP token sign-in waits on mail-glib.
-- Lane 6: telephony connector with 3CX and VoIP.ms; click-to-call; call
-  logging from the PBX; inbound match and missed calls; two-way SMS;
-  inbound webhook; STOP/HELP, consent and quiet hours; real text steps.
+- Lane 6: done (see its table and [[file:telephony.org][Phone calls and text messages]]).
+  The adapters' field names wait on confirmation against live accounts.
 - Lane 7: conversation thread per contact; assignment; status.
 - Lane 8: inbound judgements on messages; auto-replies; call summaries;
   drafts and next step; per-rule auto-send; consent and quiet hours;

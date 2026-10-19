@@ -158,3 +158,22 @@ lookback/retention days; owner/admin only), `attribution_visitor`
   `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
   `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
   `timezone`, `availability` JSON, `horizon_days`; serves `/book/<slug>`).
+
+## Phone and text (`telephony` module; docs/telephony.org)
+
+Requires `crm`, `activities`, `integrations` and `marketing`.
+`telephony_account` (a phone line: `provider` 3cx or voipms, `base_url`,
+`phone_number`, `connection_id` to the encrypted integration binding,
+`webhook_sources`, `media_hosts`; written only by the telephony service),
+`telephony_extension` (`user_id`, `extension`; one per person per
+organization) and `text_message` (`contact_id`, `direction`, `body`,
+`state` queued/held/sent/delivered/failed/received, `hold_until`,
+`provider_message_id`, `message_key` replay identity, `origin`, `keyword`,
+`auto_reply`, `inbox_ready`; service-written). Calls are ordinary
+`activity` rows through `log_call` (outcome `missed` and
+`call_inbox_ready` added); text consent is `marketing_consent` with
+`purpose` text and `phone`; a `marketing_send` with `channel` text is a
+text campaign; sequence step channel `text` sends a real text. The
+organization carries `telephony_country`, `telephony_quiet_hours`
+(empty is 21:00-08:00 recipient time, `off` for none) and
+`telephony_recording_links` (off).

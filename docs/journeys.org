@@ -15,9 +15,9 @@ after the step before it.
 - An *email* step sends one message.
 - A *wait* step only waits.
 - A *call task* or *text task* step tells the enrollment's owner to call or
-  text. Real texts arrive with the phone lane; until then a text step is a
-  task. A later lane gives a channel its behaviour with
-  =venture_sequence_channel_register()= (the channel hook).
+  text. A *text* step sends a real text through the phone module, which
+  gives that channel its behaviour with =venture_sequence_channel_register()=
+  (the channel hook); see [[file:telephony.org][Phone calls and text messages]].
 - A *branch* step waits its delay, then looks at the enrollment's latest
   email and asks one question:
   - *opened* — did the person open it?
