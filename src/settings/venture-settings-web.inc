@@ -199,6 +199,8 @@ venture_web_settings_screen(HtmxRequest *request, GHashTable *params, gpointer d
 		return venture_web_error_response(error);
 	}
 	g_object_get(organization, "name", &name, NULL);
+	/* One block, so the page arrives whole rather than card by card. */
+	g_string_append(html, "<div class=\"settings-page\">");
 	g_string_append_printf(html, "<div class=\"page-head\"><div class=\"page-title\"><p><a href=\"/e/organization/%" G_GINT64_FORMAT
 		"\">&larr; ", org);
 	venture_html_escape_append(html, name != NULL ? name : "Organization");
@@ -231,7 +233,7 @@ venture_web_settings_screen(HtmxRequest *request, GHashTable *params, gpointer d
 	if (workflow != NULL)
 		g_string_append(html, "</ul></div></section>");
 	g_string_append(html, "<p class=\"muted\">Every setting, its default and its limit, and how to change it from chat, the API "
-		"or venturectl: <a href=\"/docs/settings.html\">Settings</a>.</p>");
+		"or venturectl: <a href=\"/docs/settings.html\">Settings</a>.</p></div>");
 	return venture_web_html_response(venture_web_page(self, request, "/e/organization", "Marketing, sales, phone and AI", html->str), 200);
 }
 

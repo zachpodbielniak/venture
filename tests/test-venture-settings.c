@@ -1112,6 +1112,7 @@ test_screen(Fixture *f, gconstpointer data)
 			g_autofree gchar *still = g_regex_replace(scripts, saved, -1, 0, "", 0, NULL);
 			g_assert_true(g_file_set_contents(g_getenv("VENTURE_TEST_SETTINGS_CHAT_HTML"), still, -1, NULL));
 		}
+		g_object_set(f->config, "ui-chat-dock-expanded", FALSE, NULL);
 	}
 	hold(server, path);
 }
