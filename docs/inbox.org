@@ -111,7 +111,7 @@ are not cached. A switched-off chat answers "not available" at once.
 - *A second timeline.* The contact's page keeps its own timeline; the
   conversation reads the same records.
 - *Notes, meetings and tasks.* Only what a customer said or was told.
-- *Automatic replies and summaries.* Not yet.
+- *Automatic replies and summaries.* See [[file:ai-messages.org][AI on messages]].
 
 * API
 

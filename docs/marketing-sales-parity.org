@@ -159,14 +159,14 @@ Closed by the inbox commits on this lane ([[file:inbox.org][Conversations: one i
 
 | Capability | Venture today | Evidence | What the later lane builds |
 |------------+---------------+----------+----------------------------|
-| Inbound classify, extract, draft and route | partial | Ticket triage, summary and draft reply on the toolless path (=src/ai/venture-ai-assist.c=); not applied to inbound mail or texts | The same judgements on inbound messages |
-| Configured auto-replies (after-hours, missed-call text-back) | missing | — | Auto-reply rules |
-| Call and voicemail summaries | missing | A supplied =call_transcript= is stored only (=src/activities/venture-activity-records.c=) | Summary from a transcript or recording |
-| Outbound drafts and next step | partial | =venture_ai_assist_draft_reply()= for tickets (=src/ai/venture-ai-assist.c=) | Drafts and suggested next step for contacts and deals |
-| Draft-and-approve by default, per-rule auto-send | partial | AI writes are staged for approval under =ai.policy= (=src/config/venture-config.c=, =docs/ai.org=); no per-rule auto-send | Per-rule auto-send switch |
-| Consent and quiet hours | missing | — | AI sends obey the lane 6 consent and quiet hours |
-| Logged with reason | partial | AI changes are audited with model, diff and prompt (=docs/ai.org=, The audit trail) | Message-level log with the rule and reason |
-| One off switch | partial | The =ai= module and =ai.policy= =read_only= (=src/config/venture-config.c=) | One switch for AI messaging alone |
+| Inbound classify, extract, draft and route | done | Intent, details kept only when the message says them, a grounded draft and routing by intent route then lead routing (=src/aimessages/venture-ai-messages-service.c=, [[file:ai-messages.org][AI on messages]]) | — |
+| Configured auto-replies (after-hours, missed-call text-back) | done | Auto-reply rules with business hours, template or AI words and auto-send off by default (=ai_message_rule=) | — |
+| Call and voicemail summaries | done | From the logged or provider transcript; "No transcript" otherwise | — |
+| Outbound drafts and next step | done | Follow-ups for a contact or a deal with a next step, held to the email grounding check (=venture_email_ground_text()=) | — |
+| Draft-and-approve by default, per-rule auto-send | done | Every AI message a draft; approve, edit, discard on the conversation | — |
+| Consent and quiet hours | done | Every AI send is the inbox reply: the outbox, or the text path's consent and quiet hours (=test-ai-messages=) | — |
+| Logged with reason | done | =ai_message= rows with rule, provider, model, reason, approver or auto; sends audited as the AI's with =approved_by= | — |
+| One off switch | done | =ai-messages-off= on the organization stops everything; the pages say so | — |
 
 * Lane 9 — settings
 
@@ -194,7 +194,6 @@ Only the =partial= and =missing= rows above.
 - Lane 6: done (see its table and [[file:telephony.org][Phone calls and text messages]]).
   The adapters' field names wait on confirmation against live accounts.
 - Lane 7: done (see its table and [[file:inbox.org][Conversations: one inbox]]).
-- Lane 8: inbound judgements on messages; auto-replies; call summaries;
-  drafts and next step; per-rule auto-send; consent and quiet hours;
-  message log with reason; one off switch.
+- Lane 8: done (see its table and [[file:ai-messages.org][AI on messages]]). Settings
+  live on the organization and the rules until lane 9.
 - Lane 9: defaults; one settings screen; one settings API with audit.
