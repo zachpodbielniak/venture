@@ -99,6 +99,8 @@ static gboolean make_recipient(VentureMarketingService *self, VentureEntity *sen
 	gint64 org = venture_entity_get_organization_id(send);
 	const gchar *reason = "eligible";
 	gboolean blocked = FALSE;
+	if (text_send(send))
+		return make_text_recipient(self, send, source, source_key, seen, eligible, excluded, actor, error);
 	key = g_strdup_printf("%s:%s", venture_entity_get_uuid(send), source_key);
 	if (!source) reason = "source_missing";
 	else if (number(send, "survey-form-id") > 0 && !VENTURE_IS_CONTACT(source)) reason = "form_requires_contact";

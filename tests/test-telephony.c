@@ -334,14 +334,16 @@ typedef struct {
 	VentureEntity *ada;
 	VentureEntity *alice;
 	gchar *token;
+	gchar *root;
 } Fixture;
 
 static void
 persist(Fixture *f, gpointer row)
 {
 	g_autoptr(GError) error = NULL;
-	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(row), NULL, &error));
+	gboolean saved = venture_database_save(f->db, VENTURE_ENTITY(row), NULL, &error);
 	g_assert_no_error(error);
+	g_assert_true(saved);
 }
 
 static VentureEntity *
@@ -398,9 +400,11 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) extension = NULL;
 	(void)data;
 	fake_start(&f->fake);
+	f->root = g_dir_make_tmp("venture-telephony-XXXXXX", &error);
+	g_assert_no_error(error);
 	f->config = venture_config_new();
 	g_object_set(f->config, "connectors-allow-plaintext-loopback", TRUE,
-		"server-base-url", "https://venture.example.com", NULL);
+		"server-base-url", "https://venture.example.com", "state-dir", f->root, NULL);
 	f->db = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -409,7 +413,7 @@ setup(Fixture *f, gconstpointer data)
 	f->context = venture_context_new(f->config, f->db);
 	f->service = venture_telephony_service_get(f->db);
 	f->ada = person(f, "Ada", "(555) 010-0123", "UTC");
-	f->alice = g_object_new(VENTURE_TYPE_USER, "username", "alice", "email", "alice@example.com",
+	f->alice = g_object_new(VENTURE_TYPE_USER, "username", "alice",
 		"role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
 	persist(f, f->alice);
 	extension = g_object_new(VENTURE_TYPE_TELEPHONY_EXTENSION, "organization-id", (gint64)1,
@@ -429,6 +433,8 @@ teardown(Fixture *f, gconstpointer data)
 	g_clear_object(&f->db);
 	g_clear_object(&f->config);
 	fake_stop(&f->fake);
+	venture_test_remove_tree(f->root);
+	g_clear_pointer(&f->root, g_free);
 }
 
 static VentureEntity *

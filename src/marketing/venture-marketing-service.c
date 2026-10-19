@@ -280,6 +280,8 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 			(text && strlen(text) > 65536) || (html && strlen(html) > 65536))
 			return refuse(error, "Send requires a bounded subject and message body");
 		if (!interval) { interval = 60; g_object_set(row, "interval-seconds", interval, NULL); }
+		if (choice(row, "channel") == 1 && (!bounded(text, 1600) || g_utf8_strlen(text, -1) > 1600))
+			return refuse(error, "A text campaign needs a text body of at most 1600 characters");
 		if (interval < 1 || interval > 86400) return refuse(error, "Delivery interval must be 1 through 86400 seconds");
 		{
 			g_autofree gchar *b_subject = string(row, "variant-subject");
@@ -300,6 +302,13 @@ static gboolean validate(VentureDatabase *database, VentureEntity *row, VentureE
 	return refuse(error, "Consent, recipients and observations are written only by VentureMarketingService");
 }
 
+/* Text campaigns (venture-marketing-text.inc): the preview and the run
+ * branch to these for a send whose channel is text. */
+static gboolean text_send(VentureEntity *send);
+static gboolean make_text_recipient(VentureMarketingService *self, VentureEntity *send, VentureEntity *source,
+	const gchar *source_key, GHashTable *seen, gint64 *eligible, gint64 *excluded, const VentureActor *actor, GError **error);
+static gboolean text_queue_recipient(VentureMarketingService *self, VentureEntity *send, VentureEntity *recipient,
+	GDateTime *now, gboolean *queued, const VentureActor *actor, GError **error);
 #include "venture-marketing-consent.inc"
 #include "venture-marketing-audience.inc"
 #include "venture-marketing-preferences.inc"

@@ -19,7 +19,9 @@ G_BEGIN_DECLS
  * @queue: queue the frozen text for one approved recipient
  *
  * What the telephony module gives campaigns. Both run inside the
- * marketing service's transaction and must not talk to a provider.
+ * marketing service's transaction and must not talk to a provider. Each
+ * returns FALSE with no error for a refusal (no number, no consent, no
+ * line; @recipient sets @reason) and sets the error only for a failure.
  */
 typedef struct {
 	gboolean (*recipient)(VentureDatabase *database, VentureEntity *source, gchar **address,

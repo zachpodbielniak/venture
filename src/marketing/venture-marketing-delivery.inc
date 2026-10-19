@@ -315,7 +315,7 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 	/* The warm-up: once today's limit for the organization's sending
 	 * domain is reached, the send waits for the next UTC day rather than
 	 * skipping anybody (docs/deliverability.org). */
-	{
+	if (!text_send(send)) {
 		gint64 cap = 0, used = 0;
 		if (!venture_deliverability_ramp_status(self->database, org, now, NULL, &cap, &used, error)) goto fail;
 		if (cap > 0 && used >= cap) {
@@ -368,6 +368,18 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 		VentureEntity *recipient = g_ptr_array_index(rows, i);
 		g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
 		const gchar *reason = NULL;
+		if (text_send(send)) {
+			/* A text: the telephony send path checks consent and quiet
+			 * hours again when it sends; pacing is the send's interval. */
+			gboolean texted = FALSE;
+			if (!text_queue_recipient(self, send, recipient, now, &texted, actor, error)) goto fail;
+			if (!texted) continue;
+			g_clear_pointer(&next, g_date_time_unref); next = g_date_time_add_seconds(now, number(send, "interval-seconds"));
+			if (!next) { refuse(error, "Run interval exceeds calendar bounds"); goto fail; }
+			g_object_set(send, "next-enqueue-at", next, NULL);
+			if (!save(self, send, actor, error)) goto fail;
+			count++; break;
+		}
 		if (!recipient_allowed(self, recipient, &reason, error)) {
 			if (error && *error) goto fail;
 			g_object_set(recipient, "state", "cancelled", NULL);
