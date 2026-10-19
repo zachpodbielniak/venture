@@ -871,7 +871,20 @@ run_cli(VentureWebServer *server, const gchar *token, const gchar *const *args, 
 static gchar *
 channel_change(Fixture *f, gint64 since)
 {
-	g_autoptr(GPtrArray) entries = audit_since(f, since);
+	g_autoptr(GPtrArray) all = audit_since(f, since);
+	g_autoptr(GPtrArray) entries = g_ptr_array_new();
+	guint i;
+	/* A token's first use stamps it (its own entry); that is the
+	 * credential's bookkeeping, not the change. */
+	for (i = 0; i < all->len; i++) {
+		g_autofree gchar *type = text_of(g_ptr_array_index(all, i), "target-type");
+		if (g_strcmp0(type, "api_token") != 0)
+			g_ptr_array_add(entries, g_ptr_array_index(all, i));
+	}
+	for (i = 0; entries->len != 1 && i < entries->len; i++) {
+		g_autofree gchar *what = audit_change(g_ptr_array_index(entries, i));
+		g_printerr("unexpected audit entry: %s\n", what);
+	}
 	g_assert_cmpuint(entries->len, ==, 1);
 	return audit_change(g_ptr_array_index(entries, 0));
 }
@@ -921,13 +934,18 @@ test_channels(Fixture *f, gconstpointer data)
 
 	/* REST. */
 	{
-		g_autofree gchar *one = g_strdup_printf("/api/v1/settings/telephony.quiet-hours?organization_id=%" G_GINT64_FORMAT, f->org);
-		g_autofree gchar *all = g_strdup_printf("/api/v1/settings?organization_id=%" G_GINT64_FORMAT, f->org);
+		g_autofree gchar *one = g_strdup_printf("/api/v1/workflow-settings/telephony.quiet-hours?organization_id=%" G_GINT64_FORMAT, f->org);
+		g_autofree gchar *all = g_strdup_printf("/api/v1/workflow-settings?organization_id=%" G_GINT64_FORMAT, f->org);
 		g_autofree gchar *listed = NULL, *got = NULL;
 		g_assert_cmpuint(web_request(server, "GET", all, rest_token, NULL, NULL, &listed), ==, 200);
 		g_assert_nonnull(strstr(listed, "\"telephony.quiet-hours\""));
 		g_assert_cmpuint(web_request(server, "GET", one, rest_token, NULL, NULL, &got), ==, 200);
-		g_assert_nonnull(strstr(got, "\"is_default\":true"));
+		{
+			g_autoptr(JsonNode) parsed = venture_json_parse(got, NULL);
+			g_assert_nonnull(parsed);
+			g_assert_true(json_object_get_boolean_member(json_node_get_object(parsed), "is_default"));
+			g_assert_cmpstr(json_object_get_string_member(json_node_get_object(parsed), "value"), ==, "21:00-08:00");
+		}
 		since = last_audit_id(f);
 		g_assert_cmpuint(web_request(server, "PUT", one, rest_token, "application/json", "{\"value\":\"20:00-07:00\"}", &api), ==, 200);
 		g_assert_nonnull(strstr(api, "20:00-07:00"));
@@ -935,9 +953,9 @@ test_channels(Fixture *f, gconstpointer data)
 		back_to_default(f);
 		/* Refusals over REST are words with the right status. */
 		g_clear_pointer(&api, g_free);
-		g_assert_cmpuint(web_request(server, "PUT", one, rest_token, "application/json", "{\"value\":\"25:00-07:00\"}", &api), ==, 400);
+		g_assert_cmpuint(web_request(server, "PUT", one, rest_token, "application/json", "{\"value\":\"25:00-07:00\"}", &api), ==, 422);
 		g_clear_pointer(&api, g_free);
-		g_assert_cmpuint(web_request(server, "GET", "/api/v1/settings/no.such", rest_token, NULL, NULL, &api), ==, 404);
+		g_assert_cmpuint(web_request(server, "GET", "/api/v1/workflow-settings/no.such", rest_token, NULL, NULL, &api), ==, 404);
 	}
 
 	/* venturectl. */
@@ -1048,7 +1066,7 @@ test_screen(Fixture *f, gconstpointer data)
 	/* Grouped by workflow, the changed ones say so beside their default. */
 	g_assert_nonnull(strstr(page, "Campaigns"));
 	g_assert_nonnull(strstr(page, "AI on messages"));
-	g_assert_nonnull(strstr(page, "Default: 4"));
+	g_assert_nonnull(strstr(page, "Default: <code>4</code>"));
 	g_assert_nonnull(strstr(page, "name=\"key\" value=\"marketing.ab-wait-hours\""));
 	/* A refusal comes back to the page in words. */
 	g_assert_cmpuint(web_request(server, "POST", path, NULL, NULL,

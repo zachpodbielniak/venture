@@ -229,7 +229,10 @@ static gboolean field_set(VentureEntity *record, const gchar *field, const gchar
 	} else if (spec->value_type == G_TYPE_INT) {
 		g_object_set(record, field, (gint)g_ascii_strtoll(text, NULL, 10), NULL);
 	} else if (spec->value_type == G_TYPE_STRING) {
-		g_object_set(record, field, text, NULL);
+		/* Empty is stored as nothing, the way a field never set reads, so
+		 * a reset and a fresh install hold the same and every change from
+		 * the default has the same "from". */
+		g_object_set(record, field, (text != NULL && *text) ? text : NULL, NULL);
 	} else if (G_TYPE_IS_ENUM(spec->value_type)) {
 		GEnumValue *nick = g_enum_get_value_by_nick(G_ENUM_CLASS(g_type_class_peek(spec->value_type)), text);
 		if (nick == NULL)

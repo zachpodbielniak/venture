@@ -2653,6 +2653,110 @@ usage:
 #include "activities/venture-activity-cli.inc"
 #include "pipelines/venture-pipeline-cli.inc"
 
+/*
+ * venturectl settings list | get KEY | set KEY VALUE | reset KEY
+ * [organization_id=N]: the workflow settings (docs/settings.org), through
+ * /api/v1/workflow-settings, the same API as the settings screen.
+ */
+static gint
+venture_cli_command_settings(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(GPtrArray) words = g_ptr_array_new();
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *query = NULL;
+	g_autofree gchar *escaped = NULL;
+	const gchar *verb;
+	guint i;
+
+	for (i = 1; NULL != args[i]; i++)
+	{
+		if (g_str_has_prefix(args[i], "organization_id="))
+		{
+			g_free(query);
+			query = g_strdup_printf("?organization_id=%" G_GINT64_FORMAT,
+				g_ascii_strtoll(args[i] + strlen("organization_id="), NULL, 10));
+		}
+		else
+			g_ptr_array_add(words, args[i]);
+	}
+
+	verb = (words->len > 0) ? g_ptr_array_index(words, 0) : "list";
+
+	if ((0 == g_strcmp0(verb, "list")) && (words->len <= 1))
+		path = g_strdup_printf("/api/v1/workflow-settings%s", (NULL != query) ? query : "");
+	else if ((words->len >= 2) &&
+	         ((0 == g_strcmp0(verb, "get")) || (0 == g_strcmp0(verb, "reset")) ||
+	          ((0 == g_strcmp0(verb, "set")) && (words->len == 3))))
+	{
+		escaped = g_uri_escape_string(g_ptr_array_index(words, 1), NULL, FALSE);
+		path = g_strdup_printf("/api/v1/workflow-settings/%s%s", escaped, (NULL != query) ? query : "");
+	}
+	else
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"usage: venturectl settings list | get KEY | set KEY VALUE | reset KEY [organization_id=N]");
+		return -1;
+	}
+
+	if ((0 == g_strcmp0(verb, "set")) || (0 == g_strcmp0(verb, "reset")))
+	{
+		g_autoptr(JsonBuilder) builder = json_builder_new();
+
+		json_builder_begin_object(builder);
+		if (0 == g_strcmp0(verb, "set"))
+		{
+			/* Sent as text: the server types it against the setting's
+			 * registration, so a switch, a number and words all work. */
+			json_builder_set_member_name(builder, "value");
+			json_builder_add_string_value(builder, g_ptr_array_index(words, 2));
+		}
+		else
+		{
+			json_builder_set_member_name(builder, "reset");
+			json_builder_add_boolean_value(builder, TRUE);
+		}
+		json_builder_end_object(builder);
+		body = json_builder_get_root(builder);
+		node = venture_cli_request(cli, "PUT", path, body, error);
+	}
+	else
+		node = venture_cli_request(cli, "GET", path, NULL, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((VENTURE_OUTPUT_FORMAT_TABLE != cli->format) || !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	if (json_object_has_member(json_node_get_object(node), "items"))
+	{
+		JsonArray *rows = json_object_get_array_member(json_node_get_object(node), "items");
+
+		g_print("%-34s %-24s %s\n", "KEY", "VALUE", "DEFAULT");
+		for (i = 0; i < json_array_get_length(rows); i++)
+		{
+			JsonObject *row = json_array_get_object_element(rows, i);
+			g_autofree gchar *value = venture_json_to_string(json_object_get_member(row, "value"), FALSE);
+			g_autofree gchar *fallback = venture_json_to_string(json_object_get_member(row, "default"), FALSE);
+
+			g_print("%-34s %-24.24s %s%s\n", venture_json_object_get_string(row, "key", ""), value,
+			        fallback, venture_json_object_get_bool(row, "is_default", FALSE) ? "" : "  (changed)");
+		}
+		return 0;
+	}
+
+	venture_cli_output(cli, node);
+	return 0;
+}
+
 /* --- The workdesk ---------------------------------------------------------- */
 
 /*
@@ -4435,6 +4539,7 @@ main(
 		"  inbox [--all]                what you have been told; unread\n"
 		"                               by default\n"
 		"  inbox read ID|all            mark it read\n"
+		"  settings list|get|set|reset  workflow settings: settings set KEY VALUE\n"
 		"  watch TYPE ID                be told when a record changes;\n"
 		"                               unwatch to stop\n"
 		"  activity complete ID outcome=...  complete planned work and record history\n"
@@ -4824,6 +4929,8 @@ main(
 		result = venture_cli_command_link(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "inbox"))
 		result = venture_cli_command_inbox(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "settings"))
+		result = venture_cli_command_settings(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "comments")) ||
 	         (0 == g_strcmp0(args[0], "comment")))
 		result = venture_cli_command_comments(&cli, args, &error);

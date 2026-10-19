@@ -7248,15 +7248,15 @@ test_auth_settings_routes(ServerFixture *fixture, gconstpointer unused)
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/workflows"), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/workflows", NULL,
 		"action=reset&key=telephony.quiet-hours", NULL, NULL), ==, SOUP_STATUS_FOUND);
-	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/settings"), ==, SOUP_STATUS_UNAUTHORIZED);
-	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/settings/telephony.quiet-hours"), ==, SOUP_STATUS_UNAUTHORIZED);
-	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/settings/telephony.quiet-hours", NULL,
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/workflow-settings"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/workflow-settings/telephony.quiet-hours"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/workflow-settings/telephony.quiet-hours", NULL,
 		"{\"value\":\"off\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 
 	server_fixture_create_member(fixture, "settings-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
 	viewer = server_fixture_login(fixture, "settings-viewer", "viewer-long-password");
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/workflows", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
-	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/settings/telephony.quiet-hours", viewer,
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/workflow-settings/telephony.quiet-hours", viewer,
 		"{\"value\":\"off\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
 }
 

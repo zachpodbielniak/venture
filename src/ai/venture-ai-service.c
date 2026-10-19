@@ -2676,6 +2676,8 @@ venture_ai_make_tool(
 #include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
 
+#include "venture-ai-settings-tools.inc"
+
 static void
 venture_ai_service_register_tools(VentureAiService *self)
 {
@@ -3094,6 +3096,10 @@ venture_ai_service_register_tools(VentureAiService *self)
 	 * capability it was never told about, and refusing calls it believes
 	 * it has wastes turns.
 	 */
+	/* The workflow settings: read under every policy, changed only by
+	 * staging (docs/settings.org). */
+	venture_ai_settings_tools_register(self, VENTURE_AI_POLICY_READ_ONLY != self->policy);
+
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 		return;
 
