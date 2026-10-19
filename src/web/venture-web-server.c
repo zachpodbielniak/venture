@@ -12058,6 +12058,8 @@ venture_web_ui_detail(
 	venture_attribution_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_plan_web_panel(self, content, record, principal);
+	/* A sequence's journey map: its steps, branches and where each goes. */
+	venture_web_sequence_journey_block(self, content, record);
 
 	/*
 	 * The discussion, after the type's own block and before the tabs: it

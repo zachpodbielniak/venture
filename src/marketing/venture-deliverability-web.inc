@@ -449,6 +449,27 @@ venture_web_deliverability_report(HtmxRequest *request, GHashTable *params, gpoi
 		"the message being accepted -- those are shown as machine opens and are not in Opened. Apple Mail Privacy Protection and Gmail's "
 		"image proxy cannot be told apart from a person, so Opened is still an upper bound. A reply is any inbound email or logged contact "
 		"from the recipient after this message, the way sequences count replies.</div></div>");
+	if (report->arms && report->arms->len) {
+		/* An A/B test: both arms side by side, and the rest once picked. */
+		g_string_append(html, "<h2>A/B test</h2><p>");
+		if (report->winner) g_string_append_printf(html, "Arm <strong>%s</strong> won and went to the rest of the audience.", !g_strcmp0(report->winner, "b") ? "B" : "A");
+		else g_string_append(html, "The winner is picked once the test arms have been out for the wait you set; until then the rest wait.");
+		g_string_append(html, " People's opens and clicks only; a tie goes to A.</p><div class=\"table-wrap\"><table class=\"data deliverability-arms\"><thead><tr>"
+			"<th scope=\"col\">Arm</th><th scope=\"col\">Subject</th><th scope=\"col\" class=\"num\">Recipients</th>"
+			"<th scope=\"col\" class=\"num\">Accepted</th><th scope=\"col\" class=\"num\">Opened</th><th scope=\"col\" class=\"num\">Clicked</th></tr></thead><tbody>");
+		for (i = 0; i < report->arms->len; i++) {
+			const VentureMarketingArmCount *arm = g_ptr_array_index(report->arms, i);
+			g_autofree gchar *opened = venture_web_deliverability_share(arm->opened, arm->accepted);
+			gboolean won = report->winner && !g_strcmp0(report->winner, arm->arm);
+			g_string_append_printf(html, "<tr><td class=\"row-head\">%s%s</td><td style=\"min-width:9rem;overflow-wrap:anywhere\">",
+				!g_strcmp0(arm->arm, "a") ? "A" : !g_strcmp0(arm->arm, "b") ? "B" : "Rest", won ? " <span class=\"badge positive\">winner</span>" : "");
+			venture_html_escape_append(html, arm->subject ? arm->subject : "");
+			g_string_append_printf(html, "</td><td class=\"num\">%" G_GINT64_FORMAT "</td><td class=\"num\">%" G_GINT64_FORMAT "</td>"
+				"<td class=\"num\">%" G_GINT64_FORMAT "%s%s%s</td><td class=\"num\">%" G_GINT64_FORMAT "</td></tr>",
+				arm->recipients, arm->accepted, arm->opened, opened ? " <span class=\"muted\">(" : "", opened ? opened : "", opened ? ")</span>" : "", arm->clicked);
+		}
+		g_string_append(html, "</tbody></table></div>");
+	}
 	g_string_append(html, "<h2>Click map</h2>");
 	if (!report->links->len) g_string_append(html, "<p>This send had no tracked links.</p>");
 	else {

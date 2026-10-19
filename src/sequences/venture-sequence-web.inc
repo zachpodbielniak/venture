@@ -330,3 +330,110 @@ venture_web_sequence_click(HtmxRequest *request, GHashTable *params, gpointer da
 		return venture_web_sequence_tracking_missing();
 	return venture_web_redirect_to(url);
 }
+
+/* The journey map on a sequence's page: every step in order, what it does,
+ * how many enrollments it has seen, and for a branch where yes and no go.
+ * Drawn from the records; nothing is stored for the drawing. */
+static void
+venture_web_sequence_step_tally(VentureDatabase *database, VentureEntity *step, gint64 *done, gint64 *yes, gint64 *no, gint64 *skipped)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_DELIVERY);
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i;
+	*done = *yes = *no = *skipped = 0;
+	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, venture_entity_get_organization_id(step), NULL);
+	venture_query_add_filter_int(query, "step-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(step), NULL);
+	venture_query_set_limit(query, 10000);
+	rows = venture_database_find(database, query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autofree gchar *taken = NULL;
+		gint state = 0;
+		g_object_get(row, "state", &state, "branch-result", &taken, NULL);
+		if (!g_strcmp0(taken, "yes")) (*yes)++;
+		else if (!g_strcmp0(taken, "no")) (*no)++;
+		else if (state == 3) (*skipped)++;
+		else (*done)++;
+	}
+}
+
+static void
+venture_web_sequence_journey_block(VentureWebServer *self, GString *content, VentureEntity *record)
+{
+	static const gchar *const channels[] = { "Email", "Call task", "Text task", "Wait", "Branch" };
+	static const gchar *const conditions[] = { "", "opened the last email", "clicked a link in the last email", "replied" };
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) steps = NULL;
+	guint i;
+	if (G_OBJECT_TYPE(record) != VENTURE_TYPE_SEQUENCE || !venture_web_module_enabled(self, "sequences"))
+		return;
+	query = venture_query_new(VENTURE_TYPE_SEQUENCE_STEP);
+	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, venture_entity_get_organization_id(record), NULL);
+	venture_query_add_filter_int(query, "sequence-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(record), NULL);
+	venture_query_add_order(query, "position", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 200);
+	steps = venture_database_find(database, query, NULL);
+	g_string_append(content, "<section class=\"card journey\"><div class=\"card-head\"><h2>Journey</h2>"
+		"<a class=\"btn\" href=\"/e/sequence_step/new\">Add step</a></div><div class=\"card-body\">");
+	if (steps == NULL || steps->len == 0)
+	{
+		g_string_append(content, "<p class=\"muted\">No steps yet. Add an email, a wait or a branch to start the journey.</p></div></section>");
+		return;
+	}
+	g_string_append(content, "<ol class=\"journey-map\" style=\"list-style:none;margin:0;padding:0;display:grid;gap:0.75rem\">");
+	for (i = 0; i < steps->len; i++)
+	{
+		VentureEntity *step = g_ptr_array_index(steps, i);
+		g_autofree gchar *subject = NULL;
+		gint64 position = 0, days = 0, hours = 0, yes_at = 0, no_at = 0, then_at = 0, done, yes, no, skipped;
+		gint channel = 0, on = 0;
+		gboolean active = TRUE, end = FALSE;
+		g_object_get(step, "position", &position, "channel", &channel, "subject", &subject, "delay-days", &days,
+			"delay-hours", &hours, "branch-on", &on, "yes-position", &yes_at, "no-position", &no_at,
+			"then-position", &then_at, "end-after", &end, "active", &active, NULL);
+		venture_web_sequence_step_tally(database, step, &done, &yes, &no, &skipped);
+		g_string_append_printf(content, "<li style=\"border:1px solid var(--border);padding:0.75rem;%s\">"
+			"<div style=\"display:flex;flex-wrap:wrap;gap:0.5rem;align-items:baseline\">"
+			"<span class=\"badge\">Step %" G_GINT64_FORMAT "</span><strong>%s</strong>",
+			channel == 4 ? "border-left:4px solid var(--accent)" : "", position, channels[CLAMP(channel, 0, 4)]);
+		if (days || hours)
+		{
+			g_string_append(content, "<span class=\"muted\">after ");
+			if (days) g_string_append_printf(content, "%" G_GINT64_FORMAT " %s", days, days == 1 ? "day" : "days");
+			if (days && hours) g_string_append(content, ", ");
+			if (hours) g_string_append_printf(content, "%" G_GINT64_FORMAT " %s", hours, hours == 1 ? "hour" : "hours");
+			g_string_append(content, "</span>");
+		}
+		if (!active) g_string_append(content, "<span class=\"badge warning\">Off</span>");
+		g_string_append_printf(content, "<a href=\"/e/sequence_step/%" G_GINT64_FORMAT "\" style=\"margin-left:auto\">Edit</a></div>", venture_entity_get_id(step));
+		if (channel == 4)
+		{
+			g_autofree gchar *yes_text = yes_at > 0 ? g_strdup_printf("step %" G_GINT64_FORMAT, yes_at) : g_strdup("the next step");
+			g_autofree gchar *no_text = no_at > 0 ? g_strdup_printf("step %" G_GINT64_FORMAT, no_at) : g_strdup("the next step");
+			g_string_append_printf(content, "<p style=\"margin:0.4rem 0\">Waits, then asks: has the contact %s?</p>"
+				"<div style=\"display:flex;flex-wrap:wrap;gap:0.5rem\">"
+				"<span class=\"badge positive\">Yes &rarr; %s &middot; %" G_GINT64_FORMAT "</span>"
+				"<span class=\"badge negative\">No &rarr; %s &middot; %" G_GINT64_FORMAT "</span></div>",
+				conditions[CLAMP(on, 0, 3)], yes_text, yes, no_text, no);
+		}
+		else
+		{
+			if (subject != NULL && *subject)
+			{
+				g_string_append(content, "<p style=\"margin:0.4rem 0;overflow-wrap:anywhere\">");
+				venture_html_escape_append(content, subject);
+				g_string_append(content, "</p>");
+			}
+			g_string_append_printf(content, "<p class=\"muted\" style=\"margin:0\">%" G_GINT64_FORMAT " reached", done);
+			if (skipped) g_string_append_printf(content, " &middot; %" G_GINT64_FORMAT " skipped", skipped);
+			if (then_at > 0) g_string_append_printf(content, " &middot; then step %" G_GINT64_FORMAT, then_at);
+			if (end) g_string_append(content, " &middot; the journey ends here");
+			g_string_append(content, "</p>");
+		}
+		g_string_append(content, "</li>");
+	}
+	g_string_append(content, "</ol><p class=\"muted\">A branch waits its delay and then looks at the latest email: opens and clicks count only "
+		"when they are a person's, never a mail scanner's. Steps a path jumps over are recorded as skipped.</p></div></section>");
+}
