@@ -635,7 +635,8 @@ static GType (*const marketing_types[]) (void) = {
 static const gchar *const marketing_reports[] = { "marketing_performance", NULL };
 static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
 static GType (*const venture_module_mail_sync_types[]) (void) = {
-	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type, NULL
+	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type,
+	venture_mail_oauth_provider_get_type, NULL
 };
 static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
 static const gchar *const quotes_reports[] = { "quotes", NULL };
@@ -657,7 +658,7 @@ static GType (*const venture_module_leads_types[]) (void) = {
 	venture_lead_get_type, venture_lead_form_get_type,
 	venture_lead_assignment_rule_get_type,
 	venture_lead_routing_rule_get_type, venture_lead_scoring_rule_get_type,
-	venture_lead_score_history_get_type, NULL
+	venture_lead_score_history_get_type, venture_lead_score_proposal_get_type, NULL
 };
 static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", "lead_routing", "lead_scoring", NULL };
 static const gchar *const venture_module_requires_leads[] = { "crm", NULL };

@@ -22,7 +22,10 @@ static const VentureFieldDecl message_fields[] = {
 	VENTURE_FIELD_TEXT("last-error", "Last error", NULL),
 	STR("message-id", "Message-ID"), DATE("sent-at", "Sent at"),
 	INT("connection-id", "Delivery account"), INT("connection-version", "Delivery configuration version"),
-	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
+	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	/* A reply's threading headers, so the recipient's client files it
+	 * under the message it answers (RFC 5322 section 3.6.4). */
+	STR("in-reply-to", "In reply to"), STR("reply-references", "References")
 };
 /* Private intake mail may outlive the record whose answers it copied.
  * Keep delivery state in history, never an immutable second copy of answers. */

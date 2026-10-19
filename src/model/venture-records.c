@@ -64,7 +64,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("sequence-tracking", "Sequence mail tracking", "Allow open and click tracking on sequence mail; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("marketing-tracking", "Marketing mail tracking", "Allow marketing open and click observations; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("timezone", "Time zone", "IANA zone, for example America/Chicago: a local-time campaign uses it for a contact who has none; empty is UTC", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("timezone", "Time zone", "IANA zone, for example America/Chicago: a local-time campaign uses it for a contact who has none; empty is UTC", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("ai-lead-scoring", "AI lead score proposals", "Allow the assistant to propose a lead score beside the rule score; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,

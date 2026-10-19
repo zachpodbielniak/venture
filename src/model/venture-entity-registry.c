@@ -967,6 +967,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_marketing_topic_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_marketing_preference_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sequence_trigger_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_lead_score_proposal_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_mail_oauth_provider_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

@@ -10,5 +10,7 @@ VENTURE_DECLARE_ENTITY(VentureMailAccount, venture_mail_account, MAIL_ACCOUNT)
 VENTURE_DECLARE_ENTITY(VentureMailInbound, venture_mail_inbound, MAIL_INBOUND)
 #define VENTURE_TYPE_MAIL_UNMATCHED_SENDER (venture_mail_unmatched_sender_get_type())
 VENTURE_DECLARE_ENTITY(VentureMailUnmatchedSender, venture_mail_unmatched_sender, MAIL_UNMATCHED_SENDER)
+#define VENTURE_TYPE_MAIL_OAUTH_PROVIDER (venture_mail_oauth_provider_get_type())
+VENTURE_DECLARE_ENTITY(VentureMailOauthProvider, venture_mail_oauth_provider, MAIL_OAUTH_PROVIDER)
 G_END_DECLS
 #endif

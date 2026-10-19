@@ -344,6 +344,11 @@ const gchar *venture_connector_session_get_password(VentureConnectorSession *sel
 	g_return_val_if_fail(VENTURE_IS_CONNECTOR_SESSION(self), NULL);
 	return self->password;
 }
+const gchar *venture_connector_session_get_mechanism(VentureConnectorSession *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONNECTOR_SESSION(self), NULL);
+	return "password";
+}
 gboolean venture_connector_session_validate(VentureConnectorSession *self, GError **error)
 {
 	g_autoptr(VentureEntity) current = NULL;

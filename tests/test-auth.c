@@ -7069,6 +7069,73 @@ test_auth_web_extension_routes(
 	}
 }
 
+/* Lane 5, sales: every new route refuses the anonymous, a viewer cannot
+ * drag a deal or decide an AI score, and a mailbox sign-in started by one
+ * person cannot be finished by another. A missing guard looks exactly
+ * like nothing, so each route is named. */
+static void
+test_auth_sales_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(VentureEntity) stage = NULL;
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 stage_id = 0;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/deals/board.js"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/ai_score", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/ai_score", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/lead_score_proposals/1/accept", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/lead_score_proposals/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lead_score_proposals/1/accept", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lead_score_proposals/1/dismiss", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail_accounts/1/oauth/start"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail/oauth/callback?state=x&code=y"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_oauth_providers/1/client", NULL, "client_id=a&client_secret=b", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/interactions/1/reply", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/interactions/1/reply", NULL, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/lead_score_proposal"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail_oauth_provider"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* A viewer reads the board but its drop is refused before the service. */
+	server_fixture_create_member(fixture, "sales-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	server_fixture_create_member(fixture, "sales-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	viewer = server_fixture_login(fixture, "sales-viewer", "viewer-long-password");
+	editor = server_fixture_login(fixture, "sales-editor", "editor-long-password");
+	g_object_set(deal, "name", "Viewer drag", "organization-id", venture_context_get_default_organization_id(fixture->context), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_no_error(error);
+	venture_query_add_filter_int(query, "position", VENTURE_FILTER_OP_EQ, 1, NULL);
+	stage = venture_database_find_one(fixture->database, query, &error);
+	g_assert_nonnull(stage);
+	path = g_strdup_printf("/deals/%" G_GINT64_FORMAT "/move", venture_entity_get_id(VENTURE_ENTITY(deal)));
+	body = g_strdup_printf("stage_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, venture_entity_get_id(stage),
+		venture_entity_get_version(VENTURE_ENTITY(deal)));
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/deals/board.js", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, viewer, body, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(current, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, !=, venture_entity_get_id(stage));
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, editor, body, NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_clear_object(&current);
+	current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(current, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, ==, venture_entity_get_id(stage));
+
+	/* A viewer cannot ask for, accept or dismiss an AI score or send a
+	 * reply; an unknown or foreign sign-in state is refused rather than
+	 * redirected onward. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lead_score_proposals/1/accept", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/ai_score", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/interactions/1/reply", viewer, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/mail/oauth/callback?state=unknown&code=y", editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+}
+
 int
 main(
 	int	  argc,
@@ -7323,5 +7390,6 @@ main(
 	g_test_add("/auth/forms-upload-authority", ServerFixture, GINT_TO_POINTER(1), server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	g_test_add("/auth/forms-upload-viewer", ServerFixture, NULL, server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	g_test_add("/auth/forms-resume-session-authority", ServerFixture, NULL, server_fixture_set_up, test_forms_resume_session_authority, server_fixture_tear_down);
+	g_test_add("/auth/sales-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_sales_routes, server_fixture_tear_down);
 	return g_test_run();
 }

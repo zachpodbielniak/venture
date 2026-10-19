@@ -140,6 +140,7 @@
 #include "arbitrage/venture-arbitrage-records.h"
 #include "forms/venture-forms-records.h"
 #include "planner/venture-planner-records.h"
+#include "leads/venture-lead-ai-score-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -388,6 +389,11 @@
 #include "core/venture-tags.h"
 #include "marketing/venture-marketing-audiences.h"
 #include "sequences/venture-sequence-journeys.h"
+/* Sales: AI lead score proposals, token mailbox sign-in and replying from
+ * the timeline (docs/leads.org, docs/mail.org). */
+#include "leads/venture-lead-ai-score.h"
+#include "mail/venture-mail-oauth.h"
+#include "mail/venture-mail-reply.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

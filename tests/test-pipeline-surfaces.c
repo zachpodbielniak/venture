@@ -203,6 +203,144 @@ test_cli(Fixture *fixture, gconstpointer data)
 
 }
 
+/* The same request with an Accept header, which is how the board's script
+ * asks the move route for the moved deal instead of a redirect. */
+static guint
+request_accept(Fixture *fixture, const gchar *path, const gchar *accept, const gchar *body, gchar **response)
+{
+	g_autofree gchar *url = g_strconcat(fixture->url, path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new("POST", url);
+	g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+	Request result = { FALSE, NULL, NULL };
+	guint status;
+
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_headers_append(soup_message_get_request_headers(message), "Accept", accept);
+	soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
+	soup_session_send_and_read_async(fixture->session, message, G_PRIORITY_DEFAULT, NULL, request_done, &result);
+	while (!result.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	*response = g_strndup(g_bytes_get_data(result.body, NULL), g_bytes_get_size(result.body));
+	status = soup_message_get_status(message);
+	g_bytes_unref(result.body);
+	return status;
+}
+
+static VentureEntity *
+board_stage(Fixture *fixture, gint64 position)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(GError) error = NULL;
+	VentureEntity *stage;
+	venture_query_add_filter_int(query, "position", VENTURE_FILTER_OP_EQ, position, NULL);
+	stage = venture_database_find_one(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(stage);
+	return stage;
+}
+
+/* The board is drawn for dragging: every card carries its deal and the
+ * version it was drawn at, every column its stage, and the script that
+ * does the dragging is a file of its own rather than inline handlers. The
+ * keyboard fallback (the stage selector and Move) stays on every card. If
+ * this regresses the board either stops dragging or drops onto a version
+ * nobody checks. */
+static void
+test_board_markup(Fixture *fixture, gconstpointer data)
+{
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *needle = NULL;
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(GError) error = NULL;
+	gint64 stage_id = 0;
+	(void)data;
+	g_object_set(deal, "name", "Drag me", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(deal), NULL, &error));
+	g_object_get(deal, "stage-id", &stage_id, NULL);
+	g_assert_cmpuint(request(fixture, "GET", "/deals", NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "data-deal-board"));
+	needle = g_strdup_printf("data-stage-id=\"%" G_GINT64_FORMAT "\"", stage_id);
+	g_assert_nonnull(strstr(body, needle));
+	g_clear_pointer(&needle, g_free);
+	needle = g_strdup_printf("data-deal-id=\"%" G_GINT64_FORMAT "\" data-deal-version=\"%" G_GINT64_FORMAT "\" draggable=\"true\"",
+		venture_entity_get_id(VENTURE_ENTITY(deal)), venture_entity_get_version(VENTURE_ENTITY(deal)));
+	g_assert_nonnull(strstr(body, needle));
+	g_clear_pointer(&needle, g_free);
+	needle = g_strdup_printf("<input type=\"hidden\" name=\"version\" value=\"%" G_GINT64_FORMAT "\">", venture_entity_get_version(VENTURE_ENTITY(deal)));
+	g_assert_nonnull(strstr(body, needle));
+	g_assert_nonnull(strstr(body, "<script src=\"/deals/board.js\" defer></script>"));
+	g_assert_nonnull(strstr(body, "name=\"stage_id\""));
+	g_assert_nonnull(strstr(body, ">Move</button>"));
+	g_assert_null(strstr(body, "ondrop"));
+	g_assert_null(strstr(body, "ondragstart"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(request(fixture, "GET", "/deals/board.js", NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "dragstart"));
+	g_assert_nonnull(strstr(body, "data-deal-version"));
+}
+
+/* A drop names the version the card was drawn at. A deal someone moved or
+ * edited since is refused in plain words and left where it is; the same
+ * drop at the current version moves it through the one move service and
+ * answers the moved deal to the script. */
+static void
+test_board_stale_drop(Fixture *fixture, gconstpointer data)
+{
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *payload = NULL;
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(VentureEntity) qualified = board_stage(fixture, 1);
+	g_autoptr(VentureEntity) proposal = board_stage(fixture, 2);
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 drawn, stage_id = 0;
+	(void)data;
+	g_object_set(deal, "name", "Stale drop", "organization-id", (gint64)1, NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(deal), NULL, &error));
+	drawn = venture_entity_get_version(VENTURE_ENTITY(deal));
+	/* Someone else edits the deal after the board was drawn. */
+	g_object_set(deal, "next-step", "Call back Tuesday", NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(deal), NULL, &error));
+	path = g_strdup_printf("/deals/%" G_GINT64_FORMAT "/move", venture_entity_get_id(VENTURE_ENTITY(deal)));
+	payload = g_strdup_printf("stage_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, venture_entity_get_id(qualified), drawn);
+	g_assert_cmpuint(request_accept(fixture, path, "application/json", payload, &body), ==, 409);
+	g_assert_nonnull(strstr(body, "changed since the board was loaded"));
+	g_assert_null(strstr(body, "VentureDealService"));
+	current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(current, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, !=, venture_entity_get_id(qualified));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&payload, g_free);
+	g_clear_object(&current);
+	/* The no-script form is refused the same way, as a page. */
+	payload = g_strdup_printf("stage_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, venture_entity_get_id(qualified), drawn);
+	g_assert_cmpuint(request_accept(fixture, path, "text/html", payload, &body), ==, 409);
+	g_assert_nonnull(strstr(body, "changed since the board was loaded"));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&payload, g_free);
+	/* At the current version the drop moves it and answers the deal. */
+	payload = g_strdup_printf("stage_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, venture_entity_get_id(qualified),
+		venture_entity_get_version(VENTURE_ENTITY(deal)));
+	g_assert_cmpuint(request_accept(fixture, path, "application/json", payload, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "\"stage_id\""));
+	current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(current, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, ==, venture_entity_get_id(qualified));
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&payload, g_free);
+	/* Replaying the same drop is now stale too: the move bumped the version. */
+	payload = g_strdup_printf("stage_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, venture_entity_get_id(proposal),
+		venture_entity_get_version(VENTURE_ENTITY(deal)));
+	g_assert_cmpuint(request_accept(fixture, path, "application/json", payload, &body), ==, 409);
+	/* Without a version the fallback form keeps working as before. */
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&payload, g_free);
+	payload = g_strdup_printf("stage_id=%" G_GINT64_FORMAT, venture_entity_get_id(proposal));
+	g_assert_cmpuint(request_accept(fixture, path, "text/html", payload, &body), ==, 302);
+}
+
 
 int
 main(int argc, char **argv)
@@ -211,5 +349,7 @@ main(int argc, char **argv)
 	g_test_add("/pipeline-surfaces/rest", Fixture, NULL, fixture_set_up, test_rest_move, fixture_tear_down);
 	g_test_add("/pipeline-surfaces/staged", Fixture, GINT_TO_POINTER(1), fixture_set_up, test_rest_move, fixture_tear_down);
 	g_test_add("/pipeline-surfaces/cli", Fixture, NULL, fixture_set_up, test_cli, fixture_tear_down);
+	g_test_add("/pipeline-surfaces/board-markup", Fixture, NULL, fixture_set_up, test_board_markup, fixture_tear_down);
+	g_test_add("/pipeline-surfaces/board-stale-drop", Fixture, NULL, fixture_set_up, test_board_stale_drop, fixture_tear_down);
 	return g_test_run();
 }

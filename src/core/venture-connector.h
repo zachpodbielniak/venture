@@ -104,6 +104,14 @@ VentureEntity *venture_connector_session_get_account(VentureConnectorSession *se
  */
 const gchar *venture_connector_session_get_password(VentureConnectorSession *self);
 /**
+ * venture_connector_session_get_mechanism:
+ * @self: snapshot
+ *
+ * Returns: "xoauth2" when the credential is a token sign-in (the password
+ *   accessor then returns the access token), otherwise "password"
+ */
+const gchar *venture_connector_session_get_mechanism(VentureConnectorSession *self);
+/**
  * venture_connector_session_validate:
  * @self: snapshot
  * @error: (out) (optional): revoked or changed configuration

@@ -10,6 +10,16 @@ gboolean venture_imap_client_connect(VentureImapClient *self, const gchar *host,
 	g_return_val_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect != NULL, FALSE);
 	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect(self, host, port, security, username, secret, cancellable, error);
 }
+gboolean venture_imap_client_connect_xoauth2(VentureImapClient *self, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *access_token, GCancellable *cancellable, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_IMAP_CLIENT(self), FALSE);
+	if (VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect_xoauth2 == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "IMAP: this transport cannot sign in with a token");
+		return FALSE;
+	}
+	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect_xoauth2(self, host, port, security, username, access_token, cancellable, error);
+}
 gboolean venture_imap_client_select(VentureImapClient *self, const gchar *folder, VentureImapFolderInfo *info, GCancellable *cancellable, GError **error)
 {
 	VentureImapFolderInfo ignored;
@@ -385,6 +395,20 @@ gint venture_fake_imap_client_get_connects(VentureFakeImapClient *self)
 {
 	g_return_val_if_fail(VENTURE_IS_FAKE_IMAP_CLIENT(self), 0);
 	return self->connects;
+}
+void venture_fake_imap_client_set_token(VentureFakeImapClient *self, const gchar *token)
+{
+	(void)self; (void)token;
+}
+const gchar *venture_fake_imap_client_get_mechanism(VentureFakeImapClient *self)
+{
+	(void)self;
+	return NULL;
+}
+const gchar *venture_fake_imap_client_get_last_token(VentureFakeImapClient *self)
+{
+	(void)self;
+	return NULL;
 }
 gint venture_fake_imap_client_get_fetches(VentureFakeImapClient *self)
 {
