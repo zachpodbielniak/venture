@@ -5307,6 +5307,7 @@ static void venture_web_deal_buttons(VentureWebServer *self, GString *html, Vent
 static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_oauth_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_telephony_block(VentureWebServer *self, GString *content, VentureEntity *record, const VentureAuthPrincipal *principal);
 
 static HtmxResponse *
 venture_web_ui_invoice_print(
@@ -12067,6 +12068,8 @@ venture_web_ui_detail(
 	venture_web_lead_ai_score_block(self, content, record);
 	venture_web_mail_reply_block(self, content, record);
 	venture_web_mail_oauth_block(self, content, record);
+	/* Phone and text: the Call button and a contact's texts. */
+	venture_web_telephony_block(self, content, record, principal);
 
 	/*
 	 * The discussion, after the type's own block and before the tabs: it
@@ -32939,6 +32942,7 @@ venture_web_api_ticket_draft(
 #include "leads/venture-lead-ai-score-web.inc"
 #include "mail/venture-mail-reply-web.inc"
 #include "mail/venture-mail-oauth-web.inc"
+#include "telephony/venture-telephony-web.inc"
 #include "forms/venture-forms-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
@@ -33561,6 +33565,8 @@ venture_web_server_new(
 	/* Deliverability: the domain check, a send's report and the signed
 	 * bounce and complaint feed. */
 	venture_deliverability_pages_register(self);
+	/* Phone and text: settings, click-to-call, texts and the webhook. */
+	venture_telephony_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);
 	/* And /api/v1/arbitrage: the scan, recording, export and the
 	 * calculators, not a type. */
