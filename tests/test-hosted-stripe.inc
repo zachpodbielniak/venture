@@ -15,6 +15,70 @@ static void assert_hosted_notice(Fixture *f, gint64 business, const gchar *kind)
 	g_assert_true(found);
 }
 
+/* The money-back promise: inside thirty days of going live, the business is
+ * cancelled now and every settled hosted payment is refunded in full through
+ * the provider, once, however often the request is repeated. */
+static void
+money_back_after_payment(Fixture *f, FakeTransport *transport, gint64 business, const gchar *kind)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) refunded = NULL, replayed = NULL;
+	g_autoptr(GPtrArray) refunds = NULL;
+	JsonObject *object;
+	JsonArray *list;
+	gint state = 0;
+	transport->refund_amount = 1000;
+	if (!g_strcmp0(kind, "money-back-late")) {
+		g_autoptr(GDateTime) now = venture_time_now(), past = g_date_time_add_days(now, -31);
+		g_autofree gchar *date = venture_time_to_string(past);
+		g_autofree gchar *sql = g_strdup_printf("UPDATE lightsite_billing_receipts SET result='{\"go_live_at\":\"%s\"}' WHERE business_id=%" G_GINT64_FORMAT " AND outcome='publish'", date, business);
+		{
+			g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+			g_assert_true(venture_database_execute(f->database, sql, NULL, &error)); g_assert_no_error(error);
+		}
+		g_assert_null(venture_lightsite_billing_money_back(f->context, f->organization_id, business, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+		g_assert_cmpuint(transport->refund_creates, ==, 0);
+		g_test_message("Money back after thirty days: refused, no provider call");
+		return;
+	}
+	if (!g_strcmp0(kind, "money-back-lost")) {
+		/* The provider makes the refund but the answer is lost: the request
+		 * fails, and the retry finds that refund instead of making another. */
+		transport->drop_refund = TRUE;
+		g_assert_null(venture_lightsite_billing_money_back(f->context, f->organization_id, business, &error));
+		g_assert_nonnull(error); g_clear_error(&error);
+		g_assert_cmpuint(transport->refund_creates, ==, 1);
+	}
+	refunded = venture_lightsite_billing_money_back(f->context, f->organization_id, business, &error);
+	g_assert_no_error(error); g_assert_nonnull(refunded);
+	object = json_node_get_object(refunded);
+	g_assert_cmpint(json_object_get_int_member(object, "organization_id"), ==, business);
+	g_assert_cmpstr(json_object_get_string_member(object, "state"), ==, "refunded");
+	list = json_object_get_array_member(object, "refunds");
+	g_assert_cmpuint(json_array_get_length(list), ==, 1);
+	g_assert_true(g_str_has_prefix(json_object_get_string_member(json_array_get_object_element(list, 0), "refund"), "re_"));
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(json_array_get_object_element(list, 0), "amount"), "amount"), ==, "10.00");
+	g_assert_false(json_object_get_boolean_member(json_array_get_object_element(list, 0), "by_hand"));
+	g_assert_cmpuint(transport->refund_creates, ==, 1);
+	g_assert_nonnull(strstr(transport->refund_key, "money-back"));
+	replayed = venture_lightsite_billing_money_back(f->context, f->organization_id, business, &error);
+	g_assert_no_error(error);
+	g_assert_true(json_node_equal(refunded, replayed));
+	g_assert_cmpuint(transport->refund_creates, ==, 1);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
+			json_object_get_int_member(object, "subscription_id"), &error);
+		g_assert_no_error(error); g_object_get(sub, "status", &state, NULL); g_assert_cmpint(state, ==, 4);
+		refunds = rows(f, "refund");
+		g_assert_cmpuint(refunds->len, ==, 1);
+	}
+	assert_hosted_notice(f, business, "refund");
+	g_test_message("Money back: cancelled now, one full provider refund booked once; replay identical%s",
+		!g_strcmp0(kind, "money-back-lost") ? "; a lost refund answer recovered from the provider" : "");
+}
+
 static void
 test_hosted_saved_card(Fixture *f, gconstpointer data)
 {
@@ -78,7 +142,8 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(setup), "state"), ==, "card_ready");
 	assert_hosted_notice(f, business, "card_saved");
-	if (data) {
+	gboolean timer = data && !g_strcmp0(data, "timer");
+	if (timer) {
 		g_autoptr(JsonNode) waiting = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, FALSE, &error);
 		g_autoptr(GDateTime) now = venture_time_now(), past = g_date_time_add_days(now, -1);
 		g_autofree gchar *date = venture_time_to_string(past), *receipt = NULL, *sql = NULL;
@@ -95,10 +160,10 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 			date, date, date, date, date, json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"));
 		g_assert_true(venture_database_execute(f->database, sql, NULL, &error)); g_assert_no_error(error);
 	}
-	charged = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, data == NULL, &error);
+	charged = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, !timer, &error);
 	g_assert_no_error(error); g_assert_nonnull(charged);
 	invoice = json_object_get_int_member(json_node_get_object(charged), "invoice_id"); g_assert_cmpint(invoice, >, 0);
-	repeated = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, data == NULL, &error);
+	repeated = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, !timer, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(json_object_get_int_member(json_node_get_object(repeated), "invoice_id"), ==, invoice);
 	{
@@ -119,6 +184,10 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		g_assert_true(venture_stripe_save_owned(f->database, retained, NULL, &error)); g_assert_no_error(error);
 	}
 	assert_hosted_notice(f, business, "card_saved");
+	if (data && g_str_has_prefix(data, "money-back")) {
+		money_back_after_payment(f, (FakeTransport *)transport, business, data);
+		return;
+	}
 
 	g_test_message("Hosted enrollment + verified Setup: zero invoices; publish replay: one invoice and one collection; signed fixture settlement: paid");
 }
