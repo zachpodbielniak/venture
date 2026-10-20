@@ -68,6 +68,33 @@ refuse(GError **error, const gchar *message)
 	return FALSE;
 }
 
+/* Recheck at posting time too: an existing bank can outlive a ledger edit. */
+static gboolean
+bank_balance_account(VentureDatabase *database, VentureEntity *bank, GError **error)
+{
+	g_autoptr(VentureEntity) account = NULL;
+	gint64 account_id = 0;
+	gint kind = 0, purpose = 0;
+	if (venture_entity_is_deleted(bank)) return refuse(error, "bank account is deleted");
+	g_object_get(bank, "account-id", &account_id, "kind", &purpose, NULL);
+	account = venture_database_get(database, VENTURE_TYPE_ACCOUNT, account_id, error);
+	if (account == NULL) return FALSE;
+	if (venture_entity_is_deleted(account) ||
+		venture_entity_get_organization_id(account) != venture_entity_get_organization_id(bank))
+		return refuse(error, "account must be a live ledger account in the same organization");
+	g_object_get(account, "kind", &kind, NULL);
+	if (kind != VENTURE_ACCOUNT_KIND_ASSET && kind != VENTURE_ACCOUNT_KIND_LIABILITY)
+		return refuse(error, "bank movements require asset or liability accounts, never income or spending");
+	if (purpose != VENTURE_BANK_ACCOUNT_UNSPECIFIED)
+	{
+		gboolean liability = purpose == VENTURE_BANK_ACCOUNT_CARD || purpose == VENTURE_BANK_ACCOUNT_LOAN;
+		if ((liability && kind != VENTURE_ACCOUNT_KIND_LIABILITY) ||
+			(!liability && kind != VENTURE_ACCOUNT_KIND_ASSET))
+			return refuse(error, "cards and loans require liabilities; other account kinds require assets");
+	}
+	return TRUE;
+}
+
 gboolean
 venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gboolean removal, GError **error)
 {
@@ -113,7 +140,15 @@ venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gbool
 			return refuse(error, "ledger account belongs to another organization");
 		if (!venture_currency_is_valid(currency))
 			return refuse(error, "bank currency is required");
-		return TRUE;
+		/* A label edit must not retroactively reject an old identity. */
+		if (previous != NULL)
+		{
+			gint old_kind = 0, new_kind = 0;
+			g_object_get(previous, "kind", &old_kind, NULL);
+			g_object_get(record, "kind", &new_kind, NULL);
+			if (old_kind == new_kind) return TRUE;
+		}
+		return bank_balance_account(database, record, error);
 	}
 	if (!strcmp(name, "bank_connection"))
 		return TRUE;
@@ -1677,30 +1712,46 @@ learn_from(VentureBankMatchService *self, VentureEntity *transaction, JsonObject
 	g_autofree gchar *description = NULL, *merchant = NULL;
 	g_autoptr(GPtrArray) rules = NULL;
 	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(VentureMoney) amount = NULL, debit_max = NULL;
 	gint64 org = venture_entity_get_organization_id(transaction);
 	guint i;
-	g_object_get(transaction, "description", &description, NULL);
-	merchant = description != NULL ? g_strdup(description) : g_strdup("Bank");
+	/* Receipt corrections need a customer; never invent an expense rule. */
+	if (g_strcmp0(option(args, "type"), "expense") != 0) return TRUE;
+	g_object_get(transaction, "description", &description, "amount", &amount, NULL);
+	debit_max = venture_money_new_for_currency(-1, venture_money_get_currency(amount));
+	merchant = g_strdup(description);
+	if (merchant == NULL || *g_strstrip(merchant) == '\0') return TRUE;
 	rules = org_rules(self, org, error);
 	if (rules == NULL) return FALSE;
 	for (i = 0; i < rules->len; i++)
 	{
 		VentureEntity *existing = g_ptr_array_index(rules, i);
-		g_autofree gchar *existing_merchant = NULL;
-		g_object_get(existing, "merchant", &existing_merchant, NULL);
-		if (existing_merchant != NULL && text_has(description, existing_merchant))
+		g_autofree gchar *existing_merchant = NULL, *action = NULL, *create_type = NULL;
+		g_autofree gchar *contains = NULL, *splits = NULL;
+		g_autoptr(VentureMoney) min = NULL, max = NULL;
+		g_object_get(existing, "merchant", &existing_merchant, "action", &action,
+			"create-type", &create_type, "description-contains", &contains,
+			"splits", &splits, "amount-min", &min, "amount-max", &max, NULL);
+		/* Never rewrite a broad, bounded, split or other-account rule. */
+		if (existing_merchant != NULL && !g_ascii_strcasecmp(merchant, existing_merchant) &&
+			number(existing, "bank-account-id") == number(transaction, "bank-account-id") &&
+			!g_strcmp0(action, "categorize") && !g_strcmp0(create_type, "expense") &&
+			(contains == NULL || !*contains) && (splits == NULL || !*splits) && min == NULL &&
+			(max == NULL || venture_money_equal(max, debit_max)))
 		{
-			g_object_set(existing, "category", option(args, "category"),
-				"action", "categorize", "priority", number(existing, "priority") - 1, NULL);
-			return save_owned(self, existing, actor, error);
+			rule = g_object_ref(existing);
+			break;
 		}
 	}
-	rule = new_record(VENTURE_TYPE_BANK_RULE, org);
-	g_object_set(rule, "name", merchant, "merchant", merchant, "priority", (gint64)1, "enabled", FALSE,
-		"action", "categorize", "category", option(args, "category"), "create-type", "expense",
-		"bank-account-id", number(transaction, "bank-account-id"),
-		"last-preview", "{\"matches\":[],\"count\":0}", NULL);
-	return save_owned(self, rule, actor, error);
+	if (rule == NULL)
+	{
+		rule = new_record(VENTURE_TYPE_BANK_RULE, org);
+		g_object_set(rule, "name", merchant, "merchant", merchant, "priority", (gint64)1,
+			"action", "categorize", "create-type", "expense",
+			"bank-account-id", number(transaction, "bank-account-id"), NULL);
+	}
+	g_object_set(rule, "category", option(args, "category"), "enabled", FALSE, "amount-max", debit_max, NULL);
+	return save_owned(self, rule, actor, error) && preview_rule(self, rule, actor, error);
 }
 
 static gboolean
@@ -1858,8 +1909,11 @@ create_transfer(VentureBankMatchService *self, VentureEntity *from_bank, JsonObj
 	if (to_bank == NULL) return FALSE;
 	if (venture_entity_get_organization_id(to_bank) != org)
 		return refuse(error, "transfer crosses organizations");
-	if (venture_entity_get_id(from_bank) == dest_id)
-		return refuse(error, "transfer requires two bank accounts");
+	if (venture_entity_get_id(from_bank) == dest_id ||
+		number(from_bank, "account-id") == number(to_bank, "account-id"))
+		return refuse(error, "transfer requires two distinct ledger accounts");
+	if (!bank_balance_account(self->database, from_bank, error) ||
+		!bank_balance_account(self->database, to_bank, error)) return FALSE;
 	g_object_get(from_bank, "currency", &currency, NULL);
 	g_object_get(to_bank, "currency", &dest_currency, NULL);
 	if (g_strcmp0(currency, dest_currency) != 0)

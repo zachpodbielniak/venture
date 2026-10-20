@@ -1065,6 +1065,41 @@ test_account_holdings(void)
 	venture_test_remove_tree(directory);
 }
 
+/* An old account is unclassified, not guessed to be checking. Retain its
+ * identity and currency across upgrade and a second startup. */
+static void
+test_household_account_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO bank_accounts (uuid, organization_id, name, currency, account_id) "
+		"VALUES ('maple-old-account', 1, 'Maple savings', 'USD', 17);"
+		"UPDATE bank_accounts SET kind = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 921", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || currency || ':' || CAST(account_id AS TEXT) || ':' || CAST(kind AS TEXT) "
+			"FROM bank_accounts WHERE uuid = 'maple-old-account'");
+		g_assert_cmpstr(value, ==, "Maple savings:USD:17:0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
 /*
  * 000710 where the accounts table is absent: accounts belong to the
  * finance module, and reconciliation never creates a hidden type's table.
@@ -1469,6 +1504,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
+	g_test_add_func("/migrations/household-account-upgrade", test_household_account_upgrade);
 	g_test_add_func("/migrations/account-holdings-without-accounts",
 	                test_account_holdings_without_accounts);
 	g_test_add_func("/migrations/backup-store-copies", test_backup_store_copies);

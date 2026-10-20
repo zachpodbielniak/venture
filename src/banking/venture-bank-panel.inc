@@ -35,7 +35,12 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 			"<label><input type=\"checkbox\" name=\"apply\" value=\"true\"> Save mapping</label>"
 			"<label>Transfer to bank ID<input type=\"number\" name=\"counterparty_bank_account_id\" min=\"1\"></label>"
 			"<label>Transfer amount<input name=\"amount\"></label>"
-			"<label>Transfer date<input type=\"date\" name=\"date\"></label>");
+			"<label>Transfer date<input type=\"date\" name=\"date\"></label>"
+			"<label>Transfer fee (optional)<input name=\"fee\"></label>"
+			"<label>Source statement line ID (optional)<input type=\"number\" name=\"from_transaction_id\" min=\"1\"></label>"
+			"<label>Destination statement line ID (optional)<input type=\"number\" name=\"to_transaction_id\" min=\"1\"></label>"
+			"<p>Moving money between your accounts, including card repayments and loan principal, is a transfer. "
+			"Link its statement lines here so they cannot also become spending. Only a separate fee counts as spending.</p>");
 	}
 	else if (!strcmp(name, "bank_statement"))
 		g_string_append(content, "<label>Reconciliation state<select name=\"state\">"
@@ -48,6 +53,8 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 			"<label>Create<select name=\"type\"><option value=\"expense\">Expense</option>"
 			"<option value=\"receipt\">Receipt</option></select></label>"
 			"<label>Category<input name=\"category\"></label>"
+			"<p>Use correct to change a spending category and learn a rule for this account. "
+			"Review and enable the saved rule in Category rules before applying it to other lines.</p>"
 			"<label>Customer ID for receipt<input type=\"number\" name=\"customer_id\" min=\"1\"></label>"
 			"<label>Candidate search<input name=\"search\" placeholder=\"description or reference\"></label>"
 			"<p>For matching, select the existing record and its signed amount. Add rows for a split, refund, journal or explicit fee adjustment. REST and CLI accept any number of parts.</p>");

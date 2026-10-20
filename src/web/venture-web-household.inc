@@ -16,6 +16,11 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/e/goal", "Goals", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"8\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>"), "Goals", "goals" },
 	{ "/e/document", "Documents", VENTURE_ICON("<path d=\"M5 3h14v18H5zM8 8h8M8 13h8\"/>"), "Documents", "core" },
 	{ "/reports", "Reports", VENTURE_ICON("<path d=\"M4 20h16M7 20V12M12 20V4M17 20V8\"/>"), "Reports", "core" },
+	{ "/e/bank_account", "Bank accounts", VENTURE_ICON("<path d=\"M4 6h16v14H4zM4 10h16\"/>"), "Money", "banking" },
+	{ "/e/bank_statement", "Statements", VENTURE_ICON("<path d=\"M5 3h14v18H5z\"/>"), NULL, "banking" },
+	{ "/e/bank_transaction", "Statement lines", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "banking" },
+	{ "/e/bank_rule", "Category rules", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "banking" },
+	{ "/e/bank_transfer", "Transfers", VENTURE_ICON("<path d=\"M4 8h16l-4-4M20 16H4l4 4\"/>"), NULL, "banking" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -82,20 +87,30 @@ venture_web_household_type_link(const gchar *name)
 static void
 venture_web_append_household_nav(VentureWebServer *self, GString *html, const gchar *active)
 {
-	const gchar *section = NULL;
-	const gchar *shown = NULL;
+	g_autoptr(GHashTable) sections = g_hash_table_new(g_str_hash, g_str_equal);
 	gsize i;
+	/* Children append destinations; display a section only once, retaining
+	 * its original order even when later children add links to Money. */
 	for (i = 0; venture_household_nav[i].path != NULL; i++)
 	{
-		const VentureWebNavLink *link = &venture_household_nav[i];
-		if (link->section != NULL) section = link->section;
-		if (!venture_web_module_enabled(self, link->module)) continue;
-		if (g_strcmp0(section, shown) != 0)
+		const gchar *section = venture_household_nav[i].section;
+		const gchar *current = NULL;
+		gboolean shown = FALSE;
+		gsize j;
+		if (section == NULL || g_hash_table_contains(sections, section)) continue;
+		g_hash_table_add(sections, (gpointer)section);
+		for (j = 0; venture_household_nav[j].path != NULL; j++)
 		{
-			venture_web_append_nav_heading(html, section);
-			shown = section;
+			const VentureWebNavLink *link = &venture_household_nav[j];
+			if (link->section != NULL) current = link->section;
+			if (g_strcmp0(current, section) || !venture_web_module_enabled(self, link->module)) continue;
+			if (!shown)
+			{
+				venture_web_append_nav_heading(html, section);
+				shown = TRUE;
+			}
+			venture_web_append_nav_item(html, link, active);
 		}
-		venture_web_append_nav_item(html, link, active);
 	}
 }
 

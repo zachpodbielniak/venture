@@ -1,9 +1,33 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 
+GType
+venture_bank_account_kind_get_type(void)
+{
+	static gsize type_id = 0;
+	static const GEnumValue values[] = {
+		{ VENTURE_BANK_ACCOUNT_UNSPECIFIED, "VENTURE_BANK_ACCOUNT_UNSPECIFIED", "unspecified" },
+		{ VENTURE_BANK_ACCOUNT_CHECKING, "VENTURE_BANK_ACCOUNT_CHECKING", "checking" },
+		{ VENTURE_BANK_ACCOUNT_SAVINGS, "VENTURE_BANK_ACCOUNT_SAVINGS", "savings" },
+		{ VENTURE_BANK_ACCOUNT_CARD, "VENTURE_BANK_ACCOUNT_CARD", "card" },
+		{ VENTURE_BANK_ACCOUNT_CASH, "VENTURE_BANK_ACCOUNT_CASH", "cash" },
+		{ VENTURE_BANK_ACCOUNT_LOAN, "VENTURE_BANK_ACCOUNT_LOAN", "loan" },
+		{ VENTURE_BANK_ACCOUNT_INVESTMENT, "VENTURE_BANK_ACCOUNT_INVESTMENT", "investment" },
+		{ 0, NULL, NULL }
+	};
+	if (g_once_init_enter(&type_id))
+	{
+		GType registered = g_enum_register_static("VentureBankAccountKind", values);
+		g_once_init_leave(&type_id, registered);
+	}
+	return (GType)type_id;
+}
+
 static const VentureFieldDecl bank_account_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
-	VENTURE_FIELD_REF("account-id", "Account id", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("account-id", "Ledger account", "Asset for checking, savings, cash or investments; liability for cards or loans", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("kind", "Account kind", "Choose how this account is used",
+		venture_bank_account_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("currency", "Currency", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("last-statement-balance", "Last statement balance", NULL),
 	VENTURE_FIELD("last-statement-date", "Last statement date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
@@ -36,7 +60,8 @@ static const VentureFieldDecl bank_statement_fields[] = {
 	VENTURE_FIELD("source-file-hash", "Source file hash", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("imported-at", "Imported at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureBankStatement, venture_bank_statement, bank_statement_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankStatement, venture_bank_statement, bank_statement_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/e/bank_account");)
 
 static const VentureFieldDecl bank_transaction_fields[] = {
 	VENTURE_FIELD_REF("statement-id", "Statement id", NULL, "bank_statement", VENTURE_COLUMN_FLAG_NONE),
@@ -56,7 +81,8 @@ static const VentureFieldDecl bank_transaction_fields[] = {
 	VENTURE_FIELD_REF("suggested-rule-id", "Suggested rule", NULL, "bank_rule", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("suggested-action", "Suggested action", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureBankTransaction, venture_bank_transaction, bank_transaction_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankTransaction, venture_bank_transaction, bank_transaction_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/e/bank_account");)
 
 static const VentureFieldDecl bank_match_fields[] = {
 	VENTURE_FIELD_REF("transaction-id", "Transaction id", NULL, "bank_transaction", VENTURE_COLUMN_FLAG_NONE),
@@ -126,4 +152,5 @@ static const VentureFieldDecl bank_transfer_fields[] = {
 	VENTURE_FIELD("transfer-key", "Transfer key", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
 	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureBankTransfer, venture_bank_transfer, bank_transfer_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankTransfer, venture_bank_transfer, bank_transfer_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/e/bank_account");)

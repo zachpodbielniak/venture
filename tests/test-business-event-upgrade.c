@@ -40,11 +40,13 @@ test_upgrade(void)
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(hook), NULL, &error));
 	g_assert_no_error(error);
 	/* Reconstruct the preceding schema, preserving the historical source and
-	 * subscription. An upgrade must not invent business events for old data. */
+	 * subscription. Drop the whole later history suffix, including migrations
+	 * added after this feature: a history with a hole must be refused.
+	 * An upgrade must not invent business events for old data. */
 	g_assert_true(venture_database_execute(database,
 		"DROP TABLE business_event_deliveries; DROP TABLE business_events;"
 		"ALTER TABLE webhooks DROP COLUMN business_events;"
-		"DELETE FROM schema_migrations WHERE version IN (919, 920)", NULL, &error));
+		"DELETE FROM schema_migrations WHERE version >= 919", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&context); g_clear_object(&database);
 	for (run = 0; run < 2; run++)

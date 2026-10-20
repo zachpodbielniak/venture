@@ -5,6 +5,36 @@
 #error "Only <venture.h> can be included directly."
 #endif
 G_BEGIN_DECLS
+/**
+ * VentureBankAccountKind:
+ * @VENTURE_BANK_ACCOUNT_UNSPECIFIED: existing account without a chosen kind
+ * @VENTURE_BANK_ACCOUNT_CHECKING: checking account
+ * @VENTURE_BANK_ACCOUNT_SAVINGS: savings account
+ * @VENTURE_BANK_ACCOUNT_CARD: credit card liability
+ * @VENTURE_BANK_ACCOUNT_CASH: cash wallet
+ * @VENTURE_BANK_ACCOUNT_LOAN: loan liability
+ * @VENTURE_BANK_ACCOUNT_INVESTMENT: investment account
+ *
+ * User-facing account purpose, separate from its linked ledger class.
+ */
+typedef enum
+{
+	VENTURE_BANK_ACCOUNT_UNSPECIFIED = 0,
+	VENTURE_BANK_ACCOUNT_CHECKING,
+	VENTURE_BANK_ACCOUNT_SAVINGS,
+	VENTURE_BANK_ACCOUNT_CARD,
+	VENTURE_BANK_ACCOUNT_CASH,
+	VENTURE_BANK_ACCOUNT_LOAN,
+	VENTURE_BANK_ACCOUNT_INVESTMENT
+} VentureBankAccountKind;
+
+/**
+ * venture_bank_account_kind_get_type:
+ *
+ * Returns: the registered #VentureBankAccountKind enumeration type
+ */
+GType venture_bank_account_kind_get_type(void) G_GNUC_CONST;
+
 #define VENTURE_TYPE_BANK_ACCOUNT (venture_bank_account_get_type())
 VENTURE_DECLARE_ENTITY(VentureBankAccount, venture_bank_account, BANK_ACCOUNT)
 #define VENTURE_TYPE_BANK_STATEMENT (venture_bank_statement_get_type())

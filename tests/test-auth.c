@@ -5603,7 +5603,8 @@ test_auth_household_navigation(ServerFixture *fixture, gconstpointer user_data)
 		"/payroll", "/tax", "/e/inventory_item", "/deals"
 	};
 	static const gchar *const labels[] = {
-		"Money", "Income", "Spending", "Bills", "Budgets", "Goals", "Documents", "Reports"
+		"Money", "Income", "Spending", "Bills", "Budgets", "Goals", "Documents", "Reports",
+		"Bank accounts", "Statement lines", "Category rules", "Transfers"
 	};
 	(void)user_data;
 	org = venture_context_get_default_organization_id(fixture->context);
@@ -5642,7 +5643,8 @@ test_auth_household_navigation(ServerFixture *fixture, gconstpointer user_data)
 
 	/* Every offered household page has a real handler. */
 	{
-		static const gchar *const pages[] = { "/e/sale", "/e/account", "/bankfeed", "/e/vendor_bill", "/budgets", "/e/goal", "/e/document", "/reports" };
+		static const gchar *const pages[] = { "/e/sale", "/e/account", "/bankfeed", "/e/vendor_bill", "/budgets", "/e/goal", "/e/document", "/reports",
+			"/e/bank_account", "/e/bank_transaction", "/e/bank_rule", "/e/bank_transfer" };
 		for (i = 0; i < G_N_ELEMENTS(pages); i++)
 		{
 			g_test_message("Household destination: %s", pages[i]);

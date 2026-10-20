@@ -186,3 +186,26 @@ A transfer requires two bank accounts in the same currency, a positive amount an
 * Reversing bank categorization
 
 =reverse= cancels only expenses created by that bank categorization, including its split expenses. The reversal journal and expense soft deletion commit together, so both ledger and expense reports remove the categorization. A match to an existing document is reconciliation evidence: use =unmatch= to change that link. Receipts require the receivables refund operation rather than a journal-only bank reversal. Historical matches without creation provenance are treated as existing documents. Amount bounds on a bank rule match only the same currency as the bank transaction; no exchange conversion is inferred.
+
+* Household account kinds and correction scope
+
+A =bank_account.kind= is =unspecified=, =checking=, =savings=, =card=, =cash=,
+=loan= or =investment=. The shared save boundary requires an asset ledger
+account for checking, savings, cash and investments, or a liability for cards
+and loans. Existing identities remain unspecified after migration =000921=;
+a label-only edit does not reclassify them. Transfers recheck both current
+ledger accounts, refusing income, expense, equity, deleted or identical
+accounts before posting. Principal therefore stays off spending and income.
+
+The transfer web form also accepts =fee=, =from_transaction_id= and
+=to_transaction_id=, using the same service as REST and CLI. Link imported
+movement lines here before categorising other statement lines. Matched
+transfer lines are excluded from bulk categorisation; only a separate fee
+reaches the expense ledger.
+
+A spending correction learns an account-specific merchant rule with a real
+historical preview. It never changes another bank's or a broad merchant's
+rule. Learned rules match negative amounts in the statement currency, leaving
+refunds for review. Review and enable the rule before bulk use; another
+correction disables and refreshes it. Empty descriptions do not produce
+catch-all rules. Receipt corrections do not invent spending rules.

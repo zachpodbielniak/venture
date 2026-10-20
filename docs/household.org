@@ -74,9 +74,9 @@ Books menu. The menu still folds on a phone using the existing Menu button.
 
 This child changes navigation, not accounting scope: the existing pages and
 reports still answer for the selected entity. Use separate entities when
-household and business books must be separate. Venture-level accounts,
-budgeting and household-specific reports are later children; selecting this
-view does not implement them or create a data-access boundary. Direct URLs,
+household and business books must be separate. Household account kinds and imports are described in child 2 below;
+budgeting and household-specific reports are later children. Selecting this
+view does not create a data-access boundary. Direct URLs,
 the CLI and API retain their existing permissions and record contracts.
 
 =GET /view/venture/ID= requires a signed-in session and a live readable venture
@@ -97,3 +97,82 @@ hidden business links in the sidebar and palette, every offered page, malformed
 IDs and switching back to a business. =/auth/household-view-scope= checks
 foreign selections, forged cookies and retyping. Both initial regressions
 were observed on the epic baseline before implementation.
+
+* Child 2: accounts, imports and transfers
+
+In the household Money menu, *Bank accounts* holds accounts that can receive
+statements: checking, savings, credit cards, cash wallets, loans and
+investments. *Accounts* remains the underlying chart of ledger accounts.
+Create a ledger account first, then a bank account linked to it, with its
+currency and account kind. Checking, savings, cash and investments require
+an asset ledger account; cards and loans require a liability. An investment
+account here records money movements, not security lots or market valuations.
+Existing accounts keep their identity and start as =unspecified=; choose a
+kind deliberately. The kind appears in the normal generated form, REST and
+CLI, and is checked at the shared save boundary.
+
+Accounts still belong to the selected entity, not the browser's venture-view
+cookie. Keep household and business books in different entities when their
+money must be separate. This child does not change access permissions.
+
+** Bring in statements
+
+Open a bank account and use its Banking actions to map columns and import
+CSV, OFX or QFX statement contents. New shortcuts on statements, statement
+lines and transfers return to the account list to choose the account whose
+actions create that evidence. Set the statement period and opening and
+closing balances. CSV supports either signed amounts or separate debit and
+credit columns; OFX/QFX uses FITID. Overlapping imports skip previously seen
+identities and an invalid new line rolls back the batch. See
+[[file:banking.org][Banking]] for the exact format and CLI examples.
+
+For a provider connection, enable the optional =bankfeed= module and open
+*Bank feeds*. Link the same bank account and configure that connection's
+settings. Sync imports statement evidence; it does not book spending.
+[[file:bankfeed.org][Bank feeds]] describes encrypted settings, provider support and sync.
+File import works without provider credentials. The implementation tests use
+local fake providers, never a real bank connection.
+
+** Review and learn categories
+
+*Statement lines* shows imported evidence. Use =create= for new spending,
+=match= for a document already entered, and =correct= to change a spending
+category. A correction reverses its old bank-created expense and creates its
+replacement atomically. It saves a rule for this account and merchant, with
+a real preview of matching historical statement lines. Learned spending rules
+match debits in the same currency; a merchant refund remains for review. In *Category rules*, review
+that preview, then =enable= the rule. The account's =inbox= previews suggestions;
+=bulk= applies unique enabled suggestions. Ambiguous matches remain for review.
+A corrected rule is disabled until reviewed and enabled again.
+
+Corrections do not rewrite another account's rule or a broader merchant,
+split or amount-bounded rule. Blank descriptions do not create catch-all
+rules. Reversals and corrections retain audit history and obey closed periods
+and reconciled statement locks.
+
+** Move money without counting it as spending
+
+Use =transfer= on the source bank account for a move to savings, investment
+funding, a cash withdrawal, card repayment or loan principal. Enter the
+destination bank account ID, amount and date. Both ends must use distinct
+asset or liability ledger accounts in the same entity and currency. The
+service checks the current ledger classes again before posting; a legacy
+account cannot send transfer principal to income or spending.
+
+If imported lines represent the movement, enter their source and destination
+statement line IDs in the transfer form. Their bank, direction and amount
+must agree exactly. The service marks both as transfer evidence in the same
+transaction as the paired journal, so subsequent categorisation leaves them
+alone. Do not create expenses from those lines. A duplicate transfer is
+refused. *Transfers* lists the saved movements.
+
+An optional fee is separate spending on the source account; only the
+principal moves to the destination. Enter loan interest as separate spending,
+not principal. Different-currency transfers require explicit exchange
+accounting and are refused by this action.
+
+Migration =000921_household_account_kinds.sql= adds no invented financial
+history: field metadata adds the kind column and the paired migrations mark
+previously unset kinds as unspecified, including when banking was disabled
+after use. Tests cover account-kind persistence and class refusal, populated
+upgrade/restart, correction isolation, imports, fake feed sync and transfers.
