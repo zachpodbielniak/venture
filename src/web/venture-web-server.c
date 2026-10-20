@@ -1876,6 +1876,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
 	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
 	{ "/e/job", "Jobs", VENTURE_ICON("<path d=\"M14 6l4 4-8 8H6v-4z\"/><path d=\"M12 8l4 4\"/>"), "Jobs", "jobs" },
+	{ "/jobs/day", "Day", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 14h8M8 17h5\"/>"), NULL, "jobs" },
 	{ "/e/property", "Properties", VENTURE_ICON("<path d=\"M3 11l9-7 9 7\"/><path d=\"M5 10v10h14V10\"/><path d=\"M10 20v-6h4v6\"/>"), NULL, "jobs" },
 	{ "/e/equipment", "Equipment", VENTURE_ICON("<rect x=\"6\" y=\"3\" width=\"12\" height=\"18\" rx=\"2\"/><path d=\"M10 8h4M12 14v3\"/>"), NULL, "jobs" },
 	{ NULL, NULL, NULL, NULL, NULL }
@@ -1932,7 +1933,7 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/worklist", "/customers/duplicates",
+	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/worklist", "/customers/duplicates",
 	NULL
 };
 
@@ -8535,16 +8536,17 @@ venture_web_organization_exists(
  * without anybody writing HTML for it.
  */
 /*
- * A user on the forms that grant access is named by display name, else
- * username: "User #3" is no way to pick a person. Everywhere else a user
- * keeps its generic label, because a username is a sign-in name that the
- * roles below admin are not shown.
+ * A user on the forms that grant access, or that send a technician to a
+ * job, is named by display name, else username: "User #3" is no way to
+ * pick a person. Everywhere else a user keeps its generic label, because a
+ * username is a sign-in name that the roles below admin are not shown.
  */
 static gchar *
 venture_web_reference_option_label(VentureEntity *record, VentureEntity *option)
 {
 	if (VENTURE_IS_USER(option) && NULL != record &&
-	    (VENTURE_IS_ORGANIZATION_MEMBERSHIP(record) || VENTURE_IS_TEAM_MEMBERSHIP(record)))
+	    (VENTURE_IS_ORGANIZATION_MEMBERSHIP(record) || VENTURE_IS_TEAM_MEMBERSHIP(record) ||
+	     VENTURE_IS_JOB_TECHNICIAN(record)))
 	{
 		g_autofree gchar *username = NULL, *display = NULL;
 
@@ -33278,6 +33280,7 @@ venture_web_api_ticket_draft(
 #include "core/venture-connector-web.inc"
 #include "money-calendar/venture-money-calendar-web.inc"
 #include "planner/venture-planner-web.inc"
+#include "jobs/venture-jobs-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
 #include "report/venture-support-rollup-web.inc"
@@ -33858,6 +33861,7 @@ venture_web_server_new(
 	/* The planner's calendar, ahead of /api/v1/:type, which would read
 	 * "calendar" as a record type. */
 	venture_planner_web_register(self);
+	venture_jobs_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);

@@ -24,7 +24,7 @@ Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds
 |           | Money out         | Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
 |           | Bank              | Bank feeds, Money calendar                                                                                                                         |
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
-| Customers |                   | Companies, Contacts, Properties, Equipment, Jobs, My day, Duplicates                                                                               |
+| Customers |                   | Companies, Contacts, Properties, Equipment, Jobs, Day, My day, Duplicates                                                                          |
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts, Forms                                                                                           |
 | Support   |                   | Tickets, Sprints, Milestones, Knowledge                                                                                                            |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |

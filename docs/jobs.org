@@ -25,7 +25,9 @@ other: a list, a form, REST, CLI, JSON and the assistant's tools.
 | =property= | a customer's place: name ("Home", "14 Oak St rental"), customer, address, how to get in (=access_notes=: gate code, key, pets, parking), who is there (=contact_id=), notes |
 | =equipment= | a thing at a property that gets serviced: what it is, make, model, serial number, year installed, warranty end, notes |
 
-A job also names its =property_id=. Properties, Equipment and Jobs are
+The technician picker names people by display name, else username, as the
+access forms do; so does the day view below. A job also names its
+=property_id=. Properties, Equipment and Jobs are
 under Customers in the sidebar, after Contacts. A property's page lists
 its equipment and its jobs.
 
@@ -77,7 +79,23 @@ cannot be put back on the road by a stale page.
 The status is an ordinary field as well, so an owner can correct it on
 the form; the save rules above still apply.
 
+* A technician's day
+
+=/jobs/day= (Day, under Customers in the sidebar) lists one technician's
+jobs whose arrival window starts on one day in the business's time zone,
+earliest first. Each shows its window, status, the job, the customer with a
+tap-to-call link (the contact's phone, else the customer's), the service
+address with a Directions link (a =geo:= address the phone's map opens),
+how to get in from the property, the problem, and who is on it. Cancelled
+jobs and other days are left out.
+
+Without =tech= it is the signed-in person's day; =tech=ID= is one
+technician's and =tech=all= everyone's; =date=YYYY-MM-DD= picks the day,
+today by default. The arrival window is typed as a date and a time of day
+on the job's form; see [[file:data-model.org][the data model]] for how a
+date-and-time box is read.
+
 * Not yet
 
-A booking's time of day on the calendar and a technician's day view are a
-separate piece of work.
+Jobs are not yet a source on the planner's calendar, and there is no
+dispatch board of technicians against hours.

@@ -1253,3 +1253,11 @@ equipment filed at a property with a believable year installed and found
 by its serial number, a job refused at another customer's property and
 given the property's address when it has none of its own, and the
 sidebar, form and property page.
+
+=test-booking-times= checks that date-and-time fields render as
+date-and-time boxes and dates stay dates, that 8 to 10 typed on a job is
+stored as 8 to 10 in the business's zone and reads back so, that a
+same-day meeting from 8 to 10 is accepted, that an older date-only value
+shows as that date, and that a technician's day lists their jobs on that
+day earliest first with call and directions links, leaving out other
+technicians, other days and cancelled jobs.
