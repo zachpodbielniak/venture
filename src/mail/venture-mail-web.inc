@@ -301,3 +301,41 @@ static void venture_web_mail_append_actions(VentureWebServer *self, GString *htm
 				"<button class=\"btn\" type=\"submit\">Dismiss</button></form>", id);
 	}
 }
+
+/*
+ * What "Save and send" did, on the invoice it redirected to. A send that
+ * reached nobody says so in words the owner can act on, never just "Sent".
+ * The notice is a fixed code, so nothing from the address is echoed.
+ */
+static void venture_web_mail_append_send_notice(VentureWebServer *self, GString *html, VentureEntity *record, HtmxRequest *request)
+{
+	const gchar *notice = htmx_request_get_query_param(request, "notice");
+	const gchar *why = htmx_request_get_query_param(request, "why");
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *email = NULL, *name = NULL;
+	gint64 company_id = 0;
+	if (notice == NULL || !VENTURE_IS_INVOICE(record)) return;
+	g_object_get(record, "company-id", &company_id, NULL);
+	company = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_COMPANY, company_id, NULL);
+	if (company != NULL) {
+		g_object_get(company, "email", &email, NULL);
+		name = venture_entity_get_display_name(company);
+	}
+	if (!g_strcmp0(notice, "emailed")) {
+		g_string_append(html, "<div class=\"banner banner-ok\" role=\"status\">Emailed to ");
+		venture_html_escape_append(html, email != NULL ? email : "the customer");
+		g_string_append(html, ".</div>");
+		return;
+	}
+	if (g_strcmp0(notice, "not-emailed")) return;
+	g_string_append(html, "<div class=\"banner banner-warn\" role=\"alert\"><strong>Nothing was emailed.</strong> ");
+	if (!g_strcmp0(why, "no-address")) {
+		venture_html_escape_append(html, name != NULL ? name : "This customer");
+		g_string_append_printf(html, " has no email address. <a href=\"/e/company/%" G_GINT64_FORMAT "/edit\">Add one</a>, "
+			"then press Send below, or print the invoice and hand it over.", company_id);
+	} else if (!g_strcmp0(why, "mail-off"))
+		g_string_append(html, "Email is switched off on this server. Print the invoice or download the PDF and send it yourself.");
+	else
+		g_string_append(html, "The email could not be queued. Press Send below to try again.");
+	g_string_append(html, " The invoice is issued and counts as owed.</div>");
+}

@@ -13,6 +13,8 @@ calls the same routes.
 
 Every line must be an object with a positive numeric quantity and an exact money price. Fractional quote quantities are refused rather than truncated; invoice quantities retain their existing fractional support. Validation or send failures roll back the document and all its lines.
 
+On the browser sheet, "Save and send" on an invoice issues it and then queues its email to the customer, exactly as the invoice's Send button does. The invoice page it lands on says "Emailed to <address>", or says plainly "Nothing was emailed" and why: the customer has no email address (with a link to add one), email is switched off, or the message could not be queued. The invoice stays issued either way. The JSON composer's =send= still only issues.
+
 The browser editor is laid out as the document: the customer and "Attention of" at the top, a line table rows are added to, and the totals beside it as you type. API and CLI callers continue to use the same JSON composer.
 
 * Invoice dates

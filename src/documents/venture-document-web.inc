@@ -747,6 +747,43 @@ document_remember_exemption(VentureWebServer *self, HtmxRequest *request, const 
 	return venture_database_save(venture_context_get_database(self->context), company, actor, error);
 }
 
+/*
+ * "Save and send" on an invoice: the compose issued it, and this queues
+ * the email the button promised. The answer is the notice the invoice
+ * page shows, so the owner reads either where it went or, plainly, that
+ * nothing went out and why. The invoice stays issued either way: it is
+ * owed whether or not the mail was set up.
+ */
+static const gchar *
+document_mail_after_send(VentureWebServer *self, VentureEntity *invoice, const VentureActor *actor)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureMailMessage) queued = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *email = NULL;
+	gint64 company_id = 0;
+
+	g_object_get(invoice, "company-id", &company_id, NULL);
+	company = venture_database_get(database, VENTURE_TYPE_COMPANY, company_id, NULL);
+	if (company != NULL)
+		g_object_get(company, "email", &email, NULL);
+	if (venture_string_is_empty(email))
+		return "?notice=not-emailed&why=no-address";
+	if (venture_context_get_mail_outbox(self->context) == NULL ||
+	    !venture_context_module_enabled(self->context, "mail"))
+		return "?notice=not-emailed&why=mail-off";
+	queued = venture_mail_send_invoice(self->context, venture_entity_get_organization_id(invoice),
+		venture_entity_get_id(invoice), actor, &error);
+	if (queued == NULL)
+	{
+		g_message("Invoice %" G_GINT64_FORMAT " was issued but not emailed: %s",
+			venture_entity_get_id(invoice), error != NULL ? error->message : "unknown");
+		return "?notice=not-emailed&why=failed";
+	}
+	return "?notice=emailed";
+}
+
 static HtmxResponse *
 venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -821,8 +858,10 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		goto failed;
 	if (!api)
 	{
-		g_autofree gchar *path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, quote ? "quote" : "invoice",
-			venture_entity_get_id(result));
+		g_autofree gchar *path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT "%s", quote ? "quote" : "invoice",
+			venture_entity_get_id(result),
+			(!quote && venture_json_object_get_bool(spec, "send", FALSE))
+				? document_mail_after_send(self, result, &actor) : "");
 		return venture_web_redirect_to(path);
 	}
 	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE), 200);
