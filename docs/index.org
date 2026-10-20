@@ -229,3 +229,5 @@ screen's ordinary sync-and-import test.
 - [[file:evidence/forms-consent.org][Forms consent demonstration]] — built-server capture of explicitly checked marketing permission.
 
 - [[file:household.org][Household accounts and imports]] — account kinds, statement and bank-feed import, learned categories, and transfers that keep principal out of spending.
+
+- [[file:budgets.org::*Monthly category envelopes][Monthly category envelopes]]: rollover, left to spend and early warnings.

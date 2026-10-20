@@ -23,6 +23,10 @@ static const VentureFieldDecl budget_line_fields[] = {
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", "Planned amount in the plan currency"),
 	VENTURE_FIELD("dimension", "Dimension", "Optional department, location, project or class",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("envelope", "Monthly envelope", "Repeat this amount monthly from the line period; use one expense account per category",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("rollover", "Roll over", "Carry unspent money and overspending into the next month for this envelope",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureBudgetLine, venture_budget_line, budget_line_fields)

@@ -4,7 +4,8 @@
 * Status
 
 Tracked by the household epic (issue #201). The household type and its slim
-view are implemented. The remaining numbered children below are planned.
+view, banking workflows and monthly envelopes are implemented. Later numbered
+children below remain planned.
 
 * What a household venture is
 
@@ -25,8 +26,8 @@ Business ventures in the same organization are unchanged.
 * Gaps the epic fills
 
 1. Implemented: the =household= type and slim view (see below).
-2. Categorisation rules that learn, and transfers that never count as spending.
-3. Envelope budgets with "left to spend".
+2. Implemented: categorisation rules that learn, and transfers that never count as spending.
+3. Implemented: monthly category envelopes, rollover and early warnings (see below).
 4. Detected subscriptions with yearly cost.
 5. Net worth over time and a debt payoff planner.
 6. Savings goals tied to accounts.
@@ -176,3 +177,20 @@ history: field metadata adds the kind column and the paired migrations mark
 previously unset kinds as unspecified, including when banking was disabled
 after use. Tests cover account-kind persistence and class refusal, populated
 upgrade/restart, correction isolation, imports, fake feed sync and transfers.
+
+* Monthly envelopes (child 3)
+
+Open Budgets in the household view to see this month's category amounts,
+rolled-over balance, spending, left to spend and status. Create an active Budget
+and add Budget lines with Monthly envelope enabled, a first month and a monthly
+amount. Choose Roll over separately for each category. Unspent money and
+overspending both carry forward when it is on; when it is off each month starts
+with its own allocation. The report warns at 80% used, then says Used up or
+Over budget. Warnings appear on the page, with no notification delivery.
+
+Each envelope uses one expense account, matching the expense-category posting
+map. Transfers between owned accounts do not consume envelopes; posted fees and
+interest do. Refunds restore room to spend. Each account has one live envelope
+per organization. Changing a plan recalculates past months; these are live plans,
+not locked monthly snapshots. See [[file:budgets.org][Budgets]] for setup, calculation
+rules, the CLI/API and migration 000922.

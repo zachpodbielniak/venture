@@ -5641,6 +5641,38 @@ test_auth_household_navigation(ServerFixture *fixture, gconstpointer user_data)
 		venture_config_set_module_enabled(fixture->config, "goals", TRUE);
 	}
 
+	/* The household default is a rendered envelope report, with generated
+	 * setup forms reachable from it; names remain text, never HTML. */
+	{
+		g_autoptr(VentureAccount) category = venture_account_new();
+		g_autoptr(VentureBudget) budget = venture_budget_new();
+		g_autoptr(VentureBudgetLine) line = venture_budget_line_new();
+		g_autoptr(VentureMoney) money = venture_money_new_for_currency(10000, "USD");
+		g_autofree gchar *html = NULL, *json = NULL;
+		g_object_set(category, "organization-id", org, "code", "MAPLE-FOOD",
+			"name", "Maple <food>", "kind", VENTURE_ACCOUNT_KIND_EXPENSE, NULL);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(category), NULL, NULL));
+		g_object_set(budget, "organization-id", org, "name", "Maple monthly plan",
+			"period", "2027-01", "currency", "USD", "status", "active", NULL);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(budget), NULL, NULL));
+		g_object_set(line, "organization-id", org, "budget-id", venture_entity_get_id(VENTURE_ENTITY(budget)),
+			"account-id", venture_entity_get_id(VENTURE_ENTITY(category)), "period", "2027-01",
+			"amount", money, "envelope", TRUE, "rollover", TRUE, NULL);
+		g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(line), NULL, NULL));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", "/budgets?period=2027-01", chosen, NULL, &html, NULL), ==, SOUP_STATUS_OK);
+		g_assert_nonnull(strstr(html, "value=\"envelopes\" selected"));
+		g_assert_nonnull(strstr(html, "Left to spend"));
+		g_assert_nonnull(strstr(html, "On track"));
+		g_assert_nonnull(strstr(html, "Maple &lt;food&gt;"));
+		g_assert_null(strstr(html, "Maple <food>"));
+		g_assert_nonnull(strstr(html, "href=\"/e/budget_line\""));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/api/v1/budget_reports?kind=envelopes&period=2027-01", chosen, NULL, &json, NULL), ==, SOUP_STATUS_OK);
+		g_assert_nonnull(strstr(json, "On track"));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/api/v1/budget_reports?kind=envelopes&period=2027-13", chosen, NULL, NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
+	}
+
 	/* Every offered household page has a real handler. */
 	{
 		static const gchar *const pages[] = { "/e/sale", "/e/account", "/bankfeed", "/e/vendor_bill", "/budgets", "/e/goal", "/e/document", "/reports",
@@ -5690,6 +5722,15 @@ test_auth_household_view_scope(ServerFixture *fixture, gconstpointer user_data)
 	id = venture_entity_get_id(VENTURE_ENTITY(home));
 	server_fixture_create_member(fixture, "ash", "a-long-password", VENTURE_USER_ROLE_ADMIN, NULL);
 	cookie = server_fixture_login(fixture, "ash", "a-long-password");
+	{
+		g_autofree gchar *limited_cookie = NULL;
+		g_autofree gchar *budget_path = g_strdup_printf(
+			"/api/v1/budget_reports?kind=envelopes&period=2027-01&organization_id=%" G_GINT64_FORMAT,
+			venture_entity_get_id(foreign));
+		server_fixture_create_member(fixture, "willow", "a-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+		limited_cookie = server_fixture_login(fixture, "willow", "a-long-password");
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", budget_path, limited_cookie, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	}
 	path = g_strdup_printf("/view/venture/%" G_GINT64_FORMAT, id);
 	chosen = g_strdup_printf("%s; venture_view=%" G_GINT64_FORMAT, cookie, id);
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, cookie, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);

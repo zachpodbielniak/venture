@@ -212,6 +212,7 @@ test_module_off(Fixture *f, gconstpointer data)
 	(void)data;
 	venture_config_set_module_enabled(f->config, "budgets", FALSE);
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "budget_vs_actual"));
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "budget_envelopes"));
 	g_assert_false(venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "budget"));
 	g_assert_null(venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-08", NULL, &error));
 	g_assert_nonnull(strstr(error->message, "budgets"));
@@ -261,11 +262,223 @@ test_invalid_period(Fixture *f, gconstpointer data)
 	}
 }
 
+static void
+test_envelopes(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudget) budget = venture_budget_new();
+	g_autoptr(VentureBudgetLine) line = venture_budget_line_new();
+	g_autoptr(VentureMoney) planned = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(GDateTime) start = g_date_time_new_utc(2027, 1, 1, 0, 0, 0);
+	g_autoptr(GDateTime) end = g_date_time_add_months(start, 1);
+	g_autoptr(VentureDateRange) range = venture_date_range_new(start, end);
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureReport *report = venture_report_registry_lookup(
+		venture_context_get_report_registry(f->context), "budget_envelopes");
+	(void)data;
+	g_assert_nonnull(report);
+	g_object_set(budget, "organization-id", f->org, "name", "Maple envelopes",
+		"period", "2026-12", "currency", "USD", "status", "active", NULL);
+	save(f, VENTURE_ENTITY(budget));
+	g_object_set(line, "organization-id", f->org, "budget-id", venture_entity_get_id(VENTURE_ENTITY(budget)),
+		"account-id", account(f, "6900"), "period", "2026-12", "amount", planned,
+		"envelope", TRUE, "rollover", TRUE, NULL);
+	save(f, VENTURE_ENTITY(line));
+	post(f, "2026-12-10T00:00:00Z", "6900", "1000", 4000);
+	post(f, "2027-01-10T00:00:00Z", "6900", "1000", 14000);
+	/* Own-account transfers do not spend an envelope. */
+	post(f, "2027-01-11T00:00:00Z", "1100", "1000", 5000);
+	result = venture_report_generate(report, f->context, range, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(cell(result, "6900", "carried"), ==, 6000);
+	g_assert_cmpint(cell(result, "6900", "available"), ==, 16000);
+	g_assert_cmpint(cell(result, "6900", "actual"), ==, 14000);
+	g_assert_cmpint(cell(result, "6900", "left"), ==, 2000);
+	g_assert_cmpstr(g_value_get_string(venture_report_result_get_cell(result, 0, "warning")), ==, "Running low");
+	g_clear_object(&result);
+	g_object_set(line, "rollover", FALSE, NULL);
+	save(f, VENTURE_ENTITY(line));
+	result = venture_report_generate(report, f->context, range, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(result, "6900", "left"), ==, -4000);
+	g_assert_cmpstr(g_value_get_string(venture_report_result_get_cell(result, 0, "warning")), ==, "Over budget");
+}
+
+static VentureBudgetLine *
+make_envelope(Fixture *f, const gchar *code, const gchar *period, gint64 amount, gboolean rollover)
+{
+	g_autoptr(VentureBudget) plan = venture_budget_new();
+	g_autoptr(VentureMoney) money = venture_money_new_for_currency(amount, "USD");
+	VentureBudgetLine *line = venture_budget_line_new();
+	g_object_set(plan, "organization-id", f->org, "name", "Maple plan", "period", period,
+		"currency", "USD", "status", "active", NULL);
+	save(f, VENTURE_ENTITY(plan));
+	g_object_set(line, "organization-id", f->org, "budget-id", venture_entity_get_id(VENTURE_ENTITY(plan)),
+		"account-id", account(f, code), "period", period, "amount", money,
+		"envelope", TRUE, "rollover", rollover, NULL);
+	save(f, VENTURE_ENTITY(line));
+	return line;
+}
+
+static void
+test_envelope_rollover(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudgetLine) line = make_envelope(f, "6900", "2026-12", 10000, TRUE);
+	g_autoptr(VentureBudgetLine) reset = make_envelope(f, "6000", "2026-12", 5000, FALSE);
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	post(f, "2026-12-31T23:59:59Z", "6900", "1000", 14000);
+	post(f, "2026-12-10T00:00:00Z", "6000", "1000", 1000);
+	post(f, "2027-01-01T00:00:00Z", "6900", "1000", 5000);
+	post(f, "2027-01-15T00:00:00Z", "1000", "6900", 1000);
+	post(f, "2027-02-01T00:00:00Z", "6900", "1000", 6000);
+	result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2027-01", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(result, "6900", "carried"), ==, -4000);
+	g_assert_cmpint(cell(result, "6900", "actual"), ==, 4000);
+	g_assert_cmpint(cell(result, "6900", "left"), ==, 2000);
+	g_assert_cmpint(cell(result, "6000", "carried"), ==, 0);
+	g_assert_cmpint(cell(result, "6000", "left"), ==, 5000);
+	g_assert_cmpint(metric_money(result, "left"), ==, 7000);
+	g_clear_object(&result);
+	/* Reports need not be opened each month for allocations to accumulate. */
+	result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2027-04", &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(cell(result, "6900", "carried"), ==, 16000);
+	g_assert_cmpint(cell(result, "6900", "left"), ==, 26000);
+	g_clear_object(&result);
+	result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2026-11", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 0);
+	g_clear_object(&result);
+	result = venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-12", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 0);
+}
+
+static void
+test_envelope_warning(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudgetLine) line = make_envelope(f, "6900", "2027-01", 10000, FALSE);
+	guint i;
+	static const gint64 amounts[] = { 7999, 1, 2000, 1 };
+	static const gchar *const states[] = { "On track", "Running low", "Used up", "Over budget" };
+	(void)data;
+	for (i = 0; i < G_N_ELEMENTS(amounts); i++)
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureReportResult) result = NULL;
+		post(f, "2027-01-10T00:00:00Z", "6900", "1000", amounts[i]);
+		result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2027-01", &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(g_value_get_string(venture_report_result_get_cell(result, 0, "warning")), ==, states[i]);
+	}
+}
+
+static void
+refused(Fixture *f, VentureBudgetLine *line)
+{
+	g_autoptr(GError) error = NULL;
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	g_assert_nonnull(error);
+}
+
+static void
+test_envelope_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudgetLine) line = make_envelope(f, "6900", "2027-01", 10000, TRUE);
+	g_autoptr(VentureBudgetLine) duplicate = venture_budget_line_new();
+	g_autoptr(VentureMoney) foreign = venture_money_new_for_currency(10000, "EUR");
+	g_autoptr(VentureMoney) negative = venture_money_new_for_currency(-1, "USD");
+	g_autoptr(VentureMoney) valid = venture_money_new_for_currency(10000, "USD");
+	gint64 budget_id = 0;
+	(void)data;
+	g_object_set(line, "period", "2027-13", NULL); refused(f, line);
+	g_object_set(line, "period", "2027", NULL); refused(f, line);
+	g_object_set(line, "period", "2027-01", "account-id", account(f, "1000"), NULL); refused(f, line);
+	g_object_set(line, "account-id", account(f, "6900"), "amount", foreign, NULL); refused(f, line);
+	g_object_set(line, "amount", negative, NULL); refused(f, line);
+	g_object_set(line, "amount", valid, "dimension", "room", NULL); refused(f, line);
+	g_object_set(line, "dimension", "", "envelope", FALSE, NULL); refused(f, line);
+	g_object_set(line, "envelope", TRUE, NULL);
+	save(f, VENTURE_ENTITY(line));
+	g_object_get(line, "budget-id", &budget_id, NULL);
+	g_object_set(duplicate, "organization-id", f->org, "budget-id", budget_id,
+		"account-id", account(f, "6900"), "amount", valid, "period", "2027-02", "envelope", TRUE, NULL);
+	refused(f, duplicate);
+	{
+		g_autoptr(VentureReportResult) result = NULL;
+		g_autoptr(GError) error = NULL;
+		result = venture_budget_service_envelopes(venture_budget_service_get(f->db), 0, "2027-01", &error);
+		g_assert_null(result);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	}
+}
+
+static void
+test_envelope_inactive_overflow(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudgetLine) line = make_envelope(f, "6900", "2027-01", G_MAXINT64, TRUE);
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 budget_id = 0;
+	(void)data;
+	result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2027-03", &error);
+	g_assert_null(result);
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_object_get(line, "budget-id", &budget_id, NULL);
+	plan = venture_database_get(f->db, VENTURE_TYPE_BUDGET, budget_id, &error);
+	g_assert_no_error(error);
+	g_object_set(plan, "status", "draft", NULL);
+	save(f, plan);
+	result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2027-03", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 0);
+}
+
+static void
+test_envelope_organization(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudgetLine) home = make_envelope(f, "6900", "2027-01", 10000, TRUE);
+	g_autoptr(VentureBudgetLine) other_line = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureAccount) expense = venture_account_new();
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 original = f->org;
+	(void)data;
+	g_object_set(other, "name", "Cedar household", "slug", "cedar-household", "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(other));
+	f->org = venture_entity_get_id(VENTURE_ENTITY(other));
+	g_object_set(expense, "organization-id", f->org, "code", "6900", "name", "Cedar spending",
+		"kind", VENTURE_ACCOUNT_KIND_EXPENSE, NULL);
+	save(f, VENTURE_ENTITY(expense));
+	other_line = make_envelope(f, "6900", "2027-01", 90000, TRUE);
+	f->org = original;
+	result = venture_budget_service_envelopes(venture_budget_service_get(f->db), f->org, "2027-01", &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+	g_assert_cmpint(cell(result, "6900", "left"), ==, 10000);
+	/* Generic writers cannot attach the household envelope to another entity's account. */
+	g_object_set(home, "account-id", venture_entity_get_id(VENTURE_ENTITY(expense)), NULL);
+	refused(f, home);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/budgets/records", test_records);
+	g_test_add("/budgets/envelopes", Fixture, NULL, setup, test_envelopes, teardown);
+	g_test_add("/budgets/envelope-organization", Fixture, NULL, setup, test_envelope_organization, teardown);
+	g_test_add("/budgets/envelope-rollover", Fixture, NULL, setup, test_envelope_rollover, teardown);
+	g_test_add("/budgets/envelope-warning", Fixture, NULL, setup, test_envelope_warning, teardown);
+	g_test_add("/budgets/envelope-validation", Fixture, NULL, setup, test_envelope_validation, teardown);
+	g_test_add("/budgets/envelope-inactive-overflow", Fixture, NULL, setup, test_envelope_inactive_overflow, teardown);
 	g_test_add("/budgets/vs-actual", Fixture, NULL, setup, test_vs_actual, teardown);
 	g_test_add("/budgets/cash-forecast", Fixture, NULL, setup, test_cash_forecast, teardown);
 	g_test_add("/budgets/module-off", Fixture, NULL, setup, test_module_off, teardown);

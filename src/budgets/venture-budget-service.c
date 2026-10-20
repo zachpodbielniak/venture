@@ -68,15 +68,16 @@ enabled(GError **error)
 	return FALSE;
 }
 
+static gboolean envelope_check(VentureDatabase *database, VentureEntity *record, GError **error);
+
 gboolean
 venture_budget_check_write(VentureDatabase *database, VentureEntity *record,
 	gboolean removal, GError **error)
 {
-	(void)database;
-	(void)removal;
 	if (!VENTURE_IS_BUDGET(record) && !VENTURE_IS_BUDGET_LINE(record))
 		return TRUE;
-	return enabled(error);
+	if (!enabled(error)) return FALSE;
+	return removal || !VENTURE_IS_BUDGET_LINE(record) || envelope_check(database, record, error);
 }
 
 static VentureDateRange *
@@ -222,9 +223,11 @@ active_lines(VentureBudgetService *self, gint64 organization_id, const gchar *pe
 		for (j = 0; j < rows->len; j++)
 		{
 			VentureEntity *line = g_ptr_array_index(rows, j);
+			gboolean envelope = FALSE;
 			g_autofree gchar *line_period = NULL;
 			g_autofree gchar *line_dimension = NULL;
-			g_object_get(line, "period", &line_period, "dimension", &line_dimension, NULL);
+			g_object_get(line, "period", &line_period, "dimension", &line_dimension, "envelope", &envelope, NULL);
+			if (envelope) continue;
 			if (!covers(line_period, budget_period, period))
 				continue;
 			if (dimension != NULL && dimension[0] != '\0' && g_strcmp0(line_dimension, dimension) != 0)
@@ -247,6 +250,8 @@ balances_for(VentureBudgetService *self, gint64 organization_id, const gchar *pe
 	venture_ledger_balances_set_dimension(books, dimension);
 	return venture_ledger_balances_query(books, organization_id, currency, range, NULL, FALSE, error);
 }
+
+#include "venture-budget-envelopes.inc"
 
 VentureReportResult *
 venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization_id,
@@ -494,6 +499,16 @@ report_forecast(VentureContext *context, VentureDateRange *period, JsonObject *o
 		org, label, error);
 }
 
+static VentureReportResult *
+report_envelopes(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
+{
+	g_autofree gchar *label = report_period(period);
+	gint64 org = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
+	if (org == 0) org = venture_context_get_default_organization_id(context);
+	return venture_budget_service_envelopes(venture_budget_service_get(venture_context_get_database(context)),
+		org, label, error);
+}
+
 void
 venture_budgets_register_reports(VentureReportRegistry *registry)
 {
@@ -501,8 +516,12 @@ venture_budgets_register_reports(VentureReportRegistry *registry)
 		"Planned amounts against posted account movement.", report_vs));
 	VentureReport *forecast = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "cash_forecast", "Cash forecast",
 		"Unpaid AR and AP plus remaining budget cash movements.", report_forecast));
+	VentureReport *envelopes = VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT, "budget_envelopes", "Monthly envelopes",
+		"Monthly category budgets, rollover, left to spend and early warnings.", report_envelopes));
 	g_object_set(vs, "financial", TRUE, NULL);
 	g_object_set(forecast, "financial", TRUE, NULL);
 	venture_report_registry_add(registry, vs);
 	venture_report_registry_add(registry, forecast);
+	g_object_set(envelopes, "financial", TRUE, NULL);
+	venture_report_registry_add(registry, envelopes);
 }
