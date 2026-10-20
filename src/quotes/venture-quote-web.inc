@@ -24,7 +24,8 @@ quote_money_html(GString *html, VentureEntity *record, const gchar *field)
 static HtmxResponse *
 quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_page)
 {
-	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\"><title>Quote</title><style>");
+	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
+		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Quote</title><style>");
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_QUOTE_LINE);
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(GError) error = NULL;
@@ -49,6 +50,12 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	g_string_append_printf(html, "</h1><p>Revision %" G_GINT64_FORMAT " · ", revision);
 	{ g_autofree gchar *label = venture_web_label_from_name(venture_enum_to_nick(venture_quote_status_get_type(), state)); venture_html_escape_append(html, label); }
 	g_string_append(html, "</p>");
+	{
+		gint64 company_id = 0;
+		g_object_get(quote, "company-id", &company_id, NULL);
+		venture_web_append_document_parties(self, html, venture_entity_get_organization_id(quote),
+			company_id, "Prepared for", !public_page);
+	}
 	if (until != NULL)
 	{
 		g_autofree gchar *date = g_date_time_format(until, "%Y-%m-%d %H:%M UTC");
@@ -56,7 +63,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 		venture_html_escape_append(html, date);
 		g_string_append(html, "</p>");
 	}
-	g_string_append(html, "<table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax</th></tr></thead><tbody>");
+	g_string_append(html, "<div class=\"table-wrap\"><table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax</th></tr></thead><tbody>");
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
@@ -86,7 +93,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 			g_string_append_printf(html, "%" G_GINT64_FORMAT "%%", tax);
 		g_string_append(html, "</td></tr>");
 	}
-	g_string_append(html, "</tbody></table><table>");
+	g_string_append(html, "</tbody></table></div><table>");
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)
 	{
 		g_string_append(html, "<tr><th>");
@@ -98,6 +105,10 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	g_string_append(html, "</table><div class=\"terms\">");
 	venture_html_escape_append(html, terms);
 	g_string_append(html, "</div>");
+	/* A printed quote is signed on paper; the public page has its own
+	 * accept button instead. */
+	if (!public_page && (state == VENTURE_QUOTE_DRAFT || state == VENTURE_QUOTE_SENT))
+		g_string_append(html, "<div class=\"sign\"><span>Accepted by (name and signature)</span><span>Date</span></div>");
 	if (public_page && state == VENTURE_QUOTE_SENT)
 		g_string_append(html, "<form method=\"post\" action=\"\"><label>Your full name <input name=\"accepted_by\" maxlength=\"200\" required></label><button>Accept quote</button></form>");
 	g_string_append(html, "</body></html>");

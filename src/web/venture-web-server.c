@@ -5308,6 +5308,83 @@ venture_web_ui_invoice_status(
 static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 
+/*
+ * The two parties on a printed invoice or quote: the business that sends
+ * it, as its own record names it, and the customer it is for. A document a
+ * customer files has to say who it is from -- the server's own title, which
+ * it used to print, says nothing to them. Empty fields are left out, so a
+ * business that has filled in only its name prints only its name.
+ * @full is %FALSE on the customer's public quote page, which names the
+ * customer but does not repeat their contact details.
+ */
+static void
+venture_web_append_document_parties(
+	VentureWebServer	*self,
+	GString			*html,
+	gint64			 organization_id,
+	gint64			 company_id,
+	const gchar		*customer_heading,
+	gboolean		 full
+){
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) business = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	static const gchar *const contact_fields[] = { "address", "phone", "email", "website" };
+	guint i;
+
+	business = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+	company = company_id > 0 ? venture_database_get(database, VENTURE_TYPE_COMPANY, company_id, NULL) : NULL;
+	g_string_append(html, "<div class=\"parties\">");
+	if (NULL != business)
+	{
+		g_autofree gchar *name = venture_entity_get_display_name(business);
+		g_autofree gchar *legal = NULL;
+
+		g_object_get(business, "legal-name", &legal, NULL);
+		g_string_append(html, "<div class=\"party from\"><strong>");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</strong>");
+		if (!venture_string_is_empty(legal) && g_strcmp0(legal, name) != 0)
+		{
+			g_string_append(html, "<br>");
+			venture_html_escape_append(html, legal);
+		}
+		for (i = 0; i < G_N_ELEMENTS(contact_fields); i++)
+		{
+			g_autofree gchar *value = NULL;
+
+			g_object_get(business, contact_fields[i], &value, NULL);
+			if (venture_string_is_empty(value))
+				continue;
+			g_string_append(html, "<br>");
+			venture_html_escape_append(html, value);
+		}
+		g_string_append(html, "</div>");
+	}
+	if (NULL != company)
+	{
+		g_autofree gchar *name = venture_entity_get_display_name(company);
+
+		g_string_append(html, "<div class=\"party to\"><span class=\"meta\">");
+		venture_html_escape_append(html, customer_heading);
+		g_string_append(html, "</span><br><strong>");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</strong>");
+		for (i = 0; full && i < 3; i++)
+		{
+			g_autofree gchar *value = NULL;
+
+			g_object_get(company, contact_fields[i], &value, NULL);
+			if (venture_string_is_empty(value))
+				continue;
+			g_string_append(html, "<br>");
+			venture_html_escape_append(html, value);
+		}
+		g_string_append(html, "</div>");
+	}
+	g_string_append(html, "</div>");
+}
+
 static HtmxResponse *
 venture_web_ui_invoice_print(
 	HtmxRequest	*request,
@@ -5322,7 +5399,6 @@ venture_web_ui_invoice_print(
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *number = NULL;
 	g_autofree gchar *terms = NULL;
-	g_autofree gchar *ui_title = NULL;
 	g_autoptr(GDateTime) issued = NULL;
 	g_autoptr(GDateTime) due = NULL;
 	VentureInvoiceStatus status;
@@ -5368,12 +5444,9 @@ venture_web_ui_invoice_print(
 	g_object_get(record, "number", &number, "status", &status,
 	             "issued-at", &issued, "due-at", &due,
 	             "terms", &terms, "company-id", &company_id, NULL);
-	g_object_get(venture_context_get_config(self->context),
-	             "ui-title", &ui_title, NULL);
-
 	html = g_string_new(
 		"<!doctype html><html lang=\"en\"><head>"
-		"<meta charset=\"utf-8\"><title>Invoice ");
+		"<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Invoice ");
 	venture_html_escape_append(html, number);
 	g_string_append(html,
 		"</title><style>"
@@ -5382,32 +5455,20 @@ venture_web_ui_invoice_print(
 
 	g_string_append(html, "<div class=\"head\"><div><h1>Invoice ");
 	venture_html_escape_append(html, number);
-	g_string_append(html, "</h1><div class=\"meta\">");
-	venture_html_escape_append(html, ui_title);
-	g_string_append(html, "</div></div><span class=\"status\">");
-	venture_web_append_nick(html, VENTURE_TYPE_INVOICE_STATUS, (gint)status);
-	g_string_append(html, "</span></div>");
+	g_string_append(html, "</h1></div>");
+	/* Paid and void are news to the customer; draft, sent and the
+	 * collection states are the business's own bookkeeping. */
+	if (VENTURE_INVOICE_STATUS_PAID == status || VENTURE_INVOICE_STATUS_VOID == status)
+	{
+		g_string_append(html, "<span class=\"status\">");
+		venture_web_append_nick(html, VENTURE_TYPE_INVOICE_STATUS, (gint)status);
+		g_string_append(html, "</span>");
+	}
+	g_string_append(html, "</div>");
+	venture_web_append_document_parties(self, html,
+		venture_entity_get_organization_id(record), company_id, "Billed to", TRUE);
 
 	g_string_append(html, "<div class=\"meta\">");
-
-	if (company_id > 0)
-	{
-		g_autoptr(VentureEntity) company = NULL;
-
-		company = venture_database_get(
-			venture_context_get_database(self->context),
-			VENTURE_TYPE_COMPANY, company_id, NULL);
-
-		if (NULL != company)
-		{
-			g_autofree gchar *label = NULL;
-
-			label = venture_entity_get_display_name(company);
-			g_string_append(html, "Billed to: <strong>");
-			venture_html_escape_append(html, label);
-			g_string_append(html, "</strong><br>");
-		}
-	}
 
 	if (NULL != issued)
 	{
@@ -5432,7 +5493,7 @@ venture_web_ui_invoice_print(
 
 	g_string_append(html, "</div>");
 
-	g_string_append(html, "<table><thead><tr><th>Description</th>"
+	g_string_append(html, "<div class=\"table-wrap\"><table><thead><tr><th>Description</th>"
 	                      "<th class=\"num\">Qty</th>"
 	                      "<th class=\"num\">Unit</th>"
 	                      "<th class=\"num\">Net</th>"
@@ -5513,7 +5574,7 @@ venture_web_ui_invoice_print(
 		}
 	}
 
-	g_string_append(html, "</td></tr></tfoot></table>");
+	g_string_append(html, "</td></tr></tfoot></table></div>");
 
 	if (!venture_string_is_empty(terms))
 	{

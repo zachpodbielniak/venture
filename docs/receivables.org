@@ -233,6 +233,15 @@ Omitted dates in the invoice status buttons and payables action/workbench surfac
 
 ** Printable document layout
 
+The printed invoice and quote say who they are from and who they are for: the
+business's name, legal name when it differs, address, phone, email and website
+from its organization record, and the customer's name, address and phone
+("Billed to", "Prepared for"). Empty fields are left out. The invoice shows a
+status only when it is paid or void, and a printed draft or sent quote ends
+with a line to sign and date. The line table scrolls inside its own box on a
+narrow screen. The customer's public quote page names the customer but does
+not repeat their contact details.
+
 Invoice descriptions, payment terms and receipt allocation references continue
 onto additional PDF pages when needed; a long item is never clipped at the
 bottom of the sheet. Monetary columns reserve their own width and reduce the
