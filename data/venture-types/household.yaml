@@ -1,0 +1,15 @@
+# A household shares the ordinary ledger; the web view offers home tasks.
+name: household
+label: Household
+description: Personal and shared household money, bills and goals
+
+fields:
+  purpose:
+    type: string
+    label: What we are planning for
+    help: An optional note about this household
+    order: 10
+
+metrics:
+  - spend
+  - goals_achieved

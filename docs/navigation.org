@@ -61,3 +61,11 @@ An accountant-only sidebar is Books alone, on purpose. A plugin's row joins it o
 =test-plugin= asserts each section's membership, that every path a section gathers is a row in the link table, that no path is gathered twice, and that no row is orphaned -- every row is either under a question or under a heading it inherits. =test-auth= renders the sidebar as an administrator and checks the headings appear in order after Overview, that a gathered page is drawn once and under its question, that the emptied headings are gone, that the group holding the current page is the one drawn open, and that switching a module off removes its row and leaves the question's heading in place. The anonymous-route test is untouched: it walks the same link table, so every page still answers a redirect to the sign-in page when nobody is signed in.
 
 For plugins' rows, =test-plugin= (=/web/plugin-nav-row=) builds a server with no extension and finds no Plugins heading; then one with an extension, and checks each refusal above, that the row appears exactly once under one heading with its label escaped, that its page answers with the row marked current, and that a row whose module is off disappears while the heading stays for the other. The example plugin's own row is asserted where that test loads it (=/plugin/manager-loads-native-plugin=), deliberately and nowhere else. =test-auth= (=/auth/web-extension-routes=) checks an extension's page redirects anonymously, its API answers 401, a role short of the page's gets 403, and that an extension registering =/reports= does not displace the built-in page.
+
+* Household view
+
+A selected =household= venture uses the six-area menu documented in
+[[file:household.org][Household ventures]]. It is a per-browser navigation preference,
+not a module configuration change. Sidebar and command palette share the
+household destination table. Selecting a business venture or Full view restores
+the ordinary map above; existing entity scope and permissions still apply.

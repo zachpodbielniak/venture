@@ -1,11 +1,10 @@
-#+title: Household ventures (planned)
+#+title: Household ventures
 #+description: Personal and household finance as a slimmed-down venture type
 
 * Status
 
-Planned, tracked by the household epic (issue #201). Nothing below exists yet;
-this page is the plan the epic's children deliver against, and each child
-replaces its paragraph with the real documentation as it lands.
+Tracked by the household epic (issue #201). The household type and its slim
+view are implemented. The remaining numbered children below are planned.
 
 * What a household venture is
 
@@ -25,7 +24,7 @@ Business ventures in the same organization are unchanged.
 
 * Gaps the epic fills
 
-1. The =household= venture type and its slim navigation.
+1. Implemented: the =household= type and slim view (see below).
 2. Categorisation rules that learn, and transfers that never count as spending.
 3. Envelope budgets with "left to spend".
 4. Detected subscriptions with yearly cost.
@@ -35,3 +34,66 @@ Business ventures in the same organization are unchanged.
 8. Deductible tags, a year-end export, warranty reminders.
 9. A phone-first household dashboard.
 10. A full month walked as a household, every dead end fixed.
+
+* Household type and slim view (child 1)
+
+Create a venture through Settings / Ventures and choose *Household* as its
+Type. The optional "What we are planning for" field is a note, not a required
+setup step. The declarative definition is =data/venture-types/household.yaml=;
+it uses the existing type registry and attribute storage, so no migration is
+needed. A =general= venture whose Kind says household is unchanged; change
+its Type to =household= explicitly to use this view.
+
+Pick its entity in the sidebar, then pick the household under *Venture view*.
+The view opens Spending (or the first available destination when finance is
+disabled). An entity with no household keeps its ordinary selector. The menu
+has these destinations, in order:
+
+| Area      | Destinations                     |
+|-----------+----------------------------------|
+| Money     | Income, Spending, Accounts, Bank feeds |
+| Bills     | Bills, Pay bills                 |
+| Budgets   | Budgets                          |
+| Goals     | Goals                            |
+| Documents | Documents                        |
+| Reports   | Reports                          |
+
+Income and Spending reuse the ordinary sale and expense records; Bills reuse
+payables, and Documents is the ordinary document list, where receipts can be
+filed. These are existing pages, not new accounting operations. New offers
+Spending and Bill. The list and new-entry headings use household words. The
+command palette uses the same household destinations and omits business
+record shortcuts. Plugin shortcuts, saved-view shortcuts and custom dashboard
+shortcuts are omitted from this menu. Links belonging to disabled modules
+stay hidden, including their otherwise empty headings.
+
+Pick a business venture or *Full view* to restore normal navigation. A
+household selection does not switch off any module or change a business
+venture's type, stored data or navigation. Accountant-only access keeps its
+Books menu. The menu still folds on a phone using the existing Menu button.
+
+This child changes navigation, not accounting scope: the existing pages and
+reports still answer for the selected entity. Use separate entities when
+household and business books must be separate. Venture-level accounts,
+budgeting and household-specific reports are later children; selecting this
+view does not implement them or create a data-access boundary. Direct URLs,
+the CLI and API retain their existing permissions and record contracts.
+
+=GET /view/venture/ID= requires a signed-in session and a live readable venture
+in the currently selected entity. =/view/venture/all= restores the full view.
+The =venture_view= cookie carries only the chosen ID (HttpOnly, SameSite=Lax).
+Every request rechecks its record and type under the caller's access scope;
+a forged, deleted, moved or retyped household cannot keep an obsolete view.
+Selecting All entities uses the full menu. The cookie never grants access.
+
+The household destination table lives in =src/web/venture-web-household.inc=.
+Later children append their destinations there; the business table stays
+separate. No migration is consumed by child 1; upstream's highest migration
+at implementation was =000920=.
+
+Tests: =test-plugin /venture-type/shipped-definitions-load= checks the shipped
+type. =test-auth /auth/household-navigation= checks selection, plain labels,
+hidden business links in the sidebar and palette, every offered page, malformed
+IDs and switching back to a business. =/auth/household-view-scope= checks
+foreign selections, forged cookies and retyping. Both initial regressions
+were observed on the epic baseline before implementation.

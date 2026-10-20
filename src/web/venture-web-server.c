@@ -2653,6 +2653,8 @@ venture_web_server_render_page(
 		                 (NULL != content) ? content : ""), 200);
 }
 
+#include "venture-web-household.inc"
+
 static gchar *
 venture_web_page(
 	VentureWebServer	*self,
@@ -2666,6 +2668,7 @@ venture_web_page(
 	g_autofree gchar *accent = NULL;
 	gboolean chat_dock;
 	gboolean dock_expanded;
+	gboolean household = venture_web_household_view(self, request);
 
 	g_object_get(venture_context_get_config(self->context),
 	             "ui-title", &ui_title,
@@ -2745,6 +2748,7 @@ venture_web_page(
 	g_string_append(html, "</a>");
 
 	venture_web_append_entity_picker(self, request, html, active);
+	venture_web_append_venture_picker(self, request, html);
 
 	/*
 	 * One box that reaches everything. A GET form, so a search is a URL --
@@ -2782,16 +2786,19 @@ venture_web_page(
 		                      "<span aria-hidden=\"true\">+</span> New</summary><div class=\"quick-new-menu\">");
 		for (k = 0; k < G_N_ELEMENTS(creates); k++)
 		{
-			if (!venture_web_module_enabled(self, creates[k].module))
+			if (!venture_web_module_enabled(self, creates[k].module) ||
+				(household && g_strcmp0(creates[k].path, "/e/expense/new") != 0 &&
+				 g_strcmp0(creates[k].path, "/bills/compose") != 0))
 				continue;
 			g_string_append_printf(html, "<a href=\"%s\">", creates[k].path);
-			venture_html_escape_append(html, creates[k].label);
+			venture_html_escape_append(html, household ? (g_strcmp0(creates[k].path, "/e/expense/new") == 0 ? "Spending" : "Bill") : creates[k].label);
 			g_string_append(html, "</a>");
 		}
 		g_string_append(html, "</div></details>");
 	}
 
-	venture_accountant_web_append_inbox_nav(self, request, html, active);
+	if (!household)
+		venture_accountant_web_append_inbox_nav(self, request, html, active);
 
 	{
 		const VentureWebNavLink *links;
@@ -2823,69 +2830,75 @@ venture_web_page(
 		 * open and unfolded, the questions follow it, and every other
 		 * heading folds.
 		 */
-		for (i = 0; ; i++)
+		if (household)
+			venture_web_append_household_nav(self, html, active);
+		else
 		{
-			gboolean end;
-
-			end = (NULL == links[i].path);
-
-			/* A section heading belongs to the first link that carries
-			 * it and every link after, until the next heading. */
-			if (!end && (NULL != links[i].section))
-				section = links[i].section;
-
-			/* A row one of the questions gathers is drawn there, not
-			 * here. */
-			if (!end && venture_web_nav_link_claimed(links[i].path))
-				continue;
-
-			/* A link whose module is off is not offered. The heading
-			 * follows the first link actually shown under it, so a
-			 * section emptied by configuration leaves no orphan. */
-			if (!end && !venture_web_module_enabled(self, links[i].module))
-				continue;
-
-			if (end || ((NULL != section) && (section != shown)))
+			for (i = 0; ; i++)
 			{
-				/* Close the heading being gathered. */
-				if (NULL != shown)
+				gboolean end;
+
+				end = (NULL == links[i].path);
+
+				/* A section heading belongs to the first link that carries
+				 * it and every link after, until the next heading. */
+				if (!end && (NULL != links[i].section))
+					section = links[i].section;
+
+				/* A row one of the questions gathers is drawn there, not
+				 * here. */
+				if (!end && venture_web_nav_link_claimed(links[i].path))
+					continue;
+
+				/* A link whose module is off is not offered. The heading
+				 * follows the first link actually shown under it, so a
+				 * section emptied by configuration leaves no orphan. */
+				if (!end && !venture_web_module_enabled(self, links[i].module))
+					continue;
+
+				if (end || ((NULL != section) && (section != shown)))
 				{
-					if (!questions_shown)
+					/* Close the heading being gathered. */
+					if (NULL != shown)
 					{
-						venture_web_append_nav_heading(html, shown);
-						g_string_append(html, items->str);
-						venture_web_append_nav_sections(self, html,
-							links, active);
-						questions_shown = TRUE;
+						if (!questions_shown)
+						{
+							venture_web_append_nav_heading(html, shown);
+							g_string_append(html, items->str);
+							venture_web_append_nav_sections(self, html,
+								links, active);
+							questions_shown = TRUE;
+						}
+						else
+						{
+							venture_web_append_nav_group(html, shown,
+								items->str, open);
+						}
 					}
-					else
-					{
-						venture_web_append_nav_group(html, shown,
-							items->str, open);
-					}
+
+					if (end)
+						break;
+
+					g_string_truncate(items, 0);
+					open = FALSE;
+					shown = section;
 				}
 
-				if (end)
-					break;
-
-				g_string_truncate(items, 0);
-				open = FALSE;
-				shown = section;
+				open = open || (0 == g_strcmp0(active, links[i].path));
+				venture_web_append_nav_item(items, &links[i], active);
 			}
 
-			open = open || (0 == g_strcmp0(active, links[i].path));
-			venture_web_append_nav_item(items, &links[i], active);
+			if (!questions_shown)
+				venture_web_append_nav_sections(self, html, links, active);
+
+			/* Pages plugins added, after every built-in one. */
+			venture_web_append_plugin_nav(self, html, links, active);
+
+			/* The operator's own pages, after the built-in ones. */
+			venture_web_append_dashboard_nav(self, request, html, active);
+			venture_web_append_saved_view_nav(self, request, html, active);
+
 		}
-
-		if (!questions_shown)
-			venture_web_append_nav_sections(self, html, links, active);
-
-		/* Pages plugins added, after every built-in one. */
-		venture_web_append_plugin_nav(self, html, links, active);
-
-		/* The operator's own pages, after the built-in ones. */
-		venture_web_append_dashboard_nav(self, request, html, active);
-		venture_web_append_saved_view_nav(self, request, html, active);
 
 		g_string_append(html, "</div>");
 	}
@@ -4017,6 +4030,9 @@ venture_web_ui_dashboard(
 
 	if (!principal->authenticated)
 		return venture_web_ui_overview(request, params, user_data);
+
+	if (venture_web_household_view(self, request))
+		return venture_web_redirect_to(venture_web_household_home(self));
 
 	home = venture_web_render_home_dashboard(self, request);
 
@@ -5789,8 +5805,10 @@ venture_web_ui_search(
 	const gchar *q;
 	guint groups;
 	gsize i;
+	gboolean household;
 
 	self = user_data;
+	household = venture_web_household_view(self, request);
 
 	redirect = venture_web_ui_require_session(self, request);
 
@@ -5845,6 +5863,9 @@ venture_web_ui_search(
 			gint64 total;
 			guint j;
 
+			if (household && venture_web_household_type_link(names[i]) == NULL)
+				continue;
+
 			entity_type = venture_entity_registry_lookup(
 				venture_context_get_entity_registry(self->context),
 				names[i]);
@@ -5896,7 +5917,8 @@ venture_web_ui_search(
 
 				/* "Companies", not "company": a group of results
 				 * is named the way the sidebar names the list. */
-				plural = venture_entity_type_dup_label(entity_type, TRUE);
+				plural = household ? g_strdup(venture_web_household_type_link(names[i])->label)
+					: venture_entity_type_dup_label(entity_type, TRUE);
 				venture_html_escape_append(content, plural);
 			}
 			{
@@ -5966,8 +5988,48 @@ venture_web_ui_search(
  * builds on; declared here because the list and the form come first.
  */
 static gchar *venture_web_type_label(GType type, gboolean plural);
+
+static gchar *
+venture_web_view_type_label(VentureWebServer *self, HtmxRequest *request, GType type, gboolean plural)
+{
+	if (venture_web_household_view(self, request))
+	{
+		if (type == VENTURE_TYPE_EXPENSE) return g_strdup(plural ? "Spending" : "Spending entry");
+		if (type == VENTURE_TYPE_SALE) return g_strdup(plural ? "Income" : "Income entry");
+		if (type == VENTURE_TYPE_VENDOR_BILL) return g_strdup(plural ? "Bills" : "Bill");
+	}
+	return venture_web_type_label(type, plural);
+}
+
 static void venture_web_append_crumbs(GString *html, GType type,
 	const gchar *type_name, gboolean link_list);
+
+static void
+venture_web_append_view_crumbs(VentureWebServer *self, HtmxRequest *request,
+	GString *html, GType type, const gchar *type_name, gboolean link_list)
+{
+	const VentureWebNavLink *link = venture_web_household_type_link(type_name);
+	if (link != NULL && venture_web_household_view(self, request))
+	{
+		g_string_append(html, "<nav class=\"crumbs\" aria-label=\"Breadcrumb\"><span class=\"crumb\">Household</span>");
+		if (link_list)
+		{
+			g_string_append_printf(html, "<a class=\"crumb\" href=\"%s\">", link->path);
+			venture_html_escape_append(html, link->label);
+			g_string_append(html, "</a>");
+		}
+		else
+		{
+			g_string_append(html, "<span class=\"crumb\">");
+			venture_html_escape_append(html, link->label);
+			g_string_append(html, "</span>");
+		}
+		g_string_append(html, "</nav>");
+		return;
+	}
+	venture_web_append_crumbs(html, type, type_name, link_list);
+}
+
 static GPtrArray *venture_web_list_columns(GPtrArray *specs,
 	GPtrArray *records);
 static void venture_web_append_list_cell(VentureWebServer *self,
@@ -6948,11 +7010,11 @@ venture_web_ui_list(
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
 	path = g_strdup_printf("/e/%s", type_name);
-	heading = venture_web_type_label(entity_type, TRUE);
+	heading = venture_web_view_type_label(self, request, entity_type, TRUE);
 	content = g_string_new(NULL);
 
 	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">");
-	venture_web_append_crumbs(content, entity_type, type_name, FALSE);
+	venture_web_append_view_crumbs(self, request, content, entity_type, type_name, FALSE);
 	g_string_append(content, "<h1>");
 	venture_html_escape_append(content, heading);
 	g_string_append(content, "</h1><span class=\"subtitle\">");
@@ -6987,7 +7049,7 @@ venture_web_ui_list(
 		g_autofree gchar *lower = NULL;
 
 		/* "New contact", not "New": the button says what it makes. */
-		singular = venture_web_type_label(entity_type, FALSE);
+		singular = venture_web_view_type_label(self, request, entity_type, FALSE);
 		lower = g_ascii_strdown(singular, -1);
 		if (NULL != venture_entity_type_get_create_path(entity_type))
 			g_string_append_printf(content,
@@ -8784,7 +8846,7 @@ venture_web_ui_form(
 	g_ptr_array_sort_values(specs, venture_field_spec_compare_display_order);
 
 	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">");
-	venture_web_append_crumbs(content, entity_type, type_name, TRUE);
+	venture_web_append_view_crumbs(self, request, content, entity_type, type_name, TRUE);
 	g_string_append(content, "<h1>");
 
 	/* "New contact" or "Edit Jane Doe": what is being made, or which one
@@ -8802,7 +8864,7 @@ venture_web_ui_form(
 		g_autofree gchar *singular = NULL;
 		g_autofree gchar *lower = NULL;
 
-		singular = venture_web_type_label(entity_type, FALSE);
+		singular = venture_web_view_type_label(self, request, entity_type, FALSE);
 		lower = g_ascii_strdown(singular, -1);
 		g_string_append(content, "New ");
 		venture_html_escape_append(content, lower);
@@ -31603,6 +31665,7 @@ venture_web_api_palette(
 	const gchar *q;
 	guint records;
 	gsize i;
+	gboolean household = venture_web_household_view(self, request);
 
 	(void)params;
 
@@ -31621,7 +31684,7 @@ venture_web_api_palette(
 	/* Pages. */
 	json_builder_set_member_name(builder, "pages");
 	json_builder_begin_array(builder);
-	links = venture_web_navigation();
+	links = household ? venture_household_nav : venture_web_navigation();
 
 	for (i = 0; NULL != links[i].path; i++)
 	{
@@ -31647,7 +31710,7 @@ venture_web_api_palette(
 	 * person can see in the sidebar is a page the palette can find. */
 	links = venture_web_server_get_plugin_navigation(self);
 
-	for (i = 0; NULL != links[i].path; i++)
+	for (i = 0; !household && NULL != links[i].path; i++)
 	{
 		g_autofree gchar *label = NULL;
 
@@ -31679,7 +31742,7 @@ venture_web_api_palette(
 			{ "Search", "/search", NULL }
 		};
 
-		for (i = 0; i < G_N_ELEMENTS(extra); i++)
+		for (i = 0; !household && i < G_N_ELEMENTS(extra); i++)
 		{
 			g_autofree gchar *label = NULL;
 
@@ -31716,6 +31779,9 @@ venture_web_api_palette(
 		g_autofree gchar *new_url = NULL;
 		GType entity_type;
 
+		if (household && venture_web_household_type_link(names[i]) == NULL)
+			continue;
+
 		entity_type = venture_entity_registry_lookup(
 			venture_context_get_entity_registry(self->context), names[i]);
 
@@ -31724,7 +31790,8 @@ venture_web_api_palette(
 		                                  VENTURE_USER_ROLE_VIEWER, NULL))
 			continue;
 
-		label = venture_web_label_from_name(names[i]);
+		label = household ? g_strdup(venture_web_household_type_link(names[i])->label)
+			: venture_web_label_from_name(names[i]);
 		folded = g_utf8_casefold(label, -1);
 
 		if (('\0' != needle[0]) && (NULL == strstr(folded, needle)))
@@ -31761,6 +31828,9 @@ venture_web_api_palette(
 		g_autoptr(GPtrArray) hits = NULL;
 		GType entity_type;
 		guint j;
+
+		if (household && venture_web_household_type_link(names[i]) == NULL)
+			continue;
 
 		entity_type = venture_entity_registry_lookup(
 			venture_context_get_entity_registry(self->context), names[i]);
@@ -33559,6 +33629,8 @@ venture_document_web_register(router, self);
 	venture_money_calendar_web_register(router, self);
 	venture_docs_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/report_pack/:id/deliver", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_report_pack_deliver, self);
+
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/view/venture/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_switch_venture, self);
 
 	/*
 	 * Plugins' pages, last: they loaded before this server existed and
