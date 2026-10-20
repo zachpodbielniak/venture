@@ -138,6 +138,22 @@ validate_job(VentureDatabase *database, VentureEntity *job, VentureEntity *previ
 		if (number(contact, "company-id") != 0 && number(contact, "company-id") != number(job, "company-id"))
 			return refuse(error, "contact-id", "The contact works for another customer");
 	}
+	if (number(job, "property-id") != 0)
+	{
+		g_autoptr(VentureEntity) property = load(database, VENTURE_TYPE_PROPERTY, number(job, "property-id"), org,
+			"property-id", error);
+		g_autofree gchar *address = NULL, *where = NULL;
+		if (property == NULL)
+			return FALSE;
+		if (number(property, "company-id") != number(job, "company-id"))
+			return refuse(error, "property-id", "The property belongs to another customer");
+		/* The property's address is where the job is, unless the job was
+		 * given one of its own. */
+		g_object_get(job, "service-address", &where, NULL);
+		g_object_get(property, "address", &address, NULL);
+		if (venture_string_is_empty(where) && !venture_string_is_empty(address))
+			g_object_set(job, "service-address", address, NULL);
+	}
 	if (end != NULL && start == NULL)
 		return refuse(error, "window-start", "An arrival window needs its start as well as its end");
 	if (start != NULL && end != NULL && g_date_time_compare(end, start) <= 0)
@@ -185,6 +201,48 @@ validate_technician(VentureDatabase *database, VentureEntity *row, VentureEntity
 	return TRUE;
 }
 
+static gboolean
+validate_property(VentureDatabase *database, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
+{
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *address = NULL;
+	gint64 org = venture_entity_get_organization_id(row);
+	(void)previous;
+	(void)data;
+	g_object_get(row, "address", &address, NULL);
+	if (venture_string_is_empty(address) || g_strstrip(address)[0] == '\0')
+		return refuse(error, "address", "A property needs its address");
+	company = load(database, VENTURE_TYPE_COMPANY, number(row, "company-id"), org, "company-id", error);
+	if (company == NULL)
+		return FALSE;
+	if (number(row, "contact-id") != 0)
+	{
+		g_autoptr(VentureEntity) contact = load(database, VENTURE_TYPE_CONTACT, number(row, "contact-id"), org,
+			"contact-id", error);
+		if (contact == NULL)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+validate_equipment(VentureDatabase *database, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
+{
+	g_autoptr(VentureEntity) property = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	gint64 year = number(row, "installed-year");
+	(void)previous;
+	(void)data;
+	property = load(database, VENTURE_TYPE_PROPERTY, number(row, "property-id"), venture_entity_get_organization_id(row),
+		"property-id", error);
+	if (property == NULL)
+		return FALSE;
+	/* Blank is "nobody knows"; anything else is a year it could have gone in. */
+	if (year != 0 && (year < 1900 || year > g_date_time_get_year(now) + 1))
+		return refuse(error, "installed-year", "Give the year it was installed, like 2009, or leave it blank");
+	return TRUE;
+}
+
 void
 venture_jobs_install(VentureDatabase *database)
 {
@@ -194,6 +252,8 @@ venture_jobs_install(VentureDatabase *database)
 	g_object_set_data(G_OBJECT(database), "venture-jobs-installed", GINT_TO_POINTER(1));
 	venture_database_add_save_validator(database, VENTURE_TYPE_JOB, validate_job, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_JOB_TECHNICIAN, validate_technician, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_PROPERTY, validate_property, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_EQUIPMENT, validate_equipment, NULL, NULL);
 }
 
 /* --- The day's buttons -------------------------------------------------------- */

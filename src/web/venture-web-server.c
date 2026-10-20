@@ -1875,6 +1875,8 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
 	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
 	{ "/e/job", "Jobs", VENTURE_ICON("<path d=\"M14 6l4 4-8 8H6v-4z\"/><path d=\"M12 8l4 4\"/>"), "Jobs", "jobs" },
+	{ "/e/property", "Properties", VENTURE_ICON("<path d=\"M3 11l9-7 9 7\"/><path d=\"M5 10v10h14V10\"/><path d=\"M10 20v-6h4v6\"/>"), NULL, "jobs" },
+	{ "/e/equipment", "Equipment", VENTURE_ICON("<rect x=\"6\" y=\"3\" width=\"12\" height=\"18\" rx=\"2\"/><path d=\"M10 8h4M12 14v3\"/>"), NULL, "jobs" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -1929,7 +1931,7 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/e/job", "/worklist", "/customers/duplicates",
+	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/worklist", "/customers/duplicates",
 	NULL
 };
 

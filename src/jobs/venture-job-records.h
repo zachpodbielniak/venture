@@ -49,5 +49,25 @@ VENTURE_DECLARE_ENTITY(VentureJob, venture_job, JOB)
 #define VENTURE_TYPE_JOB_TECHNICIAN (venture_job_technician_get_type())
 VENTURE_DECLARE_ENTITY(VentureJobTechnician, venture_job_technician, JOB_TECHNICIAN)
 
+/**
+ * VentureProperty:
+ *
+ * A place a customer has work done: their home, or each rental a landlord
+ * owns. It carries the address, how to get in (gate code, key, dog in the
+ * yard) and who is there. Equipment and jobs are filed under it.
+ */
+#define VENTURE_TYPE_PROPERTY (venture_property_get_type())
+VENTURE_DECLARE_ENTITY(VentureProperty, venture_property, PROPERTY)
+
+/**
+ * VentureEquipment:
+ *
+ * A thing at a property that gets serviced: a water heater, a furnace, an
+ * air conditioner. Make, model, serial, the year it went in (so its age),
+ * and its warranty.
+ */
+#define VENTURE_TYPE_EQUIPMENT (venture_equipment_get_type())
+VENTURE_DECLARE_ENTITY(VentureEquipment, venture_equipment, EQUIPMENT)
+
 G_END_DECLS
 #endif

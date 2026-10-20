@@ -980,7 +980,8 @@ static const gchar *const referrals_reports[] = { "referrals", NULL };
 static const gchar *const jobs_requires[] = { "crm", NULL };
 static const gchar *const jobs_suggests[] = { "quotes", "invoicing", NULL };
 static GType (*const jobs_types[]) (void) = {
-	venture_job_get_type, venture_job_technician_get_type, NULL
+	venture_job_get_type, venture_job_technician_get_type,
+	venture_property_get_type, venture_equipment_get_type, NULL
 };
 
 static const VentureModuleInfo venture_module_builtins[] = {
@@ -1456,7 +1457,8 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"jobs", "Jobs",
 		"Work at a customer's address: the problem, the technicians sent, "
 		"the arrival window promised, where the job has got to through the "
-		"day, and the estimate and invoice it belongs with.",
+		"day, and the estimate and invoice it belongs with; and each "
+		"customer's properties, how to get in, and the equipment at each.",
 		jobs_requires, jobs_suggests, jobs_types,
 		NULL, NULL, FALSE
 	}

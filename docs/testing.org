@@ -1247,3 +1247,9 @@ finished job refused "On my way", "Invoiced" taking the accepted
 estimate's invoice and refusing with none, one row per active technician,
 and Jobs in the sidebar with a form that asks for the window, problem and
 service address.
+
+=test-properties= checks a property's required customer and address,
+equipment filed at a property with a believable year installed and found
+by its serial number, a job refused at another customer's property and
+given the property's address when it has none of its own, and the
+sidebar, form and property page.

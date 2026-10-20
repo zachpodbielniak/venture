@@ -1341,7 +1341,7 @@ test_web_navigation_groups_by_question(
 		"/e/accounting_cutover", "/e/currency", NULL
 	};
 	static const gchar *const customers[] = {
-		"/e/company", "/e/contact", "/e/job", "/worklist", "/customers/duplicates",
+		"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/worklist", "/customers/duplicates",
 		NULL
 	};
 	static const gchar *const growth[] = {

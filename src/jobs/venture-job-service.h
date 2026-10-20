@@ -11,7 +11,10 @@ G_BEGIN_DECLS
  * for a job saved without one, a customer and contact in the job's
  * business, an arrival window that ends after it starts, an estimate and
  * an invoice for the same customer, an invoice before "invoiced", and one
- * row per technician per job, for an active user. Idempotent.
+ * row per technician per job, for an active user; a property with its
+ * customer and address, equipment at a property with a believable year
+ * installed, and a job's property its own customer's, whose address it
+ * takes when it has none. Idempotent.
  */
 void venture_jobs_install(VentureDatabase *database);
 

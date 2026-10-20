@@ -15,15 +15,19 @@ work. Before it existed the nearest thing was an activity of kind
 window and no link to the estimate or the bill.
 
 The =jobs= module requires =crm= and suggests =quotes= and =invoicing=. It
-owns two record types, both derived from their field tables like every
+owns four record types, all derived from their field tables like every
 other: a list, a form, REST, CLI, JSON and the assistant's tools.
 
 | Record | What it holds |
 |--------+---------------|
 | =job= | title, number, status, customer (=company_id=), contact on site, service address, problem, arrival window (=window_start=, =window_end=), estimate (=quote_id=), invoice (=invoice_id=), the times it was set off for, arrived at and finished, notes |
 | =job_technician= | a job and a user sent to it; =lead= marks the one the customer deals with |
+| =property= | a customer's place: name ("Home", "14 Oak St rental"), customer, address, how to get in (=access_notes=: gate code, key, pets, parking), who is there (=contact_id=), notes |
+| =equipment= | a thing at a property that gets serviced: what it is, make, model, serial number, year installed, warranty end, notes |
 
-Jobs are under Customers in the sidebar, after Contacts.
+A job also names its =property_id=. Properties, Equipment and Jobs are
+under Customers in the sidebar, after Contacts. A property's page lists
+its equipment and its jobs.
 
 * What the save holds to
 
@@ -40,6 +44,14 @@ Jobs are under Customers in the sidebar, after Contacts.
 - An =invoiced= job names its invoice.
 - A technician is an active user who can sign in, on a job in the same
   business, once per job.
+- A property belongs to a customer in its business and has an address.
+  Its contact, when named, is in the same business.
+- Equipment is at a property in its business. Its year installed is blank
+  ("nobody knows") or a year from 1900 to next year, so its age can be
+  read from it. Make, model and serial number are searchable.
+- A job's property is its own customer's. A job that names a property and
+  has no service address of its own takes the property's address; a typed
+  service address is kept.
 
 * Through the day
 
@@ -67,6 +79,5 @@ the form; the save rules above still apply.
 
 * Not yet
 
-Service addresses as records of their own under a customer, the
-equipment at each, a booking's time of day on the calendar and a
-technician's day view are separate pieces of work.
+A booking's time of day on the calendar and a technician's day view are a
+separate piece of work.
