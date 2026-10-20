@@ -61,7 +61,11 @@ static const VentureFieldDecl venture_goal_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("tags", "Tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("savings-account-id", "Savings asset account", "Choose this or a rollover envelope; reads the direct posted balance", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("savings-envelope-id", "Savings rollover envelope", "Choose this or an asset account; reads the unspent envelope balance", "budget_line", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("savings-target", "Savings target", "Positive target in the source book currency; ordinary numeric goal fields are not used"),
+	VENTURE_FIELD_MONEY("savings-monthly", "Planned monthly savings", "Expected net monthly contribution in the target currency; zero leaves the future forecast blank")
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureGoal, venture_goal, venture_goal_fields,

@@ -541,6 +541,9 @@ http_get(SoupSession *session, const gchar *base, const gchar *path, guint expec
 	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
 	Response response = { FALSE, NULL, NULL, NULL, NULL };
 	gchar *body;
+	/* Isolate local requests from idle keep-alive reuse, and bound failures. */
+	g_object_set(session, "timeout", 20u, NULL);
+	soup_message_headers_replace(soup_message_get_request_headers(message), "Connection", "close");
 	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &response);
 	while (!response.done)
 		g_main_context_iteration(NULL, TRUE);
@@ -555,6 +558,7 @@ static void
 test_surfaces(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureGoal) savings = venture_goal_new();
 	g_autoptr(SoupSession) session = soup_session_new();
 	g_autoptr(GSubprocessLauncher) launcher = NULL;
 	g_autoptr(GSubprocess) child = NULL;
@@ -571,6 +575,13 @@ test_surfaces(Fixture *f, gconstpointer data)
 		"server-bind-address", "127.0.0.1", "server-port", (gint64)port, NULL);
 	post(f, "2026-07-10T00:00:00Z", "USD", "1000", "4000", 10000);
 	post(f, "2026-08-10T00:00:00Z", "USD", "1000", "4000", 20000);
+	g_object_set(savings, "name", "Household reserve", "organization-id", f->org,
+		"savings-account-id", account(f, "1000"), NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(savings), "savings-target", "500 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(savings), "savings-monthly", "100 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(savings), "due-on", "2026-10-31", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(savings), NULL, &error));
+	g_assert_no_error(error);
 	server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(server, &error));
@@ -642,17 +653,17 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(response.out, "200.00"));
 	g_free(response.out);
 	g_free(response.err);
-	for (wealth = 0; wealth < 2; wealth++)
+	for (wealth = 0; wealth < 3; wealth++)
 	{
-		const gchar *name = wealth == 0 ? "net_worth" : "debt_payoff";
+		const gchar *name = wealth == 0 ? "net_worth" : wealth == 1 ? "debt_payoff" : "savings_goals";
 		g_autofree gchar *page = g_strdup_printf("/reports/%s?period=2026-08&currency=USD", name);
 		g_autofree gchar *api = g_strdup_printf("/api/v1/reports/%s?period=2026-08&currency=USD", name);
 		g_clear_pointer(&body, g_free);
 		body = http_get(session, base, page, 200);
-		g_assert_nonnull(strstr(body, wealth == 0 ? "Net worth" : "Debt payoff"));
+		g_assert_nonnull(strstr(body, wealth == 0 ? "Net worth" : wealth == 1 ? "Debt payoff" : "Savings goals"));
 		g_clear_pointer(&body, g_free);
 		body = http_get(session, base, api, 200);
-		g_assert_nonnull(strstr(body, wealth == 0 ? "net_worth" : "interest_saved"));
+		g_assert_nonnull(strstr(body, wealth == 0 ? "net_worth" : wealth == 1 ? "interest_saved" : "monthly_needed"));
 		g_clear_object(&child);
 		args[6] = name;
 		args[10] = NULL;
@@ -665,7 +676,12 @@ test_surfaces(Fixture *f, gconstpointer data)
 		while (!response.done) g_main_context_iteration(NULL, TRUE);
 		g_assert_no_error(response.error);
 		g_assert_true(g_subprocess_get_successful(child));
-		g_assert_nonnull(strstr(response.out, wealth == 0 ? "Net worth" : "Interest saved"));
+		g_assert_nonnull(strstr(response.out, wealth == 0 ? "Net worth" : wealth == 1 ? "Interest saved" : "Monthly amount needed"));
+		if (wealth == 2)
+		{
+			g_assert_nonnull(strstr(response.out, "200.00"));
+			g_assert_nonnull(strstr(response.out, "2026-10-31"));
+		}
 		g_free(response.out);
 		g_free(response.err);
 	}
@@ -1076,12 +1092,185 @@ test_debt_registration(Fixture *f, gconstpointer data)
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "debt_payoff"));
 }
 
+static void
+test_savings_account(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureGoal) goal = venture_goal_new();
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = NULL;
+	(void)data;
+	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals"));
+	g_object_set(goal, "name", "Rainy day", "organization-id", f->org,
+		"savings-account-id", account(f, "1000"), NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "savings-target", "100 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "savings-monthly", "20 USD", &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "due-on", "2026-04-30", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	g_assert_no_error(error);
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "4000", 4000);
+	post(f, "2026-02-10T00:00:00Z", "USD", "1000", "4000", 99999);
+	key = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(goal)));
+	r = report(f, "savings_goals", "2026-01", "USD", NULL);
+	g_assert_cmpint(cell(r, key, "saved"), ==, 4000);
+	g_assert_cmpint(cell(r, key, "remaining"), ==, 6000);
+	g_assert_cmpint(cell(r, key, "monthly_needed"), ==, 2000);
+	g_assert_cmpstr(text_cell(r, key, "forecast"), ==, "2026-04-30");
+	g_clear_object(&r);
+	r = report(f, "goal_progress", "2026-01", NULL, NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 0);
+}
+
+static VentureGoal *
+savings_goal(Fixture *f, const gchar *field, gint64 id, const gchar *target, const gchar *monthly)
+{
+	VentureGoal *goal = venture_goal_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(goal, "name", "Household reserve", "organization-id", f->org, field, id, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "savings-target", target, &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "savings-monthly", monthly, &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	g_assert_no_error(error);
+	return goal;
+}
+
+static void
+test_savings_envelope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBudget) budget = venture_budget_new();
+	g_autoptr(VentureBudgetLine) line = venture_budget_line_new();
+	g_autoptr(VentureGoal) goal = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = NULL;
+	(void)data;
+	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals"));
+	g_object_set(budget, "name", "Reserve plan", "organization-id", f->org, "period", "2026", "currency", "USD", "status", "active", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(budget), NULL, &error));
+	g_object_set(line, "organization-id", f->org, "budget-id", venture_entity_get_id(VENTURE_ENTITY(budget)),
+		"account-id", account(f, "6400"), "period", "2026-01", "envelope", TRUE, "rollover", TRUE, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(line), "amount", "30 USD", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(line), NULL, &error));
+	goal = savings_goal(f, "savings-envelope-id", venture_entity_get_id(VENTURE_ENTITY(line)), "100 USD", "30 USD");
+	post(f, "2026-01-10T00:00:00Z", "USD", "6400", "1000", 500);
+	post(f, "2026-02-10T00:00:00Z", "USD", "6400", "1000", 1000);
+	key = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(goal)));
+	r = report(f, "savings_goals", "2026-02", "USD", NULL);
+	g_assert_cmpint(cell(r, key, "saved"), ==, 4500);
+	g_assert_cmpint(cell(r, key, "remaining"), ==, 5500);
+	g_assert_cmpstr(text_cell(r, key, "forecast"), ==, "2026-04-28");
+	g_assert_null(venture_report_result_get_cell(r, 0, "monthly_needed"));
+}
+
+static void
+test_savings_rounding(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureGoal) goal = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = NULL;
+	(void)data;
+	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals"));
+	goal = savings_goal(f, "savings-account-id", account(f, "1000"), "1 USD", "0 USD");
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "due-on", "2026-04-30", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	key = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(goal)));
+	r = report(f, "savings_goals", "2026-01", "USD", NULL);
+	g_assert_cmpint(cell(r, key, "monthly_needed"), ==, 34);
+	g_assert_null(venture_report_result_get_cell(r, 0, "forecast"));
+	g_clear_object(&r);
+	r = report(f, "savings_goals", "2026-04", "USD", NULL);
+	g_assert_cmpint(cell(r, key, "monthly_needed"), ==, 100);
+	post(f, "2026-05-10T00:00:00Z", "USD", "1000", "4000", 150);
+	g_clear_object(&r);
+	r = report(f, "savings_goals", "2026-05", "USD", NULL);
+	g_assert_cmpint(cell(r, key, "remaining"), ==, 0);
+	g_assert_cmpstr(text_cell(r, key, "forecast"), ==, "2026-05-31");
+}
+
+static void
+test_savings_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureGoal) goal = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureAccount) foreign = venture_account_new();
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026-01", NULL);
+	VentureReport *registered = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals");
+	(void)data;
+	g_assert_nonnull(registered);
+	goal = savings_goal(f, "savings-account-id", account(f, "1000"), "100 USD", "20 USD");
+	g_object_set(goal, "savings-account-id", account(f, "2000"), NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(goal, "savings-account-id", account(f, "1000"), NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "savings-monthly", "20 EUR", &error));
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(goal), "savings-monthly", "20 USD", &error));
+	g_object_set(other, "name", "Other household", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(other), NULL, &error));
+	g_object_set(foreign, "name", "Other reserve", "code", "OTHER-RESERVE", "organization-id", venture_entity_get_id(VENTURE_ENTITY(other)), NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(foreign), NULL, &error));
+	g_object_set(goal, "savings-account-id", venture_entity_get_id(VENTURE_ENTITY(foreign)), NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	venture_config_set_module_enabled(f->config, "ledger", FALSE);
+	registered = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals");
+	g_assert_nonnull(registered);
+	r = venture_report_generate(registered, f->context, range, NULL, &error);
+	g_assert_null(r);
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	venture_config_set_module_enabled(f->config, "goals", FALSE);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals"));
+	venture_config_set_module_enabled(f->config, "ledger", TRUE);
+	venture_config_set_module_enabled(f->config, "goals", TRUE);
+}
+
+static void
+test_savings_shortfall(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureGoal) goal = savings_goal(f, "savings-account-id", account(f, "1000"), "100 USD", "25 USD");
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(goal)));
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026-01", NULL);
+	VentureReport *registered = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals");
+	(void)data;
+	post(f, "2026-01-10T00:00:00Z", "USD", "6400", "1000", 2500);
+	post(f, "2026-01-10T00:00:00Z", "EUR", "1000", "4000", 99999);
+	r = report(f, "savings_goals", "2026-01", "USD", NULL);
+	g_assert_cmpint(cell(r, key, "remaining"), ==, 12500);
+	g_assert_cmpstr(text_cell(r, key, "forecast"), ==, "2026-06-30");
+	g_clear_object(&r);
+	g_object_set(goal, "status", VENTURE_GOAL_STATUS_PAUSED, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(goal), NULL, &error));
+	r = report(f, "savings_goals", "2026-01", "USD", NULL);
+	g_assert_null(venture_report_result_get_cell(r, 0, "forecast"));
+	g_clear_object(&r);
+	json_object_set_string_member(options, "as_of", "2026-01-15");
+	r = venture_report_generate(registered, f->context, range, options, &error);
+	g_assert_null(r);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
 int
 main(int argc, char **argv)
 {
 	static const gchar *const names[] = { "balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation" };
 	guint i;
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/statements/savings-envelope", Fixture, NULL, setup, test_savings_envelope, teardown);
+	g_test_add("/statements/savings-rounding", Fixture, NULL, setup, test_savings_rounding, teardown);
+	g_test_add("/statements/savings-validation", Fixture, NULL, setup, test_savings_validation, teardown);
+	g_test_add("/statements/savings-shortfall", Fixture, NULL, setup, test_savings_shortfall, teardown);
+	g_test_add("/statements/savings-account", Fixture, NULL, setup, test_savings_account, teardown);
 	g_test_add("/statements/net-worth", Fixture, NULL, setup, test_net_worth, teardown);
 	g_test_add("/statements/debt-payoff", Fixture, NULL, setup, test_debt_payoff, teardown);
 	g_test_add("/statements/wealth-cutoff", Fixture, NULL, setup, test_wealth_cutoff, teardown);

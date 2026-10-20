@@ -18,6 +18,7 @@
 #include "venture.h"
 
 #include <string.h>
+#include "venture-savings-common.inc"
 
 #define VENTURE_GOALS_STATE_KEY "venture-goals-installed"
 
@@ -200,15 +201,17 @@ venture_goals_validate_goal(
 	VentureGoalStatus was;
 	gdouble start;
 	gdouble target;
+	g_autoptr(VentureMoney) savings = NULL;
 
 	(void)user_data;
 
 	g_object_get(entity, "status", &status, "start-value", &start,
-	             "target-value", &target, NULL);
+	             "target-value", &target, "savings-target", &savings, NULL);
+	if (!savings_check(database, entity, error)) return FALSE;
 
 	/* --- The distance --- */
 
-	if (target == start)
+	if (savings == NULL && target == start)
 	{
 		venture_set_error_validation(error, "Target",
 			"must differ from the start (both are %g); a goal needs somewhere "

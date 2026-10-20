@@ -929,11 +929,11 @@ static const gchar *const sessions_reports[] = { "session_performance", NULL };
  * whose recipes a step may name and goal_materials multiplies out (the
  * reference is refused and the report refuses while it is off), and
  * market, whose observed prices that shopping list is priced at. */
-static const gchar *const goals_suggests[] = { "production", "market", NULL };
+static const gchar *const goals_suggests[] = { "production", "market", "ledger", "budgets", NULL };
 static GType (*const goals_types[]) (void) = {
 	venture_goal_get_type, venture_goal_step_get_type, NULL
 };
-static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", NULL };
+static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", "savings_goals", NULL };
 
 /* Events and one calendar over every dated record. It requires only core:
  * a meeting names nothing else. It suggests the modules whose records the

@@ -10,7 +10,7 @@
 
 A goal is a measurable target: a number that starts somewhere and should
 reach somewhere else, perhaps by a date. The =goals= module keeps them,
-generically, in two record types and two reports:
+generically, in two record types and three reports:
 
 - =goal= :: what is measured (=metric=, =unit=), where it started
   (=start_value=), where it stands (=current_value=), where it should end
@@ -22,6 +22,8 @@ generically, in two record types and two reports:
   done, the days left, and when it will get there at the pace so far.
 - =goal_materials= :: the shopping list for the recipe steps not yet done:
   components multiplied out, less what is on hand, priced.
+- =savings_goals= :: linked asset or rollover-envelope progress, monthly amounts
+  needed and a forecast from the planned contribution (see below).
 
 The same records describe:
 
@@ -462,3 +464,19 @@ order) or a savings plan (steps with no recipe, the forecast the question).
 - *Linked work never moves a goal.* =venture_goals_work_progress()= reads
   tickets and milestones; it writes neither them nor the goal, and a child
   ticket is counted through its epic, never by copying =goal_id= down.
+
+* Linked household savings
+
+Goals can also link an exact-money savings target to one asset ledger account
+or an active rollover envelope. The optional fields are =savings_account_id=,
+=savings_envelope_id=, =savings_target= and =savings_monthly=. These use the
+existing =due_on= and =status= fields, and do not use the three manual numeric
+values. =savings_goals= reports month-end progress, monthly amount needed and
+a contribution-based forecast. =goal_progress= excludes these linked goals
+with a note directing the reader to their money report. Ordinary goals and
+steps retain their existing behavior. See [[file:household.org][Household ventures, child 6]]
+for setup, exact rounding, scope, deadlines and forecast assumptions.
+
+The goals module still requires only core. Linked savings additionally need
+ledger and finance, and envelope sources need budgets; these remain optional
+for ordinary goals. The reports never move money or mark a goal achieved.

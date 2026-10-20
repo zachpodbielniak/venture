@@ -1154,6 +1154,57 @@ test_monthly_envelope_without_lines(void)
 }
 
 static void
+test_household_savings_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO goals (uuid, organization_id, name, start_value, target_value, current_value) "
+		"VALUES ('pebble-old-goal', 1, 'Pebble target', 0, 100, 25);"
+		"UPDATE goals SET savings_account_id = NULL, savings_envelope_id = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 925", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || CAST(savings_account_id AS TEXT) || ':' || CAST(savings_envelope_id AS TEXT) || ':' || CAST(current_value AS TEXT) "
+			"FROM goals WHERE uuid = 'pebble-old-goal'");
+		g_assert_cmpstr(value, ==, "Pebble target:0:0:25.0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_savings_without_goals(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE goals; DELETE FROM schema_migrations WHERE version >= 925", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
+static void
 test_household_wealth_upgrade(void)
 {
 	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
@@ -1660,6 +1711,8 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
 	g_test_add_func("/migrations/household-account-upgrade", test_household_account_upgrade);
+	g_test_add_func("/migrations/household-savings-upgrade", test_household_savings_upgrade);
+	g_test_add_func("/migrations/household-savings-without-goals", test_household_savings_without_goals);
 	g_test_add_func("/migrations/household-wealth-upgrade", test_household_wealth_upgrade);
 	g_test_add_func("/migrations/household-wealth-without-accounts", test_household_wealth_without_accounts);
 	g_test_add_func("/migrations/household-subscriptions-upgrade", test_household_subscriptions_upgrade);

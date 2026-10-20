@@ -235,3 +235,5 @@ screen's ordinary sync-and-import test.
 - [[file:household.org][Household bills and subscriptions]] — due calendar, repeat-charge suggestions, twelve-month costs and opt-in inbox reminders.
 
 - [[file:household.org][Household wealth]] — monthly net worth and debt payoff dates, snowball/avalanche strategies and interest savings.
+
+- [[file:household.org][Linked savings goals]] — account or rollover-envelope progress, monthly amounts needed and contribution forecasts.

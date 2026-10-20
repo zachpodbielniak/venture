@@ -7785,7 +7785,7 @@ venture_web_goals_controls(
 
 	name = venture_report_get_name(report);
 
-	if ((0 != g_strcmp0(name, "goal_progress")) && (0 != g_strcmp0(name, "goal_materials")))
+	if ((0 != g_strcmp0(name, "goal_progress")) && (0 != g_strcmp0(name, "goal_materials")) && (0 != g_strcmp0(name, "savings_goals")))
 		return;
 
 	g_string_append(content, "<form method=\"get\" class=\"form-grid\">");
@@ -7796,6 +7796,15 @@ venture_web_goals_controls(
 		g_string_append(content, "<input type=\"hidden\" name=\"organization_id\" value=\"");
 		venture_html_escape_append(content, organization);
 		g_string_append(content, "\">");
+	}
+
+	if (g_str_equal(name, "savings_goals"))
+	{
+		venture_web_goals_input(request, content, "Month", "period", "YYYY-MM; this month by default");
+		venture_web_goals_input(request, content, "Currency", "currency", "all currencies separately");
+		venture_web_goals_input(request, content, "Goal", "goal_id", "id; all savings goals");
+		g_string_append(content, "<button class=\"btn\" type=\"submit\">Run report</button></form>");
+		return;
 	}
 
 	if (0 == g_strcmp0(name, "goal_progress"))

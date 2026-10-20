@@ -26,6 +26,7 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/e/recurring_schedule", "Repeating bills", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "recurring" },
 	{ "/reports/net_worth", "Net worth", VENTURE_ICON("<path d=\"M4 20h16M7 20V12M12 20V4M17 20V8\"/>"), "Reports", "statements" },
 	{ "/reports/debt_payoff", "Debt payoff", VENTURE_ICON("<path d=\"M4 7l6 6 4-4 6 10\"/>"), NULL, "statements" },
+	{ "/reports/savings_goals", "Savings progress", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"8\"/>"), "Goals", "goals" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
