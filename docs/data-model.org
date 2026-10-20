@@ -451,8 +451,15 @@ nobody writing HTML for it.
 | integer     | a number box                                     |
 | boolean     | a checkbox                                       |
 | date        | a date picker                                    |
+| datetime    | a date-and-time box, in the business's time zone |
 | enum        | a select of the declared values                  |
 | reference   | a select of the records it can point at          |
+
+A datetime box posts wall time with no zone (=2026-10-21T08:00=); the form
+reads it in =locale.timezone= and stores the instant. A date alone, an ISO
+string with its own zone or a word like "today" is read as before. A value
+saved before, from a date box, is midnight UTC and shows as that date at
+=00:00= rather than the previous evening.
 
 The control follows the kind the field table *declared*, not one recomputed
 from its C type. That distinction is load-bearing: a long text field and a

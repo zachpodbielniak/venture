@@ -16,6 +16,7 @@
 #include "quotes/venture-quote-mail.h"
 #include "statements/venture-statements-private.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 
@@ -5320,6 +5321,58 @@ static void venture_web_deal_buttons(VentureWebServer *self, GString *html, Vent
  * @full is %FALSE on the customer's public quote page, which names the
  * customer but does not repeat their contact details.
  */
+/*
+ * A stored instant as a datetime box shows it: wall time in the business's
+ * zone, to the minute. A value saved from a date box -- midnight UTC, which
+ * is how a date with no time has always been kept -- shows as that date at
+ * midnight rather than as the previous evening somewhere west of Greenwich.
+ */
+static gchar *
+venture_web_datetime_local(VentureWebServer *self, GDateTime *when)
+{
+	g_autoptr(GDateTime) local = NULL;
+
+	if (0 == g_date_time_get_hour(when) && 0 == g_date_time_get_minute(when) &&
+	    0 == g_date_time_get_second(when) && 0 == g_date_time_get_utc_offset(when))
+		return g_date_time_format(when, "%Y-%m-%dT00:00");
+	local = g_date_time_to_timezone(when, venture_context_get_timezone(self->context));
+	return g_date_time_format(local, "%Y-%m-%dT%H:%M");
+}
+
+/*
+ * What a datetime box posted -- YYYY-MM-DDTHH:MM, optionally :SS, no zone --
+ * as an ISO instant, reading the wall time in the business's zone. NULL for
+ * anything else (a bare date, an ISO string with its own zone, a word like
+ * "today"), which the ordinary parser reads as it always has.
+ */
+static gchar *
+venture_web_datetime_from_local(VentureWebServer *self, const gchar *text)
+{
+	gint year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+	gint consumed = 0;
+	g_autoptr(GDateTime) local = NULL;
+
+	if (NULL == text)
+		return NULL;
+	if (sscanf(text, "%4d-%2d-%2dT%2d:%2d%n", &year, &month, &day, &hour, &minute, &consumed) != 5)
+		return NULL;
+	if (':' == text[consumed])
+	{
+		gint more = 0;
+
+		if (sscanf(text + consumed, ":%2d%n", &second, &more) != 1)
+			return NULL;
+		consumed += more;
+	}
+	if ('\0' != text[consumed])
+		return NULL;
+	local = g_date_time_new(venture_context_get_timezone(self->context), year, month, day,
+	                        hour, minute, (gdouble)second);
+	if (NULL == local)
+		return NULL;
+	return venture_time_to_string(local);
+}
+
 static void
 venture_web_append_document_parties(
 	VentureWebServer	*self,
@@ -8549,8 +8602,10 @@ venture_web_append_form_field_scoped(
 			GDateTime *when;
 
 			when = g_value_get_boxed(&value);
-			current = (NULL != when)
-				? g_date_time_format(when, "%Y-%m-%d") : NULL;
+			current = (NULL == when) ? NULL
+				: (VENTURE_FIELD_KIND_DATETIME == kind)
+				? venture_web_datetime_local(self, when)
+				: g_date_time_format(when, "%Y-%m-%d");
 		}
 		else if (G_VALUE_HOLDS_BOOLEAN(&value))
 		{
@@ -8735,9 +8790,17 @@ venture_web_append_form_field_scoped(
 		break;
 
 	case VENTURE_FIELD_KIND_DATE:
-	case VENTURE_FIELD_KIND_DATETIME:
 		g_string_append_printf(content,
 			"<input type=\"date\" name=\"%s\" value=\"%s\"%s>",
+			name, (NULL != current) ? current : "",
+			required ? " required" : "");
+		break;
+
+	/* A date and a time of day, in the business's own zone: "8 to 10 on
+	 * Tuesday" is a time, and a date box made every booking midnight. */
+	case VENTURE_FIELD_KIND_DATETIME:
+		g_string_append_printf(content,
+			"<input type=\"datetime-local\" name=\"%s\" value=\"%s\"%s>",
 			name, (NULL != current) ? current : "",
 			required ? " required" : "");
 		break;
@@ -9179,9 +9242,18 @@ venture_web_apply_form(
 			continue;
 		}
 
-		if (!venture_entity_set_field_from_string(record, name, submitted,
-		                                          error))
-			return FALSE;
+		{
+			g_autofree gchar *instant = NULL;
+
+			/* A datetime box posts wall time with no zone; it is the
+			 * business's wall time. A date alone is read as before. */
+			if (VENTURE_FIELD_KIND_DATETIME == venture_field_spec_get_kind(spec))
+				instant = venture_web_datetime_from_local(self, submitted);
+			if (!venture_entity_set_field_from_string(record, name,
+			                                          instant != NULL ? instant : submitted,
+			                                          error))
+				return FALSE;
+		}
 	}
 
 	{

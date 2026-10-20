@@ -46,7 +46,10 @@ Snooze moves the due time and reminder to =until=, and moves a meeting's
 start while preserving its duration. It rearms the reminder. Reassign changes
 the owner; cancel keeps the row with =cancelled= status. These actions require
 a planned activity. Owner strings follow the ticket assignee convention: an
-unknown username can own work but has no inbox to notify. An owner typed as a
+unknown username can own work but has no inbox to notify.
+Starts, ends, due and reminder times are date-and-time boxes in the
+business's time zone, so a meeting from 8 to 10 the same morning is
+accepted. An owner typed as a
 user's username or display name, in any case and with stray spaces, is saved
 as that username, so "Mike" is on the user =mike='s worklist.
 
