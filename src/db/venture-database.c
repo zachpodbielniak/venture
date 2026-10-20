@@ -2094,6 +2094,20 @@ venture_database_delete(
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
+	/* The default business is where records with no other home are filed;
+	 * hiding it hides them all. Make another business the default first. */
+	if (VENTURE_IS_ORGANIZATION(entity) && !venture_entity_is_deleted(entity))
+	{
+		gboolean is_default = FALSE;
+
+		g_object_get(entity, "is-default", &is_default, NULL);
+		if (is_default)
+		{
+			venture_set_error_validation(error, "organization",
+				"The default business can't be deleted; make another business the default first");
+			return FALSE;
+		}
+	}
 
 	{
 		gboolean handled;

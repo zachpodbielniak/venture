@@ -13,6 +13,7 @@
 #include "venture.h"
 #include "venture-http-limits-private.h"
 #include "quotes/venture-document-print-style.h"
+#include "quotes/venture-quote-mail.h"
 #include "statements/venture-statements-private.h"
 
 #include <string.h>
@@ -189,6 +190,8 @@ static void venture_web_append_lead_actions(GString *html, VentureEntity *record
 static void venture_web_append_form_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_append_form_answers(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_mail_append_send_notice(VentureWebServer *self, GString *html, VentureEntity *record, HtmxRequest *request);
+static void venture_web_append_restore(GString *html, VentureEntity *record, const gchar *type_name);
 static void venture_web_connector_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
 /*
@@ -9011,14 +9014,28 @@ venture_web_ui_form(
 		"<a class=\"btn\" href=\"/e/%s\">Cancel</a>"
 		"</div></form>", type_name);
 
-	if (0 != id)
+	if (0 != id && VENTURE_TYPE_ORGANIZATION == entity_type)
+	{
+		/* A business holds every record filed under it: deleting one
+		 * empties every list, so it asks first, and the server refuses
+		 * the post without the tick. */
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/e/%s/%" G_GINT64_FORMAT "/delete\" "
+			"class=\"danger-zone\">"
+			"<label class=\"checkbox\"><input type=\"checkbox\" name=\"confirm\" value=\"1\" required> "
+			"Yes, hide this business and everything filed under it</label>"
+			"<button class=\"btn btn-danger\" type=\"submit\">Delete this business</button>"
+			"<span class=\"muted small\">Its records stay kept; Restore on its page brings it back.</span>"
+			"</form>", type_name, id);
+	}
+	else if (0 != id)
 	{
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/e/%s/%" G_GINT64_FORMAT "/delete\" "
 			"class=\"danger-zone\">"
 			"<button class=\"btn btn-danger\" type=\"submit\">Delete</button>"
 			"<span class=\"muted small\">Recoverable: deleting hides the "
-			"record and keeps it.</span>"
+			"record and keeps it, and its page offers Restore.</span>"
 			"</form>", type_name, id);
 	}
 
@@ -9198,6 +9215,113 @@ venture_web_ui_save(
 	return venture_web_redirect_to(destination);
 }
 
+/*
+ * Deleting a business from its page: the form's tick must be there, and
+ * the last business standing is never hidden -- with none left, every
+ * list is empty and nothing says why. The default business is refused
+ * below this, by the database, for every caller.
+ */
+static gboolean
+venture_web_organization_delete_allowed(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureEntity		*organization,
+	GError		       **error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i, others = 0;
+
+	if (g_strcmp0(htmx_request_get_form_value(request, "confirm"), "1") != 0)
+	{
+		venture_set_error_validation(error, "confirm",
+			"Tick the box to confirm: deleting a business hides everything filed under it");
+		return FALSE;
+	}
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(venture_context_get_database(self->context), query, error);
+	if (NULL == rows)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
+		if (venture_entity_get_id(g_ptr_array_index(rows, i)) != venture_entity_get_id(organization))
+			others++;
+	if (0 == others)
+	{
+		venture_set_error_validation(error, "organization", "The last business can't be deleted");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* The way back from a delete, on the deleted record's own page. */
+static void
+venture_web_append_restore(
+	GString		*html,
+	VentureEntity	*record,
+	const gchar	*type_name
+){
+	if (!venture_entity_is_deleted(record) ||
+	    !venture_web_type_accepts_writes(G_OBJECT_TYPE(record), NULL))
+		return;
+	g_string_append(html, "<div class=\"banner banner-warn\" role=\"status\">This record is deleted: "
+		"it is hidden from lists and kept.");
+	g_string_append_printf(html, "<form method=\"post\" action=\"/e/%s/%" G_GINT64_FORMAT "/restore\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">Restore</button></form></div>",
+		type_name, venture_entity_get_id(record));
+}
+
+/* Restore from the page, with the same checks as the API's restore. */
+static HtmxResponse *
+venture_web_ui_restore(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *redirect;
+	GType entity_type;
+	gint64 id;
+
+	redirect = venture_web_ui_require_session(self, request);
+	if (NULL != redirect)
+		return redirect;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	query = venture_query_new(entity_type);
+	venture_query_set_include_deleted(query, TRUE);
+	if (!venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, id, &error))
+		return venture_web_error_response(error);
+	record = venture_database_find_one(venture_context_get_database(self->context), query, &error);
+	if (NULL == record)
+	{
+		if (NULL == error)
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No such record: %" G_GINT64_FORMAT, id);
+		return venture_web_error_response(error);
+	}
+	venture_auth_to_actor(principal, &actor);
+	if (!venture_database_restore(venture_context_get_database(self->context),
+	                              record, &actor, &error))
+		return venture_web_error_response(error);
+	destination = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT,
+	                              (const gchar *)g_hash_table_lookup(params, "type"), id);
+	return venture_web_redirect_to(destination);
+}
+
 static HtmxResponse *
 venture_web_ui_delete(
 	HtmxRequest	*request,
@@ -9244,6 +9368,10 @@ venture_web_ui_delete(
 			&error);
 
 		if (NULL == record)
+			return venture_web_error_response(error);
+
+		if (VENTURE_TYPE_ORGANIZATION == entity_type &&
+		    !venture_web_organization_delete_allowed(self, request, record, &error))
 			return venture_web_error_response(error);
 
 		/* Soft: the record is hidden and kept, because a deleted sale is
@@ -11865,6 +11993,10 @@ venture_web_ui_detail(
 		venture_web_append_record_head(content, record, specs, type_name,
 		                               actions->str);
 	}
+
+	/* What a send just did, and the way back from a delete. */
+	venture_web_mail_append_send_notice(self, content, record, request);
+	venture_web_append_restore(content, record, type_name);
 
 	/*
 	 * Two columns: what the record is about on the left, its details on
@@ -33240,6 +33372,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/:id/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_form, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_save, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id/restore", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_restore, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/invitation", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_invitation, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/invitation", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_invitation, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/support", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_support, self);
