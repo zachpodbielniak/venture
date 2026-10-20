@@ -69,5 +69,17 @@ VENTURE_DECLARE_ENTITY(VentureProperty, venture_property, PROPERTY)
 #define VENTURE_TYPE_EQUIPMENT (venture_equipment_get_type())
 VENTURE_DECLARE_ENTITY(VentureEquipment, venture_equipment, EQUIPMENT)
 
+/**
+ * VentureMaintenancePlan:
+ *
+ * A visit a customer has bought on a schedule: a yearly furnace tune-up at
+ * their home. It names the property (and the equipment, when it is one
+ * thing), what each visit is, how many months apart, and when the next is
+ * due. Booking it makes the job and moves the due date on; how it is
+ * billed (a subscription, an invoice per visit) is separate.
+ */
+#define VENTURE_TYPE_MAINTENANCE_PLAN (venture_maintenance_plan_get_type())
+VENTURE_DECLARE_ENTITY(VentureMaintenancePlan, venture_maintenance_plan, MAINTENANCE_PLAN)
+
 G_END_DECLS
 #endif

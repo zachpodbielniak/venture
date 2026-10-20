@@ -36,6 +36,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	gint64 revision;
 	guint i;
 	const gchar *fields[] = { "subtotal", "discount", "tax", "total" };
+	const gchar *labels[] = { "Subtotal", "Discount", "Tax", "Total" };
 	venture_query_set_organization(query, venture_entity_get_organization_id(quote));
 	venture_query_set_limit(query, 0);
 	venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(quote), NULL);
@@ -58,7 +59,10 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	}
 	if (until != NULL)
 	{
-		g_autofree gchar *date = g_date_time_format(until, "%Y-%m-%d %H:%M UTC");
+		/* A day the customer reads, in the business's zone: "19 November
+		 * 2026", not "2026-11-19 19:36 UTC". */
+		g_autoptr(GDateTime) local = g_date_time_to_timezone(until, venture_context_get_timezone(self->context));
+		g_autofree gchar *date = g_date_time_format(local, "%-d %B %Y");
 		g_string_append(html, "<p>Valid until ");
 		venture_html_escape_append(html, date);
 		g_string_append(html, "</p>");
@@ -97,7 +101,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)
 	{
 		g_string_append(html, "<tr><th>");
-		venture_html_escape_append(html, fields[i]);
+		venture_html_escape_append(html, labels[i]);
 		g_string_append(html, "</th><td class=\"num\">");
 		quote_money_html(html, quote, fields[i]);
 		g_string_append(html, "</td></tr>");
@@ -112,6 +116,22 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	if (public_page && state == VENTURE_QUOTE_SENT)
 		g_string_append(html, "<form method=\"post\" action=\"\"><label>Your full name <input name=\"accepted_by\" maxlength=\"200\" required></label><button>Accept quote</button></form>");
 	g_string_append(html, "</body></html>");
+	return htmx_response_new_with_content(html->str);
+}
+
+/* After the customer accepts: what happens next, from whom. */
+static HtmxResponse *
+quote_accepted_page(VentureWebServer *self, VentureEntity *quote)
+{
+	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
+		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Quote accepted</title><style>");
+	g_autoptr(VentureEntity) business = venture_database_get(venture_context_get_database(self->context),
+		VENTURE_TYPE_ORGANIZATION, venture_entity_get_organization_id(quote), NULL);
+	g_autofree gchar *name = business != NULL ? venture_entity_get_display_name(business) : NULL;
+	g_string_append(html, VENTURE_DOCUMENT_PRINT_STYLE);
+	g_string_append(html, "</style></head><body><h1>Quote accepted</h1><p>Thank you. ");
+	venture_html_escape_append(html, !venture_string_is_empty(name) ? name : "We");
+	g_string_append(html, " will be in touch to book the work.</p></body></html>");
 	return htmx_response_new_with_content(html->str);
 }
 
@@ -154,7 +174,7 @@ quote_public(HtmxRequest *request, GHashTable *params, gpointer data)
 		if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
 			action, "web", ip, &actor, &error))
 			return quote_error(400, "This quote cannot be accepted. Contact the sender.");
-		return htmx_response_new_with_content("<p>Quote accepted. Thank you.</p>");
+		return quote_accepted_page(self, quote);
 	}
 	return quote_document(self, quote, TRUE);
 }
@@ -336,17 +356,34 @@ quote_link_block(VentureWebServer *self, GString *html, VentureEntity *record)
 static void
 quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 {
-	gint64 id;
+	g_autofree gchar *mode = NULL;
+	gint64 id, company = 0;
+	gint state = 0;
 	if (!VENTURE_IS_QUOTE(record)) return;
 	id = venture_entity_get_id(record);
 	quote_subscription_block(self, html, record);
 	quote_link_block(self, html, record);
-	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/share\"><button>Share link</button>"
-		" <span class=\"field-help\">Marks it sent without email and gives you the customer's link to text or paste.</span></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/decline\"><input name=\"reason\" placeholder=\"Reason\" required><button>Decline</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>"
-		"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id, id, id, id, id, id, id);
+	g_object_get(record, "status", &state, "billing-mode", &mode, "company-id", &company, NULL);
+	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>", id);
+	/* Only what applies to where the quote is: an accepted quote sent,
+	 * accepted or declined again is a stale page waiting to be pressed. */
+	if (state == VENTURE_QUOTE_DRAFT || state == VENTURE_QUOTE_SENT)
+		g_string_append_printf(html,
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/share\"><button>Share link</button>"
+			" <span class=\"field-help\">Marks it sent without email and gives you the customer's link to text or paste.</span></form>"
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/decline\"><input name=\"reason\" placeholder=\"Reason\" required><button>Decline</button></form>",
+			id, id, id, id);
+	if (state != VENTURE_QUOTE_ACCEPTED && state != VENTURE_QUOTE_SUPERSEDED)
+		g_string_append_printf(html,
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>", id);
+	/* Accepted: the next thing is the visit. */
+	if (state == VENTURE_QUOTE_ACCEPTED && venture_web_module_enabled(self, "jobs"))
+		g_string_append_printf(html,
+			"<p><a class=\"btn btn-primary\" href=\"/e/job/new?company_id=%" G_GINT64_FORMAT "&amp;quote_id=%" G_GINT64_FORMAT "\">"
+			"Book the job</a></p>", company, id);
+	if (state == VENTURE_QUOTE_ACCEPTED && g_strcmp0(mode, "progress") == 0)
+		g_string_append_printf(html,
+			"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id);
 }

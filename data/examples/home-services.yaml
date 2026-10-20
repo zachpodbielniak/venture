@@ -1,0 +1,28 @@
+# A heating, plumbing, electrical or cleaning business: customers and
+# their homes, quotes, jobs and technicians, invoices, payment reminders
+# and the books. Everything else Venture can do is switched off, so the
+# menu is the work such a business does and nothing it never will.
+#
+#   venture --config data/examples/home-services.yaml
+#
+# Switching a module off deletes nothing; turn any of these back on and
+# its pages and records come back as they were. See docs/modules.org.
+modules:
+  # Software teams: repositories, builds, releases, incidents, tickets.
+  forge: false
+  factory: false
+  tickets: false
+  # Trading: auction houses, market prices, arbitrage, crafting recipes.
+  arbitrage: false
+  marketdata: false
+  market: false
+  production: false
+  sessions: false
+  goals: false
+  feeds: false
+  # Holding companies and investors.
+  equity: false
+  group: false
+  federation: false
+  # Idea boards and research notes.
+  ideas: false

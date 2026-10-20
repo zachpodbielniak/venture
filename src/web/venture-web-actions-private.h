@@ -60,7 +60,16 @@ venture_web_append_record_actions(VentureWebServer *self, GString *html,
 				}
 				/* Action timestamps retain their explicit ISO time and zone. */
 				if (field->kind == VENTURE_FIELD_KIND_DATETIME) field->kind = VENTURE_FIELD_KIND_STRING;
-				venture_web_append_form_field_scoped(self, html, field, NULL, venture_entity_get_organization_id(entity));
+				/* "Send a technician" picks a person the way the
+				 * technician form does, by name: the picker reads the
+				 * record it is filling to decide how people are named. */
+				if (VENTURE_IS_JOB(entity))
+				{
+					g_autoptr(VentureEntity) sent = g_object_new(VENTURE_TYPE_JOB_TECHNICIAN, NULL);
+					venture_web_append_form_field_scoped(self, html, field, sent, venture_entity_get_organization_id(entity));
+				}
+				else
+					venture_web_append_form_field_scoped(self, html, field, NULL, venture_entity_get_organization_id(entity));
 			}
 		}
 		g_string_append(html, "<button class=\"btn\" type=\"submit\">");

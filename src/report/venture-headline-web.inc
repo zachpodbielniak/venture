@@ -177,7 +177,7 @@ venture_web_render_headline_home(
 			"<a class=\"btn btn-sm%s\" href=\"/?period=%s\">%s</a>",
 			(0 == g_strcmp0(period_text, venture_web_report_periods[i]))
 				? " active" : "",
-			venture_web_report_periods[i], venture_web_report_periods[i]);
+			venture_web_report_periods[i], venture_web_report_period_label(venture_web_report_periods[i]));
 	}
 
 	csv_link = g_string_new("/api/v1/headline?format=csv&period=");
@@ -199,6 +199,7 @@ venture_web_render_headline_home(
 		g_string_append(content, "</div>");
 	}
 
+	venture_jobs_web_append_home(self, content, request);
 	g_string_append(content, "<div class=\"headline-cards widget-grid\">");
 	g_string_append(content, cards);
 	g_string_append(content, "</div>");

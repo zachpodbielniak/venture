@@ -963,6 +963,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_job_technician_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_property_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_equipment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_maintenance_plan_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

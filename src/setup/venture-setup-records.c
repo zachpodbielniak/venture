@@ -29,8 +29,12 @@ static const VentureFieldDecl setup_fields[] = {
 	VENTURE_FIELD("fiscal-year-start", "Fiscal year start", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("period-length", "Period length", "monthly or quarterly", VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("payload", "Payload", "Resumable setup answers as JSON"),
-	VENTURE_FIELD_TEXT("checklist", "Checklist", "Computed setup steps")
+	/* Both are JSON: the page draws the checklist as a list, and the raw
+	 * text waits under Technical. */
+	VENTURE_FIELD("payload", "Payload", "Resumable setup answers as JSON", VENTURE_FIELD_KIND_TEXT,
+		VENTURE_COLUMN_FLAG_TECHNICAL),
+	VENTURE_FIELD("checklist", "Checklist", "Computed setup steps", VENTURE_FIELD_KIND_TEXT,
+		VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccountingSetup, venture_accounting_setup, setup_fields,
 	VENTURE_ENTITY_CLASS(klass)->before_save = setup_before_save;)

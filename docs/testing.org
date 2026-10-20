@@ -1261,3 +1261,18 @@ same-day meeting from 8 to 10 is accepted, that an older date-only value
 shows as that date, and that a technician's day lists their jobs on that
 day earliest first with call and directions links, leaving out other
 technicians, other days and cancelled jobs.
+
+=test-home-week= walks what a heating and plumbing owner's week found
+broken: Payment reminders in the menu with one button for the usual three
+and a refusal that says where to go; a technician sent from the job by
+name, and the job showing who, how to get in and the equipment; a blank
+year-installed box; an accepted estimate billed after the work (a draft
+the job's Invoiced issues) and billing at acceptance still available;
+booked jobs on the calendar and My day; a maintenance plan's visit listed
+as due, booked as a job and moved on a year; the home page's Today card
+and plain period labels; the home-services preset leaving out unrelated
+pages; a customer's Work card; the setup checklist as a list; an accepted
+quote offering Book the job and not Send again; the customer's quote page
+in plain words; a new property taking the customer's address; a new
+record opening after save; and the composer's number hint matching the
+number given.

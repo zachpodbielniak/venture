@@ -93,7 +93,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =pnl_cuts= | receivables, payables | =revenue_by_customer=, =spend_by_vendor=, =recurring_costs=, =cash_outlook=; the links on the P&L card | leads, recurring, banking, headline |
 | =customer_health= | headline, activities | =customer_health=; =/api/v1/customers/health/sweep=; the churn card's at-risk line; health on a company page | tickets, dunning, mail_sync |
 | =calendar= | activities, crm, leads | calendar_account, calendar_event, booking_page, private booking_reservation; =calendar sync= sweep, =/book/<slug>= | |
-| =jobs= | crm | job, job_technician, property, equipment; the =on_the_way=, =arrive=, =complete=, =invoiced= and =cancel= job actions | quotes, invoicing |
+| =jobs= | crm | job, job_technician, property, equipment, maintenance_plan; the =on_the_way=, =arrive=, =complete=, =invoiced=, =cancel= and =assign= job actions and the plan's =book=; =/jobs/day= and =/jobs/visits= | quotes, invoicing |
 | =money_calendar= | receivables, payables | no records; =money_calendar=; =/money/calendar=, =/money/calendar.ics=, =money calendar= | recurring, dunning, payroll, tax_filing |
 | =dedupe= | crm | duplicate_candidate; =duplicate_candidate= scan, merge and dismiss actions; =/customers/duplicates= | leads, invoicing, payables |
 | =docs= | core | the rendered documentation site at =/docs= (read-only, no session); =venturectl docs build= | |

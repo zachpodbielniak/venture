@@ -24,7 +24,10 @@ static const VentureFieldDecl policy_fields[] = {
 	VENTURE_FIELD("last-sweep", "Last sweep", "Returned by the sweep action: counts, failed invoices, warnings and, for a dry run, the plan; never stored",
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE)
 };
-VENTURE_DEFINE_ENTITY(VentureDunningPolicy, venture_dunning_policy, policy_fields)
+/* What an owner calls it: a reminder schedule, kept under Payment
+ * reminders. "Dunning" is a word from the accounting books. */
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureDunningPolicy, venture_dunning_policy, policy_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Reminder schedule", "Payment reminders");)
 
 static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),

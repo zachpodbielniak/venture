@@ -1493,6 +1493,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "recurring"
 	},
 	{
+		"/e/dunning_policy", "Payment reminders",
+		VENTURE_ICON("<path d=\"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9\"/><path d=\"M10 21h4\"/>"),
+		NULL, "dunning"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
@@ -1879,6 +1884,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/jobs/day", "Day", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 14h8M8 17h5\"/>"), NULL, "jobs" },
 	{ "/e/property", "Properties", VENTURE_ICON("<path d=\"M3 11l9-7 9 7\"/><path d=\"M5 10v10h14V10\"/><path d=\"M10 20v-6h4v6\"/>"), NULL, "jobs" },
 	{ "/e/equipment", "Equipment", VENTURE_ICON("<rect x=\"6\" y=\"3\" width=\"12\" height=\"18\" rx=\"2\"/><path d=\"M10 8h4M12 14v3\"/>"), NULL, "jobs" },
+	{ "/jobs/visits", "Visits due", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4\"/>"), NULL, "jobs" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -1908,7 +1914,7 @@ venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *req
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-	"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
+	"/e/refund", "/e/collection_case", "/e/dunning_policy", "/e/customer_subscription", "/e/plan",
 	"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 	"/e/listing", "/e/price_observation",
 	NULL
@@ -1933,7 +1939,7 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/worklist", "/customers/duplicates",
+	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates",
 	NULL
 };
 
@@ -5311,6 +5317,11 @@ venture_web_ui_invoice_status(
  * PDF generator; it is already installed everywhere.
  */
 static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_jobs_web_append_block(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_jobs_web_seed_new(VentureWebServer *self, HtmxRequest *request, VentureEntity *record);
+static void venture_jobs_web_append_today(VentureWebServer *self, GString *html, HtmxRequest *request,
+	VentureAuthPrincipal *principal);
+static void venture_jobs_web_append_home(VentureWebServer *self, GString *html, HtmxRequest *request);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 
 /*
@@ -7408,6 +7419,21 @@ static const gchar *const venture_web_report_periods[] = {
 	NULL
 };
 
+/* What each of those buttons says: the parameter is for the address bar,
+ * not for the person; "THIS_MONTH" was a variable name on a button. */
+static const gchar *
+venture_web_report_period_label(const gchar *period)
+{
+	static const gchar *const labels[] = {
+		"This month", "Last month", "This quarter", "Year to date", "This year"
+	};
+	gsize i;
+	for (i = 0; i < G_N_ELEMENTS(labels) && NULL != venture_web_report_periods[i]; i++)
+		if (0 == g_strcmp0(period, venture_web_report_periods[i]))
+			return labels[i];
+	return period;
+}
+
 /*
  * The aggregate report's question, as a form: it has no sensible answer
  * without a type, so the page offers the options rather than a bare
@@ -8182,7 +8208,7 @@ venture_web_ui_report(
 			g_string_append_printf(content,
 				"<a class=\"btn btn-sm%s\" href=\"/reports/%s?period=%s%s\">%s</a>",
 				(0 == g_strcmp0(requested_period, periods[i])) ? " active" : "",
-				name, periods[i], historical_suffix->str, periods[i]);
+				name, periods[i], historical_suffix->str, venture_web_report_period_label(periods[i]));
 		}
 
 		g_string_append(content, "</div>");
@@ -8542,7 +8568,7 @@ venture_web_organization_exists(
  * username is a sign-in name that the roles below admin are not shown.
  */
 static gchar *
-venture_web_reference_option_label(VentureEntity *record, VentureEntity *option)
+venture_web_reference_option_label(VentureWebServer *self, VentureEntity *record, VentureEntity *option)
 {
 	if (VENTURE_IS_USER(option) && NULL != record &&
 	    (VENTURE_IS_ORGANIZATION_MEMBERSHIP(record) || VENTURE_IS_TEAM_MEMBERSHIP(record) ||
@@ -8555,6 +8581,24 @@ venture_web_reference_option_label(VentureEntity *record, VentureEntity *option)
 			return g_steal_pointer(&display);
 		if (!venture_string_is_empty(username))
 			return g_steal_pointer(&username);
+	}
+	/* Most customers' properties are all called "Home": say whose. */
+	if (VENTURE_IS_PROPERTY(option))
+	{
+		g_autofree gchar *name = venture_entity_get_display_name(option);
+		g_autoptr(VentureEntity) company = NULL;
+		g_autofree gchar *whose = NULL;
+		gint64 company_id = 0;
+
+		g_object_get(option, "company-id", &company_id, NULL);
+		if (company_id > 0)
+			company = venture_database_get(venture_context_get_database(self->context),
+				VENTURE_TYPE_COMPANY, company_id, NULL);
+		if (NULL != company)
+			whose = venture_entity_get_display_name(company);
+		if (!venture_string_is_empty(whose))
+			return g_strdup_printf("%s (%s)", name, whose);
+		return g_steal_pointer(&name);
 	}
 	return venture_entity_get_display_name(option);
 }
@@ -8619,9 +8663,11 @@ venture_web_append_form_field_scoped(
 
 			number = g_value_get_int64(&value);
 
-			/* A zero foreign key means "unset", not "record zero". */
+			/* A zero foreign key means "unset", not "record zero";
+			 * so does a zero the field declares as "not known". */
 			current = ((0 == number) &&
-			           (VENTURE_FIELD_KIND_REFERENCE == kind))
+			           ((VENTURE_FIELD_KIND_REFERENCE == kind) ||
+			            (0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_BLANK_ZERO))))
 				? NULL : g_strdup_printf("%" G_GINT64_FORMAT, number);
 		}
 		else if (G_VALUE_HOLDS_ENUM(&value))
@@ -8767,7 +8813,7 @@ venture_web_append_form_field_scoped(
 
 					option = g_ptr_array_index(options, i);
 					id = venture_entity_get_id(option);
-					display = venture_web_reference_option_label(record, option);
+					display = venture_web_reference_option_label(self, record, option);
 
 					g_string_append_printf(content,
 						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
@@ -9016,6 +9062,8 @@ venture_web_ui_form(
 		if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
 			return venture_web_error_response(error);
 	}
+	if (id == 0)
+		venture_jobs_web_seed_new(self, request, record);
 
 	/*
 	 * Four groups, each drawn from the field's role: the essentials in
@@ -9371,7 +9419,11 @@ venture_web_ui_save(
 	                           record, &actor, &error))
 		return venture_web_error_response(error);
 
-	destination = g_strdup_printf("/e/%s", type_name);
+	/* A new record opens, so the next step -- a property for the customer
+	 * just added -- starts from it; an edit goes back to the list. */
+	destination = (0 == id)
+		? g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, type_name, venture_entity_get_id(record))
+		: g_strdup_printf("/e/%s", type_name);
 
 	return venture_web_redirect_to(destination);
 }
@@ -10287,7 +10339,7 @@ venture_web_append_knowledge(
 /* The customer and contact pickers, defined with the document composer;
  * the new-subscription page shares them. */
 static void document_append_parties(VentureWebServer *self, GString *html,
-	gint64 organization);
+	gint64 organization, gint64 chosen);
 #include "payables/venture-bill-compose-web.inc"
 #include "billing/venture-plan-web.inc"
 #include "billing/venture-subscription-web.inc"
@@ -12181,6 +12233,7 @@ venture_web_ui_detail(
 	venture_web_append_payment_receipt(self, content, record);
 	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
+	venture_jobs_web_append_block(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);

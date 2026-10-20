@@ -3472,7 +3472,29 @@ static const VentureFieldDecl venture_user_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureUser, venture_user, venture_user_fields)
+/* A person by the name they go by, before their e-mail address: a list of
+ * technicians reading "sam@example.com" is a list of strangers. Never the
+ * username, which is a sign-in name the roles below admin are not shown;
+ * the forms that grant access name people by it themselves. */
+static gchar *
+venture_user_display_name(VentureEntity *self)
+{
+	g_autofree gchar *display = NULL;
+	g_autofree gchar *email = NULL;
+
+	g_object_get(self, "display-name", &display, "email", &email, NULL);
+
+	if (!venture_string_is_empty(display))
+		return g_steal_pointer(&display);
+
+	if (!venture_string_is_empty(email))
+		return g_steal_pointer(&email);
+
+	return g_strdup_printf("User #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+}
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureUser, venture_user, venture_user_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_user_display_name;)
 
 gboolean
 venture_user_set_password(

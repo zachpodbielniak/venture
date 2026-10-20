@@ -1085,6 +1085,7 @@ static const GFlagsValue venture_column_flags_values[] = {
 	VE(VENTURE_COLUMN_FLAG_RETAIN_REFERENCE, "retain_reference"),
 	VE(VENTURE_COLUMN_FLAG_TECHNICAL, "technical"),
 	VE(VENTURE_COLUMN_FLAG_SAME_PARENT, "same_parent"),
+	VE(VENTURE_COLUMN_FLAG_BLANK_ZERO, "blank_zero"),
 	VE_END
 };
 

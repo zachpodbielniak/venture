@@ -40,6 +40,7 @@ static const VentureFieldDecl job_fields[] = {
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("quote-id", "Estimate", "The quote this job carries out", "quote", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", "The invoice that bills it", "invoice", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("maintenance-plan-id", "Maintenance plan", "The plan whose visit this is", "maintenance_plan", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("left-at", "On the way", "When a technician set off", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("arrived-at", "Arrived", "When a technician got there", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("completed-at", "Done", "When the work was finished", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
@@ -77,9 +78,28 @@ static const VentureFieldDecl equipment_fields[] = {
 	VENTURE_FIELD("make", "Make", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("model", "Model", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("serial", "Serial number", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
-	VENTURE_FIELD("installed-year", "Year installed", "Gives its age; blank when nobody knows", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("installed-year", "Year installed", "Gives its age; blank when nobody knows", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_BLANK_ZERO),
 	VENTURE_FIELD("warranty-until", "Warranty until", NULL, VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", "Size, fuel, filter size, what was last done")
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureEquipment, venture_equipment, equipment_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Equipment", "Equipment");)
+
+static const VentureFieldDecl maintenance_plan_fields[] = {
+	VENTURE_FIELD_NAME("name", "Plan", "What the customer bought: \"Furnace care\", \"AC tune-up club\""),
+	VENTURE_FIELD_REF("company-id", "Customer", "Whose plan it is", "company",
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("property-id", "Property", "Where the visits are", "property", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("equipment-id", "Equipment", "What gets serviced, if it is one thing", "equipment", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("visit", "Each visit", "What a visit is; it becomes the job's title: \"Yearly furnace tune-up\"",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("every-months", "Every (months)", "12 for once a year, 6 for twice", VENTURE_FIELD_KIND_INTEGER,
+		VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("next-visit", "Next visit due", "Moves on by the interval each time a visit is booked",
+		VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("ended-at", "Ended", "Blank while the plan runs; set when the customer stops it",
+		VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", "How it is billed, filter sizes, what the customer asked for")
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMaintenancePlan, venture_maintenance_plan, maintenance_plan_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Maintenance plan", NULL);)

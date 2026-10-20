@@ -15,7 +15,7 @@ work. Before it existed the nearest thing was an activity of kind
 window and no link to the estimate or the bill.
 
 The =jobs= module requires =crm= and suggests =quotes= and =invoicing=. It
-owns four record types, all derived from their field tables like every
+owns five record types, all derived from their field tables like every
 other: a list, a form, REST, CLI, JSON and the assistant's tools.
 
 | Record | What it holds |
@@ -24,12 +24,23 @@ other: a list, a form, REST, CLI, JSON and the assistant's tools.
 | =job_technician= | a job and a user sent to it; =lead= marks the one the customer deals with |
 | =property= | a customer's place: name ("Home", "14 Oak St rental"), customer, address, how to get in (=access_notes=: gate code, key, pets, parking), who is there (=contact_id=), notes |
 | =equipment= | a thing at a property that gets serviced: what it is, make, model, serial number, year installed, warranty end, notes |
+| =maintenance_plan= | a visit bought on a schedule: plan name, customer, property, equipment, what each visit is (=visit=), months apart (=every_months=, 12 when blank), next visit due, when it ended, notes |
 
 The technician picker names people by display name, else username, as the
-access forms do; so does the day view below. A job also names its
-=property_id=. Properties, Equipment and Jobs are
+access forms do; so does the day view below. Everywhere else a user is
+named by display name, else e-mail, never "User #3" while either is set.
+A job also names its =property_id=, and =maintenance_plan_id= when it was
+booked from a plan. Properties, Equipment and Jobs are
 under Customers in the sidebar, after Contacts. A property's page lists
-its equipment and its jobs.
+its equipment and its jobs. A new property opened from a customer
+(=/e/property/new?company_id=N=) starts with the customer's address, and
+the property picker says whose each one is: "Home (Example household)".
+
+A customer's page has a Work card: their properties, jobs, quotes and
+invoices, each with a count and a button to start one for that customer.
+A job's page has The visit: who is on it (the lead marked), how to get in
+from the property, and the equipment there with make, model, year and
+serial. Saving any new record opens it, rather than the list.
 
 * What the save holds to
 
@@ -51,6 +62,10 @@ its equipment and its jobs.
 - Equipment is at a property in its business. Its year installed is blank
   ("nobody knows") or a year from 1900 to next year, so its age can be
   read from it. Make, model and serial number are searchable.
+- A maintenance plan is its customer's, at one of their properties, for
+  equipment at that property (naming only the equipment fills in its
+  property); a blank visit takes the plan's name, and the interval is 1 to
+  120 months. A job's plan is its own customer's.
 - A job's property is its own customer's. A job that names a property and
   has no service address of its own takes the property's address; a typed
   service address is kept.
@@ -76,6 +91,14 @@ became, and refuses when there is neither. A button pressed from a status
 it does not apply to is refused with the status named, so a finished job
 cannot be put back on the road by a stale page.
 
+*Send a technician* (=assign=, =user_id=, =lead=) is on the job's Actions
+card while the job is still to be done. It adds the person, or changes
+whether they lead; making one the lead stops the previous lead leading.
+
+An estimate billed after the work (see [[file:quotes.org][Quotes]]) left a
+draft invoice; =invoiced= issues it, dated today and due in thirty days,
+which is when reminders can start.
+
 The status is an ordinary field as well, so an owner can correct it on
 the form; the save rules above still apply.
 
@@ -95,7 +118,31 @@ today by default. The arrival window is typed as a date and a time of day
 on the job's form; see [[file:data-model.org][the data model]] for how a
 date-and-time box is read.
 
+Booked jobs are also on the calendar (the Jobs layer: whose and where, by
+technician when filtered by assignee), in a "Jobs today" card at the top of
+My day, and in a Today card at the top of the home page with the quotes
+waiting for an answer and the overdue invoices.
+
+* Maintenance visits
+
+=/jobs/visits= (Visits due, under Customers) lists the plans whose next
+visit is in the next 30 days or overdue, soonest first, with the customer
+and the property's address. *Book the visit*
+(=POST /api/v1/maintenance_plan/:id/actions/book=) makes the job -- the
+visit as its title, the plan's customer and property, the equipment in its
+problem -- and moves the plan's next visit on by its interval from the day
+it was due, so a visit booked late does not push the later ones back. The
+job's time is set on the job. A plan that has ended is refused. How the
+plan is billed (a subscription, an invoice per visit) is separate.
+
+* For a home-services business
+
+=data/examples/home-services.yaml= switches off the modules such a
+business never uses -- repositories and releases, trading and crafting,
+holding companies, idea boards -- so the sidebar is customers, jobs,
+quotes, invoices, reminders and the books. Nothing is deleted.
+
 * Not yet
 
-Jobs are not yet a source on the planner's calendar, and there is no
-dispatch board of technicians against hours.
+There is no dispatch board of technicians against hours, and a
+maintenance plan is not linked to the subscription that bills it.

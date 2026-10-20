@@ -247,6 +247,13 @@ next_number(VentureDocumentService *self, gint64 org, GType type, const gchar *p
 	return g_strdup_printf("%s%" G_GINT64_FORMAT, prefix, count + 1);
 }
 
+gchar *
+venture_document_service_next_number(VentureDocumentService *self, gint64 organization_id, GType type)
+{
+	g_return_val_if_fail(VENTURE_IS_DOCUMENT_SERVICE(self), NULL);
+	return next_number(self, organization_id, type, type == VENTURE_TYPE_QUOTE ? "Q-" : "INV-");
+}
+
 static JsonArray *
 lines_of(JsonObject *spec, GError **error)
 {

@@ -154,6 +154,15 @@ validate_job(VentureDatabase *database, VentureEntity *job, VentureEntity *previ
 		if (venture_string_is_empty(where) && !venture_string_is_empty(address))
 			g_object_set(job, "service-address", address, NULL);
 	}
+	if (number(job, "maintenance-plan-id") != 0)
+	{
+		g_autoptr(VentureEntity) plan = load(database, VENTURE_TYPE_MAINTENANCE_PLAN, number(job, "maintenance-plan-id"), org,
+			"maintenance-plan-id", error);
+		if (plan == NULL)
+			return FALSE;
+		if (number(plan, "company-id") != number(job, "company-id"))
+			return refuse(error, "maintenance-plan-id", "The maintenance plan belongs to another customer");
+	}
 	if (end != NULL && start == NULL)
 		return refuse(error, "window-start", "An arrival window needs its start as well as its end");
 	if (start != NULL && end != NULL && g_date_time_compare(end, start) <= 0)
@@ -243,6 +252,56 @@ validate_equipment(VentureDatabase *database, VentureEntity *row, VentureEntity 
 	return TRUE;
 }
 
+/* A plan is its customer's, at one of their properties, for equipment at
+ * that property, with something to call each visit and an interval. */
+static gboolean
+validate_plan(VentureDatabase *database, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
+{
+	g_autoptr(VentureEntity) company = NULL;
+	g_autofree gchar *visit = NULL;
+	gint64 org = venture_entity_get_organization_id(row);
+	gint64 every = number(row, "every-months");
+	(void)previous;
+	(void)data;
+	if (venture_entity_is_deleted(row))
+		return TRUE;
+	company = load(database, VENTURE_TYPE_COMPANY, number(row, "company-id"), org, "company-id", error);
+	if (company == NULL)
+		return FALSE;
+	if (number(row, "property-id") != 0)
+	{
+		g_autoptr(VentureEntity) property = load(database, VENTURE_TYPE_PROPERTY, number(row, "property-id"), org,
+			"property-id", error);
+		if (property == NULL)
+			return FALSE;
+		if (number(property, "company-id") != number(row, "company-id"))
+			return refuse(error, "property-id", "The property belongs to another customer");
+	}
+	if (number(row, "equipment-id") != 0)
+	{
+		g_autoptr(VentureEntity) equipment = load(database, VENTURE_TYPE_EQUIPMENT, number(row, "equipment-id"), org,
+			"equipment-id", error);
+		if (equipment == NULL)
+			return FALSE;
+		if (number(row, "property-id") == 0)
+			g_object_set(row, "property-id", number(equipment, "property-id"), NULL);
+		else if (number(equipment, "property-id") != number(row, "property-id"))
+			return refuse(error, "equipment-id", "That equipment is at another property");
+	}
+	g_object_get(row, "visit", &visit, NULL);
+	if (venture_string_is_empty(visit) || g_strstrip(visit)[0] == '\0')
+	{
+		g_autofree gchar *name = NULL;
+		g_object_get(row, "name", &name, NULL);
+		g_object_set(row, "visit", name, NULL);
+	}
+	if (every == 0)
+		g_object_set(row, "every-months", (gint64)12, NULL);
+	else if (every < 1 || every > 120)
+		return refuse(error, "every-months", "Give the months between visits, from 1 to 120");
+	return TRUE;
+}
+
 void
 venture_jobs_install(VentureDatabase *database)
 {
@@ -254,6 +313,7 @@ venture_jobs_install(VentureDatabase *database)
 	venture_database_add_save_validator(database, VENTURE_TYPE_JOB_TECHNICIAN, validate_technician, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_PROPERTY, validate_property, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_EQUIPMENT, validate_equipment, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_MAINTENANCE_PLAN, validate_plan, NULL, NULL);
 }
 
 /* --- The day's buttons -------------------------------------------------------- */
@@ -313,10 +373,34 @@ step_allowed(VentureAction *action, VentureEntity *entity, const VentureActor *a
 	return TRUE;
 }
 
+/* An estimate billed after the work left a draft invoice; the work is
+ * done now, so it is issued, dated today and due on the usual thirty days.
+ * The save goes through settlement, which posts it like any other issue. */
+static gboolean
+issue_draft(VentureDatabase *database, VentureEntity *job, gint64 id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) invoice = load(database, VENTURE_TYPE_INVOICE, id,
+		venture_entity_get_organization_id(job), "invoice-id", error);
+	g_autoptr(GDateTime) today = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	g_autoptr(GDateTime) set_due = NULL;
+	if (invoice == NULL)
+		return FALSE;
+	if (choice(invoice, "status") != VENTURE_INVOICE_STATUS_DRAFT)
+		return TRUE;
+	today = venture_settlement_service_today(venture_settlement_service_get(database));
+	if (today == NULL)
+		return refuse(error, "invoice-id", "Today's date could not be read in the business's zone");
+	g_object_get(invoice, "due-at", &set_due, NULL);
+	due = set_due != NULL ? g_date_time_ref(set_due) : g_date_time_add_days(today, 30);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, "issued-at", today, "due-at", due, NULL);
+	return venture_database_save(database, invoice, actor, error);
+}
+
 /* "Invoiced" names the invoice it was given, else the one the job already
  * carries, else the one its accepted estimate became. */
 static gboolean
-take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, GError **error)
+take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, const VentureActor *actor, GError **error)
 {
 	JsonNode *node = params != NULL ? g_hash_table_lookup(params, "invoice_id") : NULL;
 	gint64 invoice = node != NULL && JSON_NODE_HOLDS_VALUE(node) ? json_node_get_int(node) : 0;
@@ -333,7 +417,7 @@ take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, 
 	if (invoice == 0)
 		return refuse(error, "invoice-id", "Name the invoice: the job has none and its estimate has not been invoiced");
 	g_object_set(job, "invoice-id", invoice, NULL);
-	return TRUE;
+	return issue_draft(database, job, invoice, actor, error);
 }
 
 static VentureEntity *
@@ -347,7 +431,7 @@ step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, co
 	job = venture_database_get(database, VENTURE_TYPE_JOB, venture_entity_get_id(entity), error);
 	if (job == NULL)
 		return NULL;
-	if (step->to == VENTURE_JOB_INVOICED && !take_invoice(database, job, params, error))
+	if (step->to == VENTURE_JOB_INVOICED && !take_invoice(database, job, params, actor, error))
 		return NULL;
 	g_object_set(job, "status", step->to, NULL);
 	if (step->stamp != NULL)
@@ -358,6 +442,191 @@ step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, co
 	if (!venture_database_save(database, job, actor, error))
 		return NULL;
 	return g_steal_pointer(&job);
+}
+
+/* --- Sending a technician ------------------------------------------------------ */
+
+static gboolean
+param_bool(GHashTable *params, const gchar *name)
+{
+	JsonNode *node = params != NULL ? g_hash_table_lookup(params, name) : NULL;
+	if (node == NULL || !JSON_NODE_HOLDS_VALUE(node))
+		return FALSE;
+	if (json_node_get_value_type(node) == G_TYPE_BOOLEAN)
+		return json_node_get_boolean(node);
+	if (json_node_get_value_type(node) == G_TYPE_STRING)
+		return g_strcmp0(json_node_get_string(node), "true") == 0 || g_strcmp0(json_node_get_string(node), "1") == 0;
+	return json_node_get_int(node) != 0;
+}
+
+static gboolean
+assign_allowed(VentureAction *action, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	gint status;
+	(void)action;
+	(void)actor;
+	if (!enabled("job"))
+		return refuse(error, "module", "The jobs module is switched off");
+	if (!VENTURE_IS_JOB(entity))
+		return refuse(error, "job", "That is not a job");
+	status = choice(entity, "status");
+	if (status == VENTURE_JOB_DONE || status == VENTURE_JOB_INVOICED || status == VENTURE_JOB_CANCELLED)
+		return refuse(error, "status", "Technicians are sent to jobs that are still to be done");
+	return TRUE;
+}
+
+/* Puts a person on the job; "lead" makes them the one the customer deals
+ * with, and the job has one lead at a time. Sending someone already on it
+ * only changes whether they lead. */
+static VentureEntity *
+assign_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
+{
+	VentureDatabase *database = venture_action_get_data(action);
+	JsonNode *node = params != NULL ? g_hash_table_lookup(params, "user_id") : NULL;
+	gint64 user = node != NULL && JSON_NODE_HOLDS_VALUE(node) ? json_node_get_int(node) : 0;
+	gboolean lead = param_bool(params, "lead");
+	gint64 org = venture_entity_get_organization_id(entity);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOB_TECHNICIAN);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureEntity) mine = NULL;
+	guint i;
+	if (!assign_allowed(action, entity, actor, error))
+		return NULL;
+	if (user <= 0)
+		return refuse(error, "user_id", "Choose who to send") ? NULL : NULL;
+	venture_query_set_organization(query, org);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "job-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(entity), NULL);
+	rows = venture_database_find(database, query, error);
+	if (rows == NULL)
+		return NULL;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		gboolean was_lead = FALSE;
+		g_object_get(row, "lead", &was_lead, NULL);
+		if (number(row, "user-id") == user)
+			mine = g_object_ref(row);
+		else if (lead && was_lead)
+		{
+			g_object_set(row, "lead", FALSE, NULL);
+			if (!venture_database_save(database, row, actor, error))
+				return NULL;
+		}
+	}
+	if (mine == NULL)
+	{
+		mine = g_object_new(VENTURE_TYPE_JOB_TECHNICIAN, "job-id", venture_entity_get_id(entity), "user-id", user, NULL);
+		venture_entity_set_organization_id(mine, org);
+	}
+	g_object_set(mine, "lead", lead, NULL);
+	if (!venture_database_save(database, mine, actor, error))
+		return NULL;
+	return venture_database_get(database, VENTURE_TYPE_JOB, venture_entity_get_id(entity), error);
+}
+
+static void
+register_assign(VentureActionRegistry *registry, VentureDatabase *database)
+{
+	g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureFieldSpec *who = venture_field_spec_new("user_id", "Technician", VENTURE_FIELD_KIND_REFERENCE);
+	who->reference_type = g_strdup("user");
+	who->required = TRUE;
+	g_ptr_array_add(parameters, who);
+	g_ptr_array_add(parameters, venture_field_spec_new("lead", "Lead technician", VENTURE_FIELD_KIND_BOOLEAN));
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "job", "name", "assign", "label", "Send a technician",
+		"description", "Put a person on the job; lead makes them the one the customer deals with",
+		"parameters", parameters, "stageable", FALSE,
+		"service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(registry, action, assign_allowed, assign_invoke, database, NULL, &error))
+		g_error("Job action registration: %s", error->message);
+}
+
+/* --- Maintenance visits ------------------------------------------------------- */
+
+static gboolean
+book_allowed(VentureAction *action, VentureEntity *entity, const VentureActor *actor, GError **error)
+{
+	g_autoptr(GDateTime) ended = NULL;
+	(void)action;
+	(void)actor;
+	if (!enabled("maintenance_plan"))
+		return refuse(error, "module", "The jobs module is switched off");
+	if (!VENTURE_IS_MAINTENANCE_PLAN(entity))
+		return refuse(error, "maintenance_plan", "That is not a maintenance plan");
+	g_object_get(entity, "ended-at", &ended, NULL);
+	if (ended != NULL)
+		return refuse(error, "ended-at", "The plan has ended; its visits are no longer booked");
+	return TRUE;
+}
+
+/* Makes the visit's job -- the customer, the place, what the visit is,
+ * the equipment in its notes -- and moves the plan's next visit on by its
+ * interval, so the visit is not due twice. The job's time is set on the
+ * job, once the customer has picked one. Returns the job. */
+static VentureEntity *
+book_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
+{
+	VentureDatabase *database = venture_action_get_data(action);
+	g_autoptr(VentureEntity) plan = NULL;
+	g_autoptr(VentureEntity) job = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	g_autoptr(GDateTime) moved = NULL;
+	g_autofree gchar *visit = NULL;
+	g_autofree gchar *problem = NULL;
+	gint64 org = venture_entity_get_organization_id(entity);
+	gint64 every;
+	(void)params;
+	if (!book_allowed(action, entity, actor, error))
+		return NULL;
+	plan = venture_database_get(database, VENTURE_TYPE_MAINTENANCE_PLAN, venture_entity_get_id(entity), error);
+	if (plan == NULL)
+		return NULL;
+	g_object_get(plan, "visit", &visit, "next-visit", &due, NULL);
+	every = number(plan, "every-months");
+	if (every <= 0)
+		every = 12;
+	if (number(plan, "equipment-id") != 0)
+	{
+		g_autoptr(VentureEntity) equipment = venture_database_get(database, VENTURE_TYPE_EQUIPMENT,
+			number(plan, "equipment-id"), NULL);
+		g_autofree gchar *name = equipment != NULL ? venture_entity_get_display_name(equipment) : NULL;
+		if (!venture_string_is_empty(name))
+			problem = g_strdup_printf("Maintenance visit: %s", name);
+	}
+	job = g_object_new(VENTURE_TYPE_JOB, "title", visit, "company-id", number(plan, "company-id"),
+		"property-id", number(plan, "property-id"), "maintenance-plan-id", venture_entity_get_id(plan),
+		"problem", problem != NULL ? problem : "Maintenance visit", NULL);
+	venture_entity_set_organization_id(job, org);
+	if (!venture_database_save(database, job, actor, error))
+		return NULL;
+	/* From the day it was due, not from today: a visit booked late does
+	 * not push every later one back. */
+	if (due == NULL)
+		due = venture_time_now();
+	moved = g_date_time_add_months(due, (gint)every);
+	g_object_set(plan, "next-visit", moved, NULL);
+	if (!venture_database_save(database, plan, actor, error))
+		return NULL;
+	return g_steal_pointer(&job);
+}
+
+static void
+register_book(VentureActionRegistry *registry, VentureDatabase *database)
+{
+	g_autoptr(GPtrArray) parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(GError) error = NULL;
+	action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
+		"type-name", "maintenance_plan", "name", "book", "label", "Book the visit",
+		"description", "Make the job for the next visit and move the plan's next visit on by its interval",
+		"parameters", parameters, "stageable", FALSE,
+		"service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+	if (!venture_action_registry_register(registry, action, book_allowed, book_invoke, database, NULL, &error))
+		g_error("Maintenance plan action registration: %s", error->message);
 }
 
 void
@@ -379,4 +648,6 @@ venture_jobs_actions_register(VentureDatabase *database)
 		if (!venture_action_registry_register(registry, action, step_allowed, step_invoke, database, NULL, &error))
 			g_error("Job action registration: %s", error->message);
 	}
+	register_assign(registry, database);
+	register_book(registry, database);
 }

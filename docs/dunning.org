@@ -44,6 +44,17 @@ The save validator refuses anything it would otherwise have to guess at:
   invoice in the organization silently leaving dunning.
 - =last_sweep= is the sweep action's answer (below) and is never stored.
 
+An owner does not have to write steps. Payment reminders (=/e/dunning_policy=,
+under Money in) offers *Set up the usual reminders*
+(=POST /api/v1/dunning_policy/0/actions/standard=, optional =organization_id=):
+it makes three mail templates -- three days before the due date, a week late,
+two weeks late, each using only placeholders the renderer fills -- and a
+default policy named "Usual reminders" naming them, adopted now. It is
+refused when the business already has a default, naming it; that one is
+edited instead. Until a policy applies, "Send a reminder now" on an invoice
+says so and points at that button. The record's labels are "Reminder
+schedule" / "Payment reminders"; its type name stays =dunning_policy=.
+
 Exactly one policy per organization may be =is_default=; a second is refused
 naming the first. A company may name =dunning_policy_id= to override the
 default for every invoice it is billed, and an invoice may name its own to

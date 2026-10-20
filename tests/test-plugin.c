@@ -1200,7 +1200,7 @@ test_web_navigation_links_all_resolve(
 		"/money/calendar", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting",
 		"/arbitrage/recipe-lists", "/arbitrage/plan", "/arbitrage/calc",
-		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", "/roadmap", "/jobs/day", NULL
+		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", "/roadmap", "/jobs/day", "/jobs/visits", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1324,7 +1324,7 @@ test_web_navigation_groups_by_question(
 	static const gchar *const money_in[] = {
 		"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 		"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-		"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
+		"/e/refund", "/e/collection_case", "/e/dunning_policy", "/e/customer_subscription", "/e/plan",
 		"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 		"/e/listing", "/e/price_observation", NULL
 	};
@@ -1341,7 +1341,7 @@ test_web_navigation_groups_by_question(
 		"/e/accounting_cutover", "/e/currency", NULL
 	};
 	static const gchar *const customers[] = {
-		"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/worklist", "/customers/duplicates",
+		"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates",
 		NULL
 	};
 	static const gchar *const growth[] = {

@@ -1511,7 +1511,8 @@ accounting_save_needs_scope(VentureDatabase *database, VentureEntity *entity)
 		if (quote == NULL)
 			return TRUE;
 		g_object_get(quote, "billing-mode", &mode, NULL);
-		return g_strcmp0(mode, "progress") != 0;
+		/* Progress and after-the-work acceptance issue nothing. */
+		return g_strcmp0(mode, "progress") != 0 && g_strcmp0(mode, "after_work") != 0;
 	}
 	return FALSE;
 }

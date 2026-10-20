@@ -5,6 +5,7 @@
 
 static const gchar *const document_header_fields[] = { "number", "company-id", "contact-id", "terms", "notes", NULL };
 static const gchar *const document_invoice_fields[] = { "tax-exempt", "issued-at", "due-at", NULL };
+static const gchar *const document_quote_fields[] = { "billing-mode", NULL };
 static const gchar *const document_line_fields[] = { "description", "quantity", "unit-price", "product-id", "discount-percent", "tax-percent", NULL };
 /* Both kinds of line are taxed by a rate record, so a quote asks for
  * exactly what the invoice it becomes will. */
@@ -110,7 +111,8 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 		guint i;
 		if (!document_check_line_numbers(request, error) ||
 			!document_read_fields(request, header, document_header_fields, "", error) ||
-			(!quote && !document_read_fields(request, header, document_invoice_fields, "", error)))
+			(!quote && !document_read_fields(request, header, document_invoice_fields, "", error)) ||
+			(quote && !document_read_fields(request, header, document_quote_fields, "", error)))
 		{
 			json_array_unref(lines);
 			return NULL;
@@ -192,7 +194,7 @@ document_spec_from_request(HtmxRequest *request, GError **error)
  * people; with scripting off every contact is offered.
  */
 static void
-document_append_parties(VentureWebServer *self, GString *html, gint64 organization)
+document_append_parties(VentureWebServer *self, GString *html, gint64 organization, gint64 chosen)
 {
 	g_autoptr(VentureQuery) companies = venture_query_new(VENTURE_TYPE_COMPANY);
 	g_autoptr(VentureQuery) contacts = venture_query_new(VENTURE_TYPE_CONTACT);
@@ -239,6 +241,9 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 			venture_html_escape_append(html, number != NULL ? number : "");
 			g_string_append(html, "\"");
 		}
+		/* Started from a customer's page: that customer. */
+		if (chosen > 0 && venture_entity_get_id(row) == chosen)
+			g_string_append(html, " selected");
 		g_string_append(html, ">");
 		venture_html_escape_append(html, name);
 		g_string_append(html, "</option>");
@@ -419,11 +424,40 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 
 	g_string_append(html, "<div class=\"doc-layout\"><section class=\"card doc-sheet\"><div class=\"card-body\">"
 		"<div class=\"doc-parties\">");
-	document_append_parties(self, html, organization);
+	{
+		const gchar *company = htmx_request_get_query_param(request, "company_id");
+		document_append_parties(self, html, organization,
+			company != NULL ? g_ascii_strtoll(company, NULL, 10) : 0);
+	}
 	if (!repeat)
-		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
-			"<input type=\"text\" name=\"number\" placeholder=\"%s\"></label>",
-			quote ? "Q-2026-001" : "INV-2026-001");
+	{
+		/* The number a blank box will get, not a made-up example: an
+		 * owner who sees Q-2026-001 and then a saved Q-1 thinks the
+		 * first one went missing. */
+		g_autofree gchar *next = venture_document_service_next_number(
+			venture_document_service_get(venture_context_get_database(self->context)),
+			organization > 0 ? organization : venture_context_get_default_organization_id(self->context),
+			quote ? VENTURE_TYPE_QUOTE : VENTURE_TYPE_INVOICE);
+		g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
+			"<input type=\"text\" name=\"number\" placeholder=\"");
+		venture_html_escape_append(html, next);
+		g_string_append(html, "\"><span class=\"field-help\">Left blank, it gets this one.</span></label>");
+	}
+	/* When to bill an accepted quote. A home-services quote is accepted
+	 * before the visit is booked, and billing then is billing for work
+	 * not done; with jobs on, that is the default. */
+	if (quote)
+	{
+		gboolean jobs = venture_web_module_enabled(self, "jobs");
+		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Bill the customer</span>"
+			"<select name=\"billing-mode\">"
+			"<option value=\"after_work\"%s>When the work is done</option>"
+			"<option value=\"full\"%s>As soon as they accept</option>"
+			"<option value=\"progress\">In stages</option></select>"
+			"<span class=\"field-help\">When the work is done: accepting makes a draft invoice, "
+			"issued when the job is marked Invoiced.</span></label>",
+			jobs ? " selected" : "", jobs ? "" : " selected");
+	}
 	if (!quote && !repeat)
 	{
 		g_autoptr(VentureInvoice) dates = venture_invoice_new();

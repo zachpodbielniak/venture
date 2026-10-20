@@ -594,9 +594,14 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	g_autoptr(GDateTime) issue_date = NULL;
 	gint64 org = venture_entity_get_organization_id(q);
 	guint i, one_off = 0;
+	gboolean after_work;
 	g_object_get(q, "billing-mode", &mode, NULL);
 	if (g_strcmp0(mode, "progress") == 0)
 		return TRUE;
+	/* Billed after the work: the invoice is drawn up now, as a draft the
+	 * job issues once it is done, so no reminder chases the customer for
+	 * a visit that has not happened. */
+	after_work = g_strcmp0(mode, "after_work") == 0;
 	lines = find(self, VENTURE_TYPE_QUOTE_LINE, org, "quote-id", venture_entity_get_id(q), error);
 	if (lines == NULL) return FALSE;
 	/* A plan line is billed by the subscription it starts, from its first
@@ -622,7 +627,9 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	invoice_number = g_strdup_printf("QUOTE-%s", number);
 	g_object_set(invoice, "number", invoice_number, "company-id", integer(q, "company-id"),
 		"contact-id", integer(q, "contact-id"), "venture-id", integer(q, "venture-id"),
-		"issued-at", issue_date, "due-at", due, "terms", terms, NULL);
+		"terms", terms, NULL);
+	if (!after_work)
+		g_object_set(invoice, "issued-at", issue_date, "due-at", due, NULL);
 	if (!venture_database_save(self->database, invoice, actor, error)) return FALSE;
 	for (i = 0; i < lines->len; i++)
 	{
@@ -641,7 +648,7 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 			"tax-code-id", integer(l, "tax-code-id"), NULL);
 		if (!venture_database_save(self->database, r, actor, error)) return FALSE;
 	}
-	if (!venture_settlement_service_transition(venture_settlement_service_get(self->database),
+	if (!after_work && !venture_settlement_service_transition(venture_settlement_service_get(self->database),
 		VENTURE_INVOICE(invoice), "sent", issue_date, actor, error)) return FALSE;
 	g_object_set(q, "invoice-id", venture_entity_get_id(invoice), NULL);
 	return win_deal(self, q, now, actor, error);
@@ -1024,7 +1031,8 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 	g_object_get(quote, "billing-mode", &billing_mode, NULL);
 	/* Progress acceptance creates no invoice; its later billing operation
 	 * obtains consent when it actually posts the receivable. */
-	if (g_strcmp0(verb, "accept") == 0 && g_strcmp0(billing_mode, "progress") == 0)
+	if (g_strcmp0(verb, "accept") == 0 &&
+	    (g_strcmp0(billing_mode, "progress") == 0 || g_strcmp0(billing_mode, "after_work") == 0))
 		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
 	/* A subscription's first invoice posts inside the quote's transaction,
 	 * and consent must precede it; a start into a free trial posts nothing. */
