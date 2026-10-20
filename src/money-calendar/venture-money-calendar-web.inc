@@ -68,6 +68,17 @@ money_calendar_page_load(VentureWebServer *self, HtmxRequest *request, MoneyCale
 	if (all == NULL)
 		return venture_web_error_response(error);
 	page->events = venture_money_calendar_filter(all, page->kind, page->company_id, page->venture_id, page->currency);
+	if (venture_web_household_view(self, request))
+	{
+		for (i = page->events->len; i > 0; i--)
+		{
+			VentureMoneyCalendarEvent *event = g_ptr_array_index(page->events, i - 1);
+			const gchar *kind = venture_money_calendar_event_get_kind(event);
+			if (g_strcmp0(venture_money_calendar_event_get_direction(event), "out") ||
+				(g_strcmp0(kind, "bill") && g_strcmp0(kind, "recurring") && g_strcmp0(kind, "repeat_charge")))
+				g_ptr_array_remove_index(page->events, i - 1);
+		}
+	}
 	page->day_nets = venture_money_calendar_nets(page->events, FALSE);
 	page->week_nets = venture_money_calendar_nets(page->events, TRUE);
 	page->by_day = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
@@ -281,6 +292,11 @@ money_calendar_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	gate = venture_web_require_module_ui(self, request, "money_calendar");
 	if (gate != NULL)
 		return gate;
+	{
+		g_autoptr(GError) reminder_error = NULL;
+		if (venture_money_calendar_remind(self->context, venture_web_active_organization(self, request), NULL, &reminder_error) < 0)
+			g_message("household: reminder sweep failed: %s", reminder_error->message);
+	}
 	gate = money_calendar_page_load(self, request, &page);
 	if (gate != NULL)
 	{
@@ -300,7 +316,7 @@ money_calendar_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	else
 		money_calendar_append_grid(content, &page, g_strcmp0(page.view, "week") == 0 ? "cal-week" : "cal-month");
 	g_string_append(content, "<p class=\"muted\">Nets are per currency and never converted. Reminders show the invoice balance but do not move cash. "
-		"Overdue bills and invoices are carried to today and flagged. Dates change on the record, not here.</p></div>");
+		"Possible repeat charges are estimates and excluded from nets. Overdue bills and invoices are carried to today and flagged. Dates change on the record, not here.</p></div>");
 	money_calendar_page_clear(&page);
 	return venture_web_html_response(venture_web_page(self, request, "/money/calendar", "Money calendar", content->str), 200);
 }

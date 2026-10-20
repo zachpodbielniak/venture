@@ -187,6 +187,19 @@ schedule_validate(VentureDatabase *database, VentureEntity *entity, VentureEntit
 		return refuse(error, "Schedule cycle index is outside the calendar range");
 	if (next == NULL)
 		g_object_set(entity, "next-run-at", start, NULL);
+	if (number(entity, "reminder-days") < 0 || number(entity, "reminder-days") > 28)
+		return refuse(error, "Reminder lead must be between zero and 28 days");
+	if ((flag(entity, "subscription") || flag(entity, "projection-only") || number(entity, "reminder-days") > 0) &&
+		choice(entity, "kind") != 1 && choice(entity, "kind") != 2)
+		return refuse(error, "Household subscriptions and reminders need an outgoing bill or expense");
+	if (g_object_get_data(G_OBJECT(database), "household-reminder-writing") != entity)
+	{
+		g_autoptr(GDateTime) stamp = NULL, old_stamp = NULL;
+		g_object_get(entity, "reminder-date", &stamp, NULL);
+		if (previous != NULL) g_object_get(previous, "reminder-date", &old_stamp, NULL);
+		if (!venture_time_equal(stamp, old_stamp))
+			return refuse(error, "Only the reminder sweep may stamp a reminder");
+	}
 	if (self->writing == entity)
 		return TRUE;
 	if (previous != NULL && number(entity, "cycle-index") != number(previous, "cycle-index"))
@@ -580,7 +593,7 @@ run_schedule(VentureRecurringService *self, VentureEntity *schedule, GDateTime *
 	gint created = 0;
 	gint frequency;
 	guint n;
-	if (flag(schedule, "paused"))
+	if (flag(schedule, "paused") || flag(schedule, "projection-only"))
 		return 0;
 	if (zone != NULL)
 		today = venture_settlement_service_today(venture_settlement_service_get(self->database));
@@ -744,7 +757,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *schedule = g_ptr_array_index(rows, i);
-		if (as_of == NULL && !flag(schedule, "paused"))
+		if (as_of == NULL && !flag(schedule, "paused") && !flag(schedule, "projection-only"))
 		{
 			g_autoptr(GDateTime) start = schedule_start(schedule);
 			if (start != NULL)
@@ -758,7 +771,7 @@ venture_recurring_service_run(VentureRecurringService *self, gint64 organization
 					venture_entity_get_id(schedule), day);
 			}
 		}
-		if (!flag(schedule, "paused") && (choice(schedule, "kind") == 2 || flag(schedule, "auto-post")))
+		if (!flag(schedule, "paused") && !flag(schedule, "projection-only") && (choice(schedule, "kind") == 2 || flag(schedule, "auto-post")))
 			can_post = TRUE;
 	}
 	if (!dry_run && can_post)

@@ -150,3 +150,13 @@ refusal, module-off refusals for a source and for the whole module, the
 feed's all-day events and stable UIDs, the three page views with filters
 and record links, the feed route's content type, and the CLI verb with
 its usage refusals.
+
+* Household bills and subscriptions
+
+The =repeat_charge= banking source adds conservative, tentative repeat-charge
+forecasts to the shared calendar. These estimates never count in cash nets.
+The =household_subscriptions= report shows confirmed subscription schedules
+and possible subscriptions with a twelve-month cost in each currency.
+See [[file:household.org][Household child 4]] for detection rules, forecast-only
+schedules and opt-in inbox reminders. The household calendar filters to bills,
+outgoing schedules and repeat charges; business views retain all sources.

@@ -21,6 +21,9 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/e/bank_transaction", "Statement lines", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "banking" },
 	{ "/e/bank_rule", "Category rules", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "banking" },
 	{ "/e/bank_transfer", "Transfers", VENTURE_ICON("<path d=\"M4 8h16l-4-4M20 16H4l4 4\"/>"), NULL, "banking" },
+	{ "/money/calendar", "Due calendar", VENTURE_ICON("<path d=\"M4 5h16v16H4zM4 10h16\"/>"), "Bills", "money_calendar" },
+	{ "/reports/household_subscriptions", "Subscriptions", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "money_calendar" },
+	{ "/e/recurring_schedule", "Repeating bills", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "recurring" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 

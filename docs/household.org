@@ -28,7 +28,7 @@ Business ventures in the same organization are unchanged.
 1. Implemented: the =household= type and slim view (see below).
 2. Implemented: categorisation rules that learn, and transfers that never count as spending.
 3. Implemented: monthly category envelopes, rollover and early warnings (see below).
-4. Detected subscriptions with yearly cost.
+4. Implemented: due calendar, repeat-charge suggestions, subscriptions with yearly cost and opt-in inbox reminders (see below).
 5. Net worth over time and a debt payoff planner.
 6. Savings goals tied to accounts.
 7. Several members, shared and personal accounts, settling up.
@@ -194,3 +194,75 @@ interest do. Refunds restore room to spend. Each account has one live envelope
 per organization. Changing a plan recalculates past months; these are live plans,
 not locked monthly snapshots. See [[file:budgets.org][Budgets]] for setup, calculation
 rules, the CLI/API and migration 000922.
+
+* Child 4: bills and subscriptions
+
+The Bills menu includes *Due calendar*, *Subscriptions* and *Repeating bills*.
+The calendar combines open bills, outgoing recurring schedules and possible
+repeat charges. In the household browser view it shows only these outgoing
+items; the business view keeps its other sources. Dates and amounts come
+from the same calendar source used by reports, the planner and the ICS feed.
+
+** Confirm a subscription
+
+Open Repeating bills and create a bill or expense schedule. Set its start,
+frequency, timezone and template as described in [[file:recurring.org][Recurring work]].
+For an expense, a template such as ={"amount":"12.00 USD"}= supplies the
+forecast amount. Check *Subscription* to include it in the yearly list.
+Check *Forecast only* when charges already arrive through your bank: the
+schedule then produces dates, never expenses, bills or ledger entries.
+Ordinary recurring schedules keep their existing accounting behavior.
+
+To replace a detected suggestion, set *Paid from* to its bank account and
+copy the merchant's exact statement description into *Statement description*.
+Matching ignores letter case and outer spaces, but does not guess merchant
+aliases. This also suppresses detection while that schedule is paused, so a
+cancelled subscription does not reappear as a new suggestion. Pause or set
+an inclusive End date when payments stop. Neither operation cancels a vendor
+contract; it changes this forecast.
+
+** Detection and yearly cost
+
+A possible repeat charge requires three consecutive equal negative charges
+in one entity, bank account, merchant and currency, at an exact weekly,
+monthly or yearly cadence. Month-end dates clamp independently. Changed
+amounts, irregular intervals, excluded transactions, refunds and linked own
+account transfers are not evidence of a subscription. If the next expected
+payment is already past the report's as-of day, the suggestion is stale and
+omitted. A missed or shifted bank date can therefore hide a real subscription;
+create a schedule when its due date is known.
+
+Suggestions are labelled *Possible repeat charge*, marked tentative in ICS,
+and excluded from cash nets. They never create a bill, expense or payment.
+Reads do not save a classification. Detection fails visibly rather than
+silently truncating history beyond the configured aggregate row limit.
+
+Subscriptions you pay for lists confirmed schedules separately from possible
+subscriptions, with the next date, payment amount and cost over twelve months
+from the selected period's start. It counts actual calendar occurrences,
+respects start/end dates and pauses, and keeps currencies separate. Confirmed
+schedule costs include contractual occurrences even if their documents have
+already been generated; this is a forecast of the contract, not another
+spending total. The same report is available at
+=/api/v1/reports/household_subscriptions?period=2026-01= and through
+=venturectl report household_subscriptions 2026-01=.
+
+** Reminders
+
+Set *Remind days before* to 1–28 and choose *Remind person* on an outgoing
+schedule. Zero disables reminders. Visiting the due calendar or inbox runs a
+lazy sweep; =venturectl calendar remind= also runs it through the existing
+calendar reminder endpoint (planner enabled). There is no background timer,
+email or automatic payment. A due date is notified at most once, with the
+notification and its technical stamp saved in one transaction. The recipient
+must still be active and authorized to read the schedule. Paused schedules
+and already generated occurrences do not send schedule reminders. For bank
+subscriptions use Forecast only so the schedule retains its forecast dates.
+Polling ICS or reading reports never sends reminders.
+
+Migration =000923_household_subscriptions.sql= (SQLite and PostgreSQL) keeps
+existing schedules non-subscription, accounting-enabled and reminder-free;
+its optional-table guard supports installations without recurring schedules.
+Tests cover detection, stale and changed charges, tenant separation, suppressed
+suggestions, yearly totals, web/API/CLI, reminders, forecast-only sweeps and
+upgrade/restart behavior.

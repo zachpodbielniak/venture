@@ -1153,6 +1153,57 @@ test_monthly_envelope_without_lines(void)
 	g_assert_no_error(error);
 }
 
+static void
+test_household_subscriptions_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO recurring_schedules (uuid, organization_id, name, kind, frequency, start_at) "
+		"VALUES ('pebble-old-schedule', 1, 'Pebble library', 2, 0, '2026-01-31T00:00:00Z');"
+		"UPDATE recurring_schedules SET subscription = NULL, projection_only = NULL, reminder_days = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 923", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || CAST(subscription AS TEXT) || ':' || CAST(projection_only AS TEXT) || ':' || CAST(reminder_days AS TEXT) "
+			"FROM recurring_schedules WHERE uuid = 'pebble-old-schedule'");
+		g_assert_cmpstr(value, ==, "Pebble library:0:0:0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_subscriptions_without_lines(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE recurring_schedules; DELETE FROM schema_migrations WHERE version >= 923", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
 /*
  * 000710 where the accounts table is absent: accounts belong to the
  * finance module, and reconciliation never creates a hidden type's table.
@@ -1558,6 +1609,8 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
 	g_test_add_func("/migrations/household-account-upgrade", test_household_account_upgrade);
+	g_test_add_func("/migrations/household-subscriptions-upgrade", test_household_subscriptions_upgrade);
+	g_test_add_func("/migrations/household-subscriptions-without-schedules", test_household_subscriptions_without_lines);
 	g_test_add_func("/migrations/monthly-envelope-upgrade", test_monthly_envelope_upgrade);
 	g_test_add_func("/migrations/monthly-envelope-without-lines", test_monthly_envelope_without_lines);
 	g_test_add_func("/migrations/account-holdings-without-accounts",

@@ -247,6 +247,19 @@ gchar *venture_money_calendar_ics(GPtrArray *events);
  */
 void venture_money_calendar_register_reports(VentureReportRegistry *registry);
 
+/**
+ * venture_money_calendar_remind:
+ * @context: application context
+ * @organization_id: organization to sweep, or zero for the caller's visible organizations
+ * @now: (nullable): clock override for testing, or now
+ * @error: return location for an error
+ *
+ * Sends opt-in outgoing schedule reminders to authorized inbox recipients.
+ * Each due date is stamped atomically with its notification; no payment is made.
+ * Returns: number of reminders sent, or -1 on failure
+ */
+gint venture_money_calendar_remind(VentureContext *context, gint64 organization_id, GDateTime *now, GError **error);
+
 G_END_DECLS
 
 #endif /* VENTURE_MONEY_CALENDAR_H */

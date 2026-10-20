@@ -5604,7 +5604,7 @@ test_auth_household_navigation(ServerFixture *fixture, gconstpointer user_data)
 	};
 	static const gchar *const labels[] = {
 		"Money", "Income", "Spending", "Bills", "Budgets", "Goals", "Documents", "Reports",
-		"Bank accounts", "Statement lines", "Category rules", "Transfers"
+		"Bank accounts", "Statement lines", "Category rules", "Transfers", "Due calendar", "Subscriptions", "Repeating bills"
 	};
 	(void)user_data;
 	org = venture_context_get_default_organization_id(fixture->context);

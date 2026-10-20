@@ -1467,6 +1467,10 @@ planner_lazy_sweep(VentureWebServer *self)
 {
 	g_autoptr(GError) error = NULL;
 
+	if (venture_money_calendar_remind(self->context, 0, NULL, &error) < 0)
+		g_message("household: reminder sweep failed: %s", error->message);
+	g_clear_error(&error);
+
 	if (!venture_context_module_enabled(self->context, "planner"))
 		return;
 
@@ -1487,7 +1491,7 @@ venture_planner_web_reminders(
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *gate;
-	gint reminded;
+	gint reminded, bills;
 
 	(void)params;
 
@@ -1503,6 +1507,10 @@ venture_planner_web_reminders(
 
 	if (reminded < 0)
 		return venture_web_error_response(error);
+
+	bills = venture_money_calendar_remind(self->context, 0, NULL, &error);
+	if (bills < 0) return venture_web_error_response(error);
+	reminded += bills;
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);

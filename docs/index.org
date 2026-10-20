@@ -231,3 +231,5 @@ screen's ordinary sync-and-import test.
 - [[file:household.org][Household accounts and imports]] — account kinds, statement and bank-feed import, learned categories, and transfers that keep principal out of spending.
 
 - [[file:budgets.org::*Monthly category envelopes][Monthly category envelopes]]: rollover, left to spend and early warnings.
+
+- [[file:household.org][Household bills and subscriptions]] — due calendar, repeat-charge suggestions, twelve-month costs and opt-in inbox reminders.

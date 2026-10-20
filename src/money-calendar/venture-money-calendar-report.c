@@ -71,7 +71,7 @@ venture_report_money_calendar(VentureContext *context, VentureDateRange *period,
 	if (!venture_string_is_empty(kind) && !known_kind(kind))
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			"\"%s\" is not a money calendar kind; try recurring, bill, invoice, dunning, payroll or tax", kind);
+			"\"%s\" is not a money calendar kind; try recurring, bill, invoice, dunning, payroll, tax or repeat_charge", kind);
 		return NULL;
 	}
 	range = report_range(context, period, options, error);
@@ -122,7 +122,8 @@ venture_report_money_calendar(VentureContext *context, VentureDateRange *period,
 		venture_report_result_set_text(result, "direction", venture_money_calendar_event_get_direction(event));
 		venture_report_result_set_money(result, "amount", venture_money_calendar_event_get_amount(event));
 		venture_report_result_set_text(result, "currency", venture_money_calendar_event_get_currency(event));
-		venture_report_result_set_text(result, "status", venture_money_calendar_event_get_overdue(event) ? "overdue"
+		venture_report_result_set_text(result, "status", g_strcmp0(venture_money_calendar_event_get_kind(event), "repeat_charge") == 0 ? "estimate"
+			: venture_money_calendar_event_get_overdue(event) ? "overdue"
 			: venture_money_calendar_event_get_counts_in_net(event) ? "due" : "reminder");
 		venture_report_result_set_text(result, "record", record);
 		venture_report_result_set_text(result, "day_net", day_net);
@@ -176,4 +177,8 @@ venture_money_calendar_register_reports(VentureReportRegistry *registry)
 		"payroll runs and tax packs, with per-day and per-ISO-week nets per currency. "
 		"Options: from, to, as_of, kind, customer_id or vendor_id, venture_id, currency",
 		venture_report_money_calendar)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
+		"household_subscriptions", "Subscriptions you pay for",
+		"Confirmed subscriptions and possible repeat charges, with estimated payments over the next 12 months from the period start. Options: organization_id",
+		venture_report_household_subscriptions)));
 }
