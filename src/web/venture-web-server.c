@@ -8478,6 +8478,29 @@ venture_web_organization_exists(
  * working form the moment it is registered, including one from a plugin,
  * without anybody writing HTML for it.
  */
+/*
+ * A user on the forms that grant access is named by display name, else
+ * username: "User #3" is no way to pick a person. Everywhere else a user
+ * keeps its generic label, because a username is a sign-in name that the
+ * roles below admin are not shown.
+ */
+static gchar *
+venture_web_reference_option_label(VentureEntity *record, VentureEntity *option)
+{
+	if (VENTURE_IS_USER(option) && NULL != record &&
+	    (VENTURE_IS_ORGANIZATION_MEMBERSHIP(record) || VENTURE_IS_TEAM_MEMBERSHIP(record)))
+	{
+		g_autofree gchar *username = NULL, *display = NULL;
+
+		g_object_get(option, "username", &username, "display-name", &display, NULL);
+		if (!venture_string_is_empty(display))
+			return g_steal_pointer(&display);
+		if (!venture_string_is_empty(username))
+			return g_steal_pointer(&username);
+	}
+	return venture_entity_get_display_name(option);
+}
+
 static void
 venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
@@ -8684,7 +8707,7 @@ venture_web_append_form_field_scoped(
 
 					option = g_ptr_array_index(options, i);
 					id = venture_entity_get_id(option);
-					display = venture_entity_get_display_name(option);
+					display = venture_web_reference_option_label(record, option);
 
 					g_string_append_printf(content,
 						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
@@ -15086,6 +15109,11 @@ venture_web_ui_users(
 
 		if (0 == g_strcmp0(notice, "created-ok"))
 			g_string_append(content, "User created.");
+		else if (0 == g_strcmp0(notice, "created-access-ok"))
+			g_string_append(content, "User created. They can sign in and work in this business now.");
+		else if (0 == g_strcmp0(notice, "created-no-access"))
+			g_string_append(content, "User created, but they could not be given access to this business. "
+				"Add them under Organization memberships before they sign in.");
 		else if (0 == g_strcmp0(notice, "updated-ok"))
 			g_string_append(content, "User updated.");
 		else if (0 == g_strcmp0(notice, "password-ok"))
@@ -15361,6 +15389,39 @@ venture_web_ui_users_create(
 		/* The username column is unique, so the commonest failure here
 		 * is a name already taken. */
 		return venture_web_redirect_to("/users?notice=duplicate");
+	}
+
+	/*
+	 * A new person can work in the business they were added from. With
+	 * organization access on, a user and no membership signs in to "ask an
+	 * owner for access", and the screen that grants it is not in the menu.
+	 * The roles that share a name carry over; a service account gets none.
+	 */
+	if (venture_web_module_enabled(self, "orgaccess"))
+	{
+		gint org_role = 0;
+
+		if (!venture_enum_from_nick(venture_organization_role_get_type(), role_nick, &org_role))
+			return venture_web_redirect_to("/users?notice=created-ok");
+		{
+			g_autoptr(VentureEntity) membership = VENTURE_ENTITY(venture_organization_membership_new());
+			gint64 organization = venture_web_active_organization(self, request);
+
+			if (organization <= 0)
+				organization = venture_context_get_default_organization_id(self->context);
+			venture_entity_set_organization_id(membership, organization);
+			g_object_set(membership, "user-id", venture_entity_get_id(VENTURE_ENTITY(user)),
+				"role", org_role, "active", TRUE, NULL);
+			g_clear_error(&error);
+			if (!venture_database_save(venture_context_get_database(self->context),
+			                           membership, &actor, &error))
+			{
+				g_message("User %s created without access: %s", username,
+				          error != NULL ? error->message : "unknown");
+				return venture_web_redirect_to("/users?notice=created-no-access");
+			}
+		}
+		return venture_web_redirect_to("/users?notice=created-access-ok");
 	}
 
 	return venture_web_redirect_to("/users?notice=created-ok");
