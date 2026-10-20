@@ -48,6 +48,10 @@ static const VentureFieldDecl bank_account_fields[] = {
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("match-window-days", "Match window days", "Inclusive UTC calendar window for candidate discovery; 0 means 5",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payoff-enabled", "Include in debt planner", "Use this liability account in payoff estimates", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payoff-apr-bps", "APR in basis points", "100 basis points = 1% yearly; 0 means interest-free", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("payoff-minimum", "Fixed monthly minimum", "Positive monthly payment in the account currency"),
+	VENTURE_FIELD_MONEY("payoff-extra", "Extra monthly contribution", "Optional nonnegative amount pooled with other selected debts of the same currency"),
 };
 VENTURE_DEFINE_ENTITY(VentureBankAccount, venture_bank_account, bank_account_fields)
 

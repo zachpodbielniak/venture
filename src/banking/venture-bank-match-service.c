@@ -140,6 +140,21 @@ venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gbool
 			return refuse(error, "ledger account belongs to another organization");
 		if (!venture_currency_is_valid(currency))
 			return refuse(error, "bank currency is required");
+		{
+			gboolean enabled = FALSE;
+			gint64 apr = 0;
+			gint kind = 0;
+			g_autoptr(VentureMoney) minimum = NULL, extra = NULL;
+			g_object_get(record, "payoff-enabled", &enabled, "payoff-apr-bps", &apr,
+				"payoff-minimum", &minimum, "payoff-extra", &extra, NULL);
+			g_object_get(account, "kind", &kind, NULL);
+			if (apr < 0 || apr > 100000 ||
+				(minimum != NULL && (minimum->amount < 0 || g_strcmp0(minimum->currency, currency) != 0)) ||
+				(extra != NULL && (extra->amount < 0 || g_strcmp0(extra->currency, currency) != 0)))
+				return refuse(error, "payoff APR must be 0..100000 basis points; payments must be nonnegative and match the account currency");
+			if (enabled && (venture_entity_is_deleted(account) || kind != VENTURE_ACCOUNT_KIND_LIABILITY || minimum == NULL || minimum->amount <= 0))
+				return refuse(error, "a planned debt requires a live liability account and a positive monthly minimum");
+		}
 		/* A label edit must not retroactively reject an old identity. */
 		if (previous != NULL)
 		{

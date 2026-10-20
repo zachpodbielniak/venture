@@ -24,6 +24,8 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/money/calendar", "Due calendar", VENTURE_ICON("<path d=\"M4 5h16v16H4zM4 10h16\"/>"), "Bills", "money_calendar" },
 	{ "/reports/household_subscriptions", "Subscriptions", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "money_calendar" },
 	{ "/e/recurring_schedule", "Repeating bills", VENTURE_ICON("<path d=\"M4 7h16M4 12h16M4 17h10\"/>"), NULL, "recurring" },
+	{ "/reports/net_worth", "Net worth", VENTURE_ICON("<path d=\"M4 20h16M7 20V12M12 20V4M17 20V8\"/>"), "Reports", "statements" },
+	{ "/reports/debt_payoff", "Debt payoff", VENTURE_ICON("<path d=\"M4 7l6 6 4-4 6 10\"/>"), NULL, "statements" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 

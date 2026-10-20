@@ -172,3 +172,12 @@ reversals, invalid inputs, cyclic hierarchy and monetary overflow.
 * Cash recognition evidence
 
 Cash-basis statements recognize allocations of receipts, payments and cash deposits using the original issue journal: book currency, account splits, tax and dimensions remain frozen. Noncash credit notes and write-offs do not create cash income or expense. Customer and vendor allocation refunds reverse recognition at their refund date. Draft and unpaid documents contribute no cash recognition; cumulative rounding preserves the final minor unit across partial settlements.
+
+* Household wealth reports
+
+=net_worth= uses the same posted book evidence for month-end assets minus
+liabilities. =debt_payoff= projects selected liability accounts under minimum-only,
+snowball and avalanche payments, with payoff dates and interest saved. See
+[[file:household.org][Household ventures, child 5]] for setup, scopes and estimate assumptions.
+These reports accept currency and as-of cutoffs but require accrual balances,
+without comparative periods or dimension filters.

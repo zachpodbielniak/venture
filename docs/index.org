@@ -233,3 +233,5 @@ screen's ordinary sync-and-import test.
 - [[file:budgets.org::*Monthly category envelopes][Monthly category envelopes]]: rollover, left to spend and early warnings.
 
 - [[file:household.org][Household bills and subscriptions]] — due calendar, repeat-charge suggestions, twelve-month costs and opt-in inbox reminders.
+
+- [[file:household.org][Household wealth]] — monthly net worth and debt payoff dates, snowball/avalanche strategies and interest savings.

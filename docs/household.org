@@ -4,7 +4,7 @@
 * Status
 
 Tracked by the household epic (issue #201). The household type and its slim
-view, banking workflows and monthly envelopes are implemented. Later numbered
+view, banking workflows, monthly envelopes, bills and wealth reports are implemented. Later numbered
 children below remain planned.
 
 * What a household venture is
@@ -29,7 +29,7 @@ Business ventures in the same organization are unchanged.
 2. Implemented: categorisation rules that learn, and transfers that never count as spending.
 3. Implemented: monthly category envelopes, rollover and early warnings (see below).
 4. Implemented: due calendar, repeat-charge suggestions, subscriptions with yearly cost and opt-in inbox reminders (see below).
-5. Net worth over time and a debt payoff planner.
+5. Implemented: monthly net worth and snowball/avalanche payoff estimates (see below).
 6. Savings goals tied to accounts.
 7. Several members, shared and personal accounts, settling up.
 8. Deductible tags, a year-end export, warranty reminders.
@@ -266,3 +266,85 @@ its optional-table guard supports installations without recurring schedules.
 Tests cover detection, stale and changed charges, tenant separation, suppressed
 suggestions, yearly totals, web/API/CLI, reminders, forecast-only sweeps and
 upgrade/restart behavior.
+
+* Net worth and debt payoff (child 5)
+
+Household Reports now links to *Net worth* and *Debt payoff*. Both reuse the
+statement engine, report web page, API, CLI, MCP and assistant report tools.
+They answer for one exact organization; currencies remain separate. They
+require =statements= and its ledger/period dependencies. Debt planning also
+requires =banking=. Turning a module off removes its registered reports.
+These exploratory reports are not captured in period-close statement snapshots.
+
+** Net worth over time
+
+=/reports/net_worth?period=2026= lists each month's assets, liabilities and
+net worth (assets minus liabilities). Balances include all earlier posted
+entries and stop at the month end, or the earlier =as_of= cutoff. The Through
+column shows that precise cutoff. Parent accounts never multiply totals;
+unposted transactions and statement imports alone do not change net worth.
+Use the existing posting and reconciliation workflows to bring those into
+the ledger. These are book values, not live investment or property prices.
+Current account classifications apply to historical rows. Requests are
+limited to 600 months. Choose a shorter period for a closer look.
+
+** Configure and compare debts
+
+On *Money / Bank accounts*, edit each liability account to plan:
+
+- Turn on *Include in debt planner*.
+- Enter *APR in basis points*: 100 means 1% per year; 0 is interest-free.
+- Enter a positive *Fixed monthly minimum* in the account's currency.
+- Optionally enter an *Extra monthly contribution*. Contributions from all
+  selected accounts of the same currency form one shared extra-payment pool.
+
+Open =/reports/debt_payoff?period=2026-01=. The starting amount is each selected
+liability account's direct posted balance at the end of January (or earlier
+=as_of=), never a copied statement balance or a parent subtotal. Select each
+ledger account at most once per currency. Unselected debts are excluded, and
+credit balances count as zero debt. A selected account with no debt still
+contributes its configured minimum and extra to the strategy budget; turn
+it off to remove that contribution. Edit the settings to compare scenarios.
+
+Each currency gets debt rows and an all-debts summary for three projections:
+
+| Projection | Payment rule |
+|------------+--------------|
+| minimum | Each debt's fixed minimum only; retired payments stop. |
+| snowball | All minimums, then remaining budget to the smallest balance. |
+| avalanche | All minimums, then remaining budget to the highest APR. |
+
+The latter two retain the sum of initial minimums plus extra contributions
+throughout the projection, recycling unused and retired minimums. Priorities
+are chosen after that month's interest and minimum payments; ties follow
+bank-account record order. The summary shows the initial monthly budget;
+individual debt rows show their minimum, not a promise of constant payment.
+Interest saved compares each completed projection with minimum-only, including
+the effect of both extra contributions and recycled payments.
+
+Payments start one month after the balance cutoff. Dates remain anchored to
+that cutoff's day, clamped in shorter months (January 31 gives February 28,
+then March 31). Each month charges APR/12 on its opening balance, rounded
+half to even in the currency's minor unit, then pays. Rates and fixed minimums
+stay constant; there are no fees, new charges or daily accrual. These are
+estimates, not lender payoff quotes, and the report creates no payments.
+
+The horizon is 600 months and at most 200 selected debts. An unfinished debt
+shows its remaining balance and interest accrued through that horizon, with
+no payoff date. Savings are blank whenever that projection or its minimum-only
+baseline is unfinished. Invalid currency, duplicate debt selection, invalid
+APR/payment or money overflow returns an error instead of a partial estimate.
+
+Both reports accept =period=, =organization_id=, =currency= and =as_of= through
+existing report surfaces. They require accrual balances and reject cash basis,
+comparative periods and dimension filters, which would misstate whole-account
+wealth. For example:
+
+#+begin_src sh
+venturectl report net_worth 2026 currency=USD
+venturectl report debt_payoff 2026-01 currency=USD as_of=2026-01-31
+#+end_src
+
+Migration =000924_household_wealth.sql= is paired for SQLite and PostgreSQL.
+Metadata reconciliation adds the bank-account fields; the guarded migration
+backfills planning off and APR zero, preserving existing accounts and payments.

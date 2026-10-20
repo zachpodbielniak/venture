@@ -8137,8 +8137,9 @@ venture_web_ui_report(
 
 	{
 		gboolean financial;
+		gboolean wealth = g_str_equal(name, "net_worth") || g_str_equal(name, "debt_payoff");
 		g_object_get(report, "financial", &financial, NULL);
-		if (financial)
+		if (financial || wealth)
 		{
 			g_string_append(content, "<form method=\"get\" class=\"form-grid\"><label>Period<input name=\"period\" value=\"");
 			venture_html_escape_append(content, (NULL != requested_period) ? requested_period : "this_month");
@@ -8155,7 +8156,7 @@ venture_web_ui_report(
 				for (i = 0; names[i] != NULL; i++)
 				{
 					const gchar *value = htmx_request_get_query_param(request, names[i]);
-					if (value == NULL)
+					if (value == NULL || (wealth && g_str_equal(names[i], "currency")))
 						continue;
 					g_string_append_printf(content, "<input type=\"hidden\" name=\"%s\" value=\"", names[i]);
 					venture_html_escape_append(content, value);

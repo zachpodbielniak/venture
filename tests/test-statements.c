@@ -499,6 +499,14 @@ test_organization(Fixture *f, gconstpointer data)
 	g_clear_object(&r);
 	r = report(f, "balance_sheet", "2026-08", "USD", NULL);
 	g_assert_cmpint(cell(r, "assets", "current"), ==, 10000);
+	g_clear_object(&r);
+	r = report(f, "net_worth", "2026-08", "USD", NULL);
+	g_assert_cmpint(cell(r, "2026-08", "assets"), ==, 10000);
+	f->org = venture_entity_get_id(VENTURE_ENTITY(other));
+	g_clear_object(&r);
+	r = report(f, "net_worth", "2026-08", "USD", NULL);
+	g_assert_cmpint(cell(r, "2026-08", "assets"), ==, 777);
+	f->org = original;
 }
 
 typedef struct
@@ -556,7 +564,7 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_autofree gchar *body = NULL;
 	const gchar *args[14];
 	Response response = { FALSE, NULL, NULL, NULL, NULL };
-	guint port = 0;
+	guint port = 0, wealth;
 	(void)data;
 	g_assert_no_error(error);
 	g_object_set(f->config, "state-dir", dir, "security-require-auth", FALSE,
@@ -634,6 +642,33 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(response.out, "200.00"));
 	g_free(response.out);
 	g_free(response.err);
+	for (wealth = 0; wealth < 2; wealth++)
+	{
+		const gchar *name = wealth == 0 ? "net_worth" : "debt_payoff";
+		g_autofree gchar *page = g_strdup_printf("/reports/%s?period=2026-08&currency=USD", name);
+		g_autofree gchar *api = g_strdup_printf("/api/v1/reports/%s?period=2026-08&currency=USD", name);
+		g_clear_pointer(&body, g_free);
+		body = http_get(session, base, page, 200);
+		g_assert_nonnull(strstr(body, wealth == 0 ? "Net worth" : "Debt payoff"));
+		g_clear_pointer(&body, g_free);
+		body = http_get(session, base, api, 200);
+		g_assert_nonnull(strstr(body, wealth == 0 ? "net_worth" : "interest_saved"));
+		g_clear_object(&child);
+		args[6] = name;
+		args[10] = NULL;
+		response.done = FALSE;
+		response.out = NULL;
+		response.err = NULL;
+		child = g_subprocess_launcher_spawnv(launcher, args, &error);
+		g_assert_no_error(error);
+		g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &response);
+		while (!response.done) g_main_context_iteration(NULL, TRUE);
+		g_assert_no_error(response.error);
+		g_assert_true(g_subprocess_get_successful(child));
+		g_assert_nonnull(strstr(response.out, wealth == 0 ? "Net worth" : "Interest saved"));
+		g_free(response.out);
+		g_free(response.err);
+	}
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
 	g_clear_pointer(&body, g_free);
 	body = http_get(session, base, "/reports/balance_sheet", 404);
@@ -856,12 +891,204 @@ test_cash_split_rounding(Fixture *f, gconstpointer data)
 	g_assert_cmpint(cell(sheet, "assets", "current"), ==, 1);
 }
 
+static void
+test_net_worth(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureReportResult) r = NULL;
+	(void)data;
+	post(f, "2025-12-10T00:00:00Z", "USD", "1000", "4000", 10000);
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "2000", 5000);
+	post(f, "2026-02-10T00:00:00Z", "USD", "6400", "1000", 2000);
+	post(f, "2026-02-10T00:00:00Z", "EUR", "1000", "4000", 700);
+	post(f, "2027-01-01T00:00:00Z", "USD", "1000", "4000", 99999);
+	r = report(f, "net_worth", "2026", "USD", NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 12);
+	g_assert_cmpint(cell(r, "2026-01", "assets"), ==, 15000);
+	g_assert_cmpint(cell(r, "2026-01", "liabilities"), ==, 5000);
+	g_assert_cmpint(cell(r, "2026-01", "net_worth"), ==, 10000);
+	g_assert_cmpint(cell(r, "2026-02", "net_worth"), ==, 8000);
+	g_assert_cmpint(cell(r, "2026-12", "net_worth"), ==, 8000);
+	g_clear_object(&r);
+	r = report(f, "net_worth", "2026", "EUR", NULL);
+	g_assert_cmpint(cell(r, "2026-02", "net_worth"), ==, 700);
+}
+
+static VentureBankAccount *
+plan_debt(Fixture *f, const gchar *code, const gchar *name, gint64 apr, const gchar *minimum, const gchar *extra)
+{
+	VentureBankAccount *bank = venture_bank_account_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(bank, "name", name, "organization-id", f->org, "account-id", account(f, code),
+		"currency", "USD", "kind", VENTURE_BANK_ACCOUNT_LOAN, "payoff-enabled", TRUE,
+		"payoff-apr-bps", apr, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(bank), "payoff-minimum", minimum, &error));
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(bank), "payoff-extra", extra, &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(bank), NULL, &error));
+	g_assert_no_error(error);
+	return bank;
+}
+
+static const gchar *
+text_cell(VentureReportResult *r, const gchar *key, const gchar *column)
+{
+	guint i;
+	for (i = 0; i < venture_report_result_get_row_count(r); i++)
+		if (g_strcmp0(g_value_get_string(venture_report_result_get_cell(r, i, "key")), key) == 0)
+			return g_value_get_string(venture_report_result_get_cell(r, i, column));
+	g_error("Missing row %s", key);
+	return NULL;
+}
+
+static void
+test_debt_payoff(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBankAccount) first = NULL, second = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	(void)data;
+	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "debt_payoff"));
+	first = plan_debt(f, "2000", "Small loan", 0, "20 USD", "10 USD");
+	second = plan_debt(f, "2100", "Large loan", 2400, "20 USD", "0 USD");
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "2000", 10000);
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "2100", 20000);
+	r = report(f, "debt_payoff", "2026-01", "USD", NULL);
+	g_assert_cmpint(cell(r, "minimum", "interest"), ==, 2540);
+	g_assert_cmpint(cell(r, "snowball", "interest"), ==, 1801);
+	g_assert_cmpint(cell(r, "avalanche", "interest"), ==, 1631);
+	g_assert_cmpint(cell(r, "snowball", "interest_saved"), ==, 739);
+	g_assert_cmpint(cell(r, "avalanche", "interest_saved"), ==, 909);
+	g_assert_cmpstr(text_cell(r, "minimum", "payoff_date"), ==, "2027-01-31");
+	g_assert_cmpstr(text_cell(r, "snowball", "payoff_date"), ==, "2026-08-31");
+	g_assert_cmpstr(text_cell(r, "avalanche", "payoff_date"), ==, "2026-08-31");
+}
+
+static void
+test_wealth_cutoff(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureAccount) parent = venture_account_new();
+	g_autoptr(VentureEntity) cash = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026", NULL);
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	VentureReport *registered = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "net_worth");
+	(void)data;
+	g_object_set(parent, "code", "0900", "name", "Asset group", "organization-id", f->org, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(parent), NULL, &error));
+	cash = venture_database_get(f->db, VENTURE_TYPE_ACCOUNT, account(f, "1000"), &error);
+	g_object_set(cash, "parent-id", venture_entity_get_id(VENTURE_ENTITY(parent)), NULL);
+	g_assert_true(venture_database_save(f->db, cash, NULL, &error));
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "4000", 10000);
+	post(f, "2026-02-10T00:00:00Z", "USD", "1000", "4000", 5000);
+	post(f, "2026-02-12T00:00:00Z", "USD", "1000", "4000", 99999);
+	json_object_set_string_member(options, "currency", "USD");
+	json_object_set_string_member(options, "as_of", "2026-02-11");
+	r = venture_report_generate(registered, f->context, range, options, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 2);
+	g_assert_cmpint(cell(r, "2026-02", "assets"), ==, 15000);
+	g_clear_object(&r);
+	json_object_set_string_member(options, "basis", "cash");
+	r = venture_report_generate(registered, f->context, range, options, &error);
+	g_assert_null(r);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+}
+
+static void
+test_debt_horizon(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBankAccount) bank = plan_debt(f, "2000", "Slow loan", 1200, "0.01 USD", "0 USD");
+	g_autoptr(VentureReportResult) r = NULL;
+	guint i;
+	(void)data;
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "2000", 10000);
+	r = report(f, "debt_payoff", "2026-01", "USD", NULL);
+	g_assert_cmpint(cell(r, "avalanche", "remaining"), >, 10000);
+	for (i = 0; i < venture_report_result_get_row_count(r); i++)
+	{
+		g_assert_null(venture_report_result_get_cell(r, i, "payoff_date"));
+		g_assert_null(venture_report_result_get_cell(r, i, "interest_saved"));
+	}
+}
+
+static void
+test_debt_validation(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBankAccount) bank = plan_debt(f, "2000", "Loan", 0, "1 USD", "0 USD");
+	g_autoptr(VentureBankAccount) duplicate = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026-01", NULL);
+	VentureReport *registered = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "debt_payoff");
+	(void)data;
+	g_object_set(bank, "payoff-apr-bps", (gint64)-1, NULL);
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(bank), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(bank, "payoff-apr-bps", (gint64)0, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(bank), "payoff-extra", "1 EUR", &error));
+	g_assert_false(venture_database_save(f->db, VENTURE_ENTITY(bank), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	duplicate = plan_debt(f, "2000", "Duplicate loan", 0, "1 USD", "0 USD");
+	r = venture_report_generate(registered, f->context, range, NULL, &error);
+	g_assert_null(r);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+static void
+test_debt_rounding(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBankAccount) first = plan_debt(f, "2000", "Half-cent loan", 1200, "0.25 USD", "0 USD");
+	g_autoptr(VentureBankAccount) second = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	second = venture_bank_account_new();
+	g_object_set(second, "name", "Euro loan", "organization-id", f->org, "account-id", account(f, "2100"),
+		"currency", "EUR", "kind", VENTURE_BANK_ACCOUNT_LOAN, "payoff-enabled", TRUE,
+		"payoff-apr-bps", (gint64)1200, NULL);
+	g_assert_true(venture_entity_set_field_from_string(VENTURE_ENTITY(second), "payoff-minimum", "1.52 EUR", &error));
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(second), NULL, &error));
+	g_assert_no_error(error);
+	post(f, "2026-01-10T00:00:00Z", "USD", "1000", "2000", 50);
+	post(f, "2026-01-10T00:00:00Z", "EUR", "1000", "2100", 150);
+	r = report(f, "debt_payoff", "2026-01", "USD", NULL);
+	g_assert_cmpint(cell(r, "minimum", "interest"), ==, 0);
+	g_assert_cmpstr(text_cell(r, "minimum", "payoff_date"), ==, "2026-03-31");
+	g_clear_object(&r);
+	r = report(f, "debt_payoff", "2026-01", "EUR", NULL);
+	g_assert_cmpint(cell(r, "minimum", "interest"), ==, 2);
+	g_assert_cmpstr(text_cell(r, "minimum", "payoff_date"), ==, "2026-02-28");
+	g_clear_object(&r);
+	r = report(f, "debt_payoff", "2026-01", NULL, NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 12);
+}
+
+static void
+test_debt_registration(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureReportResult) r = NULL;
+	(void)data;
+	r = report(f, "debt_payoff", "2026-01", "USD", NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 0);
+	venture_config_set_module_enabled(f->config, "statements", FALSE);
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "net_worth"));
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "debt_payoff"));
+}
+
 int
 main(int argc, char **argv)
 {
 	static const gchar *const names[] = { "balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation" };
 	guint i;
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/statements/net-worth", Fixture, NULL, setup, test_net_worth, teardown);
+	g_test_add("/statements/debt-payoff", Fixture, NULL, setup, test_debt_payoff, teardown);
+	g_test_add("/statements/wealth-cutoff", Fixture, NULL, setup, test_wealth_cutoff, teardown);
+	g_test_add("/statements/debt-horizon", Fixture, NULL, setup, test_debt_horizon, teardown);
+	g_test_add("/statements/debt-validation", Fixture, NULL, setup, test_debt_validation, teardown);
+	g_test_add("/statements/debt-rounding", Fixture, NULL, setup, test_debt_rounding, teardown);
+	g_test_add("/statements/debt-registration", Fixture, NULL, setup, test_debt_registration, teardown);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{

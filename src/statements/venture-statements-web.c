@@ -42,6 +42,14 @@ venture_statements_append_controls(VentureContext *context, VentureReport *repor
 {
 	if (!venture_statements_owns_report(context, venture_report_get_name(report)))
 		return;
+	if (g_str_equal(venture_report_get_name(report), "net_worth") ||
+		g_str_equal(venture_report_get_name(report), "debt_payoff"))
+	{
+		g_string_append(html, "<label>Currency<input name=\"currency\" placeholder=\"All currencies separately\" value=\"");
+		venture_html_escape_append(html, venture_json_object_get_string(options, "currency", ""));
+		g_string_append(html, "\"></label>");
+		return;
+	}
 	g_string_append(html, "<label>Compare to<input name=\"compare_to\" placeholder=\"Prior period, e.g. 2026-07\" value=\"");
 	venture_html_escape_append(html, venture_json_object_get_string(options, "compare_to", ""));
 	g_string_append(html, "\"></label>");
