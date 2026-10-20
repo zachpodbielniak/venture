@@ -98,7 +98,9 @@ invoice-number conflicts are errors and roll back acceptance. Invoice lines
 now declare discount and tax percentages; existing lines default to zero.
 The ordinary invoice amount function applies the same money rounding.
 Issuance uses settlement's configured accounts and fiscal-period guard.
-Quote validity is not a payment due date; invoice due dates remain unset.
+Quote validity is not a payment due date. The acceptance invoice is due
+thirty days after issue, the invoice composer's default terms, so it ages
+in receivables and reminders fall due like any other invoice.
 
 A =before-action= signal on the service runs inside the transaction, after
 version validation and before any action records. It is =G_SIGNAL_RUN_LAST=;

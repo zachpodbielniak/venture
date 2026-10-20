@@ -613,11 +613,16 @@ handoff(VentureQuoteService *self, VentureEntity *q, GDateTime *now, const Ventu
 	issue_date = venture_settlement_service_today(venture_settlement_service_get(self->database));
 	if (issue_date == NULL) return FALSE;
 	venture_entity_set_organization_id(invoice, org);
-	g_object_get(q, "number", &number, "terms", &terms, "valid-until", &due, NULL);
+	g_object_get(q, "number", &number, "terms", &terms, NULL);
+	/* Due on the composer's default terms, thirty days from issue. Quote
+	 * validity is not a payment date, and an invoice with none never
+	 * ages: the receivables report files it under "No due date" and no
+	 * reminder ever falls due. */
+	due = g_date_time_add_days(issue_date, 30);
 	invoice_number = g_strdup_printf("QUOTE-%s", number);
 	g_object_set(invoice, "number", invoice_number, "company-id", integer(q, "company-id"),
 		"contact-id", integer(q, "contact-id"), "venture-id", integer(q, "venture-id"),
-		"issued-at", issue_date, "terms", terms, NULL);
+		"issued-at", issue_date, "due-at", due, "terms", terms, NULL);
 	if (!venture_database_save(self->database, invoice, actor, error)) return FALSE;
 	for (i = 0; i < lines->len; i++)
 	{
