@@ -1236,3 +1236,14 @@ content stays private, and generic writers cannot forge a sequence source.
 The existing sequence report fixture delivers its first email before counting
 that enrollment as completed. A reply cancels an unsent final email; it does
 not rewrite already-sent history.
+
+* Jobs
+
+=test-jobs= saves jobs through the database and presses their buttons
+through the HTTP action route, the way the page does. It checks the J-
+numbering, the required customer, the arrival window, an estimate from
+another customer refused, the day's buttons stamping their times and a
+finished job refused "On my way", "Invoiced" taking the accepted
+estimate's invoice and refusing with none, one row per active technician,
+and Jobs in the sidebar with a form that asks for the window, problem and
+service address.

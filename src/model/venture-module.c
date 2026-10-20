@@ -973,6 +973,16 @@ static GType (*const referrals_types[]) (void) = {
 };
 static const gchar *const referrals_reports[] = { "referrals", NULL };
 
+/* Work at a customer's address. It requires crm, whose customers and
+ * contacts a job is for. It suggests quotes and invoicing: a job names the
+ * estimate it carries out and the invoice that bills it, and with either
+ * module off that link is refused with the switch named. */
+static const gchar *const jobs_requires[] = { "crm", NULL };
+static const gchar *const jobs_suggests[] = { "quotes", "invoicing", NULL };
+static GType (*const jobs_types[]) (void) = {
+	venture_job_get_type, venture_job_technician_get_type, NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1440,6 +1450,14 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"goals, sprints, deals, money due and synced calendars -- as a "
 		"month, week or agenda, as JSON and as a subscribable feed.",
 		venture_module_requires_core, planner_suggests, planner_types,
+		NULL, NULL, FALSE
+	},
+	{
+		"jobs", "Jobs",
+		"Work at a customer's address: the problem, the technicians sent, "
+		"the arrival window promised, where the job has got to through the "
+		"day, and the estimate and invoice it belongs with.",
+		jobs_requires, jobs_suggests, jobs_types,
 		NULL, NULL, FALSE
 	}
 };

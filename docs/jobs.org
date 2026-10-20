@@ -1,0 +1,72 @@
+#+title: Jobs
+#+description: Work at a customer's address: the problem, the technicians sent, the arrival window, where it has got to, and the estimate and invoice it belongs with
+#+authors: Ben Doty
+#+categories: projects docs
+#+created: [2026-10-20]
+#+updated: [2026-10-20]
+#+version: 0.1.0
+
+* What a job is
+
+A home-services business works at its customers' addresses: a water heater
+replaced, a furnace serviced, a drain cleared. A =job= is one such piece of
+work. Before it existed the nearest thing was an activity of kind
+"meeting", which has no customer address, no technicians, no promised
+window and no link to the estimate or the bill.
+
+The =jobs= module requires =crm= and suggests =quotes= and =invoicing=. It
+owns two record types, both derived from their field tables like every
+other: a list, a form, REST, CLI, JSON and the assistant's tools.
+
+| Record | What it holds |
+|--------+---------------|
+| =job= | title, number, status, customer (=company_id=), contact on site, service address, problem, arrival window (=window_start=, =window_end=), estimate (=quote_id=), invoice (=invoice_id=), the times it was set off for, arrived at and finished, notes |
+| =job_technician= | a job and a user sent to it; =lead= marks the one the customer deals with |
+
+Jobs are under Customers in the sidebar, after Contacts.
+
+* What the save holds to
+
+- A job saved without a number takes the next free =J-= number in its
+  business; deleted jobs count, so a number is never reused. A typed
+  number is kept, trimmed, and is unique within the business.
+- The customer is required and must be in the job's business. A contact on
+  site must be too, and must not work for another customer.
+- An arrival window ends after it starts. An end with no start is refused;
+  a start alone is allowed ("from 8").
+- The estimate and the invoice must be the job's customer's own. With
+  =quotes= or =invoicing= switched off, naming one is refused with the
+  switch named.
+- An =invoiced= job names its invoice.
+- A technician is an active user who can sign in, on a job in the same
+  business, once per job.
+
+* Through the day
+
+The job's page offers only the buttons that apply to where it is. Each is
+an ordinary record action (=POST /api/v1/job/:id/actions/<name>=,
+=venturectl act job ID <name>=), needs an editor, and stamps when it
+happened:
+
+| Button | Action | From | To | Stamps |
+|--------+--------+------+----+--------|
+| On my way | =on_the_way= | booked | on the way | =left_at= |
+| Arrived | =arrive= | booked, on the way | on site | =arrived_at= |
+| Done | =complete= | booked, on the way, on site | done | =completed_at= |
+| Invoiced | =invoiced= | done | invoiced | |
+| Cancel job | =cancel= | booked, on the way, on site | cancelled | |
+
+=invoiced= takes an optional =invoice_id=. Without one it uses the
+invoice the job already names, else the invoice its accepted estimate
+became, and refuses when there is neither. A button pressed from a status
+it does not apply to is refused with the status named, so a finished job
+cannot be put back on the road by a stale page.
+
+The status is an ordinary field as well, so an owner can correct it on
+the form; the save rules above still apply.
+
+* Not yet
+
+Service addresses as records of their own under a customer, the
+equipment at each, a booking's time of day on the calendar and a
+technician's day view are separate pieces of work.

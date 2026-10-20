@@ -170,6 +170,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "quotes", FALSE);
 	venture_config_set_module_enabled(config, "leads", FALSE);
 	venture_config_set_module_enabled(config, "referrals", FALSE);
+	venture_config_set_module_enabled(config, "jobs", FALSE);
 	venture_config_set_module_enabled(config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(config, "activities", FALSE);
 	venture_config_set_module_enabled(config, "payables", FALSE);
@@ -631,6 +632,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "referrals", FALSE);
+	venture_config_set_module_enabled(fixture->config, "jobs", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
@@ -1035,6 +1037,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "referrals", FALSE);
+	venture_config_set_module_enabled(fixture->config, "jobs", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "payables", FALSE);
