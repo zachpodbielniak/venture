@@ -1,0 +1,37 @@
+#+title: Household ventures (planned)
+#+description: Personal and household finance as a slimmed-down venture type
+
+* Status
+
+Planned, tracked by the household epic (issue #201). Nothing below exists yet;
+this page is the plan the epic's children deliver against, and each child
+replaces its paragraph with the real documentation as it lands.
+
+* What a household venture is
+
+A venture of type =household=: the same ledger, accounts and reports as any
+other venture, with navigation and words for a home instead of a business.
+Business ventures in the same organization are unchanged.
+
+* Built from what exists
+
+- Accounts and the ledger ([[file:ledger.org][ledger]]) hold checking, savings, cards, cash, loans and investments.
+- Bank feeds ([[file:bankfeed.org][bankfeed]]) and file import bring transactions in; categorisation rules sort them.
+- Budgets ([[file:budgets.org][budgets]]) become monthly category or envelope budgets with roll-over.
+- Recurring entries ([[file:recurring.org][recurring]]) and the money calendar ([[file:money-calendar.org][money calendar]]) become bills and subscriptions.
+- Goals ([[file:goals.org][goals]]) become savings goals tied to accounts.
+- Documents ([[file:documents.org][documents]]) hold receipts and warranties.
+- Dashboards ([[file:dashboards.org][dashboards]]) give the household home screen.
+
+* Gaps the epic fills
+
+1. The =household= venture type and its slim navigation.
+2. Categorisation rules that learn, and transfers that never count as spending.
+3. Envelope budgets with "left to spend".
+4. Detected subscriptions with yearly cost.
+5. Net worth over time and a debt payoff planner.
+6. Savings goals tied to accounts.
+7. Several members, shared and personal accounts, settling up.
+8. Deductible tags, a year-end export, warranty reminders.
+9. A phone-first household dashboard.
+10. A full month walked as a household, every dead end fixed.

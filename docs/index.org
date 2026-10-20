@@ -103,6 +103,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:payroll.org][Payroll import]] — imported pay runs, liability disbursement and reconciliation
 - [[file:accounting.org][Daily accounting home]] — guided next actions for the books
 - [[file:budgets.org][Budgets]] — vs-actual and cash forecasting
+- [[file:household.org][Household ventures]] — personal and household finance (planned)
 - [[file:equity.org][Owner equity]] — contributions, draws, loans and transfers
 - [[file:group.org][Intercompany group]] — optional consolidation and eliminations
 
