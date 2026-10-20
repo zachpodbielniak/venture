@@ -6,6 +6,8 @@
 =billing= requires =invoicing= and =receivables=. A =plan= describes Starter
 or Pro; a =plan_price= describes one version of what it costs for one
 period -- every month, every 3 months, every 6 months or every year.
+A plan's page has an "Add a price" button, and says when the plan has no
+price yet and so cannot be offered.
 The customer's commitment is a =customer_subscription=. The example
 plugin's =subscription= remains a recurring cost paid by the business.
 

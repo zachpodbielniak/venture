@@ -370,6 +370,29 @@ venture_billing_web_trial_reminder(VentureWebServer *self, GString *html, Ventur
  * changes, each saying what it does to the next invoice -- the question
  * everybody has about a plan change in the middle of a month.
  */
+/*
+ * A plan with no price can't be offered: the subscription picker lists
+ * prices, not plans. The related list only appears once a price exists,
+ * so the first one is otherwise reachable only by typing its address.
+ */
+static void
+venture_billing_web_plan_prices(VentureWebServer *self, GString *html, VentureEntity *plan)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PLAN_PRICE);
+	gint64 id = venture_entity_get_id(plan);
+	gint64 count;
+
+	venture_query_set_organization(query, venture_entity_get_organization_id(plan));
+	venture_query_add_filter_int(query, "plan-id", VENTURE_FILTER_OP_EQ, id, NULL);
+	count = venture_database_count(venture_context_get_database(self->context), query, NULL);
+	g_string_append(html, "<section class=\"card next-up\"><div class=\"card-head\"><h2>Prices</h2></div><div class=\"card-body\">");
+	if (count <= 0)
+		g_string_append(html, "<p class=\"next-up-lead\">This plan has no price yet, so nobody can be put on it.</p>");
+	g_string_append_printf(html, "<a class=\"btn btn-primary\" href=\"/e/plan_price/new?plan_id=%" G_GINT64_FORMAT
+		"&amp;organization_id=%" G_GINT64_FORMAT "\">Add a price</a></div></section>",
+		id, venture_entity_get_organization_id(plan));
+}
+
 static void
 venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity *record, VentureAuthPrincipal *principal)
 {
@@ -382,6 +405,11 @@ venture_billing_web_buttons(VentureWebServer *self, GString *html, VentureEntity
 	gint status = 0;
 	guint i;
 
+	if (VENTURE_IS_PLAN(record))
+	{
+		venture_billing_web_plan_prices(self, html, record);
+		return;
+	}
 	if (!VENTURE_IS_CUSTOMER_SUBSCRIPTION(record))
 		return;
 	id = venture_entity_get_id(record);
