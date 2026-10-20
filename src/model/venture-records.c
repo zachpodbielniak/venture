@@ -735,7 +735,7 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("email", "Email", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("phone", "Phone", NULL, VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_NONE),
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_REF("venture-id", "Venture",
 	                  "The venture this relationship belongs to", "venture",
 	                  VENTURE_COLUMN_FLAG_NONE),

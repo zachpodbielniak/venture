@@ -244,7 +244,7 @@ YAML, web list view, AI tools, audit diffs and CLI subcommands all follow.
 | =INDEXED=      | an index                                               |
 | =IMMUTABLE=    | settable on insert, never on update                    |
 | =SENSITIVE=    | never serialised to an API response, log, export or AI |
-| =SEARCHABLE=   | included in free-text search                           |
+| =SEARCHABLE=   | included in free-text search; a type with none never matches a search, and a search of seven or more digits with spaces, dashes, dots or brackets also matches the field with those separators removed |
 | =TRANSIENT=    | computed; never persisted                              |
 | =RETAIN_REFERENCE= | CRM merge keeps the original subject for this reference |
 | =TECHNICAL=    | machinery: kept off summaries, list columns and the everyday form |

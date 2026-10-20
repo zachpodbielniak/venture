@@ -1226,9 +1226,37 @@ venture_query_append_filter(
 }
 
 /*
+ * A search that reads as a phone number -- digits and the separators
+ * people type between them, seven digits or more -- returns those digits;
+ * otherwise %NULL. "319-555-0177", "(319) 555 0177" and "5550177" are
+ * phone numbers; "Q-1" and "Mill St" are not. A date such as 2026-10-20
+ * also qualifies, harmlessly: it only adds matches whose digits agree.
+ */
+static gchar *
+venture_query_search_digits(const gchar *text)
+{
+	g_autoptr(GString) digits = g_string_new(NULL);
+	const gchar *p;
+
+	for (p = text; *p != '\0'; p++)
+	{
+		if (g_ascii_isdigit(*p))
+			g_string_append_c(digits, *p);
+		else if (NULL == strchr(" -.()+", *p))
+			return NULL;
+	}
+	if (digits->len < 7)
+		return NULL;
+	return g_string_free(g_steal_pointer(&digits), FALSE);
+}
+
+/*
  * Appends the free-text search: an OR across every column the record type
- * flagged searchable. A type with none simply contributes nothing, which is
- * better than matching everything.
+ * flagged searchable. A type with none matches nothing: leaving it out of
+ * the WHERE clause would match every row, which is how a search for a name
+ * listed every subscription and membership in the business. A phone-shaped
+ * search also matches each column with its separators taken out, so a
+ * number typed one way finds it stored another.
  */
 static void
 venture_query_append_search(
@@ -1242,6 +1270,7 @@ venture_query_append_search(
 	g_autoptr(VentureEntityClass) klass = NULL;
 	g_autofree GParamSpec **properties = NULL;
 	g_autofree gchar *pattern = NULL;
+	g_autofree gchar *digits = NULL;
 	guint n_properties;
 	guint n_searchable;
 	guint i;
@@ -1253,6 +1282,7 @@ venture_query_append_search(
 	properties = venture_entity_class_list_persistent_properties(klass,
 	                                                             &n_properties);
 	pattern = g_strdup_printf("%%%s%%", self->search);
+	digits = venture_query_search_digits(self->search);
 	n_searchable = 0;
 
 	for (i = 0; i < n_properties; i++)
@@ -1291,11 +1321,26 @@ venture_query_append_search(
 		venture_query_append_placeholder(sql, dialect, index);
 		*params = g_list_append(*params, orm_value_new_string(pattern));
 
+		if (NULL != digits)
+		{
+			g_autofree gchar *digit_pattern = g_strdup_printf("%%%s%%", digits);
+
+			g_string_append_printf(sql, " OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("
+				"%s, ' ', ''), '-', ''), '.', ''), '(', ''), ')', ''), '+', '') LIKE ", quoted);
+			venture_query_append_placeholder(sql, dialect, index);
+			*params = g_list_append(*params, orm_value_new_string(digit_pattern));
+		}
+
 		n_searchable++;
 	}
 
 	if (n_searchable > 0)
 		g_string_append_c(sql, ')');
+	else
+	{
+		g_string_append(sql, *first ? " WHERE 1 = 0" : " AND 1 = 0");
+		*first = FALSE;
+	}
 }
 
 gchar *
