@@ -756,8 +756,11 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		}
 	}
 	if (by != NULL) g_strstrip(by);
-	if (g_strcmp0(verb, "send") == 0 && state(q) == VENTURE_QUOTE_DRAFT)
+	/* "share" issues the quote exactly as "send" does, but the customer's
+	 * link is handed over by whoever shares it: a link delivery, no mail. */
+	if ((g_strcmp0(verb, "send") == 0 || g_strcmp0(verb, "share") == 0) && state(q) == VENTURE_QUOTE_DRAFT)
 	{
+		gboolean share = g_strcmp0(verb, "share") == 0;
 		g_autofree gchar *token = secret(error);
 		g_autofree gchar *url = NULL;
 		g_autoptr(VentureEntity) delivery = VENTURE_ENTITY(venture_quote_delivery_new());
@@ -793,8 +796,8 @@ venture_quote_service_execute_impl(VentureQuoteService *self, VentureEntity *req
 		if (!event(self, q, verb, request, method, ip, now, actor, error)) goto done;
 		url = g_strconcat("/q/", token, NULL);
 		venture_entity_set_organization_id(delivery, org);
-		g_object_set(delivery, "quote-id", venture_entity_get_id(q), "channel", "email", "acceptance-url", url, NULL);
-		if (!venture_quote_mail_enqueue(self->database, q, delivery, self->base_url, actor, error)) goto done;
+		g_object_set(delivery, "quote-id", venture_entity_get_id(q), "channel", share ? "link" : "email", "acceptance-url", url, NULL);
+		if (!share && !venture_quote_mail_enqueue(self->database, q, delivery, self->base_url, actor, error)) goto done;
 		if (!write_record(self, delivery, actor, error)) goto done;
 	}
 	else if (g_strcmp0(verb, "remind") == 0 && state(q) == VENTURE_QUOTE_SENT)

@@ -9,12 +9,12 @@ venture_cli_command_quote(VentureCli *cli, gchar **args, GError **error)
 	g_autofree gchar *path = NULL;
 	guint i;
 	if (args[1] == NULL || args[2] == NULL ||
-		(g_strcmp0(args[1], "send") != 0 && g_strcmp0(args[1], "accept") != 0 &&
+		(g_strcmp0(args[1], "send") != 0 && g_strcmp0(args[1], "share") != 0 && g_strcmp0(args[1], "accept") != 0 &&
 		g_strcmp0(args[1], "decline") != 0 && g_strcmp0(args[1], "revise") != 0 && g_strcmp0(args[1], "remind") != 0 &&
 		g_strcmp0(args[1], "start-subscription") != 0))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			"usage: quote send|accept|decline|revise|remind|start-subscription ID [by=NAME] [reason=TEXT]");
+			"usage: quote send|share|accept|decline|revise|remind|start-subscription ID [by=NAME] [reason=TEXT]");
 		return -1;
 	}
 	for (i = 0; args[2][i] != '\0'; i++)

@@ -200,6 +200,19 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 		return venture_web_error_response(error);
 	if (staged)
 		return venture_web_api_stage(self, action, NULL, principal, VENTURE_AUDIT_ACTION_CREATE);
+	/* The page's "Send quote" promises an email. With no address to mail
+	 * it is refused, as invoice Send is, and Share link is the way out. */
+	if (!api && g_strcmp0(verb, "send") == 0)
+	{
+		g_autofree gchar *recipient = venture_quote_mail_recipient(venture_context_get_database(self->context), quote, &error);
+		if (error != NULL) return venture_web_error_response(error);
+		if (recipient == NULL)
+		{
+			venture_set_error_validation(&error, "customer",
+				"This customer has no email address. Add one, or use Share link to mark the quote sent and copy the customer's link");
+			return venture_web_error_response(error);
+		}
+	}
 	if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
 		action, "manual", NULL, &actor, &error)) return venture_web_error_response(error);
 	if (!api)
@@ -258,6 +271,57 @@ quote_subscription_block(VentureWebServer *self, GString *html, VentureEntity *r
 		g_string_append(html, "<p class=\"field-help\">Once accepted, this quote starts a subscription on its plan line.</p>");
 }
 
+/*
+ * A sent quote's customer link, to copy into a text or an email of the
+ * owner's own, and a plain word when the send emailed nobody: a server
+ * with no public address keeps the delivery for later and mails nothing.
+ */
+static void
+quote_link_block(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) deliveries = NULL;
+	g_autofree gchar *token = NULL, *relative = NULL, *url = NULL, *public_url = NULL;
+	gboolean emailed = FALSE, unmailed = FALSE;
+	gint state = 0;
+	guint i;
+	g_object_get(record, "status", &state, "acceptance-token", &token, NULL);
+	if (state != VENTURE_QUOTE_SENT || venture_string_is_empty(token)) return;
+	query = venture_query_new(VENTURE_TYPE_QUOTE_DELIVERY);
+	venture_query_set_limit(query, 0);
+	venture_query_set_organization(query, venture_entity_get_organization_id(record));
+	venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(record), NULL);
+	deliveries = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; deliveries != NULL && i < deliveries->len; i++)
+	{
+		g_autofree gchar *channel = NULL, *recipient = NULL;
+		g_object_get(g_ptr_array_index(deliveries, i), "channel", &channel, "recipient", &recipient, NULL);
+		if (g_strcmp0(channel, "email") != 0) continue;
+		if (venture_string_is_empty(recipient)) unmailed = TRUE; else emailed = TRUE;
+	}
+	if (unmailed && !emailed)
+		g_string_append(html, "<div class=\"banner banner-warn\" role=\"status\"><strong>Not emailed.</strong> "
+			"This server has no public web address set, so no email went out. Copy the link below and send it to the customer yourself.</div>");
+	/* The configured public address, never the address this server
+	 * happens to listen on: a loopback link is no use on a customer's phone. */
+	g_object_get(venture_context_get_config(self->context), "server-base-url", &public_url, NULL);
+	relative = g_strconcat("/q/", token, NULL);
+	url = !venture_string_is_empty(public_url)
+		? g_uri_resolve_relative(public_url, relative, G_URI_FLAGS_NONE, NULL) : NULL;
+	/* Shown as well as copied: the clipboard needs a secure context, and
+	 * this server is often reached over plain http on a LAN. */
+	g_string_append(html, "<div class=\"quote-link\"><label class=\"field-label\" for=\"quote-link\">Customer link</label>"
+		"<input id=\"quote-link\" type=\"text\" readonly value=\"");
+	venture_html_escape_append(html, url != NULL ? url : relative);
+	g_string_append(html, "\"> <button type=\"button\" class=\"btn\" data-copy=\"");
+	venture_html_escape_append(html, url != NULL ? url : relative);
+	g_string_append(html, "\">Copy link</button>");
+	if (url == NULL)
+		g_string_append(html, "<p class=\"field-help\">This is the path on this server; set the server's public address "
+			"so the link opens from a customer's phone.</p>");
+	g_string_append(html, "</div>");
+}
+
 static void
 quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 {
@@ -265,10 +329,13 @@ quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 	if (!VENTURE_IS_QUOTE(record)) return;
 	id = venture_entity_get_id(record);
 	quote_subscription_block(self, html, record);
+	quote_link_block(self, html, record);
 	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
+		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/share\"><button>Share link</button>"
+		" <span class=\"field-help\">Marks it sent without email and gives you the customer's link to text or paste.</span></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/decline\"><input name=\"reason\" placeholder=\"Reason\" required><button>Decline</button></form>"
 		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>"
-		"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id, id, id, id, id, id);
+		"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id, id, id, id, id, id, id);
 }
