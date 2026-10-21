@@ -457,9 +457,11 @@ nobody writing HTML for it.
 
 A datetime box posts wall time with no zone (=2026-10-21T08:00=); the form
 reads it in =locale.timezone= and stores the instant. A date alone, an ISO
-string with its own zone or a word like "today" is read as before. A value
-saved before, from a date box, is midnight UTC and shows as that date at
-=00:00= rather than the previous evening.
+string with its own zone or a word like "today" is read as before.
+Field metadata distinguishes dates from instants: =date= keeps its calendar
+day, while =datetime= always converts to the business's zone, even at
+midnight UTC. Historical datetime values have no date-only provenance flag;
+they retain their stored instant rather than guessing a different time.
 
 The control follows the kind the field table *declared*, not one recomputed
 from its C type. That distinction is load-bearing: a long text field and a

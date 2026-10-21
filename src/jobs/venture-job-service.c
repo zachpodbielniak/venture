@@ -279,15 +279,7 @@ validate_plan(VentureDatabase *database, VentureEntity *row, VentureEntity *prev
 	company = load(database, VENTURE_TYPE_COMPANY, number(row, "company-id"), org, "company-id", error);
 	if (company == NULL)
 		return FALSE;
-	if (number(row, "property-id") != 0)
-	{
-		g_autoptr(VentureEntity) property = load(database, VENTURE_TYPE_PROPERTY, number(row, "property-id"), org,
-			"property-id", error);
-		if (property == NULL)
-			return FALSE;
-		if (number(property, "company-id") != number(row, "company-id"))
-			return refuse(error, "property-id", "The property belongs to another customer");
-	}
+	/* A derived property must pass the same ownership check as a typed one. */
 	if (number(row, "equipment-id") != 0)
 	{
 		g_autoptr(VentureEntity) equipment = load(database, VENTURE_TYPE_EQUIPMENT, number(row, "equipment-id"), org,
@@ -298,6 +290,15 @@ validate_plan(VentureDatabase *database, VentureEntity *row, VentureEntity *prev
 			g_object_set(row, "property-id", number(equipment, "property-id"), NULL);
 		else if (number(equipment, "property-id") != number(row, "property-id"))
 			return refuse(error, "equipment-id", "That equipment is at another property");
+	}
+	if (number(row, "property-id") != 0)
+	{
+		g_autoptr(VentureEntity) property = load(database, VENTURE_TYPE_PROPERTY, number(row, "property-id"), org,
+			"property-id", error);
+		if (property == NULL)
+			return FALSE;
+		if (number(property, "company-id") != number(row, "company-id"))
+			return refuse(error, "property-id", "The property belongs to another customer");
 	}
 	g_object_get(row, "visit", &visit, NULL);
 	if (venture_string_is_empty(visit) || g_strstrip(visit)[0] == '\0')
@@ -428,19 +429,18 @@ take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, 
 	if (invoice == 0)
 		return refuse(error, "invoice-id", "Name the invoice: the job has none and its estimate has not been invoiced");
 	g_object_set(job, "invoice-id", invoice, NULL);
-	return issue_draft(database, job, invoice, actor, error);
+	return same_customer(database, job, "invoice", VENTURE_TYPE_INVOICE, "invoice-id", "Invoices", error) &&
+		issue_draft(database, job, invoice, actor, error);
 }
 
 static VentureEntity *
-step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
+step_invoke_internal(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
 {
 	VentureDatabase *database = venture_action_get_data(action);
 	const JobStep *step = step_for(action);
 	g_autoptr(VentureEntity) job = NULL;
-	if (!step_allowed(action, entity, actor, error))
-		return NULL;
 	job = venture_database_get(database, VENTURE_TYPE_JOB, venture_entity_get_id(entity), error);
-	if (job == NULL)
+	if (job == NULL || !step_allowed(action, job, actor, error))
 		return NULL;
 	if (step->to == VENTURE_JOB_INVOICED && !take_invoice(database, job, params, actor, error))
 		return NULL;
@@ -453,6 +453,36 @@ step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, co
 	if (!venture_database_save(database, job, actor, error))
 		return NULL;
 	return g_steal_pointer(&job);
+}
+
+/* Invoicing owns its boundary because posting approval must start before
+ * the first write. The ordinary registry transaction covers other steps.
+ * Keep issue, ledger legs, approval consumption and the job in one unit. */
+static VentureEntity *
+step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
+{
+	VentureDatabase *database = venture_action_get_data(action);
+	const JobStep *step = step_for(action);
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) result = NULL;
+	JsonNode *node = params != NULL ? g_hash_table_lookup(params, "invoice_id") : NULL;
+	gint64 invoice = node != NULL && JSON_NODE_HOLDS_VALUE(node) ? json_node_get_int(node) : 0;
+
+	if (step == NULL || step->to != VENTURE_JOB_INVOICED)
+		return step_invoke_internal(action, entity, params, actor, error);
+	operation = venture_accounting_operation_begin(database, "jobs.invoiced", entity, NULL,
+		g_variant_new("(x)", invoice), venture_entity_get_organization_id(entity), actor, error);
+	if (operation == NULL || !venture_database_begin(database, error))
+		return NULL;
+	result = step_invoke_internal(action, entity, params, actor, error);
+	if (result == NULL)
+	{
+		venture_database_rollback(database);
+		return NULL;
+	}
+	if (!venture_database_commit(database, error) || !venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&result);
 }
 
 /* --- Sending a technician ------------------------------------------------------ */
@@ -551,7 +581,7 @@ register_assign(VentureActionRegistry *registry, VentureDatabase *database)
 		"type-name", "job", "name", "assign", "label", "Send a technician",
 		"description", "Put a person on the job; lead makes them the one the customer deals with",
 		"parameters", parameters, "stageable", FALSE,
-		"service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, action, assign_allowed, assign_invoke, database, NULL, &error))
 		g_error("Job action registration: %s", error->message);
 }
@@ -635,7 +665,7 @@ register_book(VentureActionRegistry *registry, VentureDatabase *database)
 		"type-name", "maintenance_plan", "name", "book", "label", "Book the visit",
 		"description", "Make the job for the next visit and move the plan's next visit on by its interval",
 		"parameters", parameters, "stageable", FALSE,
-		"service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+		"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 	if (!venture_action_registry_register(registry, action, book_allowed, book_invoke, database, NULL, &error))
 		g_error("Maintenance plan action registration: %s", error->message);
 }
@@ -655,7 +685,8 @@ venture_jobs_actions_register(VentureDatabase *database)
 		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT,
 			"type-name", "job", "name", job_steps[i].name, "label", job_steps[i].label,
 			"description", job_steps[i].description, "parameters", parameters, "stageable", FALSE,
-			"service-transaction", TRUE, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+			"service-transaction", job_steps[i].to == VENTURE_JOB_INVOICED,
+			"roles", VENTURE_USER_ROLE_EDITOR, NULL);
 		if (!venture_action_registry_register(registry, action, step_allowed, step_invoke, database, NULL, &error))
 			g_error("Job action registration: %s", error->message);
 	}

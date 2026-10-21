@@ -131,3 +131,22 @@ lookback/retention days; owner/admin only), `attribution_visitor`
   `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
   `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
   `timezone`, `availability` JSON, `horizon_days`; serves `/book/<slug>`).
+
+## jobs (requires crm; suggests quotes, invoicing)
+
+See [jobs.md](jobs.md) for the workflow and refusal rules.
+
+- `job`: customer work order; `title`, `number`, `company_id`, `contact_id`,
+  `property_id`, `service_address`, `problem`, `window_start/window_end`,
+  `quote_id`, `invoice_id`, `maintenance_plan_id`, `notes`;
+  `status` [booked|on_the_way|on_site|done|invoiced|cancelled]. Actions:
+  `assign` (`user_id`, `lead`), `on_the_way`, `arrive`, `complete`,
+  `invoiced` (optional `invoice_id`), `cancel`. None is stageable.
+- `job_technician`: `job_id`, `user_id`, `lead`; one assignment per user/job.
+- `property`: customer's service address; `name`, `company_id`, `address`,
+  `access_notes`, `contact_id`, `notes`.
+- `equipment`: `name`, `property_id`, `make`, `model`, `serial`,
+  `installed_year`, `warranty_until`, `notes`.
+- `maintenance_plan`: `name`, `company_id`, `property_id`, `equipment_id`,
+  `visit`, `every_months`, `next_visit`, `ended_at`, `notes`.
+  Action `book` creates the visit job and advances the due date atomically.

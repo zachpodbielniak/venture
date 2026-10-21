@@ -97,7 +97,12 @@ whether they lead; making one the lead stops the previous lead leading.
 
 An estimate billed after the work (see [[file:quotes.org][Quotes]]) left a
 draft invoice; =invoiced= issues it, dated today and due in thirty days,
-which is when reminders can start.
+which is when reminders can start. Invoice issue, ledger posting and the
+job update commit together; a refusal leaves all of them unchanged. Posting
+approval, when configured, covers the whole job handoff before any write.
+Assignments and maintenance booking likewise commit all their changes or
+none: a refused lead replacement keeps the previous lead, and a failed plan
+advance leaves no extra job.
 
 The status is an ordinary field as well, so an owner can correct it on
 the form; the save rules above still apply.

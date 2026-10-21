@@ -1257,8 +1257,9 @@ sidebar, form and property page.
 =test-booking-times= checks that date-and-time fields render as
 date-and-time boxes and dates stay dates, that 8 to 10 typed on a job is
 stored as 8 to 10 in the business's zone and reads back so, that a
-same-day meeting from 8 to 10 is accepted, that an older date-only value
-shows as that date, and that a technician's day lists their jobs on that
+same-day meeting from 8 to 10 is accepted, that a DATE field retains its
+calendar day, that an 8 p.m. New York booking stored at midnight UTC survives
+editing unchanged, and that a technician's day lists their jobs on that
 day earliest first with call and directions links, leaving out other
 technicians, other days and cancelled jobs.
 
@@ -1285,3 +1286,18 @@ addresses and job inheritance, the plan-form redirect and address upgrade
 replay. =node tests/home-services-layout.cjs= (with Playwright and Chromium
 available) checks actual launcher/totals rectangles at 390 pixels in both
 looks. =PLAYWRIGHT_CHROMIUM_EXECUTABLE= optionally selects a local browser.
+
+* Home-services review regressions
+
+=test-jobs= also refuses lead replacement by a missing user without demoting
+the existing lead; injects a final-save failure after maintenance job creation
+and after invoice issue; and verifies that job, plan, invoice, audit and ledger
+rows remain unchanged, with a successful retry. Whole-operation accounting
+approval stays pending after a failed job save. Equipment-only plans derive
+the property before checking the customer, with matching and mismatching cases.
+
+=/migrations/jobs-upgrade-restart= reopens a file database with existing work
+and technician assignments, upgrades it while jobs is disabled, restarts it,
+and enables jobs. Original values survive, newly added links stay blank, and
+no maintenance visits are invented. SQLite is exercised by the normal suite;
+this scenario does not claim a live PostgreSQL run.

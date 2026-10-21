@@ -5335,18 +5335,14 @@ static void venture_web_deal_buttons(VentureWebServer *self, GString *html, Vent
  */
 /*
  * A stored instant as a datetime box shows it: wall time in the business's
- * zone, to the minute. A value saved from a date box -- midnight UTC, which
- * is how a date with no time has always been kept -- shows as that date at
- * midnight rather than as the previous evening somewhere west of Greenwich.
+ * zone, to the minute. Only field metadata distinguishes a date from a
+ * datetime: midnight UTC can be a genuine timed appointment.
  */
 static gchar *
 venture_web_datetime_local(VentureWebServer *self, GDateTime *when)
 {
 	g_autoptr(GDateTime) local = NULL;
 
-	if (0 == g_date_time_get_hour(when) && 0 == g_date_time_get_minute(when) &&
-	    0 == g_date_time_get_second(when) && 0 == g_date_time_get_utc_offset(when))
-		return g_date_time_format(when, "%Y-%m-%dT00:00");
 	local = g_date_time_to_timezone(when, venture_context_get_timezone(self->context));
 	return g_date_time_format(local, "%Y-%m-%dT%H:%M");
 }
