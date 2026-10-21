@@ -57,6 +57,16 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 		venture_web_append_document_parties(self, html, venture_entity_get_organization_id(quote),
 			company_id, "Prepared for", !public_page);
 	}
+	{
+		g_autofree gchar *address = NULL;
+		g_object_get(quote, "service-address", &address, NULL);
+		if (!venture_string_is_empty(address))
+		{
+			g_string_append(html, "<section><h2>Service address</h2><p style=\"white-space:pre-line\">");
+			venture_html_escape_append(html, address);
+			g_string_append(html, "</p></section>");
+		}
+	}
 	if (until != NULL)
 	{
 		/* A day the customer reads, in the business's zone: "19 November

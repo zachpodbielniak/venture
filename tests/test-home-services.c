@@ -341,6 +341,180 @@ test_plan_add_price(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(page, "no price yet"));
 }
 
+/* List rows must carry the facts a dispatcher reads on a phone, even when
+ * the optional contact and property are populated. */
+static void
+test_phone_jobs_list(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) job = g_object_new(VENTURE_TYPE_JOB, "title", "Repair tap",
+		"company-id", f->company, "service-address", "56 Example Lane", NULL);
+	g_autoptr(GDateTime) start = g_date_time_new_from_iso8601("2026-11-12T09:00:00Z", NULL);
+	g_autofree gchar *page = NULL;
+	(void)data;
+	venture_entity_set_organization_id(job, f->org);
+	g_object_set(job, "window-start", start, NULL);
+	save(f, job);
+	g_assert_cmpuint(request(f, "GET", "/e/job", NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "data-label=\"Service address\""));
+	g_assert_nonnull(strstr(page, "56 Example Lane"));
+	g_assert_nonnull(strstr(page, "data-label=\"Customer\""));
+	g_assert_nonnull(strstr(page, "Example Household"));
+	g_assert_nonnull(strstr(page, "2026-11-12"));
+}
+
+static gint64
+issued_invoice(Fixture *f)
+{
+	g_autofree gchar *form = compose_form(f, FALSE), *path = NULL;
+	g_autoptr(GPtrArray) invoices = NULL;
+	gint64 id;
+	g_assert_cmpuint(request(f, "POST", "/invoices/compose", form, NULL, NULL) / 100, ==, 3);
+	invoices = rows(f, VENTURE_TYPE_INVOICE);
+	id = venture_entity_get_id(g_ptr_array_index(invoices, 0));
+	path = g_strdup_printf("/invoices/%" G_GINT64_FORMAT "/status", id);
+	g_assert_cmpuint(request(f, "POST", path, "to=sent", NULL, NULL) / 100, ==, 3);
+	return id;
+}
+
+/* Recording cash is a reviewed form, not an irreversible one-tap receipt.
+ * The generated save must still perform a real partial allocation. */
+static void
+test_invoice_payment_options(Fixture *f, gconstpointer data)
+{
+	gint64 id = issued_invoice(f);
+	g_autofree gchar *path = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, id);
+	g_autofree gchar *page = NULL, *form_page = NULL, *form_path = NULL, *form = NULL;
+	g_autoptr(GPtrArray) payments = NULL, allocations = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GDateTime) today = venture_settlement_service_today(venture_settlement_service_get(f->db));
+	g_autofree gchar *date = g_date_time_format(today, "%Y-%m-%d");
+	(void)data;
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Record payment</a>"));
+	g_assert_null(strstr(page, "value=\"paid\""));
+	form_path = g_strdup_printf("/e/payment/new?invoice_id=%" G_GINT64_FORMAT "&organization_id=%" G_GINT64_FORMAT, id, f->org);
+	g_assert_cmpuint(request(f, "GET", form_path, NULL, NULL, &form_page), ==, 200);
+	g_assert_nonnull(strstr(form_page, "<select name=\"method\""));
+	g_assert_nonnull(strstr(form_page, "value=\"check\""));
+	g_assert_nonnull(strstr(form_page, "1450.00"));
+	g_assert_nonnull(strstr(form_page, date));
+	form = g_strdup_printf("customer-id=%" G_GINT64_FORMAT "&invoice-id=%" G_GINT64_FORMAT
+		"&organization_id=%" G_GINT64_FORMAT "&amount=400+USD&date=%s&method=check&reference=Example+receipt", f->company, id, f->org, date);
+	g_assert_cmpuint(request(f, "POST", "/e/payment", form, NULL, NULL) / 100, ==, 3);
+	payments = rows(f, VENTURE_TYPE_PAYMENT);
+	g_assert_cmpuint(payments->len, ==, 1);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), id, NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 105000);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Record refund</a>"));
+	g_assert_nonnull(strstr(page, "Example receipt"));
+	/* A later full settlement retains the receipt history and its refund
+	 * path; a recorded refund reopens the invoice through the same service. */
+	g_free(form);
+	form = g_strdup_printf("customer-id=%" G_GINT64_FORMAT "&invoice-id=%" G_GINT64_FORMAT
+		"&organization_id=%" G_GINT64_FORMAT "&amount=1050+USD&date=%s&method=cash", f->company, id, f->org, date);
+	g_assert_cmpuint(request(f, "POST", "/e/payment", form, NULL, NULL) / 100, ==, 3);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Record refund</a>"));
+	g_assert_null(strstr(page, "Record payment</a>"));
+	allocations = rows(f, VENTURE_TYPE_PAYMENT_ALLOCATION);
+	g_assert_cmpuint(allocations->len, ==, 2);
+	g_free(form);
+	form = g_strdup_printf("customer-id=%" G_GINT64_FORMAT "&allocation-id=%" G_GINT64_FORMAT
+		"&organization_id=%" G_GINT64_FORMAT "&amount=400+USD&date=%s&reference=Returned+receipt",
+		f->company, venture_entity_get_id(g_ptr_array_index(allocations, 0)), f->org, date);
+	g_assert_cmpuint(request(f, "POST", "/e/refund", form, NULL, NULL) / 100, ==, 3);
+	g_clear_pointer(&balance, venture_money_free);
+	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), id, NULL, NULL);
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 40000);
+}
+
+/* The customer needs the work location before a job exists. It is distinct
+ * from their billing address and must be escaped on the bearer-link page. */
+static void
+test_quote_service_address(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *base = compose_form(f, FALSE);
+	g_autofree gchar *form = g_strconcat(base, "&service-address=56+Example+Lane+%3Cwest%3E", NULL);
+	g_autoptr(GPtrArray) quotes = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autofree gchar *share = NULL, *token = NULL, *path = NULL, *page = NULL;
+	(void)data;
+	g_assert_cmpuint(request(f, "POST", "/quotes/compose", form, NULL, NULL) / 100, ==, 3);
+	quotes = rows(f, VENTURE_TYPE_QUOTE);
+	share = g_strdup_printf("/quotes/%" G_GINT64_FORMAT "/share", venture_entity_get_id(g_ptr_array_index(quotes, 0)));
+	g_assert_cmpuint(request(f, "POST", share, "", NULL, NULL) / 100, ==, 3);
+	quote = venture_database_get(f->db, VENTURE_TYPE_QUOTE, venture_entity_get_id(g_ptr_array_index(quotes, 0)), NULL);
+	g_object_get(quote, "acceptance-token", &token, NULL);
+	path = g_strconcat("/q/", token, NULL);
+	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "Service address"));
+	g_assert_nonnull(strstr(page, "56 Example Lane &lt;west&gt;"));
+	g_assert_null(strstr(page, "56 Example Lane <west>"));
+	{
+		g_autoptr(VentureEntity) job = g_object_new(VENTURE_TYPE_JOB, "title", "Quoted repair",
+			"company-id", f->company, "quote-id", venture_entity_get_id(quote), NULL);
+		g_autofree gchar *address = NULL;
+		venture_entity_set_organization_id(job, f->org);
+		save(f, job);
+		g_object_get(job, "service-address", &address, NULL);
+		g_assert_cmpstr(address, ==, "56 Example Lane <west>");
+	}
+}
+
+/* Legacy links must reach the same priced composer as the menu. */
+static void
+test_one_plan_form(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *location = NULL, *page = NULL;
+	(void)data;
+	g_assert_cmpuint(request(f, "GET", "/e/plan/new", NULL, &location, NULL), ==, 303);
+	g_assert_cmpstr(location, ==, "/plans/new");
+	g_assert_cmpuint(request(f, "GET", location, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "name=\"price-0-amount\""));
+	g_assert_null(strstr(page, "name=\"venture-id\" required"));
+}
+
+/* Model a pre-address database, then migrate twice: old quotes do not
+ * acquire a guessed billing address and an entered work address survives. */
+static void
+test_quote_address_upgrade(Fixture *f, gconstpointer data)
+{
+	gint64 id = draft_quote(f);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) quote = NULL;
+	g_autofree gchar *address = NULL;
+	(void)data;
+	g_assert_true(venture_database_execute(f->db,
+		"ALTER TABLE quotes DROP COLUMN service_address;"
+		"DELETE FROM schema_migrations WHERE version = 943", NULL, &error));
+	g_assert_no_error(error);
+	/* Existing tables must gain the column even while quotes are hidden. */
+	venture_entity_registry_set_type_module(venture_entity_registry_get_default(), "quote", "quotes", FALSE);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	venture_entity_registry_set_type_module(venture_entity_registry_get_default(), "quote", "quotes", TRUE);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	quote = venture_database_get(f->db, VENTURE_TYPE_QUOTE, id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(quote);
+	g_object_get(quote, "service-address", &address, NULL);
+	g_assert_true(address == NULL || *address == '\0');
+	g_object_set(quote, "service-address", "56 Example Lane", NULL);
+	save(f, quote);
+	g_clear_object(&quote);
+	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	quote = venture_database_get(f->db, VENTURE_TYPE_QUOTE, id, &error);
+	g_assert_no_error(error);
+	g_clear_pointer(&address, g_free);
+	g_object_get(quote, "service-address", &address, NULL);
+	g_assert_cmpstr(address, ==, "56 Example Lane");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -352,5 +526,10 @@ main(int argc, char *argv[])
 	g_test_add("/home-services/new-user-can-work", Fixture, NULL, setup, test_new_user_can_work, teardown);
 	g_test_add("/home-services/owner-matches-user", Fixture, NULL, setup, test_owner_matches_user, teardown);
 	g_test_add("/home-services/plan-add-price", Fixture, NULL, setup, test_plan_add_price, teardown);
+	g_test_add("/home-services/phone-jobs-list", Fixture, NULL, setup, test_phone_jobs_list, teardown);
+	g_test_add("/home-services/invoice-payment-options", Fixture, NULL, setup, test_invoice_payment_options, teardown);
+	g_test_add("/home-services/quote-service-address", Fixture, NULL, setup, test_quote_service_address, teardown);
+	g_test_add("/home-services/one-plan-form", Fixture, NULL, setup, test_one_plan_form, teardown);
+	g_test_add("/home-services/quote-address-upgrade", Fixture, NULL, setup, test_quote_address_upgrade, teardown);
 	return g_test_run();
 }

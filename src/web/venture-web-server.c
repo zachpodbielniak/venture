@@ -8916,12 +8916,59 @@ venture_web_append_form_field(VentureWebServer *self, GString *content,
 	venture_web_append_form_field_scoped(self, content, spec, record, 0);
 }
 
+/* Receipts use the ordinary generated form and save, with the current
+ * balance as an editable starting point. Never infer a work address or
+ * a receipt amount from a different business's record. */
+static gboolean
+venture_web_seed_receipt(VentureWebServer *self, HtmxRequest *request,
+	VentureEntity *record, GError **error)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	VentureSettlementService *settlement = venture_settlement_service_get(database);
+	g_autoptr(GDateTime) today = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id = 0, customer = 0;
+	gint64 organization = venture_web_active_organization(self, request);
+	const gchar *selected = htmx_request_get_query_param(request, "organization_id");
+
+	if (!VENTURE_IS_PAYMENT(record) && !VENTURE_IS_REFUND(record))
+		return TRUE;
+	today = venture_settlement_service_today(settlement);
+	g_object_set(record, "date", today, NULL);
+	if (!VENTURE_IS_PAYMENT(record))
+		return TRUE;
+	g_object_get(record, "invoice-id", &id, NULL);
+	if (id <= 0)
+		return TRUE;
+	if (selected != NULL)
+		organization = g_ascii_strtoll(selected, NULL, 10);
+	if (organization <= 0)
+		organization = venture_context_get_default_organization_id(self->context);
+	invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, id, error);
+	if (invoice == NULL)
+		return FALSE;
+	if (venture_entity_get_organization_id(invoice) != organization)
+	{
+		venture_set_error_validation(error, "invoice-id", "Choose an invoice in this business");
+		return FALSE;
+	}
+	balance = venture_settlement_service_invoice_balance(settlement, id, NULL, error);
+	if (balance == NULL)
+		return FALSE;
+	g_object_get(invoice, "company-id", &customer, NULL);
+	g_object_set(record, "customer-id", customer, "amount", balance, NULL);
+	venture_entity_set_organization_id(record, organization);
+	return TRUE;
+}
+
 /*
  * The new-record and edit-record form. One function for both, because the
  * only differences are the heading, where it posts and whether the fields
  * start filled.
  */
 static void venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request);
+static HtmxResponse *venture_plan_see_other(const gchar *path);
 
 static HtmxResponse *
 venture_web_ui_form(
@@ -8965,6 +9012,10 @@ venture_web_ui_form(
 	type_name = g_hash_table_lookup(params, "type");
 	id_text = g_hash_table_lookup(params, "id");
 	id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	/* Old bookmarks reach the same plan-and-prices composer as New plan. */
+	if (id == 0 && entity_type == VENTURE_TYPE_PLAN)
+		return venture_plan_see_other(venture_entity_type_get_create_path(entity_type));
 
 	if (0 != id)
 	{
@@ -9063,7 +9114,11 @@ venture_web_ui_form(
 			return venture_web_error_response(error);
 	}
 	if (id == 0)
+	{
 		venture_jobs_web_seed_new(self, request, record);
+		if (!venture_web_seed_receipt(self, request, record, &error))
+			return venture_web_error_response(error);
+	}
 
 	/*
 	 * Four groups, each drawn from the field's role: the essentials in
@@ -9084,6 +9139,16 @@ venture_web_ui_form(
 
 		spec = g_ptr_array_index(specs, i);
 		flags = venture_field_spec_get_flags(spec);
+
+		/* A manual receipt has familiar choices; provider receipts still
+		 * retain their string method in the shared service and API. */
+		if (id == 0 && VENTURE_IS_PAYMENT(record) &&
+		    g_strcmp0(venture_field_spec_get_name(spec), "method") == 0)
+		{
+			spec->kind = VENTURE_FIELD_KIND_ENUM;
+			g_strfreev(spec->choices);
+			spec->choices = g_strsplit("cash,check,card,transfer,manual", ",", -1);
+		}
 
 		/*
 		 * A sensitive field is never rendered with its value -- that is
@@ -9207,6 +9272,11 @@ venture_web_ui_form(
 			                         "</div></div></div>");
 		}
 	}
+
+	if (id == 0 && VENTURE_IS_PAYMENT(record))
+		g_string_append(content, "<p class=\"field-help\">Review the amount, method and date before saving. "
+			"Saving records money already received; it does not charge a card. "
+			"A part payment leaves the rest due; any overpayment becomes customer credit.</p>");
 
 	g_string_append_printf(content,
 		"<div class=\"form-actions\">"
@@ -11619,6 +11689,57 @@ venture_web_append_ticket_forge_block(
 }
 
 static void
+venture_web_append_invoice_receipts(VentureWebServer *self, GString *html, VentureEntity *invoice)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
+	g_autoptr(GPtrArray) allocations = NULL;
+	guint i;
+	gint64 customer = 0;
+	venture_query_set_organization(query, venture_entity_get_organization_id(invoice));
+	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
+	venture_query_set_limit(query, venture_aggregate_get_max_rows() + 1);
+	allocations = venture_database_find(database, query, NULL);
+	if (allocations == NULL || allocations->len == 0)
+		return;
+	if (allocations->len > (guint)venture_aggregate_get_max_rows())
+	{
+		g_string_append(html, "<p>Too many receipts to show here. Open Payment allocations to narrow the list.</p>");
+		return;
+	}
+	g_object_get(invoice, "company-id", &customer, NULL);
+	g_string_append(html, "<section class=\"card-body\"><h3>Payments received</h3><ul>");
+	for (i = 0; i < allocations->len; i++)
+	{
+		VentureEntity *allocation = g_ptr_array_index(allocations, i);
+		gint64 payment_id = 0;
+		g_autoptr(VentureEntity) payment = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autofree gchar *text = NULL, *method = NULL, *reference = NULL;
+		g_object_get(allocation, "payment-id", &payment_id, "amount", &amount, NULL);
+		if (payment_id <= 0)
+			continue;
+		payment = venture_database_get(database, VENTURE_TYPE_PAYMENT, payment_id, NULL);
+		if (payment == NULL || amount == NULL)
+			continue;
+		text = venture_money_to_display_string(amount, TRUE);
+		g_object_get(payment, "method", &method, "reference", &reference, NULL);
+		g_string_append_printf(html, "<li><a href=\"/e/payment/%" G_GINT64_FORMAT "\">", payment_id);
+		venture_html_escape_append(html, text);
+		g_string_append(html, "</a> ");
+		venture_html_escape_append(html, method);
+		g_string_append(html, " ");
+		venture_html_escape_append(html, reference);
+		g_string_append_printf(html, " — <a href=\"/e/refund/new?allocation_id=%" G_GINT64_FORMAT
+			"&amp;customer_id=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT
+			"\">Record refund</a></li>", venture_entity_get_id(allocation), customer,
+			venture_entity_get_organization_id(invoice));
+	}
+	g_string_append(html, "</ul><p class=\"field-help\">Receipts stay in the history. "
+		"A refund records money returned and reopens that amount on the invoice.</p></section>");
+}
+
+static void
 venture_web_append_invoice_block(
 	VentureWebServer	*self,
 	GString			*content,
@@ -11809,11 +11930,9 @@ venture_web_append_invoice_block(
 	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
 	{
 		g_string_append_printf(content,
-			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
-			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
-			"<button class=\"btn btn-primary\" type=\"submit\" "
-			"title=\"Records a receipt for the outstanding balance\">"
-			"Mark paid</button></form>", id);
+			"<a class=\"btn btn-primary\" href=\"/e/payment/new?invoice_id=%" G_GINT64_FORMAT
+			"&amp;organization_id=%" G_GINT64_FORMAT "\">Record payment</a>",
+			id, venture_entity_get_organization_id(record));
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"write-off\">"
@@ -11822,7 +11941,9 @@ venture_web_append_invoice_block(
 			"Write off</button></form>", id);
 	}
 
-	g_string_append(content, "</div></div>");
+	g_string_append(content, "</div>");
+	venture_web_append_invoice_receipts(self, content, record);
+	g_string_append(content, "</div>");
 }
 
 /*

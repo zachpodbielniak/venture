@@ -523,7 +523,9 @@ venture_field_spec_get_role(const VentureFieldSpec *self)
 	if (venture_field_spec_name_is_machinery(self->name, self->kind))
 		return VENTURE_FIELD_ROLE_TECHNICAL;
 
-	if (VENTURE_FIELD_KIND_TEXT == self->kind)
+	/* Addresses are multiline facts, useful in lists as well as forms. */
+	if (VENTURE_FIELD_KIND_TEXT == self->kind &&
+	    g_strcmp0(self->name, "address") != 0 && !g_str_has_suffix(self->name, "-address"))
 		return VENTURE_FIELD_ROLE_CONTENT;
 
 	/* The lifecycle field goes by one of three names across the tree;

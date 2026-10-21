@@ -1276,3 +1276,12 @@ quote offering Book the job and not Send again; the customer's quote page
 in plain words; a new property taking the customer's address; a new
 record opening after save; and the composer's number hint matching the
 number given.
+
+* Home-services leftovers
+
+=test-home-services= covers dispatch facts on job lists, receipt options and
+partial/full/refunded balances through the web form, public quote service
+addresses and job inheritance, the plan-form redirect and address upgrade
+replay. =node tests/home-services-layout.cjs= (with Playwright and Chromium
+available) checks actual launcher/totals rectangles at 390 pixels in both
+looks. =PLAYWRIGHT_CHROMIUM_EXECUTABLE= optionally selects a local browser.

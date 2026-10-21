@@ -5,7 +5,7 @@
 
 static const gchar *const document_header_fields[] = { "number", "company-id", "contact-id", "terms", "notes", NULL };
 static const gchar *const document_invoice_fields[] = { "tax-exempt", "issued-at", "due-at", NULL };
-static const gchar *const document_quote_fields[] = { "billing-mode", NULL };
+static const gchar *const document_quote_fields[] = { "billing-mode", "service-address", NULL };
 static const gchar *const document_line_fields[] = { "description", "quantity", "unit-price", "product-id", "discount-percent", "tax-percent", NULL };
 /* Both kinds of line are taxed by a rate record, so a quote asks for
  * exactly what the invoice it becomes will. */
@@ -449,6 +449,15 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 	if (quote)
 	{
 		gboolean jobs = venture_web_module_enabled(self, "jobs");
+		g_autoptr(VentureQuote) address = venture_quote_new();
+		g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(VENTURE_ENTITY(address));
+		guint field_index;
+		for (field_index = 0; field_index < fields->len; field_index++)
+		{
+			VentureFieldSpec *field = g_ptr_array_index(fields, field_index);
+			if (g_strcmp0(venture_field_spec_get_name(field), "service-address") == 0)
+				venture_web_append_form_field(self, html, field, VENTURE_ENTITY(address));
+		}
 		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Bill the customer</span>"
 			"<select name=\"billing-mode\">"
 			"<option value=\"after_work\"%s>When the work is done</option>"

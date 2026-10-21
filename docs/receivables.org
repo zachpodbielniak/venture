@@ -33,8 +33,11 @@ Posting uses mapped cash, receivables, income and tax control accounts; see [[fi
 =VentureSettlementService= owns every financial invoice transition. A
 generic write to =payment= reaches it through =venture_database_save()=,
 so a form, REST request, =venturectl create payment= and an approved AI
-write all perform the same transaction. The invoice page's Pay action
-records a manual receipt for the remaining balance through that service.
+write all perform the same transaction. The invoice page's Record payment link opens the ordinary receipt form
+with the invoice, customer, outstanding balance and today's date filled in.
+Review or change the amount, date and method (cash, check, card, transfer
+or manual), then Save to record money already received. This does not
+charge a card. The older status action remains compatible for API clients.
 Setting =status=paid= directly is refused with a validation error naming
 =VentureSettlementService=.
 
@@ -252,3 +255,12 @@ characters in invoice numbers, keeping the HTTP filename a single value.
 Shipping is shown separately and included in the printable invoice total. Draft
 and void invoices never claim to have been paid merely because they have no
 receivable balance.
+
+* Receipts on the invoice
+
+Payments received remain visible after full settlement, with their method,
+reference and a link to the receipt. Record refund opens the ordinary refund
+form for that allocation; enter the amount returned and review the date.
+It reopens that amount on the invoice through the settlement service.
+Receipts are immutable: a refund records returned cash, not an erasure of
+the original receipt.

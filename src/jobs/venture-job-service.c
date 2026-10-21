@@ -170,6 +170,17 @@ validate_job(VentureDatabase *database, VentureEntity *job, VentureEntity *previ
 	if (!same_customer(database, job, "quote", VENTURE_TYPE_QUOTE, "quote-id", "Quotes", error) ||
 	    !same_customer(database, job, "invoice", VENTURE_TYPE_INVOICE, "invoice-id", "Invoices", error))
 		return FALSE;
+	if (previous == NULL && number(job, "quote-id") != 0)
+	{
+		g_autofree gchar *address = NULL, *quoted = NULL;
+		g_autoptr(VentureEntity) quote = venture_database_get(database, VENTURE_TYPE_QUOTE, number(job, "quote-id"), NULL);
+		g_object_get(job, "service-address", &address, NULL);
+		if (quote != NULL && venture_string_is_empty(address))
+		{
+			g_object_get(quote, "service-address", &quoted, NULL);
+			g_object_set(job, "service-address", quoted, NULL);
+		}
+	}
 	if (choice(job, "status") == VENTURE_JOB_INVOICED && number(job, "invoice-id") == 0)
 		return refuse(error, "invoice-id", "An invoiced job names its invoice");
 	return TRUE;

@@ -522,7 +522,8 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 		"currency", currency,
 		"terms", venture_json_object_get_string(spec, "terms", ""),
 		"notes", venture_json_object_get_string(spec, "notes", ""),
-		"billing-mode", venture_json_object_get_string(spec, "billing_mode", ""), NULL);
+		"billing-mode", venture_json_object_get_string(spec, "billing_mode", ""),
+		"service-address", venture_json_object_get_string(spec, "service_address", ""), NULL);
 	if (!venture_database_save(self->database, VENTURE_ENTITY(quote), actor, error))
 		goto fail;
 	for (i = 0; i < json_array_get_length(lines); i++)

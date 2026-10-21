@@ -146,3 +146,12 @@ quotes, invoices, reminders and the books. Nothing is deleted.
 
 There is no dispatch board of technicians against hours, and a
 maintenance plan is not linked to the subscription that bills it.
+
+* Lists on a phone
+
+The ordinary Jobs list stacks each job's facts below its title on narrow
+screens: customer, service address and arrival dates stay visible without
+sideways scrolling. Sorting, paging and bulk selection still use the same
+records. Addresses are multiline facts in the shared metadata renderer.
+A new job linked to an estimate takes its explicit service address when
+neither a typed job address nor a property's address is supplied.

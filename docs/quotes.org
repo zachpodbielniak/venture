@@ -200,3 +200,13 @@ With pipelines enabled, a deal's lines can be handed to a quote in one step:
 =POST /api/v1/deals/:id/quote= creates =DEAL-<id>= with the deal's lines, and
 a rerun revises the latest quote through this service's =revise= action. See
 [[file:pipelines.org][Sales pipelines]] for the line arithmetic and refusals.
+
+* Service address
+
+The estimate composer and ordinary quote form accept an optional
+=service_address=: where the quoted work will take place. It is shown on
+the customer's share-link page and printable quote, and retained in a
+revision. It does not copy the customer's billing address. Existing quotes
+remain unspecified after migration =000943_quote_service_address=; the
+paired backend scripts verify the additive column. A new linked job uses
+this address unless the job or its selected property supplies one.
