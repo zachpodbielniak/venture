@@ -52,6 +52,7 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureCompany) company = NULL;
 	(void)data;
 	f->config = venture_config_new();
+	g_object_set(f->config, "locale-timezone", "America/New_York", NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -388,6 +389,8 @@ test_invoice_payment_options(Fixture *f, gconstpointer data)
 	g_autoptr(VentureMoney) balance = NULL;
 	g_autoptr(GDateTime) today = venture_settlement_service_today(venture_settlement_service_get(f->db));
 	g_autofree gchar *date = g_date_time_format(today, "%Y-%m-%d");
+	g_autofree gchar *date_value = g_strdup_printf("name=\"date\" value=\"%sT00:00\"", date);
+	g_autofree gchar *refund_page = NULL;
 	(void)data;
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &page), ==, 200);
 	g_assert_nonnull(strstr(page, "Record payment</a>"));
@@ -397,7 +400,9 @@ test_invoice_payment_options(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(form_page, "<select name=\"method\""));
 	g_assert_nonnull(strstr(form_page, "value=\"check\""));
 	g_assert_nonnull(strstr(form_page, "1450.00"));
-	g_assert_nonnull(strstr(form_page, date));
+	g_assert_nonnull(strstr(form_page, date_value));
+	g_assert_cmpuint(request(f, "GET", "/e/refund/new", NULL, NULL, &refund_page), ==, 200);
+	g_assert_nonnull(strstr(refund_page, date_value));
 	form = g_strdup_printf("customer-id=%" G_GINT64_FORMAT "&invoice-id=%" G_GINT64_FORMAT
 		"&organization_id=%" G_GINT64_FORMAT "&amount=400+USD&date=%s&method=check&reference=Example+receipt", f->company, id, f->org, date);
 	g_assert_cmpuint(request(f, "POST", "/e/payment", form, NULL, NULL) / 100, ==, 3);
