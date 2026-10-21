@@ -80,6 +80,10 @@ savings_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 	cutoff = g_date_time_add_days(end, -1);
 	range = venture_date_range_new(start, end);
 	venture_query_set_organization(query, org);
+	/* Count only savings in the requested currency, not unrelated goals.
+	 * Invalid linked sources still reach savings_check() and refuse. */
+	if (!venture_query_add_filter(query, "savings-target", VENTURE_FILTER_OP_NOT_NULL, NULL, error)) return NULL;
+	if (currency != NULL && !venture_query_add_money_currency(query, "savings-target", currency, error)) return NULL;
 	venture_query_set_limit(query, venture_aggregate_get_max_rows() + 1);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	if (goal_id != 0)
@@ -117,7 +121,6 @@ savings_report(VentureContext *context, VentureDateRange *period, JsonObject *op
 		const gchar *reason = "Set a monthly contribution";
 		g_object_get(goal, "savings-target", &target, "savings-monthly", &monthly, "savings-envelope-id", &envelope_id,
 			"due-on", &due, "status", &status, "name", &name, NULL);
-		if (target == NULL || (currency != NULL && g_strcmp0(currency, target->currency) != 0)) continue;
 		if (!savings_check(db, goal, error)) return NULL;
 		saved = savings_balance(context, goal, range, month, target->currency, error);
 		if (saved == NULL) return NULL;

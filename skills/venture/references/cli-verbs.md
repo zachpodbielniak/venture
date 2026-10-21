@@ -104,3 +104,10 @@ take `organization_id=N` to work outside the default organization.
 | `market quote\|promote\|browse\|deals\|venues\|instrument\|watchlist\|alerts [evaluate RULE_ID [--dry-run]]`, `market help` (`deals watchlist=ID[,ID]`: the items on those lists) | the price oracle and the Trading pages | [market-data.md](market-data.md) |
 | `accounts [list\|attention]\|show\|inventory\|pnl\|post\|record-flips`, `accounts help` | the operator's accounts and their books | [accounts.md](accounts.md) |
 | `arbitrage scan\|record\|crafting\|plan\|export\|calc\|registries\|close\|reopen\|abandon\|execute`, `arbitrage help` (`crafting recipe_list=ID[,ID]`: the recipes on those lists) | opportunities and trades | [arbitrage-scan.md](arbitrage-scan.md), [arbitrage.md](arbitrage.md) |
+
+## Household envelopes and reports
+
+`budget envelopes YYYY-MM` uses `/api/v1/budget_reports?kind=envelopes`.
+The generic `report` verb serves household envelopes, subscriptions, net worth,
+debt payoff and savings; see [household.md](household.md) for periods/options.
+There is no CLI venture-view switch: that selector changes browser navigation.

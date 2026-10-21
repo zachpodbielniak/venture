@@ -145,3 +145,17 @@ is *financial*: organization finance/admin/owner to write.
   `collection_step`, `collection_case` (owner, promise, dispute),
   `collection_notice`, `financial_batch` (*action* `apply (s)`). Report
   `collections_worklist`. Usage: [billing.md](billing.md).
+
+## Household additions (same record types)
+
+- `bank_account.kind`: unspecified/checking/savings/card/cash/loan/investment;
+  `payoff_enabled`, `payoff_apr_bps`, `payoff_minimum`, `payoff_extra` configure
+  debt estimates. Cards/loans require liability accounts; other kinds assets.
+- `budget_line`: monthly envelopes and per-category rollover; inspect
+  `describe budget_line` for the first month and allocation fields.
+- `recurring_schedule`: subscription and forecast-only flags, source bank and
+  merchant matching, opt-in reminder recipient and days before.
+
+[household.md](household.md) explains workflows, direct book balances, forecast
+limits and the shared-source caveat. No new household record type or access
+boundary is created; the venture's `venture_type` selects household navigation.

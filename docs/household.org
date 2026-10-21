@@ -3,9 +3,15 @@
 
 * Status
 
-Tracked by the household epic (issue #201). The household type and its slim
-view, banking workflows, monthly envelopes, bills, wealth reports and linked savings goals are implemented. Later numbered
-children below remain planned.
+This branch is a partial delivery of issue #201: children 1–6 plus repairs
+from the responsive household walkthrough. It does not complete or close the
+epic. Publication scope is "household finance workflows, children 1–6";
+use =Refs #201=, never =Closes #201= for this delivery.
+
+Children 7–10 remain open: shared/personal account settlement, deductible
+exports and warranty reminders, a dedicated phone dashboard, and a full-month
+acceptance walkthrough. The existing 390/1440 walkthrough exercises budget,
+bills, wealth, debt and savings pages; it is not the child-10 full-month proof.
 
 * What a household venture is
 
@@ -31,10 +37,10 @@ Business ventures in the same organization are unchanged.
 4. Implemented: due calendar, repeat-charge suggestions, subscriptions with yearly cost and opt-in inbox reminders (see below).
 5. Implemented: monthly net worth and snowball/avalanche payoff estimates (see below).
 6. Implemented: savings goals tied to asset accounts or rollover envelopes (see below).
-7. Several members, shared and personal accounts, settling up.
-8. Deductible tags, a year-end export, warranty reminders.
-9. A phone-first household dashboard.
-10. A full month walked as a household, every dead end fixed.
+7. Planned: several members, shared and personal accounts, settling up.
+8. Planned: deductible tags, a year-end export, warranty reminders.
+9. Planned: a phone-first household dashboard.
+10. Planned: a full month walked as a household, every dead end fixed.
 
 * Household type and slim view (child 1)
 
@@ -381,7 +387,11 @@ venturectl report savings_goals 2026-01 goal_id=7
 The API is =/api/v1/reports/savings_goals?period=2026-01=. Options are
 =organization_id=, =goal_id= and =currency=. A year or partial-month period,
 or an =as_of= override, is refused: use the calendar month whose closing
-balance you want. Current goal and envelope settings apply to past periods.
+balance you want. Target presence and currency are filtered before the goal
+row limit, so ordinary goals and goals in other currencies do not exhaust a
+narrowed request. Too many matching savings goals still refuse; narrow by
+=goal_id=. Invalid linked sources still refuse rather than disappear.
+Current goal and envelope settings apply to past periods.
 
 Contributions start one month after the cutoff and stay anchored to its day,
 clamped in shorter months: January 31 gives February 28 and March 31;

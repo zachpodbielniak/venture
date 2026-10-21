@@ -339,6 +339,42 @@ venture_query_add_filter_string(
 }
 
 gboolean
+venture_query_add_money_currency(
+	VentureQuery *self,
+	const gchar *field,
+	const gchar *currency,
+	GError **error
+){
+	g_autoptr(VentureEntityClass) klass = NULL;
+	g_autofree gchar *property = NULL, *column = NULL;
+	GParamSpec *pspec;
+	VentureQueryFilterEntry *entry;
+
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+	g_return_val_if_fail(field != NULL, FALSE);
+	g_return_val_if_fail(currency != NULL, FALSE);
+
+	property = venture_entity_column_to_property(field);
+	klass = g_type_class_ref(self->entity_type);
+	pspec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+	if (pspec == NULL || pspec->value_type != VENTURE_TYPE_MONEY)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Currency filtering requires a money field: %s", field);
+		return FALSE;
+	}
+	column = venture_entity_property_to_column(pspec->name);
+	entry = g_new0(VentureQueryFilterEntry, 1);
+	entry->column = g_strconcat(column, VENTURE_SCHEMA_MONEY_CURRENCY_SUFFIX, NULL);
+	entry->value_type = G_TYPE_STRING;
+	entry->op = VENTURE_FILTER_OP_EQ;
+	entry->values = g_ptr_array_new_with_free_func(g_free);
+	g_ptr_array_add(entry->values, g_strdup(currency));
+	g_ptr_array_add(self->filters, entry);
+	return TRUE;
+}
+
+gboolean
 venture_query_add_filter_int(
 	VentureQuery	 *self,
 	const gchar	 *field,

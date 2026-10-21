@@ -167,3 +167,6 @@ target, remaining amount, monthly amount needed and forecast. An unreadable
 source shows a refusal instead of zero progress; ordinary goal steps remain.
 Use the page's report link to select another calendar month. See
 `docs/household.org` for source, contribution and forecast rules.
+
+See [household.md](household.md) for the six delivered children, setup,
+shared-source limits and the remaining epic scope.

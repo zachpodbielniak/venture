@@ -1156,6 +1156,79 @@ savings_goal(Fixture *f, const gchar *field, gint64 id, const gchar *target, con
 	return goal;
 }
 
+/* Currency operands stay bound in both SQL dialects; arbitrary fields do not. */
+static void
+test_savings_currency_query(void)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_GOAL);
+	g_autoptr(GError) error = NULL;
+	const gchar *operand = "USD' OR 1=1 --";
+	guint i;
+	g_assert_false(venture_query_add_money_currency(query, "name", "USD", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_false(venture_query_add_money_currency(query, "missing", "USD", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	g_assert_true(venture_query_add_money_currency(query, "savings_target", operand, &error));
+	g_assert_no_error(error);
+	for (i = 0; i < 2; i++)
+	{
+		g_autofree gchar *sql = NULL;
+		GList *params = NULL;
+		sql = venture_query_to_sql(query, i == 0 ? ORM_DIALECT_SQLITE : ORM_DIALECT_POSTGRES, FALSE, &params);
+		g_assert_nonnull(strstr(sql, "\"savings_target_currency\" = "));
+		g_assert_null(strstr(sql, operand));
+		g_assert_cmpuint(g_list_length(params), ==, 1);
+		g_assert_cmpstr(orm_value_get_string(params->data), ==, operand);
+		g_list_free_full(params, (GDestroyNotify)orm_value_free);
+	}
+}
+
+/* Unrelated goals must not exhaust a narrowed savings report's row bound. */
+static void
+test_savings_bound(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureGoal) ordinary = venture_goal_new();
+	g_autoptr(VentureGoal) usd = NULL, eur = NULL, second = NULL;
+	g_autoptr(VentureReportResult) r = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026-01", NULL);
+	VentureReport *registered = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "savings_goals");
+	guint old_limit = venture_aggregate_get_max_rows();
+	(void)data;
+	g_object_set(ordinary, "name", "Learn a craft", "organization-id", f->org, "target-value", 1.0, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(ordinary), NULL, &error));
+	usd = savings_goal(f, "savings-account-id", account(f, "1000"), "100 USD", "20 USD");
+	eur = savings_goal(f, "savings-account-id", account(f, "1000"), "100 EUR", "20 EUR");
+	venture_aggregate_set_max_rows(1);
+	r = report(f, "savings_goals", "2026-01", "USD", NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 1);
+	g_assert_cmpstr(g_value_get_string(venture_report_result_get_cell(r, 0, "currency")), ==, "USD");
+	g_clear_object(&r);
+	r = report(f, "savings_goals", "2026-01", "EUR", NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 1);
+	g_clear_object(&r);
+	/* Without currency, only the two savings goals count, not the ordinary goal. */
+	venture_aggregate_set_max_rows(2);
+	r = report(f, "savings_goals", "2026-01", NULL, NULL);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 2);
+	g_clear_object(&r);
+	second = savings_goal(f, "savings-account-id", account(f, "1000"), "50 USD", "10 USD");
+	venture_aggregate_set_max_rows(1);
+	json_object_set_string_member(options, "currency", "USD");
+	r = venture_report_generate(registered, f->context, range, options, &error);
+	g_assert_null(r);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_clear_error(&error);
+	json_object_set_int_member(options, "goal_id", venture_entity_get_id(VENTURE_ENTITY(usd)));
+	r = venture_report_generate(registered, f->context, range, options, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(venture_report_result_get_row_count(r), ==, 1);
+	venture_aggregate_set_max_rows(old_limit);
+}
+
 static void
 test_savings_envelope(Fixture *f, gconstpointer data)
 {
@@ -1288,6 +1361,8 @@ main(int argc, char **argv)
 	static const gchar *const names[] = { "balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation" };
 	guint i;
 	g_test_init(&argc, &argv, NULL);
+	g_test_add_func("/statements/savings-currency-query", test_savings_currency_query);
+	g_test_add("/statements/savings-bound", Fixture, NULL, setup, test_savings_bound, teardown);
 	g_test_add("/statements/savings-envelope", Fixture, NULL, setup, test_savings_envelope, teardown);
 	g_test_add("/statements/savings-rounding", Fixture, NULL, setup, test_savings_rounding, teardown);
 	g_test_add("/statements/savings-validation", Fixture, NULL, setup, test_savings_validation, teardown);

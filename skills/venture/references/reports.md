@@ -175,3 +175,7 @@ venturectl report aggregate last_month type=sale measure=gross group_by=channel 
 The browser offers only the two month shortcuts and a Month field. Options
 are `organization_id`, `goal_id` and `currency`. The linked goal's detail
 page uses this same report, never the unused manual progress fields.
+
+Currency and target presence narrow the savings query before its row bound;
+unrelated goals do not cause a limit error. Matching goals still obey the
+limit. Household report catalogue and assumptions: [household.md](household.md).
