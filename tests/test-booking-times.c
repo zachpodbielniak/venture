@@ -51,6 +51,7 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureCompany) company = NULL;
 	(void)data;
 	f->config = venture_config_new();
+	g_object_set(f->config, "locale-timezone", "America/New_York", NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
@@ -235,20 +236,51 @@ test_same_day_booking(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(activities->len, ==, 1);
 }
 
-/* A value kept from a date box -- midnight UTC -- shows as that date. */
+/* A DATE field keeps its day, even though its stored value is midnight UTC. */
 static void
 test_old_date_value(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) job = g_object_new(VENTURE_TYPE_JOB, "title", "Old booking", "company-id", f->company, NULL);
+	g_autoptr(VentureEntity) plan = g_object_new(VENTURE_TYPE_MAINTENANCE_PLAN,
+		"name", "Annual service", "company-id", f->company, NULL);
 	g_autoptr(GDateTime) midnight = g_date_time_new_utc(2026, 10, 21, 0, 0, 0);
 	g_autofree gchar *edit = NULL, *page = NULL;
 	(void)data;
-	g_object_set(job, "window-start", midnight, NULL);
-	venture_entity_set_organization_id(job, f->org);
-	save(f, job);
-	edit = g_strdup_printf("/e/job/%" G_GINT64_FORMAT "/edit", venture_entity_get_id(job));
+	g_object_set(plan, "next-visit", midnight, NULL);
+	venture_entity_set_organization_id(plan, f->org);
+	save(f, plan);
+	edit = g_strdup_printf("/e/maintenance_plan/%" G_GINT64_FORMAT "/edit", venture_entity_get_id(plan));
 	g_assert_cmpuint(request(f, "GET", edit, NULL, NULL, &page), ==, 200);
-	g_assert_nonnull(strstr(page, "value=\"2026-10-21T00:00\""));
+	g_assert_nonnull(strstr(page, "type=\"date\" name=\"next-visit\" value=\"2026-10-21\""));
+}
+
+/* 8 p.m. is midnight UTC, still a timed booking: an untouched edit must
+ * neither move it to tomorrow nor invert its arrival window. */
+static void
+test_utc_midnight_roundtrip(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *form = g_strdup_printf("title=Evening+repair&company-id=%" G_GINT64_FORMAT
+		"&window-start=2026-10-21T20:00&window-end=2026-10-21T21:00", f->company);
+	g_autoptr(GPtrArray) jobs = NULL;
+	g_autoptr(VentureEntity) after = NULL;
+	g_autoptr(GDateTime) before = NULL, persisted = NULL;
+	g_autofree gchar *edit = NULL, *path = NULL, *page = NULL, *versioned = NULL;
+	VentureEntity *job;
+	(void)data;
+	g_assert_cmpuint(request(f, "POST", "/e/job", form, NULL, NULL) / 100, ==, 3);
+	jobs = rows(f, VENTURE_TYPE_JOB);
+	job = g_ptr_array_index(jobs, 0);
+	g_object_get(job, "window-start", &before, NULL);
+	g_assert_cmpint(g_date_time_get_hour(before), ==, 0);
+	path = g_strdup_printf("/e/job/%" G_GINT64_FORMAT, venture_entity_get_id(job));
+	edit = g_strconcat(path, "/edit", NULL);
+	g_assert_cmpuint(request(f, "GET", edit, NULL, NULL, &page), ==, 200);
+	g_assert_nonnull(strstr(page, "value=\"2026-10-21T20:00\""));
+	g_assert_nonnull(strstr(page, "value=\"2026-10-21T21:00\""));
+	versioned = g_strdup_printf("%s&version=%" G_GINT64_FORMAT, form, venture_entity_get_version(job));
+	g_assert_cmpuint(request(f, "POST", path, versioned, NULL, NULL) / 100, ==, 3);
+	after = venture_database_get(f->db, VENTURE_TYPE_JOB, venture_entity_get_id(job), NULL);
+	g_object_get(after, "window-start", &persisted, NULL);
+	g_assert_cmpint(g_date_time_compare(before, persisted), ==, 0);
 }
 
 /* A technician's day: their jobs on that day, earliest first, with what
@@ -302,5 +334,6 @@ main(int argc, char *argv[])
 	g_test_add("/booking-times/same-day-booking", Fixture, NULL, setup, test_same_day_booking, teardown);
 	g_test_add("/booking-times/old-date-value", Fixture, NULL, setup, test_old_date_value, teardown);
 	g_test_add("/booking-times/technician-day", Fixture, NULL, setup, test_technician_day, teardown);
+	g_test_add("/booking-times/utc-midnight-roundtrip", Fixture, NULL, setup, test_utc_midnight_roundtrip, teardown);
 	return g_test_run();
 }

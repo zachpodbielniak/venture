@@ -1452,6 +1452,66 @@ test_forms_private_upgrade(gconstpointer data)
 	if (postgres) { g_assert_true(venture_database_execute(database, cleanup_sql, NULL, &error)); g_assert_no_error(error); }
 }
 
+/* Reopen an existing jobs database with the module off during upgrade.
+ * Its original work and assignments survive, additive links stay blank,
+ * and enabling the module later must neither duplicate nor invent visits. */
+static void
+test_jobs_upgrade_restart(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-jobs-upgrade-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO jobs (uuid, organization_id, version, title, number, status, company_id, service_address, problem, window_start) "
+		"VALUES ('00000000-0000-4000-8000-000000000094', 1, 7, 'Existing repair', 'J-1', 'booked', 1, '12 Example Street', 'No hot water', '2026-10-22T00:00:00Z');"
+		"INSERT INTO job_technicians (uuid, organization_id, version, job_id, user_id, lead) "
+		"VALUES ('00000000-0000-4000-8000-000000000095', 1, 3, 1, 1, 1);"
+		"DROP INDEX IF EXISTS idx_jobs_property_id; ALTER TABLE jobs DROP COLUMN property_id;"
+		"DROP INDEX IF EXISTS idx_jobs_maintenance_plan_id; ALTER TABLE jobs DROP COLUMN maintenance_plan_id;"
+		"DROP TABLE maintenance_plans; DROP TABLE equipments; DROP TABLE properties;"
+		"DELETE FROM schema_migrations WHERE version >= 940", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&context);
+	g_clear_object(&database);
+	for (run = 0; run < 3; run++)
+	{
+		g_autofree gchar *job = NULL, *technician = NULL, *history = NULL;
+		venture_config_set_module_enabled(config, "jobs", run == 2);
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, database);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		job = query_text(database, "SELECT title || '|' || number || '|' || status || '|' || version || '|' || service_address || '|' || problem || '|' || window_start FROM jobs");
+		g_assert_cmpstr(job, ==, "Existing repair|J-1|booked|7|12 Example Street|No hot water|2026-10-22T00:00:00Z");
+		technician = query_text(database, "SELECT job_id || '|' || user_id || '|' || lead || '|' || version FROM job_technicians");
+		g_assert_cmpstr(technician, ==, "1|1|1|3");
+		history = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version BETWEEN 940 AND 942");
+		g_assert_cmpstr(history, ==, "3");
+		g_assert_cmpint(venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "job"), ==, run == 2);
+		if (run == 2)
+		{
+			g_autofree gchar *plans = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM maintenance_plans");
+			g_autofree gchar *links = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM jobs WHERE COALESCE(property_id, 0) = 0 AND COALESCE(maintenance_plan_id, 0) = 0");
+			g_assert_cmpstr(plans, ==, "0");
+			g_assert_cmpstr(links, ==, "1");
+		}
+		g_clear_object(&context);
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1480,5 +1540,6 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/batch-rollback-retry", test_batch_rollback);
 	g_test_add_func("/migrations/nested-refused", test_nested_refused);
 	g_test_add_func("/migrations/forms-schema", test_forms_schema);
+	g_test_add_func("/migrations/jobs-upgrade-restart", test_jobs_upgrade_restart);
 	return g_test_run();
 }

@@ -379,6 +379,227 @@ test_jobs_reachable(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(form, "name=\"service-address\""));
 }
 
+/* A refused replacement must not demote the technician already leading. */
+static void
+test_assign_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) job = new_job(f, "Repair", f->company);
+	g_autoptr(VentureUser) tech = venture_user_new();
+	g_autoptr(VentureEntity) assignment = NULL, after = NULL;
+	g_autoptr(GPtrArray) assignments = NULL;
+	gboolean lead = FALSE;
+	gint64 version;
+	(void)data;
+	save(f, job);
+	g_object_set(tech, "username", "examplelead", "active", TRUE, NULL);
+	save(f, VENTURE_ENTITY(tech));
+	assignment = g_object_new(VENTURE_TYPE_JOB_TECHNICIAN, "job-id", venture_entity_get_id(job),
+		"user-id", venture_entity_get_id(VENTURE_ENTITY(tech)), "lead", TRUE, NULL);
+	venture_entity_set_organization_id(assignment, f->org);
+	save(f, assignment);
+	version = venture_entity_get_version(assignment);
+	g_assert_cmpuint(press(f, venture_entity_get_id(job), "assign", "user_id=999999&lead=true", NULL), ==, 422);
+	after = venture_database_get(f->db, VENTURE_TYPE_JOB_TECHNICIAN, venture_entity_get_id(assignment), NULL);
+	g_object_get(after, "lead", &lead, NULL);
+	g_assert_true(lead);
+	g_assert_cmpint(venture_entity_get_version(after), ==, version);
+	assignments = rows(f, VENTURE_TYPE_JOB_TECHNICIAN);
+	g_assert_cmpuint(assignments->len, ==, 1);
+}
+
+/* Inject a refusal at the second write, after the visit/issue has happened. */
+static gboolean
+refuse_final_save(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
+{
+	gboolean *armed = data;
+	(void)db;
+	(void)row;
+	(void)previous;
+	if (!*armed)
+		return TRUE;
+	venture_set_error_validation(error, "status", "Example final-save refusal");
+	return FALSE;
+}
+
+static gint64
+sql_count(Fixture *f, const gchar *table)
+{
+	g_autofree gchar *sql = g_strdup_printf("SELECT CAST(COUNT(*) AS BIGINT) FROM %s", table);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(OrmResult) result = venture_database_query_raw(f->db, sql, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	return orm_row_get_integer(orm_result_get_row(result), 0);
+}
+
+static void
+test_book_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GDateTime) due = g_date_time_new_utc(2026, 11, 1, 0, 0, 0);
+	g_autoptr(GDateTime) after_due = NULL;
+	g_autoptr(VentureEntity) plan = g_object_new(VENTURE_TYPE_MAINTENANCE_PLAN,
+		"name", "Annual service", "company-id", f->company, "next-visit", due, NULL);
+	g_autoptr(VentureEntity) after = NULL;
+	g_autofree gchar *path = NULL;
+	gboolean armed = TRUE;
+	gint64 audit, version;
+	(void)data;
+	venture_entity_set_organization_id(plan, f->org);
+	save(f, plan);
+	version = venture_entity_get_version(plan);
+	audit = sql_count(f, "audit_entries");
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_MAINTENANCE_PLAN, refuse_final_save, &armed, NULL);
+	path = g_strdup_printf("/api/v1/maintenance_plan/%" G_GINT64_FORMAT "/actions/book", venture_entity_get_id(plan));
+	g_assert_cmpuint(request(f, "POST", path, "", NULL, NULL), ==, 422);
+	g_assert_cmpint(sql_count(f, "jobs"), ==, 0);
+	g_assert_cmpint(sql_count(f, "audit_entries"), ==, audit);
+	after = venture_database_get(f->db, VENTURE_TYPE_MAINTENANCE_PLAN, venture_entity_get_id(plan), NULL);
+	g_assert_cmpint(venture_entity_get_version(after), ==, version);
+	g_object_get(after, "next-visit", &after_due, NULL);
+	g_assert_cmpint(g_date_time_compare(after_due, due), ==, 0);
+	armed = FALSE;
+	g_assert_cmpuint(request(f, "POST", path, "", NULL, NULL) / 100, ==, 3);
+	g_assert_cmpint(sql_count(f, "jobs"), ==, 1);
+}
+
+/* A failed job update must also undo invoice dates, issue and ledger legs. */
+static void
+test_invoice_rollback(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *form = compose_form(f, FALSE), *params = NULL;
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(VentureEntity) job = new_job(f, "Completed repair", f->company);
+	g_autoptr(VentureEntity) after = NULL;
+	g_autoptr(GDateTime) issued = NULL, due = NULL, issued_before = NULL, due_before = NULL;
+	gboolean armed = TRUE;
+	gint status;
+	gint64 id, audit, journals, entries, version;
+	(void)data;
+	g_assert_cmpuint(request(f, "POST", "/invoices/compose", form, NULL, NULL) / 100, ==, 3);
+	invoices = rows(f, VENTURE_TYPE_INVOICE);
+	id = venture_entity_get_id(g_ptr_array_index(invoices, 0));
+	version = venture_entity_get_version(g_ptr_array_index(invoices, 0));
+	g_object_get(g_ptr_array_index(invoices, 0), "issued-at", &issued_before, "due-at", &due_before, NULL);
+	g_object_set(job, "status", VENTURE_JOB_DONE, NULL);
+	save(f, job);
+	audit = sql_count(f, "audit_entries");
+	journals = sql_count(f, "journals");
+	entries = sql_count(f, "journal_lines");
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_JOB, refuse_final_save, &armed, NULL);
+	params = g_strdup_printf("invoice_id=%" G_GINT64_FORMAT, id);
+	g_assert_cmpuint(press(f, venture_entity_get_id(job), "invoiced", params, NULL), ==, 422);
+	after = venture_database_get(f->db, VENTURE_TYPE_INVOICE, id, NULL);
+	g_object_get(after, "status", &status, "issued-at", &issued, "due-at", &due, NULL);
+	g_assert_cmpint(status, ==, VENTURE_INVOICE_STATUS_DRAFT);
+	g_assert_cmpint(venture_entity_get_version(after), ==, version);
+	g_assert_true((issued == NULL && issued_before == NULL) ||
+		(issued != NULL && issued_before != NULL && g_date_time_equal(issued, issued_before)));
+	g_assert_true((due == NULL && due_before == NULL) ||
+		(due != NULL && due_before != NULL && g_date_time_equal(due, due_before)));
+	g_assert_cmpint(job_status(f, venture_entity_get_id(job)), ==, VENTURE_JOB_DONE);
+	g_assert_cmpint(sql_count(f, "journals"), ==, journals);
+	g_assert_cmpint(sql_count(f, "journal_lines"), ==, entries);
+	g_assert_cmpint(sql_count(f, "audit_entries"), ==, audit);
+	armed = FALSE;
+	g_assert_cmpuint(press(f, venture_entity_get_id(job), "invoiced", params, NULL) / 100, ==, 3);
+	g_assert_cmpint(job_status(f, venture_entity_get_id(job)), ==, VENTURE_JOB_INVOICED);
+	g_assert_cmpint(sql_count(f, "journals"), >, journals);
+}
+
+/* Approval belongs to the entire job handoff, not just its nested invoice
+ * save; a failed final write must retain the pending approval for retry. */
+static void
+test_invoice_approval_atomic(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *form = compose_form(f, FALSE), *subject = NULL;
+	g_autoptr(GPtrArray) invoices = NULL, approvals = NULL;
+	g_autoptr(VentureEntity) job = new_job(f, "Completed repair", f->company), result = NULL;
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GHashTable) params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_free);
+	VentureActionRegistry *registry = venture_database_get_action_registry(f->db);
+	VentureActor first, second;
+	gboolean armed = FALSE;
+	g_autoptr(VentureEntity) invoice = NULL;
+	gint invoice_status;
+	(void)data;
+	g_assert_cmpuint(request(f, "POST", "/invoices/compose", form, NULL, NULL) / 100, ==, 3);
+	invoices = rows(f, VENTURE_TYPE_INVOICE);
+	g_object_set(job, "status", VENTURE_JOB_DONE, "invoice-id", venture_entity_get_id(g_ptr_array_index(invoices, 0)), NULL);
+	save(f, job);
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(rule));
+	first.kind = VENTURE_ACTOR_KIND_USER; first.name = "example-first";
+	first.prompt = NULL; first.request_id = NULL; first.approved_by = NULL;
+	second.kind = VENTURE_ACTOR_KIND_USER; second.name = "example-second";
+	second.prompt = NULL; second.request_id = NULL; second.approved_by = NULL;
+	result = venture_action_registry_perform(registry, "job", venture_entity_get_id(job), "invoiced", params,
+		&first, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	approvals = rows(f, VENTURE_TYPE_ACCOUNTING_APPROVAL);
+	g_assert_cmpuint(approvals->len, ==, 1);
+	g_object_get(g_ptr_array_index(approvals, 0), "record-type", &subject, NULL);
+	g_assert_cmpstr(subject, ==, "job");
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_JOB, refuse_final_save, &armed, NULL);
+	armed = TRUE;
+	result = venture_action_registry_perform(registry, "job", venture_entity_get_id(job), "invoiced", params,
+		&second, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_clear_pointer(&approvals, g_ptr_array_unref);
+	approvals = rows(f, VENTURE_TYPE_ACCOUNTING_APPROVAL);
+	g_clear_pointer(&subject, g_free);
+	g_object_get(g_ptr_array_index(approvals, 0), "state", &subject, NULL);
+	g_assert_cmpstr(subject, ==, "pending");
+	invoice = venture_database_get(f->db, VENTURE_TYPE_INVOICE,
+		venture_entity_get_id(g_ptr_array_index(invoices, 0)), NULL);
+	g_object_get(invoice, "status", &invoice_status, NULL);
+	g_assert_cmpint(invoice_status, ==, VENTURE_INVOICE_STATUS_DRAFT);
+	g_assert_cmpint(sql_count(f, "journals"), ==, 0);
+	armed = FALSE;
+	result = venture_action_registry_perform(registry, "job", venture_entity_get_id(job), "invoiced", params,
+		&second, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(job_status(f, venture_entity_get_id(job)), ==, VENTURE_JOB_INVOICED);
+}
+
+/* Equipment may supply a missing property, but never a different customer. */
+static void
+test_equipment_plan_customer(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) property = g_object_new(VENTURE_TYPE_PROPERTY, "name", "Home",
+		"company-id", f->company, "address", "12 Example Street", NULL);
+	g_autoptr(VentureEntity) equipment = NULL, plan = NULL, wrong = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 property_id = 0;
+	(void)data;
+	venture_entity_set_organization_id(property, f->org);
+	save(f, property);
+	equipment = g_object_new(VENTURE_TYPE_EQUIPMENT, "name", "Furnace", "property-id", venture_entity_get_id(property), NULL);
+	venture_entity_set_organization_id(equipment, f->org);
+	save(f, equipment);
+	wrong = g_object_new(VENTURE_TYPE_MAINTENANCE_PLAN, "name", "Wrong customer",
+		"company-id", other_customer(f), "equipment-id", venture_entity_get_id(equipment), NULL);
+	venture_entity_set_organization_id(wrong, f->org);
+	g_assert_false(try_save(f, wrong, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	plan = g_object_new(VENTURE_TYPE_MAINTENANCE_PLAN, "name", "Annual service",
+		"company-id", f->company, "equipment-id", venture_entity_get_id(equipment), NULL);
+	venture_entity_set_organization_id(plan, f->org);
+	save(f, plan);
+	g_object_get(plan, "property-id", &property_id, NULL);
+	g_assert_cmpint(property_id, ==, venture_entity_get_id(property));
+	/* Explicit and derived properties must obey the same ownership rule. */
+	g_object_set(plan, "company-id", other_customer(f), NULL);
+	g_assert_false(try_save(f, plan, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -390,5 +611,10 @@ main(int argc, char *argv[])
 	g_test_add("/jobs/invoiced-takes-estimate-invoice", Fixture, NULL, setup, test_invoiced_takes_estimate_invoice, teardown);
 	g_test_add("/jobs/technicians", Fixture, NULL, setup, test_technicians, teardown);
 	g_test_add("/jobs/reachable", Fixture, NULL, setup, test_jobs_reachable, teardown);
+	g_test_add("/jobs/assign-rollback", Fixture, NULL, setup, test_assign_rollback, teardown);
+	g_test_add("/jobs/book-rollback", Fixture, NULL, setup, test_book_rollback, teardown);
+	g_test_add("/jobs/invoice-rollback", Fixture, NULL, setup, test_invoice_rollback, teardown);
+	g_test_add("/jobs/equipment-plan-customer", Fixture, NULL, setup, test_equipment_plan_customer, teardown);
+	g_test_add("/jobs/invoice-approval-atomic", Fixture, NULL, setup, test_invoice_approval_atomic, teardown);
 	return g_test_run();
 }
