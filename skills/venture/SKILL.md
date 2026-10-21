@@ -91,6 +91,10 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 
 ## Skill baseline -- maintained
 
+Household savings page and month-only navigation checked against epic base
+`a544371a` plus the item 7 walkthrough repairs (2026-10-21); see
+`sessions-goals.md` and `reports.md`. The broader catalogue baseline follows.
+
 This skill was reviewed against VENTURE commit
 `9c97a87a02ecc0fce669040557997f0e7d22e87f` (2026-10-18, server version
 0.6.0): every verb, route, record type, module and report it names was read

@@ -661,6 +661,14 @@ test_surfaces(Fixture *f, gconstpointer data)
 		g_clear_pointer(&body, g_free);
 		body = http_get(session, base, page, 200);
 		g_assert_nonnull(strstr(body, wealth == 0 ? "Net worth" : wealth == 1 ? "Debt payoff" : "Savings goals"));
+		/* A month-only report must never offer a quarter/year that it refuses. */
+		if (wealth == 2)
+		{
+			g_assert_null(strstr(body, "href=\"/reports/savings_goals?period=this_year"));
+			g_assert_null(strstr(body, "href=\"/reports/savings_goals?period=this_quarter"));
+			g_assert_null(strstr(body, "href=\"/reports/savings_goals?period=ytd"));
+			g_assert_nonnull(strstr(body, "href=\"/reports/savings_goals?period=last_month"));
+		}
 		g_clear_pointer(&body, g_free);
 		body = http_get(session, base, api, 200);
 		g_assert_nonnull(strstr(body, wealth == 0 ? "net_worth" : wealth == 1 ? "interest_saved" : "monthly_needed"));
@@ -684,6 +692,20 @@ test_surfaces(Fixture *f, gconstpointer data)
 		}
 		g_free(response.out);
 		g_free(response.err);
+	}
+	/* The saved goal must read the same posted money as its report, not
+	 * its unused manual Start/Current/Target zeroes. */
+	{
+		g_autofree gchar *path = g_strdup_printf("/e/goal/%" G_GINT64_FORMAT,
+			venture_entity_get_id(VENTURE_ENTITY(savings)));
+		g_clear_pointer(&body, g_free);
+		body = http_get(session, base, path, 200);
+		g_assert_nonnull(strstr(body, "class=\"card savings-progress\""));
+		g_assert_null(strstr(body, "class=\"card goal-progress\""));
+		g_assert_nonnull(strstr(body, "300.00"));
+		g_assert_nonnull(strstr(body, "500.00"));
+		g_assert_nonnull(strstr(body, "60.0%"));
+		g_assert_nonnull(strstr(body, "goal-steps"));
 	}
 	venture_config_set_module_enabled(f->config, "statements", FALSE);
 	g_clear_pointer(&body, g_free);

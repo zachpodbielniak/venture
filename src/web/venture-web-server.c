@@ -8122,7 +8122,9 @@ venture_web_ui_report(
 	g_string_append(content, "</h1></div><div class=\"page-actions\">");
 
 	{
-		const gchar *const *periods = venture_web_report_periods;
+		static const gchar *const months[] = { "this_month", "last_month", NULL };
+		const gchar *const *periods = g_str_equal(name, "savings_goals")
+			? months : venture_web_report_periods;
 		gsize i;
 
 		g_string_append(content, "<div class=\"btn-group\">");
@@ -11556,6 +11558,62 @@ venture_web_append_invoice_block(
 	g_string_append(content, "</div></div>");
 }
 
+/* Linked savings use the report's exact money and month-end authority.
+ * The ordinary numeric goal fields are deliberately unused for these goals. */
+static gboolean
+venture_web_append_savings_progress(VentureWebServer *self, GString *content, VentureEntity *record)
+{
+	gint64 account_id = 0, envelope_id = 0;
+	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+	guint i;
+	static const gchar *const keys[] = {
+		"saved", "target", "remaining", "progress", "monthly_needed", "monthly", "forecast", "status"
+	};
+	static const gchar *const labels[] = {
+		"Saved / envelope left", "Target", "Still needed", "Progress", "Monthly amount needed",
+		"Planned monthly contribution", "Estimated target date", "Forecast status"
+	};
+	g_object_get(record, "savings-account-id", &account_id, "savings-envelope-id", &envelope_id, NULL);
+	if (account_id == 0 && envelope_id == 0) return FALSE;
+	report = venture_report_registry_lookup(venture_context_get_report_registry(self->context), "savings_goals");
+	period = venture_context_parse_period(self->context, "this_month", &error);
+	json_object_set_int_member(options, "organization_id", venture_entity_get_organization_id(record));
+	json_object_set_int_member(options, "goal_id", venture_entity_get_id(record));
+	if (report != NULL && period != NULL)
+		result = venture_report_generate(report, self->context, period, options, &error);
+	g_string_append(content, "<div class=\"card savings-progress\"><div class=\"card-head\"><h2>Savings progress</h2></div><div class=\"card-body\">");
+	if (result == NULL || venture_report_result_get_row_count(result) != 1)
+	{
+		g_string_append(content, "<p class=\"notice negative\" role=\"alert\">");
+		venture_html_escape_append(content, error != NULL ? error->message : "Savings progress is unavailable. Check the source account or envelope.");
+		g_string_append(content, "</p>");
+	}
+	else
+	{
+		g_string_append(content, "<p>Balances at the end of ");
+		venture_html_escape_append(content, venture_date_range_get_label(period));
+		g_string_append(content, ". Envelope money is a budget allocation, not a bank balance.</p><div class=\"grid cols-2\">");
+		for (i = 0; i < G_N_ELEMENTS(keys); i++)
+		{
+			g_autofree gchar *value = venture_report_result_format_cell(result, 0, keys[i]);
+			g_string_append(content, "<div class=\"stat\"><span class=\"stat-label\">");
+			venture_html_escape_append(content, labels[i]);
+			g_string_append(content, "</span><span class=\"stat-value\">");
+			venture_html_escape_append(content, venture_string_is_empty(value) ? "Not set" : value);
+			g_string_append(content, "</span></div>");
+		}
+		g_string_append(content, "</div>");
+	}
+	g_string_append_printf(content, "<p><a href=\"/reports/savings_goals?goal_id=%" G_GINT64_FORMAT
+		"&amp;organization_id=%" G_GINT64_FORMAT "\">Choose a month and review the forecast</a></p></div></div>",
+		venture_entity_get_id(record), venture_entity_get_organization_id(record));
+	return TRUE;
+}
+
 /*
  * A goal's page: how far along it is and the steps that get it there, in
  * their order. The progress is venture_goals_fraction(), the same figure
@@ -11616,41 +11674,45 @@ venture_web_append_goal_block(
 		done += finished ? 1 : 0;
 	}
 
-	/* --- The figures and the bar --- */
-
-	g_string_append(content, "<div class=\"card goal-progress\"><div class=\"card-head\">"
-	                         "<h2>Progress</h2></div><div class=\"card-body\">"
-	                         "<div class=\"stat-row\">");
-	g_string_append(content, "<div class=\"stat\"><span class=\"stat-value\">");
-	venture_html_escape_append(content, start_text);
-	g_string_append(content, "</span><span class=\"stat-label\">Start</span></div>"
-	                         "<div class=\"stat\"><span class=\"stat-value\">");
-	venture_html_escape_append(content, current_text);
-	g_string_append(content, "</span><span class=\"stat-label\">Current</span></div>"
-	                         "<div class=\"stat\"><span class=\"stat-value\">");
-	venture_html_escape_append(content, target_text);
-	g_string_append_printf(content,
-		"</span><span class=\"stat-label\">Target</span></div>"
-		"<div class=\"stat\"><span class=\"stat-value\">%.0f%%</span>"
-		"<span class=\"stat-label\">Done</span></div></div>", fraction * 100.0);
-
-	g_string_append(content, "<div class=\"bar-row\"><span class=\"bar-label\">");
-	venture_html_escape_append(content, start_text);
-	g_string_append(content, " \xe2\x86\x92 ");
-	venture_html_escape_append(content, target_text);
-
-	if (!venture_string_is_empty(unit))
+	if (!venture_web_append_savings_progress(self, content, record))
 	{
-		g_string_append_c(content, ' ');
-		venture_html_escape_append(content, unit);
-	}
+		/* --- The figures and the bar --- */
 
-	g_string_append_printf(content,
-		"</span><span class=\"bar-track\"><span class=\"bar-fill\" "
-		"style=\"width:%.1f%%\"></span></span><span class=\"bar-value\">",
-		width);
-	venture_html_escape_append(content, current_text);
-	g_string_append(content, "</span></div></div></div>");
+		g_string_append(content, "<div class=\"card goal-progress\"><div class=\"card-head\">"
+		                         "<h2>Progress</h2></div><div class=\"card-body\">"
+		                         "<div class=\"stat-row\">");
+		g_string_append(content, "<div class=\"stat\"><span class=\"stat-value\">");
+		venture_html_escape_append(content, start_text);
+		g_string_append(content, "</span><span class=\"stat-label\">Start</span></div>"
+		                         "<div class=\"stat\"><span class=\"stat-value\">");
+		venture_html_escape_append(content, current_text);
+		g_string_append(content, "</span><span class=\"stat-label\">Current</span></div>"
+		                         "<div class=\"stat\"><span class=\"stat-value\">");
+		venture_html_escape_append(content, target_text);
+		g_string_append_printf(content,
+			"</span><span class=\"stat-label\">Target</span></div>"
+			"<div class=\"stat\"><span class=\"stat-value\">%.0f%%</span>"
+			"<span class=\"stat-label\">Done</span></div></div>", fraction * 100.0);
+
+		g_string_append(content, "<div class=\"bar-row\"><span class=\"bar-label\">");
+		venture_html_escape_append(content, start_text);
+		g_string_append(content, " \xe2\x86\x92 ");
+		venture_html_escape_append(content, target_text);
+
+		if (!venture_string_is_empty(unit))
+		{
+			g_string_append_c(content, ' ');
+			venture_html_escape_append(content, unit);
+		}
+
+		g_string_append_printf(content,
+			"</span><span class=\"bar-track\"><span class=\"bar-fill\" "
+			"style=\"width:%.1f%%\"></span></span><span class=\"bar-value\">",
+			width);
+		venture_html_escape_append(content, current_text);
+		g_string_append(content, "</span></div></div></div>");
+
+	}
 
 	/* --- The steps, in order --- */
 

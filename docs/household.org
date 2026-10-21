@@ -410,3 +410,30 @@ linked savings goals to =savings_goals= instead of showing stale numeric values.
 Migration =000925_household_savings.sql= is paired for SQLite and PostgreSQL.
 Metadata reconciliation adds the money and reference fields; the guarded
 migration leaves old goals unlinked and preserves their existing progress.
+
+* Household walkthrough repairs
+
+A linked savings goal's own page shows the same exact-money progress as the
+Savings progress report for this month, including the amount still needed,
+monthly contribution and forecast date. It labels the month-end cutoff and
+never substitutes the unused manual Start/Current/Target values. If the
+source cannot be read, the page shows the refusal instead of zero progress.
+Its steps remain available. The report link selects this goal and entity.
+
+Savings progress offers This month and Last month shortcuts; use its Month
+field for another calendar month. Quarter and year shortcuts are omitted
+because the calculation requires exactly one month. Other reports retain
+all their period shortcuts, which wrap inside the screen on a phone.
+
+The due calendar's month and week grids scroll within a labelled, keyboard
+focusable region. Select Agenda for a vertical list. This keeps weekday and
+weekly-total columns from widening the phone page.
+
+The opt-in =tools/venture-test-household-browser.cjs= checks a populated local
+household at 390 and 1440 in both looks. It needs =playwright-core= available
+to Node (for example through =NODE_PATH=), =VENTURE_TEST_UI_URL=,
+=VENTURE_TEST_UI_USERNAME=, =VENTURE_TEST_UI_PASSWORD=,
+=VENTURE_TEST_HOUSEHOLD_ID= and =VENTURE_TEST_SAVINGS_GOAL_ID=. The fixture
+must contain a linked savings goal and a recurring bill. Optionally set
+=VENTURE_TEST_CHROMIUM= to an installed Chromium executable. It logs in,
+reads pages and follows a bill link; it does not seed or change records.

@@ -314,7 +314,12 @@ money_calendar_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (g_strcmp0(page.view, "agenda") == 0)
 		money_calendar_append_agenda(content, &page);
 	else
+	{
+		/* Keep an eight-column calendar inside its own scroll region on phones. */
+		g_string_append(content, "<div class=\"table-wrap money-calendar-grid\" role=\"region\" aria-label=\"Due calendar; scroll for all days\" tabindex=\"0\">");
 		money_calendar_append_grid(content, &page, g_strcmp0(page.view, "week") == 0 ? "cal-week" : "cal-month");
+		g_string_append(content, "</div>");
+	}
 	g_string_append(content, "<p class=\"muted\">Nets are per currency and never converted. Reminders show the invoice balance but do not move cash. "
 		"Possible repeat charges are estimates and excluded from nets. Overdue bills and invoices are carried to today and flagged. Dates change on the record, not here.</p></div>");
 	money_calendar_page_clear(&page);

@@ -6297,3 +6297,10 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 	table.cal-grid td.cal-day { height: auto; }
 	table.cal-grid .cal-detail { display: none; }
 }
+
+/* Household reports must keep their controls reachable on a phone. */
+.page-actions .btn-group { flex-wrap: wrap; max-width: 100%; }
+.money-calendar-grid table { min-width: 800px; width: 100%; table-layout: fixed; }
+.money-calendar-grid td { vertical-align: top; overflow-wrap: anywhere; }
+.money-calendar-grid .cal-events { padding-left: 1em; }
+.savings-progress .stat-value { font-size: clamp(18px, 3vw, 28px); overflow-wrap: anywhere; }
