@@ -412,7 +412,7 @@ issue_draft(VentureDatabase *database, VentureEntity *job, gint64 id, const Vent
 /* "Invoiced" names the invoice it was given, else the one the job already
  * carries, else the one its accepted estimate became. */
 static gboolean
-take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, const VentureActor *actor, GError **error)
+take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, GError **error)
 {
 	JsonNode *node = params != NULL ? g_hash_table_lookup(params, "invoice_id") : NULL;
 	gint64 invoice = node != NULL && JSON_NODE_HOLDS_VALUE(node) ? json_node_get_int(node) : 0;
@@ -429,8 +429,7 @@ take_invoice(VentureDatabase *database, VentureEntity *job, GHashTable *params, 
 	if (invoice == 0)
 		return refuse(error, "invoice-id", "Name the invoice: the job has none and its estimate has not been invoiced");
 	g_object_set(job, "invoice-id", invoice, NULL);
-	return same_customer(database, job, "invoice", VENTURE_TYPE_INVOICE, "invoice-id", "Invoices", error) &&
-		issue_draft(database, job, invoice, actor, error);
+	return same_customer(database, job, "invoice", VENTURE_TYPE_INVOICE, "invoice-id", "Invoices", error);
 }
 
 static VentureEntity *
@@ -442,7 +441,9 @@ step_invoke_internal(VentureAction *action, VentureEntity *entity, GHashTable *p
 	job = venture_database_get(database, VENTURE_TYPE_JOB, venture_entity_get_id(entity), error);
 	if (job == NULL || !step_allowed(action, job, actor, error))
 		return NULL;
-	if (step->to == VENTURE_JOB_INVOICED && !take_invoice(database, job, params, actor, error))
+	if (step->to == VENTURE_JOB_INVOICED &&
+		(!take_invoice(database, job, params, error) ||
+		 !issue_draft(database, job, number(job, "invoice-id"), actor, error)))
 		return NULL;
 	g_object_set(job, "status", step->to, NULL);
 	if (step->stamp != NULL)
@@ -457,7 +458,8 @@ step_invoke_internal(VentureAction *action, VentureEntity *entity, GHashTable *p
 
 /* Invoicing owns its boundary because posting approval must start before
  * the first write. The ordinary registry transaction covers other steps.
- * Keep issue, ledger legs, approval consumption and the job in one unit. */
+ * Keep issue, ledger legs, approval consumption and the job in one unit.
+ * Linking an already-issued invoice posts nothing and needs no new consent. */
 static VentureEntity *
 step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, const VentureActor *actor, GError **error)
 {
@@ -465,14 +467,29 @@ step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, co
 	const JobStep *step = step_for(action);
 	g_autoptr(VentureAccountingOperation) operation = NULL;
 	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(VentureEntity) prepared = NULL, selected = NULL;
 	JsonNode *node = params != NULL ? g_hash_table_lookup(params, "invoice_id") : NULL;
 	gint64 invoice = node != NULL && JSON_NODE_HOLDS_VALUE(node) ? json_node_get_int(node) : 0;
 
 	if (step == NULL || step->to != VENTURE_JOB_INVOICED)
 		return step_invoke_internal(action, entity, params, actor, error);
-	operation = venture_accounting_operation_begin(database, "jobs.invoiced", entity, NULL,
-		g_variant_new("(x)", invoice), venture_entity_get_organization_id(entity), actor, error);
-	if (operation == NULL || !venture_database_begin(database, error))
+	prepared = load(database, VENTURE_TYPE_JOB, venture_entity_get_id(entity),
+		venture_entity_get_organization_id(entity), "job", error);
+	if (prepared == NULL || !step_allowed(action, prepared, actor, error) ||
+		!take_invoice(database, prepared, params, error))
+		return NULL;
+	selected = load(database, VENTURE_TYPE_INVOICE, number(prepared, "invoice-id"),
+		venture_entity_get_organization_id(prepared), "invoice-id", error);
+	if (selected == NULL)
+		return NULL;
+	if (choice(selected, "status") == VENTURE_INVOICE_STATUS_DRAFT)
+	{
+		operation = venture_accounting_operation_begin(database, "jobs.invoiced", entity, NULL,
+			g_variant_new("(x)", invoice), venture_entity_get_organization_id(entity), actor, error);
+		if (operation == NULL)
+			return NULL;
+	}
+	if (!venture_database_begin(database, error))
 		return NULL;
 	result = step_invoke_internal(action, entity, params, actor, error);
 	if (result == NULL)
@@ -480,7 +497,8 @@ step_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params, co
 		venture_database_rollback(database);
 		return NULL;
 	}
-	if (!venture_database_commit(database, error) || !venture_accounting_operation_finish(operation, error))
+	if (!venture_database_commit(database, error) ||
+		(operation != NULL && !venture_accounting_operation_finish(operation, error)))
 		return NULL;
 	return g_steal_pointer(&result);
 }

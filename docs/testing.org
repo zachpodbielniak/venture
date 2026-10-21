@@ -1295,6 +1295,8 @@ and after invoice issue; and verifies that job, plan, invoice, audit and ledger
 rows remain unchanged, with a successful retry. Whole-operation accounting
 approval stays pending after a failed job save. Equipment-only plans derive
 the property before checking the customer, with matching and mismatching cases.
+Linking an already-issued invoice with a posting rule enabled creates neither
+a new approval request nor another journal.
 
 =/migrations/jobs-upgrade-restart= reopens a file database with existing work
 and technician assignments, upgrades it while jobs is disabled, restarts it,

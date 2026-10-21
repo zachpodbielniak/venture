@@ -26,7 +26,9 @@ removing stored work.
    done job; omit the ID to use the job's invoice or its accepted quote's.
    A linked draft is issued with today's date and, when absent, a due date
    thirty days later. Issue, posting and job update commit together.
-   Configured accounting approval still applies to the complete operation.
+   Configured accounting approval applies to draft issuance and the complete
+   job handoff. Linking an already-issued invoice posts nothing and needs no
+   new posting approval.
 
 Actions need editor access and are not stageable. Read the current record
 and available actions before invoking one; never treat a refusal as success.

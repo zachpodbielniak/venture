@@ -99,7 +99,9 @@ An estimate billed after the work (see [[file:quotes.org][Quotes]]) left a
 draft invoice; =invoiced= issues it, dated today and due in thirty days,
 which is when reminders can start. Invoice issue, ledger posting and the
 job update commit together; a refusal leaves all of them unchanged. Posting
-approval, when configured, covers the whole job handoff before any write.
+approval, when configured, covers draft issuance and the job handoff before
+any write. Linking an already-issued invoice posts nothing and needs no new
+posting approval.
 Assignments and maintenance booking likewise commit all their changes or
 none: a refused lead replacement keeps the previous lead, and a failed plan
 advance leaves no extra job.
