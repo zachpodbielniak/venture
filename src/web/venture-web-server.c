@@ -8922,6 +8922,7 @@ venture_web_seed_receipt(VentureWebServer *self, HtmxRequest *request,
 	VentureDatabase *database = venture_context_get_database(self->context);
 	VentureSettlementService *settlement = venture_settlement_service_get(database);
 	g_autoptr(GDateTime) today = NULL;
+	g_autoptr(GDateTime) local_midnight = NULL;
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	gint64 id = 0, customer = 0;
@@ -8931,7 +8932,13 @@ venture_web_seed_receipt(VentureWebServer *self, HtmxRequest *request,
 	if (!VENTURE_IS_PAYMENT(record) && !VENTURE_IS_REFUND(record))
 		return TRUE;
 	today = venture_settlement_service_today(settlement);
-	g_object_set(record, "date", today, NULL);
+	/* today names a calendar day using midnight UTC. A new receipt's
+	 * datetime default must name midnight in the business zone instead;
+	 * existing receipt timestamps still render as their stored instants. */
+	local_midnight = g_date_time_new(venture_context_get_timezone(self->context),
+		g_date_time_get_year(today), g_date_time_get_month(today),
+		g_date_time_get_day_of_month(today), 0, 0, 0.0);
+	g_object_set(record, "date", local_midnight, NULL);
 	if (!VENTURE_IS_PAYMENT(record))
 		return TRUE;
 	g_object_get(record, "invoice-id", &id, NULL);

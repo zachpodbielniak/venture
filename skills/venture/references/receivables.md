@@ -35,6 +35,9 @@ venturectl create payment customer_id=8 invoice_id=5 'amount=40 USD' date=2026-0
 - **Dates must fall inside configured fiscal periods**, and closed periods
   refuse ("Organization 1 requires a date within its configured fiscal
   periods"). Check `list fiscal_period` when a create is refused for a date.
+- New payment and refund web forms default to midnight of today's business
+  date in the configured zone. Saved datetime values keep their instants
+  when displayed in that zone, including values at midnight UTC.
 - The receipt and its allocation settle atomically. Omit `invoice_id` to
   keep a deposit, then create `payment_allocation` rows with `payment_id` or
   `credit_id`. Overpayments remain customer credit. Standalone credits use

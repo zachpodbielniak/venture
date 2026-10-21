@@ -35,6 +35,9 @@ generic write to =payment= reaches it through =venture_database_save()=,
 so a form, REST request, =venturectl create payment= and an approved AI
 write all perform the same transaction. The invoice page's Record payment link opens the ordinary receipt form
 with the invoice, customer, outstanding balance and today's date filled in.
+New payment and refund forms start at midnight of the current business day
+in the configured time zone. Editing a saved receipt preserves its stored
+instant and displays that instant in the business zone.
 Review or change the amount, date and method (cash, check, card, transfer
 or manual), then Save to record money already received. This does not
 charge a card. The older status action remains compatible for API clients.
