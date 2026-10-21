@@ -567,6 +567,45 @@ test_invoice_approval_atomic(Fixture *f, gconstpointer data)
 	g_assert_cmpint(job_status(f, venture_entity_get_id(job)), ==, VENTURE_JOB_INVOICED);
 }
 
+/* Linking an invoice already issued posts nothing and must remain available
+ * to one editor even when new financial postings need a second account. */
+static void
+test_link_issued_invoice(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *form = compose_form(f, FALSE), *parameters = NULL;
+	g_autoptr(GPtrArray) invoices = NULL, approvals = NULL;
+	g_autoptr(VentureEntity) first_job = new_job(f, "Initial repair", f->company);
+	g_autoptr(VentureEntity) job = new_job(f, "Follow-up repair", f->company), result = NULL;
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GHashTable) params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_free);
+	VentureActor actor;
+	gint64 invoice_id, journals;
+	(void)data;
+	g_assert_cmpuint(request(f, "POST", "/invoices/compose", form, NULL, NULL) / 100, ==, 3);
+	invoices = rows(f, VENTURE_TYPE_INVOICE);
+	invoice_id = venture_entity_get_id(g_ptr_array_index(invoices, 0));
+	g_object_set(first_job, "status", VENTURE_JOB_DONE, NULL);
+	save(f, first_job);
+	parameters = g_strdup_printf("invoice_id=%" G_GINT64_FORMAT, invoice_id);
+	g_assert_cmpuint(press(f, venture_entity_get_id(first_job), "invoiced", parameters, NULL) / 100, ==, 3);
+	g_object_set(job, "status", VENTURE_JOB_DONE, "invoice-id", invoice_id, NULL);
+	save(f, job);
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	save(f, VENTURE_ENTITY(rule));
+	journals = sql_count(f, "journals");
+	actor.kind = VENTURE_ACTOR_KIND_USER; actor.name = "example-editor";
+	actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
+	result = venture_action_registry_perform(venture_database_get_action_registry(f->db),
+		"job", venture_entity_get_id(job), "invoiced", params, &actor, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(job_status(f, venture_entity_get_id(job)), ==, VENTURE_JOB_INVOICED);
+	g_assert_cmpint(sql_count(f, "journals"), ==, journals);
+	approvals = rows(f, VENTURE_TYPE_ACCOUNTING_APPROVAL);
+	g_assert_cmpuint(approvals->len, ==, 0);
+}
+
 /* Equipment may supply a missing property, but never a different customer. */
 static void
 test_equipment_plan_customer(Fixture *f, gconstpointer data)
@@ -616,5 +655,6 @@ main(int argc, char *argv[])
 	g_test_add("/jobs/invoice-rollback", Fixture, NULL, setup, test_invoice_rollback, teardown);
 	g_test_add("/jobs/equipment-plan-customer", Fixture, NULL, setup, test_equipment_plan_customer, teardown);
 	g_test_add("/jobs/invoice-approval-atomic", Fixture, NULL, setup, test_invoice_approval_atomic, teardown);
+	g_test_add("/jobs/link-issued-invoice", Fixture, NULL, setup, test_link_issued_invoice, teardown);
 	return g_test_run();
 }
