@@ -458,8 +458,12 @@ test_household_privacy_upgrade(void)
 	g_assert_no_error(error);
 	g_assert_nonnull(account);
 	g_assert_true(venture_database_execute(db,
-		"DROP INDEX IF EXISTS idx_accounts_private_owner_id; ALTER TABLE accounts DROP COLUMN private_owner_id; DELETE FROM schema_migrations WHERE version = 926", NULL, &error));
-	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+		"DROP INDEX IF EXISTS idx_accounts_private_owner_id; ALTER TABLE accounts DROP COLUMN private_owner_id; DELETE FROM schema_migrations WHERE version >= 926", NULL, &error));
+	{
+		gboolean migrated = venture_database_migrate(db, venture_entity_registry_get_default(), &error);
+		g_assert_no_error(error);
+		g_assert_true(migrated);
+	}
 	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
 	reloaded = venture_database_get(db, VENTURE_TYPE_ACCOUNT, venture_entity_get_id(account), &error);
 	g_assert_no_error(error);

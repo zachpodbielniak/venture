@@ -1,8 +1,7 @@
-# Household finance — children 1–7 of epic #201
+# Household finance — children 1–8 of epic #201
 
-This is a partial delivery. Deductible exports and warranty reminders, a
-dedicated phone dashboard, and the full-month acceptance walkthrough
-(children 8–10) remain open. The responsive walkthrough
+This is a partial delivery. A dedicated phone dashboard and the full-month
+acceptance walkthrough (children 9–10) remain open. The responsive walkthrough
 and its repairs cover the existing finance pages, not those remaining children.
 Refer to #201; do not describe this branch as completing or closing the epic.
 
@@ -123,3 +122,18 @@ must be active in the same entity; only they can access the entry. There is
 no private account/receipt reference to disclose. Mark settled only after
 repayment; this records an external repayment and never moves money or books
 another expense. The generated web, API and CLI use the same checks.
+
+## Year-end and warranties
+
+Tag a purchase with `deductibility`: `full`, `partial` (uses
+`business-use-percent`), `capital`, `review` ("ask your tax preparer",
+counted as zero) or `none`. Report `household_tax_year` lists the period's
+tagged purchases with the deductible part and attached receipt titles; it is
+the CSV export for whoever does the taxes (the web link opens last year).
+Attach receipts and warranties as documents with `expense-id`. A warranty
+sets `warranty-until` and optionally `warranty-reminder-user-id`; report
+`household_warranties` lists them soonest first, and the reminder sweep sends
+one inbox reminder per end date in the last 30 days. Both reports and the
+sweep obey the private-account contract: another member's unshared purchases,
+receipts and warranties stay out until the owner shares the account, and a
+private warranty can remind only its owner.

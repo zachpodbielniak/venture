@@ -28,6 +28,8 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/reports/debt_payoff", "Debt payoff", VENTURE_ICON("<path d=\"M4 7l6 6 4-4 6 10\"/>"), NULL, "statements" },
 	{ "/reports/savings_goals", "Savings progress", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"8\"/>"), "Goals", "goals" },
 	{ "/e/household_share", "Settle up", VENTURE_ICON("<path d=\"M4 8h16l-4-4M20 16H4l4 4\"/>"), "Money", "banking" },
+	{ "/reports/household_tax_year?period=last_year", "Year-end for taxes", VENTURE_ICON("<path d=\"M5 3h14v18H5zM8 8h8M8 13h5\"/>"), "Reports", "finance" },
+	{ "/reports/household_warranties", "Warranties", VENTURE_ICON("<path d=\"M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z\"/>"), "Documents", "core" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 

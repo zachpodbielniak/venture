@@ -1470,6 +1470,9 @@ planner_lazy_sweep(VentureWebServer *self)
 	if (venture_money_calendar_remind(self->context, 0, NULL, &error) < 0)
 		g_message("household: reminder sweep failed: %s", error->message);
 	g_clear_error(&error);
+	if (venture_household_warranty_remind(self->context, 0, NULL, &error) < 0)
+		g_message("household: warranty reminder sweep failed: %s", error->message);
+	g_clear_error(&error);
 
 	if (!venture_context_module_enabled(self->context, "planner"))
 		return;
@@ -1509,6 +1512,9 @@ venture_planner_web_reminders(
 		return venture_web_error_response(error);
 
 	bills = venture_money_calendar_remind(self->context, 0, NULL, &error);
+	if (bills < 0) return venture_web_error_response(error);
+	reminded += bills;
+	bills = venture_household_warranty_remind(self->context, 0, NULL, &error);
 	if (bills < 0) return venture_web_error_response(error);
 	reminded += bills;
 

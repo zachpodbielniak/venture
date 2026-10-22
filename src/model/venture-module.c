@@ -495,7 +495,7 @@ static const gchar *const venture_module_requires_core[] = { "core", NULL };
 
 /* The aggregate report reads any type, so it belongs to the module that is
  * always on; the types it reads are hidden by their own modules. */
-static const gchar *const venture_module_reports_core[] = { "aggregate", NULL };
+static const gchar *const venture_module_reports_core[] = { "aggregate", "household_warranties", NULL };
 static const gchar *const venture_module_requires_sales[] = { "sales", NULL };
 static const gchar *const venture_module_requires_invoicing[] = {
 	"finance", "crm", "ledger", NULL
@@ -525,7 +525,7 @@ static const gchar *const venture_module_reports_sales[] = {
 	"categories", "inventory", NULL
 };
 static const gchar *const venture_module_reports_finance[] = {
-	"pnl", "ventures", "monthly", "tax", "tax_liability", NULL
+	"pnl", "ventures", "monthly", "tax", "tax_liability", "household_tax_year", NULL
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
 static const gchar *const venture_module_reports_receivables[] = {

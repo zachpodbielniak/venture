@@ -3071,7 +3071,14 @@ static const VentureFieldDecl venture_document_fields[] = {
 	 * model re-fetches the document record, not the file.
 	 */
 	VENTURE_FIELD_TEXT("extracted-text", "Extracted text",
-	                   "Text content pulled from the file at upload")
+	                   "Text content pulled from the file at upload"),
+	/* A receipt or warranty attached to a household purchase. */
+	VENTURE_FIELD("warranty-until", "Warranty ends", "For a warranty or guarantee: the last day it covers",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("warranty-reminder-user-id", "Remind person",
+	                  "Gets an inbox reminder in the last 30 days of the warranty", "user", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("warranty-reminded-at", "Reminded for", "The warranty end date last reminded about; set by the reminder sweep",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 VENTURE_DEFINE_ENTITY(VentureDocument, venture_document,

@@ -3,12 +3,12 @@
 
 * Status
 
-This branch is a partial delivery of issue #201: children 1–7 plus repairs
+This branch is a partial delivery of issue #201: children 1–8 plus repairs
 from the responsive household walkthrough. It does not complete or close the
-epic. Publication scope is "household finance workflows, children 1–7";
+epic. Publication scope is "household finance workflows, children 1–8";
 use =Refs #201=, never =Closes #201= for this delivery.
 
-Children 8–10 remain open: deductible exports and warranty reminders, a dedicated phone dashboard, and a full-month
+Children 9–10 remain open: a dedicated phone dashboard, and a full-month
 acceptance walkthrough. The existing 390/1440 walkthrough exercises budget,
 bills, wealth, debt and savings pages; it is not the child-10 full-month proof.
 
@@ -37,7 +37,7 @@ Business ventures in the same organization are unchanged.
 5. Implemented: monthly net worth and snowball/avalanche payoff estimates (see below).
 6. Implemented: savings goals tied to asset accounts or rollover envelopes (see below).
 7. Implemented: separate members, private accounts with owner-controlled household sharing, and settling up.
-8. Planned: deductible tags, a year-end export, warranty reminders.
+8. Implemented: deductible tags, a year-end export for taxes, receipts and warranties on purchases with reminders (see below).
 9. Planned: a phone-first household dashboard.
 10. Planned: a full month walked as a household, every dead end fixed.
 
@@ -547,3 +547,52 @@ Personal subscription schedules use Forecast only and import their actual
 charges. Personal capture items inherit the original document's privacy;
 automatic conversion into a shared bill or expense is refused. Enter the
 purchase from its personal account and attach the receipt to that purchase.
+
+* Year-end and warranties (child 8)
+
+** Tag spending for tax
+
+Open a purchase under *Spending* and set *Deductibility*:
+
+- /Full/: deductible in full.
+- /Partial/: deductible at the *Business use* percentage.
+- /Capital/: spread over several years rather than claimed at once.
+- /Review/: not decided; it shows as "Ask your tax preparer" and counts
+  as zero until someone decides.
+- /None/: not for tax; the default for ordinary spending.
+
+** The year-end export
+
+*Reports / Year-end for taxes* opens last year's purchases tagged for tax,
+oldest first, with what, who was paid, category, the tax treatment, the
+amount, the deductible part and the titles of the receipts attached. A
+purchase with nothing attached says "No receipt attached", and the
+*Without a receipt* figure counts them. Pick another period with the period
+buttons; download it as CSV for whoever does the taxes. The business
+=year_end_pack= is unchanged.
+
+** Receipts and warranties on a purchase
+
+Attach a document to the purchase (its *Expense* field). For a warranty or
+guarantee, also set:
+
+- *Warranty ends*: the last day it covers.
+- *Remind person*: who gets an inbox reminder.
+
+*Documents / Warranties* lists every document with an end date, soonest
+first, with the days left or "Ended". The reminder arrives once per end date,
+in the last 30 days, when the inbox or planner sweeps reminders; changing
+the end date reminds again. Migration =000927= gives existing documents no
+reminder person.
+
+** Privacy
+
+The same contract as child 7. Every read runs as the member asking, so a
+purchase on another member's unshared personal account, its receipts and its
+warranties are absent from that member's export and list, and appear once
+the owner shares the account. A private purchase's warranty can remind only
+its owner; a reminder is also skipped if its person can no longer read the
+document, for example after the owner stops sharing.
+
+Tests: =tests/test-venture-household-yearend.c= (both privacy directions,
+reminder timing and once-only stamping, and the reminder person check).

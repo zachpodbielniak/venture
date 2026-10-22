@@ -1306,6 +1306,58 @@ test_household_subscriptions_without_lines(void)
 	g_assert_no_error(error);
 }
 
+/* 000927: an existing document gains no warranty and reminds nobody, and
+ * running the migration twice changes nothing. */
+static void
+test_household_warranties_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO documents (uuid, organization_id, title) VALUES ('old-receipt', 1, 'Old receipt');"
+		"UPDATE documents SET warranty_reminder_user_id = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 927", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT title || ':' || CAST(warranty_reminder_user_id AS TEXT) || ':' || "
+			"COALESCE(CAST(warranty_until AS TEXT), 'none') FROM documents WHERE uuid = 'old-receipt'");
+		g_assert_cmpstr(value, ==, "Old receipt:0:none");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_warranties_without_documents(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE documents; DELETE FROM schema_migrations WHERE version >= 927", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
 /*
  * 000710 where the accounts table is absent: accounts belong to the
  * finance module, and reconciliation never creates a hidden type's table.
@@ -1717,6 +1769,8 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/household-wealth-without-accounts", test_household_wealth_without_accounts);
 	g_test_add_func("/migrations/household-subscriptions-upgrade", test_household_subscriptions_upgrade);
 	g_test_add_func("/migrations/household-subscriptions-without-schedules", test_household_subscriptions_without_lines);
+	g_test_add_func("/migrations/household-warranties-upgrade", test_household_warranties_upgrade);
+	g_test_add_func("/migrations/household-warranties-without-documents", test_household_warranties_without_documents);
 	g_test_add_func("/migrations/monthly-envelope-upgrade", test_monthly_envelope_upgrade);
 	g_test_add_func("/migrations/monthly-envelope-without-lines", test_monthly_envelope_without_lines);
 	g_test_add_func("/migrations/account-holdings-without-accounts",
