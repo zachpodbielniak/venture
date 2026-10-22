@@ -1,7 +1,7 @@
-# Household finance — children 1–8 of epic #201
+# Household finance — children 1–9 of epic #201
 
-This is a partial delivery. A dedicated phone dashboard and the full-month
-acceptance walkthrough (children 9–10) remain open. The responsive walkthrough
+This is a partial delivery. The full-month acceptance walkthrough (child 10)
+remains open. The responsive walkthrough
 and its repairs cover the existing finance pages, not those remaining children.
 Refer to #201; do not describe this branch as completing or closing the epic.
 
@@ -137,3 +137,13 @@ one inbox reminder per end date in the last 30 days. Both reports and the
 sweep obey the private-account contract: another member's unshared purchases,
 receipts and warranties stay out until the owner shares the account, and a
 private warranty can remind only its owner.
+
+## Household dashboard
+
+`/household/overview` opens the member's personal dashboard from template
+`household` (created on first visit; it is the household landing page). Its
+reports: `household_spending` (category totals and share for the period,
+per currency) and `household_cash_forecast` (checking, savings and cash
+balance carried forward weekly through due events; options `as_of`,
+`weeks`) and `household_months` (money in, spent, left over by month), beside `net_worth`. All obey the private-account
+contract.

@@ -3761,6 +3761,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_customer_health_register_reports(self);
 	venture_money_calendar_register_reports(self);
 	venture_household_yearend_register_reports(self);
+	venture_household_dashboard_register_reports(self);
 	venture_support_rollup_register_reports(self);
 	venture_ticket_tree_register_reports(self);
 

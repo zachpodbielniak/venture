@@ -525,7 +525,7 @@ static const gchar *const venture_module_reports_sales[] = {
 	"categories", "inventory", NULL
 };
 static const gchar *const venture_module_reports_finance[] = {
-	"pnl", "ventures", "monthly", "tax", "tax_liability", "household_tax_year", NULL
+	"pnl", "ventures", "monthly", "tax", "tax_liability", "household_tax_year", "household_spending", "household_months", NULL
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
@@ -851,7 +851,7 @@ static const gchar *const headline_suggests[] = { "outreach", "recurring", "tick
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
 static const gchar *const money_calendar_requires[] = { "receivables", "payables", NULL };
 static const gchar *const money_calendar_suggests[] = { "recurring", "dunning", "payroll", "tax_filing", NULL };
-static const gchar *const money_calendar_reports[] = { "money_calendar", "household_subscriptions", NULL };
+static const gchar *const money_calendar_reports[] = { "money_calendar", "household_subscriptions", "household_cash_forecast", NULL };
 static const gchar *const crm_import_requires[] = { "crm", "pipelines", "activities", "leads", NULL };
 static GType (*const crm_import_types[]) (void) = { venture_crm_import_get_type, venture_crm_import_row_get_type, NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };

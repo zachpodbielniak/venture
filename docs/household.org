@@ -3,13 +3,12 @@
 
 * Status
 
-This branch is a partial delivery of issue #201: children 1–8 plus repairs
+This branch is a partial delivery of issue #201: children 1–9 plus repairs
 from the responsive household walkthrough. It does not complete or close the
-epic. Publication scope is "household finance workflows, children 1–8";
+epic. Publication scope is "household finance workflows, children 1–9";
 use =Refs #201=, never =Closes #201= for this delivery.
 
-Children 9–10 remain open: a dedicated phone dashboard, and a full-month
-acceptance walkthrough. The existing 390/1440 walkthrough exercises budget,
+Child 10 remains open: a full-month acceptance walkthrough. The existing 390/1440 walkthrough exercises budget,
 bills, wealth, debt and savings pages; it is not the child-10 full-month proof.
 
 * What a household venture is
@@ -38,7 +37,7 @@ Business ventures in the same organization are unchanged.
 6. Implemented: savings goals tied to asset accounts or rollover envelopes (see below).
 7. Implemented: separate members, private accounts with owner-controlled household sharing, and settling up.
 8. Implemented: deductible tags, a year-end export for taxes, receipts and warranties on purchases with reminders (see below).
-9. Planned: a phone-first household dashboard.
+9. Implemented: a phone-first household dashboard with spending by category, money in and out by month, a cash forecast and net worth over time (see below).
 10. Planned: a full month walked as a household, every dead end fixed.
 
 * Household type and slim view (child 1)
@@ -596,3 +595,45 @@ document, for example after the owner stops sharing.
 
 Tests: =tests/test-venture-household-yearend.c= (both privacy directions,
 reminder timing and once-only stamping, and the reminder person check).
+
+* Household dashboard (child 9)
+
+Picking a household under *Venture view* now opens *Overview*: each member's
+own household dashboard, made from the =household= template the first time
+they open it (a read-only member who has none yet gets *Spending by
+category* instead). It is personal, so another member's copy shows their
+own figures. Two columns on a desk, one stacked column on a phone:
+
+- *Spent this month* and *Money in this month*.
+- *Spending by category*: this month, biggest first.
+- *Cash forecast*: the end-of-week balance for the next 13 weeks.
+- *Spending by month* and *Net worth over time*: this year.
+- *Money in and out by month*: money in, spent and left over (=household_months=).
+- Links to budgets, the due calendar, the year-end export and warranties.
+
+Rearrange or remove widgets like any dashboard; *Dashboards / New* can
+make the template again.
+
+** The reports behind it
+
+=household_spending= groups the period's spending by category, biggest
+first and separately per currency, with each category's share. Transfers
+between your own accounts are not spending, as in child 2.
+
+=household_cash_forecast= starts from today's balance in checking, savings
+and cash accounts (posted ledger evidence), then adds what the due calendar
+says comes in and goes out, week by week from this week's Monday. Options:
+=as_of= (a date) and =weeks= (1 to 53, default 13). It is a guide, not a
+promise: spending nobody scheduled is not in it.
+
+=household_months= is the =monthly= series in household words: money in
+(income), spent and left over per month.
+
+** Privacy
+
+The same contract as child 7: every figure is computed as the member
+asking, so another member's unshared personal account, its spending and its
+balance stay out until the owner shares it.
+
+Tests: =tests/test-venture-household-dashboard.c= (both privacy directions,
+the forecast week by week, and the template).

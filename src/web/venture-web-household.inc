@@ -29,6 +29,7 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/reports/savings_goals", "Savings progress", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"8\"/>"), "Goals", "goals" },
 	{ "/e/household_share", "Settle up", VENTURE_ICON("<path d=\"M4 8h16l-4-4M20 16H4l4 4\"/>"), "Money", "banking" },
 	{ "/reports/household_tax_year?period=last_year", "Year-end for taxes", VENTURE_ICON("<path d=\"M5 3h14v18H5zM8 8h8M8 13h5\"/>"), "Reports", "finance" },
+	{ "/household/overview", "Overview", VENTURE_ICON("<path d=\"M4 13h6V4H4zM14 20h6V11h-6zM4 20h6v-4H4zM14 4v4h6V4z\"/>"), "Overview", "dashboards" },
 	{ "/reports/household_warranties", "Warranties", VENTURE_ICON("<path d=\"M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z\"/>"), "Documents", "core" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
@@ -70,6 +71,9 @@ static const gchar *
 venture_web_household_home(VentureWebServer *self)
 {
 	gsize i;
+	/* The household dashboard is the phone-first landing page. */
+	if (venture_web_module_enabled(self, "dashboards") && venture_web_module_enabled(self, "finance"))
+		return "/household/overview";
 	if (venture_web_module_enabled(self, "finance"))
 		return "/e/expense";
 	for (i = 0; venture_household_nav[i].path != NULL; i++)
@@ -260,4 +264,59 @@ venture_web_household_member_name(VentureWebServer *self, gint64 organization, g
 		}
 	}
 	return g_strdup("Former household member");
+}
+
+/*
+ * GET /household/overview - the member's own household dashboard, made
+ * from the household template on first visit. Personal, because each
+ * member's figures leave out what is not shared with them.
+ */
+static HtmxResponse *
+venture_web_ui_household_overview(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureDatabase *db = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) found = NULL;
+	g_autoptr(VentureDashboard) dashboard = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *slug = NULL, *destination = NULL;
+	gint64 organization = venture_web_active_organization(self, request);
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	(void)params;
+	gate = venture_web_require_module_ui(self, request, "dashboards");
+	if (gate != NULL)
+		return gate;
+	gate = venture_web_ui_require_session(self, request);
+	if (gate != NULL)
+		return gate;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	query = venture_query_new(VENTURE_TYPE_DASHBOARD);
+	venture_query_set_organization(query, organization);
+	venture_query_add_filter_int(query, "owner-user-id", VENTURE_FILTER_OP_EQ, principal->user_id, NULL);
+	venture_query_add_filter_string(query, "slug", VENTURE_FILTER_OP_LIKE, "household%", NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	found = venture_database_find_one(db, query, NULL);
+	if (found != NULL)
+		g_object_get(found, "slug", &slug, NULL);
+	else if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_EDITOR, NULL))
+		/* A read-only member cannot create one; the figures still open. */
+		return venture_web_redirect_to("/reports/household_spending?period=this_month");
+	else
+	{
+		venture_auth_to_actor(principal, &actor);
+		dashboard = venture_dashboard_create_from_template_in(self->context, "household", organization,
+			principal->user_id, &actor, &error);
+		if (dashboard == NULL)
+			return venture_web_error_response(error);
+		g_object_get(dashboard, "slug", &slug, NULL);
+	}
+	destination = g_strdup_printf("/dashboards/%s", slug);
+	return venture_web_redirect_to(destination);
 }

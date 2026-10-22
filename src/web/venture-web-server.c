@@ -33723,6 +33723,7 @@ venture_document_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/report_pack/:id/deliver", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_report_pack_deliver, self);
 
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/view/venture/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_switch_venture, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/household/overview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_household_overview, self);
 
 	/*
 	 * Plugins' pages, last: they loaded before this server existed and
