@@ -44,8 +44,32 @@ venture_web_view_venture(VentureWebServer *self, HtmxRequest *request)
 	gint64 id;
 	gint64 organization = venture_web_active_organization(self, request);
 
-	if (organization <= 0 || value == NULL ||
-		!g_ascii_string_to_signed(value, 10, 1, G_MAXINT64, &id, NULL))
+	if (organization <= 0)
+		return NULL;
+	/* Nobody has chosen a view in this browser yet: an entity whose only
+	 * ventures are households opens as its household. "Full view" is an
+	 * explicit choice (stored as 0) and is kept. */
+	if (value == NULL)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_VENTURE);
+		g_autoptr(GPtrArray) ventures = NULL;
+		guint i;
+		venture_query_set_organization(query, organization);
+		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 0);
+		ventures = venture_database_find(venture_context_get_database(self->context), query, NULL);
+		if (ventures == NULL || ventures->len == 0)
+			return NULL;
+		for (i = 0; i < ventures->len; i++)
+		{
+			g_autofree gchar *kind = NULL;
+			g_object_get(g_ptr_array_index(ventures, i), "venture-type", &kind, NULL);
+			if (g_strcmp0(kind, "household") != 0)
+				return NULL;
+		}
+		return g_object_ref(g_ptr_array_index(ventures, 0));
+	}
+	if (!g_ascii_string_to_signed(value, 10, 1, G_MAXINT64, &id, NULL))
 		return NULL;
 	record = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_VENTURE, id, NULL);
 	if (record == NULL || venture_entity_is_deleted(record) ||

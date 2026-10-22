@@ -265,6 +265,7 @@ venture_database_init(VentureDatabase *self)
 	venture_stripe_install_validators(self);
 	venture_document_install_validators(self);
 	venture_household_yearend_install(self);
+	venture_account_code_install(self);
 	venture_bankfeed_install_validators(self);
 	venture_connector_install(self);
 	venture_marketing_install(self);
@@ -1375,6 +1376,9 @@ database_save_dispatch(
 	{
 		gboolean handled;
 		gboolean ok = venture_payables_expense_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+			return ok;
+		ok = venture_bank_account_ledger_hook(self, entity, actor, &handled, error);
 		if (!ok || handled)
 			return ok;
 	}

@@ -189,8 +189,11 @@ venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gbool
 		else if (supplied != NULL || supplied_date != NULL)
 			return refuse(error, "statement balances are derived by import");
 		g_object_get(record, "account-id", &id, "currency", &currency, NULL);
+		if (id <= 0)
+			return refuse(error, "choose the ledger account this bank account books to");
 		account = venture_database_get(database, VENTURE_TYPE_ACCOUNT, id, error);
-		if (account == NULL) return FALSE;
+		if (account == NULL)
+			return (error != NULL && *error != NULL) ? FALSE : refuse(error, "the ledger account does not exist");
 		if (venture_entity_get_organization_id(account) != venture_entity_get_organization_id(record))
 			return refuse(error, "ledger account belongs to another organization");
 		if (!venture_currency_is_valid(currency))
@@ -785,7 +788,8 @@ bank_date(const gchar *text, const gchar *format)
 	gint y = 0, m = 0, d = 0;
 	gchar tail;
 	if (text == NULL) return NULL;
-	if (!g_strcmp0(format, "%Y-%m-%d")) return date_parse(text);
+	/* No saved format means the ISO dates a bank export usually has. */
+	if (format == NULL || *format == '\0' || !g_strcmp0(format, "%Y-%m-%d")) return date_parse(text);
 	if (!g_strcmp0(format, "%m/%d/%Y") && sscanf(text, "%d/%d/%d%c", &m, &d, &y, &tail) != 3) return NULL;
 	if (!g_strcmp0(format, "%d/%m/%Y") && sscanf(text, "%d/%d/%d%c", &d, &m, &y, &tail) != 3) return NULL;
 	if (!g_strcmp0(format, "ofx"))
@@ -910,6 +914,42 @@ import_line(VentureBankMatchService *self, VentureEntity *bank, VentureEntity *s
 	return TRUE;
 }
 
+static gboolean option_flag(JsonObject *args, const gchar *name);
+
+/* The column boxes shown beside Import are this import's mapping; they are
+ * kept on the bank account only when "Save mapping" is ticked. */
+static const gchar *const mapping_fields[][2] = {
+	{ "date_column", "date-column" }, { "amount_column", "amount-column" },
+	{ "description_column", "description-column" }, { "reference_column", "reference-column" },
+	{ "external_id_column", "external-id-column" }, { "debit_column", "debit-column" },
+	{ "credit_column", "credit-column" }, { "locale", "locale" }, { "date_format", "date-format" },
+};
+
+static GPtrArray *
+use_import_mapping(VentureEntity *bank, JsonObject *args)
+{
+	GPtrArray *previous = g_ptr_array_new_with_free_func(g_free);
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(mapping_fields); i++)
+	{
+		const gchar *given = option(args, mapping_fields[i][0]);
+		gchar *old = NULL;
+		g_object_get(bank, mapping_fields[i][1], &old, NULL);
+		g_ptr_array_add(previous, old);
+		if (given != NULL && *given != '\0')
+			g_object_set(bank, mapping_fields[i][1], given, NULL);
+	}
+	return previous;
+}
+
+static void
+restore_import_mapping(VentureEntity *bank, GPtrArray *previous)
+{
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(mapping_fields); i++)
+		g_object_set(bank, mapping_fields[i][1], g_ptr_array_index(previous, i), NULL);
+}
+
 static VentureEntity *
 import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject *args, const VentureActor *actor, GError **error)
 {
@@ -920,6 +960,7 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 	g_autoptr(VentureMoney) opening = NULL, closing = NULL;
 	g_autofree gchar *currency = NULL, *hash = NULL;
 	g_autoptr(VentureEntity) statement = NULL;
+	g_autoptr(GPtrArray) previous_mapping = NULL;
 	guint count = 0;
 	if (data == NULL || start == NULL || end == NULL || g_date_time_compare(start, end) > 0)
 	{
@@ -951,6 +992,7 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 	if (!g_strcmp0(format, "csv"))
 	{
 		g_autoptr(GPtrArray) parsed = parse_csv(data, error);
+		previous_mapping = use_import_mapping(bank, args);
 		g_autofree gchar *dc = NULL, *ac = NULL, *mc = NULL, *rc = NULL, *ic = NULL, *df = NULL, *sign = NULL;
 		g_autofree gchar *debit_name = NULL, *credit_name = NULL, *locale = NULL;
 		gint d, a, m, r, x, debit, credit;
@@ -1007,6 +1049,8 @@ import_statement(VentureBankMatchService *self, VentureEntity *bank, JsonObject 
 	}
 	else { refuse(error, "supported formats are csv, ofx and qfx"); return NULL; }
 	if (count == 0) { refuse(error, "external ID already imported for this bank account"); return NULL; }
+	if (previous_mapping != NULL && !option_flag(args, "apply"))
+		restore_import_mapping(bank, previous_mapping);
 	g_object_set(bank, "last-statement-balance", closing, "last-statement-date", end, NULL);
 	if (!save_owned(self, bank, actor, error)) return NULL;
 	return g_steal_pointer(&statement);
@@ -1348,6 +1392,19 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 			g_object_set(record, "category", option(args, "category"), NULL);
 		if (!venture_database_save(self->database, record, actor, error)) return FALSE;
 	}
+	else if (!g_strcmp0(type, "income") && venture_money_get_amount(signed_amount) > 0)
+	{
+		/* A household's pay or refund in: income booked straight to this
+		 * account, with no customer or invoice behind it. */
+		if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sale") == G_TYPE_INVALID)
+			return refuse(error, "sales module is disabled");
+		record = new_record(VENTURE_TYPE_SALE, org);
+		g_object_set(record, "gross", signed_amount, "occurred-at", date, "quantity", (gint64)1,
+			"buyer-name", description, "notes", description, "cash-account-id", number(bank, "account-id"), NULL);
+		if (option(args, "category") != NULL && *option(args, "category") != '\0')
+			g_object_set(record, "channel", option(args, "category"), NULL);
+		if (!venture_database_save(self->database, record, actor, error)) return FALSE;
+	}
 	else if ((!g_strcmp0(type, "receipt") || !g_strcmp0(type, "payment")) && venture_money_get_amount(signed_amount) > 0)
 	{
 		if (option_id(args, "customer_id") <= 0) return refuse(error, "receipt requires customer_id");
@@ -1369,7 +1426,7 @@ create_document(VentureBankMatchService *self, VentureEntity *transaction, JsonO
 			if (!ok) return FALSE;
 		}
 	}
-	else return refuse(error, "negative lines create expenses; positive lines create receipts");
+	else return refuse(error, "negative lines create expenses; positive lines create income or receipts");
 	after = venture_posting_service_account_balance(venture_database_get_posting_service(self->database),
 		number(bank, "account-id"), org, venture_money_get_currency(signed_amount), date, error);
 	if (after == NULL) return FALSE;
@@ -2416,4 +2473,75 @@ venture_bank_match_service_execute(VentureBankMatchService *self, const gchar *a
 	if (!venture_accounting_operation_finish(operation, error))
 		return NULL;
 	return g_steal_pointer(&result);
+}
+
+/* A free code for a household's own bank ledger account. */
+static gchar *
+free_bank_code(VentureDatabase *database, gint64 org)
+{
+	guint n;
+	for (n = 1; n < 10000; n++)
+	{
+		g_autofree gchar *code = g_strdup_printf("BANK-%u", n);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+		g_autoptr(VentureEntity) taken = NULL;
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+		venture_query_set_organization(query, org);
+		venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+		venture_query_set_include_deleted(query, TRUE);
+		taken = venture_database_find_one(database, query, NULL);
+		if (taken == NULL)
+			return g_steal_pointer(&code);
+	}
+	return NULL;
+}
+
+gboolean
+venture_bank_account_ledger_hook(VentureDatabase *database, VentureEntity *record,
+	const VentureActor *actor, gboolean *handled, GError **error)
+{
+	g_autoptr(VentureEntity) ledger = NULL;
+	g_autofree gchar *name = NULL, *currency = NULL, *code = NULL;
+	gint64 id = 0, org;
+	gint kind = 0;
+	gboolean ok;
+
+	*handled = FALSE;
+	if (!VENTURE_IS_BANK_ACCOUNT(record) || venture_entity_is_persisted(record))
+		return TRUE;
+	g_object_get(record, "account-id", &id, "name", &name, "kind", &kind, "currency", &currency, NULL);
+	if (id > 0 || venture_string_is_empty(name))
+		return TRUE;
+	org = venture_entity_get_organization_id(record);
+	if (venture_string_is_empty(currency))
+	{
+		g_free(currency);
+		currency = venture_database_get_book_currency(database, org);
+		g_object_set(record, "currency", currency, NULL);
+	}
+	code = free_bank_code(database, org);
+	if (code == NULL)
+		return refuse(error, "no free ledger code for a new bank account");
+	*handled = TRUE;
+	ledger = new_record(VENTURE_TYPE_ACCOUNT, org);
+	g_object_set(ledger, "code", code, "name", name, "active", TRUE,
+		"kind", (kind == VENTURE_BANK_ACCOUNT_CARD || kind == VENTURE_BANK_ACCOUNT_LOAN)
+			? VENTURE_ACCOUNT_KIND_LIABILITY : VENTURE_ACCOUNT_KIND_ASSET, NULL);
+	if (!venture_database_begin(database, error))
+		return FALSE;
+	ok = venture_database_save(database, ledger, actor, error);
+	if (ok)
+	{
+		g_object_set(record, "account-id", venture_entity_get_id(ledger), NULL);
+		ok = venture_database_save(database, record, actor, error);
+	}
+	if (ok)
+		ok = venture_database_commit(database, error);
+	if (!ok)
+	{
+		venture_database_rollback(database);
+		/* The caller's record must not keep a ledger id that was rolled back. */
+		g_object_set(record, "account-id", (gint64)0, NULL);
+	}
+	return ok;
 }

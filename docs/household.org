@@ -3,13 +3,10 @@
 
 * Status
 
-This branch is a partial delivery of issue #201: children 1–9 plus repairs
-from the responsive household walkthrough. It does not complete or close the
-epic. Publication scope is "household finance workflows, children 1–9";
-use =Refs #201=, never =Closes #201= for this delivery.
-
-Child 10 remains open: a full-month acceptance walkthrough. The existing 390/1440 walkthrough exercises budget,
-bills, wealth, debt and savings pages; it is not the child-10 full-month proof.
+This branch delivers all ten children of issue #201, from the household
+type to the full-month walk below, and awaits review. Publication scope is
+"household finance workflows, children 1–10"; until the epic's review and
+merge, use =Refs #201=, not =Closes #201=.
 
 * What a household venture is
 
@@ -38,7 +35,7 @@ Business ventures in the same organization are unchanged.
 7. Implemented: separate members, private accounts with owner-controlled household sharing, and settling up.
 8. Implemented: deductible tags, a year-end export for taxes, receipts and warranties on purchases with reminders (see below).
 9. Implemented: a phone-first household dashboard with spending by category, money in and out by month, a cash forecast and net worth over time (see below).
-10. Planned: a full month walked as a household, every dead end fixed.
+10. Implemented: a full month walked as a household at 390 and 1440, every dead end fixed (see below).
 
 * Household type and slim view (child 1)
 
@@ -637,3 +634,54 @@ balance stay out until the owner shares it.
 
 Tests: =tests/test-venture-household-dashboard.c= (both privacy directions,
 the forecast week by week, and the template).
+
+* A full month as a household (child 10)
+
+Two members, Rowan and Quinn, walked September in the web UI, once at 390
+and once at 1440 pixels wide, each time on an empty household, with no
+sideways scroll at any step:
+
+1. Sign in: the household overview opens.
+2. Bank accounts: /Joint checking/ (checking) and /Holiday savings/
+   (savings), each saved with only a name and kind.
+3. Joint checking / Banking actions / import: choose the statement file,
+   type its columns, tick Save mapping: 11 statement lines.
+4. Accounts: an expense account per spending category (Groceries, Housing,
+   Utilities, Transport, Subscriptions, Health).
+5. Statement lines / create: pay as Income, the rest as Expense with a
+   category; the move to savings linked as a transfer. Nothing left over.
+6. Budgets: a Groceries envelope of $420 shows $397.60 spent.
+7. Bills / New bill: City Electric added through "Not listed? Add them",
+   the bill approved and paid from Pay bills.
+8. Goals: Holiday fund on the savings account reaches 100%.
+9. Settle up: Rowan records a shared dinner; Quinn marks it repaid.
+10. The pharmacy purchase tagged deductible; Year-end for taxes lists it and
+    exports as CSV.
+11. The overview shows the month.
+
+** Dead ends found and fixed
+
+- A bank account would not save without a ledger account ("failed without
+  saying why; this is a bug"). Now one is made with it.
+- A taken account code showed a raw SQL error. Now it names the account
+  that has the code.
+- Members signed in to the full business view. An entity whose only
+  ventures are households now opens as the household until someone picks
+  Full view.
+- Importing meant pasting a file into a form that mixed five actions. The
+  form shows only the chosen action's fields and has a file picker.
+- Import ignored the column boxes beside it and failed every ISO date when
+  no date format was saved. It uses them, and an empty format means ISO.
+- Pay in from a statement line needed a business customer. *Income* records
+  it as household income.
+- Envelopes never saw categorised spending, which all posted to General
+  expenses. In household books a category books to the expense account of
+  the same name.
+
+** Left, low
+
+- A savings goal at 100% keeps the status Active until it is marked
+  achieved.
+- Report pages name their period buttons THIS_MONTH and so on and have no
+  "last year" button.
+- An account still needs a typed code; bank accounts make theirs.

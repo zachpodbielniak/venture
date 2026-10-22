@@ -15,5 +15,7 @@ gboolean venture_ledger_post_legacy(VentureDatabase *db, GPtrArray *entries,
 	const VentureActor *actor, GError **error);
 void venture_ledger_register_rules(VenturePostingRuleRegistry *registry);
 void venture_ledger_register_report(VentureReportRegistry *registry);
+/* Names the account holding a taken code instead of a constraint error. */
+void venture_account_code_install(VentureDatabase *database);
 
 #endif

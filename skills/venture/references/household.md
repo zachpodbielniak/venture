@@ -1,9 +1,7 @@
-# Household finance — children 1–9 of epic #201
+# Household finance — epic #201, children 1–10
 
-This is a partial delivery. The full-month acceptance walkthrough (child 10)
-remains open. The responsive walkthrough
-and its repairs cover the existing finance pages, not those remaining children.
-Refer to #201; do not describe this branch as completing or closing the epic.
+All ten children are delivered on the epic branch, awaiting review. Refer to
+#201; until it is reviewed and merged, do not describe it as closing the epic.
 
 ## Choose the books before the view
 
@@ -147,3 +145,13 @@ per currency) and `household_cash_forecast` (checking, savings and cash
 balance carried forward weekly through due events; options `as_of`,
 `weeks`) and `household_months` (money in, spent, left over by month), beside `net_worth`. All obey the private-account
 contract.
+
+## Household defaults worth knowing
+
+A bank account saved without a ledger account gets one (`BANK-n`, asset or
+liability by kind, book currency). Statement import uses the columns passed
+with it and treats an empty date format as ISO. Statement line `create` with
+`type: income` records household income with no customer. In household books an
+expense category with no posting-map entry books to the expense account of
+the same name. An entity whose ventures are all households opens in the household
+view.
