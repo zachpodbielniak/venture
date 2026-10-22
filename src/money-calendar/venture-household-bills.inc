@@ -71,7 +71,7 @@ repeat_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint64 
 		g_autofree gchar *base = g_strdup_printf("%" G_GINT64_FORMAT "|%s", number(row, "bank-account-id"), merchant);
 		g_autofree gchar *key = NULL;
 		g_autoptr(VentureEntity) match = NULL, bank = NULL;
-		g_autofree gchar *type = NULL;
+		g_autofree gchar *type = NULL, *match_kind = NULL;
 		GPtrArray *group;
 		if (at == NULL || amount == NULL || !venture_money_is_negative(amount) || *merchant == '\0' ||
 			g_strcmp0(state, "excluded") == 0 || g_hash_table_contains(tracked, base) ||
@@ -79,8 +79,8 @@ repeat_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint64 
 		bank = load(db, VENTURE_TYPE_BANK_ACCOUNT, number(row, "bank-account-id"), venture_entity_get_organization_id(row));
 		if (bank == NULL) continue;
 		match = load(db, VENTURE_TYPE_BANK_MATCH, number(row, "match-id"), venture_entity_get_organization_id(row));
-		if (match != NULL) type = text(match, "record-type");
-		if (g_strcmp0(type, "bank_transfer") == 0) continue;
+		if (match != NULL) { type = text(match, "record-type"); match_kind = text(match, "kind"); }
+		if (g_strcmp0(type, "bank_transfer") == 0 || g_strcmp0(match_kind, "transfer") == 0) continue;
 		/* Group by merchant and currency, not amount: a changed price must
 		 * invalidate the old estimate instead of predicting both prices. */
 		key = g_strdup_printf("%s|%s", base, venture_money_get_currency(amount));

@@ -265,7 +265,6 @@ venture_database_init(VentureDatabase *self)
 	venture_stripe_install_validators(self);
 	venture_document_install_validators(self);
 	venture_bankfeed_install_validators(self);
-	venture_access_policy_install_privacy(self);
 	venture_connector_install(self);
 	venture_marketing_install(self);
 	venture_attribution_install(self);
@@ -1823,6 +1822,14 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 				return FALSE;
 			}
 		}
+	}
+
+	/* Privacy last: the specific reference and scope errors above win, and
+	 * whatever they let through still fails closed here. */
+	if (!venture_access_policy_validate_privacy(self, entity, previous, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
 	}
 
 	/* Validators may fill ordinary defaults, but cannot grant a generic

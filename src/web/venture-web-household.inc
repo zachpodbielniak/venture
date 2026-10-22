@@ -27,6 +27,7 @@ static const VentureWebNavLink venture_household_nav[] = {
 	{ "/reports/net_worth", "Net worth", VENTURE_ICON("<path d=\"M4 20h16M7 20V12M12 20V4M17 20V8\"/>"), "Reports", "statements" },
 	{ "/reports/debt_payoff", "Debt payoff", VENTURE_ICON("<path d=\"M4 7l6 6 4-4 6 10\"/>"), NULL, "statements" },
 	{ "/reports/savings_goals", "Savings progress", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"8\"/>"), "Goals", "goals" },
+	{ "/e/household_share", "Settle up", VENTURE_ICON("<path d=\"M4 8h16l-4-4M20 16H4l4 4\"/>"), "Money", "banking" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -205,4 +206,56 @@ venture_web_ui_switch_venture(HtmxRequest *request, GHashTable *params, gpointer
 	response = venture_web_redirect_to(g_strcmp0(kind, "household") == 0 ? venture_web_household_home(self) : "/");
 	htmx_response_add_header(response, "Set-Cookie", cookie);
 	return response;
+}
+
+/* A participant picker discloses names, not user records or credentials.
+ * Ordinary user CRUD remains installation-owner-only. */
+static GPtrArray *
+venture_web_household_members(VentureWebServer *self, gint64 organization)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) org = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) memberships = NULL;
+	GPtrArray *result = g_ptr_array_new_with_free_func(g_object_unref);
+	guint i;
+	if (organization <= 0) return result;
+	org = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, organization, NULL);
+	if (!org) return result;
+	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	venture_query_set_organization(query, organization);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "active", VENTURE_FILTER_OP_EQ, 1, NULL);
+	memberships = venture_database_find(database, query, NULL);
+	for (i = 0; memberships && i < memberships->len; i++) {
+		VentureEntity *member = g_ptr_array_index(memberships, i);
+		g_autoptr(VentureEntity) user = NULL;
+		g_autofree gchar *name = NULL;
+		gint64 id = 0;
+		gboolean active = FALSE;
+		g_object_get(member, "user-id", &id, NULL);
+		user = venture_database_get(database, VENTURE_TYPE_USER, id, NULL);
+		if (!user || venture_entity_is_deleted(user)) continue;
+		g_object_get(user, "active", &active, "username", &name, NULL);
+		if (active) g_ptr_array_add(result, g_object_new(VENTURE_TYPE_USER, "id", id, "username", name, NULL));
+	}
+	return result;
+}
+
+static gchar *
+venture_web_household_member_name(VentureWebServer *self, gint64 organization, gint64 user_id)
+{
+	g_autoptr(GPtrArray) members = venture_web_household_members(self, organization);
+	guint i;
+	for (i = 0; i < members->len; i++) {
+		VentureEntity *user = g_ptr_array_index(members, i);
+		if (venture_entity_get_id(user) == user_id) {
+			gchar *name = NULL;
+			g_object_get(user, "username", &name, NULL);
+			return name;
+		}
+	}
+	return g_strdup("Former household member");
 }

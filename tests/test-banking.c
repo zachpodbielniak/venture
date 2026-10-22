@@ -1621,11 +1621,141 @@ test_payment_cash_account(BankFixture *f, gconstpointer data)
 	g_assert_false(journal_credits_account(f, account_by_code(f, "1000")));
 }
 
+/* Imported evidence and both sides of posted private spending stay private.
+ * This exercises the service writer, not just unsaved model metadata. */
+static void
+test_household_private_posting(BankFixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) owner = NULL, other = NULL, membership = NULL;
+	g_autoptr(VentureEntity) account = NULL, statement = NULL, result = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAccessPolicy *policy = venture_database_get_access_policy(f->database);
+	VentureAuthPrincipal actor = { 0 };
+	GType hidden[] = { VENTURE_TYPE_BANK_STATEMENT, VENTURE_TYPE_BANK_TRANSACTION,
+		VENTURE_TYPE_BANK_MATCH, VENTURE_TYPE_EXPENSE, VENTURE_TYPE_JOURNAL,
+		VENTURE_TYPE_JOURNAL_LINE, VENTURE_TYPE_LEDGER_ENTRY };
+	guint i;
+	(void)data;
+	owner = g_object_new(VENTURE_TYPE_USER, "username", "private-payer", "active", TRUE, NULL);
+	other = g_object_new(VENTURE_TYPE_USER, "username", "other-member", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, owner, NULL, &error));
+	g_assert_true(venture_database_save(f->database, other, NULL, &error));
+	for (i = 0; i < 2; i++) {
+		g_clear_object(&membership);
+		membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", f->org,
+			"user-id", venture_entity_get_id(i == 0 ? owner : other), "active", TRUE,
+			"role", VENTURE_ORGANIZATION_ROLE_OWNER, NULL);
+		g_assert_true(venture_database_save(f->database, membership, NULL, &error));
+	}
+	account = g_object_new(VENTURE_TYPE_ACCOUNT, "organization-id", f->org, "name", "Personal cash",
+		"code", "private-cash", "kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE,
+		"private-owner-id", venture_entity_get_id(owner), NULL);
+	g_assert_true(venture_database_save(f->database, account, NULL, &error));
+	g_clear_object(&f->bank);
+	f->bank = g_object_new(VENTURE_TYPE_BANK_ACCOUNT, "organization-id", f->org,
+		"name", "Personal cash", "account-id", venture_entity_get_id(account), "currency", "USD", NULL);
+	g_assert_true(venture_database_save(f->database, f->bank, NULL, &error));
+	g_assert_no_error(error);
+	actor.authenticated = TRUE;
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	actor.user_id = venture_entity_get_id(owner);
+	scope = venture_access_policy_enter(policy, &actor);
+	statement = bank_import(f, "ofx",
+		"<OFX><STMTTRN><DTPOSTED>20260110<TRNAMT>-10<FITID>private-pay<NAME>Personal purchase</STMTTRN></OFX>",
+		"-10 USD", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(statement);
+	result = bank_action(f, "create", 1, "{\"type\":\"expense\"}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	for (i = 0; i < G_N_ELEMENTS(hidden); i++) g_assert_cmpuint(bank_count(f, hidden[i]), >, 0);
+	g_clear_object(&scope);
+	actor.user_id = venture_entity_get_id(other);
+	scope = venture_access_policy_enter(policy, &actor);
+	for (i = 0; i < G_N_ELEMENTS(hidden); i++) g_assert_cmpuint(bank_count(f, hidden[i]), ==, 0);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_ACCOUNT), ==, 1);
+	g_clear_object(&scope);
+	actor.user_id = venture_entity_get_id(owner);
+	scope = venture_access_policy_enter(policy, &actor);
+	g_object_set(account, "household-shared", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, account, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&scope);
+	actor.user_id = venture_entity_get_id(other);
+	scope = venture_access_policy_enter(policy, &actor);
+	for (i = 0; i < G_N_ELEMENTS(hidden); i++) g_assert_cmpuint(bank_count(f, hidden[i]), >, 0);
+	g_clear_object(&scope);
+	actor.user_id = venture_entity_get_id(owner);
+	scope = venture_access_policy_enter(policy, &actor);
+	g_object_set(account, "household-shared", FALSE, NULL);
+	g_assert_true(venture_database_save(f->database, account, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&scope);
+	actor.user_id = venture_entity_get_id(owner);
+	scope = venture_access_policy_enter(policy, &actor);
+	g_clear_object(&result);
+	/* A transfer entered while sharing must keep the joint balance correct
+	 * after the owner stops sharing the personal side. */
+	g_object_set(account, "household-shared", TRUE, NULL);
+	g_assert_true(venture_database_save(f->database, account, NULL, &error));
+	result = bank_action(f, "transfer", venture_entity_get_id(f->bank),
+		"{\"counterparty_bank_account_id\":1,\"amount\":\"5 USD\",\"date\":\"2026-01-11\"}", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_object_set(account, "household-shared", FALSE, NULL);
+	g_assert_true(venture_database_save(f->database, account, NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&scope);
+	actor.user_id = venture_entity_get_id(other);
+	scope = venture_access_policy_enter(policy, &actor);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_EXPENSE), ==, 0);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_BANK_TRANSFER), ==, 0);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL), ==, 1);
+	g_assert_cmpuint(bank_count(f, VENTURE_TYPE_JOURNAL_LINE), ==, 2);
+	{
+		g_autoptr(GDateTime) as_of = g_date_time_new_utc(2026, 1, 31, 23, 59, 59);
+		g_autoptr(VentureMoney) balance = venture_posting_service_account_balance(
+			venture_database_get_posting_service(f->database), account_by_code(f, "1000"), f->org, "USD", as_of, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(balance);
+		g_assert_cmpint(balance->amount, ==, 500);
+	}
+
+	g_clear_object(&scope);
+	/* Scheduled exports have service authority, not the last browser's
+	 * principal; their shared output must still omit personal evidence. */
+	{
+		g_autoptr(VentureEntity) saved = g_object_new(VENTURE_TYPE_SAVED_REPORT,
+			"organization-id", f->org, "name", "Shared year", "report-name", "general_ledger", "period", "2026", NULL);
+		g_autoptr(VentureReportPack) pack = NULL;
+		g_autoptr(GPtrArray) reports = NULL;
+		g_autofree gchar *ids = NULL, *json = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		g_assert_true(venture_database_save(f->database, saved, NULL, &error));
+		ids = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(saved));
+		pack = g_object_new(VENTURE_TYPE_REPORT_PACK, "organization-id", f->org,
+			"name", "Shared year", "saved-report-ids", ids, NULL);
+		g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(pack), NULL, &error));
+		reports = venture_report_pack_service_run_pack(venture_report_pack_service_get(f->database), f->context, pack, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(reports);
+		g_assert_cmpuint(reports->len, ==, 1);
+		node = venture_report_result_to_json(g_ptr_array_index(reports, 0));
+		json = venture_json_to_string(node, FALSE);
+		g_assert_null(strstr(json, "Personal purchase"));
+		g_assert_null(strstr(json, "private-cash"));
+		g_assert_nonnull(strstr(json, "Household contributions"));
+	}
+
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
+	g_test_add("/banking/household-private-posting", BankFixture, NULL, bank_setup, test_household_private_posting, bank_teardown);
 	g_test_add("/banking/invalid-calendar-day", BankFixture, NULL, bank_setup, test_invalid_calendar_day, bank_teardown);
 	g_test_add("/banking/deleted-match-target", BankFixture, NULL, bank_setup, test_deleted_match_target, bank_teardown);
 	g_test_add("/banking/ofx-currency", BankFixture, NULL, bank_setup, test_ofx_currency, bank_teardown);

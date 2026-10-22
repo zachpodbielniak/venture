@@ -3,13 +3,12 @@
 
 * Status
 
-This branch is a partial delivery of issue #201: children 1–6 plus repairs
+This branch is a partial delivery of issue #201: children 1–7 plus repairs
 from the responsive household walkthrough. It does not complete or close the
-epic. Publication scope is "household finance workflows, children 1–6";
+epic. Publication scope is "household finance workflows, children 1–7";
 use =Refs #201=, never =Closes #201= for this delivery.
 
-Children 7–10 remain open: shared/personal account settlement, deductible
-exports and warranty reminders, a dedicated phone dashboard, and a full-month
+Children 8–10 remain open: deductible exports and warranty reminders, a dedicated phone dashboard, and a full-month
 acceptance walkthrough. The existing 390/1440 walkthrough exercises budget,
 bills, wealth, debt and savings pages; it is not the child-10 full-month proof.
 
@@ -37,7 +36,7 @@ Business ventures in the same organization are unchanged.
 4. Implemented: due calendar, repeat-charge suggestions, subscriptions with yearly cost and opt-in inbox reminders (see below).
 5. Implemented: monthly net worth and snowball/avalanche payoff estimates (see below).
 6. Implemented: savings goals tied to asset accounts or rollover envelopes (see below).
-7. Planned: several members, shared and personal accounts, settling up.
+7. Implemented: separate members, private accounts with owner-controlled household sharing, and settling up.
 8. Planned: deductible tags, a year-end export, warranty reminders.
 9. Planned: a phone-first household dashboard.
 10. Planned: a full month walked as a household, every dead end fixed.
@@ -447,3 +446,104 @@ to Node (for example through =NODE_PATH=), =VENTURE_TEST_UI_URL=,
 must contain a linked savings goal and a recurring bill. Optionally set
 =VENTURE_TEST_CHROMIUM= to an installed Chromium executable. It logs in,
 reads pages and follows a bill link; it does not seed or change records.
+
+* Members, account sharing and settling up (child 7)
+
+Personal accounts are private to their owner unless that owner explicitly
+checks *Share with household*. While unshared, other household members,
+including household administrators, cannot see the account, statements,
+receipts, reports, exports or underlying settlement evidence derived from it.
+When shared, all of those follow the account and become visible
+to the household's authorized finance members. Each member uses a separate
+login and an active membership in the household's organization.
+
+Settlement disclosures contain only the shared amounts the reader is a
+party to. They must never identify the private funding account, statement,
+receipt or journal behind those amounts. Installation administrators retain
+the existing service administration authority; household membership must not
+be implemented by granting that global role.
+
+This is the child-7 acceptance contract. Keep its policy tests together in
+=test-orgaccess= so a later policy decision can change the contract in one
+place. The existing optional personal-owner metadata is the enforcement
+primitive; a household navigation selection is never an access boundary.
+
+** Separate logins and personal accounts
+
+Use the existing user and organization membership screens to give each adult
+an individual login and an active membership in the household's entity.
+Use the organization Finance role for bookkeeping. Do not grant global Owner
+or Admin to a household member merely so they can enter spending: those are
+installation administration roles with access to all data.
+
+Open *Money / Accounts*. When creating an asset or liability ledger account,
+choose its *Private owner*
+for a personal account, or leave it empty for a joint account. The Bank account
+inherits that choice from its Ledger account. Existing accounts remain shared;
+ownership cannot be reassigned after saving. The owner can check or clear
+*Share with household* on the ledger account. Sharing includes historical
+activity; clearing it hides the account and its derived records again. It
+cannot recall exports someone already downloaded while sharing was enabled.
+Create a new personal account for future activity on a previously joint account. Spending categories stay shared; the purchase amounts inherit
+the funding account's privacy.
+
+Statement imports, statement lines, matches, category rules, feed connections,
+reconciliations, spending, income, receipts, savings goals and repeating bills
+inherit privacy through their declared references. Changing a reference within
+the same ownership remains possible; changing it to publish another person's
+private data is refused. Private postings hide both journal sides and their
+ledger projections, including from reports and record exports. Retained report
+packs and period-close snapshots contain shared records only, even when a
+scheduled service runs them. Live reports also include the reader's own
+personal records under the normal request authority.
+
+** Transfers involving a joint account
+
+A personal-to-joint transfer, or its reverse, creates two balanced journals
+through the shared *Household contributions* equity account. The journal for
+the joint account contains its amount and that equity account, never the
+personal account or the private transfer reference. Its statement match links
+to this shared journal. Each journal names only its own bank account; the transfer keeps both
+sides for authorized readers. Taken together the journals have the same asset/liability
+movement as a direct transfer; principal never becomes spending. A fee remains
+spending on the side that paid it. Transfers between joint accounts keep the ordinary single journal. Any
+personal account uses two journals even while shared, so stopping sharing
+later preserves the joint-side balance.
+
+The shared contribution account uses code =HH-CLEAR-<entity id>= and must
+remain shared equity. Its balance reflects the shared side of contributions
+when the other side is private to somebody else. Nothing here converts
+currencies or allows a member to use another member's personal account.
+
+** Who paid and settling up
+
+Open *Money / Settle up*. Add a shared purchase, choose *Who paid* and *Who owes
+a share*, enter only the amount to repay and the purchase date. The people
+picker lists active members by login name without opening their user records.
+Only those two members can read, export or edit the entry; organization
+administration alone grants no access. The label must describe the shared
+purchase only. There is no funding account, statement or private receipt field.
+
+After repayment happens, either participant can check *Repaid*. The date is
+recorded if left empty. A repaid entry keeps its amount, participants and dates;
+remove a mistaken entry and record its correction, with audit history retained.
+This is a record of an agreed obligation and an external repayment, not a bank
+payment or another spending entry. Import and reconcile actual bank movements
+through Money as usual so a shared purchase is never counted twice.
+
+Migration =000926_household_privacy.sql= preserves all old accounts as shared
+on SQLite and PostgreSQL. New reference metadata adds no invented account
+owners or historical repayments. The settlement table is created only when
+banking is enabled.
+
+Shared bill payments and invoice collections use a shared funding account.
+To fund a shared bill personally, first transfer the contribution to the joint
+account, then pay the bill there. This keeps its shared payable balance and
+payment evidence consistent without disclosing a personal account. A personal
+receipt cannot be allocated to a shared invoice. These refusals leave the
+operation unchanged; ordinary shared business accounting is unchanged.
+
+Personal subscription schedules use Forecast only and import their actual
+charges. Personal capture items inherit the original document's privacy;
+automatic conversion into a shared bill or expense is refused. Enter the
+purchase from its personal account and attach the receipt to that purchase.

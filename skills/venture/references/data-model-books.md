@@ -159,3 +159,15 @@ is *financial*: organization finance/admin/owner to write.
 [household.md](household.md) explains workflows, direct book balances, forecast
 limits and the shared-source caveat. No new household record type or access
 boundary is created; the venture's `venture_type` selects household navigation.
+
+### Household member privacy
+
+`account.private_owner_id -> user` is optional and immutable after creation:
+zero is shared. Bank evidence, purchases, receipts and ledger projections
+inherit it. `household_share` belongs to banking and holds only two active
+participants (`payer_id`, `member_id`), their shared amount/date and repayment
+state. It is private to its participants and never posts money. See
+[household.md](household.md) for personal/shared transfers and setup.
+
+Only the personal account owner may change `account.household_shared`; dependent
+financial records follow that account choice. Owner identity cannot be reassigned.

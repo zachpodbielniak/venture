@@ -69,6 +69,18 @@ VentureAccessScope *venture_access_policy_enter(VentureAccessPolicy *self, const
 VentureAccessScope *venture_access_policy_enter_organization(VentureAccessPolicy *self,
 	const VentureAuthPrincipal *actor, gint64 organization_id);
 /**
+ * venture_access_policy_enter_shared:
+ * @self: repository policy
+ * @organization_id: positive organization whose shared records are read
+ *
+ * Narrows the current principal to shared records for retained reports.
+ * Internal scheduled work also excludes personal records. Nested scopes
+ * restore the previous restriction when released.
+ * Returns: (transfer full): synchronous shared read scope
+ */
+VentureAccessScope *venture_access_policy_enter_shared(VentureAccessPolicy *self, gint64 organization_id);
+
+/**
  * venture_access_policy_get_organization:
  * @self: policy
  * Returns: current positive organization, zero if unbound, or -1 if refused
@@ -267,6 +279,18 @@ gboolean venture_orgaccess_limit_token(VentureAuth *auth, VentureDatabase *datab
  */
 gint64 venture_access_policy_get_personal_owner(VentureAccessPolicy *self, VentureEntity *entity);
 /**
+ * venture_access_policy_get_declared_owner:
+ * @self: repository policy
+ * @entity: record whose ownership is declared by field metadata
+ *
+ * Returns: the ownership boundary ignoring an account's current sharing
+ *   choice; positive user ID, zero for joint records, or a negative value
+ *   for unresolved or participant-only ownership. Use this when retaining
+ *   derived evidence that must remain safe after sharing is revoked.
+ */
+gint64 venture_access_policy_get_declared_owner(VentureAccessPolicy *self, VentureEntity *entity);
+
+/**
  * venture_access_policy_record_is_personal:
  * @self: repository policy
  * @entity: record to classify from field metadata
@@ -277,13 +301,22 @@ gint64 venture_access_policy_get_personal_owner(VentureAccessPolicy *self, Ventu
  */
 gboolean venture_access_policy_record_is_personal(VentureAccessPolicy *self, VentureEntity *entity);
 /**
- * venture_access_policy_install_privacy:
- * @database: repository receiving its one metadata-driven privacy validator
+ * venture_access_policy_validate_privacy: (skip)
+ * @database: the repository saving @entity
+ * @entity: the record about to be written
+ * @previous: (nullable): the stored record, or %NULL on create
+ * @error: return location for a #GError
  *
- * Installs immutable optional ownership and new-owner membership checks for
- * all record types, including types registered by plugins later.
+ * The one metadata-driven privacy check: immutable private ownership,
+ * owner-only household sharing and new-owner membership, for every record
+ * type including plugin types. The repository runs it after every other
+ * save validator, so a missing or cross-organization reference reports its
+ * own error first; anything still unresolved here fails closed.
+ *
+ * Returns: %TRUE when the write keeps the privacy boundary
  */
-void venture_access_policy_install_privacy(VentureDatabase *database);
+gboolean venture_access_policy_validate_privacy(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, GError **error);
 
 /**
  * venture_access_policy_check_action:

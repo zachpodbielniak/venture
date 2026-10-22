@@ -49,5 +49,8 @@ VENTURE_DECLARE_ENTITY(VentureReconciliation, venture_reconciliation, RECONCILIA
 VENTURE_DECLARE_ENTITY(VentureBankRule, venture_bank_rule, BANK_RULE)
 #define VENTURE_TYPE_BANK_TRANSFER (venture_bank_transfer_get_type())
 VENTURE_DECLARE_ENTITY(VentureBankTransfer, venture_bank_transfer, BANK_TRANSFER)
+
+#define VENTURE_TYPE_HOUSEHOLD_SHARE (venture_household_share_get_type())
+VENTURE_DECLARE_ENTITY(VentureHouseholdShare, venture_household_share, HOUSEHOLD_SHARE)
 G_END_DECLS
 #endif

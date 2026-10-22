@@ -842,6 +842,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_reconciliation_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_bank_rule_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_bank_transfer_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_household_share_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_bank_connection_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sequence_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sequence_step_get_type, VENTURE_DATA_CLASS_TENANT },

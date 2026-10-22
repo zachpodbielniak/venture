@@ -314,6 +314,161 @@ test_role_matrix(gconstpointer data)
 	g_assert_true(venture_access_policy_can(policy, &actor, "export", expense, NULL));
 }
 
+/* A household member, including its administrator, cannot read another
+ * member's personal ledger or the bank account rooted in it. */
+static void
+test_household_account_privacy(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	g_autoptr(VentureEntity) org = NULL, user = NULL, member = NULL;
+	g_autoptr(VentureEntity) account = NULL, bank = NULL, other = NULL, other_member = NULL;
+	g_autoptr(VentureEntity) expense = NULL, document = NULL, share = NULL, stranger = NULL, stranger_member = NULL;
+	g_autoptr(VentureMoney) share_amount = venture_money_new(2500, "USD", 2);
+	g_autoptr(GDateTime) purchase_date = g_date_time_new_utc(2026, 1, 1, 0, 0, 0);
+	VentureAuthPrincipal actor = { 0 };
+	VentureAccessPolicy *policy;
+	gint64 organization;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	org = venture_database_find_one(db, query, NULL);
+	organization = venture_entity_get_id(org);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "household-reader", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"organization-id", organization, "user-id", venture_entity_get_id(user),
+		"active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_OWNER, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	account = g_object_new(VENTURE_TYPE_ACCOUNT, "organization-id", organization,
+		"code", "household-private", "name", "Personal savings", "kind", VENTURE_ACCOUNT_KIND_ASSET, NULL);
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(account), "private-owner-id"));
+	g_object_set(account, "private-owner-id", venture_entity_get_id(user), NULL);
+	g_assert_true(venture_database_save(db, account, NULL, NULL));
+	bank = g_object_new(VENTURE_TYPE_BANK_ACCOUNT, "organization-id", organization,
+		"name", "Personal savings", "account-id", venture_entity_get_id(account), "currency", "USD", NULL);
+	g_assert_true(venture_database_save(db, bank, NULL, NULL));
+	expense = g_object_new(VENTURE_TYPE_EXPENSE, "organization-id", organization,
+		"description", "Private purchase", "cash-account-id", venture_entity_get_id(account), NULL);
+	g_assert_true(venture_database_save(db, expense, NULL, NULL));
+	document = g_object_new(VENTURE_TYPE_DOCUMENT, "organization-id", organization,
+		"title", "Private receipt", "expense-id", venture_entity_get_id(expense),
+		"private-owner-id", venture_entity_get_id(user), NULL);
+	g_assert_true(venture_database_save(db, document, NULL, NULL));
+	policy = venture_database_get_access_policy(db);
+	actor.authenticated = TRUE;
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	actor.user_id = venture_entity_get_id(user);
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", bank, NULL));
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", expense, NULL));
+	g_assert_true(venture_access_policy_can(policy, &actor, "export", document, NULL));
+	g_assert_true(venture_access_policy_can(policy, &actor, "export", account, NULL));
+	g_assert_cmpint(venture_access_policy_get_personal_owner(policy, bank), ==, actor.user_id);
+	other = g_object_new(VENTURE_TYPE_USER, "username", "household-other", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, other, NULL, NULL));
+	other_member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"organization-id", organization, "user-id", venture_entity_get_id(other),
+		"active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_OWNER, NULL);
+	g_assert_true(venture_database_save(db, other_member, NULL, NULL));
+	{
+		g_autoptr(VentureAccessScope) shared = venture_access_policy_enter_shared(policy, organization);
+		g_autoptr(VentureQuery) accounts = venture_query_new(VENTURE_TYPE_BANK_ACCOUNT);
+		g_autoptr(GPtrArray) visible = venture_database_find(db, accounts, NULL);
+		g_assert_nonnull(visible);
+		g_assert_cmpuint(visible->len, ==, 0);
+		g_assert_false(venture_access_policy_check_read(policy, document, NULL));
+	}
+	share = g_object_new(VENTURE_TYPE_HOUSEHOLD_SHARE, "organization-id", organization,
+		"description", "Shared groceries", "payer-id", venture_entity_get_id(user),
+		"member-id", venture_entity_get_id(other), "amount", share_amount, "date", purchase_date, NULL);
+	g_assert_true(venture_database_save(db, share, NULL, NULL));
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", share, NULL));
+	actor.user_id = venture_entity_get_id(other);
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", share, NULL));
+	g_object_set(share, "settled", TRUE, NULL);
+	g_assert_true(venture_database_save(db, share, NULL, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", bank, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "export", bank, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", expense, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "export", document, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", account, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "export", account, NULL));
+	/* Only the account owner may explicitly share or stop sharing. Derived
+	 * records follow the account, including attachments and exports. */
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(account), "household-shared"));
+	g_object_set(account, "household-shared", TRUE, NULL);
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(policy, &actor);
+		g_assert_false(venture_database_save(db, account, NULL, NULL));
+	}
+	actor.user_id = venture_entity_get_id(user);
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(policy, &actor);
+		g_assert_true(venture_database_save(db, account, NULL, NULL));
+	}
+	actor.user_id = venture_entity_get_id(other);
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", bank, NULL));
+	g_assert_true(venture_access_policy_can(policy, &actor, "export", expense, NULL));
+	g_assert_true(venture_access_policy_can(policy, &actor, "export", document, NULL));
+	g_object_set(account, "household-shared", FALSE, NULL);
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(policy, &actor);
+		g_assert_false(venture_database_save(db, account, NULL, NULL));
+	}
+	actor.user_id = venture_entity_get_id(user);
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(policy, &actor);
+		g_assert_true(venture_database_save(db, account, NULL, NULL));
+	}
+	actor.user_id = venture_entity_get_id(other);
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", bank, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "export", document, NULL));
+	g_object_set(account, "private-owner-id", actor.user_id, NULL);
+	g_assert_false(venture_database_save(db, account, NULL, NULL));
+	stranger = g_object_new(VENTURE_TYPE_USER, "username", "third-household-member", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, stranger, NULL, NULL));
+	stranger_member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", organization,
+		"user-id", venture_entity_get_id(stranger), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_OWNER, NULL);
+	g_assert_true(venture_database_save(db, stranger_member, NULL, NULL));
+	actor.user_id = venture_entity_get_id(stranger);
+	g_assert_false(venture_access_policy_can(policy, &actor, "read", share, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "export", share, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "write", share, NULL));
+	/* Private ownership must not bypass read-only or finance roles. */
+	g_object_set(account, "private-owner-id", venture_entity_get_id(user), NULL);
+	actor.user_id = venture_entity_get_id(user);
+	actor.role = VENTURE_USER_ROLE_VIEWER;
+	g_assert_true(venture_access_policy_can(policy, &actor, "read", account, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "write", account, NULL));
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	g_object_set(member, "role", VENTURE_ORGANIZATION_ROLE_VIEWER, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	g_assert_false(venture_access_policy_can(policy, &actor, "write", account, NULL));
+
+}
+
+static void
+test_household_privacy_upgrade(void)
+{
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureEntity) account = NULL, reloaded = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GError) error = NULL;
+	gint64 owner = -1;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	account = venture_database_find_one(db, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(account);
+	g_assert_true(venture_database_execute(db,
+		"DROP INDEX IF EXISTS idx_accounts_private_owner_id; ALTER TABLE accounts DROP COLUMN private_owner_id; DELETE FROM schema_migrations WHERE version = 926", NULL, &error));
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	reloaded = venture_database_get(db, VENTURE_TYPE_ACCOUNT, venture_entity_get_id(account), &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(reloaded);
+	g_assert_cmpstr(venture_entity_get_uuid(account), ==, venture_entity_get_uuid(reloaded));
+	g_object_get(reloaded, "private-owner-id", &owner, NULL);
+	g_assert_cmpint(owner, ==, 0);
+}
+
 static void
 test_team_revocation(void)
 {
@@ -900,5 +1055,7 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/assignment-ownership", test_assignment_ownership);
 	g_test_add_func("/orgaccess/crm-ai-scopes", test_crm_ai_scopes);
 	g_test_add_func("/orgaccess/type-level-actions", test_type_level_actions);
+	g_test_add_func("/orgaccess/household-account-privacy", test_household_account_privacy);
+	g_test_add_func("/orgaccess/household-privacy-upgrade", test_household_privacy_upgrade);
 	return g_test_run();
 }

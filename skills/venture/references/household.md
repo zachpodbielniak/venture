@@ -1,8 +1,8 @@
-# Household finance — children 1–6 of epic #201
+# Household finance — children 1–7 of epic #201
 
-This is a partial delivery. Shared/personal account settlement, deductible
-exports and warranty reminders, a dedicated phone dashboard, and the full-month
-acceptance walkthrough (children 7–10) remain open. The responsive walkthrough
+This is a partial delivery. Deductible exports and warranty reminders, a
+dedicated phone dashboard, and the full-month acceptance walkthrough
+(children 8–10) remain open. The responsive walkthrough
 and its repairs cover the existing finance pages, not those remaining children.
 Refer to #201; do not describe this branch as completing or closing the epic.
 
@@ -95,3 +95,31 @@ row bound; ordinary and other-currency goals cannot exhaust a narrowed report.
 Too many matching goals still fail: narrow by `goal_id`.
 
 Full setup, calculation rules and migration notes: `docs/household.org`.
+
+## Personal accounts and settling up
+
+Give each adult a login with an active organization Finance membership, not a
+global Owner/Admin role. Create a personal asset/liability `account` with
+`private_owner_id` set to its owner; blank means joint. Its `bank_account` and
+all imported evidence inherit that choice. Ownership is fixed after creation.
+Only that owner can toggle `household_shared` on the ledger account: sharing
+exposes its historical activity and receipts; stopping sharing hides them again
+in live reads. Downloaded or previously retained shared exports cannot be recalled.
+Private purchases, receipts, journal sides, savings sources and record links
+stay private in lists, reports and exports. Scheduled report packs and period
+snapshots contain shared records only.
+
+Personal/joint transfers use balanced contribution journals so the joint
+balance remains correct without exposing the personal account. Principal is
+not spending. Shared bills and invoices use a shared account: transfer a
+personal contribution there first. Personal subscriptions must be Forecast
+only; import actual charges. For a personal receipt, enter spending from its
+personal account and attach the receipt rather than converting it through the
+shared capture workflow.
+
+`describe household_share` describes Settle up: `payer_id`, `member_id`,
+`amount` (the other person's share), `date`, and `settled`. Both participants
+must be active in the same entity; only they can access the entry. There is
+no private account/receipt reference to disclose. Mark settled only after
+repayment; this records an external repayment and never moves money or books
+another expense. The generated web, API and CLI use the same checks.

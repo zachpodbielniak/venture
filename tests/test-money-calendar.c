@@ -881,8 +881,9 @@ test_repeat_charges(Fixture *f, gconstpointer unused)
 	VentureMoneyCalendarEvent *event;
 	gboolean irregular = GPOINTER_TO_INT(unused) == 1;
 	gboolean february = GPOINTER_TO_INT(unused) == 2;
-	const gchar *from = february ? "2026-03-01" : "2026-01-01";
-	const gchar *to = february ? "2026-05-01" : "2026-03-01";
+	gboolean transfers = GPOINTER_TO_INT(unused) == 3;
+	const gchar *from = transfers ? "2026-04-01" : february ? "2026-03-01" : "2026-01-01";
+	const gchar *to = transfers ? "2026-06-01" : february ? "2026-05-01" : "2026-03-01";
 	venture_query_set_organization(query, f->org);
 	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "1000", NULL);
 	accounts = venture_database_find(f->db, query, &error);
@@ -894,15 +895,45 @@ test_repeat_charges(Fixture *f, gconstpointer unused)
 		"external-id-column", "ID", "date-format", "%Y-%m-%d", "sign-convention", "normal", NULL);
 	save(f, bank);
 	json_object_set_string_member(args, "format", "csv");
-	json_object_set_string_member(args, "period_start", "2025-10-01");
-	json_object_set_string_member(args, "period_end", february ? "2026-02-28" : "2025-12-31");
+	json_object_set_string_member(args, "period_start", transfers ? "2026-01-01" : "2025-10-01");
+	json_object_set_string_member(args, "period_end", transfers ? "2026-03-31" : february ? "2026-02-28" : "2025-12-31");
 	json_object_set_string_member(args, "opening_balance", "0 USD");
 	json_object_set_string_member(args, "closing_balance", irregular ? "-37 USD" : "-36 USD");
-	json_object_set_string_member(args, "data", february ? "Date,Amount,Memo,ID\n2025-12-31,-12,Pebble library,p1\n2026-01-31,-12,Pebble library,p2\n2026-02-28,-12,Pebble library,p3\n" : irregular ? "Date,Amount,Memo,ID\n2025-10-31,-12,Pebble library,p1\n2025-11-30,-12,Pebble library,p2\n2025-12-31,-13,Pebble library,p3\n" : "Date,Amount,Memo,ID\n2025-10-31,-12,Pebble library,p1\n2025-11-30,-12,Pebble library,p2\n2025-12-31,-12,Pebble library,p3\n");
+	json_object_set_string_member(args, "data", transfers ? "Date,Amount,Memo,ID\n2026-01-31,-12,Pebble library,p1\n2026-02-28,-12,Pebble library,p2\n2026-03-31,-12,Pebble library,p3\n" : february ? "Date,Amount,Memo,ID\n2025-12-31,-12,Pebble library,p1\n2026-01-31,-12,Pebble library,p2\n2026-02-28,-12,Pebble library,p3\n" : irregular ? "Date,Amount,Memo,ID\n2025-10-31,-12,Pebble library,p1\n2025-11-30,-12,Pebble library,p2\n2025-12-31,-13,Pebble library,p3\n" : "Date,Amount,Memo,ID\n2025-10-31,-12,Pebble library,p1\n2025-11-30,-12,Pebble library,p2\n2025-12-31,-12,Pebble library,p3\n");
 	statement = venture_bank_match_service_execute(venture_database_get_bank_match_service(f->db), "import",
 		venture_entity_get_id(bank), args, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(statement);
+	if (GPOINTER_TO_INT(unused) == 3) {
+		g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "saving-owner", "active", TRUE, NULL);
+		g_autoptr(VentureEntity) member = NULL, account = NULL, personal = record(f, "bank_account");
+		guint n;
+		static const gchar *const dates[] = { "2026-01-31", "2026-02-28", "2026-03-31" };
+		save(f, user);
+		member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", f->org,
+			"user-id", venture_entity_get_id(user), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL);
+		save(f, member);
+		account = g_object_new(VENTURE_TYPE_ACCOUNT, "organization-id", f->org, "code", "personal-savings",
+			"name", "Personal savings", "kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, "private-owner-id", venture_entity_get_id(user), NULL);
+		save(f, account);
+		g_object_set(personal, "account-id", venture_entity_get_id(account), "name", "Personal savings", "currency", "USD", NULL);
+		save(f, personal);
+		for (n = 0; n < G_N_ELEMENTS(dates); n++) {
+			g_autoptr(JsonObject) transfer = json_object_new();
+			g_autoptr(VentureEntity) posted = NULL;
+			json_object_set_int_member(transfer, "counterparty_bank_account_id", venture_entity_get_id(personal));
+			json_object_set_int_member(transfer, "from_transaction_id", n + 1);
+			json_object_set_string_member(transfer, "amount", "12 USD");
+			json_object_set_string_member(transfer, "date", dates[n]);
+			posted = venture_bank_match_service_execute(venture_database_get_bank_match_service(f->db), "transfer",
+				venture_entity_get_id(bank), transfer, NULL, &error);
+			g_assert_no_error(error);
+			g_assert_nonnull(posted);
+		}
+		rows = events(f, from, to, from);
+		g_assert_cmpuint(count(rows, "repeat_charge"), ==, 0);
+		return;
+	}
 	rows = events(f, from, to, from);
 	if (irregular)
 	{
@@ -1030,6 +1061,7 @@ int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/money-calendar/personal-transfers-not-subscriptions", Fixture, GINT_TO_POINTER(3), setup, test_repeat_charges, teardown);
 	g_test_add("/money-calendar/repeat-february", Fixture, GINT_TO_POINTER(2), setup, test_repeat_charges, teardown);
 	g_test_add("/money-calendar/web/subscriptions", ServerFixture, NULL, server_setup, test_subscription_surfaces, server_teardown);
 	g_test_add("/money-calendar/changed-charge", Fixture, GINT_TO_POINTER(1), setup, test_repeat_charges, teardown);

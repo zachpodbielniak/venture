@@ -8,7 +8,7 @@ static const VentureFieldDecl bank_connection_fields[] = {
 	VENTURE_FIELD("provider-account-id", "Provider account", "The feed's account identifier",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("bank-account-id", "Bank account", "Statement evidence this feed writes",
-		"bank_account", VENTURE_COLUMN_FLAG_NOT_NULL),
+		"bank_account", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("connection-key", "Connection key", "Derived organization:provider:account identity",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
 	VENTURE_FIELD("status", "Status", "linked or error",

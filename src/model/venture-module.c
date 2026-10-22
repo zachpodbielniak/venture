@@ -720,7 +720,7 @@ static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
 	venture_bank_transaction_get_type, venture_bank_match_get_type,
 	venture_reconciliation_get_type, venture_bank_rule_get_type,
-	venture_bank_transfer_get_type, NULL
+	venture_bank_transfer_get_type, venture_household_share_get_type, NULL
 };
 static GType (*const venture_module_pipelines_types[]) (void) = {
 	venture_pipeline_get_type, venture_pipeline_stage_get_type,

@@ -8667,7 +8667,11 @@ venture_web_append_form_field_scoped(
 				g_string_append_printf(content, "<select name=\"%s\">", name);
 			g_string_append(content, "<option value=\"\">—</option>");
 
-			if (G_TYPE_INVALID != target)
+			if ((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT) ||
+				(target == VENTURE_TYPE_USER && (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER)))
+				options = venture_web_household_members(self, organization > 0 ? organization :
+					(record ? venture_entity_get_organization_id(record) : 0));
+			else if (G_TYPE_INVALID != target)
 			{
 				query = venture_query_new(target);
 				venture_query_set_limit(query, 0);
@@ -8694,7 +8698,14 @@ venture_web_append_form_field_scoped(
 
 					option = g_ptr_array_index(options, i);
 					id = venture_entity_get_id(option);
-					display = venture_entity_get_display_name(option);
+					if (target == VENTURE_TYPE_USER && (venture_field_spec_get_flags(spec) &
+						(VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT))) {
+						const VentureAuthPrincipal *actor = venture_access_policy_get_actor(
+							venture_database_get_access_policy(venture_context_get_database(self->context)));
+						if ((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER) &&
+							actor && id != actor->user_id && (!current || g_ascii_strtoll(current, NULL, 10) != id)) continue;
+						g_object_get(option, "username", &display, NULL);
+					} else display = venture_entity_get_display_name(option);
 
 					g_string_append_printf(content,
 						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
@@ -8904,6 +8915,7 @@ venture_web_ui_form(
 		guint custom;
 		if (org == 0)
 			org = venture_context_get_default_organization_id(self->context);
+		if (id == 0) venture_entity_set_organization_id(record, org);
 		extra = venture_custom_fields_form_specs(venture_context_get_database(self->context),
 			org, type_name, record, NULL);
 		for (custom = 0; extra && custom < extra->len; custom++)
@@ -9975,6 +9987,13 @@ venture_web_append_detail_value(
 
 		id = G_VALUE_HOLDS_INT64(&value) ? g_value_get_int64(&value) : 0;
 
+		if (id > 0 && ((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT) ||
+			((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER) &&
+			g_strcmp0(venture_field_spec_get_reference_type(spec), "user") == 0))) {
+			g_autofree gchar *label = venture_web_household_member_name(self, venture_entity_get_organization_id(record), id);
+			venture_html_escape_append(content, label);
+			return;
+		}
 		if (0 == id)
 		{
 			g_string_append(content, "<span class=\"muted\">—</span>");
@@ -29423,7 +29442,8 @@ venture_web_append_watch_button(
 	gboolean watching;
 	gint64 id;
 
-	if (0 == principal->user_id)
+	if (0 == principal->user_id || venture_access_policy_record_is_personal(
+		venture_database_get_access_policy(venture_context_get_database(self->context)), record))
 		return;
 
 	type_name = venture_entity_get_entity_name(record);

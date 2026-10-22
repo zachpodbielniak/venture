@@ -95,11 +95,66 @@ bank_balance_account(VentureDatabase *database, VentureEntity *bank, GError **er
 	return TRUE;
 }
 
+static gint64 number(VentureEntity *entity, const gchar *property);
+
+static gboolean
+household_share_check(VentureDatabase *database, VentureEntity *record, gboolean removal, GError **error)
+{
+	g_autoptr(VentureEntity) previous = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(GDateTime) date = NULL, repaid = NULL;
+	gboolean settled = FALSE, was_settled = FALSE;
+	gint64 people[2];
+	guint i;
+	if (removal) return TRUE;
+	people[0] = number(record, "payer-id");
+	people[1] = number(record, "member-id");
+	g_object_get(record, "amount", &amount, "date", &date, "settled", &settled, "settled-at", &repaid, NULL);
+	if (people[0] <= 0 || people[1] <= 0 || people[0] == people[1] || !amount || amount->amount <= 0 || !date)
+		return refuse(error, "Choose two different household members, a purchase date and a positive share to repay");
+	if (venture_entity_is_persisted(record)) {
+		previous = venture_database_get(database, VENTURE_TYPE_HOUSEHOLD_SHARE, venture_entity_get_id(record), error);
+		if (!previous) return FALSE;
+		g_object_get(previous, "settled", &was_settled, NULL);
+		if (people[0] != number(previous, "payer-id") || people[1] != number(previous, "member-id"))
+			return refuse(error, "The people on a saved shared purchase cannot change");
+		if (was_settled) {
+			g_autoptr(JsonNode) diff = venture_entity_diff(previous, record);
+			JsonObject *changes = json_node_get_object(diff);
+			if (!settled || json_object_has_member(changes, "amount") || json_object_has_member(changes, "date") ||
+				json_object_has_member(changes, "settled_at"))
+				return refuse(error, "A repaid share keeps its amount and dates; remove a mistaken entry and record its correction");
+		}
+	}
+	for (i = 0; i < G_N_ELEMENTS(people); i++) {
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+		g_autoptr(VentureEntity) user = venture_database_get(database, VENTURE_TYPE_USER, people[i], NULL);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+		g_autoptr(VentureEntity) member = NULL;
+		gboolean active = FALSE;
+		if (user) g_object_get(user, "active", &active, NULL);
+		if (!user || venture_entity_is_deleted(user) || !active) return refuse(error, "Both people must be active household members");
+		venture_query_set_organization(query, venture_entity_get_organization_id(record));
+		venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, people[i], NULL);
+		venture_query_add_filter_int(query, "active", VENTURE_FILTER_OP_EQ, 1, NULL);
+		member = venture_database_find_one(database, query, NULL);
+		if (!member) return refuse(error, "Both people must be active household members");
+	}
+	if (settled && !repaid) {
+		repaid = venture_time_now();
+		g_object_set(record, "settled-at", repaid, NULL);
+	}
+	if ((!settled && repaid) || (repaid && g_date_time_compare(repaid, date) < 0))
+		return refuse(error, "A repayment date must follow the purchase and needs Repaid checked");
+	return TRUE;
+}
+
 gboolean
 venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gboolean removal, GError **error)
 {
 	const gchar *name = venture_entity_get_entity_name(record);
 	VentureBankMatchService *self;
+	if (VENTURE_IS_HOUSEHOLD_SHARE(record)) return household_share_check(database, record, removal, error);
 	if (!g_str_has_prefix(name, "bank_") && strcmp(name, "reconciliation"))
 		return TRUE;
 	self = venture_database_get_bank_match_service(database);
@@ -1461,6 +1516,10 @@ preview_rule(VentureBankMatchService *self, VentureEntity *rule, const VentureAc
 	{
 		VentureEntity *transaction = g_ptr_array_index(transactions, i);
 		g_autofree gchar *description = NULL;
+		if (venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), rule) !=
+			venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), transaction)) continue;
+		if (venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), transaction) != 0 &&
+			number(rule, "bank-account-id") != number(transaction, "bank-account-id")) continue;
 		if (!rule_matches(rule, transaction)) continue;
 		g_object_get(transaction, "description", &description, NULL);
 		json_builder_begin_object(builder);
@@ -1824,6 +1883,72 @@ iso_day(GDateTime *date)
 	return date != NULL ? g_date_time_format(date, "%Y-%m-%d") : g_strdup("");
 }
 
+/* A shared account keeps its real balance without publishing the personal
+ * account on the other side. Two balanced journals meet through equity;
+ * together they are exactly the original transfer and never spending. */
+static gboolean
+post_private_shared_transfer(VentureBankMatchService *self, VentureEntity *transfer,
+	VentureEntity *from_bank, VentureEntity *to_bank, const VentureActor *actor, GError **error)
+{
+	VentureAccessPolicy *policy = venture_database_get_access_policy(self->database);
+	gint64 org = venture_entity_get_organization_id(transfer);
+	g_autofree gchar *code = g_strdup_printf("HH-CLEAR-%" G_GINT64_FORMAT, org);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(VentureEntity) clearing = NULL;
+	g_autoptr(VentureMoney) amount = NULL, fee = NULL;
+	g_autoptr(GDateTime) date = NULL;
+	guint side;
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, code, NULL);
+	clearing = venture_database_find_one(self->database, query, error);
+	if (error && *error) return FALSE;
+	if (!clearing) {
+		clearing = g_object_new(VENTURE_TYPE_ACCOUNT, "organization-id", org, "code", code,
+			"name", "Household contributions", "kind", VENTURE_ACCOUNT_KIND_EQUITY, "active", TRUE, NULL);
+		if (!venture_database_save(self->database, clearing, actor, error)) return FALSE;
+	} else {
+		gint kind;
+		g_object_get(clearing, "kind", &kind, NULL);
+		if (kind != VENTURE_ACCOUNT_KIND_EQUITY || venture_entity_is_deleted(clearing) ||
+			venture_access_policy_record_is_personal(policy, clearing))
+			return refuse(error, "The household contribution account must remain shared equity");
+	}
+	g_object_get(transfer, "amount", &amount, "fee", &fee, "date", &date, NULL);
+	for (side = 0; side < 2; side++) {
+		VentureEntity *bank = side == 0 ? from_bank : to_bank;
+		g_autoptr(VentureJournal) header = venture_journal_new(), posted = NULL;
+		g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+		g_autofree gchar *key = g_strdup_printf("household-transfer:%s:%s", venture_entity_get_uuid(transfer), venture_entity_get_uuid(bank));
+		VentureJournalLine *line;
+		g_object_set(header, "organization-id", org, "occurred-at", date, "currency", amount->currency,
+			"memo", "Household transfer", "rule-name", "bank_transfer", "posting-key", key,
+			"source-type", "bank_account", "source-id", venture_entity_get_id(bank), NULL);
+		line = venture_journal_line_new();
+		g_object_set(line, "account-id", number(bank, "account-id"), "side", side == 0 ? VENTURE_LEDGER_SIDE_CREDIT : VENTURE_LEDGER_SIDE_DEBIT, "amount", amount, NULL);
+		g_ptr_array_add(lines, line);
+		line = venture_journal_line_new();
+		g_object_set(line, "account-id", venture_entity_get_id(clearing), "side", side == 0 ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT, "amount", amount, NULL);
+		g_ptr_array_add(lines, line);
+		if (side == 0 && fee && !venture_money_is_zero(fee)) {
+			g_autoptr(VentureQuery) fees = venture_query_new(VENTURE_TYPE_ACCOUNT);
+			g_autoptr(VentureEntity) fee_account = NULL;
+			venture_query_set_organization(fees, org);
+			venture_query_add_filter_string(fees, "code", VENTURE_FILTER_OP_EQ, "6900", NULL);
+			fee_account = venture_database_find_one(self->database, fees, error);
+			if (!fee_account) return FALSE;
+			line = venture_journal_line_new();
+			g_object_set(line, "account-id", venture_entity_get_id(fee_account), "side", VENTURE_LEDGER_SIDE_DEBIT, "amount", fee, NULL);
+			g_ptr_array_add(lines, line);
+			line = venture_journal_line_new();
+			g_object_set(line, "account-id", number(from_bank, "account-id"), "side", VENTURE_LEDGER_SIDE_CREDIT, "amount", fee, NULL);
+			g_ptr_array_add(lines, line);
+		}
+		posted = venture_posting_service_post(venture_database_get_posting_service(self->database), header, lines, NULL, actor, error);
+		if (!posted) return FALSE;
+	}
+	return TRUE;
+}
+
 static gboolean
 post_transfer_journal(VentureBankMatchService *self, VentureEntity *transfer, VentureEntity *from_bank,
 	VentureEntity *to_bank, const VentureActor *actor, GError **error)
@@ -1835,6 +1960,15 @@ post_transfer_journal(VentureBankMatchService *self, VentureEntity *transfer, Ve
 	g_autoptr(VentureJournal) posted = NULL;
 	g_autofree gchar *currency = NULL, *key = NULL, *day = NULL;
 	VentureJournalLine *line;
+	g_autoptr(VentureEntity) from_account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, number(from_bank, "account-id"), error);
+	g_autoptr(VentureEntity) to_account = NULL;
+	if (!from_account) return FALSE;
+	to_account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, number(to_bank, "account-id"), error);
+	if (!to_account) return FALSE;
+	/* Sharing can later be revoked, so keep the two sides independent even
+	 * when a personal account is currently shared with the household. */
+	if (number(from_account, "private-owner-id") > 0 || number(to_account, "private-owner-id") > 0)
+		return post_private_shared_transfer(self, transfer, from_bank, to_bank, actor, error);
 	g_object_get(transfer, "amount", &amount, "fee", &fee, "date", &date, NULL);
 	g_object_get(from_bank, "currency", &currency, NULL);
 	day = iso_day(date);
@@ -1896,6 +2030,16 @@ link_transfer_txn(VentureBankMatchService *self, VentureEntity *transaction, Ven
 	g_object_set(match, "transaction-id", venture_entity_get_id(transaction), "record-type", "bank_transfer",
 		"record-id", venture_entity_get_id(transfer), "amount", amount, "kind", "transfer",
 		"created-by", actor != NULL ? actor->name : "system", "cleared-at", cleared, NULL);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+		g_autofree gchar *key = g_strdup_printf("household-transfer:%s:%s", venture_entity_get_uuid(transfer), venture_entity_get_uuid(bank));
+		g_autoptr(VentureEntity) journal = NULL;
+		venture_query_set_organization(query, venture_entity_get_organization_id(transfer));
+		venture_query_add_filter_string(query, "posting-key", VENTURE_FILTER_OP_EQ, key, NULL);
+		journal = venture_database_find_one(self->database, query, error);
+		if (error && *error) return FALSE;
+		if (journal) g_object_set(match, "record-type", "journal", "record-id", venture_entity_get_id(journal), NULL);
+	}
 	if (!save_owned(self, match, actor, error)) return FALSE;
 	g_object_set(transaction, "state", "matched", "match-id", venture_entity_get_id(match), NULL);
 	return save_owned(self, transaction, actor, error);

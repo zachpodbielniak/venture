@@ -91,10 +91,10 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 
 ## Skill baseline -- maintained
 
-Household children 1–6 checked against `e44506f4` plus the review repairs
-(2026-10-21), including savings filtering before the row bound. See
+Household children 1–7 checked against `aebfac60` plus the private accounts,
+owner-controlled sharing and settlement changes (2026-10-21). See
 [household.md](references/household.md) for scope, selector, reports and
-forecast limits. Children 7–10 remain open; this delivery does not close #201.
+forecast limits. Children 8–10 remain open; this delivery does not close #201.
 The broader catalogue baseline follows.
 
 This skill was reviewed against VENTURE commit

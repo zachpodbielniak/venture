@@ -226,3 +226,23 @@ membership boundary. A global owner or admin is reached by any
 organization's requirement. =user_mfa= and =mfa_recovery_code= are personal
 records: =user_id= is their personal owner, and their secret and hash
 fields are sensitive. See [[file:security.org][Security: the second factor]].
+
+* Household private finance
+
+Accounts may name an optional personal owner. Only that owner may change
+=household-shared=. Read privacy follows the current sharing choice, while
+=venture_access_policy_get_declared_owner()= retains the ownership boundary
+for reference changes and retained rule evidence. The =PRIVACY_PARENT= field flag
+propagates ownership through financial references while allowing edits that
+keep the same privacy. All declared parents are considered: a shared reference
+cannot override a later private parent, and incompatible owners fail closed.
+Journals inherit their source and account ownership; record links inherit both
+ends because they retain endpoint labels. These rules apply before query
+pagination and to audit visibility as well as individual reads and exports.
+
+=PRIVATE_PARTICIPANT= user references grant a private household settlement to
+its named participants, subject to active organization membership. They do not
+grant access to anybody's funding account. The shared-report scope excludes
+personal data even for service-run retained reports. See
+[[file:household.org][Household ventures]] for account setup, shared contribution journals and the
+limits of shared billing and private capture workflows.

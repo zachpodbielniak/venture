@@ -466,6 +466,13 @@ write_record(VentureSettlementService *self, VentureEntity *record,
 {
 	gboolean ok;
 
+	if (VENTURE_IS_PAYMENT(record) && !venture_entity_is_persisted(record)) {
+		g_object_set(record, "cash-account-id", self->cash_account, NULL);
+		if (get_id(record, "invoice-id") > 0 &&
+			(venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), record) != 0))
+			return refuse(error, VENTURE_ERROR_VALIDATION,
+				"Shared invoices use a shared account; personal receipts stay separate.");
+	}
 	/* A one-use permit for this exact object. A signal handler saving a
 	 * different record during the transaction cannot borrow this authority. */
 	self->writing = record;
@@ -1499,6 +1506,10 @@ perform_allocation(VentureSettlementService *self, VentureEntity *allocation,
 	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, get_id(allocation, "invoice-id"), error);
 	if (invoice == NULL || !same_owner(allocation, invoice, error) || !same_owner(allocation, credit, error))
 		return FALSE;
+	if (venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), credit) !=
+		venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), invoice))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"A personal receipt cannot settle a shared invoice. Use a shared account for shared invoices.");
 	if (get_id(invoice, "company-id") != get_id(credit, "customer-id"))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A payment or credit may only settle its own customer's invoices");
 	g_object_get(invoice, "status", &status, NULL);
@@ -1956,6 +1967,22 @@ perform_refund(VentureSettlementService *self, VentureEntity *refund,
 		available = credit_remaining(self, credit, NULL, error);
 		if (available == NULL)
 			return FALSE;
+	}
+	if (get_id(credit, "payment-id") > 0) {
+		g_autoptr(VentureEntity) payment = venture_database_get(self->database, VENTURE_TYPE_PAYMENT, get_id(credit, "payment-id"), error);
+		g_autoptr(VentureEntity) cash = NULL;
+		VentureAccessPolicy *policy = venture_database_get_access_policy(self->database);
+		gint64 cash_owner = 0;
+		if (!payment) return FALSE;
+		if (self->cash_account > 0) {
+			cash = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, self->cash_account, error);
+			if (!cash) return FALSE;
+			cash_owner = venture_access_policy_get_declared_owner(policy, cash);
+		}
+		if ((cash_owner != 0 || venture_access_policy_get_declared_owner(policy, payment) != 0) &&
+			get_id(payment, "cash-account-id") != self->cash_account)
+			return refuse(error, VENTURE_ERROR_VALIDATION,
+				"Refund a personal receipt from its original account; record account transfers separately");
 	}
 	if (!same_owner(refund, credit, error) || !check_customer(self, refund, error))
 		return FALSE;

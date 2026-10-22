@@ -200,6 +200,9 @@ schedule_validate(VentureDatabase *database, VentureEntity *entity, VentureEntit
 		if (!venture_time_equal(stamp, old_stamp))
 			return refuse(error, "Only the reminder sweep may stamp a reminder");
 	}
+	if ((venture_access_policy_get_declared_owner(venture_database_get_access_policy(database), entity) != 0) &&
+		!flag(entity, "projection-only"))
+		return refuse(error, "Personal subscriptions use Forecast only; import their actual charges from the personal account");
 	if (self->writing == entity)
 		return TRUE;
 	if (previous != NULL && number(entity, "cycle-index") != number(previous, "cycle-index"))

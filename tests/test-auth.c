@@ -5584,6 +5584,34 @@ test_auth_calendar_account_delegation(
  */
 /* Switching the view must not turn business modules off for the neighbor. */
 static void
+test_auth_household_member_forms(ServerFixture *fixture, gconstpointer user_data)
+{
+	g_autofree gchar *cookie = NULL, *page = NULL;
+	gchar *start, *end;
+	(void)user_data;
+	server_fixture_create_member(fixture, "household-first", "fixture-password-one", VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "household-second", "fixture-password-two", VENTURE_USER_ROLE_EDITOR, NULL);
+	cookie = server_fixture_login(fixture, "household-first", "fixture-password-one");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/household_share/new", cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	start = strstr(page, "<select name=\"payer-id\"");
+	g_assert_nonnull(start);
+	end = strstr(start, "</select>");
+	g_assert_nonnull(end);
+	*end = '\0';
+	g_assert_nonnull(strstr(start, "household-first"));
+	g_assert_nonnull(strstr(start, "household-second"));
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/account/new", cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	start = strstr(page, "<select name=\"private-owner-id\"");
+	g_assert_nonnull(start);
+	end = strstr(start, "</select>");
+	g_assert_nonnull(end);
+	*end = '\0';
+	g_assert_nonnull(strstr(start, "household-first"));
+	g_assert_null(strstr(start, "household-second"));
+}
+
+static void
 test_auth_household_navigation(ServerFixture *fixture, gconstpointer user_data)
 {
 	g_autoptr(VentureVenture) home = venture_venture_new();
@@ -7434,6 +7462,7 @@ main(
 	           server_fixture_set_up, test_auth_calendar_account_delegation,
 	           server_fixture_tear_down);
 	g_test_add("/auth/household-view-scope", ServerFixture, NULL, server_fixture_set_up, test_auth_household_view_scope, server_fixture_tear_down);
+	g_test_add("/auth/household-member-forms", ServerFixture, NULL, server_fixture_set_up, test_auth_household_member_forms, server_fixture_tear_down);
 	g_test_add("/auth/household-navigation", ServerFixture, NULL, server_fixture_set_up, test_auth_household_navigation, server_fixture_tear_down);
 	g_test_add("/auth/sidebar-asks-the-five-questions", ServerFixture, NULL, server_fixture_set_up, test_auth_sidebar_asks_the_five_questions, server_fixture_tear_down);
 	g_test_add("/auth/web-extension-routes", ServerFixture, auth_extension_marker, server_fixture_set_up, test_auth_web_extension_routes, server_fixture_tear_down);

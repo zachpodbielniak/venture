@@ -128,7 +128,7 @@ static const VentureFieldDecl schedule_fields[] = {
 	VENTURE_FIELD_TEXT("last-error", "Last error", "Visible failure from the latest attempt"),
 	VENTURE_FIELD("subscription", "Subscription", "Include in subscriptions you pay for", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("projection-only", "Forecast only", "Show due dates without creating accounting entries", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("bank-account-id", "Paid from", "Account for a detected repeat charge", "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("bank-account-id", "Paid from", "Account for a detected repeat charge", "bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("merchant", "Statement description", "Exact merchant description to replace its repeat-charge suggestion", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("reminder-days", "Remind days before", "1 to 28 days; zero turns reminders off", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("reminder-user-id", "Remind person", "Inbox recipient who can read this schedule", "user", VENTURE_COLUMN_FLAG_NONE),

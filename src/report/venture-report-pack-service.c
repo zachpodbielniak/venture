@@ -194,6 +194,7 @@ venture_report_pack_service_run_pack(VentureReportPackService *self, VentureCont
 	{
 		gint64 id = g_ascii_strtoll(g_strstrip(parts[i]), NULL, 10);
 		g_autoptr(VentureEntity) saved = NULL;
+		g_autoptr(VentureAccessScope) shared = NULL;
 		VentureReportResult *result;
 		if (id <= 0)
 			continue;
@@ -213,6 +214,10 @@ venture_report_pack_service_run_pack(VentureReportPackService *self, VentureCont
 			g_ptr_array_unref(results);
 			return NULL;
 		}
+		/* Packs are dispatched to the household, so they run over shared
+		 * data only, after the organization boundary has been checked. */
+		shared = venture_access_policy_enter_shared(venture_database_get_access_policy(self->database),
+			venture_entity_get_organization_id(VENTURE_ENTITY(pack)));
 		result = venture_report_pack_service_run(self, context, VENTURE_SAVED_REPORT(saved), error);
 		if (result == NULL)
 		{
