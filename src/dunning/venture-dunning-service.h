@@ -123,6 +123,41 @@ VentureMailMessage *venture_dunning_service_build_reminder(VentureDunningService
 void venture_dunning_preview_register(void);
 
 /**
+ * venture_dunning_service_remind:
+ * @self: the service
+ * @invoice: a saved open invoice
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Send the customer of @invoice a reminder now: the latest email step already
+ * decided for it, or its policy's first email step when none was. Recorded as
+ * a dunning_event the way a sweep records one, and never at a later offset
+ * than the schedule has already reached. Asking twice in one day returns that
+ * day's message and sends nothing more. Refused when the invoice is settled,
+ * not issued, disputed, opted out or disabled, has no policy or email step,
+ * or the customer has no email address.
+ *
+ * Returns: (transfer full) (nullable): the queued message
+ */
+VentureMailMessage *venture_dunning_service_remind(VentureDunningService *self, VentureEntity *invoice,
+	const VentureActor *actor, GError **error);
+
+/**
+ * venture_dunning_service_hold_reason:
+ * @self: the service
+ * @invoice: an invoice
+ * @at: the day judged
+ *
+ * Whether a promise to pay or a payment plan holds the invoice on @at: its
+ * own or its customer's reminder pause, or a held, disputed or promised
+ * collection case. Late-fee tiers that skip while a promise is active ask
+ * this, so the two modules agree on what a promise is.
+ *
+ * Returns: (nullable): "paused", "collection_case", or %NULL
+ */
+const gchar *venture_dunning_service_hold_reason(VentureDunningService *self, VentureEntity *invoice, GDateTime *at);
+
+/**
  * venture_dunning_check_write: (skip)
  * @database: the database
  * @record: record being written or removed

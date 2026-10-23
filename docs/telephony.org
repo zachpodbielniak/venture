@@ -241,9 +241,9 @@ relying on them:
 
 * Storage and upgrade
 
-Paired migrations =000927_telephony_lines_and_texts= (lines, extensions,
-texts and the organization's three settings), =000928_telephony_call_inbox=
-(the inbox flag on call activities) and =000929_telephony_text_consent=
+Paired migrations =000950_telephony_lines_and_texts= (lines, extensions,
+texts and the organization's three settings), =000951_telephony_call_inbox=
+(the inbox flag on call activities) and =000952_telephony_text_consent=
 (the number on consent evidence and a campaign's channel). Everything starts
 empty and off: no line, no extension, no text, recording links off, every
 existing campaign an email one and every existing call unchanged.

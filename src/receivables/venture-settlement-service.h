@@ -230,5 +230,64 @@ gboolean venture_settlement_service_write_off(VentureSettlementService *self,
  */
 gboolean venture_settlement_service_refresh_invoice(VentureSettlementService *self,
 	gint64 invoice_id, const VentureActor *actor, GError **error);
+/**
+ * VENTURE_INVOICE_EVENT_LATE_FEE:
+ *
+ * The invoice event kind of a late fee: a separate adjustment added on top
+ * of the frozen issue amount, never an edit of the invoice's lines.
+ */
+#define VENTURE_INVOICE_EVENT_LATE_FEE "late_fee"
+
+/**
+ * VENTURE_CREDIT_KIND_LATE_FEE_WAIVER:
+ *
+ * The customer credit kind that waives (reverses) one late fee.
+ */
+#define VENTURE_CREDIT_KIND_LATE_FEE_WAIVER "late_fee_waiver"
+
+/**
+ * venture_invoice_event_kind_moves_balance:
+ * @kind: (nullable): an invoice event kind
+ *
+ * Returns: %TRUE for the kinds a customer balance counts: issue and late
+ *   fees add, void subtracts
+ */
+gboolean venture_invoice_event_kind_moves_balance(const gchar *kind);
+
+/**
+ * venture_settlement_service_add_late_fee:
+ * @self: settlement service
+ * @invoice_id: an issued invoice with an open balance
+ * @amount: the fee, in the invoice's currency
+ * @date: the adjustment date
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Adds a late fee as its own "late_fee" invoice event, debiting receivables
+ * and crediting income, in one transaction under the accounting approval.
+ * The invoice's lines and issue event are untouched.
+ *
+ * Returns: (transfer full) (nullable): the invoice event
+ */
+VentureEntity *venture_settlement_service_add_late_fee(VentureSettlementService *self, gint64 invoice_id,
+	const VentureMoney *amount, GDateTime *date, const VentureActor *actor, GError **error);
+
+/**
+ * venture_settlement_service_waive_late_fee:
+ * @self: settlement service
+ * @event_id: a "late_fee" invoice event
+ * @date: the waiver date
+ * @reason: (nullable): recorded on the credit's reference
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal, including a fee already waived
+ *
+ * Reverses one fee with a "late_fee_waiver" credit (income debited,
+ * receivables credited) applied to the invoice up to its open balance;
+ * any rest stays as the customer's credit.
+ *
+ * Returns: (transfer full) (nullable): the credit
+ */
+VentureEntity *venture_settlement_service_waive_late_fee(VentureSettlementService *self, gint64 event_id,
+	GDateTime *date, const gchar *reason, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

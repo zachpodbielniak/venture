@@ -755,7 +755,7 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("email", "Email", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("phone", "Phone", NULL, VENTURE_FIELD_KIND_STRING,
-	              VENTURE_COLUMN_FLAG_NONE),
+	              VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_REF("venture-id", "Venture",
 	                  "The venture this relationship belongs to", "venture",
 	                  VENTURE_COLUMN_FLAG_NONE),
@@ -788,6 +788,16 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("dunning-paused-until", "Reminders paused until", "Promise to pay: no reminder for any of their invoices before this date",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dunning-pause-reason", "Pause reason", "Why reminders are paused",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("late-fee-schedule-id", "Late-fee schedule", "Overrides the organization default for this customer's invoices",
+		"late_fee_schedule", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fee-exempt", "No late fees", "Never charge this customer a late fee",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fees-paused", "Late fees paused", "Nothing is added to any of their invoices while paused",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fees-paused-until", "Late fees paused until", "First day fees may apply again; empty while paused means indefinitely",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fees-pause-reason", "Late-fee pause reason", NULL,
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-exemption-number", "Exemption number", "Resale or exemption certificate number shown on the return",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
@@ -3156,6 +3166,18 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("dunning-pause-reason", "Pause reason", "Why reminders are paused",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("invoice-type", "Invoice type", "Free text such as residential or commercial; late-fee schedules can be assigned by it",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("late-fee-schedule-id", "Late-fee schedule", "Overrides the customer's, the invoice type's and the organization default",
+		"late_fee_schedule", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fee-exempt", "No late fees", "Never charge a late fee on this invoice",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fees-paused", "Late fees paused", "Nothing is added while paused",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fees-paused-until", "Late fees paused until", "First day fees may apply again; empty while paused means indefinitely",
+		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("late-fees-pause-reason", "Late-fee pause reason", NULL,
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	/* Set only by VentureSettlementService for a migrated invoice: the cutoff
 	 * its journal posts at. Tax filing and cash-report sales skip such an
 	 * invoice, because its revenue and tax belong to the source system. */
@@ -3493,7 +3515,29 @@ static const VentureFieldDecl venture_user_fields[] = {
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 
-VENTURE_DEFINE_ENTITY(VentureUser, venture_user, venture_user_fields)
+/* A person by the name they go by, before their e-mail address: a list of
+ * technicians reading "sam@example.com" is a list of strangers. Never the
+ * username, which is a sign-in name the roles below admin are not shown;
+ * the forms that grant access name people by it themselves. */
+static gchar *
+venture_user_display_name(VentureEntity *self)
+{
+	g_autofree gchar *display = NULL;
+	g_autofree gchar *email = NULL;
+
+	g_object_get(self, "display-name", &display, "email", &email, NULL);
+
+	if (!venture_string_is_empty(display))
+		return g_steal_pointer(&display);
+
+	if (!venture_string_is_empty(email))
+		return g_steal_pointer(&email);
+
+	return g_strdup_printf("User #%" G_GINT64_FORMAT, venture_entity_get_id(self));
+}
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureUser, venture_user, venture_user_fields,
+	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_user_display_name;)
 
 gboolean
 venture_user_set_password(

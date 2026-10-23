@@ -5,6 +5,7 @@
 
 static const gchar *const document_header_fields[] = { "number", "company-id", "contact-id", "terms", "notes", NULL };
 static const gchar *const document_invoice_fields[] = { "tax-exempt", "issued-at", "due-at", NULL };
+static const gchar *const document_quote_fields[] = { "billing-mode", "service-address", NULL };
 static const gchar *const document_line_fields[] = { "description", "quantity", "unit-price", "product-id", "discount-percent", "tax-percent", NULL };
 /* Both kinds of line are taxed by a rate record, so a quote asks for
  * exactly what the invoice it becomes will. */
@@ -110,7 +111,8 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 		guint i;
 		if (!document_check_line_numbers(request, error) ||
 			!document_read_fields(request, header, document_header_fields, "", error) ||
-			(!quote && !document_read_fields(request, header, document_invoice_fields, "", error)))
+			(!quote && !document_read_fields(request, header, document_invoice_fields, "", error)) ||
+			(quote && !document_read_fields(request, header, document_quote_fields, "", error)))
 		{
 			json_array_unref(lines);
 			return NULL;
@@ -192,7 +194,7 @@ document_spec_from_request(HtmxRequest *request, GError **error)
  * people; with scripting off every contact is offered.
  */
 static void
-document_append_parties(VentureWebServer *self, GString *html, gint64 organization)
+document_append_parties(VentureWebServer *self, GString *html, gint64 organization, gint64 chosen)
 {
 	g_autoptr(VentureQuery) companies = venture_query_new(VENTURE_TYPE_COMPANY);
 	g_autoptr(VentureQuery) contacts = venture_query_new(VENTURE_TYPE_CONTACT);
@@ -239,6 +241,9 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 			venture_html_escape_append(html, number != NULL ? number : "");
 			g_string_append(html, "\"");
 		}
+		/* Started from a customer's page: that customer. */
+		if (chosen > 0 && venture_entity_get_id(row) == chosen)
+			g_string_append(html, " selected");
 		g_string_append(html, ">");
 		venture_html_escape_append(html, name);
 		g_string_append(html, "</option>");
@@ -419,11 +424,49 @@ document_compose_page(VentureWebServer *self, HtmxRequest *request, gboolean quo
 
 	g_string_append(html, "<div class=\"doc-layout\"><section class=\"card doc-sheet\"><div class=\"card-body\">"
 		"<div class=\"doc-parties\">");
-	document_append_parties(self, html, organization);
+	{
+		const gchar *company = htmx_request_get_query_param(request, "company_id");
+		document_append_parties(self, html, organization,
+			company != NULL ? g_ascii_strtoll(company, NULL, 10) : 0);
+	}
 	if (!repeat)
-		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
-			"<input type=\"text\" name=\"number\" placeholder=\"%s\"></label>",
-			quote ? "Q-2026-001" : "INV-2026-001");
+	{
+		/* The number a blank box will get, not a made-up example: an
+		 * owner who sees Q-2026-001 and then a saved Q-1 thinks the
+		 * first one went missing. */
+		g_autofree gchar *next = venture_document_service_next_number(
+			venture_document_service_get(venture_context_get_database(self->context)),
+			organization > 0 ? organization : venture_context_get_default_organization_id(self->context),
+			quote ? VENTURE_TYPE_QUOTE : VENTURE_TYPE_INVOICE);
+		g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Number</span>"
+			"<input type=\"text\" name=\"number\" placeholder=\"");
+		venture_html_escape_append(html, next);
+		g_string_append(html, "\"><span class=\"field-help\">Left blank, it gets this one.</span></label>");
+	}
+	/* When to bill an accepted quote. A home-services quote is accepted
+	 * before the visit is booked, and billing then is billing for work
+	 * not done; with jobs on, that is the default. */
+	if (quote)
+	{
+		gboolean jobs = venture_web_module_enabled(self, "jobs");
+		g_autoptr(VentureQuote) address = venture_quote_new();
+		g_autoptr(GPtrArray) fields = venture_entity_get_field_specs(VENTURE_ENTITY(address));
+		guint field_index;
+		for (field_index = 0; field_index < fields->len; field_index++)
+		{
+			VentureFieldSpec *field = g_ptr_array_index(fields, field_index);
+			if (g_strcmp0(venture_field_spec_get_name(field), "service-address") == 0)
+				venture_web_append_form_field(self, html, field, VENTURE_ENTITY(address));
+		}
+		g_string_append_printf(html, "<label class=\"doc-field\"><span class=\"field-label\">Bill the customer</span>"
+			"<select name=\"billing-mode\">"
+			"<option value=\"after_work\"%s>When the work is done</option>"
+			"<option value=\"full\"%s>As soon as they accept</option>"
+			"<option value=\"progress\">In stages</option></select>"
+			"<span class=\"field-help\">When the work is done: accepting makes a draft invoice, "
+			"issued when the job is marked Invoiced.</span></label>",
+			jobs ? " selected" : "", jobs ? "" : " selected");
+	}
 	if (!quote && !repeat)
 	{
 		g_autoptr(VentureInvoice) dates = venture_invoice_new();
@@ -747,6 +790,43 @@ document_remember_exemption(VentureWebServer *self, HtmxRequest *request, const 
 	return venture_database_save(venture_context_get_database(self->context), company, actor, error);
 }
 
+/*
+ * "Save and send" on an invoice: the compose issued it, and this queues
+ * the email the button promised. The answer is the notice the invoice
+ * page shows, so the owner reads either where it went or, plainly, that
+ * nothing went out and why. The invoice stays issued either way: it is
+ * owed whether or not the mail was set up.
+ */
+static const gchar *
+document_mail_after_send(VentureWebServer *self, VentureEntity *invoice, const VentureActor *actor)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) company = NULL;
+	g_autoptr(VentureMailMessage) queued = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *email = NULL;
+	gint64 company_id = 0;
+
+	g_object_get(invoice, "company-id", &company_id, NULL);
+	company = venture_database_get(database, VENTURE_TYPE_COMPANY, company_id, NULL);
+	if (company != NULL)
+		g_object_get(company, "email", &email, NULL);
+	if (venture_string_is_empty(email))
+		return "?notice=not-emailed&why=no-address";
+	if (venture_context_get_mail_outbox(self->context) == NULL ||
+	    !venture_context_module_enabled(self->context, "mail"))
+		return "?notice=not-emailed&why=mail-off";
+	queued = venture_mail_send_invoice(self->context, venture_entity_get_organization_id(invoice),
+		venture_entity_get_id(invoice), actor, &error);
+	if (queued == NULL)
+	{
+		g_message("Invoice %" G_GINT64_FORMAT " was issued but not emailed: %s",
+			venture_entity_get_id(invoice), error != NULL ? error->message : "unknown");
+		return "?notice=not-emailed&why=failed";
+	}
+	return "?notice=emailed";
+}
+
 static HtmxResponse *
 venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -821,8 +901,10 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 		goto failed;
 	if (!api)
 	{
-		g_autofree gchar *path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, quote ? "quote" : "invoice",
-			venture_entity_get_id(result));
+		g_autofree gchar *path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT "%s", quote ? "quote" : "invoice",
+			venture_entity_get_id(result),
+			(!quote && venture_json_object_get_bool(spec, "send", FALSE))
+				? document_mail_after_send(self, result, &actor) : "");
 		return venture_web_redirect_to(path);
 	}
 	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE), 200);

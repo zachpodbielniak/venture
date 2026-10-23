@@ -87,12 +87,14 @@ Written bottom-up, because a module may only require what precedes it:
 | =budgets= | statements | budget, budget_line; =budget_vs_actual=, =cash_forecast=; =/budgets= | |
 | =equity= | ledger, setup | equity_transaction; =/equity= | |
 | =group= | statements | intercompany_link, elimination; consolidated trial balance, income and balance sheet; =/group= | =group.enabled= (opt-in) |
-| =dunning= | receivables, mail | dunning_policy, dunning_event; =collections=, =dunning_worklist=; =dunning_policy= sweep and test_send actions, =dunning_event= retry; =venture->dunning_sweep= | activities, recurring |
+| =dunning= | receivables, mail | dunning_policy, dunning_event; =collections=, =dunning_worklist=; =dunning_policy= sweep and test_send actions, =dunning_event= retry, =invoice= remind; =venture->dunning_sweep= | activities, recurring |
+| =late_fees= | dunning, receivables | late_fee_setting, late_fee_schedule, late_fee; =late_fees=; approve, skip, skip_notice, waive, decide, pause and resume; =/late-fees= and =/late-fees/queue=; off until a setting enables it (see [[file:late-fees.org][Late fees]]) | |
 | =headline= | receivables, leads | headline_setting; =cac=, =customer_churn=, =ltv=, =ltv_cac=, =customer_cohorts=; the headline cards at =/= and =/api/v1/headline= | outreach, recurring, tickets, banking, payables, billing |
 | =sales_tax= | receivables | tax_jurisdiction, tax_rule; =sales_tax_return=; =sales-tax export= | |
 | =pnl_cuts= | receivables, payables | =revenue_by_customer=, =spend_by_vendor=, =recurring_costs=, =cash_outlook=; the links on the P&L card | leads, recurring, banking, headline |
 | =customer_health= | headline, activities | =customer_health=; =/api/v1/customers/health/sweep=; the churn card's at-risk line; health on a company page | tickets, dunning, mail_sync |
 | =calendar= | activities, crm, leads | calendar_account, calendar_event, booking_page, private booking_reservation; =calendar sync= sweep, =/book/<slug>= | |
+| =jobs= | crm | job, job_technician, property, equipment, maintenance_plan; the =on_the_way=, =arrive=, =complete=, =invoiced=, =cancel= and =assign= job actions and the plan's =book=; =/jobs/day= and =/jobs/visits= | quotes, invoicing |
 | =money_calendar= | receivables, payables | no records; =money_calendar=; =/money/calendar=, =/money/calendar.ics=, =money calendar= | recurring, dunning, payroll, tax_filing |
 | =dedupe= | crm | duplicate_candidate; =duplicate_candidate= scan, merge and dismiss actions; =/customers/duplicates= | leads, invoicing, payables |
 | =docs= | core | the rendered documentation site at =/docs= (read-only, no session); =venturectl docs build= | |

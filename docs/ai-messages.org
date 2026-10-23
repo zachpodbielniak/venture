@@ -134,7 +134,7 @@ The settings page is an owner's or administrator's.
 
 * Upgrades and tests
 
-Migration =000931_ai_messages_drafts_rules_and_routes= checks the three new
+Migration =000954_ai_messages_drafts_rules_and_routes= checks the three new
 tables and the organization's =ai_messages_off= and =business_hours=; all
 start empty. =test-ai-messages= covers reading and extraction from the
 message only, routing, after-hours and missed-call rules with auto-send

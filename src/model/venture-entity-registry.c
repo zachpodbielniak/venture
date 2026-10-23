@@ -910,6 +910,9 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_headline_setting_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_dunning_policy_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_dunning_event_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_late_fee_setting_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_late_fee_schedule_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_late_fee_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_lead_routing_rule_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_lead_scoring_rule_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_lead_score_history_get_type, VENTURE_DATA_CLASS_TENANT },
@@ -979,6 +982,11 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_ai_message_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_ai_message_rule_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_ai_message_route_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_job_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_job_technician_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_property_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_equipment_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_maintenance_plan_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

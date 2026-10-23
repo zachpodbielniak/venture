@@ -173,6 +173,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "quotes", FALSE);
 	venture_config_set_module_enabled(config, "leads", FALSE);
 	venture_config_set_module_enabled(config, "referrals", FALSE);
+	venture_config_set_module_enabled(config, "jobs", FALSE);
 	venture_config_set_module_enabled(config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(config, "activities", FALSE);
 	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires activities */
@@ -190,6 +191,7 @@ test_module_dependency_conflict_is_refused(void)
 	venture_config_set_module_enabled(config, "goods", FALSE);
 	venture_config_set_module_enabled(config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(config, "dunning", FALSE);
+	venture_config_set_module_enabled(config, "late_fees", FALSE);
 	venture_config_set_module_enabled(config, "customer_health", FALSE);
 	venture_config_set_module_enabled(config, "headline", FALSE);
 	venture_config_set_module_enabled(config, "sales_tax", FALSE);
@@ -644,6 +646,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "referrals", FALSE);
+	venture_config_set_module_enabled(fixture->config, "jobs", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires activities */
@@ -661,6 +664,7 @@ fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
 	venture_config_set_module_enabled(fixture->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dunning", FALSE);
+	venture_config_set_module_enabled(fixture->config, "late_fees", FALSE);
 	venture_config_set_module_enabled(fixture->config, "customer_health", FALSE);
 	venture_config_set_module_enabled(fixture->config, "headline", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_tax", FALSE);
@@ -1055,6 +1059,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "quotes", FALSE);
 	venture_config_set_module_enabled(fixture->config, "leads", FALSE);
 	venture_config_set_module_enabled(fixture->config, "referrals", FALSE);
+	venture_config_set_module_enabled(fixture->config, "jobs", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_performance", FALSE);
 	venture_config_set_module_enabled(fixture->config, "activities", FALSE);
 	venture_config_set_module_enabled(fixture->config, "telephony", FALSE); /* requires activities */
@@ -1072,6 +1077,7 @@ server_fixture_set_up(
 	venture_config_set_module_enabled(fixture->config, "goods", FALSE);
 	venture_config_set_module_enabled(fixture->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(fixture->config, "dunning", FALSE);
+	venture_config_set_module_enabled(fixture->config, "late_fees", FALSE);
 	venture_config_set_module_enabled(fixture->config, "customer_health", FALSE);
 	venture_config_set_module_enabled(fixture->config, "headline", FALSE);
 	venture_config_set_module_enabled(fixture->config, "sales_tax", FALSE);

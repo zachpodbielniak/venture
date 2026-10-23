@@ -36,7 +36,7 @@ headline metrics, Stripe and commerce connectors. Conventions are in
   `draft -> sent` is yours; paid states come from settlement), `issued_at`,
   `due_at`, `paid_at`, `workflow_state`, `tax_exempt`, `dunning_policy_id`,
   `dunning_paused_until`, `owner`, `external_id`. *actions*
-  `batch_create (0,s)`, `payment_link`, `collect` (stripe).
+  `batch_create (0,s)`, `remind (s)`, `payment_link`, `collect` (stripe).
 - `invoice_line` -- `invoice_id`, `description`, `quantity` (double),
   `unit_price`, `discount_percent`, `tax_code_id -> tax_code`,
   `tax_jurisdiction_id` (frozen at issue), `product_id`. Amount is computed
@@ -58,7 +58,7 @@ headline metrics, Stripe and commerce connectors. Conventions are in
   totals, `invoice_id`, `subscription_id`; *actions* `progress_invoice (s)`,
   `handoff (s)`); `quote_line` (`plan_price_id` for a subscription line);
   `quote_event`, `quote_delivery`, `quote_action` (a staged
-  send/accept/decline/revise: `action`, `expected_version`, `accepted_by`);
+  send/accept/decline/revise/remind: `action`, `expected_version`, `accepted_by`);
   `progress_billing`, `customer_retainer` (*action* `release`),
   `contract_retention`.
 
@@ -118,6 +118,19 @@ order's currency), `goods_receipt`/`goods_receipt_line`,
   `escalation_owner`, `last_sweep`; *actions* `sweep (0,s)`, `test_send`),
   `dunning_event` (one step per invoice; *action* `retry (s)`; never
   written by hand). Reports `collections`, `dunning_worklist`.
+- late_fees (requires dunning, receivables; off until a `late_fee_setting`
+  says `enabled`): `late_fee_setting` (one per organization: `enabled`,
+  `auto_apply`, `default_schedule_id`, `enabled_at`, `paused`,
+  `paused_until`, `pause_reason`; *actions* `pause_late_fees (s)`,
+  `resume_late_fees (s)`), `late_fee_schedule` (`tiers` JSON, `grace_days`,
+  `minimum_balance`, `max_percent` as text, `max_total`, `invoice_types`),
+  `late_fee` (one occurrence; *actions* `approve (s)`, `skip (s)`,
+  `skip_notice (s)`, `waive (s)` with `reason` and `note`, type-level
+  `decide (s)` with `ids` and `decision`; never written by hand). Invoice and
+  company gain `late_fee_schedule_id`, `late_fee_exempt`, `late_fees_paused`,
+  `late_fees_paused_until`, `late_fees_pause_reason`; invoice also
+  `invoice_type` and *actions* `late_fee_preview`, `pause_late_fees (s)`.
+  Report `late_fees`.
 - headline: `headline_setting` (health thresholds, hourly rates, the
   classic home switch). Reports `cac`, `customer_churn`, `ltv`, `ltv_cac`,
   `customer_cohorts`; the cards at `/` and `GET /api/v1/headline`.

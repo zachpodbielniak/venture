@@ -3,7 +3,7 @@
 #+authors: Ben Doty
 #+categories: projects docs
 #+created: [2026-09-17]
-#+updated: [2026-09-17]
+#+updated: [2026-10-19]
 #+version: 0.6.0
 
 * Dunning
@@ -43,6 +43,18 @@ The save validator refuses anything it would otherwise have to guess at:
 - An =is_default= policy needs at least one step; an empty default is every
   invoice in the organization silently leaving dunning.
 - =last_sweep= is the sweep action's answer (below) and is never stored.
+
+An owner does not have to write steps. Payment reminders (=/e/dunning_policy=,
+under Money in) offers *Set up the usual reminders*
+(=POST /api/v1/dunning_policy/0/actions/standard=, optional =organization_id=):
+it makes three mail templates -- three days before the due date, a week late,
+two weeks late, each using only placeholders the renderer fills -- and a
+default policy named "Usual reminders" naming them, adopted now. The templates
+and the policy are one transaction: a failure leaves none of them. It is
+refused when the business already has a default, naming it; that one is
+edited instead. Until a policy applies, "Send a reminder now" on an invoice
+says so and points at that button. The record's labels are "Reminder
+schedule" / "Payment reminders"; its type name stays =dunning_policy=.
 
 Exactly one policy per organization may be =is_default=; a second is refused
 naming the first. A company may name =dunning_policy_id= to override the
@@ -161,8 +173,8 @@ activity, and escalates seven days later.
 The current step renders its template with the invoice's public fields plus
 ={customer_name}=, ={contact_name}=, ={due_at}= and ={issued_at}= as dates,
 ={open_balance}= (display form) and ={open_balance_exact}=, ={days_overdue}=,
-={days_until_due}=, ={step}=, ={offset_days}=, ={policy_name}= and
-={pay_link}=. The recipient is the invoice contact's email, or the customer's
+={days_until_due}=, ={step}=, ={offset_days}=, ={policy_name}=,
+={pay_link}= and ={late_fee_notice}= (empty unless late fees are on). The recipient is the invoice contact's email, or the customer's
 when the invoice names no live contact; with neither the step is recorded as
 =suppressed= (=no_recipient=). A template naming an unknown placeholder, or a
 missing template, records the step as =failed= with the error; see
@@ -285,9 +297,23 @@ related to the invoice, instead of another email. Its owner is the first of:
 nobody. The event is =escalated= and names the activity. A settled invoice
 never escalates; a customer who opted out of reminders, or who has no email
 address, still gets the internal task. With the activities module off the
-step is recorded as =failed=. Late fees are not applied anywhere; if they are
-ever wanted they belong on the escalation step as a credit-note-shaped
-adjustment through =VentureSettlementService=, not in the reminder.
+step is recorded as =failed=.
+
+* Late fees
+
+Late fees are their own module, =late_fees=, off by default; see
+[[file:late-fees.org][Late fees]]. They are a stage of this sweep, not a
+second one: each invoice the sweep visits gets its late-fee stage first,
+then its reminder. A fee is a separate adjustment through
+=VentureSettlementService= (a =late_fee= invoice event, reversed by a
+=late_fee_waiver= credit), never an edit of the invoice's lines. A reminder
+states the next fee ("A $25.00 late fee will be added on 2026-01-25.") at
+={late_fee_notice}=, or appended when the template does not name it, and no
+fee is added unless such a reminder was sent before its day or the owner
+skipped the notice. The sweep's answer carries a =late_fees= object. While
+late fees are off or paused no fee wording reaches a customer. Late-fee
+limits vary by jurisdiction; schedules support caps and owners should set
+them for their location.
 
 * Retry
 
@@ -307,6 +333,27 @@ attempt at this one is already recorded (retrying would send an older
 reminder), when the invoice has left dunning or is on hold, or when the
 policy no longer has a step at that offset. Retrying an =uncertain= row may
 duplicate a message the relay did accept; that is the operator's call.
+
+* Remind now
+
+=invoice= has a =remind= action (editor, stageable) for the owner who wants
+one customer reminded today, outside the schedule:
+
+#+begin_src sh
+venturectl act invoice 42 remind
+# REST: POST /api/v1/invoice/42/actions/remind   (?stage=1 to propose it)
+#+end_src
+
+It sends the customer the latest reminder the invoice was already sent, or
+the policy's first email step when none was, rendered and recorded exactly as
+a sweep records a step (a =dunning_event= with the pay link and balance), and
+returns the queued =mail_message=. The step it repeats is at or below the
+newest step already decided, so the sweep's schedule is not moved on: the
+next scheduled reminder still goes when it falls due. Its key is
+=dunning:remind:inv:<id>:<YYYY-MM-DD>=; asking again the same day returns
+that day's message and sends nothing more. It is refused, with the reason,
+for an invoice that is settled, not issued, disputed, opted out or disabled,
+that has no policy, or whose customer has no email address.
 
 * Test send
 

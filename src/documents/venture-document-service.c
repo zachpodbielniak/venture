@@ -247,6 +247,13 @@ next_number(VentureDocumentService *self, gint64 org, GType type, const gchar *p
 	return g_strdup_printf("%s%" G_GINT64_FORMAT, prefix, count + 1);
 }
 
+gchar *
+venture_document_service_next_number(VentureDocumentService *self, gint64 organization_id, GType type)
+{
+	g_return_val_if_fail(VENTURE_IS_DOCUMENT_SERVICE(self), NULL);
+	return next_number(self, organization_id, type, type == VENTURE_TYPE_QUOTE ? "Q-" : "INV-");
+}
+
 static JsonArray *
 lines_of(JsonObject *spec, GError **error)
 {
@@ -515,7 +522,8 @@ venture_document_service_compose_quote(VentureDocumentService *self, gint64 orga
 		"currency", currency,
 		"terms", venture_json_object_get_string(spec, "terms", ""),
 		"notes", venture_json_object_get_string(spec, "notes", ""),
-		"billing-mode", venture_json_object_get_string(spec, "billing_mode", ""), NULL);
+		"billing-mode", venture_json_object_get_string(spec, "billing_mode", ""),
+		"service-address", venture_json_object_get_string(spec, "service_address", ""), NULL);
 	if (!venture_database_save(self->database, VENTURE_ENTITY(quote), actor, error))
 		goto fail;
 	for (i = 0; i < json_array_get_length(lines); i++)

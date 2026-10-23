@@ -212,7 +212,7 @@ registrations live in =src/mail/venture-mail-preview-settings.c=,
 =src/inbox/venture-inbox-settings.c= and
 =src/aimessages/venture-ai-messages-settings.c=.
 
-Migration =000932_settings_workflow_defaults= checks the organization
+Migration =000955_settings_workflow_defaults= checks the organization
 fields added for defaults that had no home (link checks, the send
 defaults, the keyword answers). They arrive empty, which reads as the
 defaults above; nothing already stored moves. =tests/test-venture-settings.c=

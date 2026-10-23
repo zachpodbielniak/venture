@@ -6,6 +6,8 @@
 =billing= requires =invoicing= and =receivables=. A =plan= describes Starter
 or Pro; a =plan_price= describes one version of what it costs for one
 period -- every month, every 3 months, every 6 months or every year.
+A plan's page has an "Add a price" button, and says when the plan has no
+price yet and so cannot be offered.
 The customer's commitment is a =customer_subscription=. The example
 plugin's =subscription= remains a recurring cost paid by the business.
 
@@ -134,6 +136,9 @@ charged, is applied to it: the period costs nothing and the books say why.
 It refuses a subscription that is cancelled or ends at renewal, and one
 whose next period already costs nothing. A referral reward is its caller
 (see [[file:referrals.org][Referrals]]); nothing else writes it.
+=venture_billing_service_grant_free_month()= is the same for one month of
+the plan: the next period's charge is scaled to one month (a twelfth of a
+yearly charge) with =venture_money_multiply_rational= before it is carried.
 
 Changes compare the discounted prices while the discount covers the current
 period, including its last covered invoice. Keeping the same plan retains its
@@ -544,3 +549,10 @@ a code?" box beside the discount list; the CLI takes
 =billing start ... discount_code=SPRING25=, REST =discount_code=. Migration
 =000660_billing_discount_codes.sql= checks the new request column and
 invents no codes for earlier starts.
+
+* One new-plan form
+
+Both the Plans list and old =/e/plan/new= bookmarks lead to =/plans/new=,
+where the plan and its prices are saved together. Venture is optional;
+with no single venture selected, the plan is shared across the business.
+Per seat starts unchecked. Existing plans still add prices from their page.

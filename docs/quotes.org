@@ -55,6 +55,15 @@ they are being saved.
   per-quote acceptance secret and writes one =quote_delivery= with
   =channel=email=. A missing validity date uses the organization's
   =quote_valid_days=, with zero meaning 30 days.
+- =share= issues the quote exactly as =send= does but mails nothing: its
+  =quote_delivery= has =channel=link=, and the quote page shows the
+  customer's link with a Copy button for the owner to text or paste.
+- On the quote page, "Send quote" is refused when neither the quote's contact
+  nor the customer has an email address, like invoice Send, and points at
+  Share link. A server with no =server.base_url= still issues on Send and
+  keeps the delivery for a later sender, as before; the page then says "Not
+  emailed" above the customer link instead of only "Sent". The API and CLI
+  =send= keep their offline behaviour.
 - =revise= duplicates the commercial fields and all lines into a draft,
   increments =revision= and supersedes the source. The new number appends
   =-R<n>= to its parent's number. Accepted or already superseded quotes
@@ -64,6 +73,12 @@ they are being saved.
   discounts and taxes, issues it through =VentureSettlementService=, moves
   the attached deal to =won= and marks the quote accepted. Any failure,
   including posting or invoice validation, rolls everything back.
+- =remind= on a sent, unexpired quote that was emailed mails the customer
+  again with the same private acceptance link, subject =Reminder: Quote
+  <number>=, and records the action on the quote's timeline. Its outbox key
+  is =quote-reminder:<uuid>:<YYYY-MM-DD>=, so a second reminder the same day
+  sends nothing more. It needs the public HTTPS =server.base_url=, like the
+  first send.
 - =decline= requires a reason. =venture_quote_service_sweep()= expires sent
   quotes whose validity elapsed, within one exact organization.
 
@@ -78,12 +93,16 @@ billing service -- once. See [[file:billing.org][SaaS billing]].
 
 A quote with =billing-mode=progress= is accepted without issuing the full invoice; progress slices are billed through =VentureProgressService=.
 
+A quote with =billing-mode=after_work= is billed once the work is done: accepting it draws up the invoice as a draft (no issue date, no due date, nothing posted, nothing for a reminder to chase), and the job that carries the quote issues it when it is marked Invoiced -- dated that day, due thirty days later. Marking that same draft sent from the invoice uses those terms too. The composer asks "Bill the customer: when the work is done / as soon as they accept / in stages"; with the =jobs= module on, "when the work is done" is the default, otherwise "as soon as they accept" (=full=), which is also what a quote with no mode gets. An accepted quote's page offers "Book the job" (with =jobs= on) and only the buttons that still apply: not Send, Accept or Decline again. The customer's page gives the valid-until day in the business's zone ("19 November 2026"), and after acceptance says the business will be in touch to book the work.
+
 The invoice number is =QUOTE-= followed by the quote number. Existing
 invoice-number conflicts are errors and roll back acceptance. Invoice lines
 now declare discount and tax percentages; existing lines default to zero.
 The ordinary invoice amount function applies the same money rounding.
 Issuance uses settlement's configured accounts and fiscal-period guard.
-Quote validity is not a payment due date; invoice due dates remain unset.
+Quote validity is not a payment due date. The acceptance invoice is due
+thirty days after issue, the invoice composer's default terms, so it ages
+in receivables and reminders fall due like any other invoice.
 
 A =before-action= signal on the service runs inside the transaction, after
 version validation and before any action records. It is =G_SIGNAL_RUN_LAST=;
@@ -95,14 +114,16 @@ approval here. External delivery must wait for committed records.
 
 #+begin_src sh
 venturectl quote send 1
+venturectl quote share 1
 venturectl quote accept 1 'by=Alex Buyer'
 venturectl quote decline 1 'reason=Budget deferred'
 venturectl quote revise 1
+venturectl quote remind 1
 venturectl quote start-subscription 1
 #+end_src
 
-REST actions are =POST /api/v1/quotes/:id/send=, =accept=, =decline= and
-=revise=. JSON uses =accepted_by= and =reason=. Add =?stage=1= to propose
+REST actions are =POST /api/v1/quotes/:id/send=, =share=, =accept=, =decline=,
+=revise= and =remind=. JSON uses =accepted_by= and =reason=. Add =?stage=1= to propose
 an action for approval. The quote detail page has the same buttons and
 =/quotes/:id/print= shares the invoice print stylesheet.
 
@@ -179,3 +200,13 @@ With pipelines enabled, a deal's lines can be handed to a quote in one step:
 =POST /api/v1/deals/:id/quote= creates =DEAL-<id>= with the deal's lines, and
 a rerun revises the latest quote through this service's =revise= action. See
 [[file:pipelines.org][Sales pipelines]] for the line arithmetic and refusals.
+
+* Service address
+
+The estimate composer and ordinary quote form accept an optional
+=service_address=: where the quoted work will take place. It is shown on
+the customer's share-link page and printable quote, and retained in a
+revision. It does not copy the customer's billing address. Existing quotes
+remain unspecified after migration =000943_quote_service_address=; the
+paired backend scripts verify the additive column. A new linked job uses
+this address unless the job or its selected property supplies one.

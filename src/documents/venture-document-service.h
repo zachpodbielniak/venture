@@ -41,6 +41,18 @@ VentureEntity *venture_document_service_compose_invoice(VentureDocumentService *
 VentureEntity *venture_document_service_compose_quote(VentureDocumentService *self,
 	gint64 organization_id, JsonObject *spec, const VentureActor *actor, GError **error);
 /**
+ * venture_document_service_next_number:
+ * @self: the service
+ * @organization_id: target legal entity ID
+ * @type: %VENTURE_TYPE_QUOTE or %VENTURE_TYPE_INVOICE
+ *
+ * The number a quote or invoice composed now with no number of its own
+ * would be given, so the composer can say so instead of an example.
+ *
+ * Returns: (transfer full): the number
+ */
+gchar *venture_document_service_next_number(VentureDocumentService *self, gint64 organization_id, GType type);
+/**
  * VENTURE_DOCUMENT_EXTRACT_MAX_PAGES:
  *
  * The most pages venture_document_extract_text() reads from one PDF.

@@ -13,8 +13,10 @@
 #include "venture.h"
 #include "venture-http-limits-private.h"
 #include "quotes/venture-document-print-style.h"
+#include "quotes/venture-quote-mail.h"
 #include "statements/venture-statements-private.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 
@@ -189,6 +191,8 @@ static void venture_web_append_lead_actions(GString *html, VentureEntity *record
 static void venture_web_append_form_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_append_form_answers(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_mail_append_send_notice(VentureWebServer *self, GString *html, VentureEntity *record, HtmxRequest *request);
+static void venture_web_append_restore(GString *html, VentureEntity *record, const gchar *type_name);
 static void venture_web_connector_append_actions(VentureWebServer *self, GString *html, VentureEntity *record);
 
 /*
@@ -597,6 +601,11 @@ venture_web_page(
 	const gchar		*title,
 	const gchar		*content
 );
+
+/* The late-fee panel on an invoice's page, defined with the late-fee
+ * pages in latefees/venture-late-fees-web.inc. */
+static void
+venture_late_fees_web_append_invoice(VentureWebServer *self, GString *html, VentureEntity *invoice);
 
 /* An event's own block on its record page, defined with the calendar in
  * planner/venture-planner-web.inc. */
@@ -1489,6 +1498,11 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		NULL, "recurring"
 	},
 	{
+		"/e/dunning_policy", "Payment reminders",
+		VENTURE_ICON("<path d=\"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9\"/><path d=\"M10 21h4\"/>"),
+		NULL, "dunning"
+	},
+	{
 		"/e/company", "Companies",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
@@ -1870,8 +1884,14 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
 	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
+	{ "/late-fees", "Late fees", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 7v5l3 2\"/>"), NULL, "late_fees" },
 	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
 	{ "/conversations", "Conversations", VENTURE_ICON("<path d=\"M4 5h16v10H9l-5 4z\"/><path d=\"M8 9h8M8 12h5\"/>"), "Sales pipelines", "inbox" },
+	{ "/e/job", "Jobs", VENTURE_ICON("<path d=\"M14 6l4 4-8 8H6v-4z\"/><path d=\"M12 8l4 4\"/>"), "Jobs", "jobs" },
+	{ "/jobs/day", "Day", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 14h8M8 17h5\"/>"), NULL, "jobs" },
+	{ "/e/property", "Properties", VENTURE_ICON("<path d=\"M3 11l9-7 9 7\"/><path d=\"M5 10v10h14V10\"/><path d=\"M10 20v-6h4v6\"/>"), NULL, "jobs" },
+	{ "/e/equipment", "Equipment", VENTURE_ICON("<rect x=\"6\" y=\"3\" width=\"12\" height=\"18\" rx=\"2\"/><path d=\"M10 8h4M12 14v3\"/>"), NULL, "jobs" },
+	{ "/jobs/visits", "Visits due", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4\"/>"), NULL, "jobs" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -1901,7 +1921,7 @@ venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *req
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-	"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
+	"/e/refund", "/e/collection_case", "/late-fees", "/e/dunning_policy", "/e/customer_subscription", "/e/plan",
 	"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 	"/e/listing", "/e/price_observation",
 	NULL
@@ -1927,6 +1947,7 @@ static const gchar *const venture_web_nav_books[] = {
 
 static const gchar *const venture_web_nav_customers[] = {
 	"/e/company", "/e/contact", "/worklist", "/customers/duplicates", "/conversations",
+	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates",
 	NULL
 };
 
@@ -5304,6 +5325,11 @@ venture_web_ui_invoice_status(
  * PDF generator; it is already installed everywhere.
  */
 static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_jobs_web_append_block(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_jobs_web_seed_new(VentureWebServer *self, HtmxRequest *request, VentureEntity *record);
+static void venture_jobs_web_append_today(VentureWebServer *self, GString *html, HtmxRequest *request,
+	VentureAuthPrincipal *principal);
+static void venture_jobs_web_append_home(VentureWebServer *self, GString *html, HtmxRequest *request);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
@@ -5312,6 +5338,131 @@ static void venture_web_telephony_block(VentureWebServer *self, GString *content
 static void venture_web_inbox_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_ai_messages_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_settings_block(VentureWebServer *self, GString *content, VentureEntity *record);
+
+/*
+ * The two parties on a printed invoice or quote: the business that sends
+ * it, as its own record names it, and the customer it is for. A document a
+ * customer files has to say who it is from -- the server's own title, which
+ * it used to print, says nothing to them. Empty fields are left out, so a
+ * business that has filled in only its name prints only its name.
+ * @full is %FALSE on the customer's public quote page, which names the
+ * customer but does not repeat their contact details.
+ */
+/*
+ * A stored instant as a datetime box shows it: wall time in the business's
+ * zone, to the minute. Only field metadata distinguishes a date from a
+ * datetime: midnight UTC can be a genuine timed appointment.
+ */
+static gchar *
+venture_web_datetime_local(VentureWebServer *self, GDateTime *when)
+{
+	g_autoptr(GDateTime) local = NULL;
+
+	local = g_date_time_to_timezone(when, venture_context_get_timezone(self->context));
+	return g_date_time_format(local, "%Y-%m-%dT%H:%M");
+}
+
+/*
+ * What a datetime box posted -- YYYY-MM-DDTHH:MM, optionally :SS, no zone --
+ * as an ISO instant, reading the wall time in the business's zone. NULL for
+ * anything else (a bare date, an ISO string with its own zone, a word like
+ * "today"), which the ordinary parser reads as it always has.
+ */
+static gchar *
+venture_web_datetime_from_local(VentureWebServer *self, const gchar *text)
+{
+	gint year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+	gint consumed = 0;
+	g_autoptr(GDateTime) local = NULL;
+
+	if (NULL == text)
+		return NULL;
+	if (sscanf(text, "%4d-%2d-%2dT%2d:%2d%n", &year, &month, &day, &hour, &minute, &consumed) != 5)
+		return NULL;
+	if (':' == text[consumed])
+	{
+		gint more = 0;
+
+		if (sscanf(text + consumed, ":%2d%n", &second, &more) != 1)
+			return NULL;
+		consumed += more;
+	}
+	if ('\0' != text[consumed])
+		return NULL;
+	local = g_date_time_new(venture_context_get_timezone(self->context), year, month, day,
+	                        hour, minute, (gdouble)second);
+	if (NULL == local)
+		return NULL;
+	return venture_time_to_string(local);
+}
+
+static void
+venture_web_append_document_parties(
+	VentureWebServer	*self,
+	GString			*html,
+	gint64			 organization_id,
+	gint64			 company_id,
+	const gchar		*customer_heading,
+	gboolean		 full
+){
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureEntity) business = NULL;
+	g_autoptr(VentureEntity) company = NULL;
+	static const gchar *const contact_fields[] = { "address", "phone", "email", "website" };
+	guint i;
+
+	business = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+	company = company_id > 0 ? venture_database_get(database, VENTURE_TYPE_COMPANY, company_id, NULL) : NULL;
+	g_string_append(html, "<div class=\"parties\">");
+	if (NULL != business)
+	{
+		g_autofree gchar *name = venture_entity_get_display_name(business);
+		g_autofree gchar *legal = NULL;
+
+		g_object_get(business, "legal-name", &legal, NULL);
+		g_string_append(html, "<div class=\"party from\"><strong>");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</strong>");
+		if (!venture_string_is_empty(legal) && g_strcmp0(legal, name) != 0)
+		{
+			g_string_append(html, "<br>");
+			venture_html_escape_append(html, legal);
+		}
+		for (i = 0; i < G_N_ELEMENTS(contact_fields); i++)
+		{
+			g_autofree gchar *value = NULL;
+
+			g_object_get(business, contact_fields[i], &value, NULL);
+			if (venture_string_is_empty(value))
+				continue;
+			g_string_append(html, "<br>");
+			venture_html_escape_append(html, value);
+		}
+		g_string_append(html, "</div>");
+	}
+	if (NULL != company)
+	{
+		g_autofree gchar *name = venture_entity_get_display_name(company);
+
+		g_string_append(html, "<div class=\"party to\"><span class=\"meta\">");
+		venture_html_escape_append(html, customer_heading);
+		g_string_append(html, "</span><br><strong>");
+		venture_html_escape_append(html, name);
+		g_string_append(html, "</strong>");
+		for (i = 0; full && i < 3; i++)
+		{
+			g_autofree gchar *value = NULL;
+
+			g_object_get(company, contact_fields[i], &value, NULL);
+			if (venture_string_is_empty(value))
+				continue;
+			g_string_append(html, "<br>");
+			venture_html_escape_append(html, value);
+		}
+		g_string_append(html, "</div>");
+	}
+	g_string_append(html, "</div>");
+}
 
 static HtmxResponse *
 venture_web_ui_invoice_print(
@@ -5327,7 +5478,6 @@ venture_web_ui_invoice_print(
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *number = NULL;
 	g_autofree gchar *terms = NULL;
-	g_autofree gchar *ui_title = NULL;
 	g_autoptr(GDateTime) issued = NULL;
 	g_autoptr(GDateTime) due = NULL;
 	VentureInvoiceStatus status;
@@ -5373,12 +5523,9 @@ venture_web_ui_invoice_print(
 	g_object_get(record, "number", &number, "status", &status,
 	             "issued-at", &issued, "due-at", &due,
 	             "terms", &terms, "company-id", &company_id, NULL);
-	g_object_get(venture_context_get_config(self->context),
-	             "ui-title", &ui_title, NULL);
-
 	html = g_string_new(
 		"<!doctype html><html lang=\"en\"><head>"
-		"<meta charset=\"utf-8\"><title>Invoice ");
+		"<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Invoice ");
 	venture_html_escape_append(html, number);
 	g_string_append(html,
 		"</title><style>"
@@ -5387,32 +5534,20 @@ venture_web_ui_invoice_print(
 
 	g_string_append(html, "<div class=\"head\"><div><h1>Invoice ");
 	venture_html_escape_append(html, number);
-	g_string_append(html, "</h1><div class=\"meta\">");
-	venture_html_escape_append(html, ui_title);
-	g_string_append(html, "</div></div><span class=\"status\">");
-	venture_web_append_nick(html, VENTURE_TYPE_INVOICE_STATUS, (gint)status);
-	g_string_append(html, "</span></div>");
+	g_string_append(html, "</h1></div>");
+	/* Paid and void are news to the customer; draft, sent and the
+	 * collection states are the business's own bookkeeping. */
+	if (VENTURE_INVOICE_STATUS_PAID == status || VENTURE_INVOICE_STATUS_VOID == status)
+	{
+		g_string_append(html, "<span class=\"status\">");
+		venture_web_append_nick(html, VENTURE_TYPE_INVOICE_STATUS, (gint)status);
+		g_string_append(html, "</span>");
+	}
+	g_string_append(html, "</div>");
+	venture_web_append_document_parties(self, html,
+		venture_entity_get_organization_id(record), company_id, "Billed to", TRUE);
 
 	g_string_append(html, "<div class=\"meta\">");
-
-	if (company_id > 0)
-	{
-		g_autoptr(VentureEntity) company = NULL;
-
-		company = venture_database_get(
-			venture_context_get_database(self->context),
-			VENTURE_TYPE_COMPANY, company_id, NULL);
-
-		if (NULL != company)
-		{
-			g_autofree gchar *label = NULL;
-
-			label = venture_entity_get_display_name(company);
-			g_string_append(html, "Billed to: <strong>");
-			venture_html_escape_append(html, label);
-			g_string_append(html, "</strong><br>");
-		}
-	}
 
 	if (NULL != issued)
 	{
@@ -5437,7 +5572,7 @@ venture_web_ui_invoice_print(
 
 	g_string_append(html, "</div>");
 
-	g_string_append(html, "<table><thead><tr><th>Description</th>"
+	g_string_append(html, "<div class=\"table-wrap\"><table><thead><tr><th>Description</th>"
 	                      "<th class=\"num\">Qty</th>"
 	                      "<th class=\"num\">Unit</th>"
 	                      "<th class=\"num\">Net</th>"
@@ -5518,7 +5653,7 @@ venture_web_ui_invoice_print(
 		}
 	}
 
-	g_string_append(html, "</td></tr></tfoot></table>");
+	g_string_append(html, "</td></tr></tfoot></table></div>");
 
 	if (!venture_string_is_empty(terms))
 	{
@@ -7295,6 +7430,21 @@ static const gchar *const venture_web_report_periods[] = {
 	NULL
 };
 
+/* What each of those buttons says: the parameter is for the address bar,
+ * not for the person; "THIS_MONTH" was a variable name on a button. */
+static const gchar *
+venture_web_report_period_label(const gchar *period)
+{
+	static const gchar *const labels[] = {
+		"This month", "Last month", "This quarter", "Year to date", "This year"
+	};
+	gsize i;
+	for (i = 0; i < G_N_ELEMENTS(labels) && NULL != venture_web_report_periods[i]; i++)
+		if (0 == g_strcmp0(period, venture_web_report_periods[i]))
+			return labels[i];
+	return period;
+}
+
 /*
  * The aggregate report's question, as a form: it has no sensible answer
  * without a type, so the page offers the options rather than a bare
@@ -8069,7 +8219,7 @@ venture_web_ui_report(
 			g_string_append_printf(content,
 				"<a class=\"btn btn-sm%s\" href=\"/reports/%s?period=%s%s\">%s</a>",
 				(0 == g_strcmp0(requested_period, periods[i])) ? " active" : "",
-				name, periods[i], historical_suffix->str, periods[i]);
+				name, periods[i], historical_suffix->str, venture_web_report_period_label(periods[i]));
 		}
 
 		g_string_append(content, "</div>");
@@ -8422,6 +8572,123 @@ venture_web_organization_exists(
  * working form the moment it is registered, including one from a plugin,
  * without anybody writing HTML for it.
  */
+/*
+ * A user on the forms that grant access, or that send a technician to a
+ * job, is named by display name, else username: "User #3" is no way to
+ * pick a person. Everywhere else a user keeps its generic label, because a
+ * username is a sign-in name that the roles below admin are not shown.
+ */
+static gchar *
+venture_web_reference_option_label(VentureWebServer *self, VentureEntity *record, VentureEntity *option)
+{
+	if (VENTURE_IS_USER(option) && NULL != record &&
+	    (VENTURE_IS_ORGANIZATION_MEMBERSHIP(record) || VENTURE_IS_TEAM_MEMBERSHIP(record) ||
+	     VENTURE_IS_JOB_TECHNICIAN(record)))
+	{
+		g_autofree gchar *username = NULL, *display = NULL;
+
+		g_object_get(option, "username", &username, "display-name", &display, NULL);
+		if (!venture_string_is_empty(display))
+			return g_steal_pointer(&display);
+		if (!venture_string_is_empty(username))
+			return g_steal_pointer(&username);
+	}
+	/* Most customers' properties are all called "Home": say whose. */
+	if (VENTURE_IS_PROPERTY(option))
+	{
+		g_autofree gchar *name = venture_entity_get_display_name(option);
+		g_autoptr(VentureEntity) company = NULL;
+		g_autofree gchar *whose = NULL;
+		gint64 company_id = 0;
+
+		g_object_get(option, "company-id", &company_id, NULL);
+		if (company_id > 0)
+			company = venture_database_get(venture_context_get_database(self->context),
+				VENTURE_TYPE_COMPANY, company_id, NULL);
+		if (NULL != company)
+			whose = venture_entity_get_display_name(company);
+		if (!venture_string_is_empty(whose))
+			return g_strdup_printf("%s (%s)", name, whose);
+		return g_steal_pointer(&name);
+	}
+	return venture_entity_get_display_name(option);
+}
+
+/* Active people of this business. With organization access on, membership
+ * grants a second business: the user row stays on the default organization,
+ * so a list that only filters users by that id hides them. People filed on
+ * this business still belong on the list when they have no membership row. */
+static gboolean
+venture_web_users_by_membership(VentureWebServer *self)
+{
+	return venture_web_module_enabled(self, "orgaccess") &&
+		venture_entity_registry_lookup(venture_context_get_entity_registry(self->context),
+			"organization_membership") != G_TYPE_INVALID;
+}
+
+static gboolean
+venture_web_user_listed(GPtrArray *out, gint64 id)
+{
+	guint i;
+
+	for (i = 0; i < out->len; i++)
+		if (venture_entity_get_id(g_ptr_array_index(out, i)) == id)
+			return TRUE;
+	return FALSE;
+}
+
+static GPtrArray *
+venture_web_member_users(VentureWebServer *self, gint64 organization)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GPtrArray) rows = NULL;
+	GPtrArray *out = g_ptr_array_new_with_free_func(g_object_unref);
+	VentureDatabase *database = venture_context_get_database(self->context);
+	guint i;
+	venture_query_set_organization(query, organization);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(database, query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *membership = g_ptr_array_index(rows, i);
+		g_autoptr(VentureEntity) user = NULL;
+		gboolean active = FALSE, user_active = FALSE;
+		gint64 user_id = 0;
+		g_object_get(membership, "active", &active, "user-id", &user_id, NULL);
+		if (!active || user_id <= 0)
+			continue;
+		if (venture_web_user_listed(out, user_id))
+			continue;
+		user = venture_database_get(database, VENTURE_TYPE_USER, user_id, NULL);
+		if (user == NULL)
+			continue;
+		g_object_get(user, "active", &user_active, NULL);
+		if (!user_active)
+			continue;
+		g_ptr_array_add(out, g_steal_pointer(&user));
+	}
+	/* Filed here, membership or not. The day list and the technician
+	 * picker both use this, and a user created on this business has
+	 * only the user row until someone grants them another. */
+	{
+		g_autoptr(VentureQuery) filed = venture_query_new(VENTURE_TYPE_USER);
+		g_autoptr(GPtrArray) home = NULL;
+
+		venture_query_set_organization(filed, organization);
+		venture_query_set_limit(filed, 0);
+		home = venture_database_find(database, filed, NULL);
+		for (i = 0; home != NULL && i < home->len; i++)
+		{
+			VentureEntity *user = g_ptr_array_index(home, i);
+
+			if (venture_web_user_listed(out, venture_entity_get_id(user)))
+				continue;
+			g_ptr_array_add(out, g_object_ref(user));
+		}
+	}
+	return out;
+}
+
 static void
 venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
@@ -8467,8 +8734,10 @@ venture_web_append_form_field_scoped(
 			GDateTime *when;
 
 			when = g_value_get_boxed(&value);
-			current = (NULL != when)
-				? g_date_time_format(when, "%Y-%m-%d") : NULL;
+			current = (NULL == when) ? NULL
+				: (VENTURE_FIELD_KIND_DATETIME == kind)
+				? venture_web_datetime_local(self, when)
+				: g_date_time_format(when, "%Y-%m-%d");
 		}
 		else if (G_VALUE_HOLDS_BOOLEAN(&value))
 		{
@@ -8480,9 +8749,11 @@ venture_web_append_form_field_scoped(
 
 			number = g_value_get_int64(&value);
 
-			/* A zero foreign key means "unset", not "record zero". */
+			/* A zero foreign key means "unset", not "record zero";
+			 * so does a zero the field declares as "not known". */
 			current = ((0 == number) &&
-			           (VENTURE_FIELD_KIND_REFERENCE == kind))
+			           ((VENTURE_FIELD_KIND_REFERENCE == kind) ||
+			            (0 != (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_BLANK_ZERO))))
 				? NULL : g_strdup_printf("%" G_GINT64_FORMAT, number);
 		}
 		else if (G_VALUE_HOLDS_ENUM(&value))
@@ -8603,12 +8874,18 @@ venture_web_append_form_field_scoped(
 
 			if (G_TYPE_INVALID != target)
 			{
-				query = venture_query_new(target);
-				venture_query_set_limit(query, 0);
-				if (organization > 0) venture_query_set_organization(query, organization);
+				if (target == VENTURE_TYPE_USER && organization > 0 &&
+					venture_web_users_by_membership(self))
+					options = venture_web_member_users(self, organization);
+				else
+				{
+					query = venture_query_new(target);
+					venture_query_set_limit(query, 0);
+					if (organization > 0) venture_query_set_organization(query, organization);
 
-				options = venture_database_find(
-					venture_context_get_database(self->context), query, NULL);
+					options = venture_database_find(
+						venture_context_get_database(self->context), query, NULL);
+				}
 			}
 
 			/*
@@ -8628,7 +8905,7 @@ venture_web_append_form_field_scoped(
 
 					option = g_ptr_array_index(options, i);
 					id = venture_entity_get_id(option);
-					display = venture_entity_get_display_name(option);
+					display = venture_web_reference_option_label(self, record, option);
 
 					g_string_append_printf(content,
 						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
@@ -8653,9 +8930,17 @@ venture_web_append_form_field_scoped(
 		break;
 
 	case VENTURE_FIELD_KIND_DATE:
-	case VENTURE_FIELD_KIND_DATETIME:
 		g_string_append_printf(content,
 			"<input type=\"date\" name=\"%s\" value=\"%s\"%s>",
+			name, (NULL != current) ? current : "",
+			required ? " required" : "");
+		break;
+
+	/* A date and a time of day, in the business's own zone: "8 to 10 on
+	 * Tuesday" is a time, and a date box made every booking midnight. */
+	case VENTURE_FIELD_KIND_DATETIME:
+		g_string_append_printf(content,
+			"<input type=\"datetime-local\" name=\"%s\" value=\"%s\"%s>",
 			name, (NULL != current) ? current : "",
 			required ? " required" : "");
 		break;
@@ -8723,12 +9008,66 @@ venture_web_append_form_field(VentureWebServer *self, GString *content,
 	venture_web_append_form_field_scoped(self, content, spec, record, 0);
 }
 
+/* Receipts use the ordinary generated form and save, with the current
+ * balance as an editable starting point. Never infer a work address or
+ * a receipt amount from a different business's record. */
+static gboolean
+venture_web_seed_receipt(VentureWebServer *self, HtmxRequest *request,
+	VentureEntity *record, GError **error)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	VentureSettlementService *settlement = venture_settlement_service_get(database);
+	g_autoptr(GDateTime) today = NULL;
+	g_autoptr(GDateTime) local_midnight = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	gint64 id = 0, customer = 0;
+	gint64 organization = venture_web_active_organization(self, request);
+	const gchar *selected = htmx_request_get_query_param(request, "organization_id");
+
+	if (!VENTURE_IS_PAYMENT(record) && !VENTURE_IS_REFUND(record))
+		return TRUE;
+	today = venture_settlement_service_today(settlement);
+	/* today names a calendar day using midnight UTC. A new receipt's
+	 * datetime default must name midnight in the business zone instead;
+	 * existing receipt timestamps still render as their stored instants. */
+	local_midnight = g_date_time_new(venture_context_get_timezone(self->context),
+		g_date_time_get_year(today), g_date_time_get_month(today),
+		g_date_time_get_day_of_month(today), 0, 0, 0.0);
+	g_object_set(record, "date", local_midnight, NULL);
+	if (!VENTURE_IS_PAYMENT(record))
+		return TRUE;
+	g_object_get(record, "invoice-id", &id, NULL);
+	if (id <= 0)
+		return TRUE;
+	if (selected != NULL)
+		organization = g_ascii_strtoll(selected, NULL, 10);
+	if (organization <= 0)
+		organization = venture_context_get_default_organization_id(self->context);
+	invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, id, error);
+	if (invoice == NULL)
+		return FALSE;
+	if (venture_entity_get_organization_id(invoice) != organization)
+	{
+		venture_set_error_validation(error, "invoice-id", "Choose an invoice in this business");
+		return FALSE;
+	}
+	balance = venture_settlement_service_invoice_balance(settlement, id, NULL, error);
+	if (balance == NULL)
+		return FALSE;
+	g_object_get(invoice, "company-id", &customer, NULL);
+	g_object_set(record, "customer-id", customer, "amount", balance, NULL);
+	venture_entity_set_organization_id(record, organization);
+	return TRUE;
+}
+
 /*
  * The new-record and edit-record form. One function for both, because the
  * only differences are the heading, where it posts and whether the fields
  * start filled.
  */
 static void venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request);
+static HtmxResponse *venture_plan_see_other(const gchar *path);
 
 static HtmxResponse *
 venture_web_ui_form(
@@ -8772,6 +9111,10 @@ venture_web_ui_form(
 	type_name = g_hash_table_lookup(params, "type");
 	id_text = g_hash_table_lookup(params, "id");
 	id = (NULL != id_text) ? g_ascii_strtoll(id_text, NULL, 10) : 0;
+
+	/* Old bookmarks reach the same plan-and-prices composer as New plan. */
+	if (id == 0 && entity_type == VENTURE_TYPE_PLAN)
+		return venture_plan_see_other(venture_entity_type_get_create_path(entity_type));
 
 	if (0 != id)
 	{
@@ -8869,6 +9212,12 @@ venture_web_ui_form(
 		if (value != NULL && !venture_entity_set_field_from_string(record, venture_field_spec_get_name(spec), value, &error))
 			return venture_web_error_response(error);
 	}
+	if (id == 0)
+	{
+		venture_jobs_web_seed_new(self, request, record);
+		if (!venture_web_seed_receipt(self, request, record, &error))
+			return venture_web_error_response(error);
+	}
 
 	/*
 	 * Four groups, each drawn from the field's role: the essentials in
@@ -8889,6 +9238,16 @@ venture_web_ui_form(
 
 		spec = g_ptr_array_index(specs, i);
 		flags = venture_field_spec_get_flags(spec);
+
+		/* A manual receipt has familiar choices; provider receipts still
+		 * retain their string method in the shared service and API. */
+		if (id == 0 && VENTURE_IS_PAYMENT(record) &&
+		    g_strcmp0(venture_field_spec_get_name(spec), "method") == 0)
+		{
+			spec->kind = VENTURE_FIELD_KIND_ENUM;
+			g_strfreev(spec->choices);
+			spec->choices = g_strsplit("cash,check,card,transfer,manual", ",", -1);
+		}
 
 		/*
 		 * A sensitive field is never rendered with its value -- that is
@@ -9013,20 +9372,39 @@ venture_web_ui_form(
 		}
 	}
 
+	if (id == 0 && VENTURE_IS_PAYMENT(record))
+		g_string_append(content, "<p class=\"field-help\">Review the amount, method and date before saving. "
+			"Saving records money already received; it does not charge a card. "
+			"A part payment leaves the rest due; any overpayment becomes customer credit.</p>");
+
 	g_string_append_printf(content,
 		"<div class=\"form-actions\">"
 		"<button class=\"btn btn-primary\" type=\"submit\">Save</button>"
 		"<a class=\"btn\" href=\"/e/%s\">Cancel</a>"
 		"</div></form>", type_name);
 
-	if (0 != id)
+	if (0 != id && VENTURE_TYPE_ORGANIZATION == entity_type)
+	{
+		/* A business holds every record filed under it: deleting one
+		 * empties every list, so it asks first, and the server refuses
+		 * the post without the tick. */
+		g_string_append_printf(content,
+			"<form method=\"post\" action=\"/e/%s/%" G_GINT64_FORMAT "/delete\" "
+			"class=\"danger-zone\">"
+			"<label class=\"checkbox\"><input type=\"checkbox\" name=\"confirm\" value=\"1\" required> "
+			"Yes, hide this business and everything filed under it</label>"
+			"<button class=\"btn btn-danger\" type=\"submit\">Delete this business</button>"
+			"<span class=\"muted small\">Its records stay kept; Restore on its page brings it back.</span>"
+			"</form>", type_name, id);
+	}
+	else if (0 != id)
 	{
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/e/%s/%" G_GINT64_FORMAT "/delete\" "
 			"class=\"danger-zone\">"
 			"<button class=\"btn btn-danger\" type=\"submit\">Delete</button>"
 			"<span class=\"muted small\">Recoverable: deleting hides the "
-			"record and keeps it.</span>"
+			"record and keeps it, and its page offers Restore.</span>"
 			"</form>", type_name, id);
 	}
 
@@ -9083,9 +9461,18 @@ venture_web_apply_form(
 			continue;
 		}
 
-		if (!venture_entity_set_field_from_string(record, name, submitted,
-		                                          error))
-			return FALSE;
+		{
+			g_autofree gchar *instant = NULL;
+
+			/* A datetime box posts wall time with no zone; it is the
+			 * business's wall time. A date alone is read as before. */
+			if (VENTURE_FIELD_KIND_DATETIME == venture_field_spec_get_kind(spec))
+				instant = venture_web_datetime_from_local(self, submitted);
+			if (!venture_entity_set_field_from_string(record, name,
+			                                          instant != NULL ? instant : submitted,
+			                                          error))
+				return FALSE;
+		}
 	}
 
 	{
@@ -9201,8 +9588,119 @@ venture_web_ui_save(
 	                           record, &actor, &error))
 		return venture_web_error_response(error);
 
-	destination = g_strdup_printf("/e/%s", type_name);
+	/* A new record opens, so the next step -- a property for the customer
+	 * just added -- starts from it; an edit goes back to the list. */
+	destination = (0 == id)
+		? g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, type_name, venture_entity_get_id(record))
+		: g_strdup_printf("/e/%s", type_name);
 
+	return venture_web_redirect_to(destination);
+}
+
+/*
+ * Deleting a business from its page: the form's tick must be there, and
+ * the last business standing is never hidden -- with none left, every
+ * list is empty and nothing says why. The default business is refused
+ * below this, by the database, for every caller.
+ */
+static gboolean
+venture_web_organization_delete_allowed(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	VentureEntity		*organization,
+	GError		       **error
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i, others = 0;
+
+	if (g_strcmp0(htmx_request_get_form_value(request, "confirm"), "1") != 0)
+	{
+		venture_set_error_validation(error, "confirm",
+			"Tick the box to confirm: deleting a business hides everything filed under it");
+		return FALSE;
+	}
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(venture_context_get_database(self->context), query, error);
+	if (NULL == rows)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
+		if (venture_entity_get_id(g_ptr_array_index(rows, i)) != venture_entity_get_id(organization))
+			others++;
+	if (0 == others)
+	{
+		venture_set_error_validation(error, "organization", "The last business can't be deleted");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* The way back from a delete, on the deleted record's own page. */
+static void
+venture_web_append_restore(
+	GString		*html,
+	VentureEntity	*record,
+	const gchar	*type_name
+){
+	if (!venture_entity_is_deleted(record) ||
+	    !venture_web_type_accepts_writes(G_OBJECT_TYPE(record), NULL))
+		return;
+	g_string_append(html, "<div class=\"banner banner-warn\" role=\"status\">This record is deleted: "
+		"it is hidden from lists and kept.");
+	g_string_append_printf(html, "<form method=\"post\" action=\"/e/%s/%" G_GINT64_FORMAT "/restore\">"
+		"<button class=\"btn btn-primary\" type=\"submit\">Restore</button></form></div>",
+		type_name, venture_entity_get_id(record));
+}
+
+/* Restore from the page, with the same checks as the API's restore. */
+static HtmxResponse *
+venture_web_ui_restore(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *destination = NULL;
+	VentureActor actor;
+	HtmxResponse *redirect;
+	GType entity_type;
+	gint64 id;
+
+	redirect = venture_web_ui_require_session(self, request);
+	if (NULL != redirect)
+		return redirect;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
+		return venture_web_error_response(error);
+	if (!venture_web_type_accepts_writes(entity_type, &error))
+		return venture_web_error_response(error);
+	id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
+	query = venture_query_new(entity_type);
+	venture_query_set_include_deleted(query, TRUE);
+	if (!venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, id, &error))
+		return venture_web_error_response(error);
+	record = venture_database_find_one(venture_context_get_database(self->context), query, &error);
+	if (NULL == record)
+	{
+		if (NULL == error)
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No such record: %" G_GINT64_FORMAT, id);
+		return venture_web_error_response(error);
+	}
+	venture_auth_to_actor(principal, &actor);
+	if (!venture_database_restore(venture_context_get_database(self->context),
+	                              record, &actor, &error))
+		return venture_web_error_response(error);
+	destination = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT,
+	                              (const gchar *)g_hash_table_lookup(params, "type"), id);
 	return venture_web_redirect_to(destination);
 }
 
@@ -9252,6 +9750,10 @@ venture_web_ui_delete(
 			&error);
 
 		if (NULL == record)
+			return venture_web_error_response(error);
+
+		if (VENTURE_TYPE_ORGANIZATION == entity_type &&
+		    !venture_web_organization_delete_allowed(self, request, record, &error))
 			return venture_web_error_response(error);
 
 		/* Soft: the record is hidden and kept, because a deleted sale is
@@ -10006,7 +10508,7 @@ venture_web_append_knowledge(
 /* The customer and contact pickers, defined with the document composer;
  * the new-subscription page shares them. */
 static void document_append_parties(VentureWebServer *self, GString *html,
-	gint64 organization);
+	gint64 organization, gint64 chosen);
 #include "payables/venture-bill-compose-web.inc"
 #include "billing/venture-plan-web.inc"
 #include "billing/venture-subscription-web.inc"
@@ -11286,6 +11788,57 @@ venture_web_append_ticket_forge_block(
 }
 
 static void
+venture_web_append_invoice_receipts(VentureWebServer *self, GString *html, VentureEntity *invoice)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
+	g_autoptr(GPtrArray) allocations = NULL;
+	guint i;
+	gint64 customer = 0;
+	venture_query_set_organization(query, venture_entity_get_organization_id(invoice));
+	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), NULL);
+	venture_query_set_limit(query, venture_aggregate_get_max_rows() + 1);
+	allocations = venture_database_find(database, query, NULL);
+	if (allocations == NULL || allocations->len == 0)
+		return;
+	if (allocations->len > (guint)venture_aggregate_get_max_rows())
+	{
+		g_string_append(html, "<p>Too many receipts to show here. Open Payment allocations to narrow the list.</p>");
+		return;
+	}
+	g_object_get(invoice, "company-id", &customer, NULL);
+	g_string_append(html, "<section class=\"card-body\"><h3>Payments received</h3><ul>");
+	for (i = 0; i < allocations->len; i++)
+	{
+		VentureEntity *allocation = g_ptr_array_index(allocations, i);
+		gint64 payment_id = 0;
+		g_autoptr(VentureEntity) payment = NULL;
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autofree gchar *text = NULL, *method = NULL, *reference = NULL;
+		g_object_get(allocation, "payment-id", &payment_id, "amount", &amount, NULL);
+		if (payment_id <= 0)
+			continue;
+		payment = venture_database_get(database, VENTURE_TYPE_PAYMENT, payment_id, NULL);
+		if (payment == NULL || amount == NULL)
+			continue;
+		text = venture_money_to_display_string(amount, TRUE);
+		g_object_get(payment, "method", &method, "reference", &reference, NULL);
+		g_string_append_printf(html, "<li><a href=\"/e/payment/%" G_GINT64_FORMAT "\">", payment_id);
+		venture_html_escape_append(html, text);
+		g_string_append(html, "</a> ");
+		venture_html_escape_append(html, method);
+		g_string_append(html, " ");
+		venture_html_escape_append(html, reference);
+		g_string_append_printf(html, " — <a href=\"/e/refund/new?allocation_id=%" G_GINT64_FORMAT
+			"&amp;customer_id=%" G_GINT64_FORMAT "&amp;organization_id=%" G_GINT64_FORMAT
+			"\">Record refund</a></li>", venture_entity_get_id(allocation), customer,
+			venture_entity_get_organization_id(invoice));
+	}
+	g_string_append(html, "</ul><p class=\"field-help\">Receipts stay in the history. "
+		"A refund records money returned and reopens that amount on the invoice.</p></section>");
+}
+
+static void
 venture_web_append_invoice_block(
 	VentureWebServer	*self,
 	GString			*content,
@@ -11476,11 +12029,9 @@ venture_web_append_invoice_block(
 	    (VENTURE_INVOICE_STATUS_PARTIALLY_PAID == status))
 	{
 		g_string_append_printf(content,
-			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
-			"/status\"><input type=\"hidden\" name=\"to\" value=\"paid\">"
-			"<button class=\"btn btn-primary\" type=\"submit\" "
-			"title=\"Records a receipt for the outstanding balance\">"
-			"Mark paid</button></form>", id);
+			"<a class=\"btn btn-primary\" href=\"/e/payment/new?invoice_id=%" G_GINT64_FORMAT
+			"&amp;organization_id=%" G_GINT64_FORMAT "\">Record payment</a>",
+			id, venture_entity_get_organization_id(record));
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/status\"><input type=\"hidden\" name=\"to\" value=\"write-off\">"
@@ -11489,7 +12040,9 @@ venture_web_append_invoice_block(
 			"Write off</button></form>", id);
 	}
 
-	g_string_append(content, "</div></div>");
+	g_string_append(content, "</div>");
+	venture_web_append_invoice_receipts(self, content, record);
+	g_string_append(content, "</div>");
 }
 
 /*
@@ -11874,6 +12427,10 @@ venture_web_ui_detail(
 		                               actions->str);
 	}
 
+	/* What a send just did, and the way back from a delete. */
+	venture_web_mail_append_send_notice(self, content, record, request);
+	venture_web_append_restore(content, record, type_name);
+
 	/*
 	 * Two columns: what the record is about on the left, its details on
 	 * the right. Everything the page appends after this point -- the
@@ -11892,10 +12449,14 @@ venture_web_ui_detail(
 	 * The other type-specific block, for the same reason as the ticket
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
+	{
 		venture_web_append_invoice_block(self, content, record);
+		venture_late_fees_web_append_invoice(self, content, record);
+	}
 	venture_web_append_payment_receipt(self, content, record);
 	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
+	venture_jobs_web_append_block(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);
@@ -14915,6 +15476,11 @@ venture_web_ui_users(
 
 		if (0 == g_strcmp0(notice, "created-ok"))
 			g_string_append(content, "User created.");
+		else if (0 == g_strcmp0(notice, "created-access-ok"))
+			g_string_append(content, "User created. They can sign in and work in this business now.");
+		else if (0 == g_strcmp0(notice, "created-no-access"))
+			g_string_append(content, "User created, but they could not be given access to this business. "
+				"Add them under Organization memberships before they sign in.");
 		else if (0 == g_strcmp0(notice, "updated-ok"))
 			g_string_append(content, "User updated.");
 		else if (0 == g_strcmp0(notice, "password-ok"))
@@ -15190,6 +15756,39 @@ venture_web_ui_users_create(
 		/* The username column is unique, so the commonest failure here
 		 * is a name already taken. */
 		return venture_web_redirect_to("/users?notice=duplicate");
+	}
+
+	/*
+	 * A new person can work in the business they were added from. With
+	 * organization access on, a user and no membership signs in to "ask an
+	 * owner for access", and the screen that grants it is not in the menu.
+	 * The roles that share a name carry over; a service account gets none.
+	 */
+	if (venture_web_module_enabled(self, "orgaccess"))
+	{
+		gint org_role = 0;
+
+		if (!venture_enum_from_nick(venture_organization_role_get_type(), role_nick, &org_role))
+			return venture_web_redirect_to("/users?notice=created-ok");
+		{
+			g_autoptr(VentureEntity) membership = VENTURE_ENTITY(venture_organization_membership_new());
+			gint64 organization = venture_web_active_organization(self, request);
+
+			if (organization <= 0)
+				organization = venture_context_get_default_organization_id(self->context);
+			venture_entity_set_organization_id(membership, organization);
+			g_object_set(membership, "user-id", venture_entity_get_id(VENTURE_ENTITY(user)),
+				"role", org_role, "active", TRUE, NULL);
+			g_clear_error(&error);
+			if (!venture_database_save(venture_context_get_database(self->context),
+			                           membership, &actor, &error))
+			{
+				g_message("User %s created without access: %s", username,
+				          error != NULL ? error->message : "unknown");
+				return venture_web_redirect_to("/users?notice=created-no-access");
+			}
+		}
+		return venture_web_redirect_to("/users?notice=created-access-ok");
 	}
 
 	return venture_web_redirect_to("/users?notice=created-ok");
@@ -32981,7 +33580,10 @@ venture_web_api_ticket_draft(
 #include "calendar/venture-calendar-web.inc"
 #include "core/venture-connector-web.inc"
 #include "money-calendar/venture-money-calendar-web.inc"
+#include "latefees/venture-late-fee-private.h"
+#include "latefees/venture-late-fees-web.inc"
 #include "planner/venture-planner-web.inc"
+#include "jobs/venture-jobs-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
 #include "report/venture-support-rollup-web.inc"
@@ -33273,6 +33875,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/e/:type/:id/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_form, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_save, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_delete, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/:id/restore", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_restore, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/invitation", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_invitation, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/invitation", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_invitation, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/support", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_tenant_web_support, self);
@@ -33593,6 +34196,7 @@ venture_web_server_new(
 	/* The planner's calendar, ahead of /api/v1/:type, which would read
 	 * "calendar" as a record type. */
 	venture_planner_web_register(self);
+	venture_jobs_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
@@ -33622,6 +34226,7 @@ venture_document_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type/:id/actions/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/journals/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_action, self);
 	venture_money_calendar_web_register(router, self);
+	venture_late_fees_web_register(self);
 	venture_docs_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/report_pack/:id/deliver", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_report_pack_deliver, self);
 

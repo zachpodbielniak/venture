@@ -1399,6 +1399,147 @@ source_caldav(
 }
 
 /* ==========================================================================
+ * Jobs: arrival windows at customers' addresses
+ * ========================================================================== */
+
+static gboolean
+job_narrow(
+	VentureQuery			 *query,
+	const VentureCalendarQuery	 *ask,
+	gpointer			  data,
+	GError				**error
+){
+	static const gchar *const open_only[] = { "cancelled", "done", "invoiced", NULL };
+	static const gchar *const not_cancelled[] = { "cancelled", NULL };
+
+	(void)data;
+
+	return cal_filter_in(query, "status", VENTURE_FILTER_OP_NOT_IN,
+	                     ask->include_done ? not_cancelled : open_only, error);
+}
+
+/* The jobs one person is sent to, as a set of ids. A job's technicians
+ * are rows of their own, so "only mine" is answered from them. */
+static GHashTable *
+job_assigned(
+	VentureContext			 *context,
+	const VentureCalendarQuery	 *ask,
+	GError				**error
+){
+	g_autoptr(GHashTable) jobs = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	gint64 user = ask->assignee_user_id;
+	gsize o;
+
+	/* Asked by name alone: the person of that name, else nobody's. */
+	if (0 == user)
+	{
+		g_autoptr(VentureQuery) people = venture_query_new(VENTURE_TYPE_USER);
+		g_autoptr(VentureEntity) person = NULL;
+
+		if (!venture_query_add_filter_string(people, "username", VENTURE_FILTER_OP_EQ,
+		                                     ask->assignee_username, error))
+			return NULL;
+		person = venture_database_find_one(venture_context_get_database(context), people, NULL);
+		if (NULL == person)
+			return g_steal_pointer(&jobs);
+		user = venture_entity_get_id(person);
+	}
+
+	for (o = 0; o < ask->n_organizations; o++)
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOB_TECHNICIAN);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint i;
+
+		venture_query_set_limit(query, 0);
+		venture_query_set_organization(query, ask->organization_ids[o]);
+		if (!venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, user, error))
+			return NULL;
+		rows = venture_database_find(venture_context_get_database(context), query, error);
+		if (NULL == rows)
+			return NULL;
+		for (i = 0; i < rows->len; i++)
+		{
+			gint64 *id = g_new(gint64, 1);
+
+			*id = cal_int(g_ptr_array_index(rows, i), "job-id");
+			g_hash_table_add(jobs, id);
+		}
+	}
+
+	return g_steal_pointer(&jobs);
+}
+
+static gboolean
+source_jobs(
+	VentureContext			 *context,
+	const VentureCalendarQuery	 *ask,
+	VentureCalendarResult		 *result,
+	gpointer			  user_data,
+	GError				**error
+){
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) mine = NULL;
+	guint i;
+
+	(void)user_data;
+
+	rows = g_ptr_array_new_with_free_func(g_object_unref);
+
+	if (!cal_span_rows(context, ask, VENTURE_TYPE_JOB, "window-start", "window-end",
+	                   job_narrow, NULL, rows, error))
+		return FALSE;
+
+	if (rows->len > (guint)cal_bound())
+	{
+		venture_calendar_result_refuse(result, "Jobs", cal_bound());
+		return TRUE;
+	}
+
+	if ((0 != ask->assignee_user_id) || !venture_string_is_empty(ask->assignee_username))
+	{
+		mine = job_assigned(context, ask, error);
+		if (NULL == mine)
+			return FALSE;
+	}
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *job = g_ptr_array_index(rows, i);
+		g_autoptr(GDateTime) starts = cal_time(job, "window-start");
+		g_autoptr(GDateTime) ends = cal_time(job, "window-end");
+		g_autofree gchar *title = cal_text(job, "title");
+		g_autofree gchar *customer = NULL;
+		g_autofree gchar *address = cal_text(job, "service-address");
+		gint64 id = venture_entity_get_id(job);
+		VentureCalendarItem *item;
+
+		if (NULL == starts)
+			continue;
+		if ((NULL != mine) && !g_hash_table_contains(mine, &id))
+			continue;
+
+		item = venture_calendar_item_new("job", title, starts, "job", id);
+		item->status = g_strdup(cal_nick(job, "status"));
+		item->uid = cal_uid(job);
+
+		if ((NULL != ends) && (g_date_time_compare(ends, starts) > 0))
+			item->end = g_date_time_ref(ends);
+
+		/* Whose and where, which is what the day is planned by. */
+		customer = cal_record_name(context, "company", cal_int(job, "company-id"));
+		if (!venture_string_is_empty(customer) && !venture_string_is_empty(address))
+			item->detail = g_strdup_printf("%s, %s", customer, address);
+		else if (!venture_string_is_empty(customer))
+			item->detail = g_steal_pointer(&customer);
+
+		venture_calendar_result_add(result, item);
+	}
+
+	return TRUE;
+}
+
+/* ==========================================================================
  * Registration
  * ========================================================================== */
 
@@ -1426,6 +1567,8 @@ venture_calendar_register_builtin_sources(VentureContext *context)
 	venture_calendar_sources_add(context, "deal", "Deals", "deal", NULL,
 		VENTURE_CALENDAR_SOURCE_BY_VENTURE | VENTURE_CALENDAR_SOURCE_BY_ASSIGNEE,
 		source_deals, NULL, NULL);
+	venture_calendar_sources_add(context, "job", "Jobs", "job", NULL,
+		VENTURE_CALENDAR_SOURCE_BY_ASSIGNEE, source_jobs, NULL, NULL);
 	venture_calendar_sources_add(context, "money", "Money", NULL, "money_calendar",
 		VENTURE_CALENDAR_SOURCE_BY_VENTURE, source_money, NULL, NULL);
 	venture_calendar_sources_add(context, "caldav", "Synced calendar", "calendar_event", NULL,

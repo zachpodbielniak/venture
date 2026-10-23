@@ -130,7 +130,7 @@ The records themselves are read through the ordinary record API.
 
 * Upgrades and tests
 
-Migration =000930_inbox_conversations_and_web_chat= checks the four new
+Migration =000953_inbox_conversations_and_web_chat= checks the four new
 tables; they start empty. =test-inbox= covers source registration, the
 thread's order across channels and its cursor, that the inbox stores no
 message words, defaults, assignment and its audit, statuses and reopening,

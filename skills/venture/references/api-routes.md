@@ -59,7 +59,8 @@ in the repository lists today's.
 |---|---|
 | `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON` |
 | `POST /invoices/:id/send`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID` |
-| `POST /quotes/:id/:action` (send, accept, decline, revise, start-subscription) | `quote ACTION ID` |
+| `POST /quotes/:id/:action` (send, accept, decline, revise, remind, start-subscription) | `quote ACTION ID` |
+| `POST /invoice/:id/actions/remind` (editor, stageable) | `act invoice ID remind` |
 | `POST /deals/:id/move`, `POST /deals/:id/quote` | `deal move\|quote` |
 | `POST /deals/:id/move` also takes `version` (the board's drag; stale is 409); `GET /deals/board.js` | -- |
 | `POST /leads/:id/:action` (convert, reassign, reroute, rescore, ai_score) | `lead ...`, `leads ...` |
@@ -157,9 +158,10 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /lightsite/billing/enroll` | fourteen-day deferred enrollment, no invoice | -- |
 | `POST /lightsite/billing/prepay` | frozen 24-month prepaid terms, no invoice until publication | -- |
 | `POST /lightsite/billing/setup` | hosted saved-method setup, no charge | -- |
-| `POST /lightsite/billing/publish` | record first go-live; may start the first charge | -- |
+| `POST /lightsite/billing/publish` | record first go-live (`published_at` optional, stored once as `go_live_at`); may start the first charge | -- |
 | `POST /lightsite/billing/first-charge` | idempotent first collection at publication or day fourteen | -- |
 | `POST /lightsite/billing/cancel` | no-charge cancel before the deadline, else period end | -- |
+| `POST /lightsite/billing/money-back` | within 30 days of go-live, cancel now and refund settled card payments | -- |
 | `POST /lightsite/billing/guarantee` | one-time capped account credit from a retained measurement | -- |
 | `GET /lightsite/billing/:organization_id/made-back` | won, invoiced and overlap since go-live | -- |
 | `GET /lightsite/billing/:organization_id/notifications` | owner notification facts, no payment credentials | -- |
@@ -171,3 +173,31 @@ accepts a local `return_to` path; `GET /auth/hosted/callback` consumes the
 browser-bound authorization response. These routes are opt-in through
 `hosted.identity_browser_client`, use the signup identity link and never
 create accounts. Owners follow record links or **Continue with Lightsite**.
+
+## Home-services visits
+
+| Route | Purpose | venturectl |
+|---|---|---|
+| `POST /job/:id/actions/assign` | assign technician (`user_id`, `lead`) | `act job ID assign` |
+| `POST /job/:id/actions/on_the_way` / `arrive` / `complete` / `invoiced` / `cancel` | job transitions; invoiced accepts optional `invoice_id` | `act job ID ACTION` |
+| `POST /maintenance_plan/:id/actions/book` | book visit and advance due date | `act maintenance_plan ID book` |
+| `GET /jobs/day?date=YYYY-MM-DD&tech=ID` (root web route) | ordered technician day; `tech=all` or current user by default | generic job queries |
+| `GET /jobs/visits` (root web route) | visits due within thirty days or overdue | generic maintenance-plan queries |
+
+All five jobs types use generic CRUD and schemas; no separate CLI verbs.
+See [jobs.md](jobs.md).
+
+## Late fees
+
+| Route | Auth | Notes |
+|-------|------|-------|
+| `GET /late-fees` | admin page | settings, schedules, pauses |
+| `GET /late-fees/queue` | admin page | proposed and awaiting-notice fees, bulk approve/skip |
+| `POST /late-fees/decide` | admin form | `ids` (repeated), `decision`, `reason` |
+| `POST /late-fees/:id/:verb` | admin form | `approve`, `skip`, `skip-notice`, `waive` (`reason`, `note`) |
+| `POST /late-fees/pause` | admin form | `scope`, `id`, `until`, `reason`, `resume=1` |
+| `GET /invoices/:id/late-fees` | admin page | the preview timeline |
+| `POST /api/v1/late_fee/:id/actions/{approve,skip,skip_notice,waive}` | editor | stageable |
+| `POST /api/v1/late_fee/0/actions/decide` | editor | type-level, `organization_id`, `ids` |
+| `POST /api/v1/{invoice,company,late_fee_setting}/:id/actions/pause_late_fees` | editor | stageable; `resume_late_fees` too |
+| `POST /api/v1/invoice/:id/actions/late_fee_preview` | editor | writes nothing |

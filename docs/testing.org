@@ -1236,3 +1236,70 @@ content stays private, and generic writers cannot forge a sequence source.
 The existing sequence report fixture delivers its first email before counting
 that enrollment as completed. A reply cancels an unsent final email; it does
 not rewrite already-sent history.
+
+* Jobs
+
+=test-jobs= saves jobs through the database and presses their buttons
+through the HTTP action route, the way the page does. It checks the J-
+numbering, the required customer, the arrival window, an estimate from
+another customer refused, the day's buttons stamping their times and a
+finished job refused "On my way", "Invoiced" taking the accepted
+estimate's invoice and refusing with none, one row per active technician,
+and Jobs in the sidebar with a form that asks for the window, problem and
+service address.
+
+=test-properties= checks a property's required customer and address,
+equipment filed at a property with a believable year installed and found
+by its serial number, a job refused at another customer's property and
+given the property's address when it has none of its own, and the
+sidebar, form and property page.
+
+=test-booking-times= checks that date-and-time fields render as
+date-and-time boxes and dates stay dates, that 8 to 10 typed on a job is
+stored as 8 to 10 in the business's zone and reads back so, that a
+same-day meeting from 8 to 10 is accepted, that a DATE field retains its
+calendar day, that an 8 p.m. New York booking stored at midnight UTC survives
+editing unchanged, and that a technician's day lists their jobs on that
+day earliest first with call and directions links, leaving out other
+technicians, other days and cancelled jobs.
+
+=test-home-week= walks what a heating and plumbing owner's week found
+broken: Payment reminders in the menu with one button for the usual three
+and a refusal that says where to go; a technician sent from the job by
+name, and the job showing who, how to get in and the equipment; a blank
+year-installed box; an accepted estimate billed after the work (a draft
+the job's Invoiced issues) and billing at acceptance still available;
+booked jobs on the calendar and My day; a maintenance plan's visit listed
+as due, booked as a job and moved on a year; the home page's Today card
+and plain period labels; the home-services preset leaving out unrelated
+pages; a customer's Work card; the setup checklist as a list; an accepted
+quote offering Book the job and not Send again; the customer's quote page
+in plain words; a new property taking the customer's address; a new
+record opening after save; and the composer's number hint matching the
+number given.
+
+* Home-services leftovers
+
+=test-home-services= covers dispatch facts on job lists, receipt options and
+partial/full/refunded balances through the web form, public quote service
+addresses and job inheritance, the plan-form redirect and address upgrade
+replay. =node tests/home-services-layout.cjs= (with Playwright and Chromium
+available) checks actual launcher/totals rectangles at 390 pixels in both
+looks. =PLAYWRIGHT_CHROMIUM_EXECUTABLE= optionally selects a local browser.
+
+* Home-services review regressions
+
+=test-jobs= also refuses lead replacement by a missing user without demoting
+the existing lead; injects a final-save failure after maintenance job creation
+and after invoice issue; and verifies that job, plan, invoice, audit and ledger
+rows remain unchanged, with a successful retry. Whole-operation accounting
+approval stays pending after a failed job save. Equipment-only plans derive
+the property before checking the customer, with matching and mismatching cases.
+Linking an already-issued invoice with a posting rule enabled creates neither
+a new approval request nor another journal.
+
+=/migrations/jobs-upgrade-restart= reopens a file database with existing work
+and technician assignments, upgrades it while jobs is disabled, restarts it,
+and enables jobs. Original values survive, newly added links stay blank, and
+no maintenance visits are invented. SQLite is exercised by the normal suite;
+this scenario does not claim a live PostgreSQL run.

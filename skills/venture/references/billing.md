@@ -111,6 +111,14 @@ venturectl mail deliver --limit 50                       # then deliver the outb
 - The escalating final step creates a `collect: <invoice>` activity owned
   by `invoice.owner`, else the customer's owner, else the policy's
   `escalation_owner`; an opted-out customer still escalates.
+- `act invoice ID remind` (editor, stageable) mails that one customer
+  today: the latest email step already recorded, or the policy's first
+  email step when none was. It is a `dunning_event` like a sweep's and does
+  not move the schedule on to a later step. The same day returns that
+  message and sends nothing more (`dunning:remind:inv:<id>:<YYYY-MM-DD>`).
+  Refused, with the reason, when the invoice is settled, not issued,
+  disputed, opted out or disabled, has no policy, or the customer has no
+  email. `POST /api/v1/invoice/:id/actions/remind` (`?stage=1` to propose).
 - `act dunning_event ID retry` re-runs a `failed`, `dead` or `uncertain`
   step under a new key (stageable; refused once a later step or attempt
   exists). `act dunning_policy ID test_send invoice_id=N [offset=N]` mails
@@ -140,6 +148,10 @@ many documents all-or-nothing. A non-admin must name the organization.
 
 - **Hosted checkout**: `venturectl invoice checkout ID` returns a Stripe
   Checkout URL for an eligible sent invoice (editor, module on).
+- **Saved-bank collection**: create the charge unconfirmed, then confirm
+  it with the retained mandate. The provider accepts that field only at
+  confirmation, so creation omits it. A successful setup is not a paid
+  invoice (`docs/stripe.org`).
 - **One-time payment link**: with the organization's Stripe connection and
   an HTTPS `server.base_url`, `act invoice ID payment_link
   [expires_at=...]` returns a one-time `url` (default seven days; one hour
@@ -203,14 +215,47 @@ page load is not payment evidence.
 Hosted self-serve enrollment is a trusted bearer call, not `billing start`
 and not `POST /lightsite/billing/subscriptions` (that binding still starts
 immediately). The routes are `enroll`, `prepay`, `setup`, `publish`,
-`first-charge`, `cancel`, `guarantee`, and GET `made-back` and
+`first-charge`, `cancel`, `money-back`, `guarantee`, and GET `made-back` and
 `notifications` ([api-routes.md](api-routes.md)). Enrollment and prepay
 issue no invoice; setup charges nothing; the first charge is `paid` only
 after signed settlement; cancel before day fourteen charges nothing; a published
 prepaid cancel stores the twenty-four-month end and the renewal sweep ends it
-then without another invoice. Split shares are minor units of the total, scaled
+then without another invoice. `publish` accepts optional `published_at`
+(ISO 8601 with an offset). The first accepted time, or the receipt time
+when it is omitted, is the immutable `go_live_at`; a future time, a time
+before enrollment, or `published_at` on any other billing route is refused.
+`POST /api/v1/lightsite/billing/money-back` takes exactly `organization_id`:
+within thirty days of `go_live_at` it cancels now and refunds each settled
+card payment in full (idempotency key `hosted:<business>:money-back:<payment>`).
+A payment that did not come through the card provider is listed `by_hand`
+and is not refunded here. Before go-live and after day thirty are 409. A
+completed refund answers the same receipt, and a later publish or
+first-charge returns it instead of charging again. Split shares are minor units of the total, scaled
 to Stripe charge units (ISK and UGX use two charge decimals). The
 guarantee is one capped credit, including zero. `stripe_prepayment` is
 service-owned, and checkout is refused while a non-failed prepayment owns
 the invoice. No route returns a card or a provider customer id. The
 contract, bodies and fixtures are `docs/hosted-billing.org`.
+
+## Late fees (module `late_fees`)
+
+Off by default. A `late_fee_schedule` is an ordered list of tiers (day N,
+or every N days; flat, percent of open balance, percent of original, or
+markup; caps; rounding; conditions). The dunning sweep is the only thing
+that moves a fee: a reminder states the next fee ("A $25.00 late fee will
+be added on ..."), and on its day the fee is `proposed` (or applied with
+`auto_apply`) only if that reminder was *sent* or the owner ran
+`skip_notice`. Approve, skip, waive and pause are stageable actions, so the
+assistant goes through the confirmation queue. See `docs/late-fees.org`.
+
+```sh
+venturectl act invoice 42 late_fee_preview
+venturectl dunning sweep as_of=2026-01-25 organization_id=1 dry_run=true
+venturectl act late_fee 7 approve
+venturectl act company 3 pause_late_fees until=2026-02-01 reason='promised by phone'
+venturectl act late_fee 7 waive reason=goodwill note='We removed the fee.'
+venturectl report late_fees all
+```
+
+Late-fee limits vary by jurisdiction; set the schedule caps for the
+location.

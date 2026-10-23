@@ -64,8 +64,11 @@ venturectl update lead 31 status=recycled unqualified_reason="Budget next year" 
 
 `describe referral_program`, `referral_code`, `referral` and `referral_reward`
 first. A program needs `active=true` (it is off by default) and a
-`reward_kind` of `none`, `credit` (with a positive `reward_amount`) or
-`free_period`. Get a customer's code with `act company ID referral_code`
+`reward_kind` of `none`, `credit` (with a positive `reward_amount`),
+`free_period` (the referrer's next subscription invoice, in full) or
+`free_month` (one month of that plan: all of a monthly charge, a twelfth
+of a yearly one, a third of a quarterly one, carried as the pending
+adjustment). Get a customer's code with `act company ID referral_code`
 (or `act contact ID referral_code`; add `program_id=N` when the organization
 has more than one active program) -- it returns the existing code or makes
 one, with the `link` to share. A lead attributes itself: create or capture
@@ -77,6 +80,9 @@ value is silently put back. Converting the lead wins it and the reward is
 given after that commits; a reward that could not be given has
 `status=failed` and a `failure` reason -- fix the cause, then
 `act referral_reward ID apply`. A given reward cannot be edited or deleted.
+A customer recorded by hand (`company_id`, no lead) is referred at most
+once, whoever sent them first, and a hand-recorded referral saved as `won`
+pays its reward the same way a converted lead does.
 Report: `report referrals`. See `docs/referrals.org`.
 
 ## Deals and pipelines (module `pipelines`)

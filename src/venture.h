@@ -114,6 +114,7 @@
 #include "attribution/venture-attribution-records.h"
 #include "marketing/venture-marketing-records.h"
 #include "referrals/venture-referral-records.h"
+#include "jobs/venture-job-records.h"
 #include "mail/venture-mail-sync-records.h"
 #include "emaildesign/venture-email-design-records.h"
 
@@ -125,6 +126,7 @@
 #include "autojournal/venture-posting-profile.h"
 #include "recurring/venture-recurring-records.h"
 #include "dunning/venture-dunning-records.h"
+#include "latefees/venture-late-fee-records.h"
 #include "leads/venture-lead-routing-records.h"
 #include "tax/venture-sales-tax-records.h"
 #include "calendar/venture-calendar-records.h"
@@ -243,6 +245,7 @@
 #include "marketing/venture-marketing-service.h"
 #include "attribution/venture-attribution-service.h"
 #include "referrals/venture-referral-service.h"
+#include "jobs/venture-job-service.h"
 #include "periods/venture-period-report.h"
 
 /* The confirmation store comes first: the context owns one and names its
@@ -332,6 +335,7 @@
 #include "reconciliation/venture-reconciliation-service.h"
 #include "report/venture-headline-home.h"
 #include "dunning/venture-dunning-service.h"
+#include "latefees/venture-late-fee-service.h"
 #include "backup/venture-backup-schedule-service.h"
 #include "leads/venture-lead-routing.h"
 #include "tax/venture-sales-tax-service.h"

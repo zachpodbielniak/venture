@@ -102,7 +102,7 @@ only stop-everything (suppression) applies to it, as before.
 
 * Storage
 
-Paired migration =000924_sequence_journeys.sql= checks the new step,
+Paired migration =000947_sequence_journeys.sql= checks the new step,
 enrollment and delivery columns; existing steps have no branch and no jump,
 so existing sequences run exactly as before, and existing opens carry no
 machine reason and keep counting. =tests/test-journeys.c= covers branches

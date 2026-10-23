@@ -1393,7 +1393,7 @@ test_module_switch(Fixture *f, gconstpointer data)
 	save(f, payment);
 	server = start_server(f, &state_dir);
 	g_assert_cmpuint(http_request(server, "GET", "/e/invoice/1", NULL, NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, "name=\"to\" value=\"paid\""));
+	g_assert_nonnull(strstr(body, "/e/payment/new?invoice_id=1"));
 	g_assert_nonnull(strstr(body, ">Net</th>"));
 	g_assert_nonnull(strstr(body, ">Tax</th>"));
 	g_clear_pointer(&body, g_free);
@@ -1407,7 +1407,7 @@ test_module_switch(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(body, "\"payment\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(http_request(server, "GET", "/e/invoice/1", NULL, NULL, &body), ==, 200);
-	g_assert_null(strstr(body, "name=\"to\" value=\"paid\""));
+	g_assert_null(strstr(body, "/e/payment/new?invoice_id=1"));
 	venture_config_set_module_enabled(f->config, "receivables", TRUE);
 	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "payment"), !=, G_TYPE_INVALID);
 	g_assert_nonnull(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "customer_statement"));

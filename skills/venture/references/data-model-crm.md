@@ -190,3 +190,22 @@ public `token`, `greeting`, `allowed_origins`, `active`),
 `contact_id`, `inbound`, `body`, `author`, `sent_at`). The thread is read
 from each channel's own records through registered sources (email
 interactions, text messages, call activities, chat messages).
+
+## jobs (requires crm; suggests quotes, invoicing)
+
+See [jobs.md](jobs.md) for the workflow and refusal rules.
+
+- `job`: customer work order; `title`, `number`, `company_id`, `contact_id`,
+  `property_id`, `service_address`, `problem`, `window_start/window_end`,
+  `quote_id`, `invoice_id`, `maintenance_plan_id`, `notes`;
+  `status` [booked|on_the_way|on_site|done|invoiced|cancelled]. Actions:
+  `assign` (`user_id`, `lead`), `on_the_way`, `arrive`, `complete`,
+  `invoiced` (optional `invoice_id`), `cancel`. None is stageable.
+- `job_technician`: `job_id`, `user_id`, `lead`; one assignment per user/job.
+- `property`: customer's service address; `name`, `company_id`, `address`,
+  `access_notes`, `contact_id`, `notes`.
+- `equipment`: `name`, `property_id`, `make`, `model`, `serial`,
+  `installed_year`, `warranty_until`, `notes`.
+- `maintenance_plan`: `name`, `company_id`, `property_id`, `equipment_id`,
+  `visit`, `every_months`, `next_visit`, `ended_at`, `notes`.
+  Action `book` creates the visit job and advances the due date atomically.

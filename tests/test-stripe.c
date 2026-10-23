@@ -316,7 +316,8 @@ test_missing_key(void)
 }
 
 typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
-	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live; gchar *last_invoice_id; guint invoice_count, payment_calls; } FakeTransport;
+	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live; gchar *last_invoice_id; guint invoice_count, payment_calls;
+	gint64 refund_amount; guint refund_creates; gboolean drop_refund; gchar *refund_key, *refund_intent; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -345,6 +346,36 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	if (g_str_has_suffix(request->url, "/expire"))
 		return stripe_response_new(200, "{\"id\":\"cs_offline\",\"status\":\"expired\"}", NULL, NULL);
+	/* One refund per payment intent, kept so a lost answer can be listed. */
+	if (strstr(request->url, "/refunds"))
+	{
+		g_autofree gchar *refund = self->refund_intent ? g_strdup_printf("{\"id\":\"re_offline\",\"object\":\"refund\",\"payment_intent\":\"%s\",\"amount\":%" G_GINT64_FORMAT ",\"currency\":\"usd\",\"status\":\"succeeded\"}", self->refund_intent, self->refund_amount) : NULL;
+		if (!g_strcmp0(request->method, "POST"))
+		{
+			g_autoptr(GHashTable) form = soup_form_decode(request->body);
+			if (self->refund_intent) return stripe_response_new(200, refund, NULL, NULL);
+			self->refund_creates++;
+			g_free(self->refund_key); self->refund_key = g_strdup(request->idempotency_key);
+			self->refund_intent = g_strdup(g_hash_table_lookup(form, "payment_intent"));
+			g_assert_true(g_str_has_prefix(self->refund_intent, "pi_"));
+			if (self->drop_refund)
+			{
+				self->drop_refund = FALSE;
+				g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED, "Refund response lost");
+				return NULL;
+			}
+			{
+				g_autofree gchar *made = g_strdup_printf("{\"id\":\"re_offline\",\"object\":\"refund\",\"payment_intent\":\"%s\",\"amount\":%" G_GINT64_FORMAT ",\"currency\":\"usd\",\"status\":\"succeeded\"}", self->refund_intent, self->refund_amount);
+				return stripe_response_new(200, made, NULL, NULL);
+			}
+		}
+		if (strstr(request->url, "payment_intent="))
+		{
+			g_autofree gchar *list = g_strdup_printf("{\"object\":\"list\",\"has_more\":false,\"data\":[%s]}", refund ? refund : "");
+			return stripe_response_new(200, list, NULL, NULL);
+		}
+		return stripe_response_new(refund ? 200 : 404, refund ? refund : "{\"error\":{\"type\":\"invalid_request_error\"}}", NULL, NULL);
+	}
 	if (strstr(request->url, "/invoices") || g_str_has_suffix(request->url, "/invoiceitems"))
 		return fake_invoice_send(self, request);
 	if (g_str_has_suffix(request->url, "/customers"))
@@ -411,6 +442,8 @@ static void fake_finalize(GObject *object)
 	g_free(((FakeTransport *)object)->setup_reference);
 	g_free(((FakeTransport *)object)->setup_consent);
 	g_free(((FakeTransport *)object)->last_invoice_id);
+	g_free(((FakeTransport *)object)->refund_key);
+	g_free(((FakeTransport *)object)->refund_intent);
 	g_clear_pointer(&((FakeTransport *)object)->invoices, g_hash_table_unref);
 	g_clear_pointer(&((FakeTransport *)object)->invoice_keys, g_hash_table_unref);
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
@@ -880,7 +913,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "750738372ba02428b6948edf6aca082ad605cdd6");
+		g_assert_cmpstr(g_strstrip(out), ==, "a871a247aca422ebdd4c40b0c766fa1cbaa763f1");
 	}
 }
 
@@ -1183,6 +1216,9 @@ main(int argc, char **argv)
 	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/hosted-saved-card", Fixture, NULL, set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-day-fourteen", Fixture, "timer", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-money-back", Fixture, "money-back", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-money-back-lost", Fixture, "money-back-lost", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-money-back-late", Fixture, "money-back-late", set_up, test_hosted_saved_card, tear_down);
 
 	return g_test_run();
 }

@@ -337,6 +337,6 @@ who opened, unsubscribed, bounced, complained or is suppressed is excluded
 with the reason, and permission is checked again as for any send. It is
 approved and run like any send.
 
-Migration =000923_marketing_audiences.sql= checks the new columns; existing
+Migration =000946_marketing_audiences.sql= checks the new columns; existing
 sends have no test, no local time and no topic and behave as before.
 =tests/test-audiences.c= and =tests/test-venture-tags.c= cover each.

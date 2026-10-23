@@ -316,3 +316,11 @@ their previous disabled state. A lost or unreadable response is an /unknown
 outcome/, since the write may already have committed. The notice asks the
 person to check the record before retrying; it never promises nothing was
 saved based on a network error.
+
+* Narrow record lists and the assistant
+
+At widths up to 600 pixels, ordinary record lists stack labeled values
+beneath each title. The same table keeps its sort links, checkboxes and
+pagination. The assistant launcher follows the document on phones, so it
+cannot cover quote totals, buttons or rows while scrolling. Both looks
+use the same layout.

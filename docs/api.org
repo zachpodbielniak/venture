@@ -348,6 +348,12 @@ generic write whose worst case is a record being visible again, and it is not
 worth an action of its own in the queue. The four verbs above are the whole
 surface.
 
+A deleted record's page says it is deleted and carries a Restore button,
+which posts to =/e/:type/:id/restore= with the same checks. Deleting a
+business from its page needs the form's confirmation tick (=confirm=1=),
+and the last business is never deleted there. The default business is
+refused for every caller: make another business the default first.
+
 * Forge endpoints
 
 | Method | Path                     | Role   |

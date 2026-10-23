@@ -248,7 +248,7 @@ scored or accepted.
 =test-lead-ai-score= covers the proposal, grounding, accept, dismiss, the
 off switch, the refused generic write, the audit rows and the lead page,
 against a canned provider (no network). Migration
-=000925_sales_lead_score_proposals= checks the new table and switch.
+=000948_sales_lead_score_proposals= checks the new table and switch.
 
 * Conversion is one transaction
 

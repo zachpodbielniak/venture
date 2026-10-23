@@ -271,6 +271,7 @@ venture_database_init(VentureDatabase *self)
 	venture_attribution_install(self);
 	venture_referrals_install(self);
 	venture_sequence_journeys_install(self);
+	venture_jobs_install(self);
 }
 
 VentureQuoteService *
@@ -1321,6 +1322,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_equity_check_write,
 		venture_group_check_write,
 		venture_dunning_check_write,
+		venture_late_fee_check_write,
 		venture_sales_tax_check_write,
 		venture_backup_schedule_check_write,
 		venture_crm_import_check_write,
@@ -1511,7 +1513,8 @@ accounting_save_needs_scope(VentureDatabase *database, VentureEntity *entity)
 		if (quote == NULL)
 			return TRUE;
 		g_object_get(quote, "billing-mode", &mode, NULL);
-		return g_strcmp0(mode, "progress") != 0;
+		/* Progress and after-the-work acceptance issue nothing. */
+		return g_strcmp0(mode, "progress") != 0 && g_strcmp0(mode, "after_work") != 0;
 	}
 	return FALSE;
 }
@@ -2095,6 +2098,20 @@ venture_database_delete(
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self), entity, "delete", error)) return FALSE;
 	if (!venture_pipelines_check_removal(entity, error))
 		return FALSE;
+	/* The default business is where records with no other home are filed;
+	 * hiding it hides them all. Make another business the default first. */
+	if (VENTURE_IS_ORGANIZATION(entity) && !venture_entity_is_deleted(entity))
+	{
+		gboolean is_default = FALSE;
+
+		g_object_get(entity, "is-default", &is_default, NULL);
+		if (is_default)
+		{
+			venture_set_error_validation(error, "organization",
+				"The default business can't be deleted; make another business the default first");
+			return FALSE;
+		}
+	}
 
 	{
 		gboolean handled;
@@ -2945,6 +2962,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_backup_actions_register(self);
 		venture_tax_filing_actions_register(self);
 		venture_dunning_actions_register(self);
+		venture_late_fee_actions_register(self);
 		venture_backup_schedule_actions_register(self);
 		venture_crm_import_actions_register(self);
 		venture_dedupe_actions_register(self);
@@ -2958,6 +2976,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_marketing_actions_register(self);
 		venture_attribution_actions_register(self);
 		venture_referrals_actions_register(self);
+		venture_jobs_actions_register(self);
 		venture_close_actions_register(self);
 		venture_tags_actions_register(self);
 	}

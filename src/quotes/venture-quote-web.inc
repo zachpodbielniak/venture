@@ -24,7 +24,8 @@ quote_money_html(GString *html, VentureEntity *record, const gchar *field)
 static HtmxResponse *
 quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_page)
 {
-	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\"><title>Quote</title><style>");
+	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
+		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Quote</title><style>");
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_QUOTE_LINE);
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(GError) error = NULL;
@@ -35,6 +36,7 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	gint64 revision;
 	guint i;
 	const gchar *fields[] = { "subtotal", "discount", "tax", "total" };
+	const gchar *labels[] = { "Subtotal", "Discount", "Tax", "Total" };
 	venture_query_set_organization(query, venture_entity_get_organization_id(quote));
 	venture_query_set_limit(query, 0);
 	venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(quote), NULL);
@@ -49,14 +51,33 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	g_string_append_printf(html, "</h1><p>Revision %" G_GINT64_FORMAT " · ", revision);
 	{ g_autofree gchar *label = venture_web_label_from_name(venture_enum_to_nick(venture_quote_status_get_type(), state)); venture_html_escape_append(html, label); }
 	g_string_append(html, "</p>");
+	{
+		gint64 company_id = 0;
+		g_object_get(quote, "company-id", &company_id, NULL);
+		venture_web_append_document_parties(self, html, venture_entity_get_organization_id(quote),
+			company_id, "Prepared for", !public_page);
+	}
+	{
+		g_autofree gchar *address = NULL;
+		g_object_get(quote, "service-address", &address, NULL);
+		if (!venture_string_is_empty(address))
+		{
+			g_string_append(html, "<section><h2>Service address</h2><p style=\"white-space:pre-line\">");
+			venture_html_escape_append(html, address);
+			g_string_append(html, "</p></section>");
+		}
+	}
 	if (until != NULL)
 	{
-		g_autofree gchar *date = g_date_time_format(until, "%Y-%m-%d %H:%M UTC");
+		/* A day the customer reads, in the business's zone: "19 November
+		 * 2026", not "2026-11-19 19:36 UTC". */
+		g_autoptr(GDateTime) local = g_date_time_to_timezone(until, venture_context_get_timezone(self->context));
+		g_autofree gchar *date = g_date_time_format(local, "%-d %B %Y");
 		g_string_append(html, "<p>Valid until ");
 		venture_html_escape_append(html, date);
 		g_string_append(html, "</p>");
 	}
-	g_string_append(html, "<table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax</th></tr></thead><tbody>");
+	g_string_append(html, "<div class=\"table-wrap\"><table><thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Discount %</th><th>Tax</th></tr></thead><tbody>");
 	for (i = 0; i < lines->len; i++)
 	{
 		VentureEntity *line = g_ptr_array_index(lines, i);
@@ -86,11 +107,11 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 			g_string_append_printf(html, "%" G_GINT64_FORMAT "%%", tax);
 		g_string_append(html, "</td></tr>");
 	}
-	g_string_append(html, "</tbody></table><table>");
+	g_string_append(html, "</tbody></table></div><table>");
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)
 	{
 		g_string_append(html, "<tr><th>");
-		venture_html_escape_append(html, fields[i]);
+		venture_html_escape_append(html, labels[i]);
 		g_string_append(html, "</th><td class=\"num\">");
 		quote_money_html(html, quote, fields[i]);
 		g_string_append(html, "</td></tr>");
@@ -98,9 +119,29 @@ quote_document(VentureWebServer *self, VentureEntity *quote, gboolean public_pag
 	g_string_append(html, "</table><div class=\"terms\">");
 	venture_html_escape_append(html, terms);
 	g_string_append(html, "</div>");
+	/* A printed quote is signed on paper; the public page has its own
+	 * accept button instead. */
+	if (!public_page && (state == VENTURE_QUOTE_DRAFT || state == VENTURE_QUOTE_SENT))
+		g_string_append(html, "<div class=\"sign\"><span>Accepted by (name and signature)</span><span>Date</span></div>");
 	if (public_page && state == VENTURE_QUOTE_SENT)
 		g_string_append(html, "<form method=\"post\" action=\"\"><label>Your full name <input name=\"accepted_by\" maxlength=\"200\" required></label><button>Accept quote</button></form>");
 	g_string_append(html, "</body></html>");
+	return htmx_response_new_with_content(html->str);
+}
+
+/* After the customer accepts: what happens next, from whom. */
+static HtmxResponse *
+quote_accepted_page(VentureWebServer *self, VentureEntity *quote)
+{
+	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
+		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Quote accepted</title><style>");
+	g_autoptr(VentureEntity) business = venture_database_get(venture_context_get_database(self->context),
+		VENTURE_TYPE_ORGANIZATION, venture_entity_get_organization_id(quote), NULL);
+	g_autofree gchar *name = business != NULL ? venture_entity_get_display_name(business) : NULL;
+	g_string_append(html, VENTURE_DOCUMENT_PRINT_STYLE);
+	g_string_append(html, "</style></head><body><h1>Quote accepted</h1><p>Thank you. ");
+	venture_html_escape_append(html, !venture_string_is_empty(name) ? name : "We");
+	g_string_append(html, " will be in touch to book the work.</p></body></html>");
 	return htmx_response_new_with_content(html->str);
 }
 
@@ -143,7 +184,7 @@ quote_public(HtmxRequest *request, GHashTable *params, gpointer data)
 		if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
 			action, "web", ip, &actor, &error))
 			return quote_error(400, "This quote cannot be accepted. Contact the sender.");
-		return htmx_response_new_with_content("<p>Quote accepted. Thank you.</p>");
+		return quote_accepted_page(self, quote);
 	}
 	return quote_document(self, quote, TRUE);
 }
@@ -200,6 +241,19 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 		return venture_web_error_response(error);
 	if (staged)
 		return venture_web_api_stage(self, action, NULL, principal, VENTURE_AUDIT_ACTION_CREATE);
+	/* The page's "Send quote" promises an email. With no address to mail
+	 * it is refused, as invoice Send is, and Share link is the way out. */
+	if (!api && g_strcmp0(verb, "send") == 0)
+	{
+		g_autofree gchar *recipient = venture_quote_mail_recipient(venture_context_get_database(self->context), quote, &error);
+		if (error != NULL) return venture_web_error_response(error);
+		if (recipient == NULL)
+		{
+			venture_set_error_validation(&error, "customer",
+				"This customer has no email address. Add one, or use Share link to mark the quote sent and copy the customer's link");
+			return venture_web_error_response(error);
+		}
+	}
 	if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
 		action, "manual", NULL, &actor, &error)) return venture_web_error_response(error);
 	if (!api)
@@ -258,17 +312,88 @@ quote_subscription_block(VentureWebServer *self, GString *html, VentureEntity *r
 		g_string_append(html, "<p class=\"field-help\">Once accepted, this quote starts a subscription on its plan line.</p>");
 }
 
+/*
+ * A sent quote's customer link, to copy into a text or an email of the
+ * owner's own, and a plain word when the send emailed nobody: a server
+ * with no public address keeps the delivery for later and mails nothing.
+ */
+static void
+quote_link_block(VentureWebServer *self, GString *html, VentureEntity *record)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) deliveries = NULL;
+	g_autofree gchar *token = NULL, *relative = NULL, *url = NULL, *public_url = NULL;
+	gboolean emailed = FALSE, unmailed = FALSE;
+	gint state = 0;
+	guint i;
+	g_object_get(record, "status", &state, "acceptance-token", &token, NULL);
+	if (state != VENTURE_QUOTE_SENT || venture_string_is_empty(token)) return;
+	query = venture_query_new(VENTURE_TYPE_QUOTE_DELIVERY);
+	venture_query_set_limit(query, 0);
+	venture_query_set_organization(query, venture_entity_get_organization_id(record));
+	venture_query_add_filter_int(query, "quote-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(record), NULL);
+	deliveries = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	for (i = 0; deliveries != NULL && i < deliveries->len; i++)
+	{
+		g_autofree gchar *channel = NULL, *recipient = NULL;
+		g_object_get(g_ptr_array_index(deliveries, i), "channel", &channel, "recipient", &recipient, NULL);
+		if (g_strcmp0(channel, "email") != 0) continue;
+		if (venture_string_is_empty(recipient)) unmailed = TRUE; else emailed = TRUE;
+	}
+	if (unmailed && !emailed)
+		g_string_append(html, "<div class=\"banner banner-warn\" role=\"status\"><strong>Not emailed.</strong> "
+			"This server has no public web address set, so no email went out. Copy the link below and send it to the customer yourself.</div>");
+	/* The configured public address, never the address this server
+	 * happens to listen on: a loopback link is no use on a customer's phone. */
+	g_object_get(venture_context_get_config(self->context), "server-base-url", &public_url, NULL);
+	relative = g_strconcat("/q/", token, NULL);
+	url = !venture_string_is_empty(public_url)
+		? g_uri_resolve_relative(public_url, relative, G_URI_FLAGS_NONE, NULL) : NULL;
+	/* Shown as well as copied: the clipboard needs a secure context, and
+	 * this server is often reached over plain http on a LAN. */
+	g_string_append(html, "<div class=\"quote-link\"><label class=\"field-label\" for=\"quote-link\">Customer link</label>"
+		"<input id=\"quote-link\" type=\"text\" readonly value=\"");
+	venture_html_escape_append(html, url != NULL ? url : relative);
+	g_string_append(html, "\"> <button type=\"button\" class=\"btn\" data-copy=\"");
+	venture_html_escape_append(html, url != NULL ? url : relative);
+	g_string_append(html, "\">Copy link</button>");
+	if (url == NULL)
+		g_string_append(html, "<p class=\"field-help\">This is the path on this server; set the server's public address "
+			"so the link opens from a customer's phone.</p>");
+	g_string_append(html, "</div>");
+}
+
 static void
 quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 {
-	gint64 id;
+	g_autofree gchar *mode = NULL;
+	gint64 id, company = 0;
+	gint state = 0;
 	if (!VENTURE_IS_QUOTE(record)) return;
 	id = venture_entity_get_id(record);
 	quote_subscription_block(self, html, record);
-	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/decline\"><input name=\"reason\" placeholder=\"Reason\" required><button>Decline</button></form>"
-		"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>"
-		"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id, id, id, id, id, id);
+	quote_link_block(self, html, record);
+	g_object_get(record, "status", &state, "billing-mode", &mode, "company-id", &company, NULL);
+	g_string_append_printf(html, "<p><a href=\"/quotes/%" G_GINT64_FORMAT "/print\">Print quote</a></p>", id);
+	/* Only what applies to where the quote is: an accepted quote sent,
+	 * accepted or declined again is a stale page waiting to be pressed. */
+	if (state == VENTURE_QUOTE_DRAFT || state == VENTURE_QUOTE_SENT)
+		g_string_append_printf(html,
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/send\"><button>Send quote</button></form>"
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/share\"><button>Share link</button>"
+			" <span class=\"field-help\">Marks it sent without email and gives you the customer's link to text or paste.</span></form>"
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/accept\"><input name=\"accepted_by\" placeholder=\"Acceptor's full name\" required><button>Accept</button></form>"
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/decline\"><input name=\"reason\" placeholder=\"Reason\" required><button>Decline</button></form>",
+			id, id, id, id);
+	if (state != VENTURE_QUOTE_ACCEPTED && state != VENTURE_QUOTE_SUPERSEDED)
+		g_string_append_printf(html,
+			"<form method=\"post\" action=\"/quotes/%" G_GINT64_FORMAT "/revise\"><button>New revision</button></form>", id);
+	/* Accepted: the next thing is the visit. */
+	if (state == VENTURE_QUOTE_ACCEPTED && venture_web_module_enabled(self, "jobs"))
+		g_string_append_printf(html,
+			"<p><a class=\"btn btn-primary\" href=\"/e/job/new?company_id=%" G_GINT64_FORMAT "&amp;quote_id=%" G_GINT64_FORMAT "\">"
+			"Book the job</a></p>", company, id);
+	if (state == VENTURE_QUOTE_ACCEPTED && g_strcmp0(mode, "progress") == 0)
+		g_string_append_printf(html,
+			"<form method=\"post\" action=\"/api/v1/quotes/%" G_GINT64_FORMAT "/actions/progress_invoice\"><input name=\"percent\" value=\"50\"><button>Progress invoice</button></form>", id);
 }

@@ -866,6 +866,12 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+/* A fee is announced by a reminder and added by the settlement service. */
+static const gchar *const late_fees_requires[] = { "dunning", "receivables", NULL };
+static GType (*const late_fees_types[]) (void) = {
+	venture_late_fee_setting_get_type, venture_late_fee_schedule_get_type, venture_late_fee_get_type, NULL
+};
+static const gchar *const late_fees_reports[] = { "late_fees", NULL };
 static GType (*const sales_tax_types[]) (void) = { venture_tax_jurisdiction_get_type, venture_tax_rule_get_type, NULL };
 static const gchar *const sales_tax_requires[] = { "receivables", NULL };
 static const gchar *const sales_tax_reports[] = { "sales_tax_return", NULL };
@@ -1003,6 +1009,18 @@ static const gchar *const ai_messages_suggests[] = { "ai", NULL };
 static GType (*const ai_messages_types[]) (void) = {
 	venture_ai_message_get_type, venture_ai_message_rule_get_type, venture_ai_message_route_get_type, NULL
 };
+/* Work at a customer's address. It requires crm, whose customers and
+ * contacts a job is for. It suggests quotes and invoicing: a job names the
+ * estimate it carries out and the invoice that bills it, and with either
+ * module off that link is refused with the switch named. */
+static const gchar *const jobs_requires[] = { "crm", NULL };
+static const gchar *const jobs_suggests[] = { "quotes", "invoicing", NULL };
+static GType (*const jobs_types[]) (void) = {
+	venture_job_get_type, venture_job_technician_get_type,
+	venture_property_get_type, venture_equipment_get_type,
+	venture_maintenance_plan_get_type, NULL
+};
+
 static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"core", "Core",
@@ -1313,6 +1331,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		dunning_requires, dunning_suggests, dunning_types, dunning_reports, NULL, FALSE
 	},
 	{
+		"late_fees", "Late fees", "Tiered, pausable late-fee schedules: announced by reminders, approved by the owner, added and waived through settlement.",
+		late_fees_requires, NULL, late_fees_types, late_fees_reports, NULL, FALSE
+	},
+	{
 		"headline", "Headline metrics",
 		"CAC, churn, LTV, LTV:CAC and cohort reports, and the headline home page.",
 		headline_requires, headline_suggests, headline_types, headline_reports, NULL, FALSE
@@ -1489,6 +1511,16 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"Drafted replies, routing, auto-reply rules, call summaries and "
 		"follow-ups, each approved by a person unless its rule sends on its own.",
 		ai_messages_requires, ai_messages_suggests, ai_messages_types, NULL, NULL, FALSE
+	},
+	{
+		"jobs", "Jobs",
+		"Work at a customer's address: the problem, the technicians sent, "
+		"the arrival window promised, where the job has got to through the "
+		"day, and the estimate and invoice it belongs with; and each "
+		"customer's properties, how to get in, and the equipment at each; "
+		"and maintenance plans, whose visits come due and are booked as jobs.",
+		jobs_requires, jobs_suggests, jobs_types,
+		NULL, NULL, FALSE
 	}
 };
 

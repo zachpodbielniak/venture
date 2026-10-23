@@ -105,13 +105,19 @@ the old five-member body is refused (operations.md). Events and the
 unified calendar are the planner guide. Durable business outcomes and
 their replay route are in the automation guide. A lead email keeps its
 plus tag; matching uses a separate key (crm.md). Sequence email steps
-enqueue in the mail outbox; `mail deliver` submits them (outreach.md). The
-baseline below remains the last full review.
+enqueue in the mail outbox; `mail deliver` submits them (outreach.md).
+`act invoice ID remind` and `quote remind` send one customer a reminder
+today without moving the dunning schedule or the quote's validity
+(billing.md, receivables.md). The full review above remains the last complete
+inventory; the comparison baseline below includes these incremental updates.
+Late fees (module `late_fees`, report `late_fees`, `/late-fees`) and
+home-services jobs are both in this baseline. The full inventory remains
+`9c97a87a`.
 
-<!-- skill-baseline:start -- reviewed 2026-10-18 against 9c97a87a -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 1be4e0c0 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=9c97a87a02ecc0fce669040557997f0e7d22e87f
+base=1be4e0c0
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -124,6 +130,12 @@ When the server and this skill disagree, the generated ground truths win
 answer from them, and say the skill is behind. A newer server may have
 types, verbs or reports this skill has never heard of; an older one may lack
 some it describes.
+
+Home-services coverage was updated against `1be4e0c0` (2026-10-23): jobs
+types, actions, day and visit routes, atomic refusals, datetime editing,
+draft-only posting approval, business-midnight receipt dates, and the
+saved-bank confirmation pin. The full-system baseline above remains the
+last complete inventory review.
 
 ## Topic guides
 
@@ -152,6 +164,7 @@ and `~/.agents/skills/venture` by `make install-skill`.
 - [`references/receivables.md`](references/receivables.md) -- invoices, receipts, credits, refunds, quotes, client projects, retainers, sales tax, commerce, the portal
 - [`references/billing.md`](references/billing.md) -- SaaS subscriptions, usage, MRR/churn, dunning, recurring documents, batch entry, Stripe
 - [`references/payables.md`](references/payables.md) -- bills, purchasing and sales orders, capture and OCR, claims, payroll, banking, tax filings
+- [`references/jobs.md`](references/jobs.md) -- customer properties, equipment, job actions, technician day and maintenance visits
 - [`references/crm.md`](references/crm.md) -- companies, contacts, leads, routing and scoring, deals, activities and calls, customer health, duplicates, territories, CRM import
 - [`references/forms.md`](references/forms.md) -- forms: questions, publishing, embeds, results, languages, quizzes, bookings, payments, uploads, Lightsite forms
 - [`references/outreach.md`](references/outreach.md) -- sequences, marketing sends and consent, attribution, campaigns
@@ -312,7 +325,7 @@ ids, notes) in words.
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
-| "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish`, `first-charge`, `cancel`, `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
+| "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish` (`published_at` optional), `first-charge`, `cancel`, `money-back` (thirty days from go-live), `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |
 | "What fields does X have?" | `describe X`; actions from `/api/v1/schema/X` | [records.md](references/records.md) |
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |
@@ -321,10 +334,11 @@ ids, notes) in words.
 | "Invoice a customer" | draft + lines + `update invoice ID status=sent`, or `compose invoice JSON` | [receivables.md](references/receivables.md) |
 | "Record a payment / credit / refund" | `create payment ...`; `customer_credit`; `refund` | [receivables.md](references/receivables.md) |
 | "What does this customer owe?" | `report receivables`, `report customer_statement ... customer_id=` | [receivables.md](references/receivables.md) |
-| "Send / accept a quote" | `quote send\|accept\|decline\|revise ID` | [receivables.md](references/receivables.md) |
+| "Send / accept / remind a quote" | `quote send\|accept\|decline\|revise\|remind ID` | [receivables.md](references/receivables.md) |
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
-| "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver` | [billing.md](references/billing.md) |
+| "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
+| "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
@@ -342,7 +356,9 @@ ids, notes) in words.
 | "Create a venture of a declared type" | `create venture venture_type=... attributes.NAME=...` | [taxonomy.md](references/taxonomy.md) |
 | "Total anything by anything" | `report aggregate PERIOD type= measure= group_by= date_field=` | [reports.md](references/reports.md) |
 | "Build / read / export a dashboard" | `dashboard create TEMPLATE`, `dashboard SLUG`, `dashboard export` | [dashboards.md](references/dashboards.md) |
+| "Book a service visit / send a technician" | `describe job`, `act job ID assign`, `act maintenance_plan ID book` | [jobs.md](references/jobs.md) |
 | "Convert / route / score a lead" | `lead convert`, `leads reroute\|rescore` | [crm.md](references/crm.md) |
+| "Refer a customer" | `act company ID referral_code`; reward `none`, `credit`, `free_period`, or `free_month` (one month of the referrer's plan). A hand-recorded customer is referred once | [crm.md](references/crm.md) |
 | "Move a deal / log a call / plan a follow-up" | `deal move ID STAGE`, `act contact ID log_call`, `activity complete` | [crm.md](references/crm.md) |
 | "Which customers are at risk? / merge duplicates" | `report customer_health`, `customers health-sweep`; `dedupe scan\|merge` | [crm.md](references/crm.md) |
 | "Migrate from HubSpot/Salesforce/Zoho" | `crm preview\|import\|activate` | [crm.md](references/crm.md) |
@@ -461,5 +477,7 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `9c97a87a`; when the live server disagrees,
-  trust the server's generated answers and say the skill is behind.
+- This skill includes late fees and home-services updates through
+  `1be4e0c0`; the full-system inventory remains `9c97a87a`. When the
+  live server disagrees, trust the server's generated answers and say the
+  skill is behind.

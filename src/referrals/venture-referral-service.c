@@ -389,6 +389,18 @@ validate_referral(VentureDatabase *database, VentureEntity *entity, VentureEntit
 		return refuse(error, "company-id", "A referral needs who was referred: a lead, a customer or a contact");
 	if ((referrer_company != 0 && referrer_company == company) || (referrer_contact != 0 && referrer_contact == contact))
 		return refuse(error, "company-id", "A customer cannot be recorded as referring themselves");
+	/* A customer recorded by hand is referred once, whoever sent them first,
+	 * as a lead is. */
+	if (lead_id == 0 && company != 0 && (previous == NULL || number(previous, "company-id") != company))
+	{
+		g_autoptr(GPtrArray) others = find(database, VENTURE_TYPE_REFERRAL, org, "company-id", company, FALSE, error);
+		guint i;
+		if (others == NULL)
+			return FALSE;
+		for (i = 0; i < others->len; i++)
+			if (venture_entity_get_id(g_ptr_array_index(others, i)) != venture_entity_get_id(entity))
+				return refuse(error, "company-id", "That customer is already recorded as referred");
+	}
 	/* Won follows the status: stamped when empty, kept when given, cleared
 	 * on leaving won. */
 	status = choice(entity, "status");
@@ -469,8 +481,10 @@ give_credit(VentureDatabase *database, VentureEntity *reward, VentureEntity *pro
 	return TRUE;
 }
 
+/* The referrer's oldest subscription that will renew is credited its next
+ * period in full (free_period), or one month of it (free_month). */
 static gboolean
-give_free_period(VentureDatabase *database, VentureEntity *reward, const VentureActor *actor, GError **error)
+give_free_period(VentureDatabase *database, VentureEntity *reward, gboolean month, const VentureActor *actor, GError **error)
 {
 	gint64 org = venture_entity_get_organization_id(reward);
 	g_autoptr(GPtrArray) subscriptions = NULL;
@@ -493,8 +507,8 @@ give_free_period(VentureDatabase *database, VentureEntity *reward, const Venture
 	}
 	if (chosen == NULL)
 		return refuse(error, "subscription-id", "The referrer has no subscription that will renew to give a free period on");
-	credited = venture_billing_service_grant_free_period(venture_billing_service_get(database),
-		VENTURE_CUSTOMER_SUBSCRIPTION(chosen), actor, error);
+	credited = (month ? venture_billing_service_grant_free_month : venture_billing_service_grant_free_period)(
+		venture_billing_service_get(database), VENTURE_CUSTOMER_SUBSCRIPTION(chosen), actor, error);
 	if (credited == NULL)
 		return FALSE;
 	g_object_set(reward, "amount", credited, "subscription-id", venture_entity_get_id(chosen), NULL);
@@ -541,7 +555,7 @@ pay(VentureDatabase *database, VentureEntity *reward, VentureEntity *referral, V
 	g_object_set(attempt, "status", VENTURE_REFERRAL_REWARD_APPLIED, "applied-at", now, "failure", NULL, NULL);
 	ok = choice(program, "reward-kind") == VENTURE_REFERRAL_REWARD_CREDIT
 		? give_credit(database, attempt, program, referral, actor, &why)
-		: give_free_period(database, attempt, actor, &why);
+		: give_free_period(database, attempt, choice(program, "reward-kind") == VENTURE_REFERRAL_REWARD_FREE_MONTH, actor, &why);
 	if (ok)
 		ok = write_reward(database, attempt, actor, &why);
 	if (!ok)

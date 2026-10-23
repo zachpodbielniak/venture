@@ -6,7 +6,7 @@ static const VentureFieldDecl payment_fields[] = {
 	VENTURE_FIELD_REF("customer-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", "The amount received, including any overpayment"),
-	VENTURE_FIELD_NAME("method", "Method", "Cash, transfer, card, manual, or a provider name"),
+	VENTURE_FIELD_NAME("method", "Method", "How the customer paid"),
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("external-id", "External ID", "Unique within the owning organization", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	/* An ordinary UNIQUE column encodes the pair without a hand-written schema. */

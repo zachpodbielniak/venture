@@ -662,7 +662,7 @@ relay accepts it records it on the contact's timeline as outbound, like
 any other send. The SMTP transport refuses a threading header that is not
 a list of =<id>= tokens. =test-mail-reply= covers the headers, the
 timeline entry, the refusals, the wire headers and the page. Migration
-=000926_sales_mail_sign_in= checks the provider table, the account field
+=000949_sales_mail_sign_in= checks the provider table, the account field
 and the two message fields.
 
 ** Upgrades and tests

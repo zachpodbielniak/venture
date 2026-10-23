@@ -226,7 +226,7 @@ before this judgement existed keep counting as opens.
 
 * Storage and verification
 
-Paired migration =000922_marketing_deliverability.sql= checks the new
+Paired migration =000945_marketing_deliverability.sql= checks the new
 recipient columns (=delivered_at=, =replied_at=, =complained_at=,
 =machine_opened_at=) after field-table reconciliation, plus
 =marketing_event.machine_reason= and the new =marketing_sending_domain=

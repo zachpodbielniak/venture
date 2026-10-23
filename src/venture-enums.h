@@ -1045,6 +1045,10 @@ typedef enum
  *   venture_entity_class_get_shared_parent(). Checked at the save when
  *   either end is written, and used by the form to offer only matching
  *   records.
+ * @VENTURE_COLUMN_FLAG_BLANK_ZERO: an integer whose zero means "not
+ *   known" -- a year installed nobody remembers. Presentation only: zero
+ *   is drawn as an empty box and an empty value, so typing 2014 into a
+ *   new form is 2014 and not 20140. Storage ignores it.
  *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
@@ -1068,7 +1072,8 @@ typedef enum
 	VENTURE_COLUMN_FLAG_HOST_RESOURCE = 1 << 13,
 	VENTURE_COLUMN_FLAG_RETAIN_REFERENCE = 1 << 12,
 	VENTURE_COLUMN_FLAG_TECHNICAL = 1 << 14,
-	VENTURE_COLUMN_FLAG_SAME_PARENT = 1 << 15
+	VENTURE_COLUMN_FLAG_SAME_PARENT = 1 << 15,
+	VENTURE_COLUMN_FLAG_BLANK_ZERO = 1 << 16
 } VentureColumnFlags;
 
 /**

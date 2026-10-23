@@ -176,13 +176,17 @@ SERVER_ONLY_SRCS += $(filter-out src/attribution/venture-attribution-records.c,$
 CORE_SRCS += src/marketing/venture-marketing-records.c
 CORE_SRCS += src/referrals/venture-referral-records.c
 SERVER_ONLY_SRCS += $(filter-out src/referrals/venture-referral-records.c,$(wildcard src/referrals/*.c))
+CORE_SRCS += src/jobs/venture-job-records.c
+SERVER_ONLY_SRCS += $(filter-out src/jobs/venture-job-records.c,$(wildcard src/jobs/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/marketing/venture-marketing-records.c,$(wildcard src/marketing/*.c))
 CORE_SRCS += src/autojournal/venture-posting-profile.c
 CORE_SRCS += src/recurring/venture-recurring-records.c
 SERVER_ONLY_SRCS += $(filter-out src/autojournal/venture-posting-profile.c,$(wildcard src/autojournal/*.c))
 SERVER_ONLY_SRCS += $(filter-out src/recurring/venture-recurring-records.c,$(wildcard src/recurring/*.c))
 CORE_SRCS += src/dunning/venture-dunning-records.c
+CORE_SRCS += src/latefees/venture-late-fee-records.c
 SERVER_ONLY_SRCS += $(filter-out src/dunning/venture-dunning-records.c,$(wildcard src/dunning/*.c))
+SERVER_ONLY_SRCS += $(filter-out src/latefees/venture-late-fee-records.c,$(wildcard src/latefees/*.c))
 CORE_SRCS += src/tax/venture-sales-tax-records.c
 SERVER_ONLY_SRCS += src/tax/venture-sales-tax-service.c
 CORE_SRCS += src/dedupe/venture-dedupe-records.c
@@ -330,6 +334,7 @@ PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/sequences/*.h))
 PUBLIC_HDRS += $(wildcard src/marketing/*.h)
 PUBLIC_HDRS += $(wildcard src/attribution/*.h)
 PUBLIC_HDRS += $(wildcard src/referrals/*.h)
+PUBLIC_HDRS += $(wildcard src/jobs/*.h)
 PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/statements/*.h))
 PUBLIC_HDRS += $(wildcard src/cutover/*.h)
 PUBLIC_HDRS += $(wildcard src/setup/*.h)
@@ -340,6 +345,7 @@ PUBLIC_HDRS += $(wildcard src/progress/*.h)
 PUBLIC_HDRS += $(wildcard src/portal/*.h)
 PUBLIC_HDRS += $(wildcard src/fields/*.h)
 PUBLIC_HDRS += $(wildcard src/dunning/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h,$(wildcard src/latefees/*.h))
 PUBLIC_HDRS += $(wildcard src/backup/*.h)
 PUBLIC_HDRS += $(wildcard src/budgets/*.h)
 PUBLIC_HDRS += $(wildcard src/equity/*.h)
@@ -411,6 +417,7 @@ $(OUTDIR)/tests/test-banking: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sequences: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-recurring: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-dunning: | $(OUTDIR)/venturectl
+$(OUTDIR)/tests/test-late-fees: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-sales-tax: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-backup-schedule: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-customer-health: | $(OUTDIR)/venturectl

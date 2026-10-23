@@ -40,4 +40,37 @@ VentureMailMessage *venture_quote_mail_message(VentureDatabase *database, Ventur
  * Registers the quote mail preview kind.
  */
 void venture_quote_mail_preview_register(void);
+
+/**
+ * venture_quote_mail_remind:
+ * @database: quote's database, inside the remind transaction
+ * @quote: a sent quote
+ * @delivery: the email delivery whose acceptance URL is already set
+ * @base_url: public HTTPS origin
+ * @day: calendar day (`YYYY-MM-DD`) included in the outbox key
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): a missing public origin, or an enqueue failure
+ *
+ * Queues one reminder of a quote that was already emailed. The subject starts
+ * with "Reminder" and the private body carries the same acceptance link.
+ * A second call on the same @day returns the message already queued and
+ * sends nothing more. Performs no network I/O.
+ *
+ * Returns: %TRUE when the reminder was queued, or was already queued today
+ */
+gboolean venture_quote_mail_remind(VentureDatabase *database, VentureEntity *quote, VentureEntity *delivery,
+	const gchar *base_url, const gchar *day, const VentureActor *actor, GError **error);
+/**
+ * venture_quote_mail_recipient:
+ * @database: quote's database
+ * @quote: the quote about to be sent
+ * @error: (out) (optional): a customer or contact outside the quote's business
+ *
+ * The address a send would mail: the quote's contact's email, else the
+ * customer's. %NULL with no error when neither has one, so a page can
+ * refuse "Send" before it records a delivery that reaches nobody.
+ *
+ * Returns: (transfer full) (nullable): the address
+ */
+gchar *venture_quote_mail_recipient(VentureDatabase *database, VentureEntity *quote, GError **error);
 #endif

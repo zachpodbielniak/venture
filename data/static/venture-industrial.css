@@ -6319,3 +6319,38 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 .mail-thread .reply-composer { margin-top: 0.75rem; }
 .mail-thread .reply-composer form { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
 .mail-thread .reply-composer textarea { width: 100%; }
+
+/* On phones the assistant follows the page instead of covering totals or
+ * record rows. It remains available at the end of the document. */
+@media (max-width: 600px) {
+	.ai-fab { position: static; margin: var(--space-4); }
+}
+
+/* Keep the same paged, selectable records on phones, with readable facts
+ * beneath each title. Column labels come from field metadata. */
+@media (max-width: 600px) {
+	table[data-list], table[data-list] tbody, table[data-list] tr,
+	table[data-list] td { display: block; width: auto; min-width: 0; }
+	table[data-list] thead { display: block; }
+	table[data-list] thead tr { display: flex; flex-wrap: wrap; }
+	table[data-list] thead th { padding: 6px; }
+	table[data-list] tbody tr { padding: var(--space-3); border-bottom: 1px solid var(--border); }
+	table[data-list] td { white-space: normal; overflow-wrap: anywhere; text-align: left; border: 0; padding: 4px 0; }
+	table[data-list] td[data-label]:not(:empty)::before { content: attr(data-label) ": "; color: var(--text-muted); }
+	table[data-list] td:empty { display: none; }
+	table[data-list] td.tick { float: right; }
+	table[data-list] td.row-title { font-weight: 600; }
+}
+
+/* Late-fee tables stack as cards on a phone: every row is one fee, every
+ * cell says what it is, and nothing (the waive form least of all) needs a
+ * sideways scroll. */
+@media (max-width: 640px) {
+	table.stack-cards thead { display: none; }
+	table.stack-cards, table.stack-cards tbody, table.stack-cards tr, table.stack-cards td { display: block; width: 100%; }
+	table.stack-cards tr { border-bottom: 1px solid var(--border); padding: 8px 0; }
+	table.stack-cards td { border: 0; padding: 2px 0; text-align: left; }
+	table.stack-cards td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted); font-size: 12px; }
+}
+details.late-fee-waive > summary { cursor: pointer; }
+details.late-fee-waive[open] > summary { margin-bottom: 8px; }
