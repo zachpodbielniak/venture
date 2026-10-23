@@ -1253,17 +1253,27 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		}
 		if (total == NULL)
 			total = venture_money_new_zero(NULL);
-		/* A first issue with no due date never ages: receivables files it
-		 * under "No due date" and no reminder falls due. Ordinary terms are
-		 * thirty days from the issue date. An opening invoice keeps the
-		 * date its migration supplied, including none. */
+		/* A draft that was never dated (an estimate billed after the work,
+		 * or a blank send) takes ordinary terms: thirty days from this
+		 * issue date, so it ages and reminders can fall due. A draft that
+		 * already has an issue date and no due date stays undated. That is
+		 * due_days of zero, and the cash outlook's undated bucket. An
+		 * opening invoice keeps the date its migration supplied, including
+		 * none. A due date already on the invoice is left alone. */
 		if (first_issue && opening == NULL && date != NULL)
 		{
 			g_autoptr(GDateTime) existing_due = NULL;
+			g_autoptr(GDateTime) previous_issued = NULL;
+			g_autoptr(GDateTime) terms = NULL;
+
 			g_object_get(invoice, "due-at", &existing_due, NULL);
-			if (existing_due == NULL)
+			g_object_get(previous, "issued-at", &previous_issued, NULL);
+			if (existing_due == NULL && previous_issued == NULL)
 			{
-				g_autoptr(GDateTime) terms = g_date_time_add_days(date, 30);
+				terms = g_date_time_add_days(date, 30);
+				if (terms == NULL)
+					return refuse(error, VENTURE_ERROR_VALIDATION,
+						"Due date is outside the supported calendar");
 				g_object_set(invoice, "due-at", terms, NULL);
 			}
 		}

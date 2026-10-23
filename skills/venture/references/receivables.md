@@ -26,8 +26,10 @@ venturectl create payment customer_id=8 invoice_id=5 'amount=40 USD' date=2026-0
   '{"company_id":8,"issued_at":"2026-09-21","lines":[{"description":"Setup","quantity":1,"unit_price":"120.00 USD","tax_code_id":3}],"send":false}'`
   (also `compose quote`). `issued_at` defaults to today at midnight UTC;
   `due_at` may name an explicit due date, otherwise `due_days` (default 30)
-  counts from the invoice date (zero or negative: no due date). Sending
-  keeps the invoice date. Numbers are allocated per organization when
+  counts from the invoice date (zero or negative: no due date). Sending a
+  draft that has never been dated applies thirty days from the issue date;
+  a draft that already has an issue date and no due date stays undated.
+  Sending keeps the invoice date. Numbers are allocated per organization when
   omitted. To remember an exemption on the customer atomically, add
   `remember_tax_exemption=true`, `tax_exemption_kind`, `tax_exemption_number`
   beside `tax_exempt=true`; those fields are part of issuance approval, and a
