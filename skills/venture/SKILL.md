@@ -108,13 +108,14 @@ plus tag; matching uses a separate key (crm.md). Sequence email steps
 enqueue in the mail outbox; `mail deliver` submits them (outreach.md).
 `act invoice ID remind` and `quote remind` send one customer a reminder
 today without moving the dunning schedule or the quote's validity
-(billing.md, receivables.md). The
-baseline below remains the last full review.
+(billing.md, receivables.md). The full review above remains the last
+complete inventory. Late fees (module `late_fees`, report `late_fees`,
+`/late-fees` and the stageable actions) were read against `51f41c2a`.
 
-<!-- skill-baseline:start -- reviewed 2026-10-18 against 9c97a87a -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 51f41c2a -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=9c97a87a02ecc0fce669040557997f0e7d22e87f
+base=51f41c2a
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -464,5 +465,6 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill describes baseline `9c97a87a`; when the live server disagrees,
-  trust the server's generated answers and say the skill is behind.
+- This skill includes late fees through `51f41c2a`; the full-system
+  inventory remains `9c97a87a`. When the live server disagrees, trust the
+  server's generated answers and say the skill is behind.
