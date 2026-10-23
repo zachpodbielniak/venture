@@ -1283,6 +1283,7 @@ venture_desk_activity(
 	}
 
 	venture_dunning_append_timeline(context, target_type, target_id, limit, venture_desk_add_event, events);
+	venture_late_fee_append_timeline(context, target_type, target_id, limit, venture_desk_add_event, events);
 	{
 		g_autoptr(JsonNode) calls = venture_activity_call_timeline(context, target_type, target_id, limit, error);
 		JsonArray *rows;

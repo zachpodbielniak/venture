@@ -171,3 +171,18 @@ create accounts. Owners follow record links or **Continue with Lightsite**.
 
 All five jobs types use generic CRUD and schemas; no separate CLI verbs.
 See [jobs.md](jobs.md).
+
+## Late fees
+
+| Route | Auth | Notes |
+|-------|------|-------|
+| `GET /late-fees` | admin page | settings, schedules, pauses |
+| `GET /late-fees/queue` | admin page | proposed and awaiting-notice fees, bulk approve/skip |
+| `POST /late-fees/decide` | admin form | `ids` (repeated), `decision`, `reason` |
+| `POST /late-fees/:id/:verb` | admin form | `approve`, `skip`, `skip-notice`, `waive` (`reason`, `note`) |
+| `POST /late-fees/pause` | admin form | `scope`, `id`, `until`, `reason`, `resume=1` |
+| `GET /invoices/:id/late-fees` | admin page | the preview timeline |
+| `POST /api/v1/late_fee/:id/actions/{approve,skip,skip_notice,waive}` | editor | stageable |
+| `POST /api/v1/late_fee/0/actions/decide` | editor | type-level, `organization_id`, `ids` |
+| `POST /api/v1/{invoice,company,late_fee_setting}/:id/actions/pause_late_fees` | editor | stageable; `resume_late_fees` too |
+| `POST /api/v1/invoice/:id/actions/late_fee_preview` | editor | writes nothing |

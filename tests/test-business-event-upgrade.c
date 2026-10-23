@@ -28,6 +28,7 @@ test_upgrade(void)
 	g_autoptr(GError) error = NULL;
 	gint64 organization;
 	guint run;
+	gint64 later;
 	g_assert_nonnull(database);
 	schema = g_strdup(g_object_get_data(G_OBJECT(database), "accounting-test-schema"));
 	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
@@ -40,7 +41,10 @@ test_upgrade(void)
 	g_assert_true(venture_database_save(database, VENTURE_ENTITY(hook), NULL, &error));
 	g_assert_no_error(error);
 	/* Reconstruct the preceding schema, preserving the historical source and
-	 * subscription. An upgrade must not invent business events for old data. */
+	 * subscription. An upgrade must not invent business events for old data.
+	 * History is a prefix, so every later version goes too and is replayed. */
+	later = scalar(database, "SELECT COUNT(*) FROM schema_migrations WHERE version >= 919");
+	g_assert_cmpint(later, >=, 2);
 	g_assert_true(venture_database_execute(database,
 		"DROP TABLE business_event_deliveries; DROP TABLE business_events;"
 		"ALTER TABLE webhooks DROP COLUMN business_events;"
@@ -66,6 +70,7 @@ test_upgrade(void)
 		g_assert_cmpint(scalar(database, "SELECT COUNT(*) FROM business_events"), ==, 0);
 		g_assert_cmpint(scalar(database, "SELECT COUNT(*) FROM webhooks WHERE business_events=TRUE"), ==, 0);
 		g_assert_cmpint(scalar(database, "SELECT COUNT(*) FROM schema_migrations WHERE version IN (919,920)"), ==, 2);
+		g_assert_cmpint(scalar(database, "SELECT COUNT(*) FROM schema_migrations WHERE version >= 919"), ==, later);
 		if (run == 1) venture_test_accounting_database_cleanup(database);
 		g_clear_object(&database);
 	}

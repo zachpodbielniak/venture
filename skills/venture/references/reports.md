@@ -78,7 +78,8 @@ way.
   `payables` (aging), `vendor_statement` (`vendor_id`). goods:
   `committed_spend`, `reorder_worklist`, `inventory_valuation`. quotes:
   `quotes`. projects: `project_margin`. recurring: `collections_worklist`.
-  dunning: `collections`, `dunning_worklist`.
+  dunning: `collections`, `dunning_worklist`. late_fees: `late_fees`
+  (applied, waived, collected and awaiting, one figure per currency).
 - billing: `mrr` (`currency`; MRR, ARR, `arpa`, `quick_ratio`), `churn`
   (the billing cohort: logos and MRR lost, `grr_bps`, `nrr_bps`),
   `subscriptions_due` (`days=14`). headline: `cac`, `customer_churn`

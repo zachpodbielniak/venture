@@ -860,6 +860,12 @@ static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 static const gchar *const dunning_suggests[] = { "activities", "recurring", NULL };
 static GType (*const dunning_types[]) (void) = { venture_dunning_policy_get_type, venture_dunning_event_get_type, NULL };
 static const gchar *const dunning_reports[] = { "collections", "dunning_worklist", NULL };
+/* A fee is announced by a reminder and added by the settlement service. */
+static const gchar *const late_fees_requires[] = { "dunning", "receivables", NULL };
+static GType (*const late_fees_types[]) (void) = {
+	venture_late_fee_setting_get_type, venture_late_fee_schedule_get_type, venture_late_fee_get_type, NULL
+};
+static const gchar *const late_fees_reports[] = { "late_fees", NULL };
 static GType (*const sales_tax_types[]) (void) = { venture_tax_jurisdiction_get_type, venture_tax_rule_get_type, NULL };
 static const gchar *const sales_tax_requires[] = { "receivables", NULL };
 static const gchar *const sales_tax_reports[] = { "sales_tax_return", NULL };
@@ -1293,6 +1299,10 @@ static const VentureModuleInfo venture_module_builtins[] = {
 	{
 		"dunning", "Overdue reminders", "Per-organization reminder policies, escalation and collection effectiveness.",
 		dunning_requires, dunning_suggests, dunning_types, dunning_reports, NULL, FALSE
+	},
+	{
+		"late_fees", "Late fees", "Tiered, pausable late-fee schedules: announced by reminders, approved by the owner, added and waived through settlement.",
+		late_fees_requires, NULL, late_fees_types, late_fees_reports, NULL, FALSE
 	},
 	{
 		"headline", "Headline metrics",

@@ -6319,3 +6319,16 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 	table[data-list] td.tick { float: right; }
 	table[data-list] td.row-title { font-weight: 600; }
 }
+
+/* Late-fee tables stack as cards on a phone: every row is one fee, every
+ * cell says what it is, and nothing (the waive form least of all) needs a
+ * sideways scroll. */
+@media (max-width: 640px) {
+	table.stack-cards thead { display: none; }
+	table.stack-cards, table.stack-cards tbody, table.stack-cards tr, table.stack-cards td { display: block; width: 100%; }
+	table.stack-cards tr { border-bottom: 1px solid var(--border); padding: 8px 0; }
+	table.stack-cards td { border: 0; padding: 2px 0; text-align: left; }
+	table.stack-cards td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted); font-size: 12px; }
+}
+details.late-fee-waive > summary { cursor: pointer; }
+details.late-fee-waive[open] > summary { margin-bottom: 8px; }

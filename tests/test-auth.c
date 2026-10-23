@@ -1439,6 +1439,32 @@ test_auth_pages_refuse_anonymous_requests(
 	                 ==, SOUP_STATUS_FOUND);
 }
 
+/* The late-fee pages and their action routes carry their own guard: a
+ * stranger is sent to sign in, and the API answers 401. A fee page with no
+ * guard would show every overdue customer and what they are charged. */
+static void
+test_auth_late_fee_routes_are_guarded(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const pages[] = { "/late-fees", "/late-fees/queue", "/invoices/1/late-fees" };
+	static const gchar *const posts[] = { "/late-fees/decide", "/late-fees/1/waive", "/late-fees/pause" };
+	static const gchar *const api[] = { "/api/v1/late_fee", "/api/v1/late_fee_schedule", "/api/v1/late_fee_setting" };
+	guint i;
+
+	(void)user_data;
+	for (i = 0; i < G_N_ELEMENTS(pages); i++)
+		g_assert_cmpuint(server_fixture_get_anonymous(fixture, pages[i]), ==, SOUP_STATUS_FOUND);
+	for (i = 0; i < G_N_ELEMENTS(posts); i++)
+		g_assert_cmpuint(server_fixture_request(fixture, "POST", posts[i], NULL, "ids=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	for (i = 0; i < G_N_ELEMENTS(api); i++)
+		g_assert_cmpuint(server_fixture_get_anonymous(fixture, api[i]), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/late_fee/1/actions/waive", NULL,
+		"{\"reason\":\"x\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/invoice/1/actions/late_fee_preview", NULL,
+		"{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+}
+
 static void
 test_auth_api_refuses_anonymous_requests(
 	ServerFixture	*fixture,
@@ -7181,6 +7207,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/api-refuses-anonymous-requests", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_api_refuses_anonymous_requests,
+	           server_fixture_tear_down);
+	g_test_add("/auth/late-fee-routes-are-guarded", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_late_fee_routes_are_guarded,
 	           server_fixture_tear_down);
 	g_test_add("/auth/health-stays-public", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_health_stays_public,

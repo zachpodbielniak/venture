@@ -110,11 +110,14 @@ enqueue in the mail outbox; `mail deliver` submits them (outreach.md).
 today without moving the dunning schedule or the quote's validity
 (billing.md, receivables.md). The full review above remains the last complete
 inventory; the comparison baseline below includes these incremental updates.
+Late fees (module `late_fees`, report `late_fees`, `/late-fees`) and
+home-services jobs are both in this baseline. The full inventory remains
+`9c97a87a`.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 89fcd672 -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against COMBINEDBASE -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=89fcd672
+base=COMBINEDBASE
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -128,7 +131,7 @@ answer from them, and say the skill is behind. A newer server may have
 types, verbs or reports this skill has never heard of; an older one may lack
 some it describes.
 
-Home-services coverage was updated against `89fcd672` (2026-10-23): jobs
+Home-services coverage was updated against `COMBINEDBASE` (2026-10-23): jobs
 types, actions, day and visit routes, atomic refusals, datetime editing,
 draft-only posting approval, business-midnight receipt dates, and the
 saved-bank confirmation pin. The full-system baseline above remains the
@@ -334,6 +337,7 @@ ids, notes) in words.
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
 | "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
+| "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
@@ -471,6 +475,7 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill includes home-services updates through `89fcd672`; when the
+- This skill includes late fees and home-services updates through
+  `COMBINEDBASE`; the full-system inventory remains `9c97a87a`. When the
   live server disagrees, trust the server's generated answers and say the
   skill is behind.

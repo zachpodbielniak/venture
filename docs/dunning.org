@@ -3,7 +3,7 @@
 #+authors: Ben Doty
 #+categories: projects docs
 #+created: [2026-09-17]
-#+updated: [2026-09-17]
+#+updated: [2026-10-19]
 #+version: 0.6.0
 
 * Dunning
@@ -173,8 +173,8 @@ activity, and escalates seven days later.
 The current step renders its template with the invoice's public fields plus
 ={customer_name}=, ={contact_name}=, ={due_at}= and ={issued_at}= as dates,
 ={open_balance}= (display form) and ={open_balance_exact}=, ={days_overdue}=,
-={days_until_due}=, ={step}=, ={offset_days}=, ={policy_name}= and
-={pay_link}=. The recipient is the invoice contact's email, or the customer's
+={days_until_due}=, ={step}=, ={offset_days}=, ={policy_name}=,
+={pay_link}= and ={late_fee_notice}= (empty unless late fees are on). The recipient is the invoice contact's email, or the customer's
 when the invoice names no live contact; with neither the step is recorded as
 =suppressed= (=no_recipient=). A template naming an unknown placeholder, or a
 missing template, records the step as =failed= with the error; see
@@ -297,9 +297,23 @@ related to the invoice, instead of another email. Its owner is the first of:
 nobody. The event is =escalated= and names the activity. A settled invoice
 never escalates; a customer who opted out of reminders, or who has no email
 address, still gets the internal task. With the activities module off the
-step is recorded as =failed=. Late fees are not applied anywhere; if they are
-ever wanted they belong on the escalation step as a credit-note-shaped
-adjustment through =VentureSettlementService=, not in the reminder.
+step is recorded as =failed=.
+
+* Late fees
+
+Late fees are their own module, =late_fees=, off by default; see
+[[file:late-fees.org][Late fees]]. They are a stage of this sweep, not a
+second one: each invoice the sweep visits gets its late-fee stage first,
+then its reminder. A fee is a separate adjustment through
+=VentureSettlementService= (a =late_fee= invoice event, reversed by a
+=late_fee_waiver= credit), never an edit of the invoice's lines. A reminder
+states the next fee ("A $25.00 late fee will be added on 2026-01-25.") at
+={late_fee_notice}=, or appended when the template does not name it, and no
+fee is added unless such a reminder was sent before its day or the owner
+skipped the notice. The sweep's answer carries a =late_fees= object. While
+late fees are off or paused no fee wording reaches a customer. Late-fee
+limits vary by jurisdiction; schedules support caps and owners should set
+them for their location.
 
 * Retry
 
