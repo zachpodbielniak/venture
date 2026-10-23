@@ -111,10 +111,10 @@ today without moving the dunning schedule or the quote's validity
 (billing.md, receivables.md). The full review above remains the last complete
 inventory; the comparison baseline below includes these incremental updates.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-21 against b01d715d -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 92447c13 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=b01d715d
+base=92447c13
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -128,9 +128,10 @@ answer from them, and say the skill is behind. A newer server may have
 types, verbs or reports this skill has never heard of; an older one may lack
 some it describes.
 
-Home-services coverage was updated against `b01d715d` plus the accompanying
-review repairs (2026-10-21): jobs types, actions, day/visit routes, atomic
-refusals and datetime editing. The full-system baseline above remains the
+Home-services coverage was updated against `92447c13` (2026-10-23): jobs
+types, actions, day and visit routes, atomic refusals, datetime editing,
+draft-only posting approval, business-midnight receipt dates, and the
+saved-bank confirmation pin. The full-system baseline above remains the
 last complete inventory review.
 
 ## Topic guides
@@ -470,6 +471,6 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill includes updates through `b01d715d` and the accompanying jobs
-  review fixes; when the live server disagrees,
-  trust the server's generated answers and say the skill is behind.
+- This skill includes home-services updates through `92447c13`; when the
+  live server disagrees, trust the server's generated answers and say the
+  skill is behind.
