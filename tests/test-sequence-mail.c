@@ -247,6 +247,7 @@ static void test_mail_disabled(Fixture *f, gconstpointer unused)
 	venture_config_set_module_enabled(f->config, "recurring", FALSE);
 	venture_config_set_module_enabled(f->config, "mail_sync", FALSE);
 	venture_config_set_module_enabled(f->config, "dunning", FALSE);
+	venture_config_set_module_enabled(f->config, "late_fees", FALSE);
 	venture_config_set_module_enabled(f->config, "mail", FALSE);
 	restart(f);
 	run(f, 1);

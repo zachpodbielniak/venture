@@ -330,6 +330,17 @@ venture_settlement_service_invoice_balance(VentureSettlementService *self,
 		if (g_strcmp0(state, "void") == 0)
 			voided = TRUE;
 	}
+	/* A late fee is a separate adjustment on top of the frozen issue, added
+	 * after it; it never edits the invoice's lines. */
+	for (i = 0; issued && i < events->len; i++)
+	{
+		VentureEntity *event = g_ptr_array_index(events, i);
+		g_autofree gchar *state = NULL;
+
+		g_object_get(event, "kind", &state, NULL);
+		if (g_strcmp0(state, VENTURE_INVOICE_EVENT_LATE_FEE) == 0 && !accumulate_record(&total, event, FALSE, error))
+			return NULL;
+	}
 	if (!issued)
 		return venture_money_new_zero(NULL);
 	if (voided)
@@ -856,6 +867,48 @@ invoice_state(VentureEntity *invoice)
 }
 
 static gboolean
+add_late_fees(VentureSettlementService *self, gint64 invoice_id, VentureMoney **total, GError **error)
+{
+	g_autoptr(GPtrArray) events = find_rows(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", invoice_id, NULL, error);
+	guint i;
+
+	if (events == NULL)
+		return FALSE;
+	for (i = 0; i < events->len; i++)
+	{
+		g_autofree gchar *kind = NULL;
+
+		g_object_get(g_ptr_array_index(events, i), "kind", &kind, NULL);
+		if (g_strcmp0(kind, VENTURE_INVOICE_EVENT_LATE_FEE) == 0 &&
+			!accumulate_record(total, g_ptr_array_index(events, i), FALSE, error))
+			return FALSE;
+	}
+	/* A waiver cancels its fee rather than paying it: what it applied
+	 * comes off what was charged, so a waived invoice reads exactly as it
+	 * did before the fee, not as part paid. */
+	{
+		g_autoptr(GPtrArray) allocations = find_rows(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id", invoice_id, NULL, error);
+		if (allocations == NULL)
+			return FALSE;
+		for (i = 0; i < allocations->len; i++)
+		{
+			VentureEntity *allocation = g_ptr_array_index(allocations, i);
+			g_autoptr(VentureEntity) credit = NULL;
+			g_autofree gchar *kind = NULL;
+			if (get_id(allocation, "credit-id") == 0)
+				continue;
+			credit = venture_database_get(self->database, VENTURE_TYPE_CUSTOMER_CREDIT, get_id(allocation, "credit-id"), error);
+			if (credit == NULL)
+				return FALSE;
+			g_object_get(credit, "kind", &kind, NULL);
+			if (g_strcmp0(kind, VENTURE_CREDIT_KIND_LATE_FEE_WAIVER) == 0 && !accumulate_record(total, allocation, TRUE, error))
+				return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+static gboolean
 derive_invoice(VentureSettlementService *self, VentureEntity *invoice, GDateTime *date,
 	const VentureActor *actor, GError **error)
 {
@@ -870,6 +923,10 @@ derive_invoice(VentureSettlementService *self, VentureEntity *invoice, GDateTime
 	if (issued == NULL)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Issue the invoice before allocating a payment");
 	g_object_get(issued, "amount", &total, NULL);
+	/* What was charged is the issue plus its late fees: a fee on top is not
+	 * a part payment. */
+	if (!add_late_fees(self, venture_entity_get_id(invoice), &total, error))
+		return FALSE;
 	balance = venture_settlement_service_invoice_balance(self, venture_entity_get_id(invoice), NULL, error);
 	if (balance == NULL)
 		return FALSE;
@@ -1128,6 +1185,62 @@ schedule_recognition(VentureSettlementService *self, VentureEntity *invoice, con
 	}
 }
 
+static gchar *
+waiver_reference(gint64 event_id)
+{
+	return g_strdup_printf("Late fee event #%" G_GINT64_FORMAT " waived", event_id);
+}
+
+/* The waiver credit naming @event_id, if one was ever written. */
+static VentureEntity *
+find_waiver(VentureSettlementService *self, gint64 customer_id, gint64 event_id, GError **error)
+{
+	g_autoptr(GPtrArray) credits = find_rows(self, VENTURE_TYPE_CUSTOMER_CREDIT, "customer-id", customer_id, NULL, error);
+	g_autofree gchar *wanted = waiver_reference(event_id);
+	guint i;
+
+	for (i = 0; credits != NULL && i < credits->len; i++)
+	{
+		g_autofree gchar *kind = NULL;
+		g_autofree gchar *reference = NULL;
+
+		g_object_get(g_ptr_array_index(credits, i), "kind", &kind, "reference", &reference, NULL);
+		if (g_strcmp0(kind, VENTURE_CREDIT_KIND_LATE_FEE_WAIVER) == 0 && reference != NULL &&
+			g_str_has_prefix(reference, wanted))
+			return g_object_ref(g_ptr_array_index(credits, i));
+	}
+	return NULL;
+}
+
+static gboolean
+late_fees_standing(VentureSettlementService *self, VentureEntity *invoice, gboolean *standing, GError **error)
+{
+	g_autoptr(GPtrArray) events = find_rows(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", venture_entity_get_id(invoice), NULL, error);
+	guint i;
+
+	*standing = FALSE;
+	if (events == NULL)
+		return FALSE;
+	for (i = 0; i < events->len && !*standing; i++)
+	{
+		g_autofree gchar *kind = NULL;
+		g_autoptr(VentureEntity) waiver = NULL;
+		g_autoptr(GError) local = NULL;
+
+		g_object_get(g_ptr_array_index(events, i), "kind", &kind, NULL);
+		if (g_strcmp0(kind, VENTURE_INVOICE_EVENT_LATE_FEE) != 0)
+			continue;
+		waiver = find_waiver(self, get_id(invoice, "company-id"), venture_entity_get_id(g_ptr_array_index(events, i)), &local);
+		if (local != NULL)
+		{
+			g_propagate_error(error, g_steal_pointer(&local));
+			return FALSE;
+		}
+		*standing = waiver == NULL;
+	}
+	return TRUE;
+}
+
 static gboolean
 perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 	const gchar *state, GDateTime *date, const OpeningPosting *opening,
@@ -1155,6 +1268,16 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		return FALSE;
 	if (phase == VENTURE_INVOICE_STATUS_PAID || phase == VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Financial status is derived; create a payment or allocation through this service");
+	/* A void reverses the issue only; a fee left standing would be owed on
+	 * an invoice that no longer exists. */
+	if (phase == VENTURE_INVOICE_STATUS_VOID && opening == NULL)
+	{
+		gboolean standing = FALSE;
+		if (!late_fees_standing(self, invoice, &standing, error))
+			return FALSE;
+		if (standing)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Waive the invoice's late fees before voiding it");
+	}
 	from = invoice_state(previous);
 	if (!venture_invoice_state_machine_get_phase(self->machine, from, &old_phase, error))
 		return FALSE;
@@ -2344,7 +2467,7 @@ venture_settlement_service_customer_balance(VentureSettlementService *self,
 			if (t == 0)
 			{
 				g_object_get(record, "kind", &kind, NULL);
-				if (g_strcmp0(kind, "issue") != 0 && g_strcmp0(kind, "void") != 0)
+				if (!venture_invoice_event_kind_moves_balance(kind))
 					continue;
 				subtract = g_strcmp0(kind, "void") == 0;
 			}
@@ -2675,4 +2798,186 @@ gboolean venture_settlement_service_record_mail(VentureSettlementService *self, 
 		"kind", "mail_queued", "state", state, NULL);
 	ok = check_customer(self, VENTURE_ENTITY(event), error) && write_record(self, VENTURE_ENTITY(event), actor, error);
 	return finish_operation(self, ok, error);
+}
+
+gboolean
+venture_invoice_event_kind_moves_balance(const gchar *kind)
+{
+	return g_strcmp0(kind, "issue") == 0 || g_strcmp0(kind, "void") == 0 ||
+		g_strcmp0(kind, VENTURE_INVOICE_EVENT_LATE_FEE) == 0;
+}
+
+static VentureEntity *
+add_late_fee_impl(VentureSettlementService *self, gint64 invoice_id, const VentureMoney *amount,
+	GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) issued = NULL;
+	g_autoptr(VentureEntity) event = NULL;
+	g_autoptr(VentureMoney) issued_amount = NULL;
+	g_autoptr(VentureMoney) issued_book = NULL;
+	g_autoptr(GDateTime) issue_date = NULL;
+	g_autofree gchar *state = NULL;
+	gboolean ok;
+	gint status = 0;
+
+	if (!begin_operation(self, "payment", error))
+		return NULL;
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	ok = invoice != NULL;
+	if (ok)
+	{
+		g_object_get(invoice, "status", &status, NULL);
+		if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+			ok = refuse(error, VENTURE_ERROR_VALIDATION, "A late fee needs an issued invoice with an open balance");
+	}
+	if (ok && opening_invoice(invoice))
+		ok = refuse(error, VENTURE_ERROR_VALIDATION, "A migrated opening invoice takes no late fee here");
+	if (ok)
+	{
+		issued = issue_event(self, invoice_id, NULL, error);
+		ok = issued != NULL || refuse(error, VENTURE_ERROR_VALIDATION, "The invoice has no issue event");
+	}
+	if (ok)
+	{
+		g_object_get(issued, "amount", &issued_amount, "book-amount", &issued_book, "date", &issue_date, NULL);
+		/* Cross-currency is refused, never converted. */
+		if (amount == NULL || issued_amount == NULL ||
+			g_strcmp0(venture_money_get_currency(amount), venture_money_get_currency(issued_amount)) != 0)
+			ok = refuse(error, VENTURE_ERROR_VALIDATION, "A late fee must be in the invoice's currency");
+		else if (issued_book != NULL && g_strcmp0(venture_money_get_currency(issued_amount), venture_money_get_currency(issued_book)) != 0)
+			ok = refuse(error, VENTURE_ERROR_VALIDATION, "A book-valued foreign invoice takes no late fee");
+	}
+	ok = ok && check_amount(amount, error) && check_date(self, date, issue_date, error);
+	if (ok)
+	{
+		state = invoice_state(invoice);
+		event = g_object_new(VENTURE_TYPE_INVOICE_EVENT, NULL);
+		venture_entity_set_organization_id(event, venture_entity_get_organization_id(invoice));
+		g_object_set(event, "invoice-id", invoice_id, "customer-id", get_id(invoice, "company-id"),
+			"state", state, "kind", VENTURE_INVOICE_EVENT_LATE_FEE, "date", date, "amount", amount,
+			"venture-id", get_id(invoice, "venture-id"), NULL);
+		ok = write_record(self, event, actor, error) &&
+			post(self, event, date, amount, "1100", "4000", actor, error) &&
+			derive_invoice(self, invoice, date, actor, error);
+	}
+	if (!finish_operation(self, ok, error))
+		return NULL;
+	return g_steal_pointer(&event);
+}
+
+VentureEntity *
+venture_settlement_service_add_late_fee(VentureSettlementService *self, gint64 invoice_id,
+	const VentureMoney *amount, GDateTime *date, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) event = NULL;
+	g_autofree gchar *text = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), NULL);
+	subject = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (subject == NULL)
+		return NULL;
+	text = amount != NULL ? venture_money_to_string(amount) : g_strdup("");
+	operation = accounting_operation(self, "receivables.late_fee", subject, NULL, operation_date(date, text),
+		venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return NULL;
+	event = add_late_fee_impl(self, invoice_id, amount, date, actor, error);
+	if (event == NULL || !venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&event);
+}
+
+static VentureEntity *
+waive_late_fee_impl(VentureSettlementService *self, VentureEntity *event, GDateTime *date,
+	const gchar *reason, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) existing = NULL;
+	g_autoptr(VentureCustomerCredit) credit = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) balance = NULL;
+	g_autofree gchar *reference = NULL;
+	g_autofree gchar *base = NULL;
+	gint64 invoice_id = get_id(event, "invoice-id");
+	gboolean ok;
+
+	if (!begin_operation(self, "payment", error))
+		return NULL;
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	ok = invoice != NULL;
+	if (ok)
+		existing = find_waiver(self, get_id(event, "customer-id"), venture_entity_get_id(event), error);
+	if (ok && existing != NULL)
+		ok = refuse(error, VENTURE_ERROR_CONFLICT, "This late fee was already waived");
+	if (ok)
+	{
+		g_object_get(event, "amount", &amount, NULL);
+		base = waiver_reference(venture_entity_get_id(event));
+		reference = reason != NULL && *reason != '\0' ? g_strdup_printf("%s: %s", base, reason) : g_strdup(base);
+		credit = venture_customer_credit_new();
+		g_object_set(credit, "customer-id", get_id(event, "customer-id"), "kind", VENTURE_CREDIT_KIND_LATE_FEE_WAIVER,
+			"date", date, "amount", amount, "remaining", amount, "reference", reference, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(credit), venture_entity_get_organization_id(event));
+		ok = check_amount(amount, error) && check_date(self, date, NULL, error) &&
+			write_record(self, VENTURE_ENTITY(credit), actor, error) &&
+			post(self, VENTURE_ENTITY(credit), date, amount, "4000", "1100", actor, error);
+	}
+	if (ok)
+	{
+		balance = venture_settlement_service_invoice_balance(self, invoice_id, NULL, error);
+		ok = balance != NULL;
+	}
+	/* Applied to the invoice up to what it still owes; a fee the customer
+	 * already paid leaves the rest as their credit, refundable like any. */
+	if (ok && venture_money_get_amount(balance) > 0)
+	{
+		g_autoptr(VenturePaymentAllocation) allocation = venture_payment_allocation_new();
+		const VentureMoney *applied = venture_money_compare(balance, amount) < 0 ? balance : amount;
+
+		g_object_set(allocation, "credit-id", venture_entity_get_id(VENTURE_ENTITY(credit)),
+			"invoice-id", invoice_id, "amount", applied, "date", date, NULL);
+		venture_entity_set_organization_id(VENTURE_ENTITY(allocation), venture_entity_get_organization_id(invoice));
+		ok = perform_allocation(self, VENTURE_ENTITY(allocation), actor, error);
+	}
+	else if (ok)
+		ok = derive_invoice(self, invoice, date, actor, error);
+	if (!finish_operation(self, ok, error))
+		return NULL;
+	return VENTURE_ENTITY(g_steal_pointer(&credit));
+}
+
+VentureEntity *
+venture_settlement_service_waive_late_fee(VentureSettlementService *self, gint64 event_id,
+	GDateTime *date, const gchar *reason, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) event = NULL;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autoptr(VentureEntity) credit = NULL;
+	g_autofree gchar *kind = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), NULL);
+	event = venture_database_get(self->database, VENTURE_TYPE_INVOICE_EVENT, event_id, error);
+	if (event == NULL)
+		return NULL;
+	g_object_get(event, "kind", &kind, NULL);
+	if (g_strcmp0(kind, VENTURE_INVOICE_EVENT_LATE_FEE) != 0)
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION, "Only a late fee adjustment can be waived");
+		return NULL;
+	}
+	subject = venture_database_get(self->database, VENTURE_TYPE_INVOICE, get_id(event, "invoice-id"), error);
+	if (subject == NULL)
+		return NULL;
+	operation = accounting_operation(self, "receivables.waive_late_fee", subject, NULL, operation_date(date, reason),
+		venture_entity_get_organization_id(subject), actor, error);
+	if (operation == NULL)
+		return NULL;
+	credit = waive_late_fee_impl(self, event, date, reason, actor, error);
+	if (credit == NULL || !venture_accounting_operation_finish(operation, error))
+		return NULL;
+	return g_steal_pointer(&credit);
 }

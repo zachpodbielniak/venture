@@ -598,6 +598,11 @@ venture_web_page(
 	const gchar		*content
 );
 
+/* The late-fee panel on an invoice's page, defined with the late-fee
+ * pages in latefees/venture-late-fees-web.inc. */
+static void
+venture_late_fees_web_append_invoice(VentureWebServer *self, GString *html, VentureEntity *invoice);
+
 /* An event's own block on its record page, defined with the calendar in
  * planner/venture-planner-web.inc. */
 static void
@@ -1870,6 +1875,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/deals", "Sales board", VENTURE_ICON("<path d=\"M4 4v16M12 4v16M20 4v16\"/>"), "Sales pipelines", "pipelines" },
 	{ "/invoices/compose", "New invoice", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h8M8 16h5\"/>"), "Invoicing", "invoicing" },
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
+	{ "/late-fees", "Late fees", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 7v5l3 2\"/>"), NULL, "late_fees" },
 	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
@@ -1900,7 +1906,7 @@ venture_accountant_web_append_inbox_nav(VentureWebServer *self, HtmxRequest *req
 static const gchar *const venture_web_nav_money_in[] = {
 	"/e/sale", "/e/invoice", "/invoices/compose", "/quotes/compose",
 	"/e/payment", "/e/payment_allocation", "/e/customer_credit",
-	"/e/refund", "/e/collection_case", "/e/customer_subscription", "/e/plan",
+	"/e/refund", "/e/collection_case", "/late-fees", "/e/customer_subscription", "/e/plan",
 	"/e/recurring_schedule", "/sales-orders", "/e/product", "/e/inventory_item",
 	"/e/listing", "/e/price_observation",
 	NULL
@@ -11884,7 +11890,10 @@ venture_web_ui_detail(
 	 * The other type-specific block, for the same reason as the ticket
 	 * composer below: an invoice without its total is a list of hints. */
 	if (VENTURE_TYPE_INVOICE == entity_type)
+	{
 		venture_web_append_invoice_block(self, content, record);
+		venture_late_fees_web_append_invoice(self, content, record);
+	}
 	venture_web_append_payment_receipt(self, content, record);
 	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
@@ -32948,6 +32957,8 @@ venture_web_api_ticket_draft(
 #include "calendar/venture-calendar-web.inc"
 #include "core/venture-connector-web.inc"
 #include "money-calendar/venture-money-calendar-web.inc"
+#include "latefees/venture-late-fee-private.h"
+#include "latefees/venture-late-fees-web.inc"
 #include "planner/venture-planner-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
@@ -33557,6 +33568,7 @@ venture_document_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type/:id/actions/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/journals/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_action, self);
 	venture_money_calendar_web_register(router, self);
+	venture_late_fees_web_register(self);
 	venture_docs_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/report_pack/:id/deliver", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_report_pack_deliver, self);
 

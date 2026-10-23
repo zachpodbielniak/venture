@@ -232,3 +232,26 @@ guarantee is one capped credit, including zero. `stripe_prepayment` is
 service-owned, and checkout is refused while a non-failed prepayment owns
 the invoice. No route returns a card or a provider customer id. The
 contract, bodies and fixtures are `docs/hosted-billing.org`.
+
+## Late fees (module `late_fees`)
+
+Off by default. A `late_fee_schedule` is an ordered list of tiers (day N,
+or every N days; flat, percent of open balance, percent of original, or
+markup; caps; rounding; conditions). The dunning sweep is the only thing
+that moves a fee: a reminder states the next fee ("A $25.00 late fee will
+be added on ..."), and on its day the fee is `proposed` (or applied with
+`auto_apply`) only if that reminder was *sent* or the owner ran
+`skip_notice`. Approve, skip, waive and pause are stageable actions, so the
+assistant goes through the confirmation queue. See `docs/late-fees.org`.
+
+```sh
+venturectl act invoice 42 late_fee_preview
+venturectl dunning sweep as_of=2026-01-25 organization_id=1 dry_run=true
+venturectl act late_fee 7 approve
+venturectl act company 3 pause_late_fees until=2026-02-01 reason='promised by phone'
+venturectl act late_fee 7 waive reason=goodwill note='We removed the fee.'
+venturectl report late_fees all
+```
+
+Late-fee limits vary by jurisdiction; set the schedule caps for the
+location.
