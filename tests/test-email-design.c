@@ -413,6 +413,11 @@ static void test_render_video(void)
 	g_assert_nonnull(strstr(html, "alt=\"How a tune-up works\""));
 	g_assert_nonnull(strstr(text, "Watch the video (How a tune-up works): https://video.example.com/watch/1"));
 	g_assert_null(strstr(html, "<video"));
+	/* Some webmail (SOGo) strips a downlevel-revealed "<!--[if !mso]><!-->"
+	 * section as a comment, which lost the poster and its play button.
+	 * The poster is hidden from Outlook by mso-hide instead. */
+	g_assert_null(strstr(html, "<!--[if !mso]>"));
+	g_assert_nonnull(strstr(html, "role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"mso-hide:all\""));
 }
 
 /* A design names a hosted image by id; with nothing to resolve it, the

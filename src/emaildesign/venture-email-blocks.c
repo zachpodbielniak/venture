@@ -749,12 +749,12 @@ static gboolean render_video(Render *r, GString *out, JsonObject *block, GError 
 	caption = words(r, string_member(block, "caption") != NULL ? string_member(block, "caption") : "Watch the video");
 	g_string_append_printf(out,
 		"<!--[if mso]><a href=\"%s\" target=\"_blank\"><img src=\"%s\" alt=\"%s\" width=\"%d\" height=\"%d\" style=\"display:block;border:0\"></a><![endif]-->"
-		"<!--[if !mso]><!--><table role=\"presentation\" width=\"100%%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr>"
+		"<table role=\"presentation\" width=\"100%%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"mso-hide:all\"><tr>"
 		"<td background=\"%s\" bgcolor=\"%s\" align=\"center\" valign=\"middle\" height=\"%d\" role=\"img\" aria-label=\"%s\" "
-		"style=\"height:%dpx;background-color:%s;background-image:url('%s');background-size:cover;background-position:center;border-radius:6px\">"
+		"style=\"mso-hide:all;height:%dpx;background-color:%s;background-image:url('%s');background-size:cover;background-position:center;border-radius:6px\">"
 		"<a href=\"%s\" target=\"_blank\" aria-label=\"Play: %s\" style=\"display:inline-block;width:72px;height:72px;border-radius:36px;"
 		"background:rgba(0,0,0,0.62);border:3px solid #ffffff;color:#ffffff;font-family:Arial,sans-serif;font-size:0;line-height:66px;"
-		"text-align:center;text-decoration:none\"><span class=\"ve-play\" style=\"display:inline-block;width:0;height:0;margin-left:6px;vertical-align:middle;border-style:solid;border-width:13px 0 13px 22px;border-color:transparent transparent transparent #ffffff\"></span></a></td></tr></table><!--<![endif]-->"
+		"text-align:center;text-decoration:none;mso-hide:all\"><span class=\"ve-play\" style=\"display:inline-block;width:0;height:0;margin-left:6px;vertical-align:middle;border-style:solid;border-width:13px 0 13px 22px;border-color:transparent transparent transparent #ffffff\"></span></a></td></tr></table>"
 		"<p class=\"ve-muted\" style=\"margin:10px 0 0;font-family:%s;font-size:14px;line-height:20px;text-align:center;color:%s\">"
 		"<a class=\"ve-link\" href=\"%s\" target=\"_blank\" style=\"color:%s;text-decoration:underline\">%s</a></p>",
 		url, src, alt, INNER, height, src, r->look->text, height, alt, height, r->look->text, src,

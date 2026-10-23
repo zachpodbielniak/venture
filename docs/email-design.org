@@ -113,7 +113,10 @@ No mail app plays video inside a message. A video block is a poster -- a
 picture with a play button drawn over it -- that links to the page where
 the video plays, with the caption as a text link beneath it. Outlook for
 Windows, which cannot draw a picture behind a button, gets the poster as
-an ordinary linked picture.
+an ordinary linked picture; the poster with the button carries
+=mso-hide:all= so Outlook skips it. It is not wrapped in a "not Outlook"
+comment: some webmail (SOGo, the webmail of Mailcow) strips such a
+section as a comment, and the poster vanished there.
 
 ** Dark mode
 
@@ -199,3 +202,19 @@ block and colour-scheme tag, Outlook conditionals, and a plain-text
 alternative of real length. It says the message is built from what every
 major client renders; it cannot say how a given client draws it. Look at
 the preview's frames, and send yourself a test, before a large send.
+
+** What was seen in real mail apps
+
+A branded design with every block, and the plain look with three
+columns, were sent through the SMTP transport and looked at as received:
+
+- Thunderbird (desktop), light and dark, wide and narrow windows:
+  everything shows and reads. Thunderbird ignores the message's own
+  style rules: columns stay side by side in a narrow window, and in
+  dark mode it darkens the message itself (links in its own blue)
+  instead of using the design's dark colours.
+- SOGo webmail, light and dark, desktop and phone widths: everything
+  shows once remote pictures are allowed; before that the alt text
+  shows. SOGo's dark switch darkens only its own frame; the message
+  stays in its light colours. Columns stay side by side at phone width.
+- Gmail, Outlook and Apple Mail were not looked at by a test run.
