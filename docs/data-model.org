@@ -244,7 +244,7 @@ YAML, web list view, AI tools, audit diffs and CLI subcommands all follow.
 | =INDEXED=      | an index                                               |
 | =IMMUTABLE=    | settable on insert, never on update                    |
 | =SENSITIVE=    | never serialised to an API response, log, export or AI |
-| =SEARCHABLE=   | included in free-text search                           |
+| =SEARCHABLE=   | included in free-text search; a type with none never matches a search, and a search of seven or more digits with spaces, dashes, dots or brackets also matches the field with those separators removed |
 | =TRANSIENT=    | computed; never persisted                              |
 | =RETAIN_REFERENCE= | CRM merge keeps the original subject for this reference |
 | =TECHNICAL=    | machinery: kept off summaries, list columns and the everyday form |
@@ -451,8 +451,17 @@ nobody writing HTML for it.
 | integer     | a number box                                     |
 | boolean     | a checkbox                                       |
 | date        | a date picker                                    |
+| datetime    | a date-and-time box, in the business's time zone |
 | enum        | a select of the declared values                  |
 | reference   | a select of the records it can point at          |
+
+A datetime box posts wall time with no zone (=2026-10-21T08:00=); the form
+reads it in =locale.timezone= and stores the instant. A date alone, an ISO
+string with its own zone or a word like "today" is read as before.
+Field metadata distinguishes dates from instants: =date= keeps its calendar
+day, while =datetime= always converts to the business's zone, even at
+midnight UTC. Historical datetime values have no date-only provenance flag;
+they retain their stored instant rather than guessing a different time.
 
 The control follows the kind the field table *declared*, not one recomputed
 from its C type. That distinction is load-bearing: a long text field and a

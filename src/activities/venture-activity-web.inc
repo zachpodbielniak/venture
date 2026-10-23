@@ -199,6 +199,8 @@ activity_ui_worklist(HtmxRequest *request, GHashTable *params, gpointer data)
 	principal = venture_auth_authenticate(self->auth, request);
 	if (venture_activity_service_sweep(service, activity_organization(self, request), 50, &error) < 0)
 		return venture_web_error_response(error);
+	/* A technician's day is jobs before it is calls to make. */
+	venture_jobs_web_append_today(self, content, request, principal);
 	for (q = 0; q < G_N_ELEMENTS(queues); q++)
 	{
 		g_autoptr(GPtrArray) rows = venture_activity_service_list(service, activity_organization(self, request), principal->name, queues[q], NULL, &error);

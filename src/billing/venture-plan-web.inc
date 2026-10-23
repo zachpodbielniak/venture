@@ -66,9 +66,9 @@ venture_plan_append_venture_select(VentureWebServer *self, GString *html, gint64
 	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
 
 	g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Venture"
-		"<span class=\"required\">*</span></span><select name=\"venture-id\" required>");
+		"</span><select name=\"venture-id\">");
 	if (rows == NULL || rows->len != 1)
-		g_string_append(html, "<option value=\"\">Whose plan is it?</option>");
+		g_string_append(html, "<option value=\"0\" selected>Shared by every venture</option>");
 	for (i = 0; rows != NULL && i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
@@ -79,7 +79,9 @@ venture_plan_append_venture_select(VentureWebServer *self, GString *html, gint64
 		venture_html_escape_append(html, name);
 		g_string_append(html, "</option>");
 	}
-	g_string_append(html, "<option value=\"0\">Shared by every venture</option></select>"
+	if (rows != NULL && rows->len == 1)
+		g_string_append(html, "<option value=\"0\">Shared by every venture</option>");
+	g_string_append(html, "</select>"
 		"<span class=\"field-help\">Only this venture's customers can be put on it.</span></label>");
 }
 

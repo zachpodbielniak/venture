@@ -16,6 +16,33 @@ customer_record(VentureDatabase *database, GType type, gint64 id, gint64 org, GE
 	return record;
 }
 
+gchar *
+venture_quote_mail_recipient(VentureDatabase *database, VentureEntity *quote, GError **error)
+{
+	g_autoptr(VentureEntity) company = NULL, contact = NULL;
+	g_autofree gchar *email = NULL;
+	gint64 company_id = 0, contact_id = 0, contact_company = 0;
+	gint64 org = venture_entity_get_organization_id(quote);
+	g_object_get(quote, "company-id", &company_id, "contact-id", &contact_id, NULL);
+	company = customer_record(database, VENTURE_TYPE_COMPANY, company_id, org, error);
+	if (!company) return NULL;
+	if (contact_id > 0) {
+		contact = customer_record(database, VENTURE_TYPE_CONTACT, contact_id, org, error);
+		if (!contact) return NULL;
+		g_object_get(contact, "company-id", &contact_company, "email", &email, NULL);
+		if (contact_company != company_id) {
+			venture_set_error_validation(error, "contact", "Quote contact must belong to its customer");
+			return NULL;
+		}
+	}
+	if (venture_string_is_empty(email)) {
+		g_clear_pointer(&email, g_free);
+		g_object_get(company, "email", &email, NULL);
+	}
+	if (venture_string_is_empty(email)) return NULL;
+	return g_steal_pointer(&email);
+}
+
 /* The quote's mail; a reminder (day set) carries the same private link,
  * says so in its subject and is keyed by the day it was asked for. */
 static gboolean
@@ -23,12 +50,11 @@ quote_mail(VentureDatabase *database, VentureEntity *quote, VentureEntity *deliv
 	const gchar *day, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GUri) origin = NULL;
-	g_autoptr(VentureEntity) company = NULL, contact = NULL;
 	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
 	g_autoptr(VentureMoney) total = NULL;
 	g_autofree gchar *email = NULL, *number = NULL, *relative = NULL, *url = NULL;
 	g_autofree gchar *key = NULL, *subject = NULL, *body = NULL, *formatted = NULL;
-	gint64 company_id, contact_id, contact_company, org = venture_entity_get_organization_id(quote);
+	gint64 org = venture_entity_get_organization_id(quote);
 	/* Offline quote ledgers may have no public address. Their retained
 	 * delivery intent remains available to a separately configured sender. */
 	if (!base_url || !*base_url) return TRUE;
@@ -38,23 +64,9 @@ quote_mail(VentureDatabase *database, VentureEntity *quote, VentureEntity *deliv
 		venture_set_error_validation(error, "base-url", "Quote delivery needs a configured public HTTPS address");
 		return FALSE;
 	}
-	g_object_get(quote, "company-id", &company_id, "contact-id", &contact_id,
-		"number", &number, "total", &total, NULL);
-	company = customer_record(database, VENTURE_TYPE_COMPANY, company_id, org, error);
-	if (!company) return FALSE;
-	if (contact_id > 0) {
-		contact = customer_record(database, VENTURE_TYPE_CONTACT, contact_id, org, error);
-		if (!contact) return FALSE;
-		g_object_get(contact, "company-id", &contact_company, "email", &email, NULL);
-		if (contact_company != company_id) {
-			venture_set_error_validation(error, "contact", "Quote contact must belong to its customer");
-			return FALSE;
-		}
-	}
-	if (venture_string_is_empty(email)) {
-		g_clear_pointer(&email, g_free);
-		g_object_get(company, "email", &email, NULL);
-	}
+	g_object_get(quote, "number", &number, "total", &total, NULL);
+	email = venture_quote_mail_recipient(database, quote, error);
+	if (error && *error) return FALSE;
 	if (venture_string_is_empty(email)) {
 		venture_set_error_validation(error, "customer", "Add a customer email before sending this quote");
 		return FALSE;

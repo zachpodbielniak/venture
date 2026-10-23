@@ -108,14 +108,16 @@ plus tag; matching uses a separate key (crm.md). Sequence email steps
 enqueue in the mail outbox; `mail deliver` submits them (outreach.md).
 `act invoice ID remind` and `quote remind` send one customer a reminder
 today without moving the dunning schedule or the quote's validity
-(billing.md, receivables.md). The full review above remains the last
-complete inventory. Late fees (module `late_fees`, report `late_fees`,
-`/late-fees` and the stageable actions) were read against `51f41c2a`.
+(billing.md, receivables.md). The full review above remains the last complete
+inventory; the comparison baseline below includes these incremental updates.
+Late fees (module `late_fees`, report `late_fees`, `/late-fees`) and
+home-services jobs are both in this baseline. The full inventory remains
+`9c97a87a`.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 51f41c2a -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 1be4e0c0 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=51f41c2a
+base=1be4e0c0
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -128,6 +130,12 @@ When the server and this skill disagree, the generated ground truths win
 answer from them, and say the skill is behind. A newer server may have
 types, verbs or reports this skill has never heard of; an older one may lack
 some it describes.
+
+Home-services coverage was updated against `1be4e0c0` (2026-10-23): jobs
+types, actions, day and visit routes, atomic refusals, datetime editing,
+draft-only posting approval, business-midnight receipt dates, and the
+saved-bank confirmation pin. The full-system baseline above remains the
+last complete inventory review.
 
 ## Topic guides
 
@@ -156,6 +164,7 @@ and `~/.agents/skills/venture` by `make install-skill`.
 - [`references/receivables.md`](references/receivables.md) -- invoices, receipts, credits, refunds, quotes, client projects, retainers, sales tax, commerce, the portal
 - [`references/billing.md`](references/billing.md) -- SaaS subscriptions, usage, MRR/churn, dunning, recurring documents, batch entry, Stripe
 - [`references/payables.md`](references/payables.md) -- bills, purchasing and sales orders, capture and OCR, claims, payroll, banking, tax filings
+- [`references/jobs.md`](references/jobs.md) -- customer properties, equipment, job actions, technician day and maintenance visits
 - [`references/crm.md`](references/crm.md) -- companies, contacts, leads, routing and scoring, deals, activities and calls, customer health, duplicates, territories, CRM import
 - [`references/forms.md`](references/forms.md) -- forms: questions, publishing, embeds, results, languages, quizzes, bookings, payments, uploads, Lightsite forms
 - [`references/outreach.md`](references/outreach.md) -- sequences, marketing sends and consent, attribution, campaigns
@@ -346,6 +355,7 @@ ids, notes) in words.
 | "Create a venture of a declared type" | `create venture venture_type=... attributes.NAME=...` | [taxonomy.md](references/taxonomy.md) |
 | "Total anything by anything" | `report aggregate PERIOD type= measure= group_by= date_field=` | [reports.md](references/reports.md) |
 | "Build / read / export a dashboard" | `dashboard create TEMPLATE`, `dashboard SLUG`, `dashboard export` | [dashboards.md](references/dashboards.md) |
+| "Book a service visit / send a technician" | `describe job`, `act job ID assign`, `act maintenance_plan ID book` | [jobs.md](references/jobs.md) |
 | "Convert / route / score a lead" | `lead convert`, `leads reroute\|rescore` | [crm.md](references/crm.md) |
 | "Refer a customer" | `act company ID referral_code`; reward `none`, `credit`, `free_period`, or `free_month` (one month of the referrer's plan). A hand-recorded customer is referred once | [crm.md](references/crm.md) |
 | "Move a deal / log a call / plan a follow-up" | `deal move ID STAGE`, `act contact ID log_call`, `activity complete` | [crm.md](references/crm.md) |
@@ -465,6 +475,7 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill includes late fees through `51f41c2a`; the full-system
-  inventory remains `9c97a87a`. When the live server disagrees, trust the
-  server's generated answers and say the skill is behind.
+- This skill includes late fees and home-services updates through
+  `1be4e0c0`; the full-system inventory remains `9c97a87a`. When the
+  live server disagrees, trust the server's generated answers and say the
+  skill is behind.

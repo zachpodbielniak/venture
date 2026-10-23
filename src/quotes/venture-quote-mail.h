@@ -38,4 +38,17 @@ gboolean venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *qu
  */
 gboolean venture_quote_mail_remind(VentureDatabase *database, VentureEntity *quote, VentureEntity *delivery,
 	const gchar *base_url, const gchar *day, const VentureActor *actor, GError **error);
+/**
+ * venture_quote_mail_recipient:
+ * @database: quote's database
+ * @quote: the quote about to be sent
+ * @error: (out) (optional): a customer or contact outside the quote's business
+ *
+ * The address a send would mail: the quote's contact's email, else the
+ * customer's. %NULL with no error when neither has one, so a page can
+ * refuse "Send" before it records a delivery that reaches nobody.
+ *
+ * Returns: (transfer full) (nullable): the address
+ */
+gchar *venture_quote_mail_recipient(VentureDatabase *database, VentureEntity *quote, GError **error);
 #endif

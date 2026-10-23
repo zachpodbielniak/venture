@@ -8,6 +8,11 @@ The =orgaccess= module requires =core= and is on by default. It declares
 An organization membership names a user and a role and can be deactivated.
 There is one membership per user and organization, including inactive and
 soft-deleted rows. Reactivate the existing membership when access resumes.
+Adding a user on the Users page also gives them a membership in the active
+organization with the role of the same name (owner, admin, editor, viewer); a
+service account gets none. The membership and team-membership forms name
+users by display name, else username; other pickers keep the generic label,
+since a username is a sign-in name roles below admin are not shown.
 A team belongs to one organization; a user can belong to several teams.
 
 Companies, contacts, deals, tickets and ventures carry =owner_user_id= and

@@ -31,6 +31,7 @@ off by default. A module nobody configures is on.
 | `finance` | sales | [books](data-model-books.md) |
 | `ledger` | finance | [books](data-model-books.md) |
 | `crm` | core | [crm](data-model-crm.md) |
+| `jobs` | crm | [crm](data-model-crm.md), [jobs workflow](jobs.md) |
 | `invoicing` | finance, crm, ledger | [revenue](data-model-revenue.md) |
 | `receivables` | finance, invoicing | [revenue](data-model-revenue.md) |
 | `outreach` | sales | [crm](data-model-crm.md) |

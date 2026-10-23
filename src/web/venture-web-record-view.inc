@@ -1127,10 +1127,16 @@ venture_web_append_list_cell(
 	VentureFieldKind kind;
 
 	kind = venture_field_spec_get_kind(spec);
+	g_string_append(html, "<td data-label=\"");
+	venture_html_escape_append(html, venture_field_spec_get_label(spec));
+	g_string_append(html, "\"");
+	if (VENTURE_FIELD_KIND_MONEY == kind || VENTURE_FIELD_KIND_INTEGER == kind ||
+	    VENTURE_FIELD_KIND_DOUBLE == kind)
+		g_string_append(html, " class=\"num\"");
+	g_string_append(html, ">");
 
 	if (VENTURE_FIELD_ROLE_STATUS == venture_field_spec_get_role(spec))
 	{
-		g_string_append(html, "<td>");
 		venture_web_append_status_badge(html, record, spec);
 		g_string_append(html, "</td>");
 		return;
@@ -1138,8 +1144,7 @@ venture_web_append_list_cell(
 
 	if (venture_web_value_is_empty(record, spec))
 	{
-		g_string_append(html, (VENTURE_FIELD_KIND_MONEY == kind)
-			? "<td class=\"num\"></td>" : "<td></td>");
+		g_string_append(html, "</td>");
 		return;
 	}
 
@@ -1147,7 +1152,6 @@ venture_web_append_list_cell(
 	    (VENTURE_FIELD_KIND_INTEGER == kind) ||
 	    (VENTURE_FIELD_KIND_DOUBLE == kind))
 	{
-		g_string_append(html, "<td class=\"num\">");
 		venture_web_append_value(self, html, record, spec);
 		g_string_append(html, "</td>");
 		return;
@@ -1164,7 +1168,7 @@ venture_web_append_list_cell(
 		                         &value);
 		text = venture_time_to_date_string(g_value_get_boxed(&value),
 			venture_context_get_timezone(self->context));
-		g_string_append(html, "<td><time>");
+		g_string_append(html, "<time>");
 		venture_html_escape_append(html, (NULL != text) ? text : "");
 		g_string_append(html, "</time></td>");
 		return;
@@ -1185,13 +1189,11 @@ venture_web_append_list_cell(
 		 * is a page, and a truncated URI can still carry the password. */
 		shown = venture_string_redact_uri(g_value_get_string(&value));
 		text = venture_truncate(shown, 60);
-		g_string_append(html, "<td>");
 		venture_html_escape_append(html, text);
 		g_string_append(html, "</td>");
 		return;
 	}
 
-	g_string_append(html, "<td>");
 	venture_web_append_value(self, html, record, spec);
 	g_string_append(html, "</td>");
 }

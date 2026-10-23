@@ -89,6 +89,57 @@ venture_activity_service_init(VentureActivityService *self)
 	(void)self;
 }
 
+/*
+ * The owner is typed, and matched exactly wherever a person's own list is
+ * drawn: "Mike" for the user "mike" was a job on nobody's day. A name that
+ * is a user's username or display name, in any case and with stray spaces,
+ * is stored as that username. Anything else is kept as typed.
+ */
+static void
+canonical_owner(VentureDatabase *db, VentureEntity *row)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) users = NULL;
+	g_autofree gchar *owner = NULL;
+	guint i;
+	g_autofree gchar *username_hit = NULL;
+	g_autofree gchar *display_hit = NULL;
+	guint username_count = 0, display_count = 0;
+	g_object_get(row, "owner", &owner, NULL);
+	if (venture_string_is_empty(owner)) return;
+	g_strstrip(owner);
+	query = venture_query_new(VENTURE_TYPE_USER);
+	venture_query_set_limit(query, 0);
+	users = venture_database_find(db, query, NULL);
+	/* A username match wins only when it is the only one. A display name
+	 * is used only when no username matched and exactly one person has it.
+	 * Two people named "Mike" stay as typed, on nobody's day by accident. */
+	for (i = 0; users != NULL && i < users->len; i++)
+	{
+		g_autofree gchar *username = NULL, *display = NULL;
+		g_object_get(g_ptr_array_index(users, i), "username", &username, "display-name", &display, NULL);
+		if (username == NULL) continue;
+		if (g_ascii_strcasecmp(owner, username) == 0)
+		{
+			username_count++;
+			g_free(username_hit);
+			username_hit = g_strdup(username);
+		}
+		else if (!venture_string_is_empty(display) && g_ascii_strcasecmp(owner, display) == 0)
+		{
+			display_count++;
+			g_free(display_hit);
+			display_hit = g_strdup(username);
+		}
+	}
+	if (username_count == 1)
+		g_object_set(row, "owner", username_hit, NULL);
+	else if (username_count == 0 && display_count == 1)
+		g_object_set(row, "owner", display_hit, NULL);
+	else
+		g_object_set(row, "owner", owner, NULL);
+}
+
 static gboolean
 validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
 {
@@ -109,6 +160,7 @@ validate(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpoin
 	/* Consume before any callback can borrow the authority. */
 	if (permitted)
 		self->writing = NULL;
+	canonical_owner(db, row);
 	g_object_get(row, "status", &status, "completed-at", &completed, "reminded-at", &reminded,
 		"starts-at", &starts, "ends-at", &ends, "due-at", &due, "recurrence", &recurrence,
 		"related-type", &related, "related-id", &related_id, NULL);

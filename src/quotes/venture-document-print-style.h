@@ -16,4 +16,11 @@
 		"text-transform:uppercase;letter-spacing:0.06em}" \
 		".terms{color:#555;font-size:13px;margin-top:24px;" \
 		"white-space:pre-wrap}" \
+		".parties{display:flex;flex-wrap:wrap;gap:16px 40px;" \
+		"justify-content:space-between;margin:0 0 20px}" \
+		".party{white-space:pre-line}" \
+		".table-wrap{overflow-x:auto}" \
+		".sign{margin-top:40px;display:flex;flex-wrap:wrap;gap:24px}" \
+		".sign span{flex:1;min-width:200px;border-top:1px solid #999;" \
+		"padding-top:4px;color:#555;font-size:13px}" \
 		"@media print{body{margin:0 auto}}"

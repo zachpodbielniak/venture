@@ -159,6 +159,19 @@ browser-bound authorization response. These routes are opt-in through
 `hosted.identity_browser_client`, use the signup identity link and never
 create accounts. Owners follow record links or **Continue with Lightsite**.
 
+## Home-services visits
+
+| Route | Purpose | venturectl |
+|---|---|---|
+| `POST /job/:id/actions/assign` | assign technician (`user_id`, `lead`) | `act job ID assign` |
+| `POST /job/:id/actions/on_the_way` / `arrive` / `complete` / `invoiced` / `cancel` | job transitions; invoiced accepts optional `invoice_id` | `act job ID ACTION` |
+| `POST /maintenance_plan/:id/actions/book` | book visit and advance due date | `act maintenance_plan ID book` |
+| `GET /jobs/day?date=YYYY-MM-DD&tech=ID` (root web route) | ordered technician day; `tech=all` or current user by default | generic job queries |
+| `GET /jobs/visits` (root web route) | visits due within thirty days or overdue | generic maintenance-plan queries |
+
+All five jobs types use generic CRUD and schemas; no separate CLI verbs.
+See [jobs.md](jobs.md).
+
 ## Late fees
 
 | Route | Auth | Notes |

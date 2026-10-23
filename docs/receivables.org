@@ -33,8 +33,14 @@ Posting uses mapped cash, receivables, income and tax control accounts; see [[fi
 =VentureSettlementService= owns every financial invoice transition. A
 generic write to =payment= reaches it through =venture_database_save()=,
 so a form, REST request, =venturectl create payment= and an approved AI
-write all perform the same transaction. The invoice page's Pay action
-records a manual receipt for the remaining balance through that service.
+write all perform the same transaction. The invoice page's Record payment link opens the ordinary receipt form
+with the invoice, customer, outstanding balance and today's date filled in.
+New payment and refund forms start at midnight of the current business day
+in the configured time zone. Editing a saved receipt preserves its stored
+instant and displays that instant in the business zone.
+Review or change the amount, date and method (cash, check, card, transfer
+or manual), then Save to record money already received. This does not
+charge a card. The older status action remains compatible for API clients.
 Setting =status=paid= directly is refused with a validation error naming
 =VentureSettlementService=.
 
@@ -75,7 +81,7 @@ fund an allocation in an earlier statement.
 
 * Lifecycle and extensions
 
-Create a draft, add lines, then send it. Sending freezes its amount, due date, and per-line income, discount, shipping
+Create a draft, add lines, then send it. A draft that has never been dated takes thirty days from the issue date when it is first sent, so an estimate billed after the work ages once that invoice is sent. A draft that already has an issue date and no due date stays undated, including =due_days= of zero. An opening invoice keeps the date its migration recorded, including none. Sending freezes its amount, due date, and per-line income, discount, shipping
 and tax allocations in an issue event. The state is =sent= before allocation,
 =partially_paid= after a partial allocation, and =paid= at zero balance.
 A refund derives the state again. Void is allowed for an unpaid invoice;
@@ -247,6 +253,15 @@ Omitted dates in the invoice status buttons and payables action/workbench surfac
 
 ** Printable document layout
 
+The printed invoice and quote say who they are from and who they are for: the
+business's name, legal name when it differs, address, phone, email and website
+from its organization record, and the customer's name, address and phone
+("Billed to", "Prepared for"). Empty fields are left out. The invoice shows a
+status only when it is paid or void, and a printed draft or sent quote ends
+with a line to sign and date. The line table scrolls inside its own box on a
+narrow screen. The customer's public quote page names the customer but does
+not repeat their contact details.
+
 Invoice descriptions, payment terms and receipt allocation references continue
 onto additional PDF pages when needed; a long item is never clipped at the
 bottom of the sheet. Monetary columns reserve their own width and reduce the
@@ -257,3 +272,12 @@ characters in invoice numbers, keeping the HTTP filename a single value.
 Shipping is shown separately and included in the printable invoice total. Draft
 and void invoices never claim to have been paid merely because they have no
 receivable balance.
+
+* Receipts on the invoice
+
+Payments received remain visible after full settlement, with their method,
+reference and a link to the receipt. Record refund opens the ordinary refund
+form for that allocation; enter the amount returned and review the date.
+It reopens that amount on the invoice through the settlement service.
+Receipts are immutable: a refund records returned cash, not an erasure of
+the original receipt.
