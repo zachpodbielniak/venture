@@ -165,7 +165,9 @@ Provisioning still uses the unchanged =/api/v1/account-identity/:id= contract.
 (Lightsite daemon #60). Lightsite has already created the person's
 identity-provider account and confirmed their email; Venture links or
 creates the matching local user, creates a business they own and returns its
-account reference. It is the only API path that creates a hosted identity or
+account reference. The business gets the same starter chart of accounts a new
+install's default business gets, in the same transaction, so the owner's first
+accepted quote can post its invoice without anyone adding accounts first. It is the only API path that creates a hosted identity or
 organization, and it is a narrow, separately authorized operation in the
 tenant service. Generic user and organization creation rules are unchanged:
 the generic API still refuses to create users in a hosted workspace and only

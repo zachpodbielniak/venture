@@ -789,6 +789,60 @@ test_required_names(Fixture *f, gconstpointer data)
 	}
 }
 
+/* A new business can take money the day it is made: a sent quote the
+ * customer accepts becomes an issued invoice without anyone first adding a
+ * chart of accounts. Without the starter chart, acceptance refused with
+ * "Configure the cash, receivable and income accounts" and the quote stayed
+ * Sent. */
+static void
+test_business_takes_money(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *payload = body_for("signup:books-1", "books.owner@example.test", "kc-sub-books", "Example Books");
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureEntity) company = NULL, quote = NULL, line = NULL, request = NULL, accepted = NULL;
+	g_autoptr(VentureQuery) invoices = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *classes[] = { "cash", "receivables", "income" };
+	gint64 business;
+	gint status = 0;
+	guint i;
+	(void)data;
+	result = signup(f, payload, 201);
+	business = json_object_get_int_member(json_node_get_object(result), "organization_id");
+	internal = venture_access_policy_enter(venture_database_get_access_policy(f->db), NULL);
+	for (i = 0; i < G_N_ELEMENTS(classes); i++) {
+		g_assert_cmpint(venture_setup_resolve_account(f->db, business, classes[i], "organization", 0, NULL, &error), >, 0);
+		g_assert_no_error(error);
+	}
+	company = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", business, "name", "Example Customer",
+		"email", "customer@example.test", NULL);
+	g_assert_true(venture_database_save(f->db, company, NULL, &error)); g_assert_no_error(error);
+	quote = g_object_new(VENTURE_TYPE_QUOTE, "organization-id", business, "number", "Q-BOOKS",
+		"company-id", venture_entity_get_id(company), "currency", "USD", NULL);
+	g_assert_true(venture_database_save(f->db, quote, NULL, &error)); g_assert_no_error(error);
+	line = g_object_new(VENTURE_TYPE_QUOTE_LINE, "organization-id", business, "quote-id", venture_entity_get_id(quote),
+		"description", "Example service", "quantity", (gint64)1, NULL);
+	g_assert_true(venture_entity_set_field_from_string(line, "unit-price", "100.00 USD", &error)); g_assert_no_error(error);
+	g_assert_true(venture_database_save(f->db, line, NULL, &error)); g_assert_no_error(error);
+	for (i = 0; i < 2; i++) {
+		g_autoptr(VentureEntity) fresh = venture_database_get(f->db, VENTURE_TYPE_QUOTE, venture_entity_get_id(quote), &error);
+		g_assert_no_error(error);
+		g_clear_object(&request);
+		request = g_object_new(VENTURE_TYPE_QUOTE_ACTION, "organization-id", business, "quote-id", venture_entity_get_id(fresh),
+			"expected-version", venture_entity_get_version(fresh), "action", i ? "accept" : "send", "accepted-by", "Example Customer", NULL);
+		{ gboolean saved = venture_database_save(f->db, request, NULL, &error); g_assert_no_error(error); g_assert_true(saved); }
+	}
+	accepted = venture_database_get(f->db, VENTURE_TYPE_QUOTE, venture_entity_get_id(quote), &error);
+	g_assert_no_error(error);
+	g_object_get(accepted, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_QUOTE_ACCEPTED);
+	invoices = venture_query_new(VENTURE_TYPE_INVOICE);
+	venture_query_set_organization(invoices, business);
+	g_assert_cmpint(venture_database_count(f->db, invoices, &error), ==, 1);
+	g_assert_no_error(error);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -796,6 +850,7 @@ main(int argc, char **argv)
 	g_test_add("/signup/person-names", Fixture, NULL, setup, test_person_names, teardown);
 	g_test_add("/signup/required-names", Fixture, NULL, setup, test_required_names, teardown);
 	g_test_add("/lightsite-signup/creates-owner", Fixture, NULL, setup, test_creates_owner, teardown);
+	g_test_add("/lightsite-signup/business-takes-money", Fixture, NULL, setup, test_business_takes_money, teardown);
 	g_test_add("/lightsite-signup/links-existing", Fixture, NULL, setup, test_links_existing, teardown);
 	g_test_add("/lightsite-signup/replay", Fixture, NULL, setup, test_replay, teardown);
 	g_test_add("/lightsite-signup/refuses-unavailable-identity", Fixture, NULL, setup, test_refuses_unavailable_identity, teardown);
