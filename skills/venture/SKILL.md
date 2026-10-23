@@ -114,10 +114,10 @@ Late fees (module `late_fees`, report `late_fees`, `/late-fees`) and
 home-services jobs are both in this baseline. The full inventory remains
 `9c97a87a`.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-23 against COMBINEDBASE -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 1be4e0c0 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=COMBINEDBASE
+base=1be4e0c0
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -131,7 +131,7 @@ answer from them, and say the skill is behind. A newer server may have
 types, verbs or reports this skill has never heard of; an older one may lack
 some it describes.
 
-Home-services coverage was updated against `COMBINEDBASE` (2026-10-23): jobs
+Home-services coverage was updated against `1be4e0c0` (2026-10-23): jobs
 types, actions, day and visit routes, atomic refusals, datetime editing,
 draft-only posting approval, business-midnight receipt dates, and the
 saved-bank confirmation pin. The full-system baseline above remains the
@@ -476,6 +476,6 @@ vendor="Hosting Co"` and check `get expense ID`.
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
 - This skill includes late fees and home-services updates through
-  `COMBINEDBASE`; the full-system inventory remains `9c97a87a`. When the
+  `1be4e0c0`; the full-system inventory remains `9c97a87a`. When the
   live server disagrees, trust the server's generated answers and say the
   skill is behind.
