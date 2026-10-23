@@ -1946,8 +1946,7 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/worklist", "/customers/duplicates", "/conversations",
-	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates",
+	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
 	NULL
 };
 

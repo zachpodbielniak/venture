@@ -525,7 +525,9 @@ test_quote_address_upgrade(Fixture *f, gconstpointer data)
 	(void)data;
 	g_assert_true(venture_database_execute(f->db,
 		"ALTER TABLE quotes DROP COLUMN service_address;"
-		"DELETE FROM schema_migrations WHERE version = 943", NULL, &error));
+		/* Every version from 943 on, as the other upgrade tests do: a
+		 * later migration left recorded would make 943 out of order. */
+		"DELETE FROM schema_migrations WHERE version >= 943", NULL, &error));
 	g_assert_no_error(error);
 	/* Existing tables must gain the column even while quotes are hidden. */
 	venture_entity_registry_set_type_module(venture_entity_registry_get_default(), "quote", "quotes", FALSE);
