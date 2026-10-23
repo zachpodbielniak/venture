@@ -403,10 +403,15 @@ in_period(VentureDateRange *period, GDateTime *at)
 	return (start == NULL || g_date_time_compare(at, start) >= 0) && (end == NULL || g_date_time_compare(at, end) < 0);
 }
 
-static void
-bump(VentureMoney **total, const VentureMoney *amount)
+static gboolean
+bump(VentureMoney **total, const VentureMoney *amount, GError **error)
 {
-	(*total)->amount += amount->amount;
+	VentureMoney *next = venture_money_add(*total, amount, error);
+	if (next == NULL)
+		return FALSE;
+	venture_money_free(*total);
+	*total = next;
+	return TRUE;
 }
 
 static VentureReportResult *
@@ -427,10 +432,19 @@ late_fees_report(VentureContext *context, VentureDateRange *period, JsonObject *
 	query = venture_query_new(VENTURE_TYPE_LATE_FEE);
 	venture_query_set_organization(query, org);
 	venture_query_set_include_deleted(query, TRUE);
-	venture_query_set_limit(query, venture_aggregate_get_max_rows());
+	/* One past the bound, so a truncated total is refused rather than shown. */
+	venture_query_set_limit(query, (guint)venture_aggregate_get_max_rows() + 1);
+	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+		return NULL;
 	rows = venture_database_find(db, query, error);
 	if (rows == NULL)
 		return NULL;
+	if (rows->len > (guint)venture_aggregate_get_max_rows())
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"More than %d late fees match; narrow the period", venture_aggregate_get_max_rows());
+		return NULL;
+	}
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *fee = g_ptr_array_index(rows, i);
@@ -459,24 +473,27 @@ late_fees_report(VentureContext *context, VentureDateRange *period, JsonObject *
 			if (in_period(period, due_on))
 			{
 				t->applied_count++;
-				bump(&t->applied, amount);
+				if (!bump(&t->applied, amount, error))
+					return NULL;
 			}
 			if (g_strcmp0(status, "waived") == 0 && in_period(period, decided))
 			{
 				t->waived_count++;
-				bump(&t->waived, amount);
+				if (!bump(&t->waived, amount, error))
+					return NULL;
 			}
 			if (g_strcmp0(status, "applied") == 0)
 			{
 				/* Collected once the invoice carrying it is paid in full. */
 				g_autoptr(VentureEntity) invoice = venture_database_get(db, VENTURE_TYPE_INVOICE, number(fee, "invoice-id"), NULL);
 				g_autoptr(GDateTime) paid = invoice != NULL ? when(invoice, "paid-at") : NULL;
-				if (paid != NULL && in_period(period, paid))
-					bump(&t->collected, amount);
+				if (paid != NULL && in_period(period, paid) && !bump(&t->collected, amount, error))
+					return NULL;
 			}
 		}
-		else if ((g_strcmp0(status, "proposed") == 0 || g_strcmp0(status, "awaiting_notice") == 0) && in_period(period, due_on))
-			bump(&t->pending, amount);
+		else if ((g_strcmp0(status, "proposed") == 0 || g_strcmp0(status, "awaiting_notice") == 0) && in_period(period, due_on) &&
+			!bump(&t->pending, amount, error))
+			return NULL;
 	}
 	result = venture_report_result_new("Late fees", period);
 	venture_report_result_add_column(result, "currency", "Currency", VENTURE_REPORT_COLUMN_TEXT);

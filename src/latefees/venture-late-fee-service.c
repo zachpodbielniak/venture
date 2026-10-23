@@ -418,9 +418,11 @@ parse_tiers(const gchar *json, GError **error)
 			refuse(error, "day is a whole number of days late, written as a JSON integer");
 			return NULL;
 		}
-		if (json_object_has_member(o, "every") && (!json_int(o, "every", &t->every) || t->every < 1))
+		/* A step past the timeline cannot be added without wrapping the day
+		 * counter, which would spin the preview and the sweep. */
+		if (json_object_has_member(o, "every") && (!json_int(o, "every", &t->every) || t->every < 1 || t->every > LF_MAX_DAY))
 		{
-			refuse(error, "every is a whole number of days, at least 1");
+			refuse(error, "every is a whole number of days, from 1 to 365");
 			return NULL;
 		}
 		if (json_object_has_member(o, "after") && (!json_int(o, "after", &after) || after < 0))
@@ -1042,7 +1044,7 @@ occurrences(Case *c)
 		const Tier *t = g_ptr_array_index(c->tiers, i);
 		gint64 day;
 		gint64 n = 0;
-		for (day = t->day; day <= LF_MAX_DAY; day += t->every)
+		for (day = t->day; day <= LF_MAX_DAY;)
 		{
 			Occurrence o;
 			if (t->times > 0 && n >= t->times)
@@ -1055,8 +1057,10 @@ occurrences(Case *c)
 				o.key = occurrence_key(c, t, day);
 				g_array_append_val(out, o);
 			}
-			if (t->every <= 0)
+			/* Stop before the add would pass 365 or wrap a huge step. */
+			if (t->every <= 0 || day > LF_MAX_DAY - t->every)
 				break;
+			day += t->every;
 		}
 	}
 	g_array_sort(out, occurrence_compare);
@@ -1078,8 +1082,34 @@ typedef struct
 	GHashTable *per_tier;
 } Running;
 
-static void
-running_init(Running *r, Case *c)
+/* Checked add. A wrapped negative total would make a cap look unused. */
+static gboolean
+add_committed(VentureMoney **slot, gint64 amount, GError **error)
+{
+	g_autoptr(VentureMoney) extra = NULL;
+	VentureMoney *next;
+	if (amount == 0)
+		return TRUE;
+	extra = venture_money_new(amount, venture_money_get_currency(*slot), venture_money_get_exponent(*slot));
+	next = venture_money_add(*slot, extra, error);
+	if (next == NULL)
+		return FALSE;
+	venture_money_free(*slot);
+	*slot = next;
+	return TRUE;
+}
+
+static gboolean
+add_checked(gint64 *slot, gint64 amount, GError **error)
+{
+	if ((amount > 0 && *slot > G_MAXINT64 - amount) || (amount < 0 && *slot < G_MININT64 - amount))
+		return refuse(error, "a late-fee total overflowed");
+	*slot += amount;
+	return TRUE;
+}
+
+static gboolean
+running_init(Running *r, Case *c, GError **error)
 {
 	guint i;
 	r->committed = zero_like(c->original);
@@ -1088,9 +1118,11 @@ running_init(Running *r, Case *c)
 	{
 		VentureEntity *fee = g_ptr_array_index(c->fees, i);
 		g_autoptr(VentureMoney) amount = money(fee, "amount");
-		if (commits(fee) && same_currency(amount, r->committed))
-			r->committed->amount += minor_of(amount);
+		if (commits(fee) && same_currency(amount, r->committed) &&
+			!add_committed(&r->committed, minor_of(amount), error))
+			return FALSE;
 	}
+	return TRUE;
 }
 
 static void
@@ -1101,7 +1133,7 @@ running_clear(Running *r)
 }
 
 static gint64 *
-tier_slot(Running *r, Case *c, const Tier *t)
+tier_slot(Running *r, Case *c, const Tier *t, GError **error)
 {
 	gint64 *slot = g_hash_table_lookup(r->per_tier, t);
 	guint i;
@@ -1112,29 +1144,35 @@ tier_slot(Running *r, Case *c, const Tier *t)
 			"/%" G_GINT64_FORMAT ":%s:", venture_entity_get_id(c->invoice), venture_entity_get_id(c->schedule), t->day, t->every,
 			fee_type_names[t->type]);
 		slot = g_new0(gint64, 1);
+		g_hash_table_insert(r->per_tier, (gpointer)t, slot);
 		for (i = 0; c->fees != NULL && i < c->fees->len; i++)
 		{
 			VentureEntity *fee = g_ptr_array_index(c->fees, i);
 			g_autofree gchar *key = text(fee, "occurrence-key");
-			if (commits(fee) && g_str_has_prefix(key, prefix))
-				*slot += minor(fee);
+			if (commits(fee) && g_str_has_prefix(key, prefix) && !add_checked(slot, minor(fee), error))
+				return NULL;
 		}
-		g_hash_table_insert(r->per_tier, (gpointer)t, slot);
 	}
 	return slot;
 }
 
-static gint64
-tier_total(Running *r, Case *c, const Tier *t)
+static gboolean
+tier_total(Running *r, Case *c, const Tier *t, gint64 *out, GError **error)
 {
-	return *tier_slot(r, c, t);
+	gint64 *slot = tier_slot(r, c, t, error);
+	if (slot == NULL)
+		return FALSE;
+	*out = *slot;
+	return TRUE;
 }
 
-static void
-running_add(Running *r, Case *c, const Tier *t, gint64 amount)
+static gboolean
+running_add(Running *r, Case *c, const Tier *t, gint64 amount, GError **error)
 {
-	*tier_slot(r, c, t) += amount;
-	r->committed->amount += amount;
+	gint64 *slot = tier_slot(r, c, t, error);
+	if (slot == NULL || !add_checked(slot, amount, error))
+		return FALSE;
+	return add_committed(&r->committed, amount, error);
 }
 
 /* "1.5", "10", "0.125": parts per million as a person writes a percent. */
@@ -1194,8 +1232,9 @@ occurrence_amount(Case *c, Running *r, const Occurrence *o, gchar **basis, GErro
 	case FEE_MARKUP:
 	default:
 		{
-			g_autoptr(VentureMoney) outstanding = venture_money_new(minor_of(c->principal) + minor_of(r->committed),
-				venture_money_get_currency(c->principal), venture_money_get_exponent(c->principal));
+			g_autoptr(VentureMoney) outstanding = venture_money_add(c->principal, r->committed, error);
+			if (outstanding == NULL)
+				return -1;
 			raw = percent_of(outstanding, t->ppm, t->round, error);
 		}
 		break;
@@ -1206,7 +1245,12 @@ occurrence_amount(Case *c, Running *r, const Occurrence *o, gchar **basis, GErro
 	if (basis != NULL)
 		*basis = tier_basis(t);
 	if (t->cap != NULL)
-		fee = MIN(fee, MAX(0, minor_of(t->cap) - tier_total(r, c, t)));
+	{
+		gint64 so_far = 0;
+		if (!tier_total(r, c, t, &so_far, error))
+			return -1;
+		fee = MIN(fee, MAX(0, minor_of(t->cap) - so_far));
+	}
 	if (max_total != NULL && same_currency(max_total, c->original))
 		fee = MIN(fee, MAX(0, minor_of(max_total) - minor_of(r->committed)));
 	if (!venture_string_is_empty(max_percent))
@@ -1345,7 +1389,11 @@ venture_late_fee_service_preview(VentureLateFeeService *self, gint64 invoice_id,
 	{
 		g_autoptr(VentureMoney) minimum = money(c.schedule, "minimum-balance");
 		occ = occurrences(&c);
-		running_init(&r, &c);
+		if (!running_init(&r, &c, error))
+		{
+			running_clear(&r);
+			return NULL;
+		}
 		for (i = 0; i < occ->len; i++)
 		{
 			const Occurrence *o = &g_array_index(occ, Occurrence, i);
@@ -1374,8 +1422,12 @@ venture_late_fee_service_preview(VentureLateFeeService *self, gint64 invoice_id,
 				 * exactly as it will when charged; applied and proposed ones
 				 * are already in the running total. Leaving it out is how a
 				 * preview showed 115.00 of fees under a 100.00 cap. */
-				if ((status_is(fee, ST_SCHEDULED) || status_is(fee, ST_AWAITING)) && amount != NULL)
-					running_add(&r, &c, o->tier, minor_of(amount));
+				if ((status_is(fee, ST_SCHEDULED) || status_is(fee, ST_AWAITING)) && amount != NULL &&
+					!running_add(&r, &c, o->tier, minor_of(amount), error))
+				{
+					running_clear(&r);
+					return NULL;
+				}
 			}
 			else if (o->day < c.start_day)
 			{
@@ -1393,7 +1445,10 @@ venture_late_fee_service_preview(VentureLateFeeService *self, gint64 invoice_id,
 			{
 				fee_minor = occurrence_amount(&c, &r, o, &basis, error);
 				if (fee_minor < 0)
+				{
+					running_clear(&r);
 					return NULL;
+				}
 				amount = fee_money(&c, fee_minor);
 				if (fee_minor == 0)
 				{
@@ -1403,7 +1458,11 @@ venture_late_fee_service_preview(VentureLateFeeService *self, gint64 invoice_id,
 				else
 				{
 					status = g_strdup(o->day <= c.days ? "due" : "upcoming");
-					running_add(&r, &c, o->tier, fee_minor);
+					if (!running_add(&r, &c, o->tier, fee_minor, error))
+					{
+						running_clear(&r);
+						return NULL;
+					}
 				}
 			}
 			json_builder_begin_object(b);
@@ -1470,7 +1529,11 @@ next_fee(VentureLateFeeService *self, Case *c, GDateTime *at, const Occurrence *
 	if (minimum != NULL && same_currency(minimum, c->principal) && minor_of(c->principal) < minor_of(minimum))
 		return FALSE;
 	*keep = occurrences(c);
-	running_init(&r, c);
+	if (!running_init(&r, c, NULL))
+	{
+		running_clear(&r);
+		return FALSE;
+	}
 	for (i = 0; i < (*keep)->len; i++)
 	{
 		const Occurrence *o = &g_array_index(*keep, Occurrence, i);
@@ -1483,7 +1546,12 @@ next_fee(VentureLateFeeService *self, Case *c, GDateTime *at, const Occurrence *
 		if (condition_fails(self, c, o->tier, at) != NULL)
 			continue;
 		value = occurrence_amount(c, &r, o, NULL, NULL);
-		if (value <= 0)
+		if (value < 0)
+		{
+			running_clear(&r);
+			return FALSE;
+		}
+		if (value == 0)
 			continue;
 		*found = o;
 		*amount = value;
@@ -1626,27 +1694,58 @@ fresh(VentureLateFeeService *self, VentureEntity *fee, GError **error)
 	return row;
 }
 
+/* Consent owns the outer transaction. Settlement then nests, so a named
+ * actor under a post or pay rule approves the fee and its row together.
+ * Beginning the business transaction first makes that rule refuse. */
+static gboolean
+consent_open(VentureLateFeeService *self, const gchar *name, VentureEntity *fee, GVariant *arguments,
+	const VentureActor *actor, VentureAccountingOperation **operation, GError **error)
+{
+	*operation = venture_accounting_operation_begin(self->database, name, fee, NULL, arguments,
+		venture_entity_get_organization_id(fee), actor, error);
+	if (*operation == NULL)
+		return FALSE;
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	return TRUE;
+}
+
+static gboolean
+consent_finish(VentureDatabase *database, VentureAccountingOperation *operation, gboolean ok, GError **error)
+{
+	if (!ok)
+	{
+		venture_database_rollback(database);
+		return FALSE;
+	}
+	if (!venture_database_commit(database, error))
+		return FALSE;
+	return venture_accounting_operation_finish(operation, error);
+}
+
 static gboolean
 apply_fee(VentureLateFeeService *self, VentureEntity *fee, GDateTime *date, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureMoney) amount = money(fee, "amount");
 	g_autoptr(VentureEntity) event = NULL;
 	g_autoptr(GDateTime) chosen = date != NULL ? g_date_time_ref(date) : adjustment_date(self, fee);
-	if (!venture_database_begin(self->database, error))
+	g_autoptr(VentureAccountingOperation) operation = NULL;
+	g_autofree gchar *amount_text = amount != NULL ? venture_money_to_string(amount) : g_strdup("");
+	g_autofree gchar *when = chosen != NULL ? g_date_time_format_iso8601(chosen) : NULL;
+	gboolean ok;
+	if (!consent_open(self, "late_fees.apply", fee, g_variant_new("(ss)", amount_text, when != NULL ? when : ""),
+		actor, &operation, error))
 		return FALSE;
 	event = venture_settlement_service_add_late_fee(venture_settlement_service_get(self->database),
 		number(fee, "invoice-id"), amount, chosen, actor, error);
-	if (event != NULL)
+	ok = event != NULL;
+	if (ok)
 	{
 		g_object_set(fee, "status", ST_APPLIED, "invoice-event-id", venture_entity_get_id(event), NULL);
 		stamp(fee, actor);
+		ok = save_fee(self, fee, actor, error);
 	}
-	if (event == NULL || !save_fee(self, fee, actor, error))
-	{
-		venture_database_rollback(self->database);
-		return FALSE;
-	}
-	return venture_database_commit(self->database, error);
+	return consent_finish(self->database, operation, ok, error);
 }
 
 /* Whether this fee may still be added today: late fees on and unpaused,
@@ -1671,6 +1770,40 @@ may_charge(VentureLateFeeService *self, VentureEntity *fee, GError **error)
 	return TRUE;
 }
 
+static gboolean
+key_current(GArray *occ, const gchar *key)
+{
+	guint i;
+	if (key == NULL || occ == NULL)
+		return FALSE;
+	for (i = 0; i < occ->len; i++)
+		if (g_strcmp0(g_array_index(occ, Occurrence, i).key, key) == 0)
+			return TRUE;
+	return FALSE;
+}
+
+/* A tier edited off the same schedule must not stay chargeable. The key
+ * names the trigger, so a removed tier no longer produces it. */
+static gboolean
+occurrence_live(VentureLateFeeService *self, VentureEntity *fee, GError **error)
+{
+	g_auto(Case) c;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GArray) occ = NULL;
+	g_autofree gchar *key = text(fee, "occurrence-key");
+	memset(&c, 0, sizeof(c));
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, number(fee, "invoice-id"), error);
+	if (invoice == NULL || !case_open(self, &c, invoice, now, error))
+		return FALSE;
+	if (c.schedule == NULL || number(fee, "schedule-id") != venture_entity_get_id(c.schedule))
+		return refuse(error, "this fee's schedule no longer governs the invoice");
+	occ = occurrences(&c);
+	if (!key_current(occ, key))
+		return refuse(error, "this fee's tier is no longer on the schedule");
+	return TRUE;
+}
+
 gboolean
 venture_late_fee_service_approve(VentureLateFeeService *self, VentureEntity *fee, GDateTime *date,
 	const VentureActor *actor, GError **error)
@@ -1682,6 +1815,8 @@ venture_late_fee_service_approve(VentureLateFeeService *self, VentureEntity *fee
 		return FALSE;
 	if (!status_is(row, ST_PROPOSED))
 		return refuse(error, "only a proposed fee can be approved");
+	if (!occurrence_live(self, row, error))
+		return FALSE;
 	if (!may_charge(self, row, error) || !apply_fee(self, row, date, actor, error))
 		return FALSE;
 	if (fee != row)
@@ -1760,48 +1895,48 @@ venture_late_fee_service_waive(VentureLateFeeService *self, VentureEntity *fee, 
 	if (!status_is(row, ST_APPLIED) || number(row, "invoice-event-id") <= 0)
 		return refuse(error, "only an applied fee can be waived");
 	today = date != NULL ? g_date_time_ref(date) : venture_settlement_service_today(venture_settlement_service_get(self->database));
-	if (!venture_database_begin(self->database, error))
-		return FALSE;
-	credit = venture_settlement_service_waive_late_fee(venture_settlement_service_get(self->database),
-		number(row, "invoice-event-id"), today, reason, actor, error);
-	if (credit != NULL)
 	{
-		g_object_set(row, "status", ST_WAIVED, "reason", reason, "waiver-credit-id", venture_entity_get_id(credit),
-			"note", venture_string_is_empty(note) ? NULL : note, NULL);
-		stamp(row, actor);
-	}
-	if (credit == NULL || !save_fee(self, row, actor, error))
-	{
-		venture_database_rollback(self->database);
-		return FALSE;
-	}
-	/* The note goes through the outbox, keyed by the fee: approving the
-	 * waiver twice cannot mail the customer twice. */
-	if (!venture_string_is_empty(note) &&
-		venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message") != G_TYPE_INVALID)
-	{
-		g_autoptr(VentureEntity) invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, number(row, "invoice-id"), NULL);
-		g_autofree gchar *to = invoice != NULL ? recipient(self, invoice) : NULL;
-		if (to != NULL)
+		g_autoptr(VentureAccountingOperation) operation = NULL;
+		g_autofree gchar *when = today != NULL ? g_date_time_format_iso8601(today) : NULL;
+		gboolean ok;
+		if (!consent_open(self, "late_fees.waive", row, g_variant_new("(ss)", reason, when != NULL ? when : ""),
+			actor, &operation, error))
+			return FALSE;
+		credit = venture_settlement_service_waive_late_fee(venture_settlement_service_get(self->database),
+			number(row, "invoice-event-id"), today, reason, actor, error);
+		ok = credit != NULL;
+		if (ok)
 		{
-			g_autoptr(VentureMailMessage) message = venture_mail_message_new();
-			g_autoptr(VentureMailMessage) queued = NULL;
-			g_autofree gchar *number_text = text(invoice, "number");
-			g_autofree gchar *subject = g_strdup_printf("Late fee removed from invoice %s", number_text ? number_text : "");
-			g_autofree gchar *key = g_strdup_printf("late-fee-waiver:%s", venture_entity_get_uuid(row));
-			venture_entity_set_organization_id(VENTURE_ENTITY(message), venture_entity_get_organization_id(row));
-			g_object_set(message, "to", to, "subject", subject, "text-body", note, "idempotency-key", key,
-				"related-type", "late_fee", "related-id", venture_entity_get_id(row), NULL);
-			queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
-			if (queued == NULL)
+			g_object_set(row, "status", ST_WAIVED, "reason", reason, "waiver-credit-id", venture_entity_get_id(credit),
+				"note", venture_string_is_empty(note) ? NULL : note, NULL);
+			stamp(row, actor);
+			ok = save_fee(self, row, actor, error);
+		}
+		/* The note goes through the outbox, keyed by the fee: approving the
+		 * waiver twice cannot mail the customer twice. It stays in the same
+		 * transaction as the credit, so a failed enqueue posts nothing. */
+		if (ok && !venture_string_is_empty(note) &&
+			venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message") != G_TYPE_INVALID)
+		{
+			g_autoptr(VentureEntity) invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, number(row, "invoice-id"), NULL);
+			g_autofree gchar *to = invoice != NULL ? recipient(self, invoice) : NULL;
+			if (to != NULL)
 			{
-				venture_database_rollback(self->database);
-				return FALSE;
+				g_autoptr(VentureMailMessage) message = venture_mail_message_new();
+				g_autoptr(VentureMailMessage) queued = NULL;
+				g_autofree gchar *number_text = text(invoice, "number");
+				g_autofree gchar *subject = g_strdup_printf("Late fee removed from invoice %s", number_text ? number_text : "");
+				g_autofree gchar *key = g_strdup_printf("late-fee-waiver:%s", venture_entity_get_uuid(row));
+				venture_entity_set_organization_id(VENTURE_ENTITY(message), venture_entity_get_organization_id(row));
+				g_object_set(message, "to", to, "subject", subject, "text-body", note, "idempotency-key", key,
+					"related-type", "late_fee", "related-id", venture_entity_get_id(row), NULL);
+				queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
+				ok = queued != NULL;
 			}
 		}
+		if (!consent_finish(self->database, operation, ok, error))
+			return FALSE;
 	}
-	if (!venture_database_commit(self->database, error))
-		return FALSE;
 	if (fee != row)
 		venture_entity_copy_properties_from(fee, row, FALSE);
 	return TRUE;
@@ -2066,7 +2201,32 @@ venture_late_fee_service_sweep_invoice(VentureLateFeeService *self, VentureEntit
 	auto_apply = flag(c.settings, "auto-apply");
 	minimum = money(c.schedule, "minimum-balance");
 	occ = occurrences(&c);
-	running_init(&r, &c);
+	/* Same schedule, tier removed: a pending row whose key the schedule
+	 * no longer produces is cancelled, not left for a later approve. */
+	for (i = 0; c.fees != NULL && i < c.fees->len; i++)
+	{
+		VentureEntity *fee = g_ptr_array_index(c.fees, i);
+		g_autofree gchar *key = NULL;
+		if (!pending(fee) || number(fee, "schedule-id") != venture_entity_get_id(c.schedule))
+			continue;
+		key = text(fee, "occurrence-key");
+		if (key_current(occ, key))
+			continue;
+		wrote = TRUE;
+		tally->cancelled++;
+		plan_entry(plan, &c, number(fee, "trigger-day"), "cancel", 0, "tier removed");
+		if (!dry_run)
+		{
+			g_object_set(fee, "status", ST_CANCELLED, "reason", "tier removed", NULL);
+			if (!save_fee(self, fee, actor, error))
+			{
+				venture_database_rollback(self->database);
+				return FALSE;
+			}
+		}
+	}
+	if (!running_init(&r, &c, error))
+		goto fail;
 	for (i = 0; i < occ->len; i++)
 	{
 		const Occurrence *o = &g_array_index(occ, Occurrence, i);
@@ -2148,7 +2308,8 @@ venture_late_fee_service_sweep_invoice(VentureLateFeeService *self, VentureEntit
 		{
 			g_autoptr(VentureMoney) m = fee_money(&c, amount);
 			wrote = TRUE;
-			running_add(&r, &c, o->tier, amount);
+			if (!running_add(&r, &c, o->tier, amount, error))
+				goto fail;
 			if (auto_apply)
 				tally->applied++;
 			else
@@ -2208,14 +2369,25 @@ venture_late_fee_service_sweep_settled(VentureLateFeeService *self, gint64 organ
 		return TRUE;
 	for (s = 0; states[s] != NULL; s++)
 	{
+		gint64 after = 0;
+		for (;;)
+		{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_LATE_FEE);
 		g_autoptr(GPtrArray) rows = NULL;
 		venture_query_set_organization(query, organization_id);
 		venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, states[s], NULL);
+		if (after > 0 && !venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_GT, after, error))
+			return FALSE;
+		if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+			return FALSE;
+		/* Page by id until the status is exhausted. A single unordered
+		 * thousand would leave later settled fees proposed. */
 		venture_query_set_limit(query, 1000);
 		rows = venture_database_find(self->database, query, error);
 		if (rows == NULL)
 			return FALSE;
+		if (rows->len == 0)
+			break;
 		for (i = 0; i < rows->len; i++)
 		{
 			gint64 id = number(g_ptr_array_index(rows, i), "invoice-id");
@@ -2254,6 +2426,10 @@ venture_late_fee_service_sweep_settled(VentureLateFeeService *self, gint64 organ
 				else if (!venture_database_commit(self->database, error))
 					return FALSE;
 			}
+		}
+		after = venture_entity_get_id(g_ptr_array_index(rows, rows->len - 1));
+		if (rows->len < 1000)
+			break;
 		}
 	}
 	return TRUE;

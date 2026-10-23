@@ -1330,6 +1330,139 @@ test_invoice_panel(Fixture *f, gconstpointer unused)
 	venture_test_remove_tree(state_dir);
 }
 
+/* A step wider than the 365-day timeline is refused, and a daily tier
+ * still ends on day 365 instead of spinning. */
+static void
+test_every_bound(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) bad = record(f, "late_fee_schedule");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonArray *entries;
+	(void)unused;
+	g_object_set(bad, "name", "Too wide", "grace-days", (gint64)0,
+		"tiers", "[{\"day\":1,\"every\":400,\"type\":\"flat\",\"amount\":\"1.00 USD\"}]", NULL);
+	g_assert_false(venture_database_save(f->db, bad, NULL, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "365"));
+	enable(f, schedule(f, "Daily",
+		"[{\"day\":1,\"every\":1,\"type\":\"flat\",\"amount\":\"1.00 USD\"}]", 0, NULL, NULL), FALSE);
+	node = preview(f, f->invoice, 1);
+	entries = json_object_get_array_member(json_node_get_object(node), "entries");
+	g_assert_cmpuint(json_array_get_length(entries), <=, 365);
+	g_assert_cmpint(json_object_get_int_member(
+		json_array_get_object_element(entries, json_array_get_length(entries) - 1), "day"), <=, 365);
+}
+
+/* Editing a tier off the same schedule cancels the pending fee and
+ * refuses an approve of the old occurrence. */
+static void
+test_tier_removed(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) fee = NULL;
+	g_autoptr(VentureEntity) schedule_row = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) schedules = NULL;
+	(void)unused;
+	enable(f, schedule(f, "Residential",
+		"[{\"day\":15,\"type\":\"flat\",\"amount\":\"25.00 USD\"},{\"day\":30,\"type\":\"flat\",\"amount\":\"10.00 USD\"}]",
+		14, NULL, NULL), FALSE);
+	days(f, 1, 15);
+	fee = first_fee(f, f->invoice, "proposed");
+	g_assert_nonnull(fee);
+	schedules = rows(f, "late_fee_schedule");
+	g_assert_cmpuint(schedules->len, ==, 1);
+	schedule_row = g_object_ref(g_ptr_array_index(schedules, 0));
+	g_object_set(schedule_row, "tiers", "[{\"day\":40,\"type\":\"flat\",\"amount\":\"25.00 USD\"}]", NULL);
+	save(f, schedule_row);
+	g_assert_false(venture_late_fee_service_approve(venture_late_fee_service_get(f->db), fee, NULL, NULL, &error));
+	g_assert_nonnull(strstr(error->message, "no longer"));
+	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
+	g_clear_error(&error);
+	day(f, 16);
+	g_assert_cmpuint(count_status(f, f->invoice, "cancelled", NULL), >=, 1);
+	g_assert_cmpuint(count_status(f, f->invoice, "proposed", NULL), ==, 0);
+	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
+}
+
+static VentureActor
+named_actor(const gchar *name)
+{
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = name;
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	return actor;
+}
+
+/* A post rule consents to the whole approve or waive, then the second
+ * person posts it. The fee row and the balance move together. */
+static void
+test_post_rule_approve_and_waive(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureAccountingApprovalRule) rule = venture_accounting_approval_rule_new();
+	g_autoptr(VentureEntity) fee = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureActor alice, bob;
+	(void)unused;
+	alice = named_actor("alice");
+	bob = named_actor("bob");
+	enable(f, schedule(f, "Residential", FLAT_15, 14, NULL, NULL), FALSE);
+	days(f, 1, 15);
+	fee = first_fee(f, f->invoice, "proposed");
+	g_assert_nonnull(fee);
+	g_object_set(rule, "organization-id", f->org, "action", "post", "require-second-actor", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(rule), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(venture_late_fee_service_approve(venture_late_fee_service_get(f->db), fee, NULL, &alice, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_assert_nonnull(strstr(error->message, "second account"));
+	g_clear_error(&error);
+	g_assert_cmpuint(count_status(f, f->invoice, "proposed", NULL), ==, 1);
+	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
+	g_assert_true(venture_late_fee_service_approve(venture_late_fee_service_get(f->db), fee, NULL, &bob, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(count_status(f, f->invoice, "applied", NULL), ==, 1);
+	g_assert_cmpint(balance(f, f->invoice), ==, 102500);
+	g_clear_object(&fee);
+	fee = first_fee(f, f->invoice, "applied");
+	g_assert_false(venture_late_fee_service_waive(venture_late_fee_service_get(f->db), fee, "goodwill", NULL, NULL, &bob, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	g_assert_cmpint(balance(f, f->invoice), ==, 102500);
+	g_assert_true(venture_late_fee_service_waive(venture_late_fee_service_get(f->db), fee, "goodwill", NULL, NULL, &alice, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(count_status(f, f->invoice, "waived", NULL), ==, 1);
+	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
+}
+
+/* Staging the approve action records the decision and writes nothing. */
+static void
+test_stage_approve_writes_nothing(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) fee = NULL;
+	g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);
+	g_autoptr(GError) error = NULL;
+	VentureAction *action;
+	VentureActor alice;
+	VentureConfirmation *confirmation;
+	(void)unused;
+	alice = named_actor("alice");
+	enable(f, schedule(f, "Residential", FLAT_15, 14, NULL, NULL), FALSE);
+	days(f, 1, 15);
+	fee = first_fee(f, f->invoice, "proposed");
+	action = venture_action_registry_lookup(venture_database_get_action_registry(f->db), "late_fee", "approve");
+	g_assert_nonnull(action);
+	confirmation = venture_confirmation_store_stage_action(venture_context_get_confirmations(f->context),
+		action, fee, params, &alice, VENTURE_USER_ROLE_EDITOR, "rest-api", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+	g_assert_cmpuint(count_status(f, f->invoice, "proposed", NULL), ==, 1);
+	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1357,6 +1490,10 @@ main(int argc, char **argv)
 	ADD("/late-fees/actions", test_actions);
 	ADD("/late-fees/cap-with-announced-fee", test_cap_with_announced_fee);
 	ADD("/late-fees/invoice-panel", test_invoice_panel);
+	ADD("/late-fees/every-bound", test_every_bound);
+	ADD("/late-fees/tier-removed", test_tier_removed);
+	ADD("/late-fees/post-rule-approve-and-waive", test_post_rule_approve_and_waive);
+	ADD("/late-fees/stage-approve-writes-nothing", test_stage_approve_writes_nothing);
 #undef ADD
 	return g_test_run();
 }

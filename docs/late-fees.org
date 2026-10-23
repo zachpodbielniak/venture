@@ -49,7 +49,7 @@ invoice.
 | Member | Meaning |
 |--------+---------|
 | =day= | The first occurrence, in days late (1-365); day N is the due date plus N calendar days, UTC |
-| =every= | Recurring: again every N days after =day= |
+| =every= | Recurring: again every N days after =day=, from 1 to 365; a larger step is refused |
 | =after= | With =every= and no =day=: "every N days after day M", first on M + N |
 | =times= | At most this many occurrences |
 | =type= | =flat= (=amount=), =percent_open= (of the open balance, fees excluded), =percent_original= (of the original invoice), =markup= (a percent added to everything outstanding, fees included, so it compounds) |

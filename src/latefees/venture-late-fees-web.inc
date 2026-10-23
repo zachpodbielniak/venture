@@ -745,7 +745,8 @@ late_fees_invoice_page(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_string_append(html, "</span><span class=\"stat-label\">Fees charged</span></div></div>");
 	g_string_append(html, "<div class=\"card\"><div class=\"card-head\"><h2>Timeline</h2></div><div class=\"card-body\"><div class=\"table-wrap\"><table class=\"data late-fee-timeline stack-cards\">"
 		"<thead><tr><th>Day</th><th>Date</th><th>Tier</th><th>Charge</th><th>Amount</th><th>State</th><th>Notice</th></tr></thead><tbody>");
-	for (i = 0; entries != NULL && i < json_array_get_length(entries) && i < 60; i++)
+	/* Every occurrence through day 365. A silent cap hid the rest of the schedule. */
+	for (i = 0; entries != NULL && i < json_array_get_length(entries); i++)
 	{
 		JsonObject *e = json_array_get_object_element(entries, i);
 		const gchar *status = json_object_get_string_member_with_default(e, "status", "");
