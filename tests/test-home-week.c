@@ -392,6 +392,31 @@ test_accept_bills_after_work(Fixture *f, gconstpointer data)
 	g_assert_nonnull(due);
 	g_assert_cmpint(integer(f, VENTURE_TYPE_JOB, job_id, "invoice-id"), ==, invoice);
 
+	/* Issuing the after-work draft from the invoice, not the job, still
+	 * uses thirty days. The draft itself has no due date. */
+	{
+		gint64 later = quote_from_composer(f, "&billing-mode=after_work");
+		gint64 draft_id;
+		g_autoptr(VentureEntity) draft = NULL;
+		g_autoptr(GDateTime) issued_at = NULL, due_at = NULL;
+		g_autoptr(GDateTime) today = venture_settlement_service_today(venture_settlement_service_get(f->db));
+		g_autoptr(GError) error = NULL;
+		share_and_accept(f, later);
+		draft_id = integer(f, VENTURE_TYPE_QUOTE, later, "invoice-id");
+		draft = venture_database_get(f->db, VENTURE_TYPE_INVOICE, draft_id, NULL);
+		g_object_get(draft, "due-at", &due_at, NULL);
+		g_assert_null(due_at);
+		g_assert_true(venture_settlement_service_transition(venture_settlement_service_get(f->db),
+			VENTURE_INVOICE(draft), "sent", today, NULL, &error));
+		g_assert_no_error(error);
+		g_clear_object(&draft);
+		draft = venture_database_get(f->db, VENTURE_TYPE_INVOICE, draft_id, NULL);
+		g_object_get(draft, "issued-at", &issued_at, "due-at", &due_at, NULL);
+		g_assert_nonnull(issued_at);
+		g_assert_nonnull(due_at);
+		g_assert_cmpint(g_date_time_difference(due_at, issued_at) / G_TIME_SPAN_DAY, ==, 30);
+	}
+
 	/* Billing at acceptance is still there for whoever asks for it. */
 	{
 		gint64 upfront = quote_from_composer(f, "&billing-mode=full");

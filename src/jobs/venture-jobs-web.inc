@@ -581,12 +581,19 @@ venture_jobs_web_day(HtmxRequest *request, GHashTable *params, gpointer user_dat
 	venture_html_escape_append(content, day_text);
 	g_string_append(content, "\"></label><label class=\"field\"><span class=\"field-label\">Technician</span><select name=\"tech\">");
 	g_string_append_printf(content, "<option value=\"all\"%s>Everyone</option>", everyone ? " selected" : "");
-	people = venture_query_new(VENTURE_TYPE_USER);
-	venture_query_set_limit(people, 0);
-	/* This business's people only, as the technician picker offers. */
-	if (organization > 0)
-		venture_query_set_organization(people, organization);
-	users = venture_database_find(database, people, NULL);
+	/* This business's people only, as the technician picker offers.
+	 * Membership plus people filed here, when organization access is
+	 * on; otherwise the user row. */
+	if (organization > 0 && venture_web_users_by_membership(self))
+		users = venture_web_member_users(self, organization);
+	else
+	{
+		people = venture_query_new(VENTURE_TYPE_USER);
+		venture_query_set_limit(people, 0);
+		if (organization > 0)
+			venture_query_set_organization(people, organization);
+		users = venture_database_find(database, people, NULL);
+	}
 	for (i = 0; users != NULL && i < users->len; i++)
 	{
 		VentureEntity *person = g_ptr_array_index(users, i);

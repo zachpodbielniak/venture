@@ -102,25 +102,42 @@ canonical_owner(VentureDatabase *db, VentureEntity *row)
 	g_autoptr(GPtrArray) users = NULL;
 	g_autofree gchar *owner = NULL;
 	guint i;
+	g_autofree gchar *username_hit = NULL;
+	g_autofree gchar *display_hit = NULL;
+	guint username_count = 0, display_count = 0;
 	g_object_get(row, "owner", &owner, NULL);
 	if (venture_string_is_empty(owner)) return;
 	g_strstrip(owner);
 	query = venture_query_new(VENTURE_TYPE_USER);
 	venture_query_set_limit(query, 0);
 	users = venture_database_find(db, query, NULL);
+	/* A username match wins only when it is the only one. A display name
+	 * is used only when no username matched and exactly one person has it.
+	 * Two people named "Mike" stay as typed, on nobody's day by accident. */
 	for (i = 0; users != NULL && i < users->len; i++)
 	{
 		g_autofree gchar *username = NULL, *display = NULL;
 		g_object_get(g_ptr_array_index(users, i), "username", &username, "display-name", &display, NULL);
 		if (username == NULL) continue;
-		if (g_ascii_strcasecmp(owner, username) == 0 ||
-			(!venture_string_is_empty(display) && g_ascii_strcasecmp(owner, display) == 0))
+		if (g_ascii_strcasecmp(owner, username) == 0)
 		{
-			g_object_set(row, "owner", username, NULL);
-			return;
+			username_count++;
+			g_free(username_hit);
+			username_hit = g_strdup(username);
+		}
+		else if (!venture_string_is_empty(display) && g_ascii_strcasecmp(owner, display) == 0)
+		{
+			display_count++;
+			g_free(display_hit);
+			display_hit = g_strdup(username);
 		}
 	}
-	g_object_set(row, "owner", owner, NULL);
+	if (username_count == 1)
+		g_object_set(row, "owner", username_hit, NULL);
+	else if (username_count == 0 && display_count == 1)
+		g_object_set(row, "owner", display_hit, NULL);
+	else
+		g_object_set(row, "owner", owner, NULL);
 }
 
 static gboolean

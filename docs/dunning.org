@@ -49,7 +49,8 @@ under Money in) offers *Set up the usual reminders*
 (=POST /api/v1/dunning_policy/0/actions/standard=, optional =organization_id=):
 it makes three mail templates -- three days before the due date, a week late,
 two weeks late, each using only placeholders the renderer fills -- and a
-default policy named "Usual reminders" naming them, adopted now. It is
+default policy named "Usual reminders" naming them, adopted now. The templates
+and the policy are one transaction: a failure leaves none of them. It is
 refused when the business already has a default, naming it; that one is
 edited instead. Until a policy applies, "Send a reminder now" on an invoice
 says so and points at that button. The record's labels are "Reminder

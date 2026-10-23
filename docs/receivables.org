@@ -81,7 +81,7 @@ fund an allocation in an earlier statement.
 
 * Lifecycle and extensions
 
-Create a draft, add lines, then send it. Sending freezes its amount, due date, and per-line income, discount, shipping
+Create a draft, add lines, then send it. A first issue that has no due date takes thirty days from the issue date, so the invoice ages; an opening invoice keeps the date its migration recorded, including none. Sending freezes its amount, due date, and per-line income, discount, shipping
 and tax allocations in an issue event. The state is =sent= before allocation,
 =partially_paid= after a partial allocation, and =paid= at zero balance.
 A refund derives the state again. Void is allowed for an unpaid invoice;

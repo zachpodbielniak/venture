@@ -324,6 +324,37 @@ test_owner_matches_user(Fixture *f, gconstpointer data)
 	save(f, activity);
 	g_object_get(activity, "owner", &owner, NULL);
 	g_assert_cmpstr(owner, ==, "mike");
+	/* Two people displaying "Pat Example" are not collapsed onto the first
+	 * user the query happened to return. That label is not a username, so
+	 * the typed text stays. A unique display name still matches. */
+	{
+		g_autoptr(VentureUser) pat = venture_user_new();
+		g_autoptr(VentureUser) sam = venture_user_new();
+		g_autoptr(VentureUser) alex = venture_user_new();
+		g_autoptr(VentureEntity) ambiguous = NULL, unique = NULL;
+		g_autofree gchar *left = NULL, *matched = NULL;
+		g_object_set(pat, "username", "pat", "display-name", "Pat Example", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+		g_object_set(sam, "username", "sam", "display-name", "Pat Example", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+		g_object_set(alex, "username", "alex", "display-name", "Alex Owner", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+		g_assert_true(venture_user_set_password(pat, "correct-horse-battery", 100000, &error));
+		g_assert_true(venture_user_set_password(sam, "correct-horse-battery", 100000, &error));
+		g_assert_true(venture_user_set_password(alex, "correct-horse-battery", 100000, &error));
+		save(f, VENTURE_ENTITY(pat));
+		save(f, VENTURE_ENTITY(sam));
+		save(f, VENTURE_ENTITY(alex));
+		ambiguous = g_object_new(venture_entity_registry_lookup(venture_entity_registry_get_default(), "activity"),
+			"subject", "Two Pats", "owner", "Pat Example", NULL);
+		venture_entity_set_organization_id(ambiguous, f->org);
+		save(f, ambiguous);
+		g_object_get(ambiguous, "owner", &left, NULL);
+		g_assert_cmpstr(left, ==, "Pat Example");
+		unique = g_object_new(venture_entity_registry_lookup(venture_entity_registry_get_default(), "activity"),
+			"subject", "Unique", "owner", "alex owner", NULL);
+		venture_entity_set_organization_id(unique, f->org);
+		save(f, unique);
+		g_object_get(unique, "owner", &matched, NULL);
+		g_assert_cmpstr(matched, ==, "alex");
+	}
 }
 
 /* A plan with no price says so and links straight to adding one. */

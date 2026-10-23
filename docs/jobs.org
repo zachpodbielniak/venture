@@ -27,7 +27,11 @@ other: a list, a form, REST, CLI, JSON and the assistant's tools.
 | =maintenance_plan= | a visit bought on a schedule: plan name, customer, property, equipment, what each visit is (=visit=), months apart (=every_months=, 12 when blank), next visit due, when it ended, notes |
 
 The technician picker names people by display name, else username, as the
-access forms do; so does the day view below. Everywhere else a user is
+access forms do; so does the day view below. With organization access on,
+both lists are the business's active members plus the people filed on that
+business, so a person granted a second business still appears there while
+someone created on the home business is not dropped for lacking a membership
+row. Everywhere else a user is
 named by display name, else e-mail, never "User #3" while either is set.
 A job also names its =property_id=, and =maintenance_plan_id= when it was
 booked from a plan. Properties, Equipment and Jobs are

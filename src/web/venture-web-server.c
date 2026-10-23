@@ -8599,6 +8599,81 @@ venture_web_reference_option_label(VentureWebServer *self, VentureEntity *record
 	return venture_entity_get_display_name(option);
 }
 
+/* Active people of this business. With organization access on, membership
+ * grants a second business: the user row stays on the default organization,
+ * so a list that only filters users by that id hides them. People filed on
+ * this business still belong on the list when they have no membership row. */
+static gboolean
+venture_web_users_by_membership(VentureWebServer *self)
+{
+	return venture_web_module_enabled(self, "orgaccess") &&
+		venture_entity_registry_lookup(venture_context_get_entity_registry(self->context),
+			"organization_membership") != G_TYPE_INVALID;
+}
+
+static gboolean
+venture_web_user_listed(GPtrArray *out, gint64 id)
+{
+	guint i;
+
+	for (i = 0; i < out->len; i++)
+		if (venture_entity_get_id(g_ptr_array_index(out, i)) == id)
+			return TRUE;
+	return FALSE;
+}
+
+static GPtrArray *
+venture_web_member_users(VentureWebServer *self, gint64 organization)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GPtrArray) rows = NULL;
+	GPtrArray *out = g_ptr_array_new_with_free_func(g_object_unref);
+	VentureDatabase *database = venture_context_get_database(self->context);
+	guint i;
+	venture_query_set_organization(query, organization);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(database, query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *membership = g_ptr_array_index(rows, i);
+		g_autoptr(VentureEntity) user = NULL;
+		gboolean active = FALSE, user_active = FALSE;
+		gint64 user_id = 0;
+		g_object_get(membership, "active", &active, "user-id", &user_id, NULL);
+		if (!active || user_id <= 0)
+			continue;
+		if (venture_web_user_listed(out, user_id))
+			continue;
+		user = venture_database_get(database, VENTURE_TYPE_USER, user_id, NULL);
+		if (user == NULL)
+			continue;
+		g_object_get(user, "active", &user_active, NULL);
+		if (!user_active)
+			continue;
+		g_ptr_array_add(out, g_steal_pointer(&user));
+	}
+	/* Filed here, membership or not. The day list and the technician
+	 * picker both use this, and a user created on this business has
+	 * only the user row until someone grants them another. */
+	{
+		g_autoptr(VentureQuery) filed = venture_query_new(VENTURE_TYPE_USER);
+		g_autoptr(GPtrArray) home = NULL;
+
+		venture_query_set_organization(filed, organization);
+		venture_query_set_limit(filed, 0);
+		home = venture_database_find(database, filed, NULL);
+		for (i = 0; home != NULL && i < home->len; i++)
+		{
+			VentureEntity *user = g_ptr_array_index(home, i);
+
+			if (venture_web_user_listed(out, venture_entity_get_id(user)))
+				continue;
+			g_ptr_array_add(out, g_object_ref(user));
+		}
+	}
+	return out;
+}
+
 static void
 venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
@@ -8784,12 +8859,18 @@ venture_web_append_form_field_scoped(
 
 			if (G_TYPE_INVALID != target)
 			{
-				query = venture_query_new(target);
-				venture_query_set_limit(query, 0);
-				if (organization > 0) venture_query_set_organization(query, organization);
+				if (target == VENTURE_TYPE_USER && organization > 0 &&
+					venture_web_users_by_membership(self))
+					options = venture_web_member_users(self, organization);
+				else
+				{
+					query = venture_query_new(target);
+					venture_query_set_limit(query, 0);
+					if (organization > 0) venture_query_set_organization(query, organization);
 
-				options = venture_database_find(
-					venture_context_get_database(self->context), query, NULL);
+					options = venture_database_find(
+						venture_context_get_database(self->context), query, NULL);
+				}
 			}
 
 			/*

@@ -50,8 +50,10 @@ unknown username can own work but has no inbox to notify.
 Starts, ends, due and reminder times are date-and-time boxes in the
 business's time zone, so a meeting from 8 to 10 the same morning is
 accepted. An owner typed as a
-user's username or display name, in any case and with stray spaces, is saved
-as that username, so "Mike" is on the user =mike='s worklist.
+user's username, or as a display name that belongs to exactly one user and
+is not itself another username, in any case and with stray spaces, is saved
+as that username, so "Mike" is on the user =mike='s worklist. Two people
+with the same display name are left as typed.
 
 | Surface | Completion |
 |---------+------------|

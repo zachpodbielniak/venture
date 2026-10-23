@@ -2034,6 +2034,10 @@ standard_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params
 		g_autofree gchar *why = g_strdup_printf("This business already has reminders set up (\"%s\"); edit that one", name);
 		return refuse(error, why) ? NULL : NULL;
 	}
+	/* The templates and the policy are one setup. A failed policy save must
+	 * not leave a second press to insert another three templates. */
+	if (!venture_database_begin(self->database, error))
+		return NULL;
 	json_builder_begin_array(builder);
 	for (i = 0; i < G_N_ELEMENTS(usual_steps); i++)
 	{
@@ -2042,7 +2046,10 @@ standard_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params
 		g_object_set(template, "name", usual_steps[i].name, "subject", usual_steps[i].subject,
 			"text-body", usual_steps[i].body, NULL);
 		if (!venture_database_save(self->database, template, actor, error))
+		{
+			venture_database_rollback(self->database);
 			return NULL;
+		}
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "offset");
 		json_builder_add_int_value(builder, usual_steps[i].offset);
@@ -2057,8 +2064,12 @@ standard_invoke(VentureAction *action, VentureEntity *entity, GHashTable *params
 	venture_entity_set_organization_id(policy, org);
 	g_object_set(policy, "name", "Usual reminders", "steps", steps_text, "is-default", TRUE,
 		"adopted-at", now, NULL);
-	if (!venture_database_save(self->database, policy, actor, error))
+	if (!venture_database_save(self->database, policy, actor, error) ||
+		!venture_database_commit(self->database, error))
+	{
+		venture_database_rollback(self->database);
 		return NULL;
+	}
 	return g_steal_pointer(&policy);
 }
 

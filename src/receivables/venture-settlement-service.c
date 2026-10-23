@@ -1253,6 +1253,20 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		}
 		if (total == NULL)
 			total = venture_money_new_zero(NULL);
+		/* A first issue with no due date never ages: receivables files it
+		 * under "No due date" and no reminder falls due. Ordinary terms are
+		 * thirty days from the issue date. An opening invoice keeps the
+		 * date its migration supplied, including none. */
+		if (first_issue && opening == NULL && date != NULL)
+		{
+			g_autoptr(GDateTime) existing_due = NULL;
+			g_object_get(invoice, "due-at", &existing_due, NULL);
+			if (existing_due == NULL)
+			{
+				g_autoptr(GDateTime) terms = g_date_time_add_days(date, 30);
+				g_object_set(invoice, "due-at", terms, NULL);
+			}
+		}
 		g_object_get(invoice, "due-at", &due, NULL);
 		event = venture_invoice_event_new();
 		{

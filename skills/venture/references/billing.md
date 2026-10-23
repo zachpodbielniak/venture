@@ -148,6 +148,10 @@ many documents all-or-nothing. A non-admin must name the organization.
 
 - **Hosted checkout**: `venturectl invoice checkout ID` returns a Stripe
   Checkout URL for an eligible sent invoice (editor, module on).
+- **Saved-bank collection**: create the charge unconfirmed, then confirm
+  it with the retained mandate. The provider accepts that field only at
+  confirmation, so creation omits it. A successful setup is not a paid
+  invoice (`docs/stripe.org`).
 - **One-time payment link**: with the organization's Stripe connection and
   an HTTPS `server.base_url`, `act invoice ID payment_link
   [expires_at=...]` returns a one-time `url` (default seven days; one hour
