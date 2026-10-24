@@ -1,0 +1,1 @@
+{"finalstatus":"Success","reason":"","result":{"id":17,"callid":4242,"dn":"101","party_caller_name":"","party_dn":"101","party_caller_id":"101","party_did":"","device_id":"sip:101@pbx.example.com","party_dn_type":"Wextension","direct_control":false,"originated_by_dn":"","originated_by_type":"None","status":"Dialing"},"reasontext":""}

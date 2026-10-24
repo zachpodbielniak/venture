@@ -19,11 +19,32 @@ gboolean venture_sequences_save_hook(VentureDatabase *database, VentureEntity *r
 	const VentureActor *actor, VentureSequenceSaveContinuation save, gboolean *handled, GError **error);
 
 void venture_sequence_mail_install(VentureSequenceService *service, VentureDatabase *database);
+/* The message the outbox would store for an email delivery; writes nothing.
+ * The enqueue path and the mail preview both build through it. */
+VentureMailMessage *venture_sequence_mail_build(VentureDatabase *database, VentureEntity *delivery, GError **error);
 gboolean venture_sequence_mail_enqueue(VentureDatabase *database, VentureEntity *delivery,
 	const VentureActor *actor, GError **error);
 gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organization, GDateTime *now,
 	const VentureActor *actor, GError **error);
 gboolean venture_sequence_delivery_eligible(VentureDatabase *database, VentureEntity *delivery,
 	GDateTime *now, gboolean *defer, GError **error);
+
+/* Enrols @contact_id in @trigger's journey once per @identity: 1 enrolled,
+ * 0 not (already, suppressed, inactive), -1 on failure. Works inside or
+ * outside a sequence transition. */
+gint venture_sequence_trigger_enroll(VentureSequenceService *self, VentureEntity *trigger, gint64 contact_id,
+	gint64 deal_id, const gchar *identity, const gchar *reason, GDateTime *at, GError **error);
+/* Deal stage changed: called by the save hook after the deal is written. */
+gboolean venture_sequence_triggers_deal(VentureSequenceService *self, VentureEntity *deal, VentureEntity *previous, GError **error);
+/* The registered executor for a channel, if any. */
+gboolean venture_sequence_channel_lookup(gint channel, VentureSequenceChannelExecute *execute, gpointer *data);
+/* Whether a branch step's condition held on the enrollment's latest email
+ * by @deadline, the end of its wait. Opens and clicks judged a machine's
+ * do not count. */
+gboolean venture_sequence_branch_taken(VentureDatabase *database, VentureEntity *enrollment, VentureEntity *step,
+	GPtrArray *history, GDateTime *deadline, gboolean *taken, GError **error);
+/* Each installed VentureSequenceEmailGate in turn; the first skip wins. */
+gboolean venture_sequence_email_gates_ask(VentureDatabase *database, VentureEntity *sequence, VentureEntity *contact,
+	GDateTime *as_of, gchar **skip_reason, GError **error);
 
 #endif

@@ -1,0 +1,243 @@
+#+title: Deliverability: bounces, replies, the domain check, warm-up and honest numbers
+
+What happens to campaign mail after your mail server accepts it, whether
+your domain is set up to be believed, how fast a new domain may send, and
+what each number on a send's report means. Everything here feeds the
+evidence rules in [[file:marketing.org][Marketing]] ("Bounce and complaint evidence",
+"Observations and report meaning"): there is one suppression list, one
+reply rule and one report.
+
+* Where bounces and complaints come from
+
+Three doors, one rule. Each records evidence through
+=venture_marketing_service_feedback()=, so a hard bounce or a complaint
+suppresses the address and stops pending outreach, a temporary bounce is
+recorded without suppression, and a replayed event is recorded once.
+
+1. *An operator* uses a recipient's *Record delivery feedback* action, as
+   before.
+2. *A bounce in a synced mailbox.* When mail sync files a new message from
+   a shared (not private) mailbox, it is read as a delivery status
+   notification (RFC 3464, =multipart/report; report-type=delivery-status=)
+   or an abuse report (RFC 5965, =report-type=feedback-report=). Only the
+   machine-readable part decides, never the prose:
+   | Action                    | Status  | Recorded as        |
+   |---------------------------+---------+--------------------|
+   | =failed=                  | 5.x.x   | hard bounce        |
+   | =failed=                  | 4.x.x or none | temporary bounce |
+   | =delayed=                 | any     | temporary bounce   |
+   | =delivered=, =relayed=    | 2.x.x   | delivered          |
+   | abuse report (=Feedback-Type: abuse=) | -- | complaint     |
+   The message it is about is found by Message-ID: the per-recipient
+   =Original-Message-ID= if the reporting server wrote one, else the
+   returned message's own =Message-ID= (from its =message/rfc822= or
+   =text/rfc822-headers= part), else the report's =In-Reply-To=. It must be
+   a campaign message this organization's outbox sent, and the report's
+   =Final-Recipient= must be the address it was sent to: a forwarded copy
+   bouncing elsewhere is not evidence about the person you wrote to. The
+   replay identity is the report's own Message-ID and the recipient.
+3. *A signed provider feed.* =POST /hooks/deliverability/ORG/PROVIDER=, per
+   organization, with no session. See below.
+
+The evidence time is the event's own, kept between the message's
+acceptance and now, so a provider clock running ahead, or a report dated
+before the message existed, cannot place evidence where the rules refuse
+it. Events about mail this organization did not send are /ignored/, not
+refused, so a provider that posts everything does not see errors.
+
+** The signed feed
+
+Set the organization's signing secret on =/marketing/deliverability=
+(*Make a signing secret*; it is shown once) or with
+=POST /api/v1/marketing/feedback-secret= ={"organization_id": N}=
+(optionally ="secret"=, 32 to 128 printable characters). Owners and
+administrators only. It is sealed as an integration credential (provider
+=marketing_feedback=), never shown again, and a new one replaces the old
+at once. An organization with no secret refuses every delivery.
+
+Each delivery carries:
+
+- =X-Venture-Timestamp=: Unix seconds.
+- =X-Venture-Signature=: hex HMAC-SHA256, keyed with the secret, over the
+  timestamp, a newline (=\n=) and the exact body bytes. A =sha256= prefix
+  (=sha256=...=) is accepted, the same shape outbound webhooks send.
+
+A delivery is refused (401) when either header is missing or malformed,
+the signature does not match (compared in constant time), or the timestamp
+is more than 300 seconds from the server's clock -- the replay window.
+A refused signature is logged as a warning naming the organization. Bodies
+are capped at 256 KiB and 100 events.
+
+The =generic= adapter reads this shape:
+
+#+begin_src json
+{"events": [
+  {"id": "evt-1", "type": "bounce", "bounce": "hard",
+   "message_id": "<message id as sent>", "recipient": "reader@example.net",
+   "occurred_at": "2026-10-18T12:00:00Z", "status": "5.1.1",
+   "detail": "550 5.1.1 mailbox does not exist"}
+]}
+#+end_src
+
+=type= is =delivered=, =complaint= or =bounce= (with =bounce= =hard= or
+=soft=). =id= is required and is the replay identity (scoped by
+provider). =message_id= may keep or drop its angle brackets;
+=recipient=, =occurred_at= (ISO 8601 with a zone), =status= and =detail=
+are optional. The answer is ={"accepted": n, "ignored": n, "results":
+[{"id", "result"}]}=, where =result= is =recorded= or why it was ignored.
+
+*Adding a provider.* A provider with its own event shape is an adapter: a
+=VentureDeliverabilityAdapter= (=id=, =label=, =parse=) registered with
+=venture_deliverability_adapter_register()=. The signature check runs
+before =parse= and is the same for every adapter, so an adapter only turns
+a verified body into =VentureDeliverabilityEvent=s. Its id is the last
+part of the feed address. Recorded example payloads live in
+=tests/fixtures/deliverability/=.
+
+* Replies
+
+A campaign reply is counted the way sequences count one
+(=venture_sequence_interaction_is_reply()=): an inbound interaction -- not
+outbound -- for the contact or lead. Mail sync files a reply as exactly
+that, matched to the contact by address, so there is no second matcher.
+It counts once, for the most recent campaign message the relay accepted for
+that person before the reply and within 30 days. Like the sequence rule,
+any inbound interaction counts, a logged call back too; an out-of-office
+answer from the person's address counts as well. An outbound interaction,
+or one dated before the message was sent, never counts.
+
+* The sending domain check
+
+=/marketing/deliverability= (owners and administrators) and
+=GET /api/v1/marketing/domain-health?organization_id=N&domain=D&selector=S=
+check three DNS records and say, in plain words, what each means and what
+to change:
+
+| Check | Looked up at               | Pass                                   | Weak                                                | Missing                     |
+|-------+----------------------------+----------------------------------------+-----------------------------------------------------+-----------------------------|
+| SPF   | the domain                 | one =v=spf1= ending =~all= or =-all=   | =+all=, =?all=, no =all=, or two SPF records         | no =v=spf1= record          |
+| DKIM  | =SELECTOR._domainkey.DOMAIN= | a key (=p==) is published              | --                                                  | no key, an empty (revoked) key, or no selector set |
+| DMARC | =_dmarc.DOMAIN=            | =p=quarantine= or =p=reject=, pct 100 | =p=none= (monitoring only), pct below 100, two records, no valid =p= | no =v=DMARC1= record |
+
+A lookup DNS could not answer is =error= ("could not check"), not a
+verdict about the domain. The overall result is the worst of the three.
+Save the domain and its DKIM selector as a =marketing_sending_domain=
+record and the page checks it every time it opens (at most ten domains).
+
+DNS goes through an injectable resolver (=VentureDnsResolver=); the default
+is GResolver's TXT lookup on a private main context with a five-second
+deadline, so the server's own loop is not driven underneath a request.
+Tests use a fake and never touch the network. *Limits:* this reads public
+DNS only. It cannot see what your relay actually signs or whether SPF
+covers the server that really sends; send yourself a test message and
+look for =spf=pass=, =dkim=pass= and =dmarc=pass= in its
+=Authentication-Results= header.
+
+* Warm-up
+
+Mailbox providers distrust a new domain that suddenly sends a lot, so
+campaign delivery starts small and grows. The limit is per organization
+and per UTC day: Venture sends an organization's campaign mail through its
+one SMTP account. It counts campaign messages queued that day (cancelled
+ones aside), across all its sends.
+
+The default schedule (=VENTURE_DELIVERABILITY_DEFAULT_RAMP=):
+
+| Day of sending | Most campaign messages that day |
+|----------------+---------------------------------|
+| 1-2            | 50                              |
+| 3-4            | 100                             |
+| 5-6            | 250                             |
+| 7-9            | 500                             |
+| 10-13          | 1,000                           |
+| 14-20          | 2,500                           |
+| 21-29          | 5,000                           |
+| 30 on          | no limit                        |
+
+Day one is the organization's first =marketing_sending_domain= record's
+=warmup_started_on=, or, without one, the day its first campaign message
+was accepted -- so an organization that has been sending through Venture
+for a month is already past the warm-up, and one that has never sent
+starts at day one. Set =ramp_schedule= on that record to change it:
+=day:limit= pairs in increasing day order starting at day 1, each limit
+holding until the next pair, 0 for no limit (=1:20,4:100,15:0=), or =off=.
+A malformed schedule is refused when the record is saved.
+
+*Execute bounded delivery* enforces it: once today's limit is reached the
+send's next enqueue moves to the next UTC midnight and nobody is skipped;
+the next run after midnight continues with the same recipient. The
+per-send pacing interval (1-86,400 seconds, default 60) still applies on
+top, so one send alone reaches at most 1,440 a day at the default.
+
+* The send report and what each number means
+
+=/marketing/sends/ID/report= and =GET /api/v1/marketing/sends/ID/report=
+(owners, administrators, editors and sales members) show one send;
+=marketing_performance= has the same numbers per send (pass
+=send_id= in its options for one). They count people, once each:
+
+| Number          | Counted from                                                                 |
+|-----------------+------------------------------------------------------------------------------|
+| Accepted        | the outbox message is =sent=: your relay took it. Not proof of an inbox.      |
+| Delivered       | a provider or DSN said the receiving server accepted it (only when one tells us) |
+| Opened          | a tracked open not judged a machine's (=opened_at=)                         |
+| Machine opens   | the recipient's only opens were judged a machine's (=machine_opened_at=)    |
+| Clicked         | a tracked click not judged a machine's                                      |
+| Replied         | a reply, as above                                                           |
+| Unsubscribed    | the one-click unsubscribe was used                                          |
+| Bounced         | hard bounce evidence for this recipient                                     |
+| Soft bounced    | temporary bounce evidence                                                   |
+| Complained      | complaint evidence                                                          |
+
+The *click map* lists every tracked link in the message with the people
+who clicked it and, beside them, the recipients whose clicks on it were
+judged a machine's. Links are shown without their query string or
+fragment, which can carry a personal value. Accepted and bounced overlap:
+accepted mail can bounce later.
+
+** Machine opens, honestly
+
+An open (or click) is judged a machine's, kept as evidence with the reason,
+and kept out of Opened and Clicked when:
+
+- the request's User-Agent names a known prefetching proxy (Yahoo's), a
+  link or attachment scanner (Barracuda, Mimecast, Proofpoint, Safe Links
+  and similar) or a crawler or scripted client (=bot=, =python-=, =curl/=,
+  headless browsers); the User-Agent is read and dropped, only the reason
+  is kept; or
+- it arrived within 10 seconds of the relay accepting the message, faster
+  than a person opens mail (=venture_marketing_service_set_machine_seconds()=).
+
+The judgement is per observation, and part of its daily identity: a
+proxy's fetch on arrival does not swallow the person's own open later that
+day. What it cannot do, and does not claim to:
+
+- Apple Mail Privacy Protection fetches every image from Apple's servers
+  with an ordinary browser User-Agent, often minutes or hours after
+  delivery. Venture collects no IP address, so those opens count as
+  opens. Gmail's image proxy fetches when the reader opens, so it is a
+  real open and is not flagged.
+- "Opened but never clicked" is not used as a machine signal: most people
+  who open never click, and the rule would move them out of Opened.
+
+So Opened is an upper bound and Machine opens a lower one. Treat clicks,
+replies and unsubscribes as the signals of a person. Observations recorded
+before this judgement existed keep counting as opens.
+
+* Storage and verification
+
+Paired migration =000945_marketing_deliverability.sql= checks the new
+recipient columns (=delivered_at=, =replied_at=, =complained_at=,
+=machine_opened_at=) after field-table reconciliation, plus
+=marketing_event.machine_reason= and the new =marketing_sending_domain=
+table (an owner or administrator setting). Nothing is inferred for mail
+sent before them.
+
+=tests/test-deliverability.c= covers the signature (pass, wrong secret,
+changed body, stale and future timestamps, missing headers), an
+organization with no secret, replays, the recorded fixture payloads into
+suppression, an event naming another address, DSN hard/soft and abuse
+report parsing and Message-ID matching, campaign replies, the domain
+check through a fake resolver (pass, missing, weak =p=none=), the warm-up
+schedule and its enforcement across a UTC midnight, the per-send report
+with machine opens and the click map, and the routes' authentication.

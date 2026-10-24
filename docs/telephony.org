@@ -1,0 +1,255 @@
+#+title: Phone calls and text messages
+#+description: Click-to-call through your phone system, every call logged on the contact, and two-way texts with consent and quiet hours
+
+The =telephony= module connects Venture to a phone provider. With a 3CX
+phone system you call a contact from their page and every call -- made,
+taken or missed -- is logged on the contact by itself. With a VoIP.ms
+number you text contacts and read their replies on the contact's page. The
+module requires =crm=, =activities=, =integrations= and =marketing=: calls
+are ordinary call-log activities and text consent is ordinary marketing
+consent evidence, so there is no second call log and no second consent
+store.
+
+* Setting it up
+
+Open the organization's page and choose *Telephony settings* (owners and
+administrators only), or go to =/organizations/ID/settings/telephony=.
+
+1. *Connect a line.* Pick 3CX or VoIP.ms and fill in its fields:
+   - *3CX*: your phone system's address (for example
+     =https://pbx.example.com=), and the client ID and API key of a 3CX
+     API integration ("Integrations, API" in the 3CX admin console) that
+     may use call control.
+   - *VoIP.ms*: your API user name (your VoIP.ms sign-in email), the API
+     password you set under "SOAP and REST/JSON API", and the number texts
+     are sent from. Allow this server's address in the same VoIP.ms page.
+   Credentials go into the organization's encrypted vault ([[file:integrations.org][Organization
+   integration credentials]]) and are never shown again. To rotate them,
+   connect the same provider again with the complete settings.
+2. *Copy the webhook address.* When a line is made Venture shows its
+   webhook address once: =https://your-venture/hooks/telephony/TOKEN=.
+   - For 3CX, set it as the CRM integration's call journal address, so
+     3CX reports each call when it ends.
+   - For VoIP.ms, add
+     =?to={TO}&from={FROM}&message={MESSAGE}&id={ID}&media={MEDIA}= and set
+     it as the number's *SMS URL callback*. VoIP.ms is answered =ok=.
+   *New webhook address* makes another and stops the old one at once.
+3. *Add extensions.* Under *Extensions*, give each person who calls their
+   extension (for example 101). Click-to-call rings that extension first.
+4. *Set the rules*: the phone country, text quiet hours and recording
+   links (below).
+
+* Calling
+
+A contact, a deal or a ticket shows a *Call* button with the contact's
+number. Pressing it rings your own extension; when you pick up, the phone
+system dials the contact. A deal or ticket calls its contact.
+
+#+begin_src text
+POST /api/v1/telephony/call   {"contact_id": 12}            (or deal_id, ticket_id, and an optional "number")
+-> 202 {"call_id": "4242", "state": "ringing your extension"}
+#+end_src
+
+It refuses in plain words, before anything is dialled, when no phone
+system is connected, when you have no extension in this organization, or
+when the contact has no number Venture can read. It needs the editor role.
+
+* Every call is logged
+
+When 3CX reports a call, Venture writes it through the existing *Log a call*
+service ([[file:activities.org][Planned activities and call history]], "Logging calls"):
+one completed call activity and one history entry on the contact, with the
+direction, the seconds talked, the result and the person whose extension
+took it. The provider's call id is the replay identity
+(=call_external_source= =3cx-v1=, =call_external_id= the line and the call
+id), so the same report delivered twice is one call.
+
+- The caller is matched to a contact by their number: both sides are read
+  into international (E.164) form first, so =(555) 010-0123=,
+  =555.010.0123= and =+1 555 010 0123= are the same person. Numbers written
+  without a country code are read as the organization's phone country (US
+  when empty). When several contacts share a number the oldest is used.
+- A caller nobody knows becomes a contact named "Unknown caller" plus the
+  number, so the call has somewhere to live. An outbound call to a number no
+  contact has is not logged.
+- A missed inbound call is a call-log row with the result *missed* and
+  *For the inbox* set, ready for the shared inbox. An outbound call nobody
+  answered is *no answer*.
+
+* Recording links -- off by default
+
+When *Keep call recording links* is on, the phone system's recording link
+is stored on the logged call (only a stable =https= address with no query
+or fragment; anything else is dropped). It is off by default.
+
+*The recording note, in plain words.* Recording a phone call is allowed in
+some places only when everyone on the call agrees, and some places require
+you to say at the start that the call is recorded. Venture never records a
+call, never downloads a recording and never fetches the link; it only keeps
+the link your phone system made. Turn the switch on only if your phone
+system announces recording and you are allowed to keep recordings. The
+link is kept with the call for as long as the call is (see "Timelines,
+reporting and retention" in [[file:activities.org][the call history]]).
+
+* Texting
+
+A contact's page shows their texts, newest last, each with its state:
+=queued=, =held= (quiet hours, with the time it will go), =sent=,
+=delivered= (where the provider reports it), =failed= (with the
+provider's reason) or =received=. Below is the composer.
+
+#+begin_src text
+POST /api/v1/contacts/12/texts   {"body": "Your estimate is ready", "hosted_image_id": 0}
+GET  /api/v1/contacts/12/texts
+POST /api/v1/telephony/run?organization_id=1     send the texts that are due
+#+end_src
+
+- A text is at most 1600 characters. With VoIP.ms, a text longer than 160
+  characters or with a picture goes as MMS.
+- A picture you send is one of the organization's hosted images (the
+  designed-email image store); the provider is given its public address.
+- A picture you receive is fetched only from a host the line lists under
+  *Picture hosts* and kept as a private document (kind =text-media=),
+  readable only by people who can read the organization's documents. It is
+  never published.
+- An inbound text is marked *For the inbox* until somebody texts back.
+- Nothing is retried. A failed text stays failed with its reason; sending
+  again is a person's choice, because a retry after an uncertain answer
+  could text someone twice.
+
+* Consent
+
+Venture texts a contact only when their latest text consent is an
+agreement. Consent is kept exactly like email consent: each agreement and
+each withdrawal is a retained =marketing_consent= row (purpose =text=, the
+number in E.164), with where it came from and the evidence, and the latest
+one decides.
+
+- An operator records an agreement on the contact's page (*Record their
+  agreement*, with how they agreed), or =POST
+  /api/v1/contacts/12/text-consent {"granted": true, "evidence": "..."}=.
+  *They asked to stop* records a withdrawal.
+- A text that is only =STOP=, =STOPALL=, =UNSUBSCRIBE=, =CANCEL=, =END=
+  or =QUIT= (any capitals, spaces and punctuation ignored) withdraws
+  consent and is answered once: "you are unsubscribed ... Reply START to
+  resubscribe". A second STOP while already out changes nothing and is not
+  answered.
+- =START= or =UNSTOP= agrees again and is answered once.
+- =HELP= or =INFO= is answered with how to stop, at most once a day.
+- These answers are the only texts sent without consent and outside the
+  quiet hours: they are the answer the person just asked for.
+- A send without consent is refused, in words, and nothing is queued.
+  The send path checks again just before a provider is asked, so a STOP
+  that arrives after a text was queued still stops it.
+
+* Quiet hours
+
+No text goes out between *21:00 and 08:00 in the recipient's own time
+zone*: the contact's time zone, else the organization's, else UTC. A text
+written during quiet hours is held and sent when they end. An organization
+can set other hours (for example =20:00-09:00=) or =off=. An unreadable
+setting means the default, never "none". This is enforced in the one send
+path every text goes through -- the page, the API, sequences, journeys and
+campaigns only queue -- so nothing can bypass it.
+
+* Text steps and text campaigns
+
+- *Sequences and journeys*: a step with the channel *text* sends a real
+  text through the channel hook ([[file:journeys.org][Journeys]]). The step queues; the send
+  path sends, with consent and quiet hours. A contact without text consent
+  is *skipped* with the reason and the journey carries on. Each step texts
+  once, however often the sweep runs. The older *text task* channel still
+  only reminds the owner.
+- *Campaigns*: a marketing send with channel *text* uses the ordinary
+  campaign machinery ([[file:marketing.org][Marketing]]): the preview freezes who gets it and
+  leaves out anybody without a number (=no_phone=), without text consent
+  (=no_text_permission=) or without a connected line (=no_text_line=);
+  approval, pausing and the per-recipient interval are the same; each
+  recipient is texted once. Every campaign text ends with "Reply STOP to
+  opt out." unless it already says STOP. The email warm-up does not apply
+  to texts.
+
+* The webhook and how it is checked
+
+=GET= or =POST /hooks/telephony/TOKEN= needs no session. It is checked, in
+order:
+
+1. *The address token*: 64 hexadecimal characters from secure randomness,
+   stored only as its SHA-256. An unknown or disconnected token is 404.
+2. *Allowed senders*: when the line lists addresses (or address/prefix
+   ranges) the request must come from one of them, or it is 401. This is
+   the connecting address; behind a proxy, list the proxy's view or leave
+   it empty.
+3. *The provider's signature*, for a provider that signs (HMAC-SHA256,
+   compared in constant time).
+4. *Idempotency*: a text by its line and the provider's message id, a call
+   by log_call's external identity, a delivery receipt by the text's state.
+   The same request twice changes nothing the second time and is counted
+   as a duplicate.
+
+Honestly: *neither 3CX's call journal nor VoIP.ms's SMS callback is
+signed*. For both, the long unguessable address token (kept secret like a
+password) and, if you list them, the allowed senders are what keep others
+out. Bodies over 64 KiB are refused.
+
+* Adding a provider
+
+A provider is one file in =src/telephony/= that implements the
+=VentureTelephonyConnector= interface and ends with
+=VENTURE_TELEPHONY_PROVIDER(its_get_type)=; nothing else names it. It
+declares what it can do (click-to-call, call events, SMS, MMS, delivery
+status, a signed webhook), its credential fields, how to place a call or
+send a text through the line's pinned address, and how to read its
+webhook into events. Requests go only to the line's own address, with no
+redirects, no retries and a 15-second timeout, and refusals are mapped to
+plain words that never repeat a secret. =tests/test-telephony.c= defines a
+third, signed provider the same way.
+
+* What is from public documentation and needs confirming
+
+There is no live 3CX or VoIP.ms account behind this work. Both adapters
+were written from the providers' public API documentation and tested
+against fakes and the fixtures in =tests/fixtures/telephony/=. Each
+adapter keeps its field names in one table at the top of its file, so a
+correction is one line. Confirm these against a live account before
+relying on them:
+
+| Provider | What | Where in Venture |
+|----------+------+------------------|
+| 3CX | =POST /connect/token= with =grant_type=client_credentials=, =client_id=, =client_secret=; =access_token= in the answer | =token()= in =venture-telephony-3cx.c= |
+| 3CX | =POST /callcontrol/{extension}/makecall= with ={"destination": ...}=; =finalstatus=, =reasontext=, =result.callid= in the answer; that the extension's phone rings first | =click_to_call()= |
+| 3CX | The call journal's variable names (=CallID=, =CallType= with =Inbound=, =Outbound=, =Missed=, =Notanswered=, =Number=, =Agent=, =Duration= as hh:mm:ss, =CallStartTimeUTC=, =RecordingUrl=) and whether the template can post JSON | =journal_fields= and =call_types= |
+| VoIP.ms | =POST /api/v1/rest.php= with =api_username=, =api_password=, =method= =sendSMS= or =sendMMS=, =did=, =dst=, =message=, =media1= to =media3=; =status= and =sms= or =mms= in the answer | =send_message()= in =venture-telephony-voipms.c= |
+| VoIP.ms | The error statuses (=invalid_dst=, =invalid_did=, =invalid_credentials=, =ip_not_enabled=, =sms_toolong=, ...) | =refusals= |
+| VoIP.ms | The SMS URL callback placeholders and that it expects =ok=; that MMS media arrive as comma-separated addresses | =callback_fields= |
+| VoIP.ms | That texting is North American numbers only, and that the API reports no delivery receipts | =ten_digits()=, capabilities |
+
+* Defaults and limits
+
+| Setting | Default | Limit |
+|---------+---------+-------|
+| Text quiet hours | 21:00-08:00, recipient's time | any HH:MM-HH:MM, or off |
+| Phone country | US | the countries in =venture-phone.c=; any number with its + code |
+| Recording links | off | stable https only |
+| Text length | -- | 1600 characters |
+| Pictures per text | -- | 3 (VoIP.ms) |
+| Provider request timeout | 15 seconds | no retries |
+| Provider answer or picture | -- | 5 MiB |
+| Webhook body | -- | 64 KiB |
+| Texts sent per run | -- | 100 |
+| HELP answers | once a day per contact | -- |
+
+* Storage and upgrade
+
+Paired migrations =000950_telephony_lines_and_texts= (lines, extensions,
+texts and the organization's three settings), =000951_telephony_call_inbox=
+(the inbox flag on call activities) and =000952_telephony_text_consent=
+(the number on consent evidence and a campaign's channel). Everything starts
+empty and off: no line, no extension, no text, recording links off, every
+existing campaign an email one and every existing call unchanged.
+=tests/test-telephony.c= covers the registry, both adapters against their
+fakes and fixtures, extension-first click-to-call, call logging and replay,
+matching and missed calls, sending, receiving, the signed delivery receipt,
+STOP/HELP/START, consent refusal, quiet hours across time zones, text steps,
+text campaigns and that no secret reaches a record, an error or a log;
+=tests/test-auth.c= covers every route.

@@ -206,8 +206,49 @@ venturectl update lead 42 score=80            # marks score_manual
 venturectl leads rescore 42                   # clears it and recomputes
 #+end_src
 
-The formula is rule-based only; there is no model training, behavioural
-tracking or external enrichment.
+The formula is rule-based; there is no model training, behavioural
+tracking or external enrichment. The assistant may propose a score beside
+it, below; the rule score stays the lead's score until a person accepts one.
+
+* AI score proposals
+
+Off by default. An organization turns it on with its =ai_lead_scoring=
+field (the organization's ordinary edit form); the AI module must be on and
+a provider configured. Turning the field or the AI module off hides the
+proposal block, refuses new proposals and refuses accepting a pending one.
+
+On a lead's page, *Ask the assistant for a score* (=POST /leads/:id/ai_score=,
+or =POST /api/v1/leads/:id/ai_score= for the API, editor role) sends the
+model the lead's own facts, numbered: source, company, notes, status,
+website, first-seen and last-activity dates, and up to 40 of its
+interactions (newest first, each at most 600 characters). Email address
+and phone are not sent. It goes on the toolless path between the
+=BEGIN RECORDS= / =END RECORDS= markers, so a lead's text cannot ask for a
+tool.
+
+The answer must be a whole score from 0 to 100 and at most five reasons,
+each naming the fact numbers it rests on. A reason is kept only when every
+fact it cites was given and every number it mentions appears in those
+facts; it is stored with the facts it came from, for example "Asked about
+25 seats (from: Notes)". An answer that is not that shape, a score outside
+0..100, or no reason left standing is refused and nothing is stored.
+
+The proposal is a =lead_score_proposal= record (proposed score, the rule
+score at the time, reasons, status =proposed=, =accepted= or =dismissed=,
+who decided and when). Only the service writes one; a generic create or
+update is refused. A lead has at most one pending proposal: asking again
+replaces it. *Accept* (=POST /lead_score_proposals/:id/accept=) saves the
+proposed score on the lead through the lead service, as an operator's
+score: it takes =score_manual= and a score history row, exactly like a typed
+score, and =leads rescore= returns it to the formula. *Dismiss* (=.../dismiss=)
+changes nothing on the lead. Both are one transaction, and the proposal's
+creation and decision are in the audit trail. Converted leads cannot be
+scored or accepted.
+
+=test-lead-ai-score= covers the proposal, grounding, accept, dismiss, the
+off switch, the refused generic write, the audit rows and the lead page,
+against a canned provider (no network). Migration
+=000948_sales_lead_score_proposals= checks the new table and switch.
 
 * Conversion is one transaction
 

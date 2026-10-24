@@ -11,6 +11,9 @@ static gchar *render(const gchar *format, JsonObject *values, gboolean html, GEr
 		g_autofree gchar *value = NULL;
 		JsonNode *node;
 		if (*p != '{') { g_string_append_c(out, *p++); continue; }
+		/* "{{" is a literal brace: a designed email's style sheet has
+		 * them, and a placeholder never starts with one. */
+		if (p[1] == '{') { g_string_append_c(out, '{'); p += 2; continue; }
 		end = strchr(p + 1, '}');
 		if (!end) goto invalid;
 		key = g_strndup(p + 1, end - p - 1);

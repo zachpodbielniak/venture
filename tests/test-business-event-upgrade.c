@@ -48,8 +48,6 @@ test_upgrade(void)
 	g_assert_true(venture_database_execute(database,
 		"DROP TABLE business_event_deliveries; DROP TABLE business_events;"
 		"ALTER TABLE webhooks DROP COLUMN business_events;"
-		/* Every version from 919 on, as the other upgrade tests do: a
-		 * later migration left recorded would make 919 out of order. */
 		"DELETE FROM schema_migrations WHERE version >= 919", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&context); g_clear_object(&database);

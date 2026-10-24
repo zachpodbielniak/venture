@@ -16,6 +16,22 @@ VENTURE_DECLARE_ENTITY(VentureMarketingSend, venture_marketing_send, MARKETING_S
 VENTURE_DECLARE_ENTITY(VentureMarketingRecipient, venture_marketing_recipient, MARKETING_RECIPIENT)
 #define VENTURE_TYPE_MARKETING_EVENT (venture_marketing_event_get_type())
 VENTURE_DECLARE_ENTITY(VentureMarketingEvent, venture_marketing_event, MARKETING_EVENT)
+#define VENTURE_TYPE_MARKETING_SENDING_DOMAIN (venture_marketing_sending_domain_get_type())
+VENTURE_DECLARE_ENTITY(VentureMarketingSendingDomain, venture_marketing_sending_domain, MARKETING_SENDING_DOMAIN)
+#define VENTURE_TYPE_MARKETING_TOPIC (venture_marketing_topic_get_type())
+VENTURE_DECLARE_ENTITY(VentureMarketingTopic, venture_marketing_topic, MARKETING_TOPIC)
+#define VENTURE_TYPE_MARKETING_PREFERENCE (venture_marketing_preference_get_type())
+VENTURE_DECLARE_ENTITY(VentureMarketingPreference, venture_marketing_preference, MARKETING_PREFERENCE)
+/**
+ * venture_marketing_winner_metric_get_type:
+ * Returns: the opens/clicks A/B winner rule enumeration
+ */
+GType venture_marketing_winner_metric_get_type(void) G_GNUC_CONST;
+/**
+ * venture_marketing_frequency_get_type:
+ * Returns: the any/weekly/monthly preference enumeration
+ */
+GType venture_marketing_frequency_get_type(void) G_GNUC_CONST;
 /**
  * venture_marketing_list_mode_get_type:
  * Returns: the static/segment audience mode enumeration
@@ -26,6 +42,11 @@ GType venture_marketing_list_mode_get_type(void) G_GNUC_CONST;
  * Returns: the contact/company/lead segment target enumeration
  */
 GType venture_marketing_target_get_type(void) G_GNUC_CONST;
+/**
+ * venture_marketing_channel_get_type:
+ * Returns: the email/text campaign channel enumeration
+ */
+GType venture_marketing_channel_get_type(void) G_GNUC_CONST;
 /**
  * venture_marketing_send_state_get_type:
  * Returns: the draft/preview/approved/paused/cancelled/complete enumeration

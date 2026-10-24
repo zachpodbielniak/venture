@@ -32,6 +32,18 @@ GType venture_sequence_suppression_reason_get_type(void) G_GNUC_CONST;
  * Returns: the open/click enumeration
  */
 GType venture_sequence_tracking_kind_get_type(void) G_GNUC_CONST;
+/**
+ * venture_sequence_branch_on_get_type:
+ * Returns: the none/opened/clicked/replied branch condition enumeration
+ */
+GType venture_sequence_branch_on_get_type(void) G_GNUC_CONST;
+/**
+ * venture_sequence_trigger_kind_get_type:
+ * Returns: the journey trigger enumeration
+ */
+GType venture_sequence_trigger_kind_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_SEQUENCE_TRIGGER (venture_sequence_trigger_get_type())
+VENTURE_DECLARE_ENTITY(VentureSequenceTrigger, venture_sequence_trigger, SEQUENCE_TRIGGER)
 #define VENTURE_TYPE_SEQUENCE (venture_sequence_get_type())
 VENTURE_DECLARE_ENTITY(VentureSequence, venture_sequence, SEQUENCE)
 #define VENTURE_TYPE_SEQUENCE_STEP (venture_sequence_step_get_type())

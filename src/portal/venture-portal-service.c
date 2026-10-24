@@ -159,6 +159,66 @@ venture_portal_service_revoke(VenturePortalService *self, VentureCustomerPortalA
 	return save_owned(self, VENTURE_ENTITY(access), actor, error);
 }
 
+/* The invitation mail for an access row, the bearer link in the private
+ * body only. Sending and previewing both build it here. */
+VentureMailMessage *
+venture_portal_service_invitation_message(VentureEntity *access, const gchar *base_url)
+{
+	VentureMailMessage *message;
+	gboolean supplier = g_strcmp0(venture_entity_get_entity_name(access), "supplier_portal_access") == 0;
+	g_autofree gchar *token = NULL, *email = NULL, *body = NULL, *key = NULL;
+	g_autofree gchar *base = g_strdup(base_url != NULL ? base_url : "");
+	g_object_get(access, "token", &token, "email", &email, NULL);
+	while (g_str_has_suffix(base, "/"))
+		base[strlen(base) - 1] = '\0';
+	body = g_strdup_printf("Your private Venture accounting portal invitation:\n%s/%s/%s\nKeep this link private.",
+		base, supplier ? "supplier" : "portal", token);
+	key = g_strdup_printf("portal-invitation:%s", venture_entity_get_uuid(access));
+	message = venture_mail_message_new();
+	g_object_set(message, "organization-id", venture_entity_get_organization_id(access), "to", email,
+		"subject", supplier ? "Your supplier portal invitation" : "Your customer portal invitation",
+		"text-body", "Private accounting portal invitation", "private-text-body", body,
+		"idempotency-key", key, "related-type", venture_entity_get_entity_name(access),
+		"related-id", venture_entity_get_id(access), NULL);
+	return message;
+}
+
+static VentureMailMessage *
+invitation_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now, GPtrArray *notes, GError **error)
+{
+	g_autoptr(VentureEntity) access = venture_database_get(venture_context_get_database(context),
+		VENTURE_TYPE_CUSTOMER_PORTAL_ACCESS, id, NULL);
+	g_autofree gchar *base = NULL;
+	gboolean revoked = FALSE;
+	(void)now;
+	if (access == NULL || venture_entity_is_deleted(access) || venture_entity_get_organization_id(access) != org)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Portal access not found");
+		return NULL;
+	}
+	g_object_get(venture_context_get_config(context), "server-base-url", &base, NULL);
+	if (venture_string_is_empty(base))
+	{
+		refuse(error, "Invitations require server.base_url with a public HTTPS URL");
+		return NULL;
+	}
+	g_object_get(access, "revoked", &revoked, NULL);
+	if (revoked && notes != NULL)
+		g_ptr_array_add(notes, g_strdup("This access is revoked; its link no longer opens the portal."));
+	return venture_portal_service_invitation_message(access, base);
+}
+
+static const VentureMailPreviewKind invitation_kind = {
+	"portal-invitation", "Customer portal invitation", "receivables", "customer_portal_access",
+	"customer_portal_access", FALSE, invitation_preview
+};
+
+void
+venture_portal_preview_register(void)
+{
+	venture_mail_preview_register(&invitation_kind);
+}
+
 VentureEntity *
 venture_portal_service_send_invitation(VenturePortalService *self, const gchar *base_url,
 	gboolean supplier, gint64 organization_id, gint64 company_id, const gchar *email,
@@ -168,10 +228,6 @@ venture_portal_service_send_invitation(VenturePortalService *self, const gchar *
 	g_autoptr(VentureEntity) access = NULL;
 	g_autoptr(VentureMailMessage) message = NULL;
 	g_autoptr(VentureMailMessage) queued = NULL;
-	g_autofree gchar *token = NULL;
-	g_autofree gchar *body = NULL;
-	g_autofree gchar *key = NULL;
-	g_autofree gchar *base = NULL;
 	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
 	/* Do not mint unusable credentials or send them over an insecure origin. */
 	if (!venture_string_is_empty(base_url))
@@ -201,19 +257,7 @@ venture_portal_service_send_invitation(VenturePortalService *self, const gchar *
 		venture_portal_service_invite(self, organization_id, company_id, email, actor, error);
 	if (access == NULL)
 		goto fail;
-	g_object_get(access, "token", &token, NULL);
-	base = g_strdup(base_url);
-	while (g_str_has_suffix(base, "/"))
-		base[strlen(base) - 1] = '\0';
-	body = g_strdup_printf("Your private Venture accounting portal invitation:\n%s/%s/%s\nKeep this link private.",
-		base, supplier ? "supplier" : "portal", token);
-	key = g_strdup_printf("portal-invitation:%s", venture_entity_get_uuid(access));
-	message = venture_mail_message_new();
-	g_object_set(message, "organization-id", organization_id, "to", email,
-		"subject", supplier ? "Your supplier portal invitation" : "Your customer portal invitation",
-		"text-body", "Private accounting portal invitation", "private-text-body", body,
-		"idempotency-key", key, "related-type", venture_entity_get_entity_name(access),
-		"related-id", venture_entity_get_id(access), NULL);
+	message = venture_portal_service_invitation_message(access, base_url);
 	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
 	if (queued == NULL)
 		goto fail;

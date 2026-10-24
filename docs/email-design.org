@@ -1,0 +1,220 @@
+#+title: Designed email
+
+A designed email is a mail template built from blocks, in the business's
+own brand, instead of typed-in HTML. The assistant can design one from a
+few plain words; a person can fine-tune it block by block. It is the same
+=mail_template= record and the same template renderer every sender
+already uses -- invoices, reminders, report packs and campaigns all send
+what the design says, with no second template system beside it.
+
+Everything here is in the =mail= module and is changed only by an owner
+or administrator of the organization. Other members can read it.
+
+* Brand settings
+
+One =email_brand= record per organization (=/e/email_brand=):
+
+| Field | What it is |
+|-------+------------|
+| Business name | Shown in the header when there is no logo, and in the footer |
+| Logo | One of the organization's hosted images |
+| Primary colour | Headings and buttons, written =#rrggbb= |
+| Accent colour | A second button colour |
+| Text and background colours | The words, and the surround of the message |
+| Dark-mode colours | Primary, text and background in dark mode; left empty, they are worked out from the light ones (the primary is lightened until it reads on the dark card) |
+| Font | =sans=, =serif=, =rounded=, =system= or =mono=: each a stack of faces every computer has, ending in a generic fallback, because mail apps cannot load web fonts reliably |
+| Website | The business's own address, used for the header logo's link and offered to the designer |
+| Postal address | Shown in the footer |
+
+An organization with no brand gets a plain look: neutral colours, a
+sans-serif stack and its name in place of a logo.
+
+After a brand or a shared section changes, a template picks it up the
+next time it is saved. To rebuild every designed template at once:
+=venturectl act mail_template rebuild_designs organization_id=N=.
+
+* Hosted images
+
+Pictures in email have to be on a public address: a mail app fetching
+one sends no cookie and no password. *Upload an image* on the builder
+page (or =POST /email-design/images=, multipart, fields =file=, =alt=
+and =organization_id=) stores it and gives it an address like
+
+#+begin_example
+https://books.example.com/i/1/ghjk...wxyz.png
+#+end_example
+
+- PNG, JPEG, GIF and WebP only, up to 5 MB and 8000 pixels on a side.
+  What the file is, and its width and height, are read from its bytes --
+  never from the name or the type the browser declared. SVG is refused:
+  it can carry script.
+- The last part of the address is 32 random characters (160 bits) and is
+  the only thing that makes an image findable. It works only under its
+  own organization's number; another number answers /not found/.
+- Served with =Cache-Control: public, max-age=31536000, immutable= and
+  =X-Content-Type-Options: nosniff=. An image never changes under its
+  address -- a new upload is a new address -- and a deleted one stops
+  being served.
+- The bytes are kept in the ordinary attachment store as a document; the
+  =hosted_image= record holds the token and what was read from the file,
+  and nothing but the upload can make or change one.
+
+A product's =image_url= can be a hosted image's address, which is how the
+designer finds photos of what the business sells.
+
+* Blocks
+
+A design is JSON on the template's =design= field:
+
+#+begin_src json
+{"preheader": "Book a tune-up by Nov 15 and save 10%.",
+ "blocks": [
+   {"type": "header"},
+   {"type": "text", "heading": "Get ready for fall", "body": "First paragraph.\n\nSecond."},
+   {"type": "button", "label": "Book now", "url": "https://brightside.example.com/book"},
+   {"type": "footer"}]}
+#+end_src
+
+| Block | Fields |
+|-------+--------|
+| =header= | =show_logo=, =tagline=, =align= -- the logo, or the business name |
+| =text= | =heading=, =body= (blank line between paragraphs), =align= |
+| =image= | =image_id= (a hosted image) or =src= (an address), =alt= (required), =width= (16-600), =link= |
+| =button= | =label=, =url=, =size= (small, medium, large), =align=, =color= (primary, accent) |
+| =columns= | =columns=: two or three, each ={"blocks": [...]}= of text, image, button or divider blocks; they stack on a phone |
+| =divider= | -- |
+| =social= | =links=: up to eight ={"network", "url"}= (facebook, instagram, x, linkedin, youtube, tiktok, pinterest, website) |
+| =video= | =url= (the page where it plays), =poster_image_id= or =poster_src=, =alt=, =caption= |
+| =footer= | =text=, =address= (the brand's address when left out) |
+| =section= | =section_id= -- a shared section, put in place |
+
+Validation is strict: an unknown block type or field, a missing required
+field, a size out of bounds, more than 40 blocks, more than 64 KB, or any
+address that is not =http= or =https= with a host is refused with a
+sentence saying which block and why. Text may hold placeholders such as
+={first_name}=, filled from the record when the email is sent; a literal
+brace is written ={{=.
+
+** What the HTML is
+
+The renderer writes for the mail apps people use: table layout, every
+style inline, a body 600 pixels wide that narrows on a phone, buttons that
+are padded links (they work with images off and in Outlook), alt text and
+a width on every image, a =color-scheme= meta tag and a
+=prefers-color-scheme: dark= block with the brand's dark colours (and the
+same rules for Outlook.com's own darkening), and Outlook conditional
+comments where they are cheap. There is no script, no form and no linked
+style sheet. The plain-text alternative is written from the same blocks:
+headings, paragraphs, every button and link as =Label: address=.
+
+** Video
+
+No mail app plays video inside a message. A video block is a poster -- a
+picture with a play button drawn over it -- that links to the page where
+the video plays, with the caption as a text link beneath it. Outlook for
+Windows, which cannot draw a picture behind a button, gets the poster as
+an ordinary linked picture; the poster with the button carries
+=mso-hide:all= so Outlook skips it. It is not wrapped in a "not Outlook"
+comment: some webmail (SOGo, the webmail of Mailcow) strips such a
+section as a comment, and the poster vanished there.
+
+** Dark mode
+
+The dark block applies in apps that honour =prefers-color-scheme=. Some
+apps ignore it and some invert a message's colours on their own; no
+email can control that. A logo, usually dark ink on nothing, sits on a
+light chip in dark mode so it does not disappear.
+
+* Shared sections
+
+An =email_section= is a saved group of blocks -- a header, a footer, a
+signature -- that designs name with ={"type": "section", "section_id": N}=
+and that is rendered in place. Sections may name sections, four deep. A
+section that would include itself, through any chain, is refused when it
+is saved; so is a design naming a section the organization does not have.
+
+* Versions and undo
+
+Every change to a design -- by hand, by the designer from a brief, or by
+an instruction -- is saved as an =email_design_version=: its number, the
+design exactly as it was, what made it (=manual=, =ai=, =ai-edit=) and the
+brief or instruction. *Undo the last change* puts the template back to the
+version before its current one, byte for byte, and its bodies are rebuilt
+to exactly what they were. Versions stay in the history; the next change
+is numbered after the newest one. Only the design service writes versions.
+
+* The builder
+
+=/email-design= lists designed templates and starts a new one;
+=/email-design/ID= is the builder: a brief box, a box for changes in
+words, *Undo*, the blocks in order with up, down, remove and an editor for
+each block's JSON, *Add a block*, image upload, and the live preview --
+the same frames and checks as [[file:mail.org::*Previews and pre-send checks][the mail preview]], phone width in light and
+dark. Each action is an htmx post that swaps the builder in place; without
+script it is an ordinary form. The full preview, every width in both
+schemes, is =/mail/preview/email-design/ID=.
+
+A new block starts from what the organization has -- its newest image,
+its website. A button or social block with no website to point at is
+refused rather than filled with an address nobody gave.
+
+* The AI designer
+
+Write what the email is for in plain words -- "fall furnace tune-up, 10%
+off, ends Nov 15" -- in the builder's brief box, or ask the assistant,
+which is offered the =mail_template= actions =design_email=,
+=edit_design= and =undo_design= (always staged for a person to approve).
+
+The designer gathers the organization's brand (name, colours, font,
+website, address, whether it has a logo), its hosted images and up to
+twenty products with their prices, links and photos, and sends them to
+the configured AI provider as data, on the toolless path, between =BEGIN
+RECORDS= and =END RECORDS=. What comes back must be a subject and a design;
+it is then held to the following, in code:
+
+- The same strict validation as a design typed by hand.
+- Every address in it must appear in the brief or the records, and every
+  image must be one of the organization's.
+- *The grounding rule.* Every number in its words -- a price, an amount,
+  a percentage, a date -- and the word "free" must appear in the brief
+  or the records. A sentence in a paragraph or footer that breaks it is
+  removed, and the builder says which and why; one in a heading, a
+  button, a caption, alt text or the subject refuses the whole design and
+  nothing is saved. The check does no arithmetic: "10% off $129.00"
+  written as "$116.10" is a number nobody gave, so it goes. That is the
+  safe way to be wrong.
+
+With no logo the design uses the plain look, and the designer asks once
+for a logo -- once per organization. After it has asked, or after *No
+logo, thanks*, or once a logo is chosen, it never asks again.
+
+Changes by words ("make the button bigger", "swap the photo", "shorter")
+send the current design with the instruction and come back under the
+same rules as a new version, so *Undo* reverses any of them.
+
+* Rendering in mail apps: what is and is not checked
+
+No test runs Gmail, Outlook or Apple Mail. =tests/test-email-design.c=
+holds every rendered message to a structural check instead: table layout,
+inline styles present, no script, form or linked style sheet, nothing
+wider than 600 pixels, alt text and a width on every image, the dark-mode
+block and colour-scheme tag, Outlook conditionals, and a plain-text
+alternative of real length. It says the message is built from what every
+major client renders; it cannot say how a given client draws it. Look at
+the preview's frames, and send yourself a test, before a large send.
+
+** What was seen in real mail apps
+
+A branded design with every block, and the plain look with three
+columns, were sent through the SMTP transport and looked at as received:
+
+- Thunderbird (desktop), light and dark, wide and narrow windows:
+  everything shows and reads. Thunderbird ignores the message's own
+  style rules: columns stay side by side in a narrow window, and in
+  dark mode it darkens the message itself (links in its own blue)
+  instead of using the design's dark colours.
+- SOGo webmail, light and dark, desktop and phone widths: everything
+  shows once remote pictures are allowed; before that the alt text
+  shows. SOGo's dark switch darkens only its own frame; the message
+  stays in its light colours. Columns stay side by side at phone width.
+- Gmail, Outlook and Apple Mail were not looked at by a test run.

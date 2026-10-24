@@ -116,6 +116,7 @@
 #include "referrals/venture-referral-records.h"
 #include "jobs/venture-job-records.h"
 #include "mail/venture-mail-sync-records.h"
+#include "emaildesign/venture-email-design-records.h"
 
 #include "leads/venture-lead-records.h"
 #include "activities/venture-activity-records.h"
@@ -141,6 +142,10 @@
 #include "arbitrage/venture-arbitrage-records.h"
 #include "forms/venture-forms-records.h"
 #include "planner/venture-planner-records.h"
+#include "leads/venture-lead-ai-score-records.h"
+#include "telephony/venture-telephony-records.h"
+#include "inbox/venture-inbox-records.h"
+#include "aimessages/venture-ai-messages-records.h"
 
 
 /* --- Configuration ------------------------------------------------------- */
@@ -379,6 +384,37 @@
 #include "planner/venture-planner.h"
 #include "planner/venture-calendar-view.h"
 #include "planner/venture-planner-roadmap.h"
+/* After the context: a preview kind's builder is handed one. */
+#include "mail/venture-mail-preview.h"
+/* After the context and the mail records: a design renders a mail_template. */
+#include "emaildesign/venture-email-design.h"
+/* After the marketing service, the integrations and the mail sync: the
+ * provider feed, DSNs, domain check, warm-up and per-send report. */
+#include "marketing/venture-deliverability.h"
+/* Audiences and journeys: tags, segments, preferences, A/B, local time,
+ * resends, branches and triggers (docs/journeys.org). */
+#include "core/venture-tags.h"
+#include "marketing/venture-marketing-audiences.h"
+#include "sequences/venture-sequence-journeys.h"
+/* Sales: AI lead score proposals, token mailbox sign-in and replying from
+ * the timeline (docs/leads.org, docs/mail.org). */
+#include "leads/venture-lead-ai-score.h"
+#include "mail/venture-mail-oauth.h"
+#include "mail/venture-mail-reply.h"
+/* Phone and text: the provider interface, numbers, the service and the
+ * text channel for campaigns (docs/telephony.org). */
+#include "telephony/venture-phone.h"
+#include "telephony/venture-telephony-connector.h"
+#include "telephony/venture-telephony-service.h"
+#include "marketing/venture-marketing-text.h"
+/* One inbox: the channel interface and the conversation service
+ * (docs/inbox.org). */
+#include "inbox/venture-inbox-source.h"
+#include "inbox/venture-inbox-service.h"
+/* AI on inbound and outbound messages (docs/ai-messages.org). */
+#include "aimessages/venture-ai-messages.h"
+/* One settings API for the workflow settings (docs/settings.org). */
+#include "settings/venture-settings.h"
 
 #endif /* VENTURE_SERVER_BUILD */
 

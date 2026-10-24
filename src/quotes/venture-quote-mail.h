@@ -20,6 +20,28 @@
 gboolean venture_quote_mail_enqueue(VentureDatabase *database, VentureEntity *quote,
 	VentureEntity *delivery, const gchar *base_url, const VentureActor *actor, GError **error);
 /**
+ * venture_quote_mail_message:
+ * @database: quote's database
+ * @quote: the quote being sent
+ * @base_url: public HTTPS origin
+ * @acceptance_url: the acceptance path, resolved against @base_url
+ * @error: (out) (optional): an unusable origin or a missing recipient
+ *
+ * Builds the quote email venture_quote_mail_enqueue() queues, writing
+ * nothing. The acceptance link goes only in the private text body.
+ *
+ * Returns: (transfer full) (nullable): the unsaved message
+ */
+VentureMailMessage *venture_quote_mail_message(VentureDatabase *database, VentureEntity *quote,
+	const gchar *base_url, const gchar *acceptance_url, GError **error);
+/**
+ * venture_quote_mail_preview_register:
+ *
+ * Registers the quote mail preview kind.
+ */
+void venture_quote_mail_preview_register(void);
+
+/**
  * venture_quote_mail_remind:
  * @database: quote's database, inside the remind transaction
  * @quote: a sent quote

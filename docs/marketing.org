@@ -80,9 +80,9 @@ not an edit erasing what was previously recorded.
 Unsubscribe, hard bounce and complaint use the existing organization-scoped
 =suppression= record and sequence exit mechanism. Suppression is retained
 through ordinary imports, merges and address changes. New permission does
-not clear it. The initial preference policy is deliberately one organization-
-wide marketing stop, without automatic resubscription or topic-specific
-preferences. A necessary invoice, receipt, password notice or other
+not clear it. Stop-everything is that one organization-wide marketing stop,
+without automatic resubscription; topics and frequency are the preference
+centre's (below). A necessary invoice, receipt, password notice or other
 transactional message is outside this marketing policy.
 
 * Execute, pause and recover
@@ -94,7 +94,9 @@ only enqueues; applications may deliver through =VentureMailOutbox= themselves.
 A missing organization SMTP binding is a visible outbox failure, never a
 fallback to installation-wide credentials.
 
-The interval is 1–86,400 seconds, with a 60-second default. Both enqueue and
+The interval is 1–86,400 seconds, with a 60-second default. A daily warm-up
+limit per organization holds delivery until the next UTC day once reached
+(see [[file:deliverability.org][Deliverability]], "Warm-up"). Both enqueue and
 actual submission retain their next permitted time. There is at most one
 unresolved outbox identity per send. A repeat sweep, process restart or
 transport retry uses the same recipient key, outbox key and Message-ID.
@@ -160,9 +162,10 @@ Use a recipient's *Record delivery feedback* action with =hard_bounce=,
 organization-scoped event identity. The recipient must have an actual outbox
 attempt and the evidence cannot predate approval. Replays retain one event;
 conflicting reuse of an identity is refused. Record the reviewed DSN/provider
-reference in the source. This is an implemented operator workflow and a typed
-service seam for a future authenticated provider consumer; no unauthenticated
-provider bounce webhook is installed.
+reference in the source. The same service seam takes bounces and complaints
+from delivery status notifications in a synced mailbox and from a signed,
+per-organization provider feed; no unauthenticated feed exists. See
+[[file:deliverability.org][Deliverability]] for both, and for =delivered= evidence.
 
 A hard bounce or complaint creates retained address suppression and stops
 pending outreach. A temporary bounce records evidence without suppression.
@@ -191,6 +194,11 @@ scanners, image proxies and bots can produce these requests: an observation
 is not proof a human read a message. Turning off organization tracking stops
 new observations and prevents queued tracked snapshots from being delivered;
 create a new untracked send rather than silently changing approved content.
+
+Opens and clicks judged a machine's (a known scanner or prefetching proxy,
+or within seconds of acceptance) are retained with their reason and counted
+apart, never as opens; replies are counted by the sequence reply rule. Both
+are described, with their limits, in [[file:deliverability.org][Deliverability]].
 
 =marketing_performance= is an approval cohort: its period selects
 =approved_at=. Each send reports its approved eligible count, preview
@@ -247,3 +255,88 @@ Eligible contacts receive a seven-day personal link, frozen only in private
 delivery content and delivered through the ordinary approved outbox path.
 Non-contact audience members are excluded. The form exposes only published
 contact mappings; see [[file:forms.org][Forms]] for scopes, expiry and duplicate limits.
+
+* Tags and behaviour
+
+Tags are the =tags= field contacts and companies already have, one model.
+A tag is a whole entry between commas, trimmed, any capitals: "vip" is in
+"Early, VIP" and not in "vipers". The *Add tag* and *Remove tag* actions
+(=add_tag=, =remove_tag=, parameter =tag=) are ordinary audited saves; a tag
+is up to 64 characters with no comma or line break.
+
+A saved search (=mode=segment=) may add, beside its field filters:
+
+| Filter                  | Who                                                        |
+|-------------------------+------------------------------------------------------------|
+| =tag=vip=               | records with that tag (=tag=a,b= is both)                  |
+| =opened_within_days=N=  | contacts who opened a campaign or journey email in the last N days |
+| =clicked_within_days=N= | contacts who clicked one                                   |
+| =replied_within_days=N= | contacts with anything inbound from them (the reply rule)  |
+| =bought_within_days=N=  | contacts an invoice was paid for (Attention of)            |
+| =booked_within_days=N=  | contacts who booked a meeting (the feed's =booking.created=) |
+
+Opens and clicks are people's only: lane 3's machine judgement keeps a mail
+scanner's open out of =opened_at=. N is 1 to 3650; behaviour filters are for
+contact segments only. Criteria combine with "and". The window counts back
+from the preview, which freezes the result like any segment; more than
+10,000 people behaving one way is refused, not truncated.
+
+* The preference centre
+
+The link in every campaign message, =/marketing/u/<token>=, is the
+preference page. It shows the organization's offered topics
+(=marketing_topic=, editors make them), how often (whenever there is
+something to send, at most one a week, at most one a month) and a button
+that stops everything. It names no person and no address. Saving needs only
+the link, like unsubscribing; one-click unsubscribe (RFC 8058) is unchanged.
+An operator can record what somebody asked by phone
+(=venture_marketing_service_record_preferences()=).
+
+A send with a *topic* leaves out anybody who turned it off
+(=topic_turned_off=). A weekly or monthly choice leaves out anybody who had
+a campaign message or a marketing journey email in the last 7 or 30 days
+(=frequency=). Both are decided at preview; a topic turned off after
+approval cancels that recipient at the run, and the frequency is asked
+again before each message is queued. Marketing journeys honour the same
+choices ([[file:journeys.org][Journeys]]). No preference is "everything, as often as you send".
+
+* A/B tests
+
+Give a draft a *B subject* and/or *B text*/*B HTML* (empty keeps A's) and a
+*test share* (1 to 100 percent). The preview freezes both arms for everyone
+and splits deterministically: recipients are ordered by a digest of the send
+and their address, the first share (at least two) is the test, alternately
+A and B, and the rest wait. A re-preview or a restart cannot move anybody.
+
+The bounded delivery sends the test arms first. *Winner after* hours (4 when
+empty, 1 to 168) after the last test message is queued, the run picks the
+winner by people's opens, or clicks if *Winner by* says so: B wins only with
+a strictly higher rate, so a tie or no evidence is A. The rest are then sent
+the winner. An A/B test needs tracking, and cannot be combined with a
+local-time send. The send's report shows both arms and the rest.
+
+* Recipient local time
+
+*Send at local time* with a *local hour* (0 to 23) and optionally a *local
+day* makes each recipient due at that hour on the wall clock in their zone:
+the contact's =timezone=, else the organization's, else UTC. Daylight saving
+is GLib's zone database: an hour the clocks skip is sent at the first moment
+after it. With no day, it is the next time the hour comes round after
+approval; a day whose hour has already passed in that zone is sent straight
+away rather than never. The due moments are fixed at approval. The bounded
+delivery (one recipient per interval) and the warm-up still decide how fast,
+so recipients due at the same hour still go one at a time.
+
+* Resend to non-openers
+
+*Resend to non-openers* on an approved send that has sent (with tracking)
+makes a new draft with an optional new subject and a number of days (0 to
+365, 3 by default). Its preview takes the first send's recipients whose
+message went out at least that many days ago with no human open; anybody
+who opened, unsubscribed, bounced, complained or is suppressed is excluded
+with the reason, and permission is checked again as for any send. It is
+approved and run like any send.
+
+Migration =000946_marketing_audiences.sql= checks the new columns; existing
+sends have no test, no local time and no topic and behave as before.
+=tests/test-audiences.c= and =tests/test-venture-tags.c= cover each.

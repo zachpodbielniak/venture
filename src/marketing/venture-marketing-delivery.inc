@@ -25,6 +25,17 @@ static gboolean recipient_allowed(VentureMarketingService *self, VentureEntity *
 		if (withdrawn || g_strcmp0(address, email) || g_strcmp0(purpose, "marketing") ||
 			number(consent, subject_field(G_OBJECT_TYPE(source))) != venture_entity_get_id(source)) return FALSE;
 	}
+	{
+		/* A topic turned off after approval stops the message; how often
+		 * is judged before queueing, where the run's clock is known. */
+		g_autoptr(VentureEntity) send = get_row(self, VENTURE_TYPE_MARKETING_SEND, org, number(recipient, "send-id"), error);
+		const gchar *why = NULL;
+		if (!send) return FALSE;
+		if (!venture_marketing_preference_allows(self->database, org, email, number(send, "topic-id"), NULL, &why, error)) {
+			*reason = "The recipient turned this topic off";
+			return FALSE;
+		}
+	}
 	tracking = string(recipient, "tracking-hash");
 	if (tracking && *tracking) {
 		organization = get_row(self, VENTURE_TYPE_ORGANIZATION, org, org, error);
@@ -194,6 +205,8 @@ gboolean venture_marketing_service_transition(VentureMarketingService *self, gin
 	state = choice(send, "state"); next = state;
 	if (!g_strcmp0(transition, "approve") && state == 1 && number(send, "eligible-count") > 0) {
 		next = 2; g_object_set(send, "approved-at", now, "approved-by", actor && actor->name ? actor->name : "system", NULL);
+		/* Local time: each recipient's due moment, from the approval on. */
+		if (flag(send, "local-time") && !schedule_local(self, send, now, actor, error)) goto fail;
 	} else if (!g_strcmp0(transition, "pause") && state == 2) next = 3;
 	else if (!g_strcmp0(transition, "resume") && state == 3) next = 2;
 	else if (!g_strcmp0(transition, "cancel") && state >= 1 && state <= 4) {
@@ -223,6 +236,57 @@ gboolean venture_marketing_service_transition(VentureMarketingService *self, gin
 fail:
 	venture_database_rollback(self->database); return FALSE;
 }
+/* The outbox message for one frozen recipient: exactly the approved
+ * snapshot, which validate_mail() holds the enqueue to. The run and the
+ * preview both build it here. */
+static VentureMailMessage *recipient_message(VentureEntity *recipient)
+{
+	const gchar *fields[] = { "subject", "text-body", "html-body", "private-text-body", "private-html-body" };
+	VentureMailMessage *message = venture_mail_message_new();
+	g_autofree gchar *email = string(recipient, "email"), *url = string(recipient, "unsubscribe-url");
+	g_autofree gchar *key = g_strconcat("marketing:", venture_entity_get_uuid(recipient), NULL);
+	guint j;
+	for (j = 0; j < G_N_ELEMENTS(fields); j++) {
+		g_autofree gchar *value = string(recipient, fields[j]);
+		g_object_set(message, fields[j], value, NULL);
+	}
+	g_object_set(message, "organization-id", venture_entity_get_organization_id(recipient), "to", email,
+		"private-unsubscribe-url", url, "related-type", "marketing_recipient",
+		"related-id", venture_entity_get_id(recipient), "idempotency-key", key, NULL);
+	return message;
+}
+static VentureMailMessage *campaign_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now,
+	GPtrArray *notes, GError **error)
+{
+	VentureMarketingService *self = venture_marketing_service_get(venture_context_get_database(context));
+	g_autoptr(VentureEntity) recipient = NULL;
+	g_autofree gchar *state = NULL;
+	const gchar *reason = NULL;
+	(void)now;
+	recipient = get_row(self, VENTURE_TYPE_MARKETING_RECIPIENT, org, id, NULL);
+	if (!recipient) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Campaign recipient not found");
+		return NULL;
+	}
+	state = string(recipient, "state");
+	if (!g_strcmp0(state, "excluded")) {
+		g_autofree gchar *why = string(recipient, "eligibility");
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "This recipient is excluded (%s), so nothing is sent to it", why ? why : "excluded");
+		return NULL;
+	}
+	if (notes && g_strcmp0(state, "eligible") && g_strcmp0(state, "queued"))
+		g_ptr_array_add(notes, g_strdup_printf("This recipient is %s; nothing more will be sent to it.", state));
+	else if (notes && !recipient_allowed(self, recipient, &reason, NULL))
+		g_ptr_array_add(notes, g_strdup_printf("The run would not send this now: %s.", reason ? reason : "permission is no longer valid"));
+	return recipient_message(recipient);
+}
+static const VentureMailPreviewKind campaign_kind = {
+	"campaign", "Campaign (one recipient)", "marketing", "marketing_recipient", "marketing_recipient", TRUE, campaign_preview
+};
+void venture_marketing_preview_register(void)
+{
+	venture_mail_preview_register(&campaign_kind);
+}
 gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gint64 send_id,
 	guint limit, GDateTime *now, const VentureActor *actor, GError **error)
 {
@@ -232,6 +296,7 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 	g_autoptr(GDateTime) next = NULL, approved = NULL;
 	guint i;
 	gint count = 0;
+	gboolean arms_only = FALSE;
 	g_return_val_if_fail(VENTURE_IS_MARKETING_SERVICE(self), -1);
 	if (!allowed(self, org, error)) return -1;
 	if (!now || limit < 1 || limit > 100) { refuse(error, "Run requires a clock and limit 1 through 100"); return -1; }
@@ -247,36 +312,92 @@ gint venture_marketing_service_run(VentureMarketingService *self, gint64 org, gi
 		if (!last) goto fail;
 		if (!g_strcmp0(state, "queued") || !g_strcmp0(state, "failed") || !g_strcmp0(state, "sending") || !g_strcmp0(state, "uncertain")) goto done;
 	}
+	/* The warm-up: once today's limit for the organization's sending
+	 * domain is reached, the send waits for the next UTC day rather than
+	 * skipping anybody (docs/deliverability.org). */
+	if (!text_send(send)) {
+		gint64 cap = 0, used = 0;
+		if (!venture_deliverability_ramp_status(self->database, org, now, NULL, &cap, &used, error)) goto fail;
+		if (cap > 0 && used >= cap) {
+			g_autoptr(GDateTime) utc = g_date_time_to_utc(now);
+			g_autoptr(GDateTime) midnight = g_date_time_new_utc(g_date_time_get_year(utc), g_date_time_get_month(utc), g_date_time_get_day_of_month(utc), 0, 0, 0);
+			g_autoptr(GDateTime) tomorrow = midnight ? g_date_time_add_days(midnight, 1) : NULL;
+			if (!tomorrow) { refuse(error, "Warm-up limit exceeds calendar bounds"); goto fail; }
+			g_object_set(send, "next-enqueue-at", tomorrow, NULL);
+			if (!save(self, send, actor, error)) goto fail;
+			goto done;
+		}
+	}
+	/* An A/B test: the arms first, then the rest wait for the winner. */
+	{
+		gboolean hold = FALSE;
+		if (!ab_gate(self, send, now, &hold, &arms_only, actor, error)) goto fail;
+		if (hold) goto done;
+	}
 	venture_query_set_organization(query, org); venture_query_set_limit(query, limit);
 	venture_query_add_filter_int(query, "send-id", VENTURE_FILTER_OP_EQ, send_id, NULL);
 	venture_query_add_filter_string(query, "state", VENTURE_FILTER_OP_EQ, "eligible", NULL);
+	if (arms_only) {
+		g_autoptr(GPtrArray) arms = g_ptr_array_new_with_free_func(g_free);
+		g_ptr_array_add(arms, g_strdup("a")); g_ptr_array_add(arms, g_strdup("b"));
+		venture_query_add_filter(query, "variant", VENTURE_FILTER_OP_IN, arms, NULL);
+	}
+	if (flag(send, "local-time")) {
+		/* Due in the recipient's own zone; the soonest first. */
+		g_autofree gchar *cutoff = venture_time_to_string(now);
+		venture_query_add_filter_string(query, "due-at", VENTURE_FILTER_OP_LTE, cutoff, NULL);
+		venture_query_add_order(query, "due-at", VENTURE_SORT_ASCENDING, NULL);
+	}
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	rows = venture_database_find(self->database, query, error);
 	if (!rows) goto fail;
-	if (!rows->len) { g_object_set(send, "state", 5, NULL); if (!save(self, send, actor, error)) goto fail; }
+	if (!rows->len) {
+		g_autoptr(GPtrArray) left = NULL;
+		/* Nobody due yet is not finished: later zones, or the rest. */
+		if (flag(send, "local-time") || arms_only) {
+			g_autoptr(VentureQuery) remaining = venture_query_new(VENTURE_TYPE_MARKETING_RECIPIENT);
+			venture_query_set_organization(remaining, org); venture_query_set_limit(remaining, 1);
+			venture_query_add_filter_int(remaining, "send-id", VENTURE_FILTER_OP_EQ, send_id, NULL);
+			venture_query_add_filter_string(remaining, "state", VENTURE_FILTER_OP_EQ, "eligible", NULL);
+			left = venture_database_find(self->database, remaining, error);
+			if (!left) goto fail;
+		}
+		if (!left || !left->len) { g_object_set(send, "state", 5, NULL); if (!save(self, send, actor, error)) goto fail; }
+	}
 	for (i = 0; i < rows->len; i++) {
 		VentureEntity *recipient = g_ptr_array_index(rows, i);
 		g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
-		g_autofree gchar *email = NULL, *key = NULL, *url = NULL;
 		const gchar *reason = NULL;
-		const gchar *fields[] = { "subject", "text-body", "html-body", "private-text-body", "private-html-body" };
-		guint j;
+		if (text_send(send)) {
+			/* A text: the telephony send path checks consent and quiet
+			 * hours again when it sends; pacing is the send's interval. */
+			gboolean texted = FALSE;
+			if (!text_queue_recipient(self, send, recipient, now, &texted, actor, error)) goto fail;
+			if (!texted) continue;
+			g_clear_pointer(&next, g_date_time_unref); next = g_date_time_add_seconds(now, number(send, "interval-seconds"));
+			if (!next) { refuse(error, "Run interval exceeds calendar bounds"); goto fail; }
+			g_object_set(send, "next-enqueue-at", next, NULL);
+			if (!save(self, send, actor, error)) goto fail;
+			count++; break;
+		}
 		if (!recipient_allowed(self, recipient, &reason, error)) {
 			if (error && *error) goto fail;
 			g_object_set(recipient, "state", "cancelled", NULL);
 			if (!save(self, recipient, actor, error)) goto fail;
 			continue;
 		}
-		message = venture_mail_message_new();
-		for (j = 0; j < G_N_ELEMENTS(fields); j++) {
-			g_autofree gchar *value = string(recipient, fields[j]);
-			g_object_set(message, fields[j], value, NULL);
+		{
+			g_autofree gchar *email = string(recipient, "email");
+			const gchar *why = NULL;
+			if (!venture_marketing_preference_allows(self->database, org, email, number(send, "topic-id"), now, &why, error)) {
+				if (error && *error) goto fail;
+				g_object_set(recipient, "state", "cancelled", NULL);
+				if (!save(self, recipient, actor, error)) goto fail;
+				continue;
+			}
 		}
-		email = string(recipient, "email"); url = string(recipient, "unsubscribe-url");
-		key = g_strconcat("marketing:", venture_entity_get_uuid(recipient), NULL);
-		g_object_set(message, "organization-id", org, "to", email, "private-unsubscribe-url", url,
-			"related-type", "marketing_recipient", "related-id", venture_entity_get_id(recipient),
-			"idempotency-key", key, "next-attempt-at", now, NULL);
+		message = recipient_message(recipient);
+		g_object_set(message, "next-attempt-at", now, NULL);
 		self->enqueue_recipient = recipient;
 		queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
 		self->enqueue_recipient = NULL;

@@ -590,6 +590,8 @@ venture_lead_service_save_hook(VentureLeadService *self, VentureEntity *entity,
 		return venture_lead_routing_validate_rule(self->database, entity, error);
 	if (VENTURE_IS_LEAD_SCORE_HISTORY(entity))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "score history is written only by the scoring formula");
+	if (VENTURE_IS_LEAD_SCORE_PROPOSAL(entity))
+		return venture_lead_ai_score_check_write(entity, error);
 	if (VENTURE_IS_INTERACTION(entity))
 	{
 		gint64 lead_id = 0, company_id = 0, contact_id = 0, deal_id = 0;

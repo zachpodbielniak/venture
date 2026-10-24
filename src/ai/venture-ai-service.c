@@ -2676,6 +2676,8 @@ venture_ai_make_tool(
 #include "pipelines/venture-pipeline-ai.inc"
 #include "venture-ai-actions-private.h"
 
+#include "venture-ai-settings-tools.inc"
+
 static void
 venture_ai_service_register_tools(VentureAiService *self)
 {
@@ -3094,6 +3096,10 @@ venture_ai_service_register_tools(VentureAiService *self)
 	 * capability it was never told about, and refusing calls it believes
 	 * it has wastes turns.
 	 */
+	/* The workflow settings: read under every policy, changed only by
+	 * staging (docs/settings.org). */
+	venture_ai_settings_tools_register(self, VENTURE_AI_POLICY_READ_ONLY != self->policy);
+
 	if (VENTURE_AI_POLICY_READ_ONLY == self->policy)
 		return;
 
@@ -3489,6 +3495,24 @@ venture_ai_service_complete_for_organization(VentureAiService *self, gint64 org,
 {
 	g_autoptr(VentureAiService) bound = venture_ai_service_for_organization(self, org, error);
 	return bound ? venture_ai_service_complete(bound, system_prompt, user_text, error) : NULL;
+}
+
+gchar *
+venture_ai_service_complete_attributed(VentureAiService *self, gint64 org, const gchar *system_prompt,
+	const gchar *user_text, gchar **provider, gchar **model, GError **error)
+{
+	g_autoptr(VentureAiService) bound = venture_ai_service_for_organization(self, org, error);
+	gchar *reply = bound ? venture_ai_service_complete(bound, system_prompt, user_text, error) : NULL;
+	/* The provider the turn used, which for an organization binding is
+	 * made for the turn and gone with it. */
+	if (reply != NULL && bound->provider != NULL)
+	{
+		if (provider != NULL)
+			*provider = g_strdup(ai_provider_get_name(bound->provider));
+		if (model != NULL)
+			*model = g_strdup(ai_provider_get_default_model(bound->provider));
+	}
+	return reply;
 }
 
 /* --- Answering ----------------------------------------------------------- */

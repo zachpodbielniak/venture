@@ -1040,26 +1040,43 @@ escalate(VentureDunningService *self, Dossier *d, GDateTime *now, GDateTime *as_
 	return TRUE;
 }
 
+/* One email step's message as the sweep queues it, before its event exists:
+ * the template, the live pay link in the private bodies, the recipient and
+ * the step's key. The sweep and the preview both build it here. */
+static VentureMailMessage *
+compose_step(VentureDunningService *self, Dossier *d, const Step *step, guint step_no, const gchar *recipient,
+	const gchar *key, GError **error)
+{
+	g_autoptr(VentureEntity) template = NULL;
+	g_autofree gchar *pay_link = NULL;
+	VentureMailMessage *message;
+	gint64 org = venture_entity_get_organization_id(d->invoice);
+	template = load(self, venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_template"), step->template_id, org);
+	if (template == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "The step's mail_template is missing");
+		return NULL;
+	}
+	pay_link = live_portal_link(self, org, d->company, recipient);
+	message = render_message(self, d, template, step, step_no, pay_link, TRUE, error);
+	if (message == NULL)
+		return NULL;
+	g_object_set(message, "to", recipient, "idempotency-key", key, "related-type", "dunning_event", NULL);
+	return message;
+}
+
 static gboolean
 send_step(VentureDunningService *self, Dossier *d, GDateTime *now, guint step_no, const Step *step,
 	const gchar *key, const VentureActor *actor, Tally *tally, GError **error)
 {
 	g_autoptr(VentureEntity) event = NULL;
-	g_autoptr(VentureEntity) template = NULL;
 	g_autofree gchar *recipient = recipient_for(d);
-	g_autofree gchar *pay_link = NULL;
 	g_autoptr(VentureMailMessage) message = NULL;
 	g_autoptr(VentureMailMessage) queued = NULL;
 	g_autoptr(GError) local = NULL;
-	gint64 org = venture_entity_get_organization_id(d->invoice);
 	if (recipient == NULL)
 		return record_status(self, d, now, step_no, step, key, STATUS_SUPPRESSED, "no_recipient", NULL, actor, tally, error);
-	template = load(self, venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_template"), step->template_id, org);
-	if (template == NULL)
-		return record_status(self, d, now, step_no, step, key, STATUS_FAILED, NULL,
-			"The step's mail_template is missing", actor, tally, error);
-	pay_link = live_portal_link(self, org, d->company, recipient);
-	message = render_message(self, d, template, step, step_no, pay_link, TRUE, &local);
+	message = compose_step(self, d, step, step_no, recipient, key, &local);
 	if (message == NULL)
 		return record_status(self, d, now, step_no, step, key, STATUS_FAILED, NULL, local->message, actor, tally, error);
 	event = new_event(d, now, step_no, step, key, STATUS_QUEUED);
@@ -1073,8 +1090,7 @@ send_step(VentureDunningService *self, Dossier *d, GDateTime *now, guint step_no
 		if (!venture_late_fee_service_record_notice(venture_late_fee_service_get(self->database), d->invoice, event, day, actor, error))
 			return FALSE;
 	}
-	g_object_set(message, "to", recipient, "idempotency-key", key,
-		"related-type", "dunning_event", "related-id", venture_entity_get_id(event), NULL);
+	g_object_set(message, "related-id", venture_entity_get_id(event), NULL);
 	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
 	if (queued == NULL)
 		return FALSE;
@@ -1689,33 +1705,6 @@ venture_dunning_service_retry(VentureDunningService *self, VentureEntity *event,
 	return venture_database_find_one(self->database, query, error);
 }
 
-static gchar *
-actor_email(VentureDunningService *self, const VentureActor *actor, GError **error)
-{
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(VentureEntity) user = NULL;
-	g_autofree gchar *email = NULL;
-	if (actor == NULL || venture_string_is_empty(actor->name))
-		return refuse(error, "test_send mails the acting user's own address, and this request names no user") ? NULL : NULL;
-	query = venture_query_new(VENTURE_TYPE_USER);
-	venture_query_add_filter_string(query, "username", VENTURE_FILTER_OP_EQ, actor->name, NULL);
-	user = venture_database_find_one(self->database, query, NULL);
-	if (user == NULL || venture_entity_is_deleted(user))
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			"VentureDunningService: test_send mails the acting user's own address, and \"%s\" is not a user account", actor->name);
-		return NULL;
-	}
-	email = text(user, "email");
-	if (venture_string_is_empty(email))
-	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			"VentureDunningService: test_send mails only the acting user, and %s has no email address", actor->name);
-		return NULL;
-	}
-	return g_steal_pointer(&email);
-}
-
 VentureMailMessage *
 venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *policy, gint64 invoice_id,
 	gboolean has_offset, gint64 offset, const VentureActor *actor, GError **error)
@@ -1729,8 +1718,6 @@ venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *po
 	g_autofree gchar *json = NULL;
 	g_autofree gchar *recipient = NULL;
 	g_autofree gchar *link = NULL;
-	g_autofree gchar *subject = NULL;
-	g_autofree gchar *test_subject = NULL;
 	g_autofree gchar *uuid = NULL;
 	g_autofree gchar *key = NULL;
 	gint64 org;
@@ -1742,7 +1729,7 @@ venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *po
 		return NULL;
 	if (!VENTURE_IS_DUNNING_POLICY(policy) || venture_entity_get_id(policy) <= 0)
 		return refuse(error, "A saved dunning_policy is required") ? NULL : NULL;
-	email = actor_email(self, actor, error);
+	email = venture_mail_preview_actor_email(self->database, actor, error);
 	if (email == NULL)
 		return NULL;
 	org = venture_entity_get_organization_id(policy);
@@ -1789,15 +1776,103 @@ venture_dunning_service_test_send(VentureDunningService *self, VentureEntity *po
 		link != NULL ? VENTURE_DUNNING_TEST_LINK : NULL, FALSE, error);
 	if (message == NULL)
 		return NULL;
-	g_object_get(message, "subject", &subject, NULL);
-	test_subject = g_strdup_printf("[TEST] %s", subject ? subject : "");
 	uuid = g_uuid_string_random();
 	key = g_strdup_printf("dunning-test:%s", uuid);
 	/* No dunning_event: a test send decides nothing about the invoice, so
-	 * it must not count as a step, and the outbox's recheck ignores it. */
-	g_object_set(message, "organization-id", org, "to", email, "subject", test_subject, "idempotency-key", key,
-		"related-type", "dunning_policy", "related-id", venture_entity_get_id(policy), NULL);
-	return venture_mail_outbox_enqueue(venture_database_get_mail_outbox(self->database), message, actor, error);
+	 * it must not count as a step, and the outbox's recheck ignores it.
+	 * The copy goes the way every preview's test send goes. */
+	g_object_set(message, "organization-id", org, NULL);
+	return venture_mail_preview_enqueue_test(self->database, message, key, "dunning_policy",
+		venture_entity_get_id(policy), actor, error);
+}
+
+/* --- Previews --------------------------------------------------------------- */
+
+VentureMailMessage *
+venture_dunning_service_build_reminder(VentureDunningService *self, VentureEntity *invoice, GDateTime *as_of,
+	GPtrArray *notes, GError **error)
+{
+	g_auto(Dossier) d;
+	g_autoptr(GArray) pending = NULL;
+	g_autoptr(GArray) planned = NULL;
+	g_autofree gchar *recipient = NULL;
+	g_autofree gchar *key = NULL;
+	const gchar *reason;
+	const Step *step;
+	gint index = -1;
+	guint i;
+	memset(&d, 0, sizeof(d));
+	g_return_val_if_fail(VENTURE_IS_DUNNING_SERVICE(self), NULL);
+	if (!enabled(error))
+		return NULL;
+	if (!dossier_open(self, NULL, &d, invoice, as_of, TRUE, error))
+		return NULL;
+	if (d.policy == NULL)
+		return refuse(error, "This invoice has no reminder policy: neither it nor its customer names one and there is no default") ? NULL : NULL;
+	if (d.steps == NULL || d.steps->len == 0)
+		return refuse(error, "The invoice's reminder policy has no valid steps") ? NULL : NULL;
+	if (d.due == NULL)
+		return refuse(error, "The invoice has no due date, so no reminder is sent") ? NULL : NULL;
+	if (!load_history(self, &d, error))
+		return NULL;
+	/* The step the sweep would send on @as_of, by the sweep's own plan. */
+	if (g_array_index(d.steps, Step, 0).offset <= d.days)
+	{
+		pending = pending_steps(&d);
+		if (pending->len > 0)
+		{
+			planned = plan_invoice(&d, pending, NULL);
+			for (i = 0; i < planned->len; i++)
+				if (g_array_index(planned, Planned, i).kind == PLAN_SEND)
+					index = (gint)g_array_index(planned, Planned, i).index;
+		}
+	}
+	if (index < 0)
+	{
+		gint next = next_step_index(&d);
+		for (i = next < 0 ? d.steps->len : (guint)next; index < 0 && i < d.steps->len; i++)
+			if (!escalating(&d, i) && g_array_index(d.steps, Step, i).template_id > 0)
+				index = (gint)i;
+		if (index < 0)
+			return refuse(error, "No reminder email is left to send for this invoice") ? NULL : NULL;
+		if (notes != NULL)
+			g_ptr_array_add(notes, g_strdup_printf("No reminder is due on this date; this is step %d, due %" G_GINT64_FORMAT
+				" days from the due date.", index + 1, g_array_index(d.steps, Step, index).offset));
+	}
+	step = &g_array_index(d.steps, Step, index);
+	reason = stop_reason(self, &d);
+	if (reason == NULL)
+		reason = hold_reason(self, &d, as_of, NULL);
+	if (reason != NULL && notes != NULL)
+		g_ptr_array_add(notes, g_strdup_printf("The sweep would not send this today (%s).", reason));
+	recipient = recipient_for(&d);
+	if (recipient == NULL)
+		return refuse(error, "Neither the invoice's contact nor its customer has an email address, so the reminder is suppressed") ? NULL : NULL;
+	key = step_key(d.invoice, d.policy, step->offset);
+	return compose_step(self, &d, step, (guint)index + 1, recipient, key, error);
+}
+
+static VentureMailMessage *
+reminder_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now, GPtrArray *notes, GError **error)
+{
+	VentureDatabase *database = venture_context_get_database(context);
+	g_autoptr(VentureEntity) invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, id, NULL);
+	if (invoice == NULL || venture_entity_is_deleted(invoice) || venture_entity_get_organization_id(invoice) != org)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Invoice not found");
+		return NULL;
+	}
+	return venture_dunning_service_build_reminder(venture_dunning_service_get(database), invoice, now, notes, error);
+}
+
+static const VentureMailPreviewKind reminder_kind = {
+	"reminder", "Overdue reminder", "dunning", "invoice", "dunning_event", FALSE, reminder_preview
+};
+
+void
+venture_dunning_preview_register(void)
+{
+	venture_mail_preview_register(&reminder_kind);
 }
 
 /* The reminder an owner asks for now, for one open invoice: the latest

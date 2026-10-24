@@ -91,6 +91,7 @@ GType venture_call_direction_get_type(void) G_GNUC_CONST;
  * @VENTURE_CALL_OUTCOME_VOICEMAIL: left or received voicemail
  * @VENTURE_CALL_OUTCOME_NO_ANSWER: no answer
  * @VENTURE_CALL_OUTCOME_CALLBACK: a callback was agreed
+ * @VENTURE_CALL_OUTCOME_MISSED: an inbound call nobody answered
  *
  * Structured call result, separate from the free-text activity outcome.
  */
@@ -99,7 +100,8 @@ typedef enum {
 	VENTURE_CALL_OUTCOME_REACHED,
 	VENTURE_CALL_OUTCOME_VOICEMAIL,
 	VENTURE_CALL_OUTCOME_NO_ANSWER,
-	VENTURE_CALL_OUTCOME_CALLBACK
+	VENTURE_CALL_OUTCOME_CALLBACK,
+	VENTURE_CALL_OUTCOME_MISSED
 } VentureCallOutcome;
 /**
  * venture_call_outcome_get_type:

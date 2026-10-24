@@ -1,0 +1,1 @@
+{"events":[{"id":"evt-soft-0001","type":"bounce","bounce":"soft","message_id":"<{{MESSAGE_ID}}>","recipient":"{{RECIPIENT}}","occurred_at":"{{OCCURRED_AT}}","status":"4.2.2","detail":"452 4.2.2 Mailbox full"}]}

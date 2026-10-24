@@ -83,6 +83,32 @@ venture_financial_documents_content_disposition(
 );
 
 /**
+ * venture_financial_documents_receipt_message:
+ * @context: the wiring
+ * @payment: a customer payment
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND when no receipt is sent
+ *   (no customer, no address, or hosted billing), else why it could not be drawn
+ *
+ * The receipt mail queued once the payment commits, with its PDF, writing nothing.
+ *
+ * Returns: (transfer full) (nullable): the unsaved message
+ */
+VentureMailMessage *
+venture_financial_documents_receipt_message(
+	VentureContext	*context,
+	VentureEntity	*payment,
+	GError		**error
+);
+
+/**
+ * venture_financial_documents_preview_register:
+ *
+ * Registers the payment receipt mail preview kind.
+ */
+void
+venture_financial_documents_preview_register(void);
+
+/**
  * venture_financial_documents_install_receipts:
  * @context: the application context
  *

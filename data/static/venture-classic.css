@@ -6004,6 +6004,28 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 	table.cal-grid .cal-detail { display: none; }
 }
 
+/* The deals board: one column per stage, side by side, scrolling sideways
+ * on a narrow screen rather than stacking into one long page. Dragging is
+ * marked with attributes the board's script sets (data/static/deal-board.js). */
+.deal-board { display: flex; gap: 1rem; align-items: flex-start; overflow-x: auto; padding-bottom: 0.75rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+.deal-board > .deal-column { flex: 0 0 17rem; max-width: 85vw; margin: 0; scroll-snap-align: start; }
+.deal-column > h2 { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin: 0; padding: 0.75rem 0.75rem 0.25rem; font-size: 1.1rem; }
+.deal-cards { display: grid; gap: 0.5rem; min-height: 3rem; padding: 0.5rem; }
+.deal-card { border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+.deal-card { cursor: grab; }
+.deal-card[data-dragging] { opacity: 0.5; }
+.deal-card[aria-busy="true"] { opacity: 0.7; }
+.deal-card form { display: grid; gap: 0.35rem; margin-top: 0.5rem; }
+.deal-column[data-drop-target] { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.board-status:empty { display: none; }
+.board-status { margin: 0 0 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; background: var(--positive-soft); color: var(--text); }
+.board-status[data-refused="true"] { background: var(--warning-soft); }
+.lead-ai-score .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
+.lead-ai-score .actions form { margin: 0; }
+.mail-thread .reply-composer { margin-top: 0.75rem; }
+.mail-thread .reply-composer form { display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+.mail-thread .reply-composer textarea { width: 100%; }
+
 /* On phones the assistant follows the page instead of covering totals or
  * record rows. It remains available at the end of the document. */
 @media (max-width: 600px) {

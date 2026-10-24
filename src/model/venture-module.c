@@ -611,7 +611,10 @@ static GType (*const billing_types[]) (void) = {
 	NULL
 };
 static GType (*const venture_module_mail_types[]) (void) = {
-	venture_mail_message_get_type, venture_mail_template_get_type, NULL
+	venture_mail_message_get_type, venture_mail_template_get_type,
+	/* Designed email: brand, hosted images, shared sections, design history. */
+	venture_email_brand_get_type, venture_hosted_image_get_type,
+	venture_email_section_get_type, venture_email_design_version_get_type, NULL
 };
 static const gchar *const venture_module_mail_sync_requires[] = { "mail", "crm", "leads", NULL };
 static const gchar *const attribution_requires[] = { "leads", "integrations", NULL };
@@ -625,12 +628,15 @@ static const gchar *const marketing_requires[] = { "mail", "sequences", "leads",
 static GType (*const marketing_types[]) (void) = {
 	venture_marketing_list_get_type, venture_marketing_member_get_type,
 	venture_marketing_consent_get_type, venture_marketing_send_get_type,
-	venture_marketing_recipient_get_type, venture_marketing_event_get_type, NULL
+	venture_marketing_recipient_get_type, venture_marketing_event_get_type,
+	venture_marketing_sending_domain_get_type, venture_marketing_topic_get_type,
+	venture_marketing_preference_get_type, NULL
 };
 static const gchar *const marketing_reports[] = { "marketing_performance", NULL };
 static const gchar *const venture_module_mail_sync_suggests[] = { "capture", NULL };
 static GType (*const venture_module_mail_sync_types[]) (void) = {
-	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type, NULL
+	venture_mail_account_get_type, venture_mail_inbound_get_type, venture_mail_unmatched_sender_get_type,
+	venture_mail_oauth_provider_get_type, NULL
 };
 static const gchar *const quotes_requires[] = { "crm", "invoicing", NULL };
 static const gchar *const quotes_reports[] = { "quotes", NULL };
@@ -652,7 +658,7 @@ static GType (*const venture_module_leads_types[]) (void) = {
 	venture_lead_get_type, venture_lead_form_get_type,
 	venture_lead_assignment_rule_get_type,
 	venture_lead_routing_rule_get_type, venture_lead_scoring_rule_get_type,
-	venture_lead_score_history_get_type, NULL
+	venture_lead_score_history_get_type, venture_lead_score_proposal_get_type, NULL
 };
 static const gchar *const venture_module_reports_leads[] = { "lead_sources", "lead_response_time", "leads_recycled_due", "lead_routing", "lead_scoring", NULL };
 static const gchar *const venture_module_requires_leads[] = { "crm", NULL };
@@ -736,7 +742,7 @@ static GType (*const sequence_types[]) (void) = {
 	venture_sequence_get_type, venture_sequence_step_get_type,
 	venture_sequence_enrollment_get_type, venture_sequence_delivery_get_type,
 	venture_suppression_get_type, venture_sequence_link_get_type,
-	venture_sequence_tracking_event_get_type, NULL
+	venture_sequence_tracking_event_get_type, venture_sequence_trigger_get_type, NULL
 };
 static const gchar *const sequence_requires[] = { "crm", NULL };
 static const gchar *const sequence_reports[] = { "sequence_performance", "sequence_failures", "sequence_engagement", NULL };
@@ -979,6 +985,30 @@ static GType (*const referrals_types[]) (void) = {
 };
 static const gchar *const referrals_reports[] = { "referrals", NULL };
 
+/* Phone and text (docs/telephony.org): calls are logged as activities and
+ * text consent is marketing evidence, so both come first. */
+static const gchar *const telephony_requires[] = { "crm", "activities", "integrations", "marketing", NULL };
+static GType (*const telephony_types[]) (void) = {
+	venture_telephony_account_get_type, venture_telephony_extension_get_type,
+	venture_text_message_get_type, NULL
+};
+/* One inbox (docs/inbox.org): conversations are kept per contact and a
+ * call is an activity; mail and texts are channels it reads when they are
+ * on, not requirements. */
+static const gchar *const inbox_requires[] = { "crm", "activities", NULL };
+static const gchar *const inbox_suggests[] = { "mail", "telephony", NULL };
+static GType (*const inbox_types[]) (void) = {
+	venture_inbox_conversation_get_type, venture_inbox_chat_widget_get_type,
+	venture_inbox_chat_session_get_type, venture_inbox_chat_message_get_type, NULL
+};
+/* AI on messages (docs/ai-messages.org): drafts, rules and their log hang
+ * off conversations; the AI itself is asked only when it is on and
+ * configured, so it is a suggestion rather than a requirement. */
+static const gchar *const ai_messages_requires[] = { "inbox", NULL };
+static const gchar *const ai_messages_suggests[] = { "ai", NULL };
+static GType (*const ai_messages_types[]) (void) = {
+	venture_ai_message_get_type, venture_ai_message_rule_get_type, venture_ai_message_route_get_type, NULL
+};
 /* Work at a customer's address. It requires crm, whose customers and
  * contacts a job is for. It suggests quotes and invoicing: a job names the
  * estimate it carries out and the invoice that bills it, and with either
@@ -1463,6 +1493,24 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"month, week or agenda, as JSON and as a subscribable feed.",
 		venture_module_requires_core, planner_suggests, planner_types,
 		NULL, NULL, FALSE
+	},
+	{
+		"telephony", "Phone and text",
+		"Click-to-call through the phone system, every call logged on the "
+		"contact, and two-way texts with consent and quiet hours.",
+		telephony_requires, NULL, telephony_types, NULL, NULL, FALSE
+	},
+	{
+		"inbox", "Conversations",
+		"One inbox: every customer's email, texts, calls and web chat in one "
+		"thread per contact, with an owner, a status and replies.",
+		inbox_requires, inbox_suggests, inbox_types, NULL, NULL, FALSE
+	},
+	{
+		"ai_messages", "AI on messages",
+		"Drafted replies, routing, auto-reply rules, call summaries and "
+		"follow-ups, each approved by a person unless its rule sends on its own.",
+		ai_messages_requires, ai_messages_suggests, ai_messages_types, NULL, NULL, FALSE
 	},
 	{
 		"jobs", "Jobs",

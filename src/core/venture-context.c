@@ -341,6 +341,23 @@ venture_context_new(
 	 * hook makes a run's accounts into places first. */
 	venture_arbitrage_books_install(self);
 
+	/* Designed email: a template's bodies built from its blocks, brands
+	 * and hosted images checked, design history kept by its service, and
+	 * the designer's actions for the assistant. */
+	venture_email_design_install(self);
+
+	/* Phone and text: the write guards, and the text channels for
+	 * sequences and campaigns (docs/telephony.org). */
+	venture_telephony_install(self);
+
+	/* One inbox: the write guards and the observer that opens and
+	 * reopens conversations (docs/inbox.org). */
+	venture_inbox_install(self);
+
+	/* AI on messages: the observer that reads each new inbound message
+	 * once its transaction commits (docs/ai-messages.org). */
+	venture_ai_messages_install(self);
+
 	return self;
 }
 

@@ -1,0 +1,110 @@
+#+title: Journeys: sequences with branches, triggers and preferences
+
+A journey is a sequence. There is one engine, the sequence sweep described
+in [[file:sequences.org][Sequences]]; a journey is a sequence whose steps branch and jump, that
+triggers can enrol people into, and that can honour the recipient's
+marketing preferences. Everything a sequence does still holds: send
+windows, suppression, exits on reply or a won deal, delivery through the
+outbox, and the lazy, bounded sweep.
+
+* Steps, waits and branches
+
+Steps run in position order. Each step waits its own delay (days and hours)
+after the step before it.
+
+- An *email* step sends one message.
+- A *wait* step only waits.
+- A *call task* or *text task* step tells the enrollment's owner to call or
+  text. A *text* step sends a real text through the phone module, which
+  gives that channel its behaviour with =venture_sequence_channel_register()=
+  (the channel hook); see [[file:telephony.org][Phone calls and text messages]].
+- A *branch* step waits its delay, then looks at the enrollment's latest
+  email and asks one question:
+  - *opened* — did the person open it?
+  - *clicked* — did they click a link in it?
+  - *replied* — did anything come back from them after it (the one reply
+    rule sequences already use)? Its "no" path is "no response within the
+    wait".
+
+  The answer is fixed at the end of the wait, by the branch's scheduled
+  time, not when the sweep happens to run: an open an hour after the wait
+  ended does not count even if the sweep is a day late. Opens and clicks
+  count only when they are a person's: the same judgement campaigns use
+  ([[file:deliverability.org][Deliverability]], "Machine opens") sets aside a mail scanner's or a
+  prefetching proxy's open, keeps it as evidence with its reason, and it
+  never takes a branch. A branch with no email before it answers no.
+
+  *If yes, go to* and *If no, go to* name a step position; empty is the next
+  step. The branch's history row says which way it went
+  (=branch_result= yes or no).
+
+Any step may also say *Then go to* a later position, and *End after this
+step* finishes the journey there, which is how a path stops before the next
+path's steps. Every jump goes forward — the save refuses a jump to the same
+or an earlier position — so every journey ends. Steps a path passes over are
+recorded as skipped, with the reason, the next time the enrollment runs.
+
+The sequence's page draws the journey: every step in order, its wait, how
+many enrollments reached it, and for a branch how many went each way.
+
+Tracking must be on (the organization's =sequence_tracking= and the
+sequence's =tracking=) for opened and clicked branches to see anything;
+with it off they always answer no.
+
+* Triggers
+
+A =sequence_trigger= enrols a contact into its journey when something
+happens:
+
+| When                         | What it reads                                  | Narrowed by            |
+|------------------------------+------------------------------------------------+------------------------|
+| =form_submitted=             | a form response naming a contact (a personal link, or the contact its lead became) | =form_id=, empty is any form |
+| =tag_added=                  | a save that adds the tag to a contact, any capitals | =tag=                 |
+| =deal_stage_changed=         | a deal moving stage through the deal service   | =deal_stage= (lead, qualified, proposal, negotiation, won, lost), empty is any move |
+| =quote_not_accepted=         | the business-event feed's =quote.sent=, once it is =days= old (7 when empty) and the quote is still sent | =days= |
+| =invoice_paid=               | the feed's =invoice.paid=, for the invoice's contact (Attention of) | -- |
+| =booking_made=               | the feed's =booking.created=, for the booked meeting's contact | -- |
+
+Form, tag and deal triggers fire as the record is saved. Feed triggers are
+read by the sequence sweep (=venture_sequence_service_run_triggers()=, called
+first by =POST /api/v1/sequences/run=), at most 500 events per trigger per
+sweep, each trigger keeping its own position in the feed. A new trigger
+starts at the end of the feed: making one does not enrol everybody who ever
+paid.
+
+*Once per event per journey.* Each enrollment a trigger makes carries a
+=trigger_key= — the journey, the event and the contact — unique in the
+organization, deleted rows included. A re-run, a re-save, a restart or two
+triggers on one journey cannot enrol anybody twice for the same event. A
+later genuine event (the tag removed and added again, another invoice paid)
+is a new event. The ordinary enrollment rules still apply: a suppressed
+address is never enrolled, and somebody already active or paused in the
+journey is not enrolled again; both are "not enrolled", not errors.
+
+* Preferences
+
+A sequence with a *marketing topic* is a marketing journey. Before each of
+its emails it asks the recipient's preference centre
+([[file:marketing.org][Marketing]], "The preference centre"): an email on a topic they turned
+off, or more mail than the frequency they chose (weekly or monthly, counting
+campaign mail and marketing journey emails), is skipped with the reason and
+the journey carries on. A sequence without a topic is one-to-one outreach;
+only stop-everything (suppression) applies to it, as before.
+
+* Limits and defaults
+
+| Setting                      | Default        | Limit                         |
+|------------------------------+----------------+-------------------------------|
+| Branch wait                  | the step's delay | 0 to 100 years, like any delay |
+| Quote not accepted after     | 7 days         | 0 to 365 days                 |
+| Feed events per trigger per sweep | --        | 500                           |
+| Enrollments per sweep        | --             | 1000, as before               |
+
+* Storage
+
+Paired migration =000947_sequence_journeys.sql= checks the new step,
+enrollment and delivery columns; existing steps have no branch and no jump,
+so existing sequences run exactly as before, and existing opens carry no
+machine reason and keep counting. =tests/test-journeys.c= covers branches
+with a controlled clock, the machine judgement, validation, the channel
+hook, every trigger and its idempotency, and preferences.

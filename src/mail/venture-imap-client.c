@@ -10,6 +10,16 @@ gboolean venture_imap_client_connect(VentureImapClient *self, const gchar *host,
 	g_return_val_if_fail(VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect != NULL, FALSE);
 	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect(self, host, port, security, username, secret, cancellable, error);
 }
+gboolean venture_imap_client_connect_xoauth2(VentureImapClient *self, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *access_token, GCancellable *cancellable, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_IMAP_CLIENT(self), FALSE);
+	if (VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect_xoauth2 == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED, "IMAP: this transport cannot sign in with a token");
+		return FALSE;
+	}
+	return VENTURE_IMAP_CLIENT_GET_IFACE(self)->connect_xoauth2(self, host, port, security, username, access_token, cancellable, error);
+}
 gboolean venture_imap_client_select(VentureImapClient *self, const gchar *folder, VentureImapFolderInfo *info, GCancellable *cancellable, GError **error)
 {
 	VentureImapFolderInfo ignored;
@@ -126,6 +136,9 @@ struct _VentureFakeImapClient {
 	gint fetches;
 	gint64 deadline;
 	gboolean connected;
+	gchar *token; /* the only bearer XOAUTH2 accepts, or NULL for any */
+	gchar *last_token;
+	const gchar *mechanism;
 };
 static void fake_iface_init(VentureImapClientInterface *iface);
 G_DEFINE_FINAL_TYPE_WITH_CODE(VentureFakeImapClient, venture_fake_imap_client, G_TYPE_OBJECT,
@@ -151,6 +164,8 @@ static void fake_finalize(GObject *object)
 	g_hash_table_unref(self->fetch_errors);
 	g_clear_error(&self->connect_error);
 	g_free(self->selected);
+	g_free(self->token);
+	g_free(self->last_token);
 	G_OBJECT_CLASS(venture_fake_imap_client_parent_class)->finalize(object);
 }
 static guint fake_response_ready;
@@ -206,7 +221,27 @@ static gboolean fake_connect(VentureImapClient *client, const gchar *host, guint
 	if (!secret || !*secret) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "IMAP secret is empty"); return FALSE; }
 	if (fake_expired(self, error)) return FALSE;
 	self->connects++;
+	self->mechanism = "password";
 	if (self->connect_error) { g_propagate_error(error, g_error_copy(self->connect_error)); return FALSE; }
+	self->connected = TRUE;
+	return TRUE;
+}
+static gboolean fake_connect_xoauth2(VentureImapClient *client, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *access_token, GCancellable *cancellable, GError **error)
+{
+	VentureFakeImapClient *self = VENTURE_FAKE_IMAP_CLIENT(client);
+	(void)host; (void)port; (void)security; (void)username; (void)cancellable;
+	if (!access_token || !*access_token) { g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "IMAP token is empty"); return FALSE; }
+	if (fake_expired(self, error)) return FALSE;
+	self->connects++;
+	self->mechanism = "xoauth2";
+	g_free(self->last_token);
+	self->last_token = g_strdup(access_token);
+	if (self->connect_error) { g_propagate_error(error, g_error_copy(self->connect_error)); return FALSE; }
+	if (self->token && g_strcmp0(self->token, access_token))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "IMAP: authentication refused [AUTHENTICATIONFAILED]");
+		return FALSE;
+	}
 	self->connected = TRUE;
 	return TRUE;
 }
@@ -317,6 +352,7 @@ static void fake_iface_init(VentureImapClientInterface *iface)
 	iface->connect = fake_connect; iface->select = fake_select; iface->list = fake_list; iface->since = fake_since;
 	iface->fetch = fake_fetch; iface->fetch_truncated = fake_fetch_truncated; iface->set_deadline = fake_set_deadline;
 	iface->disconnect = fake_disconnect;
+	iface->connect_xoauth2 = fake_connect_xoauth2;
 }
 VentureFakeImapClient *venture_fake_imap_client_new(void) { return g_object_new(VENTURE_TYPE_FAKE_IMAP_CLIENT, NULL); }
 void venture_fake_imap_client_add_bytes(VentureFakeImapClient *self, const gchar *folder, guint32 uid, GBytes *raw)
@@ -386,6 +422,22 @@ gint venture_fake_imap_client_get_connects(VentureFakeImapClient *self)
 	g_return_val_if_fail(VENTURE_IS_FAKE_IMAP_CLIENT(self), 0);
 	return self->connects;
 }
+void venture_fake_imap_client_set_token(VentureFakeImapClient *self, const gchar *token)
+{
+	g_return_if_fail(VENTURE_IS_FAKE_IMAP_CLIENT(self));
+	g_free(self->token);
+	self->token = g_strdup(token);
+}
+const gchar *venture_fake_imap_client_get_mechanism(VentureFakeImapClient *self)
+{
+	g_return_val_if_fail(VENTURE_IS_FAKE_IMAP_CLIENT(self), NULL);
+	return self->mechanism;
+}
+const gchar *venture_fake_imap_client_get_last_token(VentureFakeImapClient *self)
+{
+	g_return_val_if_fail(VENTURE_IS_FAKE_IMAP_CLIENT(self), NULL);
+	return self->last_token;
+}
 gint venture_fake_imap_client_get_fetches(VentureFakeImapClient *self)
 {
 	g_return_val_if_fail(VENTURE_IS_FAKE_IMAP_CLIENT(self), 0);
@@ -425,6 +477,7 @@ struct _VentureSocketImapClient {
 	guint tag;
 	gboolean selected;
 	gboolean allow_plaintext;
+	gboolean xoauth2; /* this session authenticates with a bearer token */
 };
 static void socket_iface_init(VentureImapClientInterface *iface);
 G_DEFINE_FINAL_TYPE_WITH_CODE(VentureSocketImapClient, venture_socket_imap_client, G_TYPE_OBJECT,
@@ -804,16 +857,44 @@ static gboolean socket_auth_plain(VentureSocketImapClient *self, const gchar *us
 	g_free(encoded);
 	return ok;
 }
+/* XOAUTH2: the bearer token rides on the command with SASL-IR, or after
+ * the server's "+" without it. A refusal is a continuation carrying the
+ * server's JSON status, which the client must answer with an empty line
+ * before the tagged NO arrives -- the trailing empty part below. */
+static gboolean socket_auth_xoauth2(VentureSocketImapClient *self, const gchar *username, const gchar *token, ImapStatus *status, const gchar **code, GCancellable *cancellable, GError **error)
+{
+	gchar *encoded = venture_mail_oauth_xoauth2(username, token);
+	gchar *command = NULL;
+	const gchar *parts[4];
+	gboolean ok;
+	if (!encoded) return socket_refuse(error, VENTURE_ERROR_CONFIG, "credentials contain a control character", NULL);
+	if (socket_has_capability(self, "SASL-IR")) {
+		command = g_strconcat("AUTHENTICATE XOAUTH2 ", encoded, NULL);
+		parts[0] = command; parts[1] = ""; parts[2] = NULL;
+	} else {
+		parts[0] = "AUTHENTICATE XOAUTH2"; parts[1] = encoded; parts[2] = ""; parts[3] = NULL;
+	}
+	ok = socket_run(self, parts, VENTURE_IMAP_MAX_SMALL_LITERAL, NULL, status, code, cancellable, error);
+	socket_wipe(command);
+	socket_wipe(encoded);
+	g_free(command);
+	g_free(encoded);
+	return ok;
+}
 /* PLAIN when offered, LOGIN otherwise unless the server disabled it. A
- * token-based mechanism such as XOAUTH2 would be one more branch here,
- * chosen by the account rather than by what the server advertises, since
- * it needs a refreshed token where these take the stored secret. */
+ * token session uses XOAUTH2, chosen by the account rather than by what
+ * the server advertises, since it needs a refreshed token where these take
+ * the stored secret; a server without it is told nothing at all. */
 static gboolean socket_authenticate(VentureSocketImapClient *self, const gchar *username, const gchar *secret, GCancellable *cancellable, GError **error)
 {
 	ImapStatus status;
 	const gchar *code = NULL;
 	gboolean ran;
-	if (socket_has_capability(self, "AUTH=PLAIN")) ran = socket_auth_plain(self, username, secret, &status, &code, cancellable, error);
+	if (self->xoauth2) {
+		if (!socket_has_capability(self, "AUTH=XOAUTH2")) return socket_refuse(error, VENTURE_ERROR_UNSUPPORTED, "the server does not offer token sign-in (XOAUTH2)", NULL);
+		ran = socket_auth_xoauth2(self, username, secret, &status, &code, cancellable, error);
+	}
+	else if (socket_has_capability(self, "AUTH=PLAIN")) ran = socket_auth_plain(self, username, secret, &status, &code, cancellable, error);
 	else if (!socket_has_capability(self, "LOGINDISABLED")) ran = socket_login(self, username, secret, &status, &code, cancellable, error);
 	else return socket_refuse(error, VENTURE_ERROR_UNSUPPORTED, "the server offers no authentication this client supports", NULL);
 	if (!ran) return FALSE;
@@ -874,6 +955,15 @@ static gboolean socket_connect(VentureImapClient *client, const gchar *host, gui
 	if (preauth) return TRUE;
 	if (!socket_authenticate(self, username, secret, cancellable, error)) { socket_close(self); return FALSE; }
 	return TRUE;
+}
+static gboolean socket_connect_xoauth2(VentureImapClient *client, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *access_token, GCancellable *cancellable, GError **error)
+{
+	VentureSocketImapClient *self = VENTURE_SOCKET_IMAP_CLIENT(client);
+	gboolean ok;
+	self->xoauth2 = TRUE;
+	ok = socket_connect(client, host, port, security, username, access_token, cancellable, error);
+	self->xoauth2 = FALSE;
+	return ok;
 }
 static gboolean parse_uint32(const gchar *text, guint32 *value)
 {
@@ -1158,5 +1248,6 @@ static void socket_iface_init(VentureImapClientInterface *iface)
 	iface->connect = socket_connect; iface->select = socket_select; iface->list = socket_list; iface->since = socket_since;
 	iface->fetch = socket_fetch; iface->fetch_truncated = socket_fetch_truncated; iface->set_deadline = socket_set_deadline;
 	iface->disconnect = socket_disconnect;
+	iface->connect_xoauth2 = socket_connect_xoauth2;
 }
 VentureSocketImapClient *venture_socket_imap_client_new(void) { return g_object_new(VENTURE_TYPE_SOCKET_IMAP_CLIENT, NULL); }

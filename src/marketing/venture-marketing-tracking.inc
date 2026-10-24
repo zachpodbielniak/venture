@@ -28,28 +28,42 @@ static VentureEntity *observable_recipient(VentureMarketingService *self, const 
 	}
 	return g_steal_pointer(&recipient);
 }
+/* One retained observation per recipient, UTC day, kind, link and verdict.
+ * A machine's open never fills opened-at, so it is never counted as one;
+ * the verdict is part of the key so a proxy's fetch on arrival cannot
+ * swallow the person's own open later that day. The user agent is judged
+ * here and dropped: only the reason it matched is kept. */
 static gboolean observe(VentureMarketingService *self, VentureEntity *recipient, const gchar *kind,
-	gint64 position, GDateTime *now, GError **error)
+	gint64 position, const gchar *user_agent, GDateTime *now, GError **error)
 {
 	g_autoptr(GDateTime) utc = g_date_time_to_utc(now);
 	g_autofree gchar *day = g_date_time_format(utc, "%Y-%m-%d"), *key = NULL;
-	g_autoptr(VentureEntity) existing = NULL, event = NULL;
-	g_autoptr(GDateTime) first = NULL;
+	g_autoptr(VentureEntity) existing = NULL, event = NULL, mail = NULL;
+	g_autoptr(GDateTime) first = NULL, sent = NULL;
 	gint64 org = venture_entity_get_organization_id(recipient);
-	const gchar *field = position ? "clicked-at" : "opened-at";
-	key = g_strdup_printf("observation:%s:%s:%s:%" G_GINT64_FORMAT, venture_entity_get_uuid(recipient), day, kind, position);
+	const gchar *field, *machine;
+	mail = get_row(self, VENTURE_TYPE_MAIL_MESSAGE, org, number(recipient, "mail-id"), error);
+	if (!mail) return FALSE;
+	g_object_get(mail, "sent-at", &sent, NULL);
+	machine = venture_marketing_machine_reason(sent, now, user_agent, self->machine_seconds);
+	field = machine ? (position ? NULL : "machine-opened-at") : (position ? "clicked-at" : "opened-at");
+	key = g_strdup_printf("observation:%s:%s:%s:%" G_GINT64_FORMAT "%s", venture_entity_get_uuid(recipient), day, kind, position,
+		machine ? ":machine" : "");
 	existing = find_string(self, VENTURE_TYPE_MARKETING_EVENT, org, "event-key", key, error);
 	if (error && *error) return FALSE;
 	if (existing) return TRUE;
 	event = g_object_new(VENTURE_TYPE_MARKETING_EVENT, "organization-id", org,
 		"recipient-id", venture_entity_get_id(recipient), "kind", kind, "link-position", position,
-		"occurred-at", now, "source", "Mail tracking request; human readership is unknown", "event-key", key, NULL);
+		"occurred-at", now, "source", "Mail tracking request; human readership is unknown", "event-key", key,
+		"machine-reason", machine, NULL);
 	if (!save(self, event, NULL, error)) return FALSE;
+	if (!field) return TRUE;
 	g_object_get(recipient, field, &first, NULL);
 	if (!first) { g_object_set(recipient, field, now, NULL); if (!save(self, recipient, NULL, error)) return FALSE; }
 	return TRUE;
 }
-gboolean venture_marketing_service_record_open(VentureMarketingService *self, const gchar *token, GDateTime *now, GError **error)
+gboolean venture_marketing_service_record_open(VentureMarketingService *self, const gchar *token,
+	const gchar *user_agent, GDateTime *now, GError **error)
 {
 	g_autoptr(VentureAccessScope) capability = NULL;
 	g_autoptr(VentureEntity) recipient = NULL;
@@ -58,13 +72,13 @@ gboolean venture_marketing_service_record_open(VentureMarketingService *self, co
 	capability = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
 	if (!valid_time(now, error) || !venture_database_begin(self->database, error)) return FALSE;
 	recipient = observable_recipient(self, token, error);
-	if (!recipient || !observe(self, recipient, "open", 0, now, error)) goto fail;
+	if (!recipient || !observe(self, recipient, "open", 0, user_agent, now, error)) goto fail;
 	return venture_database_commit(self->database, error);
 fail:
 	venture_database_rollback(self->database); return FALSE;
 }
 gchar *venture_marketing_service_record_click(VentureMarketingService *self, const gchar *token, gint64 position,
-	GDateTime *now, GError **error)
+	const gchar *user_agent, GDateTime *now, GError **error)
 {
 	g_autoptr(VentureAccessScope) capability = NULL;
 	g_autoptr(VentureEntity) recipient = NULL;
@@ -84,7 +98,7 @@ gchar *venture_marketing_service_record_click(VentureMarketingService *self, con
 	if (position < 1 || (guint64)position > json_array_get_length(array)) { refuse(error, "Unknown tracked destination"); goto fail; }
 	url = g_strdup(json_array_get_string_element(array, position - 1));
 	if (!url || (!g_str_has_prefix(url, "https://") && !g_str_has_prefix(url, "http://"))) { refuse(error, "Invalid tracked web destination"); goto fail; }
-	if (!observe(self, recipient, "click", position, now, error)) goto fail;
+	if (!observe(self, recipient, "click", position, user_agent, now, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return g_steal_pointer(&url);
 fail:
@@ -98,10 +112,12 @@ gboolean venture_marketing_service_feedback(VentureMarketingService *self, gint6
 	g_autoptr(GDateTime) approved = NULL;
 	g_autofree gchar *key = NULL, *email = NULL;
 	gboolean hard = !g_strcmp0(kind, "hard_bounce"), complaint = !g_strcmp0(kind, "complaint");
+	gboolean delivered = !g_strcmp0(kind, "delivered");
+	const gchar *stamp = hard ? "bounced-at" : complaint ? "complained-at" : delivered ? "delivered-at" : NULL;
 	g_return_val_if_fail(VENTURE_IS_MARKETING_SERVICE(self), FALSE);
 	if (!self->database) return refuse(error, "Marketing database is unavailable");
 	if (!allowed(self, org, error) || !valid_time(occurred_at, error)) return FALSE;
-	if ((!hard && !complaint && g_strcmp0(kind, "temporary_bounce")) || !bounded(source, 4096) || !bounded(event_key, 128))
+	if ((!hard && !complaint && !delivered && g_strcmp0(kind, "temporary_bounce")) || !bounded(source, 4096) || !bounded(event_key, 128))
 		return refuse(error, "Feedback needs an explicit kind, evidence source and replay identity");
 	if (!venture_database_begin(self->database, error)) return FALSE;
 	recipient = get_row(self, VENTURE_TYPE_MARKETING_RECIPIENT, org, recipient_id, error);
@@ -132,13 +148,15 @@ gboolean venture_marketing_service_feedback(VentureMarketingService *self, gint6
 	if (hard || complaint) {
 		email = string(recipient, "email");
 		if (!withdraw(self, org, email, hard ? 1 : 2, source, occurred_at, actor, error)) goto fail;
-		if (hard) {
-			g_autoptr(GDateTime) first = NULL;
-			g_clear_object(&recipient); recipient = get_row(self, VENTURE_TYPE_MARKETING_RECIPIENT, org, recipient_id, error);
-			if (!recipient) goto fail;
-			g_object_get(recipient, "bounced-at", &first, NULL);
-			if (!first) { g_object_set(recipient, "bounced-at", occurred_at, NULL); if (!save(self, recipient, actor, error)) goto fail; }
-		}
+	}
+	/* Only the evidenced recipient is stamped; other mail to the address
+	 * is suppressed, not counted as bounced or complained about. */
+	if (stamp) {
+		g_autoptr(GDateTime) first = NULL;
+		g_clear_object(&recipient); recipient = get_row(self, VENTURE_TYPE_MARKETING_RECIPIENT, org, recipient_id, error);
+		if (!recipient) goto fail;
+		g_object_get(recipient, stamp, &first, NULL);
+		if (!first) { g_object_set(recipient, stamp, occurred_at, NULL); if (!save(self, recipient, actor, error)) goto fail; }
 	}
 	return venture_database_commit(self->database, error);
 fail:

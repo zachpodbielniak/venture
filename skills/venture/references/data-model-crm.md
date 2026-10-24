@@ -71,7 +71,14 @@ subject/body), `sequence_enrollment` (`status`
 progress service-owned), `sequence_delivery` (`state`
 [pending|sent|failed|skipped]), `suppression` (`reason`
 [unsubscribed|bounced|complained|manual]), `sequence_link`,
-`sequence_tracking_event` (`kind` [open|click]).
+`sequence_tracking_event` (`kind` [open|click], `machine_reason`),
+`sequence_trigger` (journey triggers: `kind` [form_submitted|tag_added|
+deal_stage_changed|quote_not_accepted|invoice_paid|booking_made], `tag`,
+`form_id`, `deal_stage`, `days`; `feed_cursor` derived). Steps add
+`channel` branch with `branch_on` [none|opened|clicked|replied],
+`yes_position`, `no_position`, `then_position`, `end_after`; an enrollment
+a trigger made carries `trigger_id` and a unique `trigger_key`. See
+`docs/journeys.org`.
 
 ## marketing (requires mail, sequences, leads) -- report `marketing_performance`
 
@@ -82,7 +89,19 @@ contact/company/lead), `marketing_consent` (evidence: `source`,
 `marketing_send` (`state` [draft|preview|approved|paused|cancelled|complete];
 *actions* `preview`, `approve`, `pause`, `resume`, `cancel`, `run` --
 none stage), `marketing_recipient` (frozen per-recipient copy; *action*
-`feedback`), `marketing_event`.
+`feedback`; evidence stamps `bounced_at`, `opened_at`, `clicked_at`,
+`unsubscribed_at`, `delivered_at`, `replied_at`, `complained_at`,
+`machine_opened_at`), `marketing_event` (`machine_reason` when an
+observation was judged a machine's), `marketing_sending_domain` (owner/admin
+setting: `domain`, `dkim_selector`, `warmup_started_on`, `ramp_schedule`),
+`marketing_topic` (what the preference page offers), `marketing_preference`
+(service-owned per address: `topics_off`, `frequency` [any|weekly|monthly]).
+A send adds `topic_id`, A/B (`variant_subject`, `variant_text_body`,
+`variant_html_body`, `test_percent`, `winner_metric` [opens|clicks],
+`winner_wait_hours`; `winner` derived), local time (`local_time`,
+`local_hour`, `local_date`) and `resend_of_id`/`resend_after_days`
+(*action* `resend_non_openers`). Contacts and companies have *actions*
+`add_tag`/`remove_tag`; contacts and organizations a `timezone`.
 
 ## outreach, ideas (requires sales / core) -- reports `campaigns`, `ideas`
 
@@ -121,7 +140,15 @@ lookback/retention days; owner/admin only), `attribution_visitor`
 - mail (requires core): `mail_message` -- the durable outbox: `to`,
   `subject`, bodies, `attachments`, `related_type/related_id`, `state`
   (incl. `uncertain`, `dead`), `attempts`, `last_error`, `message_id`,
-  `idempotency_key`, `connection_id/connection_version`. `mail_template`.
+  `idempotency_key`, `connection_id/connection_version`. `mail_template`
+  (`design`: block JSON; with one, `text_body`/`html_body` are rebuilt
+  from it on every save; `design_version`). Designed email (owner/admin
+  write, docs/email-design.org): `email_brand` (one per organization:
+  `logo_image_id`, `*_color` as `#rrggbb`, `font` sans/serif/rounded/
+  system/mono, `website_url`, `footer_address`, `logo_ask`),
+  `hosted_image` (made only by upload; `token`, sniffed `content_type`,
+  `width`/`height`), `email_section` (shared blocks, cycles refused),
+  `email_design_version` (written only by the design service).
 - mail_sync (requires mail, crm, leads): `mail_account` (IMAP mailbox;
   `address`, `imap_host`, `folders`, `capture_address`,
   `private_owner_id`; sync state fields are the sweep's), `mail_inbound`
@@ -131,6 +158,38 @@ lookback/retention days; owner/admin only), `attribution_visitor`
   `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
   `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
   `timezone`, `availability` JSON, `horizon_days`; serves `/book/<slug>`).
+
+## Phone and text (`telephony` module; docs/telephony.org)
+
+Requires `crm`, `activities`, `integrations` and `marketing`.
+`telephony_account` (a phone line: `provider` 3cx or voipms, `base_url`,
+`phone_number`, `connection_id` to the encrypted integration binding,
+`webhook_sources`, `media_hosts`; written only by the telephony service),
+`telephony_extension` (`user_id`, `extension`; one per person per
+organization) and `text_message` (`contact_id`, `direction`, `body`,
+`state` queued/held/sent/delivered/failed/received, `hold_until`,
+`provider_message_id`, `message_key` replay identity, `origin`, `keyword`,
+`auto_reply`, `inbox_ready`; service-written). Calls are ordinary
+`activity` rows through `log_call` (outcome `missed` and
+`call_inbox_ready` added); text consent is `marketing_consent` with
+`purpose` text and `phone`; a `marketing_send` with `channel` text is a
+text campaign; sequence step channel `text` sends a real text. The
+organization carries `telephony_country`, `telephony_quiet_hours`
+(empty is 21:00-08:00 recipient time, `off` for none) and
+`telephony_recording_links` (off).
+
+## One inbox (`inbox` module; docs/inbox.org)
+
+Requires `crm` and `activities`. `inbox_conversation` (one per contact:
+`contact_id`, `status` open/waiting/closed, `owner_id`, `last_message_at`,
+`last_inbound_at`, `last_inbound_channel`, `channels`; written only by the
+inbox service, never a message body), `inbox_chat_widget` (a web chat:
+public `token`, `greeting`, `allowed_origins`, `active`),
+`inbox_chat_session` (a visitor's chat: `contact_id`, what they gave,
+`token_hash` of their link) and `inbox_chat_message` (`session_id`,
+`contact_id`, `inbound`, `body`, `author`, `sent_at`). The thread is read
+from each channel's own records through registered sources (email
+interactions, text messages, call activities, chat messages).
 
 ## jobs (requires crm; suggests quotes, invoicing)
 

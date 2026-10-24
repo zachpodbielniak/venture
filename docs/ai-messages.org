@@ -1,0 +1,144 @@
+#+title: AI on messages
+#+description: Drafted replies, routing, auto-reply rules, call summaries and follow-ups -- each approved by a person unless its rule sends on its own, and every send through the channel's own consent and quiet hours
+
+The =ai_messages= module reads what customers send, drafts answers, decides
+who should answer, answers on its own only where you told it to, and keeps a
+log of all of it. It needs =inbox= ([[file:inbox.org][Conversations]]); it asks
+the AI only when the organization's AI is set up ([[file:ai-organizations.org][Organization AI settings]]).
+
+Open a conversation: the *AI on messages* card sits above the reply box.
+The settings are at =/organizations/ID/settings/ai-messages=, linked from
+the card and from the organization's page.
+
+* The defaults
+
+| What                    | Default                                                        |
+|-------------------------+----------------------------------------------------------------|
+| AI messages             | On; the switch is per organization                             |
+| Drafting and summaries  | Only where the organization's AI is configured                 |
+| Every AI message        | A draft a person approves                                      |
+| Auto-send on a rule     | Off                                                            |
+| Auto-reply rules        | None                                                           |
+| Business hours          | None, so no after-hours replies                                |
+| Routes                  | None; unassigned conversations go through the lead routing rules |
+
+* When a message comes in
+
+A text, an email, a web chat message or a voicemail with a transcript is
+read once, after it is saved (never while the phone system or mail sync
+is still waiting):
+
+1. *Intent*: booking, quote, question, complaint, cancellation or other.
+   Anything else the AI answers becomes "other".
+2. *Details*: name, phone, address, the date they asked for, the product
+   or service. A detail is kept only if the message itself says it -- a
+   phone number by its digits, anything else word for word. What the AI
+   guessed is dropped.
+3. *A reply draft* in the channel they used (a voicemail is answered by
+   text, or by email when there is no number).
+4. *Routing*: a conversation nobody owns goes to the person or team you
+   chose for its intent; with no such route, the [[file:leads.org][lead routing rules]]
+   decide, and they may test =intent= and =channel= like any other field.
+   A conversation somebody already owns keeps its owner.
+
+The customer's words are given to the AI as data, with the instruction
+never to follow anything written in them, and with no tools to act with.
+
+* Auto-reply rules
+
+Each rule has:
+
+- *When*: a message outside your business hours, or a missed call;
+- *Answer by*: text, email, web chat, or the channel they used;
+- *Words*: your own, or an AI draft;
+- *Send without asking me*: off unless you tick it.
+
+Business hours are days and times in the organization's time zone, for
+example =Mon-Fri 09:00-17:00; Sat 10:00-14:00=. The first active rule that
+applies answers, at most once per person per rule in 12 hours. A rule with
+its own words works even without AI.
+
+* Approving
+
+Drafts wait at the top of the card, with why they were made, the intent
+and details, the rule, and which provider and model wrote them. Edit the
+words if you like, then *Approve and send*, or *Discard*. A decided message
+cannot be sent again. Viewers can read the card but not approve.
+
+*Draft a reply* asks for a new draft for their latest message; *Draft a
+follow-up* (on the card, on a contact and on a deal) drafts a follow-up and
+suggests a next step.
+
+* What the AI never does
+
+- *It never sends around consent or quiet hours.* Every send -- approved or
+  automatic -- is the conversation's reply: the outbox for email, the one
+  text send path for texts. Without their agreement to texts the send is
+  refused; during their quiet hours it is held and goes when they end. The
+  AI message says which.
+- *It never invents prices, offers or dates.* Replies and follow-ups go
+  through the grounding check of [[file:email-design.org][designed email]]: a sentence naming a
+  price, an amount, a percentage, a date or "free" that is in neither the
+  message nor the records is removed and listed. A follow-up with nothing
+  left is refused.
+- *It never summarises nothing.* A call with a transcript (given when it
+  was logged, or sent by the phone system with recording links switched on)
+  is summarised from it; a call without one gets "No transcript". Missed
+  calls have nothing to summarise.
+
+* The log
+
+Every AI message is its own record: the draft or summary, the rule, the
+provider and model, the reason, who approved it (or =auto=), when, and what
+the send path said (sent, held for quiet hours, or refused and why). It is
+shown on the conversation and returned by the API. The message the customer
+receives is the channel's own record, written as the AI's with the approver
+in the [[file:ai.org][audit trail]]:
+
+#+begin_src sh
+venturectl list audit_entry actor_kind__eq=ai target_type__eq=text_message
+#+end_src
+
+AI messages, rules and routes are written only by this module, never by
+the generic record API.
+
+* The switch
+
+*Switch all AI messages off* on the settings page stops every reading,
+draft, summary, auto-reply and send for the organization, including the
+approval of drafts made before. The card and the settings page say so.
+
+* API
+
+| Method | Path                                         | Role   | Does                                          |
+|--------+----------------------------------------------+--------+-----------------------------------------------|
+| GET    | =/api/v1/conversations/:id/ai-messages=      | viewer | The contact's AI messages and whether it is on |
+| POST   | =/api/v1/conversations/:id/ai-draft=         | editor | A new draft for their latest message           |
+| POST   | =/api/v1/ai-messages/:id/approve=            | editor | ={"body": "..."}= optional; sends              |
+| POST   | =/api/v1/ai-messages/:id/discard=            | editor | Discards a draft                               |
+| POST   | =/api/v1/contacts/:id/ai-follow-up=          | editor | ={"channel": "text", "instruction": "..."}=    |
+| POST   | =/api/v1/deals/:id/ai-follow-up=             | editor | The same, from a deal                          |
+
+The settings page is an owner's or administrator's.
+
+* Limits
+
+- A message is read up to 6,000 characters, a transcript up to 24,000.
+- A reply is at most 2,000 characters; a detail at most 200.
+- One reading, one draft and one summary per message.
+- Cold email follow-ups (to someone who never emailed) go through the
+  outbox like any other single email; marketing consent applies to
+  campaigns, not to these.
+- Settings live on the organization and on the rules; a shared settings
+  screen comes later.
+
+* Upgrades and tests
+
+Migration =000954_ai_messages_drafts_rules_and_routes= checks the three new
+tables and the organization's =ai_messages_off= and =business_hours=; all
+start empty. =test-ai-messages= covers reading and extraction from the
+message only, routing, after-hours and missed-call rules with auto-send
+off and on, summaries with and without a transcript, the grounding
+refusal, approval, consent and quiet hours on AI sends, the log, the
+switch, organization isolation and the pages; =test-auth= the sign-in and
+role refusals of every route. No test calls a real AI.

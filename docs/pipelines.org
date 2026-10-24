@@ -78,6 +78,33 @@ board groups cards by stage and provides a stage selector and Move button.
 Set any required fields or loss reason through the deal's ordinary edit form
 before moving it.
 
+* The board
+
+=/deals= draws one column per stage, side by side. On a narrow screen (a
+phone) the columns scroll sideways rather than stacking; each is about 17
+rem wide and never wider than 85% of the screen.
+
+Drag a card onto another stage's column to move it. Dragging works within
+the card's own pipeline only; another pipeline's columns do not take the
+drop. Every card keeps its stage selector, note and Move button, which is
+also the keyboard way and the way with scripting off or on a touch screen
+that does not drag.
+
+A drop is the same request as the Move button: =POST /deals/:id/move= with
+=stage_id= and =version=, the version the card was drawn at. The route hands
+the deal to =venture_deal_service_move_stage()= at that version, so there
+is one move path and one rule: if anybody changed the deal after the board
+was drawn, the move is refused (409) with "This deal changed since the
+board was loaded, so it was not moved. Reload the board and try again."
+The card stays where it was. A successful drop moves the card and keeps
+its form current, so a second drag or Move works without reloading.
+Required fields, loss reasons and roles are the service's and the route's,
+unchanged: a viewer sees the board but a drop is refused (403).
+
+The drag code is =data/static/deal-board.js=, served at =/deals/board.js=
+to a signed-in person; the page carries no inline handlers. A form post
+without =version= (an older client) moves as before.
+
 Archived deals receive their pipeline and stage references during upgrade,
 without a fabricated entry referencing a deleted record. Their deletion
 stamp remains intact. The upgrade test reopens the fixture file and verifies

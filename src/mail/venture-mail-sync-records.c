@@ -25,7 +25,8 @@ static const VentureFieldDecl account_fields[] = {
 	STR("internal-domains", "Internal domains", "Comma-separated domains whose addresses never become unmatched senders"),
 	VENTURE_FIELD("sync-since", "Sync since", "A folder's first sync starts at mail received on or after this date; empty means everything", VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("cursors", "Cursors", "Per folder: last synced UID, UIDVALIDITY and a failing message's attempts; maintained by the sync service", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("sync-lease-until", "Sync lease", "Held while a sync runs so an overlapping caller skips the account", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("sync-lease-until", "Sync lease", "Held while a sync runs so an overlapping caller skips the account", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("oauth-provider-id", "Sign-in provider", "Token sign-in (OAuth 2.0 and XOAUTH2) through this provider instead of a password; empty uses the password", "mail_oauth_provider", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureMailAccount, venture_mail_account, account_fields)
 /* One row per fetched message. The UID key is what makes a rerun a no-op
@@ -61,3 +62,17 @@ static const VentureFieldDecl unmatched_fields[] = {
 	VENTURE_FIELD("dismissed", "Dismissed", "An ignore-list entry: later mail still counts here but asks for nothing; filter the list with dismissed=false", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureMailUnmatchedSender, venture_mail_unmatched_sender, unmatched_fields)
+/* A token sign-in provider the operator configures: where the browser is
+ * sent to sign in, where codes and refresh tokens are exchanged, and what
+ * is asked for. The client id and secret are an encrypted integration
+ * credential (venture_mail_oauth_configure_client()), never a field here.
+ * No provider ships with Venture. */
+static const VentureFieldDecl oauth_provider_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", "What people call this sign-in, for example Company mail"),
+	STR("authorize-url", "Authorize URL", "HTTPS address the browser is sent to for sign-in"),
+	STR("token-url", "Token URL", "HTTPS address codes and refresh tokens are exchanged at"),
+	STR("scopes", "Scopes", "Space-separated scopes asked for, including whatever the provider needs for IMAP and offline access"),
+	VENTURE_FIELD("active", "Active", "Offered on mailbox settings", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMailOauthProvider, venture_mail_oauth_provider, oauth_provider_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Mailbox sign-in provider", NULL);)

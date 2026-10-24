@@ -312,7 +312,12 @@ call_prepare(VentureEntity *row, VentureEntity *subject, JsonObject *details,
 		if (value == NULL || JSON_NODE_HOLDS_NULL(value))
 			continue;
 		g_strdelimit(field, "_", '-');
-		text = spec->kind == VENTURE_FIELD_KIND_INTEGER ? g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(value)) : g_strdup(json_node_get_string(value));
+		if (spec->kind == VENTURE_FIELD_KIND_INTEGER)
+			text = g_strdup_printf("%" G_GINT64_FORMAT, json_node_get_int(value));
+		else if (spec->kind == VENTURE_FIELD_KIND_BOOLEAN)
+			text = g_strdup(json_node_get_boolean(value) ? "true" : "false");
+		else
+			text = g_strdup(json_node_get_string(value));
 		if (!venture_entity_set_field_from_string(row, field, text, error))
 			return FALSE;
 	}

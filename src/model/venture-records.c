@@ -63,7 +63,27 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("quote-valid-days", "Quote validity days", "Zero uses 30 days", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("sequence-tracking", "Sequence mail tracking", "Allow open and click tracking on sequence mail; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("marketing-tracking", "Marketing mail tracking", "Allow marketing open and click observations; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("marketing-tracking", "Marketing mail tracking", "Allow marketing open and click observations; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("timezone", "Time zone", "IANA zone, for example America/Chicago: a local-time campaign uses it for a contact who has none; empty is UTC", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("ai-lead-scoring", "AI lead score proposals", "Allow the assistant to propose a lead score beside the rule score; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/* Phone and text (docs/telephony.org). */
+	VENTURE_FIELD("telephony-country", "Phone country", "Two-letter country for numbers written without a country code, for example GB; empty is US", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-quiet-hours", "Text quiet hours", "No texts between these times in the recipient's own time, for example 21:00-08:00 (the default when empty); off for none", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-recording-links", "Keep call recording links", "Store the phone system's recording link on each logged call; off by default, see the recording note", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/* AI on messages (docs/ai-messages.org). */
+	VENTURE_FIELD("ai-messages-off", "AI messages off", "The one switch: nothing is drafted, summarised or sent by the AI while it is on", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("business-hours", "Business hours", "For after-hours replies, in the organization's time zone, for example Mon-Fri 09:00-17:00; Sat 10:00-14:00; empty for none", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/* Workflow defaults that had no home before the settings API
+	 * (docs/settings.org). Numbers are text so that empty is "the default"
+	 * and 0 can still be chosen. */
+	VENTURE_FIELD("mail-preview-link-check", "Check links on every preview", "Each mail preview also asks every web link whether it answers; off by default", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("marketing-local-hour", "Local-time hour for new sends", "0 to 23 in the recipient's time; empty is 9", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("marketing-ab-wait-hours", "A/B test wait", "Hours before the winner is picked, 1 to 168; empty is 4", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("marketing-ab-metric", "A/B test winner by", "opens or clicks for a new send; empty is opens", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("marketing-resend-days", "Resend to non-openers after", "Days, 0 to 365; empty is 3", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-stop-reply", "STOP answer", "What a STOP text is answered with; {business} is your name; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-start-reply", "START answer", "What a START text is answered with; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("telephony-help-reply", "HELP answer", "What a HELP text is answered with; it must say how to stop; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -827,7 +847,8 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_REF("team-id", "Team", "Optional owning team", "team", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("campaign-id", "Campaign", "Original acquisition campaign", "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
-		"contact", VENTURE_COLUMN_FLAG_INDEXED)
+		"contact", VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("timezone", "Time zone", "IANA zone, for example Europe/Berlin: a local-time campaign reaches them at that hour there", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureContact, venture_contact, venture_contact_fields,

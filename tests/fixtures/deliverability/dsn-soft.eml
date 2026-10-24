@@ -1,0 +1,38 @@
+Return-Path: <>
+Date: Sun, 18 Oct 2026 12:00:00 +0000
+From: MAILER-DAEMON@mail.example.com
+To: news@example.com
+Subject: Delivery Status Notification (Delay)
+Auto-Submitted: auto-replied
+Message-ID: <dsn-soft-0001@mail.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status; boundary="soft-b"
+
+--soft-b
+Content-Type: text/plain
+
+Delivery to the following recipient has been delayed.
+
+--soft-b
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; mail.example.com
+
+Original-Message-ID: <{{MESSAGE_ID}}>
+Final-Recipient: RFC822; {{RECIPIENT}}
+Action: delayed
+Status: 4.2.2
+Diagnostic-Code: smtp; 452 4.2.2 Mailbox full
+Will-Retry-Until: Mon, 19 Oct 2026 12:00:00 +0000
+
+--soft-b
+Content-Type: message/rfc822
+
+From: News <news@example.com>
+To: {{RECIPIENT}}
+Subject: Autumn
+Message-ID: <{{MESSAGE_ID}}>
+
+Hello
+
+--soft-b--

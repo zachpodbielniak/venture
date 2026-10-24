@@ -1886,6 +1886,7 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 	{ "/quotes/compose", "New quote", VENTURE_ICON("<path d=\"M4 4h16v16H4zM8 8h8M8 12h6\"/>"), "Quotes", "quotes" },
 	{ "/late-fees", "Late fees", VENTURE_ICON("<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 7v5l3 2\"/>"), NULL, "late_fees" },
 	{ "/money/calendar", "Money calendar", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 3v4M16 3v4\"/>"), "Money", "money_calendar" },
+	{ "/conversations", "Conversations", VENTURE_ICON("<path d=\"M4 5h16v10H9l-5 4z\"/><path d=\"M8 9h8M8 12h5\"/>"), "Sales pipelines", "inbox" },
 	{ "/e/job", "Jobs", VENTURE_ICON("<path d=\"M14 6l4 4-8 8H6v-4z\"/><path d=\"M12 8l4 4\"/>"), "Jobs", "jobs" },
 	{ "/jobs/day", "Day", VENTURE_ICON("<rect x=\"3\" y=\"5\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M3 10h18M8 14h8M8 17h5\"/>"), NULL, "jobs" },
 	{ "/e/property", "Properties", VENTURE_ICON("<path d=\"M3 11l9-7 9 7\"/><path d=\"M5 10v10h14V10\"/><path d=\"M10 20v-6h4v6\"/>"), NULL, "jobs" },
@@ -1945,7 +1946,7 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates",
+	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
 	NULL
 };
 
@@ -5329,6 +5330,13 @@ static void venture_jobs_web_append_today(VentureWebServer *self, GString *html,
 	VentureAuthPrincipal *principal);
 static void venture_jobs_web_append_home(VentureWebServer *self, GString *html, HtmxRequest *request);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_mail_oauth_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_telephony_block(VentureWebServer *self, GString *content, VentureEntity *record, const VentureAuthPrincipal *principal);
+static void venture_web_inbox_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_ai_messages_block(VentureWebServer *self, GString *content, VentureEntity *record);
+static void venture_web_settings_block(VentureWebServer *self, GString *content, VentureEntity *record);
 
 /*
  * The two parties on a printed invoice or quote: the business that sends
@@ -12618,6 +12626,20 @@ venture_web_ui_detail(
 	venture_attribution_web_settings_link(self, content, record, principal);
 	venture_billing_web_buttons(self, content, record, principal);
 	venture_plan_web_panel(self, content, record, principal);
+	/* A sequence's journey map: its steps, branches and where each goes. */
+	venture_web_sequence_journey_block(self, content, record);
+	/* Sales: a lead's AI score proposal, a contact's mail with replies. */
+	venture_web_lead_ai_score_block(self, content, record);
+	venture_web_mail_reply_block(self, content, record);
+	venture_web_mail_oauth_block(self, content, record);
+	/* Phone and text: the Call button and a contact's texts. */
+	venture_web_telephony_block(self, content, record, principal);
+	/* One inbox: the way into a contact's conversation. */
+	venture_web_inbox_block(self, content, record);
+	/* AI on messages: a follow-up from a contact or a deal, the settings. */
+	venture_web_ai_messages_block(self, content, record);
+	/* One settings screen: the organization's workflow settings. */
+	venture_web_settings_block(self, content, record);
 
 	/*
 	 * The discussion, after the type's own block and before the tabs: it
@@ -16334,7 +16356,8 @@ venture_web_metrics_class(const gchar *path)
 	 * the customer and supplier portals, published pages. */
 	if (g_str_has_prefix(path, "/pub/") || g_str_has_prefix(path, "/portal/") ||
 	    g_str_has_prefix(path, "/supplier/") || g_str_has_prefix(path, "/q/") ||
-	    g_str_has_prefix(path, "/t/") || g_str_has_prefix(path, "/forms/"))
+	    g_str_has_prefix(path, "/t/") || g_str_has_prefix(path, "/forms/") ||
+	    g_str_has_prefix(path, "/i/"))
 		return "public";
 
 	return "page";
@@ -33517,10 +33540,20 @@ venture_web_api_ticket_draft(
 #include "autojournal/venture-autojournal-web.inc"
 
 #include "mail/venture-mail-web.inc"
+#include "mail/venture-mail-preview-web.inc"
+#include "emaildesign/venture-email-design-web.inc"
+#include "marketing/venture-deliverability-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
 
 #include "leads/venture-lead-web.inc"
+#include "leads/venture-lead-ai-score-web.inc"
+#include "mail/venture-mail-reply-web.inc"
+#include "mail/venture-mail-oauth-web.inc"
+#include "telephony/venture-telephony-web.inc"
+#include "inbox/venture-inbox-web.inc"
+#include "aimessages/venture-ai-messages-web.inc"
+#include "settings/venture-settings-web.inc"
 #include "forms/venture-forms-web.inc"
 #include "close/venture-close-web.inc"
 #include "tax/venture-tax-web.inc"
@@ -34057,6 +34090,14 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals/board.js", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board_script, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lead_score_proposals/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_ai_score_decide, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/lead_score_proposals/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_ai_score_decide, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/interactions/:id/reply", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_reply, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/interactions/:id/reply", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_reply, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mail_accounts/:id/oauth/start", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_oauth_start, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mail/oauth/callback", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_oauth_callback, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_oauth_providers/:id/client", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_oauth_client, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence/:id/enroll", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/ui/sequence_enrollment/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_action, self);
@@ -34074,6 +34115,9 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/quote", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_quote, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_open, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mail/preview/:kind/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_preview, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail/preview/:kind/:id/test", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_preview_test, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/mail/preview/:kind/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_mail_preview, self);
 	htmx_router_post(router, "/api/v1/reconciliation/suggest", venture_web_api_reconciliation_suggest, self);
 	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
 	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
@@ -34089,6 +34133,14 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
 	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
 	htmx_router_get(router, "/deals", venture_web_deals_board, self);
+	htmx_router_get(router, "/deals/board.js", venture_web_deals_board_script, self);
+	htmx_router_post(router, "/api/v1/lead_score_proposals/:id/:action", venture_web_lead_ai_score_decide, self);
+	htmx_router_post(router, "/lead_score_proposals/:id/:action", venture_web_lead_ai_score_decide, self);
+	htmx_router_post(router, "/api/v1/interactions/:id/reply", venture_web_mail_reply, self);
+	htmx_router_post(router, "/interactions/:id/reply", venture_web_mail_reply, self);
+	htmx_router_get(router, "/mail_accounts/:id/oauth/start", venture_web_mail_oauth_start, self);
+	htmx_router_get(router, "/mail/oauth/callback", venture_web_mail_oauth_callback, self);
+	htmx_router_post(router, "/mail_oauth_providers/:id/client", venture_web_mail_oauth_client, self);
 	htmx_router_post(router, "/api/v1/sequence/:id/enroll", venture_web_sequence_enroll, self);
 	htmx_router_post(router, "/api/v1/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
 	htmx_router_post(router, "/ui/sequence_enrollment/:id/:action", venture_web_sequence_action, self);
@@ -34123,6 +34175,19 @@ venture_web_server_new(
 	 * pages' twins, not a type. */
 	venture_marketdata_web_register(self);
 	venture_marketdata_pages_register(self);
+	/* The email builder, image upload and the public image address. */
+	venture_email_design_pages_register(self);
+	/* Deliverability: the domain check, a send's report and the signed
+	 * bounce and complaint feed. */
+	venture_deliverability_pages_register(self);
+	/* Phone and text: settings, click-to-call, texts and the webhook. */
+	venture_telephony_pages_register(self);
+	/* One inbox: conversations, their API and the public web chat. */
+	venture_inbox_pages_register(self);
+	/* AI on messages: approval, drafts, follow-ups and the rules page. */
+	venture_ai_messages_pages_register(self);
+	/* One settings API: the screen and /api/v1/settings. */
+	venture_settings_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);
 	/* And /api/v1/arbitrage: the scan, recording, export and the
 	 * calculators, not a type. */

@@ -401,6 +401,13 @@ that row and Message-ID. All accept =organization_id=N= where relevant.
 See [[file:mail.org][mail]] for uncertainty and scheduling. Actions reject
 =--stage=; =--stage create mail_message= proposes an enqueue instead.
 
+=venturectl mail preview KIND ID= prints, as JSON, the email a sender would
+queue for a record -- =invoice 41=, =reminder 41=, =campaign 7= (a marketing
+recipient) -- with its plain text, HTML, private links withheld and its
+pre-send checks; =mail preview message ID= does the same for a queued row.
+It needs an owner or administrator of the record's organization and writes
+nothing. See [[file:mail.org][mail]], Previews and pre-send checks.
+
 =venturectl mail sync [organization_id=N] [limit=N]= runs the bounded
 inbound sweep over every active =mail_account= in the organization that is
 not backing off and prints the accounts and messages processed, the accounts

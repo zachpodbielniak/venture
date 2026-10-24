@@ -48,6 +48,8 @@ G_DECLARE_INTERFACE(VentureImapClient, venture_imap_client, VENTURE, IMAP_CLIENT
  * @fetch_truncated: the header and the first bytes of the text of one UID
  * @set_deadline: a monotonic instant after which every call fails with %VENTURE_ERROR_TIMEOUT
  * @disconnect: close the session; must be safe when not connected
+ * @connect_xoauth2: open one session authenticated with SASL XOAUTH2 and a
+ *   bearer token instead of a password; %NULL in a transport that has none
  *
  * The transport behind the sync service. deps/mail-glib is sending-only, so
  * the socket implementation lives in src/mail/; tests use the fake or the
@@ -72,6 +74,7 @@ struct _VentureImapClientInterface {
 	GBytes *(*fetch_truncated)(VentureImapClient *self, guint32 uid, gsize text_limit, GCancellable *cancellable, GError **error);
 	void (*set_deadline)(VentureImapClient *self, gint64 monotonic_deadline);
 	void (*disconnect)(VentureImapClient *self);
+	gboolean (*connect_xoauth2)(VentureImapClient *self, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *access_token, GCancellable *cancellable, GError **error);
 };
 /**
  * venture_imap_client_connect:
@@ -86,6 +89,25 @@ struct _VentureImapClientInterface {
  * Returns: whether the session is authenticated
  */
 gboolean venture_imap_client_connect(VentureImapClient *self, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *secret, GCancellable *cancellable, GError **error);
+/**
+ * venture_imap_client_connect_xoauth2:
+ * @self: the client
+ * @host: server name
+ * @port: server port
+ * @security: tls or starttls
+ * @username: the mailbox login the token was issued for
+ * @access_token: a current bearer token, never stored by the client
+ * @cancellable: (nullable): cancellation
+ * @error: (out) (optional): %VENTURE_ERROR_UNAUTHENTICATED when the server
+ *   refuses the token, %VENTURE_ERROR_UNSUPPORTED when the transport or the
+ *   server offers no XOAUTH2
+ *
+ * SASL XOAUTH2: "user=" username, ^A, "auth=Bearer " token, ^A^A, base64
+ * encoded. A refusal arrives as a continuation carrying the server's JSON
+ * status, answered with an empty line, then a tagged NO.
+ * Returns: whether the session is authenticated
+ */
+gboolean venture_imap_client_connect_xoauth2(VentureImapClient *self, const gchar *host, guint16 port, const gchar *security, const gchar *username, const gchar *access_token, GCancellable *cancellable, GError **error);
 /**
  * venture_imap_client_select:
  * @self: the client
@@ -248,6 +270,24 @@ void venture_fake_imap_client_refuse_folder(VentureFakeImapClient *self, const g
  * Returns: how many sessions were opened
  */
 gint venture_fake_imap_client_get_connects(VentureFakeImapClient *self);
+/**
+ * venture_fake_imap_client_set_token:
+ * @self: the fake
+ * @token: (nullable): the only bearer token XOAUTH2 accepts; %NULL accepts any
+ */
+void venture_fake_imap_client_set_token(VentureFakeImapClient *self, const gchar *token);
+/**
+ * venture_fake_imap_client_get_mechanism:
+ * @self: the fake
+ * Returns: (nullable): "password" or "xoauth2" for the last session opened
+ */
+const gchar *venture_fake_imap_client_get_mechanism(VentureFakeImapClient *self);
+/**
+ * venture_fake_imap_client_get_last_token:
+ * @self: the fake
+ * Returns: (nullable): the bearer token the last XOAUTH2 session presented
+ */
+const gchar *venture_fake_imap_client_get_last_token(VentureFakeImapClient *self);
 /**
  * venture_fake_imap_client_get_fetches:
  * @self: the fake

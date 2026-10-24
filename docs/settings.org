@@ -1,0 +1,222 @@
+#+title: Settings: marketing, sales, phone and AI
+#+description: Every workflow setting -- what it does, its default and its limit -- and the four ways to change one: the settings screen, the assistant, the API and venturectl
+
+How email, campaigns, sales, phone and text, web chat and AI on messages
+behave is a short list of settings per organization. Each has a sensible
+default, so a new organization needs none of them. This page lists every
+one, and how to change it.
+
+* Where they are
+
+Open the organization's page and choose *Marketing, sales, phone and AI*,
+or go to =/organizations/ID/settings/workflows=. Owners and administrators
+of the organization see the screen; others are refused.
+
+The screen groups the settings by workflow. Each shows what it does, what
+it is now, its default and its limit. *Save* changes it, *Reset to default*
+puts the default back. It works at phone width: each setting stacks above
+its controls.
+
+* What changing one does
+
+- The value is checked first: on or off, a whole number inside its
+  limits, one of its choices, or text in the form the setting describes.
+  A refused value is answered in words and nothing is written.
+- Only an owner or administrator of that organization may change it.
+- The value is written where the feature has always kept it -- a field on
+  the organization, the email brand, the first sending domain, an
+  auto-reply rule, a web chat. Nothing is moved into a separate store, and
+  the feature's own pages (the AI messages page, the web chat page, the
+  deliverability page) keep working on the same values.
+- The change is one entry in the audit log, saying who made it and the old
+  and new value. Setting the value a setting already has writes nothing.
+- A setting belongs to one organization; another organization keeps its own.
+- When a setting's module is switched off, the setting is not offered.
+
+* The settings
+
+Defaults are what a new organization has. "Stored" is where the value lives.
+
+** Email
+
+| Setting | Key | Default | Limit | Stored |
+|---------+-----+---------+-------+--------|
+| Check links answer on every preview | =mail.preview-link-check= | off | on or off | organization |
+| Brand colour (headings, buttons) | =email-brand.primary-color= | =#1f5fbf= | =#rrggbb= | email brand |
+| Accent colour (links) | =email-brand.accent-color= | =#0f766e= | =#rrggbb= | email brand |
+| Text colour | =email-brand.text-color= | =#1f2933= | =#rrggbb= | email brand |
+| Background colour | =email-brand.background-color= | =#f3f4f6= | =#rrggbb= | email brand |
+| Font | =email-brand.font= | sans | sans, serif, rounded, system, mono | email brand |
+
+- *Check links answer on every preview*: each mail preview also asks
+  every web link in the message whether it answers -- one request each,
+  at most ten, from this server. Off, a preview checks only that links are
+  well formed and offers the check as a link ([[file:mail.org][Mail]]). =?reachability=0= on a
+  preview still skips it once.
+- *The brand*: the look of designed email ([[file:email-design.org][Designed email]]). Changing a
+  brand setting when the organization has no brand yet makes one, named
+  after the organization. A designed template picks the change up when it
+  is next saved, or at once for all with =rebuild_designs=.
+
+** Campaigns
+
+| Setting | Key | Default | Limit | Stored |
+|---------+-----+---------+-------+--------|
+| Warm-up daily limits | =marketing.warm-up= | =1:50,3:100,5:250,7:500,10:1000,14:2500,21:5000,30:0= | day:limit pairs from day 1, or =off= | first sending domain |
+| Local-time hour for new sends | =marketing.local-hour= | 9 | 0 to 23 | organization |
+| A/B test wait | =marketing.ab-wait-hours= | 4 hours | 1 to 168 | organization |
+| A/B test winner by | =marketing.ab-metric= | opens | opens, clicks | organization |
+| Resend to non-openers after | =marketing.resend-days= | 3 days | 0 to 365 | organization |
+
+- *Warm-up*: how many campaign messages may go each day while a new
+  sending domain builds trust ([[file:deliverability.org][Deliverability]], Warm-up). 0 is no limit;
+  =off= turns the warm-up off. It lives on the organization's first sending
+  domain, so add the domain on the Deliverability page first; until then
+  the default applies and changing it is refused with that advice.
+- *Local-time hour*: a new local-time send whose hour is left at 0 starts
+  at this hour in each recipient's own time ([[file:marketing.org][Marketing]], Recipient local
+  time). To send at midnight, set the send's hour to 0 after making it.
+- *A/B test wait*: a send that sets no wait picks its winner this many
+  hours after the test messages go.
+- *A/B winner by*: a new send starts with this; change it on the send.
+- *Resend to non-openers*: the days a resend waits when the action names none.
+
+** Sales
+
+| Setting | Key | Default | Limit | Stored |
+|---------+-----+---------+-------+--------|
+| AI lead score proposals | =leads.ai-scoring= | off | on or off | organization |
+
+The assistant proposes a lead score with its reasons beside the rule
+score; a person accepts or dismisses each ([[file:leads.org][Leads]], AI score proposals).
+It needs the organization's AI.
+
+** Phone and text
+
+| Setting | Key | Default | Limit | Stored |
+|---------+-----+---------+-------+--------|
+| Text quiet hours | =telephony.quiet-hours= | =21:00-08:00= | =HH:MM-HH:MM= on the 24-hour clock, or =off= | organization |
+| Keep call recording links | =telephony.recording-links= | off | on or off | organization |
+| Phone country | =telephony.country= | US | a two-letter country Venture knows the calling code of | organization |
+| Answer to STOP | =telephony.stop-reply= | "{business}: you are unsubscribed and will get no more texts from us. Reply START to resubscribe." | one line, 320 characters, must say START | organization |
+| Answer to START | =telephony.start-reply= | "{business}: you will get our texts again. Reply STOP to opt out." | one line, 320 characters, must say STOP | organization |
+| Answer to HELP | =telephony.help-reply= | "{business}: reply STOP to stop our texts or START to get them again. Message and data rates may apply." | one line, 320 characters, must say STOP | organization |
+
+- *Quiet hours* are in the recipient's own time zone, enforced in the one
+  text send path ([[file:telephony.org][Phone calls and text messages]], Quiet hours).
+- *Recording links*: recording calls has legal rules where you and your
+  callers are; read the recording note before turning this on.
+- *Keyword answers*: ={business}= becomes the organization's name. The
+  answers must keep telling people how to stop or come back; the keywords
+  themselves (STOP, START, HELP and their synonyms) are fixed.
+
+** Conversations
+
+| Setting | Key | Default | Limit | Stored |
+|---------+-----+---------+-------+--------|
+| Web chat on (each chat) | =inbox.webchat.ID= | on | on or off | that web chat |
+
+One setting per web chat on your site ([[file:inbox.org][Conversations]], Web chat). Off, the chat
+takes no new messages; conversations already started stay in the inbox.
+
+** AI on messages
+
+| Setting | Key | Default | Limit | Stored |
+|---------+-----+---------+-------+--------|
+| Switch AI messages off | =ai-messages.off= | off (AI messages on) | on or off | organization |
+| Business hours | =ai-messages.business-hours= | none | for example =Mon-Fri 09:00-17:00; Sat 10:00-14:00= | organization |
+| Send without asking (each rule) | =ai-messages.auto-send.ID= | off | on or off | that auto-reply rule |
+
+- *The switch*: while it is on, nothing is read, drafted, summarised or
+  sent by the AI ([[file:ai-messages.org][AI on messages]]).
+- *Business hours*: in the organization's time zone; after-hours rules
+  answer outside them. None means no after-hours replies.
+- *Send without asking*: one setting per auto-reply rule. Off, the rule's
+  reply waits as a draft for a person to approve.
+
+* How to change one
+
+** On the screen
+
+=/organizations/ID/settings/workflows=: change the value, *Save*; or *Reset
+to default*.
+
+** In chat
+
+Ask the assistant, for example "make the text quiet hours 8pm to 7am". It
+has three tools: =settings_list= (every setting, or one workflow's),
+=settings_get= (one by key) and =settings_set= (a value, or =reset=).
+=settings_set= never changes anything by itself, under any policy: it
+stages the change and the panel shows the card with *Apply* and *Discard*.
+Applying needs an owner or administrator of the organization; an editor's
+approval is refused. The applied change is the same record change, and
+the same single audit entry, as saving it on the screen -- the entry
+differs only in who: the actor is the assistant, with the prompt, the
+confirmation's id and the person who approved it.
+
+** Over the API
+
+#+begin_src sh
+# every setting of an organization (organization_id is optional: the default one)
+curl -H "Authorization: Bearer $VENTURE_TOKEN" \
+     "$VENTURE_SERVER/api/v1/workflow-settings?organization_id=1"
+
+# one
+curl -H "Authorization: Bearer $VENTURE_TOKEN" \
+     "$VENTURE_SERVER/api/v1/workflow-settings/telephony.quiet-hours"
+
+# change one, or put it back
+curl -X PUT -H "Authorization: Bearer $VENTURE_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"value": "20:00-07:00"}' \
+     "$VENTURE_SERVER/api/v1/workflow-settings/telephony.quiet-hours"
+curl -X PUT -H "Authorization: Bearer $VENTURE_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"reset": true}' \
+     "$VENTURE_SERVER/api/v1/workflow-settings/telephony.quiet-hours"
+#+end_src
+
+Each setting comes back as =key=, =workflow=, =label=, =help=, =type=
+(boolean, integer, text or choice), =value=, =default=, =is_default=,
+=minimum= and =maximum= or =choices=, =permission= and =stored_in=. A
+switch takes =true= or =false=, a number a number; text works for any.
+Anybody in the organization may read; changing needs an owner or
+administrator (403). A refused value is 422 with the reason; an unknown
+key, or one whose module is off, is 404. (=/api/v1/settings= is
+something else: the install's configuration, owner only.)
+
+** With venturectl
+
+#+begin_src sh
+venturectl settings list [organization_id=N]
+venturectl settings get telephony.quiet-hours
+venturectl settings set telephony.quiet-hours 20:00-07:00
+venturectl settings reset telephony.quiet-hours
+#+end_src
+
+=venturectl= calls the API above, with its token.
+
+* For developers
+
+A feature registers its settings from its own file with
+=venture_settings_register()= (=src/settings/venture-settings.h=): key,
+workflow, module, label, help, type, default, bounds or choices,
+permission, where it is stored, the field, what the field holds when
+nothing is set, and -- when the record is not the organization -- a
+function that finds it. A family (one setting per rule or per chat) adds a
+function listing its members. The screen, the API, venturectl and the
+assistant pick a new registration up with nothing else written. The
+registrations live in =src/mail/venture-mail-preview-settings.c=,
+=src/emaildesign/venture-email-design-settings.c=,
+=src/marketing/venture-marketing-settings.c=,
+=src/leads/venture-lead-ai-score.c=,
+=src/telephony/venture-telephony-settings.c=,
+=src/inbox/venture-inbox-settings.c= and
+=src/aimessages/venture-ai-messages-settings.c=.
+
+Migration =000955_settings_workflow_defaults= checks the organization
+fields added for defaults that had no home (link checks, the send
+defaults, the keyword answers). They arrive empty, which reads as the
+defaults above; nothing already stored moves. =tests/test-venture-settings.c=
+covers the registrations, defaults, validation and limits, permission,
+the single audit entry, reset, families, storage, the features reading
+the values, organization isolation and the four ways in reaching the same
+audit entry.

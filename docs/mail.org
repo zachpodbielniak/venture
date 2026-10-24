@@ -73,6 +73,10 @@ record. =venture_mail_template_render_values()= renders from an explicit
 value set instead, for a message composed from several records; the caller
 owns what enters it.
 
+A literal brace is written ={{=; a single ={= always opens a placeholder.
+A template with a =design= has its text and HTML bodies built from its
+blocks on every save; see [[file:email-design.org][Designed email]].
+
 * SMTP configuration
 
 The operator first enables =mail= and =integrations= and provides the
@@ -585,12 +589,81 @@ injectable connect and fetch errors, sizes, internal dates and UIDVALIDITY.
 GMime, already a server dependency through mail-glib, parses the fetched
 bytes.
 
-OAuth (XOAUTH2 for Google and Microsoft) is not implemented. A future
-provider must refresh tokens through the same account-bound encrypted
-credential service and preserve completion-time revocation checks; it must
-not reintroduce environment credentials. The current IMAP transport uses
-passwords or provider app tokens. CalDAV uses its separate typed client and
-the shared credential lifecycle documented in [[file:connectors.org][mailbox and calendar connectors]].
+Token sign-in (XOAUTH2) is described next. CalDAV uses its separate typed
+client and the shared credential lifecycle documented in
+[[file:connectors.org][mailbox and calendar connectors]].
+
+** Token sign-in
+
+A mailbox can sign in with OAuth 2.0 tokens instead of a password. Venture
+ships no provider and no vendor credentials: the operator describes one as
+a =mail_oauth_provider= record (name, authorize URL, token URL, scopes,
+active) in the mailbox's organization, then sets its client ID and secret
+on the provider's page (=POST /mail_oauth_providers/:id/client=,
+organization owner or admin). The secret is an encrypted integration
+credential, never a field, and is never shown again. Both addresses must be
+HTTPS; plain HTTP is accepted only to 127.0.0.1 or ::1 with
+=connectors.allow_plaintext_loopback= (the tests' fake server). The scopes
+are sent as written, so include whatever the provider needs for IMAP and
+for a refresh token.
+
+On a mail account, choose the provider in =oauth_provider_id= and press
+*Sign in with ...* on the account's page (=/mail_accounts/:id/oauth/start=,
+the same people who may manage its connector settings). The browser goes
+to the provider with the authorization-code flow and PKCE (S256): a
+one-time =state= and a fresh verifier, held in memory for 10 minutes, at
+most 256 waiting at once. The provider sends the browser back to
+=<server.base_url>/mail/oauth/callback=, which must be registered with the
+provider. Only the person who started the sign-in can finish it; a state
+is used once, and a restart forgets waiting ones (start again).
+
+The code is exchanged at the token URL (client secret in the body,
+redirects refused, at most 15 seconds, at most 64 KiB of reply). The access
+token, refresh token and expiry become the account's connector credential
+in place of the password, so rotation, disconnect, private ownership and
+in-flight revocation checks are the connector's. Before each sync a token
+within 2 minutes of expiry (or with no expiry given: one hour) is refreshed;
+a rotated refresh token replaces the old one. The IMAP session then
+authenticates with =AUTHENTICATE XOAUTH2= (SASL-IR when offered, the
+refusal continuation answered with an empty line); a server that does not
+advertise =AUTH=XOAUTH2= is refused without sending anything.
+
+A refused exchange or refresh (revoked, expired, wrong client) says "sign
+in again" and names at most the OAuth error code, never the provider's
+description. In a sync it is a refused login: the sync stops, backs off,
+and five in a row switch the account off as for a wrong password. An
+unreachable provider is a network failure and only backs off.
+
+Limits: SMTP is not signed in with tokens. Replies and all other outbound
+mail go through the organization's outbox relay as before; mail-glib's
+SMTP transport offers PLAIN and LOGIN only.
+
+=test-mail-oauth= drives PKCE, the one-time and per-person state, the
+endpoint policy, refresh with rotation, a revoked grant and a sync that
+refreshes and signs in with XOAUTH2, against a fake OAuth server on
+loopback in its own thread and the fake IMAP client. =test-mail-sync=
+drives XOAUTH2 against the scripted IMAP server.
+
+** Replying from the timeline
+
+A contact's page lists its mail newest first (up to 20 messages) with
+what came in and what went out. Under a message the sync filed there is a
+*Reply* composer; the newest one is open. Sending it
+(=POST /interactions/:id/reply=, or =POST /api/v1/interactions/:id/reply=
+with ={"body": "..."}=, editor role) queues an ordinary outbox message to
+the sender's address with "Re: " before the subject (once),
+=In-Reply-To= naming the message and =References= naming the thread root
+and the message, so the customer's mail client threads it. Bodies are
+plain text, up to 64 KiB. A note, a call or a message Venture sent itself
+cannot be answered this way.
+
+Nothing is sent by the request: the delivery sweep sends it, and once the
+relay accepts it records it on the contact's timeline as outbound, like
+any other send. The SMTP transport refuses a threading header that is not
+a list of =<id>= tokens. =test-mail-reply= covers the headers, the
+timeline entry, the refusals, the wire headers and the page. Migration
+=000949_sales_mail_sign_in= checks the provider table, the account field
+and the two message fields.
 
 ** Upgrades and tests
 
@@ -707,3 +780,113 @@ through the organization settings service and sends using the outbox. It checks
 refusal without the operator exception, credential and endpoint refusal,
 uncertain delivery recovery, actual sender/body bytes, and revocation of the
 plaintext exception. No public mail server is contacted.
+
+* Previews and pre-send checks
+
+Every kind of email Venture sends can be looked at before it goes, as the
+customer will get it. An organization owner or administrator opens
+=/mail/preview/KIND/ID= -- for example =/mail/preview/invoice/41= -- or
+=/mail/preview/message/ID= for a message already in the outbox, in any
+state. The same preview is =GET /api/v1/mail/preview/KIND/ID= and
+=venturectl mail preview KIND ID=, which print it as JSON with its checks.
+
+** What is shown
+
+- The recipient, subject, any headers the transport adds and the names of
+  the attachments.
+- The HTML part in six frames: phone (390 pixels wide), tablet (768) and
+  desktop (1440), each in a light and a dark colour scheme. Each frame can
+  be opened alone with =?frame=390&scheme=dark=.
+- The plain-text part, exactly as sent.
+- The pre-send checks.
+
+The bodies are the ones the SMTP transport would send, by its own rule: a
+private text body replaces both public bodies, and a private HTML body
+replaces the HTML. The transport and the preview call the same function
+(=venture_mail_visible_bodies()=), so they cannot disagree.
+
+Private links are never shown. A pay link, a quote acceptance link, a
+portal invitation, a campaign's unsubscribe and tracking links and a
+personal form link are each replaced by
+=https://private-link.invalid/withheld-in-preview=. A link counts as
+private when it is only in the private bodies, when it is the message's
+unsubscribe endpoint, or when it carries a 32-digit hex token anywhere (the
+form every token here takes); a public link that happens to carry one, such
+as a commit hash, is withheld too.
+
+The email's HTML runs in an iframe with an empty =sandbox= and =srcdoc=: no
+script in a message runs and nothing in it can reach the page, its session
+or the API.
+
+** Dark mode is a simulation
+
+A dark frame sets the frame's colour scheme to dark, so the message's own
+=prefers-color-scheme: dark= rules apply, and a text-only message is shown
+light-on-dark the way most mail apps show one. Nothing else is changed. Real
+mail apps differ: some honour those rules, some ignore them, and some
+invert the colours of a message by themselves, which no preview can
+predict.
+
+** The checks
+
+Each check is =ok=, =warn= or =fail=, with a sentence saying what was found.
+
+| Check | Passes when | Fails or warns when |
+|-------+-------------+---------------------|
+| =plain-text= | there is a plain-text part of at least 20 characters | it is missing or shorter (fail): text-only mail apps, some screen readers and many spam filters read only that part |
+| =image-alt= | every image has non-empty alt text (one-pixel tracking images excepted) | an image has none (fail): with images off, the reader sees nothing there |
+| =links= | every link is a well-formed http, https, mailto or tel address with a host | a link cannot work from a mail app -- =javascript:=, a relative path, no host (fail); with reachability asked for, a web link that does not answer (warn) |
+| =size= | the HTML is under about 102 KB | it is over (warn): a major webmail client cuts the message off there, often hiding the footer and the unsubscribe link |
+| =unsubscribe= | transactional mail; or bulk mail with an unsubscribe link in the body and the one-click =List-Unsubscribe= header | bulk mail with neither (fail), or with the link but no header (warn); the header needs a public HTTPS address |
+| =source= | -- | a warning from the sender about how this preview may differ from the real send (a draft invoice, a step not yet due, a recipient whose permission lapsed) |
+
+Bulk mail is campaigns and sequence steps: the law in most places requires
+them to carry a way out, and large mailbox providers require the header.
+Invoices, quotes, reminders, receipts, invitations and account notices are
+transactional and need neither.
+
+Whether a link answers is not checked unless asked for, on the page with
+*Also ask each web link whether it answers* (=?reachability=1=). Then each
+distinct web link, at most ten, gets one =HEAD= request with a three-second
+timeout and no redirects followed, from this server; private links and
+addresses the assistant's fetch guard refuses (loopback, link-local,
+site-local) are never asked about. Tests use a fake checker and never touch
+the network.
+
+** Send me a test
+
+The page's *Send me a test* button queues one copy to the signed-in
+person's own email address and nobody else: subject prefixed =[TEST] =,
+every private link replaced by the placeholder, no Cc or Bcc, the
+attachments kept. It goes through the ordinary outbox, keyed by the kind,
+the record and the button's one-time token, so a double click sends once,
+and is delivered at once like the SMTP settings test. Its row is filed
+under =mail_preview=, so no sender's eligibility hook acts on it and nothing
+about the source record is decided. A user with no email address cannot
+send one. The overdue reminder's =test_send= action is the same send.
+
+** Which kinds
+
+| Kind | Source record | Notes |
+|------+---------------+-------|
+| =invoice= | invoice | a draft is previewed as it stands; sending issues it first, which can change its dates |
+| =quote= | quote | a draft has no acceptance link yet; it is withheld either way |
+| =reminder= | invoice | the step the sweep would send that day, else the next email step; holds and stops are noted |
+| =receipt= | payment | |
+| =campaign= | marketing recipient | one frozen recipient's message; run *Preview* on the send first |
+| =sequence= | sequence delivery | built by the same function the sequence outbox adapter enqueues with, so the preview is the stored message |
+| =portal-invitation= | customer portal access | |
+| =account-welcome=, =account-password-change= | user | |
+
+Subscription and collection notices, booking confirmations, form
+confirmations, opt-in and resume links and report packs compute their
+content inside the transaction that queues them, so they are previewed once
+queued, as =/mail/preview/message/ID=. Alerts are in-app only: they send no
+email, so there is nothing to preview.
+
+A kind is a registration: the sending module declares a function that
+builds the unsaved message it would enqueue, writing nothing, and its own
+enqueue path calls that same function. =test-mail-preview= holds the
+preview to the stored row for invoices, quotes, reminders and campaigns,
+covers each check passing and failing, the private-link rule, the test
+send and the page's access and frames.

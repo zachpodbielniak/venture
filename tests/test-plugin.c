@@ -1200,7 +1200,7 @@ test_web_navigation_links_all_resolve(
 		"/money/calendar", "/late-fees", "/customers/duplicates", "/feeds", "/market/browse", "/market/find", "/market/deals",
 		"/market/venues", "/market/watchlists", "/market/alerts", "/arbitrage", "/arbitrage/crafting",
 		"/arbitrage/recipe-lists", "/arbitrage/plan", "/arbitrage/calc",
-		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", "/roadmap", "/jobs/day", "/jobs/visits", NULL
+		"/accounts", "/accounts/inventory", "/accounts/pnl", "/calendar", "/roadmap", "/conversations", "/jobs/day", "/jobs/visits", NULL
 	};
 	const VentureWebNavLink *links;
 	gsize i;
@@ -1341,7 +1341,7 @@ test_web_navigation_groups_by_question(
 		"/e/accounting_cutover", "/e/currency", NULL
 	};
 	static const gchar *const customers[] = {
-		"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates",
+		"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
 		NULL
 	};
 	static const gchar *const growth[] = {

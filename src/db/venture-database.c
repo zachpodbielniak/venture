@@ -270,6 +270,7 @@ venture_database_init(VentureDatabase *self)
 	venture_marketing_install(self);
 	venture_attribution_install(self);
 	venture_referrals_install(self);
+	venture_sequence_journeys_install(self);
 	venture_jobs_install(self);
 }
 
@@ -2977,6 +2978,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_referrals_actions_register(self);
 		venture_jobs_actions_register(self);
 		venture_close_actions_register(self);
+		venture_tags_actions_register(self);
 	}
 	return self->actions;
 }

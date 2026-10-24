@@ -111,13 +111,15 @@ today without moving the dunning schedule or the quote's validity
 (billing.md, receivables.md). The full review above remains the last complete
 inventory; the comparison baseline below includes these incremental updates.
 Late fees (module `late_fees`, report `late_fees`, `/late-fees`) and
-home-services jobs are both in this baseline. The full inventory remains
-`9c97a87a`.
+home-services jobs are both in this baseline. Marketing, sales, phone and
+text (mail preview, designed email, deliverability, journeys, telephony,
+the one inbox, AI on messages, workflow settings) are in it too, against
+`e549807a`. The full inventory remains `9c97a87a`.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-23 against 1be4e0c0 -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-23 against e549807a -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=1be4e0c0
+base=e549807a
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -134,8 +136,11 @@ some it describes.
 Home-services coverage was updated against `1be4e0c0` (2026-10-23): jobs
 types, actions, day and visit routes, atomic refusals, datetime editing,
 draft-only posting approval, business-midnight receipt dates, and the
-saved-bank confirmation pin. The full-system baseline above remains the
-last complete inventory review.
+saved-bank confirmation pin. Marketing, sales, phone and text were updated
+against `e549807a` (2026-10-23): `mail preview`, designed email, the signed
+deliverability feed, journeys, telephony, `/conversations`, AI message
+drafts, and `venturectl settings`. The full-system baseline above remains
+the last complete inventory review.
 
 ## Topic guides
 
@@ -320,6 +325,7 @@ ids, notes) in words.
 
 | Request | Answer | Guide |
 |---|---|---|
+| "Change the text quiet hours" (or any workflow default) | `venturectl settings set telephony.quiet-hours 20:00-07:00`; `settings list` names every key; one audit entry | [platform.md](references/platform.md) |
 | "Provision a Lightsite owner" | `POST /api/v1/lightsite/signups`: seven strings, including `first_name` and `last_name`; the old five-member body is 422 | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
@@ -407,6 +413,10 @@ ids, notes) in words.
 | "Share records with another server" | `federation '{"action":...}'` | [operations.md](references/operations.md) |
 | "Add a venture type / provider / plugin" | YAML type, `*.plugin.yaml`, `plugins list` | [plugins.md](references/plugins.md) |
 | "Print a receipt" | `print payment\|invoice ID [PRINTER]` | [platform.md](references/platform.md) |
+| "Show me this email before it goes" | `mail preview KIND ID` or `/mail/preview/KIND/ID`; *Send me a test* mails only you | [mail.md](references/mail.md) |
+| "Call or text this contact" | `POST /api/v1/telephony/call` with `contact_id` (rings the extension first); `POST /api/v1/contacts/ID/texts` needs recorded text consent; STOP holds until START | [data-model-crm.md](references/data-model-crm.md) |
+| "One thread for this customer's mail, texts and calls" | `/conversations`; a reply stays in the channel it arrived on | [data-model-crm.md](references/data-model-crm.md) |
+| "Why did this campaign bounce, and who opened it?" | `GET /api/v1/marketing/sends/ID/report`; provider feed is `POST /hooks/deliverability/ORG/generic` with the organization's signing secret | [outreach.md](references/outreach.md) |
 
 ## Output Format
 
@@ -475,7 +485,7 @@ vendor="Hosting Co"` and check `get expense ID`.
 - Configuration (modules, allowlists, `plugins.allow_exec`,
   `forge.runs_enabled`) is the operator's file and restart, not an API call;
   say so instead of inventing an endpoint.
-- This skill includes late fees and home-services updates through
-  `1be4e0c0`; the full-system inventory remains `9c97a87a`. When the
-  live server disagrees, trust the server's generated answers and say the
-  skill is behind.
+- This skill includes late fees, home services, and marketing, sales,
+  phone and text through `e549807a`; the full-system inventory remains
+  `9c97a87a`. When the live server disagrees, trust the server's generated
+  answers and say the skill is behind.

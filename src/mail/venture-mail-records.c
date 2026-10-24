@@ -22,7 +22,10 @@ static const VentureFieldDecl message_fields[] = {
 	VENTURE_FIELD_TEXT("last-error", "Last error", NULL),
 	STR("message-id", "Message-ID"), DATE("sent-at", "Sent at"),
 	INT("connection-id", "Delivery account"), INT("connection-version", "Delivery configuration version"),
-	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
+	VENTURE_FIELD("idempotency-key", "Idempotency key", "Unique within the organization, including retained rows", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	/* A reply's threading headers, so the recipient's client files it
+	 * under the message it answers (RFC 5322 section 3.6.4). */
+	STR("in-reply-to", "In reply to"), STR("reply-references", "References")
 };
 /* Private intake mail may outlive the record whose answers it copied.
  * Keep delivery state in history, never an immutable second copy of answers. */
@@ -45,6 +48,12 @@ static const VentureFieldDecl template_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
 	VENTURE_FIELD_NAME("subject", "Subject", NULL),
 	VENTURE_FIELD_TEXT("text-body", "Text body", "Record fields in {braces}"),
-	VENTURE_FIELD_TEXT("html-body", "HTML body", "Substituted record values are HTML escaped")
+	VENTURE_FIELD_TEXT("html-body", "HTML body", "Substituted record values are HTML escaped"),
+	/* With a design, both bodies are built from it on every save
+	 * (src/emaildesign/): the design is the source, the bodies derived. */
+	VENTURE_FIELD("design", "Design", "Email blocks as JSON; when set, the text and HTML bodies are built from it",
+		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("design-version", "Design version", "The saved design version the template shows",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY(VentureMailTemplate, venture_mail_template, template_fields)

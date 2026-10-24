@@ -115,6 +115,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:backup.org][Accounting backup]] — export and restore an organization pack; scheduled, retained, verified backups and the restore drill
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
 - [[file:docs-site.org][The documentation site]] — docs/*.org rendered to HTML, served at =/docs=, with link and index checks
+- [[file:marketing-sales-parity.org][Marketing, sales, phone and text parity]] — the gap audit: what Venture has, what is partial and what each later lane builds
 
 ** Market data, arbitrage and plugins
 
@@ -228,3 +229,17 @@ screen's ordinary sync-and-import test.
 - [[file:printing.org][Receipt printers]] — named ESC/POS printers, thermal receipts and invoice summaries.
 
 - [[file:evidence/forms-consent.org][Forms consent demonstration]] — built-server capture of explicitly checked marketing permission.
+
+- [[file:email-design.org][Designed email]] — brand settings, hosted images, blocks, shared sections, the AI designer and its grounding rule, dark mode and undo.
+
+- [[file:deliverability.org][Deliverability]] — signed bounce and complaint feed, DSNs from synced mail, campaign replies, the SPF/DKIM/DMARC check, warm-up limits and the per-send report with machine opens and click map.
+
+- [[file:journeys.org][Journeys]] — sequences with branches and waits, named triggers that enrol once per event, and the preference centre they honour.
+
+- [[file:telephony.org][Phone calls and text messages]] — click-to-call through 3CX, every call logged on the contact, missed calls, two-way texts through VoIP.ms with consent, STOP/HELP and quiet hours, text steps and text campaigns.
+
+- [[file:inbox.org][Conversations: one inbox]] — every customer's email, texts, calls, voicemail and web chat in one thread per contact, with an owner, open/waiting/closed, replies in their channel and an embeddable web chat.
+
+- [[file:ai-messages.org][AI on messages]] — drafted replies, intent and details from the message only, routing, after-hours and missed-call auto-replies, call summaries, grounded follow-ups, approval, and one switch; every send through consent and quiet hours.
+
+- [[file:settings.org][Settings: marketing, sales, phone and AI]] — every workflow setting with its default and limit, the settings screen, and changing one from chat, the API or venturectl through one audited path.

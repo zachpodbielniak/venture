@@ -9,7 +9,7 @@ venture_activity_call_parameters(void)
 		"subject", "owner", "outcome", "call-direction", "call-duration", "call-occurred-at",
 		"call-outcome", "call-recording-url", "call-transcript", "call-external-source",
 		"call-external-id", "call-followup-subject", "call-followup-owner",
-		"call-followup-due-at", "call-followup-remind-at", NULL
+		"call-followup-due-at", "call-followup-remind-at", "call-inbox-ready", NULL
 	};
 	g_autoptr(VentureEntity) prototype = VENTURE_ENTITY(venture_activity_new());
 	g_autoptr(GPtrArray) all = venture_entity_get_field_specs(prototype);

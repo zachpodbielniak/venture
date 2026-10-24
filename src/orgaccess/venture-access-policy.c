@@ -504,6 +504,10 @@ role_allows(VentureAccessPolicy *self, const VentureAuthPrincipal *actor,
 		return FALSE;
 	if (manager)
 		return TRUE;
+	/* Settings kept as records (an email brand, a hosted image): every
+	 * member reads them, only an owner or administrator changes them. */
+	if (!read && g_type_get_qdata(G_OBJECT_TYPE(entity), g_quark_from_static_string("venture-access-manager-write")))
+		return FALSE;
 	/* An outside accountant reads and exports the books; the write refusal
 	 * that names the role is raised by the caller before reaching here. */
 	if (role == VENTURE_ORGANIZATION_ROLE_ACCOUNTANT)

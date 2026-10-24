@@ -62,7 +62,20 @@ in the repository lists today's.
 | `POST /quotes/:id/:action` (send, accept, decline, revise, remind, start-subscription) | `quote ACTION ID` |
 | `POST /invoice/:id/actions/remind` (editor, stageable) | `act invoice ID remind` |
 | `POST /deals/:id/move`, `POST /deals/:id/quote` | `deal move\|quote` |
-| `POST /leads/:id/:action` (convert, reassign, reroute, rescore) | `lead ...`, `leads ...` |
+| `POST /deals/:id/move` also takes `version` (the board's drag; stale is 409); `GET /deals/board.js` | -- |
+| `POST /leads/:id/:action` (convert, reassign, reroute, rescore, ai_score) | `lead ...`, `leads ...` |
+| `POST /lead_score_proposals/:id/accept\|dismiss` (AI score proposal; docs/leads.org) | -- |
+| `GET /mail_accounts/:id/oauth/start`, `GET /mail/oauth/callback`, `POST /mail_oauth_providers/:id/client` (token mailbox sign-in) | -- |
+| `POST /interactions/:id/reply` (`{"body"}`; threaded reply through the outbox) | -- |
+| `POST /telephony/call` (`contact_id`, `deal_id` or `ticket_id`; rings the caller's extension first; docs/telephony.org) | -- |
+| `POST /contacts/:id/texts` (`body`, optional `hosted_image_id`), `POST /contacts/:id/text-consent` (`granted`, `evidence`) | -- |
+| `GET`/`POST /organizations/:id/settings/telephony` (owner/admin: lines, webhook address shown once, extensions, quiet hours, recording links) | -- |
+| `GET`/`POST /hooks/telephony/:token` (provider webhook; no session; token, allowed senders, signature where offered; idempotent) | -- |
+| `POST /api/v1/telephony/call`, `GET`/`POST /api/v1/contacts/:id/texts`, `POST /api/v1/contacts/:id/text-consent`, `POST /api/v1/telephony/run?organization_id=` | -- |
+| `GET /conversations` (`view` mine/unassigned/all, `status`, `channel`), `GET /conversations/:id`, `POST /conversations/:id/assign\|status\|reply`, `GET /contacts/:id/conversation` (one inbox; docs/inbox.org) | -- |
+| `GET /api/v1/conversations`, `GET /api/v1/conversations/:id` (conversation, `items`, `reply_channel`), `POST /api/v1/conversations/:id/assign` (`{"owner_id"}`), `/status` (`{"status"}`), `/reply` (`{"body","channel"}`), `GET /api/v1/contacts/:id/conversation` | -- |
+| `GET`/`POST /organizations/:id/settings/webchat` (owner/admin), public `GET`/`POST /webchat/:token`, `GET`/`POST /webchat/c/:token`, `GET /webchat/c/:token/messages?after=`, `GET /webchat.js` (no session, no cookie; rate-limited) | -- |
+| `GET`/`POST /organizations/:id/settings/workflows` (owner/admin: every workflow setting from the registry, `action=set\|reset`, `key`, `value`), `GET /api/v1/workflow-settings?organization_id=`, `GET`/`PUT /api/v1/workflow-settings/:key` (`{"value"}` or `{"reset": true}`; 422 refused value, 404 unknown key; docs/settings.org). Not `/api/v1/settings`, which is the install configuration | `settings list\|get\|set\|reset` |
 | `POST /billing/start`, `POST /billing/renew-sweep\|dunning-sweep`, `POST /customer_subscriptions/:id/:action` (renew, change, change-seats, cancel, pause, resume, mark-payment-failed, recover); metered use is `POST /usage_record` | `billing ...` |
 | `POST /vendor_bill/:id/:action` (approve, pay, void), `POST /payables/pay` | `bill ...`, `bill pay-bulk` |
 | `POST /purchase_order/:id/:action`, `POST /sales_order/:id/:action` | `purchase ...`, `sales-order ...` |
@@ -102,7 +115,9 @@ in the repository lists today's.
 | `GET /activities` (`.ics`), `POST /activities/:id/:action`, `POST /activities/sweep` | `activity complete\|list` |
 | `POST /sequence/:id/enroll`, `POST /sequence_enrollment/:id/:action` (pause, resume, exit, goal), `POST /sequences/run` | `sequence ...` |
 | `POST /crm_imports/preview`, `POST /crm_imports/:id/:action` | `crm preview\|import\|activate\|rollback` |
-| `POST /mail/:action` (send, test, deliver), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss` | `mail ...` |
+| `GET /api/v1/marketing/domain-health?organization_id=&domain=&selector=` (owner/admin: SPF, DKIM, DMARC), `POST /api/v1/marketing/feedback-secret` (owner/admin: seal the feed's signing secret, shown once), `GET /api/v1/marketing/sends/:id/report` (counts and click map); pages `/marketing/deliverability`, `/marketing/sends/:id/report`; public `POST /hooks/deliverability/:org/:provider` (no session: the signed bounce and complaint feed, refused without the organization's secret) | -- |
+| `POST /mail/:action` (send, test, deliver), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss`, `GET /mail/preview/:kind/:id` (owner/admin: the email a sender would queue, with its checks; `kind=message` for a queued row) | `mail ...`, `mail preview KIND ID` |
+| `GET /email-design`, `GET /email-design/:id` (builder, owner/admin), `POST /email-design/new\|images\|logo-ask/dismiss`, `POST /email-design/:id/blocks\|brief\|edit\|undo`, public `GET /i/:org/:file` (hosted image, no cookie) | `act mail_template design_email\|edit_design\|undo_design\|rebuild_designs` |
 | `POST /calendar/sync` | `calendar sync` |
 | `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`); the same answer as the page `/calendar`, the feed `/calendar.ics` and the org-agenda file `/calendar.org`, all three at the site root, not under `/api/v1` | `calendar show [k=v ...]`, `calendar org [k=v ...]` |
 | `POST /calendar/reminders` (editor): the event reminder sweep, `{"reminded": N}` | `calendar remind` |

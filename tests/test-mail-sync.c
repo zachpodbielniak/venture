@@ -331,6 +331,32 @@ static gboolean stub_handle(Stub *s, GDataInputStream *in, GOutputStream *out, c
 			if ((gsize)(user - (const gchar *)decoded) < length) pass = user + strlen(user) + 1;
 		}
 		stub_check_credentials(s, user, pass, tag, reply);
+	} else if (g_str_has_prefix(upper, "AUTHENTICATE XOAUTH2")) {
+		/* RFC-less but documented: user=...^Aauth=Bearer ...^A^A. A refusal
+		 * is a continuation carrying a JSON status the client answers with
+		 * an empty line, then a tagged NO. */
+		const gchar *initial = command + strlen("AUTHENTICATE XOAUTH2");
+		g_autofree gchar *response = NULL;
+		g_autofree guchar *decoded = NULL;
+		g_autofree gchar *wanted = NULL;
+		gsize length = 0;
+		if (*initial == ' ') response = g_strdup(initial + 1);
+		else {
+			if (!stub_send(out, "+ \r\n")) return FALSE;
+			response = g_data_input_stream_read_line(in, NULL, NULL, NULL);
+			if (!response) return FALSE;
+		}
+		decoded = g_base64_decode(response, &length);
+		g_free(s->credentials);
+		s->credentials = g_strndup((const gchar *)decoded, length);
+		wanted = g_strdup_printf("auth=Bearer %s\001\001", s->secret ? s->secret : "");
+		if (s->secret && !g_str_has_suffix(s->credentials, wanted)) {
+			g_autofree gchar *empty = NULL;
+			if (!stub_send(out, "+ eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIn0=\r\n")) return FALSE;
+			empty = g_data_input_stream_read_line(in, NULL, NULL, NULL);
+			if (!empty) return FALSE;
+			g_string_append_printf(reply, "%s %s\r\n", tag, *empty ? "BAD expected an empty line" : "NO [AUTHENTICATIONFAILED] Invalid token for the bearer");
+		} else g_string_append_printf(reply, "%s OK authenticated\r\n", tag);
 	} else if (g_str_has_prefix(upper, "LOGIN ")) {
 		if (strstr(s->capabilities, "LOGINDISABLED")) g_string_append_printf(reply, "%s NO [PRIVACYREQUIRED] login disabled\r\n", tag);
 		else if (!stub_login(s, in, out, tag, command + strlen("LOGIN "), reply)) return FALSE;
@@ -1040,6 +1066,55 @@ static void test_socket_authentication(Fixture *f, gconstpointer data)
 	g_assert_null(strstr(error->message, secret));
 	g_assert_null(strstr(error->message, "Invalid credentials"));
 	stub_clear(&stub);
+}
+
+/* XOAUTH2 against the scripted server: the token rides on the command with
+ * SASL-IR (or after "+" without it), a refusal's JSON continuation is
+ * answered with an empty line and reported as a refused login without the
+ * token, and a server that offers no XOAUTH2 is told nothing at all. */
+static gboolean xoauth2_case(Fixture *f, const gchar *capabilities, const gchar *token, Stub *stub, GError **error)
+{
+	g_autoptr(VentureImapClient) client = g_object_new(VENTURE_TYPE_SOCKET_IMAP_CLIENT, "allow-plaintext", TRUE, NULL);
+	gboolean ok;
+	(void)f;
+	stub_init(stub, capabilities, "good-token");
+	stub_start(stub, 1);
+	venture_imap_client_set_deadline(client, g_get_monotonic_time() + 10 * G_USEC_PER_SEC);
+	ok = venture_imap_client_connect_xoauth2(client, "127.0.0.1", stub->port, "none", "ops@example.net", token, NULL, error);
+	venture_imap_client_disconnect(client);
+	stub_finish(stub);
+	return ok;
+}
+static void test_socket_xoauth2(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	Stub stub;
+	(void)data;
+	g_assert_true(xoauth2_case(f, "IMAP4rev1 AUTH=XOAUTH2 SASL-IR", "good-token", &stub, &error));
+	g_assert_no_error(error);
+	g_assert_cmpstr(stub.credentials, ==, "user=ops@example.net\001auth=Bearer good-token\001\001");
+	g_assert_true(stub_has_command(&stub, "AUTHENTICATE XOAUTH2 "));
+	g_assert_false(stub_has_command(&stub, "LOGIN"));
+	stub_clear(&stub);
+	g_assert_true(xoauth2_case(f, "IMAP4rev1 AUTH=XOAUTH2", "good-token", &stub, &error));
+	g_assert_no_error(error);
+	stub_clear(&stub);
+	g_assert_false(xoauth2_case(f, "IMAP4rev1 AUTH=XOAUTH2 SASL-IR", "stale-token", &stub, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
+	g_assert_nonnull(strstr(error->message, "AUTHENTICATIONFAILED"));
+	g_assert_null(strstr(error->message, "stale-token"));
+	g_assert_null(strstr(error->message, "bearer"));
+	g_clear_error(&error);
+	stub_clear(&stub);
+	g_assert_false(xoauth2_case(f, "IMAP4rev1 AUTH=PLAIN", "good-token", &stub, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+	g_assert_null(stub.credentials);
+	g_clear_error(&error);
+	stub_clear(&stub);
+	/* The fake transport used by the service tests speaks it too. */
+	g_assert_true(venture_imap_client_connect_xoauth2(VENTURE_IMAP_CLIENT(f->imap), "imap.example.net", 993, "tls", "ops@example.net", "any", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpstr(venture_fake_imap_client_get_mechanism(f->imap), ==, "xoauth2");
 }
 
 /* An oversized message is listed with its size and read as its header plus
@@ -1953,5 +2028,6 @@ int main(int argc, char **argv)
 	g_test_add("/mail-sync/sync-since", Fixture, NULL, setup, test_sync_since, teardown);
 	g_test_add("/mail-sync/leads-and-deals", Fixture, NULL, setup, test_leads_and_deals, teardown);
 	g_test_add("/mail-sync/migration", Fixture, NULL, setup, test_migration, teardown);
+	g_test_add("/mail-sync/socket-xoauth2", Fixture, NULL, setup, test_socket_xoauth2, teardown);
 	return g_test_run();
 }

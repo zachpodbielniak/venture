@@ -27,6 +27,7 @@ take `organization_id=N` to work outside the default organization.
 | Verb | What it does | Guide |
 |---|---|---|
 | `inbox [--all]`, `inbox read ID\|all` | what you have been told; mark read | [desk.md](desk.md) |
+| `settings list\|get KEY\|set KEY VALUE\|reset KEY [organization_id=N]` | workflow settings (quiet hours, warm-up, A/B defaults, AI messages switch, ...); same API and audit as the settings screen | [platform.md](platform.md) |
 | `watch TYPE ID`, `unwatch TYPE ID` | follow a record | [desk.md](desk.md) |
 | `activity TYPE ID` | a record's timeline: changes, comments, worklogs | [desk.md](desk.md) |
 | `comments list\|add\|reply\|edit\|delete\|get ...` | discussion on any record; BODY `-` reads stdin | [desk.md](desk.md) |
@@ -89,7 +90,7 @@ take `organization_id=N` to work outside the default organization.
 | `dedupe scan [kind=] \| merge ID survivor=N \| dismiss ID` | duplicates | [crm.md](crm.md) |
 | `crm preview MANIFEST \| import MANIFEST\|ID \| activate ID \| rollback ID` | CRM migration | [crm.md](crm.md) |
 | `sequence enroll ID contact_id=`, `sequence run [--as-of]`, `sequence status ID` | follow-ups | [outreach.md](outreach.md) |
-| `mail list\|send\|test\|deliver\|retry\|sync\|contact\|dismiss` | transactional and inbound mail | [mail.md](mail.md) |
+| `mail list\|send\|test\|deliver\|retry\|sync\|contact\|dismiss\|preview` | transactional and inbound mail; `mail preview KIND ID` shows what a sender would queue, with its pre-send checks | [mail.md](mail.md) |
 | `calendar sync [organization_id=] [limit=]` | CalDAV sweep | [mail.md](mail.md) |
 | `calendar show [view=] [date=] [from=] [to=] [kind=a,b] [venture_id=] [assignee=me] [done=1]` | the unified calendar as an agenda; `-f json` the API's answer | [planner.md](planner.md) |
 | `calendar org [same options as show]` | the calendar as an org-agenda file, printed untouched | [planner.md](planner.md) |

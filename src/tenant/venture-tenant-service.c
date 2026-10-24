@@ -1786,6 +1786,9 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	organization = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", business_name, "active", TRUE, NULL);
 	if (!venture_database_save(self->database, organization, &audit, error)) goto rollback;
 	organization_id = venture_entity_get_id(organization);
+	/* The starter chart every new install gets, in this same transaction: a
+	 * business that cannot post its first invoice is not ready to sell. */
+	if (!venture_setup_seed_defaults(self->database, organization_id, &audit, error)) goto rollback;
 	if (!linked) {
 		username = signup_username(self, email, error);
 		if (!username) goto rollback;

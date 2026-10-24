@@ -412,6 +412,15 @@ has_pending_email(VentureSequenceService *self, VentureEntity *enrollment, gbool
 	return TRUE;
 }
 
+gboolean
+venture_sequence_interaction_is_reply(VentureEntity *interaction, VentureEntity *previous)
+{
+	g_return_val_if_fail(VENTURE_IS_ENTITY(interaction), FALSE);
+	if (G_OBJECT_TYPE(interaction) != VENTURE_TYPE_INTERACTION || flag(interaction, "outbound"))
+		return FALSE;
+	return previous == NULL || flag(previous, "outbound");
+}
+
 static gboolean
 apply_exits(VentureSequenceService *self, VentureEntity *source,
 	VentureEntity *previous, const VentureActor *actor, GError **error)
@@ -420,7 +429,7 @@ apply_exits(VentureSequenceService *self, VentureEntity *source,
 	g_autoptr(GPtrArray) enrolled = NULL;
 	g_autofree gchar *email = NULL;
 	gboolean suppression = G_OBJECT_TYPE(source) == VENTURE_TYPE_SUPPRESSION;
-	gboolean reply = G_OBJECT_TYPE(source) == VENTURE_TYPE_INTERACTION && !flag(source, "outbound");
+	gboolean reply = venture_sequence_interaction_is_reply(source, NULL);
 	gboolean meeting = G_OBJECT_TYPE(source) == VENTURE_TYPE_INTERACTION && choice(source, "kind") == VENTURE_INTERACTION_KIND_MEETING;
 	gboolean won = G_OBJECT_TYPE(source) == VENTURE_TYPE_DEAL && choice(source, "stage") == VENTURE_DEAL_STAGE_WON;
 	guint i;
@@ -428,7 +437,7 @@ apply_exits(VentureSequenceService *self, VentureEntity *source,
 		return TRUE;
 	if (won && previous != NULL && choice(previous, "stage") == VENTURE_DEAL_STAGE_WON)
 		return TRUE;
-	if (reply && previous != NULL && !flag(previous, "outbound"))
+	if (reply && !venture_sequence_interaction_is_reply(source, previous))
 		return TRUE;
 	if (suppression)
 		email = normalized_email(source);
@@ -568,6 +577,19 @@ process_save(VentureSequenceService *self, VentureEntity *row, const VentureActo
 		if (number(row, "position") < 1 || number(row, "delay-days") < 0 ||
 			number(row, "delay-hours") < 0 || number(row, "delay-days") > 36500 || number(row, "delay-hours") > 876000)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Positions must be positive and delays between zero and 100 years");
+		/* Journeys: only a branch step branches, and every jump goes
+		 * forward, so every path ends (docs/journeys.org). */
+		if (choice(row, "channel") == 4 && choice(row, "branch-on") == 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "A branch step needs what to branch on: opened, clicked or replied");
+		if (choice(row, "channel") != 4 && choice(row, "branch-on") != 0)
+			return refuse(error, VENTURE_ERROR_VALIDATION, "Only a branch step branches; set the channel to branch");
+		{
+			const gchar *jumps[] = { "yes-position", "no-position", "then-position" };
+			guint j;
+			for (j = 0; j < G_N_ELEMENTS(jumps); j++)
+				if (number(row, jumps[j]) < 0 || (number(row, jumps[j]) > 0 && number(row, jumps[j]) <= number(row, "position")))
+					return refuse(error, VENTURE_ERROR_VALIDATION, "A journey only goes forward: jump to a step after this one");
+		}
 		steps = rows(self, type, org, "sequence-id", number(row, "sequence-id"), error);
 		if (steps == NULL)
 			return FALSE;
@@ -618,7 +640,10 @@ process_save(VentureSequenceService *self, VentureEntity *row, const VentureActo
 	 * Re-entering the dispatcher would spend a consumed permit twice. Keep
 	 * validators and signals in the ordinary downstream write, within this
 	 * sequence transaction. */
-	if (type == VENTURE_TYPE_DEAL || type == VENTURE_TYPE_INTERACTION)
+	if (type == VENTURE_TYPE_DEAL)
+		return save(self->database, row, actor, error) && apply_exits(self, row, previous, actor, error) &&
+			venture_sequence_triggers_deal(self, row, previous, error);
+	if (type == VENTURE_TYPE_INTERACTION)
 		return save(self->database, row, actor, error) && apply_exits(self, row, previous, actor, error);
 	return persist(self, row, actor, error) && apply_exits(self, row, previous, actor, error);
 }
@@ -675,6 +700,77 @@ venture_sequence_service_enroll(VentureSequenceService *self, VentureEntity *enr
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") == G_TYPE_INVALID)
 		return refuse(error, VENTURE_ERROR_NOT_FOUND, "The sequences module is disabled");
 	return venture_database_save(self->database, enrollment, actor, error);
+}
+
+gint
+venture_sequence_trigger_enroll(VentureSequenceService *self, VentureEntity *trigger, gint64 contact_id,
+	gint64 deal_id, const gchar *identity, const gchar *reason, GDateTime *at, GError **error)
+{
+	gint64 org = venture_entity_get_organization_id(trigger);
+	gint64 sequence_id = number(trigger, "sequence-id");
+	g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT ":%s:%" G_GINT64_FORMAT, sequence_id, identity, contact_id);
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_ENROLLMENT);
+	g_autoptr(VentureEntity) existing = NULL, sequence = NULL, contact = NULL, row = NULL;
+	g_autoptr(GError) refused = NULL;
+	gboolean outer = self->busy, ok;
+	if (contact_id <= 0 || sequence_id <= 0)
+		return 0;
+	/* The journey's own enrollment, made as the system: whoever saved the
+	 * contact or paid the invoice need not be allowed to enrol anybody. */
+	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, org, NULL);
+	venture_query_add_filter_string(query, "trigger-key", VENTURE_FILTER_OP_EQ, key, NULL);
+	existing = venture_database_find_one(self->database, query, error);
+	if (existing != NULL)
+		return 0;
+	if (error != NULL && *error != NULL)
+		return -1;
+	sequence = venture_database_get(self->database, VENTURE_TYPE_SEQUENCE, sequence_id, NULL);
+	contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, contact_id, NULL);
+	if (sequence == NULL || contact == NULL || venture_entity_is_deleted(sequence) || venture_entity_is_deleted(contact) ||
+		venture_entity_get_organization_id(sequence) != org || venture_entity_get_organization_id(contact) != org ||
+		!flag(sequence, "active"))
+		return 0;
+	row = g_object_new(VENTURE_TYPE_SEQUENCE_ENROLLMENT, "organization-id", org, "sequence-id", sequence_id,
+		"contact-id", contact_id, "enrolled-at", at, "enrollment-reason", reason,
+		"owner-id", number(trigger, "owner-id"), "trigger-id", venture_entity_get_id(trigger), NULL);
+	if (deal_id > 0)
+	{
+		g_autoptr(VentureEntity) deal = venture_database_get(self->database, VENTURE_TYPE_DEAL, deal_id, NULL);
+		if (deal != NULL && number(deal, "contact-id") == contact_id)
+			g_object_set(row, "deal-id", deal_id, NULL);
+	}
+	if (!outer && !venture_database_begin(self->database, error))
+		return -1;
+	self->busy = TRUE;
+	/* The ordinary enrollment rules: an active sequence, no suppression,
+	 * no active or paused enrollment already. Refused is "not enrolled". */
+	ok = prepare_enrollment(self, row, NULL, &refused);
+	if (ok)
+	{
+		g_object_set(row, "trigger-key", key, NULL);
+		ok = persist(self, row, NULL, error);
+		self->busy = outer;
+		if (!ok)
+		{
+			if (!outer) venture_database_rollback(self->database);
+			return -1;
+		}
+		if (!outer && !venture_database_commit(self->database, error))
+			return -1;
+		return 1;
+	}
+	self->busy = outer;
+	if (!outer) venture_database_rollback(self->database);
+	if (!g_error_matches(refused, VENTURE_ERROR, VENTURE_ERROR_VALIDATION) &&
+		!g_error_matches(refused, VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS))
+	{
+		g_propagate_error(error, g_steal_pointer(&refused));
+		return -1;
+	}
+	return 0;
 }
 
 gboolean
@@ -913,6 +1009,19 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 	contact = reference(self, VENTURE_TYPE_CONTACT, number(row, "contact-id"), org, error);
 	if (contact == NULL)
 		return FALSE;
+	if (channel == 0)
+	{
+		/* A marketing journey asks the preference centre first; a skipped
+		 * email is history like any other step, and the journey goes on. */
+		g_autofree gchar *skip = NULL;
+		if (!venture_sequence_email_gates_ask(self->database, sequence, contact, as_of, &skip, error))
+			return FALSE;
+		if (skip != NULL)
+		{
+			g_object_set(delivery, "state", 3, "error", skip, NULL);
+			return persist(self, delivery, actor, error);
+		}
+	}
 	contact_json = venture_serializable_to_json(VENTURE_SERIALIZABLE(contact), FALSE);
 	if (number(contact, "company-id") != 0)
 	{
@@ -954,7 +1063,7 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 		}
 	}
 
-	if (render_error == NULL && (channel == 1 || channel == 2))
+	if (render_error == NULL && (channel == 1 || channel == 2) && !venture_sequence_channel_lookup(channel, NULL, NULL))
 	{
 		g_autoptr(VentureEntity) owner = NULL;
 		owner = reference(self, VENTURE_TYPE_USER, number(row, "owner-id"), org, &render_error);
@@ -979,6 +1088,21 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 		g_object_set(delivery, "subject", subject, "body", body, "state", channel == 0 ? 0 : (channel == 3 ? 3 : 1), NULL);
 		if (channel == 3)
 			g_object_set(delivery, "error", "Wait completed; no delivery required", NULL);
+		{
+			/* The channel hook (venture_sequence_channel_register()): a
+			 * later channel's executor decides what this step did. */
+			VentureSequenceChannelExecute execute = NULL;
+			gpointer hook_data = NULL;
+			if (channel != 0 && venture_sequence_channel_lookup(channel, &execute, &hook_data))
+			{
+				g_autoptr(GError) hook_error = NULL;
+				if (!execute(self->database, delivery, contact, step, as_of, hook_data, &hook_error))
+				{
+					*failed = TRUE;
+					g_object_set(delivery, "state", 2, "error", hook_error != NULL ? hook_error->message : "The channel failed", NULL);
+				}
+			}
+		}
 		if (channel == 0)
 		{
 			gboolean allowed;
@@ -1023,6 +1147,20 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 	return venture_sequence_mail_enqueue(self->database, delivery, actor, error);
 }
 
+/* A branch's history row: what it decided, and where the journey went. */
+static gboolean
+record_branch(VentureSequenceService *self, VentureEntity *row, VentureEntity *step, GDateTime *scheduled,
+	GDateTime *as_of, gboolean taken, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) delivery = new_delivery(row, step, scheduled, as_of);
+	const gchar *on = venture_enum_to_nick(venture_sequence_branch_on_get_type(), choice(step, "branch-on"));
+	gint64 next = number(step, taken ? "yes-position" : "no-position");
+	g_autofree gchar *where = next > 0 ? g_strdup_printf("continue at step %" G_GINT64_FORMAT, next) : g_strdup("continue with the next step");
+	g_autofree gchar *note = g_strdup_printf("Branch on %s: %s, %s", on != NULL ? on : "?", taken ? "yes" : "no", where);
+	g_object_set(delivery, "state", 3, "branch-result", taken ? "yes" : "no", "error", note, NULL);
+	return persist(self, delivery, actor, error);
+}
+
 static gint
 run_one(VentureSequenceService *self, gint64 org, gint64 id, GDateTime *as_of,
 	const VentureActor *actor, GError **error)
@@ -1036,7 +1174,8 @@ run_one(VentureSequenceService *self, gint64 org, gint64 id, GDateTime *as_of,
 	g_autoptr(GPtrArray) history = NULL;
 	VentureEntity *selected = NULL;
 	guint i, selected_index = 0;
-	gboolean suppressed, failed;
+	gboolean suppressed, failed = FALSE;
+	gint64 target = 0;
 	if (row == NULL)
 		return -1;
 	g_object_get(row, "next-run-at", &scheduled, NULL);
@@ -1080,7 +1219,7 @@ run_one(VentureSequenceService *self, gint64 org, gint64 id, GDateTime *as_of,
 		if (number(step, "position") < number(row, "current-step"))
 		{
 			g_autoptr(VentureEntity) skipped = new_delivery(row, step, scheduled, as_of);
-			g_object_set(skipped, "state", 3, "error", "Inserted before the enrollment's current step", NULL);
+			g_object_set(skipped, "state", 3, "error", "Not on this enrollment's path: before its current step", NULL);
 			if (!persist(self, skipped, actor, error))
 				return -1;
 		}
@@ -1095,17 +1234,40 @@ run_one(VentureSequenceService *self, gint64 org, gint64 id, GDateTime *as_of,
 		g_object_set(row, "status", 2, "next-run-at", NULL, NULL);
 		return persist(self, row, actor, error) ? 0 : -1;
 	}
-	if (!execute_step(self, row, sequence, selected, scheduled, as_of, actor, &failed, error))
-		return -1;
+	if (choice(selected, "channel") == 4)
+	{
+		gboolean taken = FALSE;
+		/* The wait is the branch's own delay, ending at its scheduled time:
+		 * a sweep that runs late does not widen it. */
+		if (!venture_sequence_branch_taken(self->database, row, selected, history, scheduled, &taken, error) ||
+			!record_branch(self, row, selected, scheduled, as_of, taken, actor, error))
+			return -1;
+		target = number(selected, taken ? "yes-position" : "no-position");
+	}
+	else
+	{
+		if (!execute_step(self, row, sequence, selected, scheduled, as_of, actor, &failed, error))
+			return -1;
+		target = number(selected, "then-position");
+	}
 	g_object_set(row, "current-step", number(selected, "position"), NULL);
 	if (failed)
 	{
 		g_object_set(row, "status", 4, "next-run-at", NULL, "exit-reason", "step_failed", NULL);
 		return persist(self, row, actor, error) ? 1 : -1;
 	}
+	if (flag(selected, "end-after"))
+	{
+		g_object_set(row, "status", 2, "next-run-at", NULL, NULL);
+		return persist(self, row, actor, error) ? 1 : -1;
+	}
 	for (i = selected_index + 1; i < steps->len; i++)
 	{
 		VentureEntity *next = g_ptr_array_index(steps, i);
+		/* A jump goes to the first step at or after its position; the
+		 * steps passed over are recorded as skipped on the next run. */
+		if (target > 0 && number(next, "position") < target)
+			continue;
 		if (flag(next, "active") && !already_delivered(history, next))
 			return schedule(sequence, next, row, as_of, error) && persist(self, row, actor, error) ? 1 : -1;
 	}
@@ -1130,6 +1292,10 @@ venture_sequence_service_run_due(VentureSequenceService *self, gint64 organizati
 		refuse(error, VENTURE_ERROR_INVALID_ARGUMENT, "An execution timestamp is required");
 		return -1;
 	}
+	/* Triggers read the business-event feed first, so an enrollment the
+	 * feed makes now is due in this same sweep. */
+	if (venture_sequence_service_run_triggers(self, organization_id, as_of, actor, error) < 0)
+		return -1;
 	/* Pick up retained deliveries from installations that had no mail adapter. */
 	if (!venture_sequence_mail_recover(self->database, organization_id, as_of, actor, error))
 		return -1;
@@ -1185,8 +1351,10 @@ delivery_by_token(VentureSequenceService *self, const gchar *token, GError **err
  * outbound so it never counts as a reply and never exits an enrollment. */
 static gboolean
 record_hit(VentureSequenceService *self, VentureEntity *delivery, gint kind, gint64 position,
-	const gchar *url, GDateTime *now, const VentureActor *actor, GError **error)
+	const gchar *url, const gchar *user_agent, GDateTime *now, const VentureActor *actor, GError **error)
 {
+	g_autoptr(GDateTime) sent = NULL;
+	const gchar *machine;
 	gint64 org = venture_entity_get_organization_id(delivery);
 	g_autoptr(VentureEntity) enrollment = reference(self, VENTURE_TYPE_SEQUENCE_ENROLLMENT, number(delivery, "enrollment-id"), org, error);
 	g_autoptr(VentureEntity) contact = NULL;
@@ -1200,12 +1368,18 @@ record_hit(VentureSequenceService *self, VentureEntity *delivery, gint kind, gin
 	contact = reference(self, VENTURE_TYPE_CONTACT, number(enrollment, "contact-id"), org, error);
 	if (contact == NULL)
 		return FALSE;
+	/* The one machine-open judgement campaigns use (docs/deliverability.org):
+	 * a scanner's or proxy's open is kept with its reason, takes no branch,
+	 * and does not land on the person's timeline. A pending delivery has
+	 * no acceptance time yet, so only the user agent can say. */
+	g_object_get(delivery, "executed-at", &sent, NULL);
+	machine = venture_marketing_machine_reason(choice(delivery, "state") == 1 ? sent : NULL, now, user_agent, 10);
 	if (kind == 0)
 	{
 		g_autofree gchar *day = g_date_time_format(now, "%Y-%m-%d");
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_TRACKING_EVENT);
 		g_autoptr(VentureEntity) existing = NULL;
-		key = g_strdup_printf("o:%" G_GINT64_FORMAT ":%s", venture_entity_get_id(delivery), day);
+		key = g_strdup_printf("o:%" G_GINT64_FORMAT ":%s%s", venture_entity_get_id(delivery), day, machine ? ":machine" : "");
 		venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, org, NULL);
 		venture_query_add_filter_string(query, "dedupe-key", VENTURE_FILTER_OP_EQ, key, NULL);
 		existing = venture_database_find_one(self->database, query, error);
@@ -1217,9 +1391,11 @@ record_hit(VentureSequenceService *self, VentureEntity *delivery, gint kind, gin
 	event = g_object_new(VENTURE_TYPE_SEQUENCE_TRACKING_EVENT, "organization-id", org,
 		"delivery-id", venture_entity_get_id(delivery), "enrollment-id", venture_entity_get_id(enrollment),
 		"step-id", number(delivery, "step-id"), "contact-id", venture_entity_get_id(contact),
-		"kind", kind, "link-position", position, "occurred-at", now, "dedupe-key", key, NULL);
+		"kind", kind, "link-position", position, "occurred-at", now, "dedupe-key", key, "machine-reason", machine, NULL);
 	if (!persist(self, event, actor, error))
 		return FALSE;
+	if (machine != NULL)
+		return TRUE;
 	title = kind == 0 ? g_strdup_printf("Opened: %s", subject != NULL ? subject : "")
 		: g_strdup_printf("Clicked link %" G_GINT64_FORMAT ": %s", position, url != NULL ? url : "");
 	interaction = g_object_new(VENTURE_TYPE_INTERACTION, "organization-id", org,
@@ -1245,6 +1421,13 @@ gboolean
 venture_sequence_service_record_open(VentureSequenceService *self, const gchar *token,
 	GDateTime *now, const VentureActor *actor, GError **error)
 {
+	return venture_sequence_service_record_open_full(self, token, NULL, now, actor, error);
+}
+
+gboolean
+venture_sequence_service_record_open_full(VentureSequenceService *self, const gchar *token,
+	const gchar *user_agent, GDateTime *now, const VentureActor *actor, GError **error)
+{
 	g_autoptr(VentureEntity) delivery = NULL;
 	gboolean ok;
 	g_return_val_if_fail(VENTURE_IS_SEQUENCE_SERVICE(self), FALSE);
@@ -1253,7 +1436,7 @@ venture_sequence_service_record_open(VentureSequenceService *self, const gchar *
 		return FALSE;
 	self->busy = TRUE;
 	delivery = delivery_by_token(self, token, error);
-	ok = delivery != NULL && record_hit(self, delivery, 0, 0, NULL, now, actor, error);
+	ok = delivery != NULL && record_hit(self, delivery, 0, 0, NULL, user_agent, now, actor, error);
 	self->busy = FALSE;
 	if (!ok)
 	{
@@ -1266,6 +1449,13 @@ venture_sequence_service_record_open(VentureSequenceService *self, const gchar *
 gchar *
 venture_sequence_service_record_click(VentureSequenceService *self, const gchar *token,
 	gint64 position, GDateTime *now, const VentureActor *actor, GError **error)
+{
+	return venture_sequence_service_record_click_full(self, token, position, NULL, now, actor, error);
+}
+
+gchar *
+venture_sequence_service_record_click_full(VentureSequenceService *self, const gchar *token,
+	gint64 position, const gchar *user_agent, GDateTime *now, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) delivery = NULL;
 	g_autoptr(VentureEntity) link = NULL;
@@ -1290,7 +1480,7 @@ venture_sequence_service_record_click(VentureSequenceService *self, const gchar 
 	if (link != NULL)
 	{
 		url = string(link, "url");
-		ok = record_hit(self, delivery, 1, position, url, now, actor, error);
+		ok = record_hit(self, delivery, 1, position, url, user_agent, now, actor, error);
 	}
 	self->busy = FALSE;
 	if (!ok)
@@ -1301,4 +1491,32 @@ venture_sequence_service_record_click(VentureSequenceService *self, const gchar 
 	if (!venture_database_commit(self->database, error))
 		return NULL;
 	return g_steal_pointer(&url);
+}
+
+/* --- Previews ------------------------------------------------------------- */
+
+
+static VentureMailMessage *
+sequence_preview(VentureContext *context, gint64 org, gint64 id, GDateTime *now, GPtrArray *notes, GError **error)
+{
+	VentureSequenceService *self = venture_sequence_service_get(venture_context_get_database(context));
+	g_autoptr(VentureEntity) delivery = venture_database_get(self->database, VENTURE_TYPE_SEQUENCE_DELIVERY, id, NULL);
+	(void)now;
+	if (delivery == NULL || venture_entity_is_deleted(delivery) || venture_entity_get_organization_id(delivery) != org)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Sequence delivery not found");
+		return NULL;
+	}
+	(void)notes;
+	return venture_sequence_mail_build(self->database, delivery, error);
+}
+
+static const VentureMailPreviewKind sequence_kind = {
+	"sequence", "Sequence step", "sequences", "sequence_delivery", "sequence_delivery", TRUE, sequence_preview
+};
+
+void
+venture_sequence_preview_register(void)
+{
+	venture_mail_preview_register(&sequence_kind);
 }

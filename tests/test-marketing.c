@@ -252,18 +252,18 @@ static void test_observations(Fixture *f, gconstpointer data)
 	token = g_strndup(pixel + strlen("/marketing/t/o/"), 64);
 	now = venture_time_now(); zone = g_time_zone_new_offset(g_date_time_get_hour(now) < 12 ? -12 * 3600 : 14 * 3600);
 	local = g_date_time_to_timezone(now, zone);
-	g_assert_true(venture_marketing_service_record_open(f->service, token, local, &error)); g_assert_no_error(error);
-	g_assert_true(venture_marketing_service_record_open(f->service, token, now, &error)); g_assert_no_error(error);
+	g_assert_true(venture_marketing_service_record_open(f->service, token, NULL, local, &error)); g_assert_no_error(error);
+	g_assert_true(venture_marketing_service_record_open(f->service, token, NULL, now, &error)); g_assert_no_error(error);
 	events = all_rows(f, VENTURE_TYPE_MARKETING_EVENT); g_assert_cmpuint(events->len, ==, 1);
 	g_test_message("Two open clocks representing one instant retained %u daily observation", events->len);
-	destination = venture_marketing_service_record_click(f->service, token, 1, now, &error); g_assert_no_error(error);
+	destination = venture_marketing_service_record_click(f->service, token, 1, NULL, now, &error); g_assert_no_error(error);
 	g_assert_cmpstr(destination, ==, "https://example.test/news");
 	g_test_message("Retained click destination: %s", destination);
 	g_clear_pointer(&destination, g_free);
-	destination = venture_marketing_service_record_click(f->service, token, 1, now, &error); g_assert_no_error(error);
+	destination = venture_marketing_service_record_click(f->service, token, 1, NULL, now, &error); g_assert_no_error(error);
 	g_clear_pointer(&events, g_ptr_array_unref); events = all_rows(f, VENTURE_TYPE_MARKETING_EVENT); g_assert_cmpuint(events->len, ==, 2);
 	g_assert_false(venture_marketing_service_record_open(f->service,
-		"0000000000000000000000000000000000000000000000000000000000000000", now, &error));
+		"0000000000000000000000000000000000000000000000000000000000000000", NULL, now, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 }
 /* Only explicit hard evidence suppresses: retryable mail errors are not bounces. */
@@ -522,6 +522,7 @@ static void test_module(Fixture *f, gconstpointer data)
 	preview(f); approve(f); g_assert_cmpint(run(f), ==, 1);
 	rows = recipients(f); g_object_get(g_ptr_array_index(rows, 0), "unsubscribe-url", &url, NULL);
 	venture_config_set_module_enabled(config, "marketing", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires marketing */
 	if (data) venture_config_set_module_enabled(config, data, FALSE);
 	g_assert_cmpuint(venture_entity_registry_lookup(venture_entity_registry_get_default(), "marketing_send"), ==, G_TYPE_INVALID);
 	if (g_strcmp0(data, "mail")) { g_assert_cmpint(venture_mail_outbox_deliver_due(f->outbox, 1, 1, NULL, NULL, &error), ==, 0); g_assert_no_error(error); }
@@ -760,6 +761,7 @@ static void test_upgrade(Fixture *f, gconstpointer data)
 	g_autofree gchar *name = NULL;
 	persist(f, suppression);
 	venture_config_set_module_enabled(config, "marketing", FALSE);
+	venture_config_set_module_enabled(config, "telephony", FALSE); /* requires marketing */
 	g_assert_true(venture_database_execute(f->db,
 		"DELETE FROM schema_migrations WHERE version >= 420;"
 		"DROP TABLE marketing_members; DROP TABLE marketing_consents; DROP TABLE marketing_recipients;"

@@ -1429,6 +1429,27 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/runs/table"),
 	                 ==, SOUP_STATUS_UNAUTHORIZED);
 
+	/* Mail previews: the page and its test send redirect, the API 401s. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail/preview/invoice/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail/preview/message/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail/preview/invoice/1/test", NULL, "token=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail/preview/invoice/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail/preview/message/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* The email builder and image upload redirect; a hosted image is
+	 * public by design (mail apps send no cookie), so an unknown one is
+	 * simply not found. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/email-design"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/email-design/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/blocks", NULL, "op=add&type=divider", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/brief", NULL, "brief=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/edit", NULL, "instruction=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/1/undo", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/new", NULL, "name=x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/images", NULL, "x=y", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/email-design/logo-ask/dismiss", NULL, "organization_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/i/1/ghjkmnpqrstvwxyzghjkmnpqrstvwxyz.png"), ==, SOUP_STATUS_NOT_FOUND);
+
 	/*
 	 * An unknown path redirects rather than 404s while anonymous: whether
 	 * a page exists is not information for people without a session, and
@@ -2180,6 +2201,26 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* Deliverability: the domain check, its API, the send report and the
+	 * feed secret need a session or a token; the provider feed has no
+	 * session by design and refuses an organization with no secret. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/deliverability"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/sends/1/report"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing/domain-health?domain=example.com"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing/sends/1/report"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing/feedback-secret", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/marketing/deliverability/secret", NULL, "organization_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/hooks/deliverability/1/generic", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* Audiences and journeys: the tag and resend actions, topics and
+	 * triggers need a token; the preference page answers only a known
+	 * capability, saving included. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contact/1/actions/add_tag", NULL, "{\"tag\":\"vip\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/resend_non_openers", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/sequence_trigger"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing_topic"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing_preference"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/e/sequence/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/marketing/u/0000000000000000000000000000000000000000000000000000000000000000", NULL, "action=save&frequency=weekly", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	/* The documentation site is public by design -- it is the shipped
 	 * shipped documentation, not this install's data -- so it answers
 	 * anonymously rather than redirecting. Pinned here so a route added
@@ -7054,6 +7095,197 @@ test_auth_web_extension_routes(
 	}
 }
 
+/* Lane 5, sales: every new route refuses the anonymous, a viewer cannot
+ * drag a deal or decide an AI score, and a mailbox sign-in started by one
+ * person cannot be finished by another. A missing guard looks exactly
+ * like nothing, so each route is named. */
+static void
+test_auth_sales_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(VentureDeal) deal = venture_deal_new();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
+	g_autoptr(VentureEntity) stage = NULL;
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 stage_id = 0;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/deals/board.js"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/leads/1/ai_score", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/ai_score", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/lead_score_proposals/1/accept", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/lead_score_proposals/1/dismiss", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lead_score_proposals/1/accept", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lead_score_proposals/1/dismiss", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail_accounts/1/oauth/start"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/mail/oauth/callback?state=x&code=y"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/mail_oauth_providers/1/client", NULL, "client_id=a&client_secret=b", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/interactions/1/reply", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/interactions/1/reply", NULL, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/lead_score_proposal"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/mail_oauth_provider"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	/* A viewer reads the board but its drop is refused before the service. */
+	server_fixture_create_member(fixture, "sales-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	server_fixture_create_member(fixture, "sales-editor", "editor-long-password", VENTURE_USER_ROLE_EDITOR, NULL);
+	viewer = server_fixture_login(fixture, "sales-viewer", "viewer-long-password");
+	editor = server_fixture_login(fixture, "sales-editor", "editor-long-password");
+	g_object_set(deal, "name", "Viewer drag", "organization-id", venture_context_get_default_organization_id(fixture->context), NULL);
+	g_assert_true(venture_database_save(fixture->database, VENTURE_ENTITY(deal), NULL, &error));
+	g_assert_no_error(error);
+	venture_query_add_filter_int(query, "position", VENTURE_FILTER_OP_EQ, 1, NULL);
+	stage = venture_database_find_one(fixture->database, query, &error);
+	g_assert_nonnull(stage);
+	path = g_strdup_printf("/deals/%" G_GINT64_FORMAT "/move", venture_entity_get_id(VENTURE_ENTITY(deal)));
+	body = g_strdup_printf("stage_id=%" G_GINT64_FORMAT "&version=%" G_GINT64_FORMAT, venture_entity_get_id(stage),
+		venture_entity_get_version(VENTURE_ENTITY(deal)));
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/deals/board.js", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, viewer, body, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(current, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, !=, venture_entity_get_id(stage));
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", path, editor, body, NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_clear_object(&current);
+	current = venture_database_get(fixture->database, VENTURE_TYPE_DEAL, venture_entity_get_id(VENTURE_ENTITY(deal)), &error);
+	g_object_get(current, "stage-id", &stage_id, NULL);
+	g_assert_cmpint(stage_id, ==, venture_entity_get_id(stage));
+
+	/* A viewer cannot ask for, accept or dismiss an AI score or send a
+	 * reply; an unknown or foreign sign-in state is refused rather than
+	 * redirected onward. */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lead_score_proposals/1/accept", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/leads/1/ai_score", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/interactions/1/reply", viewer, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/mail/oauth/callback?state=unknown&code=y", editor, NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+}
+
+/* Lane 6, phone and text: every route refuses the anonymous, a viewer can
+ * neither dial nor text, and the webhook answers an unknown address token
+ * with not found rather than a sign-in redirect. */
+static void
+test_auth_telephony_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/telephony"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/telephony", NULL, "operation=connect", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/telephony/call", NULL, "contact_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/telephony/call", NULL, "{\"contact_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/contacts/1/texts", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/texts", NULL, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/contacts/1/texts"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/contacts/1/text-consent", NULL, "evidence=yes", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/text-consent", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/telephony/run", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/telephony_account"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/text_message"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/hooks/telephony/not-a-real-token-not-a-real-token-xx", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/hooks/telephony/not-a-real-token-not-a-real-token-xx?message=hi"), ==, SOUP_STATUS_NOT_FOUND);
+
+	server_fixture_create_member(fixture, "phone-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "phone-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/telephony/call", viewer, "{\"contact_id\":1}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/texts", viewer, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/text-consent", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/telephony", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
+/* Lane 7, one inbox: the conversation pages and API refuse the anonymous,
+ * a viewer can read but not assign, set a status or reply, the chat
+ * settings are an administrator's, and the public chat answers an unknown
+ * token with not found rather than a sign-in redirect. */
+static void
+test_auth_inbox_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/conversations"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/conversations/1"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/contacts/1/conversation"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/assign", NULL, "owner_id=1", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/status", NULL, "status=closed", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/reply", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/conversations"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/conversations/1"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/contacts/1/conversation"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/assign", NULL, "{\"owner_id\":1}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/status", NULL, "{\"status\":\"closed\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/reply", NULL, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/webchat"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/inbox_conversation"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/inbox_chat_message"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webchat/not-a-real-token-not-a-real-token-xxxxxx"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webchat/c/00000000000000000000000000000000000000000000000000000000000000aa"), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/webchat/c/00000000000000000000000000000000000000000000000000000000000000aa", NULL, "message=hi", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/webchat.js"), ==, SOUP_STATUS_OK);
+
+	server_fixture_create_member(fixture, "inbox-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "inbox-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/conversations", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/assign", viewer, "{\"owner_id\":1}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/status", viewer, "{\"status\":\"closed\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/reply", viewer, "{\"body\":\"hi\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/webchat", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
+/* Lane 8, AI on messages: drafts, approval, follow-ups and the rules page
+ * refuse the anonymous; a viewer reads but cannot approve, discard, draft
+ * or change rules; the rules page is an administrator's. */
+static void
+test_auth_ai_messages_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ai-messages/1/approve", NULL, "body=hi", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/ai-messages/1/discard", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/conversations/1/ai-draft", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/contacts/1/ai-follow-up", NULL, "channel=text", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/deals/1/ai-follow-up", NULL, "channel=text", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/ai-messages"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/ai-messages", NULL, "action=off", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/conversations/1/ai-messages"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/ai-draft", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/discard", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/ai-follow-up", NULL, "{\"channel\":\"text\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/deals/1/ai-follow-up", NULL, "{\"channel\":\"text\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/ai_message"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/ai_message_rule"), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	server_fixture_create_member(fixture, "aim-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "aim-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/approve", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/ai-messages/1/discard", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/conversations/1/ai-draft", viewer, "{}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contacts/1/ai-follow-up", viewer, "{\"channel\":\"text\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/ai-messages", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
+/* Lane 9, settings: the screen and the API refuse the anonymous; a viewer
+ * cannot open the screen or change a setting. */
+static void
+test_auth_settings_routes(ServerFixture *fixture, gconstpointer unused)
+{
+	g_autofree gchar *viewer = NULL;
+	(void)unused;
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/organizations/1/settings/workflows"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/organizations/1/settings/workflows", NULL,
+		"action=reset&key=telephony.quiet-hours", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/workflow-settings"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/workflow-settings/telephony.quiet-hours"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/workflow-settings/telephony.quiet-hours", NULL,
+		"{\"value\":\"off\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+
+	server_fixture_create_member(fixture, "settings-viewer", "viewer-long-password", VENTURE_USER_ROLE_VIEWER, NULL);
+	viewer = server_fixture_login(fixture, "settings-viewer", "viewer-long-password");
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/organizations/1/settings/workflows", viewer, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/workflow-settings/telephony.quiet-hours", viewer,
+		"{\"value\":\"off\"}", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+}
+
 int
 main(
 	int	  argc,
@@ -7311,5 +7543,10 @@ main(
 	g_test_add("/auth/forms-upload-authority", ServerFixture, GINT_TO_POINTER(1), server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	g_test_add("/auth/forms-upload-viewer", ServerFixture, NULL, server_fixture_set_up, test_forms_upload_authority, server_fixture_tear_down);
 	g_test_add("/auth/forms-resume-session-authority", ServerFixture, NULL, server_fixture_set_up, test_forms_resume_session_authority, server_fixture_tear_down);
+	g_test_add("/auth/sales-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_sales_routes, server_fixture_tear_down);
+	g_test_add("/auth/telephony-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_telephony_routes, server_fixture_tear_down);
+	g_test_add("/auth/inbox-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_inbox_routes, server_fixture_tear_down);
+	g_test_add("/auth/ai-messages-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_ai_messages_routes, server_fixture_tear_down);
+	g_test_add("/auth/settings-routes", ServerFixture, NULL, server_fixture_set_up, test_auth_settings_routes, server_fixture_tear_down);
 	return g_test_run();
 }

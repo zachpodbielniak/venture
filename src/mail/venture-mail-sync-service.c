@@ -946,6 +946,25 @@ static gboolean file_capture(SyncRun *run, Parsed *p, VentureEntity *inbound, GE
 	}
 	return TRUE;
 }
+/* Registered once at install, read on the main thread only. A GArray of
+ * the function type, so no function pointer passes through a gpointer. */
+static GArray *inbound_hooks;
+void venture_mail_sync_add_inbound_hook(VentureMailInboundHook hook)
+{
+	guint i;
+	g_return_if_fail(hook != NULL);
+	if (!inbound_hooks) inbound_hooks = g_array_new(FALSE, FALSE, sizeof(VentureMailInboundHook));
+	for (i = 0; i < inbound_hooks->len; i++)
+		if (g_array_index(inbound_hooks, VentureMailInboundHook, i) == hook) return;
+	g_array_append_val(inbound_hooks, hook);
+}
+static gboolean run_inbound_hooks(SyncRun *run, GBytes *raw, GError **error)
+{
+	guint i;
+	for (i = 0; inbound_hooks && i < inbound_hooks->len; i++)
+		if (!g_array_index(inbound_hooks, VentureMailInboundHook, i)(run->db, run->org, raw, error)) return FALSE;
+	return TRUE;
+}
 /* Every write for one message. Runs inside the caller's transaction. */
 static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidity, guint32 uid, GBytes *raw, const gchar *skip_reason, Parsed *p, GError **error)
 {
@@ -987,6 +1006,7 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	/* Private mail remains an inbox record and an owned raw document. Its
 	 * participants and receipt attachments are not organization CRM input. */
 	if (run->private_owner > 0) return venture_database_save(run->db, inbound, run->actor, error);
+	if (!skip_reason && !run_inbound_hooks(run, raw, error)) return FALSE;
 	body = timeline_body(p->from, p->message_id, thread, p->text, skip_reason);
 	/* A truncated capture message has lost its attachments; filing its
 	 * remains as a receipt would invent one, so it stays a row whose skip
@@ -1231,6 +1251,14 @@ static gboolean prepare(SyncRun *run, GError **error)
 	g_autofree gchar *folders = NULL, *address = NULL, *ignore = NULL, *internal = NULL;
 	g_autoptr(GPtrArray) patterns = NULL;
 	guint i;
+	{
+		/* A token sign-in is refreshed before the snapshot is taken, so the
+		 * session presents a current token; a refused refresh is a refused
+		 * login and counts toward switching the account off. */
+		gint64 provider_id = 0;
+		g_object_get(run->account, "oauth-provider-id", &provider_id, NULL);
+		if (provider_id > 0 && !venture_mail_oauth_refresh(run->db, run->self->config, run->account, FALSE, error)) return FALSE;
+	}
 	run->connector = venture_connector_open(run->db, run->self->config, run->account, error);
 	if (!run->connector) return FALSE;
 	run->org = venture_entity_get_organization_id(venture_connector_session_get_account(run->connector));
@@ -1355,8 +1383,13 @@ static gboolean sync_account(VentureMailSyncService *self, VentureEntity *accoun
 		return FALSE;
 	}
 	venture_imap_client_set_deadline(self->client, budget->deadline);
-	if (!prepare(&run, &stopped)) session_failed = TRUE;
-	else if (!venture_imap_client_connect(self->client, run.host, (guint16)run.port, run.security, run.username, run.secret, NULL, &stopped)) {
+	if (!prepare(&run, &stopped)) {
+		session_failed = TRUE;
+		auth_failed = g_error_matches(stopped, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
+	}
+	else if (!(g_strcmp0(venture_connector_session_get_mechanism(run.connector), "xoauth2") == 0
+		? venture_imap_client_connect_xoauth2(self->client, run.host, (guint16)run.port, run.security, run.username, run.secret, NULL, &stopped)
+		: venture_imap_client_connect(self->client, run.host, (guint16)run.port, run.security, run.username, run.secret, NULL, &stopped))) {
 		session_failed = TRUE;
 		auth_failed = g_error_matches(stopped, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED);
 	} else {

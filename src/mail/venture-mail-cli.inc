@@ -13,6 +13,20 @@ static gint venture_cli_command_mail(VentureCli *cli, gchar **args, const gchar 
 		g_free(copy[1]); copy[1] = g_strdup("mail_message");
 		return venture_cli_command_list(cli, copy, error);
 	}
+	if (!g_strcmp0(verb, "preview")) {
+		/* Read-only: what KIND would send for record ID, or a queued message,
+		 * with its pre-send checks. */
+		g_autoptr(JsonNode) result = NULL;
+		g_autofree gchar *kind = NULL, *preview_path = NULL;
+		gchar *end = NULL;
+		if (!args[2] || !args[3] || args[4] || g_ascii_strtoll(args[3], &end, 10) <= 0 || *end) goto usage;
+		kind = g_uri_escape_string(args[2], NULL, FALSE);
+		preview_path = g_strdup_printf("/api/v1/mail/preview/%s/%s", kind, args[3]);
+		result = venture_cli_request(cli, "GET", preview_path, NULL, error);
+		if (!result) return -1;
+		venture_cli_output(cli, result);
+		return 0;
+	}
 	if (cli->stage) {
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Mail actions cannot be staged; use --stage create mail_message to propose an enqueue"); return -1;
 	}
@@ -91,6 +105,6 @@ static gint venture_cli_command_mail(VentureCli *cli, gchar **args, const gchar 
 	return 0;
 usage:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		"usage: mail list [state=uncertain] | mail sync [organization_id=N] [limit=N] | mail sync account_id=N | mail contact SENDER_ID | mail dismiss SENDER_ID | mail deliver [--limit N] | mail send to=... subject=... body=... [--html FILE] | mail test to=... | mail retry ID");
+		"usage: mail list [state=uncertain] | mail sync [organization_id=N] [limit=N] | mail sync account_id=N | mail contact SENDER_ID | mail dismiss SENDER_ID | mail deliver [--limit N] | mail send to=... subject=... body=... [--html FILE] | mail test to=... | mail retry ID | mail preview KIND ID | mail preview message ID");
 	return -1;
 }

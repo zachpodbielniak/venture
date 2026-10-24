@@ -177,5 +177,24 @@ GPtrArray *venture_portal_service_offered_prices(VenturePortalService *self, Ven
 gboolean venture_portal_service_manage_subscription(VenturePortalService *self, const gchar *token,
 	gint64 subscription_id, const gchar *action, gint64 plan_price_id, gboolean now,
 	const VentureActor *actor, GError **error);
+/**
+ * venture_portal_service_invitation_message:
+ * @access: a customer or supplier portal access
+ * @base_url: the public HTTPS origin
+ *
+ * The invitation mail venture_portal_service_send_invitation() queues, the
+ * bearer link only in its private body.
+ *
+ * Returns: (transfer full): the unsaved message
+ */
+VentureMailMessage *venture_portal_service_invitation_message(VentureEntity *access, const gchar *base_url);
+
+/**
+ * venture_portal_preview_register:
+ *
+ * Registers the customer portal invitation mail preview kind.
+ */
+void venture_portal_preview_register(void);
+
 G_END_DECLS
 #endif
