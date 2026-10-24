@@ -5330,6 +5330,7 @@ static void venture_jobs_web_append_today(VentureWebServer *self, GString *html,
 	VentureAuthPrincipal *principal);
 static void venture_jobs_web_append_home(VentureWebServer *self, GString *html, HtmxRequest *request);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_append_deal_contacts(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_oauth_block(VentureWebServer *self, GString *content, VentureEntity *record);
@@ -10592,6 +10593,11 @@ venture_web_append_related(
 		if (VENTURE_TYPE_INVOICE_LINE == types[i])
 			continue;
 
+		/* A deal's people are its Buying committee panel, and a
+		 * contact's deals its On deals panel, each with the role. */
+		if (VENTURE_TYPE_DEAL_CONTACT == types[i])
+			continue;
+
 		/* A comment names its record by type and id, but it does
 		 * reference its author and the comment it answers; the
 		 * Discussion card is where comments are read. */
@@ -12461,6 +12467,7 @@ venture_web_ui_detail(
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);
+	venture_web_append_deal_contacts(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
 		venture_web_append_asset_actions(self, content, record);
@@ -33547,6 +33554,7 @@ venture_web_api_ticket_draft(
 #include "marketing/venture-deliverability-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
+#include "web/venture-web-deal-contacts.inc"
 
 #include "leads/venture-lead-web.inc"
 #include "leads/venture-lead-ai-score-web.inc"
@@ -34188,6 +34196,8 @@ venture_web_server_new(
 	venture_inbox_pages_register(self);
 	/* AI on messages: approval, drafts, follow-ups and the rules page. */
 	venture_ai_messages_pages_register(self);
+	/* A deal's buying committee: add and remove people with a role. */
+	venture_deal_contacts_pages_register(self);
 	/* One settings API: the screen and /api/v1/settings. */
 	venture_settings_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);

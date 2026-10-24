@@ -396,6 +396,7 @@ static GType (*const venture_module_crm_types[]) (void) = {
 	venture_contact_get_type,
 	venture_interaction_get_type,
 	venture_deal_get_type,
+	venture_deal_contact_get_type,
 	NULL
 };
 
@@ -527,7 +528,7 @@ static const gchar *const venture_module_reports_sales[] = {
 static const gchar *const venture_module_reports_finance[] = {
 	"pnl", "ventures", "monthly", "tax", "tax_liability", NULL
 };
-static const gchar *const venture_module_reports_crm[] = { "pipeline", NULL };
+static const gchar *const venture_module_reports_crm[] = { "pipeline", "deals_without_decision_maker", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
 	"receivables", "customer_statement", "cash_vs_booked", NULL
 };

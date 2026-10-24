@@ -173,3 +173,81 @@ transitions and dated reversals atomically. Reassigning a won opportunity
 does not rewrite its original representative's credit; value corrections
 require reopening it first. Booked sales remain distinct from ledger revenue
 and cash.
+
+* Contact roles
+
+"Who signs?" is the most-asked question about a deal, and a deal's single
+=contact_id= cannot answer it. A =deal_contact= records one person's part in
+one deal: =deal_id=, =contact_id=, =role=, =primary= and =note=. It is an
+ordinary field-table record in the =crm= module, beside the deal, so its
+REST CRUD (=/api/v1/deal_contact=), list, CLI (=venturectl list
+deal_contact=) and assistant schema come from the table.
+
+| Role             | Stored as        | Meaning                     |
+|------------------+------------------+-----------------------------|
+| Decision maker   | =decision_maker= | signs, or says yes          |
+| Economic buyer   | =economic_buyer= | owns the budget             |
+| Champion         | =champion=       | argues for you inside       |
+| Influencer       | =influencer=     | has a say                   |
+| Technical evaluator | =technical=   | judges whether it works     |
+| User             | =user=           | will use it                 |
+| Other            | =other=          | on the deal, role not named |
+
+The rules are save validators in =src/core/venture-deal-contact.c=, so the
+page, the API, an approved staged change and the assistant meet the same
+refusal: the deal and the contact must be live and in the record's
+business; a person is on a deal once (change their role on that row); a deal
+has at most one primary, and a second -- added or promoted -- is refused
+naming the one it has; a role cannot move to another deal. The contact need
+not work at the deal's company: a buying committee often includes a
+consultant or a parent company's buyer. That is why the deal's own
+=contact_id=, which must be somebody at the deal's company, is left as it
+was.
+
+** Pages
+
+A deal's page has a *Buying committee* card: each person with their role,
+the primary marked, the note, and *Remove*; beneath it a form to add a person
+of the business with a role, the primary tick and a note
+(=POST /deals/:id/contacts= with =contact_id=, =role=, =primary=1= and
+=note=; =POST /deals/:id/contacts/:link/remove=; editor role). A contact's
+page lists the deals they are on with their role (*On deals*). The generic
+Related panel leaves these rows out, since both cards say more.
+
+** The primary contact as recipient
+
+=venture_deal_contact_primary()= is who mail about a deal goes to: the live
+contact marked primary, or, when nobody is, the deal's own =contact_id=. A
+[[file:sequences.org][sequence]] enrollment that names a deal and no contact
+is enrolled for that person, and is refused when the deal has nobody. An
+enrollment that names both may name anyone on the deal, not only its own
+contact; a trigger that enrolls a contact carries the deal when the contact
+is on it. *Draft a follow-up* on a deal ([[file:ai-messages.org][AI on
+messages]]) writes to the primary contact.
+
+** Lead conversion, deletes and merges
+
+Converting a lead with a deal makes the new contact the deal's primary, role
+=other=: the conversion knows who the deal is with, not what they are on it.
+That deal shows in the report below until somebody records a decision maker.
+
+Deleting a contact deletes their deal roles and leaves every deal. A
+[[file:dedupe.org][dedupe merge]] of two contacts re-points the loser's
+roles to the survivor like every other reference.
+
+** Open deals with no decision maker
+
+The =deals_without_decision_maker= report (crm) lists the open deals --
+neither won nor lost -- that nobody is recorded on as the decision maker,
+with the company, stage, owner, value and how many people are on the deal,
+and a =deals_without_decision_maker= metric for a dashboard tile. It reads
+the deals as they stand; the period is not used. It takes
+=organization_id=.
+
+Migration =000957_deal_contact_roles= checks the table's columns; it starts
+empty and nothing is backfilled. =test-venture-deal-contact= covers the
+record, the refused second primary (saved and promoted) and the repeated
+person, lead conversion producing exactly one primary, a deleted contact's
+roles going with it while the deals stay, the primary as recipient with its
+fallback and a sequence enrollment by deal, the report, and the deal and
+contact pages with add, refusal and remove.

@@ -159,6 +159,39 @@ VENTURE_DECLARE_ENTITY(VentureInteraction, venture_interaction, INTERACTION)
 VENTURE_DECLARE_ENTITY(VentureDeal, venture_deal, DEAL)
 
 /**
+ * VentureDealContactRole:
+ * @VENTURE_DEAL_CONTACT_ROLE_DECISION_MAKER: signs, or says yes
+ * @VENTURE_DEAL_CONTACT_ROLE_ECONOMIC_BUYER: owns the budget
+ * @VENTURE_DEAL_CONTACT_ROLE_CHAMPION: argues for you inside
+ * @VENTURE_DEAL_CONTACT_ROLE_INFLUENCER: has a say
+ * @VENTURE_DEAL_CONTACT_ROLE_TECHNICAL: judges whether it works
+ * @VENTURE_DEAL_CONTACT_ROLE_USER: will use it
+ * @VENTURE_DEAL_CONTACT_ROLE_OTHER: on the deal, role not named
+ *
+ * What a person is on a deal.
+ */
+typedef enum
+{
+	VENTURE_DEAL_CONTACT_ROLE_DECISION_MAKER = 0,
+	VENTURE_DEAL_CONTACT_ROLE_ECONOMIC_BUYER,
+	VENTURE_DEAL_CONTACT_ROLE_CHAMPION,
+	VENTURE_DEAL_CONTACT_ROLE_INFLUENCER,
+	VENTURE_DEAL_CONTACT_ROLE_TECHNICAL,
+	VENTURE_DEAL_CONTACT_ROLE_USER,
+	VENTURE_DEAL_CONTACT_ROLE_OTHER
+} VentureDealContactRole;
+
+GType venture_deal_contact_role_get_type(void) G_GNUC_CONST;
+#define VENTURE_TYPE_DEAL_CONTACT_ROLE (venture_deal_contact_role_get_type())
+
+#define VENTURE_TYPE_DEAL_CONTACT (venture_deal_contact_get_type())
+VENTURE_DECLARE_ENTITY(VentureDealContact, venture_deal_contact, DEAL_CONTACT)
+/**
+ * venture_deal_contact_new:
+ * Returns: (transfer full): a person's role on a deal
+ */
+
+/**
  * venture_deal_get_weighted_value:
  * @self: a #VentureDeal
  * @error: (out) (optional): return location for a #GError

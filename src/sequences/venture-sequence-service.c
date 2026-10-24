@@ -323,6 +323,20 @@ prepare_enrollment(VentureSequenceService *self, VentureEntity *row,
 		return FALSE;
 	if (!flag(sequence, "active") || choice(row, "status") != 0 || org <= 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Enrollment needs an active sequence and active initial status");
+	/* An enrollment that names only a deal goes to the deal's primary
+	 * contact (docs/pipelines.org, Contact roles). */
+	if (number(row, "contact-id") == 0 && number(row, "deal-id") != 0)
+	{
+		g_autoptr(VentureEntity) deal = reference(self, VENTURE_TYPE_DEAL, number(row, "deal-id"), org, error);
+		g_autoptr(VentureEntity) primary = NULL;
+		if (deal == NULL)
+			return FALSE;
+		primary = venture_deal_contact_primary(self->database, deal, error);
+		if (primary == NULL)
+			return (error != NULL && *error != NULL) ? FALSE :
+				refuse(error, VENTURE_ERROR_VALIDATION, "The deal has no primary contact to enroll");
+		g_object_set(row, "contact-id", venture_entity_get_id(primary), NULL);
+	}
 	contact = reference(self, VENTURE_TYPE_CONTACT, number(row, "contact-id"), org, error);
 	if (contact == NULL || !is_suppressed(self, contact, &suppressed, error))
 		return FALSE;
@@ -333,8 +347,8 @@ prepare_enrollment(VentureSequenceService *self, VentureEntity *row,
 		g_autoptr(VentureEntity) deal = reference(self, VENTURE_TYPE_DEAL, number(row, "deal-id"), org, error);
 		if (deal == NULL)
 			return FALSE;
-		if (number(deal, "contact-id") != venture_entity_get_id(contact))
-			return refuse(error, VENTURE_ERROR_VALIDATION, "Deal and enrollment must name the same contact");
+		if (!venture_deal_contact_is_on_deal(self->database, deal, venture_entity_get_id(contact)))
+			return refuse(error, VENTURE_ERROR_VALIDATION, "The enrolled contact is not on that deal");
 		if (choice(deal, "stage") == VENTURE_DEAL_STAGE_WON && flag(sequence, "exit-on-deal-won"))
 			return refuse(error, VENTURE_ERROR_VALIDATION, "The deal is already won");
 	}
@@ -739,7 +753,7 @@ venture_sequence_trigger_enroll(VentureSequenceService *self, VentureEntity *tri
 	if (deal_id > 0)
 	{
 		g_autoptr(VentureEntity) deal = venture_database_get(self->database, VENTURE_TYPE_DEAL, deal_id, NULL);
-		if (deal != NULL && number(deal, "contact-id") == contact_id)
+		if (deal != NULL && venture_deal_contact_is_on_deal(self->database, deal, contact_id))
 			g_object_set(row, "deal-id", deal_id, NULL);
 	}
 	if (!outer && !venture_database_begin(self->database, error))

@@ -966,6 +966,41 @@ venture_deal_get_weighted_value(
 	return venture_money_multiply_rational(value, probability, 100, error);
 }
 
+/* Who on the customer's side is on a deal, and as what. The rules -- one
+ * primary a deal, one row a person -- are save validators in
+ * src/core/venture-deal-contact.c. */
+GType
+venture_deal_contact_role_get_type(void)
+{
+	static gsize type_id;
+	static const GEnumValue values[] = {
+		{ VENTURE_DEAL_CONTACT_ROLE_DECISION_MAKER, "VENTURE_DEAL_CONTACT_ROLE_DECISION_MAKER", "decision_maker" },
+		{ VENTURE_DEAL_CONTACT_ROLE_ECONOMIC_BUYER, "VENTURE_DEAL_CONTACT_ROLE_ECONOMIC_BUYER", "economic_buyer" },
+		{ VENTURE_DEAL_CONTACT_ROLE_CHAMPION, "VENTURE_DEAL_CONTACT_ROLE_CHAMPION", "champion" },
+		{ VENTURE_DEAL_CONTACT_ROLE_INFLUENCER, "VENTURE_DEAL_CONTACT_ROLE_INFLUENCER", "influencer" },
+		{ VENTURE_DEAL_CONTACT_ROLE_TECHNICAL, "VENTURE_DEAL_CONTACT_ROLE_TECHNICAL", "technical" },
+		{ VENTURE_DEAL_CONTACT_ROLE_USER, "VENTURE_DEAL_CONTACT_ROLE_USER", "user" },
+		{ VENTURE_DEAL_CONTACT_ROLE_OTHER, "VENTURE_DEAL_CONTACT_ROLE_OTHER", "other" },
+		{ 0, NULL, NULL }
+	};
+
+	if (g_once_init_enter(&type_id))
+		g_once_init_leave(&type_id, g_enum_register_static("VentureDealContactRole", values));
+
+	return type_id;
+}
+
+static const VentureFieldDecl deal_contact_fields[] = {
+	VENTURE_FIELD_REF("deal-id", "Deal", NULL, "deal", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("role", "Role", "What they are on this deal", venture_deal_contact_role_get_type,
+		VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("primary", "Primary contact", "Who mail about the deal goes to; one a deal",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("note", "Note", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureDealContact, venture_deal_contact, deal_contact_fields)
+
 /* ==========================================================================
  * Growth
  * ========================================================================== */

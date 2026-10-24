@@ -318,6 +318,15 @@ A [[file:dedupe.org][dedupe merge]] moves the loser's branches to the
 survivor. A survivor that was itself a branch of the loser takes the loser's
 place in the tree, so it never becomes its own parent.
 
+** Contact roles on deals
+
+A =deal_contact= says who on the customer's side is on a deal and as what
+-- decision maker, economic buyer, champion, influencer, technical
+evaluator, user or other -- whether they are the deal's primary contact
+(one a deal at most) and a note. It belongs to =crm= beside the deal. The
+deal's own =contact_id= is unchanged and stays the fallback when nobody is
+marked primary. See [[file:pipelines.org][Contact roles]].
+
 ** Every record has a detail page
 
 =/e/<type>/<id>= shows a record's fields and, beneath them, *every record
