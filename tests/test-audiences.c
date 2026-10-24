@@ -940,12 +940,19 @@ static void test_local_send(Fixture *f, gconstpointer data)
  * runs on today's date. */
 static void test_local_warmup(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) ada = NULL, bob = NULL, approved = NULL, domain = NULL, fresh = NULL;
+	g_autoptr(VentureEntity) ada = NULL, bob = NULL, approved = NULL, domain = NULL, fresh = NULL, organization = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(GDateTime) later = g_date_time_add_seconds(now, 5);
 	g_autoptr(GDateTime) next = NULL;
 	g_autofree gchar *today = g_date_time_format(now, "%Y-%m-%d"), *text = NULL;
 	(void)data;
+	/* The business is on UTC and sends new local-time mail at midnight
+	 * (hour 0 on a new send takes the business's hour, else 9), so the
+	 * sends below are due at any time of day the test runs. */
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, 1, NULL);
+	g_assert_nonnull(organization);
+	g_object_set(organization, "timezone", "UTC", "marketing-local-hour", "0", NULL);
+	persist(f, organization);
 	ada = reader(f, "Ada", "ada@example.com");
 	bob = reader(f, "Bob", "bob@example.com");
 	domain = g_object_new(VENTURE_TYPE_MARKETING_SENDING_DOMAIN, "organization-id", (gint64)1,
