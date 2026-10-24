@@ -28,7 +28,8 @@ typedef struct
  * is issued. */
 typedef struct
 {
-	gchar *invoice;
+	gchar *invoice;		/* Zoho invoice number, or bill id when @vendor */
+	gboolean vendor;
 	gint64 payment_id;
 	gint64 cents;
 } Waiting;
@@ -221,7 +222,8 @@ number_taken(Plan *plan, GType type, const gchar *number, GError **error)
 
 /* --- Invoices -------------------------------------------------------------------------------- */
 
-static gboolean apply_waiting(Replay *replay, const gchar *number, gint64 invoice_id, const gchar *date, GError **error);
+static gboolean apply_waiting(Replay *replay, gboolean vendor, const gchar *key, gint64 document_id, const gchar *date,
+	GError **error);
 
 static gboolean
 replay_invoice(Replay *replay, Event *event, GError **error)
@@ -333,27 +335,31 @@ replay_invoice(Replay *replay, Event *event, GError **error)
 	}
 	g_hash_table_insert(replay->invoices, g_strdup(number), (gpointer)(gintptr)venture_entity_get_id(VENTURE_ENTITY(invoice)));
 	return note_event(replay, event, "invoice", venture_entity_get_id(VENTURE_ENTITY(invoice)), error) &&
-		apply_waiting(replay, number, venture_entity_get_id(VENTURE_ENTITY(invoice)), event->date, error);
+		apply_waiting(replay, FALSE, number, venture_entity_get_id(VENTURE_ENTITY(invoice)), event->date, error);
 }
 
 /* --- Customer payments ------------------------------------------------------------------------ */
 
 static gboolean
-allocate_credit(Replay *replay, gint64 credit_id, gint64 invoice_id, const gchar *date, gint64 cents, GError **error)
+allocate_credit(Replay *replay, gboolean vendor, gint64 credit_id, gint64 document_id, const gchar *date, gint64 cents,
+	GError **error)
 {
 	Plan *plan = replay->plan;
-	g_autoptr(VenturePaymentAllocation) allocation = venture_payment_allocation_new();
+	g_autoptr(VentureEntity) allocation = vendor ? VENTURE_ENTITY(venture_bill_payment_allocation_new())
+		: VENTURE_ENTITY(venture_payment_allocation_new());
 	g_autoptr(VentureMoney) amount = money(plan, cents);
 	g_autoptr(GDateTime) when = parse_date(date);
-	g_object_set(allocation, "credit-id", credit_id, "invoice-id", invoice_id, "date", when, "amount", amount, NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(allocation), plan->org);
-	return venture_database_save(plan->self->database, VENTURE_ENTITY(allocation), replay->actor, error);
+	g_object_set(allocation, "credit-id", credit_id, vendor ? "bill-id" : "invoice-id", document_id, "date", when,
+		"amount", amount, NULL);
+	venture_entity_set_organization_id(allocation, plan->org);
+	return venture_database_save(plan->self->database, allocation, replay->actor, error);
 }
 
+/* The credit a payment's unapplied money became. */
 static gint64
-receipt_credit(Replay *replay, gint64 payment_id, GError **error)
+payment_credit(Replay *replay, gboolean vendor, gint64 payment_id, GError **error)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CUSTOMER_CREDIT);
+	g_autoptr(VentureQuery) query = venture_query_new(vendor ? VENTURE_TYPE_VENDOR_CREDIT : VENTURE_TYPE_CUSTOMER_CREDIT);
 	g_autoptr(GPtrArray) found = NULL;
 	venture_query_set_organization(query, replay->plan->org);
 	if (!venture_query_add_filter_int(query, "payment-id", VENTURE_FILTER_OP_EQ, payment_id, error))
@@ -362,24 +368,24 @@ receipt_credit(Replay *replay, gint64 payment_id, GError **error)
 	if (found == NULL || found->len != 1)
 	{
 		if (found != NULL)
-			refuse(error, "a receipt with money left over has no unique credit");
+			refuse(error, "a payment with money left over has no unique credit");
 		return 0;
 	}
 	return venture_entity_get_id(g_ptr_array_index(found, 0));
 }
 
 static gboolean
-apply_waiting(Replay *replay, const gchar *number, gint64 invoice_id, const gchar *date, GError **error)
+apply_waiting(Replay *replay, gboolean vendor, const gchar *key, gint64 document_id, const gchar *date, GError **error)
 {
 	guint i;
 	for (i = 0; i < replay->waiting->len; i++)
 	{
 		Waiting *waiting = g_ptr_array_index(replay->waiting, i);
 		gint64 credit;
-		if (g_strcmp0(waiting->invoice, number) != 0 || waiting->cents == 0)
+		if (waiting->vendor != vendor || g_strcmp0(waiting->invoice, key) != 0 || waiting->cents == 0)
 			continue;
-		credit = receipt_credit(replay, waiting->payment_id, error);
-		if (credit == 0 || !allocate_credit(replay, credit, invoice_id, date, waiting->cents, error))
+		credit = payment_credit(replay, vendor, waiting->payment_id, error);
+		if (credit == 0 || !allocate_credit(replay, vendor, credit, document_id, date, waiting->cents, error))
 			return FALSE;
 		waiting->cents = 0;
 	}
@@ -446,12 +452,11 @@ replay_customer_payment(Replay *replay, Event *event, GError **error)
 	if (!venture_settlement_service_apply_payment(venture_settlement_service_get(plan->self->database),
 		payment, allocations->len > 0 ? allocations : NULL, replay->actor, error))
 		return FALSE;
-	for (l = 0; l < later->len; l++)
+	while (later->len > 0)
 	{
-		Waiting *waiting = g_ptr_array_index(later, l);
+		Waiting *waiting = g_ptr_array_steal_index(later, 0);
 		waiting->payment_id = venture_entity_get_id(VENTURE_ENTITY(payment));
-		g_ptr_array_add(replay->waiting, g_ptr_array_steal_index(later, l));
-		l--;
+		g_ptr_array_add(replay->waiting, waiting);
 	}
 	cash = posted_account(replay, "payment", venture_entity_get_id(VENTURE_ENTITY(payment)), VENTURE_LEDGER_SIDE_DEBIT, 0, error);
 	if (cash == 0)
@@ -589,7 +594,8 @@ replay_bill(Replay *replay, Event *event, GError **error)
 			return FALSE;
 	}
 	g_hash_table_insert(replay->bills, g_strdup(event->source_id), (gpointer)(gintptr)bill_id);
-	return note_event(replay, event, "vendor_bill", bill_id, error);
+	return note_event(replay, event, "vendor_bill", bill_id, error) &&
+		apply_waiting(replay, TRUE, event->source_id, bill_id, event->date, error);
 }
 
 static gboolean
@@ -603,6 +609,7 @@ replay_vendor_payment(Replay *replay, Event *event, GError **error)
 	g_autoptr(VentureMoney) amount = money(plan, event->cents);
 	g_autoptr(GDateTime) when = event_date(event);
 	g_autofree gchar *external = g_strdup_printf("zoho-vpay-%" G_GINT64_FORMAT "-%s", venture_entity_get_id(replay->batch), event->source_id);
+	g_autoptr(GPtrArray) later = g_ptr_array_new_with_free_func(waiting_free);
 	g_autofree gchar *reference = NULL;
 	g_autofree gchar *memo = NULL;
 	gint64 vendor = party_of(replay, table, head, TRUE, error);
@@ -620,10 +627,14 @@ replay_vendor_payment(Replay *replay, Event *event, GError **error)
 		bill = g_hash_table_lookup(replay->bills, cell(table, row, "Bill ID"));
 		if (bill == NULL)
 		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-				"VentureBooksImportService: vendor payment %s pays a bill not yet imported; a payment before its bill is not supported",
-				cell(table, head, "Payment Number"));
-			return FALSE;
+			/* Paid before the bill arrived: the money waits as the
+			 * payment's credit and settles the bill on its date. */
+			Waiting *waiting = g_new0(Waiting, 1);
+			waiting->invoice = g_strdup(cell(table, row, "Bill ID"));
+			waiting->vendor = TRUE;
+			waiting->cents = part;
+			g_ptr_array_add(later, waiting);
+			continue;
 		}
 		{
 			VentureBillPaymentAllocation *allocation = venture_bill_payment_allocation_new();
@@ -643,6 +654,12 @@ replay_vendor_payment(Replay *replay, Event *event, GError **error)
 	if (!venture_payables_service_apply_payment(venture_payables_service_get(plan->self->database),
 		payment, allocations->len > 0 ? allocations : NULL, replay->actor, error))
 		return FALSE;
+	while (later->len > 0)
+	{
+		Waiting *waiting = g_ptr_array_steal_index(later, 0);
+		waiting->payment_id = venture_entity_get_id(VENTURE_ENTITY(payment));
+		g_ptr_array_add(replay->waiting, waiting);
+	}
 	cash = posted_account(replay, "bill_payment", venture_entity_get_id(VENTURE_ENTITY(payment)), VENTURE_LEDGER_SIDE_CREDIT, 0, error);
 	if (cash == 0)
 		return error != NULL && *error != NULL ? FALSE : refuse(error, "the vendor payment posted no cash leg");
@@ -799,7 +816,7 @@ replay_credit_application(Replay *replay, Event *event, GError **error)
 	gpointer invoice = g_hash_table_lookup(replay->invoices, cell(table, row, "Invoice Number"));
 	if (credit == NULL || invoice == NULL)
 		return refuse(error, "a credit application names a credit note or invoice that was not imported before it");
-	return allocate_credit(replay, (gint64)(gintptr)credit, (gint64)(gintptr)invoice, event->date, event->cents, error) &&
+	return allocate_credit(replay, FALSE, (gint64)(gintptr)credit, (gint64)(gintptr)invoice, event->date, event->cents, error) &&
 		note_event(replay, event, "payment_allocation", 0, error);
 }
 
