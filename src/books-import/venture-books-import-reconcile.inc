@@ -85,6 +85,91 @@ ledger_balance(Plan *plan, gint64 account, const gchar *date, GError **error)
 	return value != NULL ? venture_money_get_amount(value) : G_MININT64;
 }
 
+/* The organization's ledger read once: per account, every posted movement
+ * in the book currency with its instant. Asking the posting service for
+ * each account at each month end rereads every journal each time, which
+ * on a two-year history is thousands of full scans. The same rules decide
+ * what counts -- posted or reversed journals in the book currency, dated
+ * at or before the instant -- and the last date is checked against the
+ * posting service itself. */
+typedef struct
+{
+	gint64 when;	/* unix seconds */
+	gint64 cents;	/* debit positive */
+} Movement;
+
+static GHashTable *
+ledger_load(Plan *plan, GError **error)
+{
+	VentureDatabase *db = plan->self->database;
+	g_autoptr(GHashTable) ledger = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_array_unref);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
+	g_autoptr(GPtrArray) journals = NULL;
+	guint i, j;
+	venture_query_set_limit(query, 0);
+	venture_query_set_include_deleted(query, TRUE);
+	venture_query_set_organization(query, plan->org);
+	journals = venture_database_find(db, query, error);
+	if (journals == NULL)
+		return NULL;
+	for (i = 0; i < journals->len; i++)
+	{
+		VentureEntity *journal = g_ptr_array_index(journals, i);
+		g_autoptr(GDateTime) when = NULL;
+		g_autofree gchar *currency = NULL;
+		g_autoptr(VentureQuery) lines_query = venture_query_new(VENTURE_TYPE_JOURNAL_LINE);
+		g_autoptr(GPtrArray) lines = NULL;
+		VentureJournalState state;
+		g_object_get(journal, "state", &state, "occurred-at", &when, "currency", &currency, NULL);
+		if ((state != VENTURE_JOURNAL_POSTED && state != VENTURE_JOURNAL_REVERSED) || when == NULL ||
+			g_strcmp0(currency, plan->currency) != 0)
+			continue;
+		venture_query_set_limit(lines_query, 0);
+		if (!venture_query_add_filter_int(lines_query, "journal-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(journal), error))
+			return NULL;
+		lines = venture_database_find(db, lines_query, error);
+		if (lines == NULL)
+			return NULL;
+		for (j = 0; j < lines->len; j++)
+		{
+			g_autoptr(VentureMoney) amount = NULL;
+			gint64 account = 0;
+			VentureLedgerSide side;
+			Movement movement;
+			GArray *movements;
+			g_object_get(g_ptr_array_index(lines, j), "account-id", &account, "side", &side, "book-amount", &amount, NULL);
+			if (amount == NULL)
+				continue;
+			movement.when = g_date_time_to_unix(when);
+			movement.cents = side == VENTURE_LEDGER_SIDE_DEBIT ? venture_money_get_amount(amount) : -venture_money_get_amount(amount);
+			movements = g_hash_table_lookup(ledger, &account);
+			if (movements == NULL)
+			{
+				gint64 *key = g_new(gint64, 1);
+				*key = account;
+				movements = g_array_new(FALSE, FALSE, sizeof(Movement));
+				g_hash_table_insert(ledger, key, movements);
+			}
+			g_array_append_val(movements, movement);
+		}
+	}
+	return g_steal_pointer(&ledger);
+}
+
+/* The balance at the end of @date: every movement at or before 23:59:59. */
+static gint64
+ledger_at(GHashTable *ledger, gint64 account, const gchar *date)
+{
+	g_autoptr(GDateTime) day = parse_date(date);
+	GArray *movements = g_hash_table_lookup(ledger, &account);
+	gint64 end = g_date_time_to_unix(day) + 86399, sum = 0;
+	guint i;
+	for (i = 0; movements != NULL && i < movements->len; i++)
+		if (g_array_index(movements, Movement, i).when <= end)
+			sum += g_array_index(movements, Movement, i).cents;
+	return sum;
+}
+
 typedef struct
 {
 	guint count;
@@ -363,13 +448,14 @@ static gboolean
 compare_ledger(Plan *plan, gint64 batch_id, GString *block, GPtrArray *failures, GError **error)
 {
 	g_autoptr(GPtrArray) earlier = rolled_back_history(plan, batch_id, error);
+	g_autoptr(GHashTable) ledger = ledger_load(plan, error);
 	g_autoptr(GPtrArray) dates = check_dates(plan);
 	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
 	g_autoptr(GArray) postings = g_array_new(FALSE, FALSE, sizeof(gint64));
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
 	g_autoptr(GPtrArray) chart = NULL;
 	guint d, i;
-	if (earlier == NULL)
+	if (earlier == NULL || ledger == NULL)
 		return FALSE;
 	/* Resolve every posting's account once. */
 	for (i = 0; i < plan->expected->len; i++)
@@ -424,11 +510,23 @@ compare_ledger(Plan *plan, gint64 batch_id, GString *block, GPtrArray *failures,
 		{
 			gint64 id = g_array_index(ids, gint64, i);
 			gint64 *want = g_hash_table_lookup(expected, &id);
-			gint64 have = ledger_balance(plan, id, date, error);
+			gint64 have = ledger_at(ledger, id, date);
 			gint64 target = want != NULL ? *want : 0;
 			guint e;
-			if (have == G_MININT64)
-				return FALSE;
+			if (d == dates->len - 1)
+			{
+				/* The last date, from the posting service itself. */
+				gint64 posted = ledger_balance(plan, id, date, error);
+				if (posted == G_MININT64)
+					return FALSE;
+				if (posted != have)
+				{
+					g_autofree gchar *label = account_label(plan->self, id);
+					g_string_append_printf(block, "FAIL account %s at %s: the ledger read disagrees with the posting service\n",
+						label, date);
+					g_ptr_array_add(failures, g_strdup_printf("ledger read for %s", label));
+				}
+			}
 			for (e = 0; e < earlier->len; e++)
 			{
 				Earlier *entry = g_ptr_array_index(earlier, e);
@@ -460,11 +558,9 @@ compare_ledger(Plan *plan, gint64 batch_id, GString *block, GPtrArray *failures,
 		for (i = 0; i < ids->len; i++)
 		{
 			gint64 id = g_array_index(ids, gint64, i);
-			gint64 have = ledger_balance(plan, id, last, error);
+			gint64 have = ledger_at(ledger, id, last);
 			g_autofree gchar *label = NULL;
 			g_autofree gchar *text = NULL;
-			if (have == G_MININT64)
-				return FALSE;
 			if (have == 0)
 				continue;
 			label = account_label(plan->self, id);

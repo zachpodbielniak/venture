@@ -94,6 +94,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:setup.org][Accounting setup]] — guided books setup and control-account mappings
 - [[file:projects.org][Client projects]] — approved time, billable costs and invoices through settlement
 - [[file:cutover.org][Accounting cutover]] — guided opening balances from Zoho Books, QuickBooks, Xero or any mapped ledger
+- [[file:books-import.org][Books migration]] — a whole Zoho Books backup with its history, replayed through the owning services and reconciled
 - [[file:statements.org][Financial statements]] — posted ledger balances, statements, comparatives and P&L reconciliation
 - [[file:close.org][Accountant close]] — workspace, subledger tie-outs, workpapers and signoff
 - [[file:tax-filing.org][Jurisdiction tax filing]] — adapter-prepared sales-tax return packs
