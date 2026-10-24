@@ -22,10 +22,17 @@ The first call returns 201; the same terms return 200 and the same subscription.
 Different terms on a retry conflict. An existing subscription cannot enroll.
 The =hosted:= receipt prefix is reserved from legacy subscription requests.
 
-Enrollment creates a fourteen-day trial through the billing service without
-changing the catalogue price or issuing an invoice. The receipt retains the
-subscription, billing customer, enrollment time, charge deadline and guarantee
-cap. The cap is three initial monthly prices, or one quarter of the initial
+Enrollment creates a thirty-day setup window (=defer_days= 30) through the
+billing service without changing the catalogue price or issuing an invoice.
+Nothing is charged before the site goes live: the window gives the owner enough
+to get set up, and at its end Lightsite switches the unpublished business off.
+Lightsite owns that switch-off and its reminders; Venture only stops charging
+and reports the date. The receipt retains the subscription, billing customer,
+=enrolled_at=, =expires_at= (exactly =enrolled_at= plus thirty days, same ISO
+format; there is no =charge_due_at=) and guarantee cap. The subscription gets
+the reserved identity =hosted:<business>=, which keeps the renewal and
+trial-expiry sweep from invoicing it until publication activates it. =/prepay=
+is unchanged. The cap is three initial monthly prices, or one quarter of the initial
 annual price using exact money rounding. Later catalogue changes cannot raise
 it. The older =/subscriptions= operation retains its immediate-start behavior;
 new deferred onboarding must use =/enroll=.
@@ -50,13 +57,14 @@ whatever time a later request carries. The C API is
 Publication is recorded even when the owner has not completed payment setup.
 
 =POST /api/v1/lightsite/billing/first-charge= accepts the same object. The client
-may call it on day fourteen and retry either operation after a failure. Before
-publication and before the deadline, verified enrollment remains =building=.
-Without verified authority it returns =awaiting_card=, without issuing an invoice.
+may retry either operation after a failure. Without publication it never issues
+an invoice: before =expires_at= verified enrollment remains =building=, and
+without verified authority it returns =awaiting_card=; at or after =expires_at=
+it returns =expired= with =invoice_id= 0.
 
-At publication, the billing service's =activate= action ends an uncancelled
-trial and anchors its first paid period now. At the deadline the ordinary
-=renew= action ends the trial. A retained subscription event also lets the
+Only publication bills, before or after =expires_at=: the billing service's
+=activate= action ends an uncancelled trial, anchors its first paid period now,
+issues the first invoice and collection starts. A retained subscription event also lets the
 operation adopt an invoice already created by the recurring scheduler.
 A unique receipt identifies the first invoice, even after later renewals.
 Collection uses the existing invoice-wide idempotent provider attempt. Network
@@ -125,9 +133,16 @@ backends. It verifies the additive =billing_request.defer_days= metadata;
 existing requests keep their catalogue trial semantics. No historic invoice,
 permission or measurement is invented.
 
+Migration =000956_hosted_deferred_identity.sql=, paired for SQLite and
+PostgreSQL, protects enrollments made under the earlier fourteen-day trial: a
+non-prepaid =/enroll= subscription without an identity of its own gets
+=hosted:<business>=, so the sweep does not invoice it before publication.
+Their receipts are not rewritten and keep =charge_due_at=; like every
+enrollment they expire at =enrolled_at= plus thirty days.
+
 The hosted HTTP fixture exercises enrollment, publication, credit replay,
 eligibility, annual caps and attribution through the built server. The provider
-fixture exercises hosted Setup, publication and deadline collection, retries,
+fixture exercises hosted Setup, publication collection, retries,
 and signed settlement with deterministic provider responses. These are local
 fixtures, not evidence of a transaction with a live provider.
 
@@ -235,20 +250,19 @@ client checks that the dashboard user owns that business before forwarding
 this request; browser sessions, customer tokens and viewer tokens cannot call
 this service boundary directly.
 
-Before fourteen days from =enrolled_at=, an unpublished enrollment with no
-invoice ends immediately. The response has =state: cancelled= and
+An unpublished enrollment with no invoice always ends immediately, inside the
+setup window or after it expired, because nothing was charged. The response has =state: cancelled= and
 =no_charge: true=, with =cancelled_at= and =effective_at=. The subscription and
 immutable cancellation receipt commit together. An identical retry returns
-the original response, even after the deadline. Queued =publish= and
+the original response. Queued =publish= and
 =first-charge= calls return that response without collection. New enrollment,
 subscription changes and payment setup are refused for the cancelled business.
 The normal renewal sweep cannot issue an invoice for the ended subscription.
 A delayed prepaid setup completion becomes terminal =cancelled= without
 provider calls or payment links, and the prepaid timer skips it thereafter.
 
-Publication takes precedence over the unpaid trial, even within the first
-fourteen days. At or after the deadline, or after publication, the response
-instead reports =cancel_at_period_end= and =no_charge: false=. Existing
+Publication takes precedence over the unpaid trial. After publication, or once
+an invoice exists, the response instead reports =cancel_at_period_end= and =no_charge: false=. Existing
 monthly invoices and prepaid installment obligations remain; cancellation
 creates no automatic refund or credit (money back, above, is the separate
 request that refunds within thirty days of go-live). A published prepaid enrollment that
@@ -259,7 +273,7 @@ and collection of those already committed terms remain available.
 
 The built HTTP fixture =test-hosted-billing= covers early monthly and prepaid
 cancellation, replay, delayed publication/collection, a later renewal sweep,
-the day-fourteen boundary, incurred monthly invoices, invalid requests and
+cancellation after the setup window expired, incurred monthly invoices, invalid requests and
 authority. =test-prepaid-stripe= covers delayed setup completion after cancel
 and a second installment retained after cancellation at term end.
 =test-stripe /stripe/cancel-before-charge= verifies that an already verified
