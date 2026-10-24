@@ -1,6 +1,20 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 static VentureMoney *enrollment_money(JsonObject *object, const gchar *name, GError **error);
 
+/* The setup window: Lightsite switches an unpublished business off this many
+ * days after enrollment. Nothing in Venture charges at its end. */
+#define ENROLLMENT_WINDOW_DAYS 30
+
+/* Enrollments made under the fourteen-day release carry charge_due_at, not
+ * expires_at; every enrollment expires thirty days after enrolled_at. */
+static GDateTime *
+enrollment_expiry(JsonNode *enrollment, GError **error)
+{
+	g_autoptr(GDateTime) enrolled_at = venture_time_from_string(
+		json_object_get_string_member(json_node_get_object(enrollment), "enrolled_at"), error);
+	return enrolled_at ? g_date_time_add_days(enrolled_at, ENROLLMENT_WINDOW_DAYS) : NULL;
+}
+
 /* Immutable operation receipts are also the enrollment journal. Their unique
  * keys include tombstones, so removing a customer cannot reset the guarantee. */
 static gchar *
@@ -184,13 +198,16 @@ enrollment_create(VentureDatabase *database, gint64 billing, gint64 business,
 	}
 	venture_entity_set_organization_id(VENTURE_ENTITY(instruction), billing);
 	g_object_set(instruction, "action", "start", "company-id", venture_entity_get_id(company),
-		"plan-price-id", price_id, "seats", (gint64)1, "defer-days", (gint64)14, "at", now, NULL);
-	if (payment_path) {
-		g_autofree gchar *identity = g_strdup_printf("prepaid:%" G_GINT64_FORMAT, business);
+		"plan-price-id", price_id, "seats", (gint64)1, "defer-days", (gint64)ENROLLMENT_WINDOW_DAYS, "at", now, NULL);
+	{
+		/* The reserved identity keeps the renewal sweep off the trial until
+		 * publication: prepaid terms belong to the prepaid service, and a
+		 * deferred enrollment is never charged before its site goes live. */
+		g_autofree gchar *identity = g_strdup_printf("%s:%" G_GINT64_FORMAT, payment_path ? "prepaid" : "hosted", business);
 		g_object_set(instruction, "external-id", identity, NULL);
 	}
 	if (!execute(database, instruction, &actor, error)) goto fail;
-	deadline = g_date_time_add_days(now, 14);
+	deadline = g_date_time_add_days(now, ENROLLMENT_WINDOW_DAYS);
 	object = json_object_new();
 	result = json_node_new(JSON_NODE_OBJECT);
 	json_node_take_object(result, object);
@@ -227,7 +244,7 @@ enrollment_create(VentureDatabase *database, gint64 billing, gint64 business,
 		}
 	}
 	set_time(object, "enrolled_at", now);
-	if (!payment_path) set_time(object, "charge_due_at", deadline);
+	if (!payment_path) set_time(object, "expires_at", deadline);
 	if (!enrollment_write(database, billing, business, "enroll", result, &actor, error)) goto fail;
 	if (!venture_database_commit(database, error)) return NULL;
 	if (created) *created = TRUE;
@@ -478,12 +495,15 @@ first_charge(VentureContext *context, gint64 billing, gint64 business,
 	receipt = enrollment_read(db, billing, business, "first-charge", error);
 	if (error && *error) goto fail;
 	if (receipt) invoice = json_object_get_int_member(json_node_get_object(receipt), "invoice_id");
-	deadline = venture_time_from_string(json_object_get_string_member(json_node_get_object(enrollment), "charge_due_at"), error);
+	deadline = enrollment_expiry(enrollment, error);
 	if (!deadline) goto fail;
 	permission = enrollment_permission(db, billing, subscription, error);
 	if (error && *error) goto fail;
 	if (permission) g_object_get(permission, "status", &status, NULL);
-	if (!invoice && !g_strcmp0(status, "active") && (publication || g_date_time_compare(now, deadline) >= 0)) {
+	/* Only publication bills. The end of the setup window charges nothing:
+	 * Lightsite switches the business off, and publishing later still
+	 * activates the trial and issues the first invoice. */
+	if (!invoice && !g_strcmp0(status, "active") && publication) {
 		invoice = enrollment_first_invoice(db, billing, subscription, error);
 		if (error && *error) goto fail;
 		if (!invoice) {
@@ -491,7 +511,7 @@ first_charge(VentureContext *context, gint64 billing, gint64 business,
 			if (!sub) goto fail;
 			instruction = venture_billing_request_new();
 			venture_entity_set_organization_id(VENTURE_ENTITY(instruction), billing);
-			g_object_set(instruction, "action", publication ? "activate" : "renew", "subscription-id", subscription,
+			g_object_set(instruction, "action", "activate", "subscription-id", subscription,
 				"at", now, "expected-version", venture_entity_get_version(sub), NULL);
 			if (!execute(db, instruction, &actor, error)) goto fail;
 			invoice = number(VENTURE_ENTITY(instruction), "invoice-id");
@@ -503,6 +523,7 @@ first_charge(VentureContext *context, gint64 billing, gint64 business,
 	}
 	json_object_set_int_member(object, "invoice_id", invoice);
 	json_object_set_string_member(object, "state", invoice ? "collection_pending" :
+		!publication && g_date_time_compare(now, deadline) >= 0 ? "expired" :
 		g_strcmp0(status, "active") ? "awaiting_card" : "building");
 	if (!venture_database_commit(db, error)) return NULL;
 	if (!venture_accounting_operation_finish(operation, error)) return NULL;

@@ -1498,6 +1498,16 @@ resolve_discount_code(VentureBillingService *self, VentureEntity *request, Ventu
 	return refuse(error, VENTURE_ERROR_VALIDATION, why);
 }
 
+/* A hosted deferred enrollment (external identity "hosted:<business>") is
+ * unpublished while it is still an uncancelled trial: publication activates
+ * it, and only then does it renew like any other subscription. */
+static gboolean
+hosted_unpublished(VentureEntity *sub, const gchar *identity)
+{
+	return identity && g_str_has_prefix(identity, "hosted:") &&
+		choice(sub, "status") == 0 && !flag(sub, "cancel-at-period-end");
+}
+
 static gboolean
 perform(VentureBillingService *self, VentureEntity *request, const VentureActor *actor, GError **error)
 {
@@ -1617,6 +1627,11 @@ perform(VentureBillingService *self, VentureEntity *request, const VentureActor 
 					return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid terms require the prepaid collection service");
 			}
 			else if (prepaid) return refuse(error, VENTURE_ERROR_CONFLICT, "prepaid enrollment is required");
+			/* A hosted enrollment is never charged before its site goes
+			 * live: publication activates it, and the trial end renews
+			 * nothing. */
+			if (hosted_unpublished(sub, identity) && !g_strcmp0(verb, "renew"))
+				return TRUE;
 		}
 		old_seats = seats = number(sub, "seats");
 		old_price = venture_entity_get_id(price);
@@ -1942,6 +1957,10 @@ sweep(VentureBillingService *self, VentureEntity *request, const VentureActor *a
 		 * prepaid invoice or a published cancellation has scheduled the
 		 * end, a due period ends here and is not invoiced again. */
 		if (identity && g_str_has_prefix(identity, "prepaid:") && !flag(sub, "cancel-at-period-end"))
+			continue;
+		/* Nor are unpublished hosted enrollments: their setup window ends
+		 * in Lightsite switching the business off, never in an invoice. */
+		if (hosted_unpublished(sub, identity))
 			continue;
 		if (steps == NULL)
 		{
