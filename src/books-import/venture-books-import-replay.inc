@@ -1013,6 +1013,92 @@ replay_contacts(Replay *replay, GHashTable *side, GError **error)
 	return TRUE;
 }
 
+/* The source ids of @object this batch already has a row for. */
+static GHashTable *
+rows_of(VentureBooksImportService *self, VentureEntity *batch, const gchar *object, GError **error)
+{
+	g_autoptr(GPtrArray) rows = batch_rows(self, venture_entity_get_id(batch), error);
+	GHashTable *seen;
+	guint i;
+	if (rows == NULL)
+		return NULL;
+	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autofree gchar *kind = row_string(row, "source-object");
+		if (g_strcmp0(kind, object) == 0)
+			g_hash_table_add(seen, row_string(row, "source-id"));
+	}
+	return seen;
+}
+
+/*
+ * The people at each company, as contacts linked to it. A contact of the
+ * same name at the same company is matched, not duplicated. Email and
+ * phone come over only with contact_details, as for companies. A person
+ * the batch already has a row for is skipped, so a re-run adds only what
+ * an earlier import left out.
+ */
+static gboolean
+replay_persons(Replay *replay, GError **error)
+{
+	Plan *plan = replay->plan;
+	g_autoptr(GHashTable) done = rows_of(plan->self, replay->batch, "contact_person", error);
+	guint i;
+	if (done == NULL)
+		return FALSE;
+	for (i = 0; i < plan->persons->len; i++)
+	{
+		Person *person = g_ptr_array_index(plan->persons, i);
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CONTACT);
+		g_autoptr(GPtrArray) found = NULL;
+		g_autofree gchar *wanted = fold_name(person->name);
+		gint64 contact = 0;
+		gboolean created = FALSE;
+		guint j;
+		if (g_hash_table_contains(done, person->source_id))
+			continue;
+		if (person->party->id <= 0)
+			return refuse(error, "a contact person's company was not imported");
+		venture_query_set_organization(query, plan->org);
+		venture_query_set_limit(query, 0);
+		if (!venture_query_add_filter_int(query, "company-id", VENTURE_FILTER_OP_EQ, person->party->id, error))
+			return FALSE;
+		found = venture_database_find(plan->self->database, query, error);
+		if (found == NULL)
+			return FALSE;
+		for (j = 0; j < found->len && contact == 0; j++)
+		{
+			g_autofree gchar *name = NULL;
+			g_autofree gchar *folded = NULL;
+			g_object_get(g_ptr_array_index(found, j), "name", &name, NULL);
+			folded = fold_name(name);
+			if (g_strcmp0(folded, wanted) == 0)
+				contact = venture_entity_get_id(g_ptr_array_index(found, j));
+		}
+		if (contact == 0)
+		{
+			g_autoptr(VentureContact) made = venture_contact_new();
+			g_object_set(made, "name", person->name, "company-id", person->party->id, "source", "zoho_books", NULL);
+			if (person->role != NULL && *person->role != '\0')
+				g_object_set(made, "role", person->role, NULL);
+			if (plan->contact_details && person->email != NULL && *person->email != '\0')
+				g_object_set(made, "email", person->email, NULL);
+			if (plan->contact_details && person->phone != NULL && *person->phone != '\0')
+				g_object_set(made, "phone", person->phone, NULL);
+			venture_entity_set_organization_id(VENTURE_ENTITY(made), plan->org);
+			if (!venture_database_save(plan->self->database, VENTURE_ENTITY(made), replay->actor, error))
+				return FALSE;
+			contact = venture_entity_get_id(VENTURE_ENTITY(made));
+			created = TRUE;
+		}
+		if (!note_record(replay, "contact_person", person->source_id, "contact", contact, created, error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
 static gboolean
 import_impl(VentureBooksImportService *self, VentureEntity *batch, const VentureActor *actor, GError **error)
 {
@@ -1043,7 +1129,7 @@ import_impl(VentureBooksImportService *self, VentureEntity *batch, const Venture
 	replay.companies = companies;
 	if (companies == NULL || !resolve_accounts(plan, TRUE, actor, error) ||
 		!replay_contacts(&replay, plan->customers, error) || !replay_contacts(&replay, plan->vendors, error) ||
-		!replay_opening(&replay, error))
+		!replay_persons(&replay, error) || !replay_opening(&replay, error))
 		goto fail;
 	for (i = 0; i < plan->events->len; i++)
 		if (!replay_event(&replay, g_ptr_array_index(plan->events, i), error))
@@ -1078,6 +1164,79 @@ done:
 	return ok;
 }
 
+/*
+ * A re-run on an imported, reconciled or active batch: the ledger is
+ * complete, so nothing posts again; records that post nothing and that a
+ * newer importer brings -- the people at each company -- are added if the
+ * batch has no row for them. An active batch also gets the ledger as its
+ * profit-and-loss basis, as activation now sets it.
+ */
+static gboolean
+topup_impl(VentureBooksImportService *self, VentureEntity *batch, const VentureActor *actor, GError **error)
+{
+	g_autoptr(Plan) plan = plan_of(self, batch, error);
+	g_autoptr(Companies) companies = NULL;
+	g_autoptr(GString) block = g_string_new(NULL);
+	g_autoptr(GHashTable) before = NULL;
+	g_autofree gchar *stamp = stamp_now();
+	g_autofree gchar *state = state_of(batch);
+	Replay replay;
+	GHashTableIter iter;
+	gpointer value;
+	guint added;
+	gboolean ok = FALSE;
+	GHashTable *sides[2];
+	guint s;
+	if (plan == NULL || !venture_database_begin(self->database, error))
+		return FALSE;
+	memset(&replay, 0, sizeof replay);
+	replay.plan = plan;
+	replay.batch = batch;
+	replay.actor = actor;
+	companies = companies_load(self, plan->org, error);
+	if (companies == NULL)
+		goto fail;
+	sides[0] = plan->customers;
+	sides[1] = plan->vendors;
+	for (s = 0; s < 2; s++)
+	{
+		g_hash_table_iter_init(&iter, sides[s]);
+		while (g_hash_table_iter_next(&iter, NULL, &value))
+		{
+			gboolean created;
+			((Party *)value)->id = resolve_party(plan, companies, value, FALSE, &created, actor, error);
+			if (error != NULL && *error != NULL)
+				goto fail;
+		}
+	}
+	before = rows_of(self, batch, "contact_person", error);
+	if (before == NULL || !replay_persons(&replay, error))
+		goto fail;
+	{
+		g_autoptr(GHashTable) after = rows_of(self, batch, "contact_person", error);
+		if (after == NULL)
+			goto fail;
+		added = g_hash_table_size(after) - g_hash_table_size(before);
+	}
+	if (g_strcmp0(state, "active") == 0)
+	{
+		g_autoptr(VentureEntity) organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, plan->org, error);
+		if (organization == NULL)
+			goto fail;
+		g_object_set(organization, "pnl-basis", "ledger", NULL);
+		if (!venture_database_save(self->database, organization, actor, error))
+			goto fail;
+	}
+	g_string_append_printf(block, "\n== Import again %s ==\nThe ledger is complete; added %u people as contacts.\n", stamp, added);
+	if (!append_report(self, batch, NULL, block, actor, error) || !venture_database_commit(self->database, error))
+		goto fail;
+	ok = TRUE;
+	return ok;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
 gboolean
 venture_books_import_service_import(VentureBooksImportService *self, VentureBooksImport *batch,
 	const VentureActor *actor, GError **error)
@@ -1093,8 +1252,13 @@ venture_books_import_service_import(VentureBooksImportService *self, VentureBook
 	state = state_of(stored);
 	/* One transaction made the whole import, so a second call on an
 	 * imported batch has nothing left to do. */
-	if (g_strcmp0(state, "imported") == 0 || g_strcmp0(state, "reconciled") == 0)
+	if (g_strcmp0(state, "imported") == 0 || g_strcmp0(state, "reconciled") == 0 || g_strcmp0(state, "active") == 0)
+	{
+		if (!topup_impl(self, stored, actor, error))
+			return FALSE;
+		venture_entity_copy_properties_from(VENTURE_ENTITY(batch), stored, FALSE);
 		return TRUE;
+	}
 	if (g_strcmp0(state, "preview") != 0)
 		return refuse(error, "only a previewed batch can be imported");
 	g_variant_builder_init(&arguments, G_VARIANT_TYPE_VARDICT);

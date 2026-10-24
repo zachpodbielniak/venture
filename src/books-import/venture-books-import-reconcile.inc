@@ -578,6 +578,124 @@ compare_ledger(Plan *plan, gint64 batch_id, GString *block, GPtrArray *failures,
 	return TRUE;
 }
 
+/*
+ * The people: every person of the backup is a contact of the batch, linked
+ * to the company it belongs to. And money left on account: each
+ * customer's unapplied credit -- receipts not yet set against an invoice,
+ * credit notes not yet used -- equals what Zoho left unused.
+ */
+static gint64 *
+unused_slot(GHashTable *table, const gchar *key)
+{
+	gint64 *sum = g_hash_table_lookup(table, key);
+	if (sum == NULL)
+	{
+		sum = g_new0(gint64, 1);
+		g_hash_table_insert(table, g_strdup(key), sum);
+	}
+	return sum;
+}
+
+static gboolean
+compare_contacts_and_credits(Plan *plan, VentureEntity *batch, GString *block, GPtrArray *failures, GError **error)
+{
+	VentureDatabase *db = plan->self->database;
+	g_autoptr(GPtrArray) rows = batch_rows(plan->self, venture_entity_get_id(batch), error);
+	g_autoptr(GHashTable) zoho_unused = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
+	Table *payments = plan_table(plan, "Customer_Payment.csv");
+	Table *credits = plan_table(plan, "Credit_Note.csv");
+	guint linked = 0, i, checked = 0, wrong = 0;
+	GHashTableIter iter;
+	gpointer value;
+	if (rows == NULL)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autofree gchar *object = row_string(row, "source-object");
+		g_autofree gchar *source = row_string(row, "source-id");
+		g_autoptr(VentureEntity) contact = NULL;
+		gint64 company = 0;
+		guint p;
+		if (g_strcmp0(object, "contact_person") != 0 || row_int(row, "record-id") <= 0)
+			continue;
+		contact = venture_database_get(db, VENTURE_TYPE_CONTACT, row_int(row, "record-id"), error);
+		if (contact == NULL)
+			return FALSE;
+		g_object_get(contact, "company-id", &company, NULL);
+		for (p = 0; p < plan->persons->len; p++)
+		{
+			Person *person = g_ptr_array_index(plan->persons, p);
+			if (g_strcmp0(person->source_id, source) == 0 && company > 0 && person->party->id == company)
+				linked++;
+		}
+	}
+	g_string_append_printf(block, "%s contacts: Zoho %u people, VENTURE %u contacts linked to their companies\n",
+		linked == plan->persons->len ? "PASS" : "FAIL", plan->persons->len, linked);
+	if (linked != plan->persons->len)
+		g_ptr_array_add(failures, g_strdup("contacts"));
+	for (i = 0; payments != NULL && i < payments->rows->len; i++)
+	{
+		const gchar *id = cell(payments, i, "CustomerPayment ID");
+		Party *party = document_party(plan, payments, i, FALSE);
+		if (party == NULL || g_hash_table_contains(seen, id))
+			continue;
+		g_hash_table_add(seen, (gpointer)id);
+		*unused_slot(zoho_unused, party->source_id) += amount_at(plan, payments, i, "Unused Amount");
+	}
+	g_hash_table_remove_all(seen);
+	for (i = 0; credits != NULL && i < credits->rows->len; i++)
+	{
+		const gchar *id = cell(credits, i, "CreditNotes ID");
+		Party *party = document_party(plan, credits, i, FALSE);
+		if (party == NULL || g_hash_table_contains(seen, id) || is_status(cell(credits, i, "Credit Note Status"), "Draft") ||
+			is_status(cell(credits, i, "Credit Note Status"), "Void"))
+			continue;
+		g_hash_table_add(seen, (gpointer)id);
+		*unused_slot(zoho_unused, party->source_id) += amount_at(plan, credits, i, "Balance");
+	}
+	g_hash_table_iter_init(&iter, plan->customers);
+	while (g_hash_table_iter_next(&iter, NULL, &value))
+	{
+		Party *party = value;
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) held = NULL;
+		gint64 *want = g_hash_table_lookup(zoho_unused, party->source_id);
+		gint64 have = 0;
+		guint j;
+		if (party->id <= 0)
+			continue;
+		query = venture_query_new(VENTURE_TYPE_CUSTOMER_CREDIT);
+		venture_query_set_organization(query, plan->org);
+		venture_query_set_limit(query, 0);
+		if (!venture_query_add_filter_int(query, "customer-id", VENTURE_FILTER_OP_EQ, party->id, error))
+			return FALSE;
+		held = venture_database_find(db, query, error);
+		if (held == NULL)
+			return FALSE;
+		for (j = 0; j < held->len; j++)
+		{
+			g_autoptr(VentureMoney) remaining = NULL;
+			g_object_get(g_ptr_array_index(held, j), "remaining", &remaining, NULL);
+			if (remaining != NULL)
+				have += venture_money_get_amount(remaining);
+		}
+		checked++;
+		if (have != (want != NULL ? *want : 0))
+		{
+			g_autofree gchar *want_text = format_amount(plan, want != NULL ? *want : 0);
+			g_autofree gchar *have_text = format_amount(plan, have);
+			g_string_append_printf(block, "FAIL unapplied credit %s: Zoho %s, VENTURE %s\n", party->name, want_text, have_text);
+			if (wrong++ == 0)
+				g_ptr_array_add(failures, g_strdup_printf("unapplied credit of %s", party->name));
+		}
+	}
+	if (wrong == 0)
+		g_string_append_printf(block, "PASS unapplied credit: every customer's equals Zoho's (%u customers)\n", checked);
+	return TRUE;
+}
+
 /* Runs the comparison, appends it and reports whether everything tied. */
 static gboolean
 reconcile_run(VentureBooksImportService *self, VentureEntity *batch, gboolean *passed, gchar **summary,
@@ -594,6 +712,28 @@ reconcile_run(VentureBooksImportService *self, VentureEntity *batch, gboolean *p
 	g_string_append_printf(block, "\n== Reconcile %s ==\n", stamp);
 	if (!compare_ledger(plan, venture_entity_get_id(batch), block, failures, error) || !compare_documents(plan, batch, block, failures, error))
 		return FALSE;
+	{
+		g_autoptr(Companies) companies = companies_load(self, plan->org, error);
+		GHashTable *sides[2];
+		guint s;
+		if (companies == NULL)
+			return FALSE;
+		sides[0] = plan->customers;
+		sides[1] = plan->vendors;
+		for (s = 0; s < 2; s++)
+		{
+			GHashTableIter iter;
+			gpointer value;
+			g_hash_table_iter_init(&iter, sides[s]);
+			while (g_hash_table_iter_next(&iter, NULL, &value))
+			{
+				gboolean created;
+				((Party *)value)->id = resolve_party(plan, companies, value, FALSE, &created, actor, NULL);
+			}
+		}
+		if (!compare_contacts_and_credits(plan, batch, block, failures, error))
+			return FALSE;
+	}
 	*passed = failures->len == 0;
 	g_string_append_printf(block, "Result: %s\n", *passed ? "reconciled" : "FAILED");
 	if (summary != NULL)

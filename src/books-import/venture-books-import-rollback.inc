@@ -334,6 +334,11 @@ venture_books_import_service_rollback(VentureBooksImportService *self, VentureBo
 						: venture_payables_service_refresh_credit(venture_payables_service_get(self->database), id, actor, error));
 			else if (pass == 2 && g_strcmp0(type, "equity_transaction") == 0)
 				ok = reverse_source(&walk, "equity_transaction", id, error);
+			else if (pass == 2 && g_strcmp0(type, "contact") == 0 && row_bool(row, "created"))
+			{
+				g_autoptr(VentureEntity) contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, id, error);
+				ok = contact != NULL && venture_database_delete(self->database, contact, actor, error);
+			}
 			(void)object;
 			if (!ok)
 				goto fail;

@@ -339,6 +339,7 @@ typedef struct
 	GPtrArray *problems;
 	GPtrArray *warnings;
 	GPtrArray *unsupported;
+	GPtrArray *persons;	/* Person: the people at each company */
 	gchar *bank_charges_account;
 	gchar *purchase_tax_account;
 	gchar *discount_account;
@@ -371,6 +372,7 @@ plan_free(Plan *plan)
 	g_clear_pointer(&plan->problems, g_ptr_array_unref);
 	g_clear_pointer(&plan->warnings, g_ptr_array_unref);
 	g_clear_pointer(&plan->unsupported, g_ptr_array_unref);
+	g_clear_pointer(&plan->persons, g_ptr_array_unref);
 	g_free(plan->bank_charges_account);
 	g_free(plan->purchase_tax_account);
 	g_free(plan->discount_account);
@@ -613,6 +615,102 @@ plan_parties(Plan *plan, const gchar *file, gboolean vendor)
 		party->terms = g_strdup(cell(table, i, "Payment Terms Label"));
 		g_hash_table_insert(vendor ? plan->vendor_names : plan->customer_names, fold_name(name), party);
 		g_hash_table_insert(vendor ? plan->vendors : plan->customers, g_strdup(id), party);
+	}
+}
+
+/* A person at a company: a contact row's primary contact, or a row of the
+ * contact persons export. */
+typedef struct
+{
+	gchar *source_id;
+	Party *party;
+	gchar *name;
+	gchar *email, *phone, *role;
+} Person;
+
+static void
+person_free(gpointer data)
+{
+	Person *person = data;
+	g_free(person->source_id);
+	g_free(person->name);
+	g_free(person->email);
+	g_free(person->phone);
+	g_free(person->role);
+	g_free(person);
+}
+
+static gchar *
+person_name(Table *table, guint row)
+{
+	g_autofree gchar *joined = g_strjoin(" ", cell(table, row, "Salutation"), cell(table, row, "First Name"),
+		cell(table, row, "Last Name"), NULL);
+	return g_strstrip(g_strdup(joined));
+}
+
+static void
+add_person(Plan *plan, Party *party, Table *table, guint row, const gchar *source_id)
+{
+	Person *person;
+	g_autofree gchar *name = NULL;
+	guint i;
+	if (party == NULL || source_id == NULL || *source_id == '\0')
+		return;
+	for (i = 0; i < plan->persons->len; i++)
+		if (g_strcmp0(((Person *)g_ptr_array_index(plan->persons, i))->source_id, source_id) == 0)
+			return;
+	/* A salutation alone is not a name; the email stands in when there is
+	 * no name at all, so the person can still be told apart. */
+	name = person_name(table, row);
+	if (*cell(table, row, "First Name") == '\0' && *cell(table, row, "Last Name") == '\0')
+	{
+		g_free(name);
+		name = g_strdup(cell(table, row, "EmailID"));
+	}
+	if (name == NULL || *name == '\0')
+		return;
+	person = g_new0(Person, 1);
+	person->source_id = g_strdup(source_id);
+	person->party = party;
+	person->name = g_steal_pointer(&name);
+	person->email = g_strdup(cell(table, row, "EmailID"));
+	person->phone = g_strdup(*cell(table, row, "Phone") != '\0' ? cell(table, row, "Phone") : cell(table, row, "MobilePhone"));
+	person->role = g_strdup(cell(table, row, "Designation"));
+	g_ptr_array_add(plan->persons, person);
+}
+
+/* The people: each contact row's primary contact, then every row of the
+ * contact persons exports, linked to its company by the contact id. */
+static void
+plan_persons(Plan *plan)
+{
+	static const struct { const gchar *file; gboolean vendor; const gchar *link; } exports[] = {
+		{ "Contacts.csv", FALSE, "Contact ID" }, { "Vendors.csv", TRUE, "Contact ID" },
+		{ "Contact_Persons.csv", FALSE, "Customer ID" }, { "Vendor_Contact_Persons.csv", TRUE, "Vendor ID" }
+	};
+	guint e, i;
+	for (e = 0; e < G_N_ELEMENTS(exports); e++)
+	{
+		Table *table = plan_table(plan, exports[e].file);
+		gboolean persons_file = g_str_has_suffix(exports[e].file, "Persons.csv");
+		for (i = 0; table != NULL && i < table->rows->len; i++)
+		{
+			Party *party = g_hash_table_lookup(exports[e].vendor ? plan->vendors : plan->customers,
+				cell(table, i, exports[e].link));
+			g_autofree gchar *fallback = NULL;
+			const gchar *id;
+			if (party == NULL)
+			{
+				if (persons_file)
+					plan_problem(plan, table->file, i, "a contact person names a company the backup does not hold");
+				continue;
+			}
+			id = cell(table, i, persons_file ? "Contact Person ID" : "Primary Contact ID");
+			if (*id == '\0' && !persons_file &&
+				(*cell(table, i, "First Name") != '\0' || *cell(table, i, "Last Name") != '\0'))
+				id = fallback = g_strdup_printf("%s-primary", party->source_id);
+			add_person(plan, party, table, i, id);
+		}
 	}
 }
 
@@ -1256,7 +1354,6 @@ plan_unsupported(Plan *plan)
 		{ "Recurring_Bill.csv", "recurring profiles are set up again in VENTURE's recurring schedules; their past bills are imported" },
 		{ "Recurring_Expense.csv", "recurring profiles are set up again in VENTURE's recurring schedules; their past expenses are imported" },
 		{ "Fixed_Asset.csv", "fixed assets are placed in service in VENTURE's asset register" },
-		{ "Inventory_Adjustment.csv", "stock adjustments need the goods module's own counts" },
 		{ "Projects.csv", "projects are not imported yet" },
 		{ "Project_Tasks.csv", "project tasks have no VENTURE record" },
 		{ "Timesheet.csv", "timesheets are not imported yet" },
@@ -1264,8 +1361,6 @@ plan_unsupported(Plan *plan)
 		{ "Sales_Order.csv", "sales orders are not imported yet" },
 		{ "Purchase_Order.csv", "purchase orders are not imported yet" },
 		{ "Item.csv", "items are not imported yet; invoice and bill lines keep their descriptions" },
-		{ "Contact_Persons.csv", "contact persons are not imported yet" },
-		{ "Vendor_Contact_Persons.csv", "contact persons are not imported yet" }
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(homeless); i++)
@@ -1374,6 +1469,7 @@ plan_build(VentureBooksImportService *self, gint64 org, JsonObject *manifest, GE
 	plan->problems = g_ptr_array_new_with_free_func(g_free);
 	plan->warnings = g_ptr_array_new_with_free_func(g_free);
 	plan->unsupported = g_ptr_array_new_with_free_func(g_free);
+	plan->persons = g_ptr_array_new_with_free_func(person_free);
 	plan->invoice_numbers = g_hash_table_new(g_str_hash, g_str_equal);
 	plan->bill_ids = g_hash_table_new(g_str_hash, g_str_equal);
 	plan->credit_numbers = g_hash_table_new(g_str_hash, g_str_equal);
@@ -1408,6 +1504,7 @@ plan_build(VentureBooksImportService *self, gint64 org, JsonObject *manifest, GE
 			plan->bank_charges_account));
 	plan_parties(plan, "Contacts.csv", FALSE);
 	plan_parties(plan, "Vendors.csv", TRUE);
+	plan_persons(plan);
 	plan_opening(plan, manifest);
 	plan_invoices(plan);
 	plan_bills(plan);

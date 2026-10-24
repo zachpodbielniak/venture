@@ -217,6 +217,14 @@ row_int(VentureEntity *row, const gchar *field)
 	return value;
 }
 
+static gboolean
+row_bool(VentureEntity *row, const gchar *field)
+{
+	gboolean value = FALSE;
+	g_object_get(row, field, &value, NULL);
+	return value;
+}
+
 /* A source id another live batch of the organization already imported.
  * Two batches replaying the same invoice would count it twice. */
 static gint64
@@ -615,8 +623,8 @@ report_plan(Plan *plan, GString *block)
 	guint i, create = 0;
 	g_string_append_printf(block, "Source zoho_books, start %s, export date %s, currency %s\n",
 		plan->start_text, *plan->export_text != '\0' ? plan->export_text : "(none)", plan->currency);
-	g_string_append_printf(block, "Contacts: %u customers, %u vendors\n",
-		g_hash_table_size(plan->customers), g_hash_table_size(plan->vendors));
+	g_string_append_printf(block, "Contacts: %u customers, %u vendors, %u people\n",
+		g_hash_table_size(plan->customers), g_hash_table_size(plan->vendors), plan->persons->len);
 	for (i = 0; i < G_N_ELEMENTS(kinds); i++)
 	{
 		guint all = count_events(plan, kinds[i].kind, FALSE);

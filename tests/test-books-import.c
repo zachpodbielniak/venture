@@ -42,9 +42,13 @@ static const gchar *const CHART =
 	"9100013,Card Fees,,,Expense,Active,USD\n";
 
 static const gchar *const CONTACTS =
-	"Contact ID,Display Name,Company Name,EmailID,Phone,Opening Balance,Payment Terms Label\n"
-	"9200001,Acme Widgets,Acme Widgets,ap@acme.invalid,555-0100,,Net 15\n"
-	"9200002,Bluebird Bakery,Bluebird Bakery,owner@bluebird.invalid,,,Due on receipt\n";
+	"Contact ID,Display Name,Company Name,First Name,Last Name,Designation,Primary Contact ID,EmailID,Phone,Opening Balance,Payment Terms Label\n"
+	"9200001,Acme Widgets,Acme Widgets,Wanda,Ledger,Accounts,9210001,ap@acme.invalid,555-0100,,Net 15\n"
+	"9200002,Bluebird Bakery,Bluebird Bakery,,,,,owner@bluebird.invalid,,,Due on receipt\n";
+
+static const gchar *const CONTACT_PERSONS =
+	"Customer ID,Customer Name,First Name,Last Name,EmailID,Phone,Contact Person ID,Designation\n"
+	"9200001,Acme Widgets,Rory,Shipper,dock@acme.invalid,,9210002,Receiving\n";
 
 static const gchar *const VENDORS =
 	"Contact ID,Display Name,Company Name,EmailID,Phone,Opening Balance,Payment Terms Label\n"
@@ -151,6 +155,7 @@ manifest_with(const gchar *invoices)
 	json_object_set_string_member(files, "Chart_of_Accounts.csv", CHART);
 	json_object_set_string_member(files, "Contacts.csv", CONTACTS);
 	json_object_set_string_member(files, "Vendors.csv", VENDORS);
+	json_object_set_string_member(files, "Contact_Persons.csv", CONTACT_PERSONS);
 	json_object_set_string_member(files, "Invoice.csv", invoices);
 	json_object_set_string_member(files, "Customer_Payment.csv", PAYMENTS);
 	json_object_set_string_member(files, "Bill.csv", BILLS);
@@ -431,6 +436,22 @@ test_import_reconcile(Fixture *f, gconstpointer data)
 	g_assert_true(dunning);
 	g_assert_cmpint(count(f, "mail_message"), ==, mail_before);
 	g_assert_cmpint(count(f, "company"), ==, 4);
+	/* The people at Acme are contacts of Acme; Bluebird's row names nobody. */
+	g_assert_cmpint(count(f, "contact"), ==, 2);
+	{
+		g_autoptr(VentureQuery) q = venture_query_new(VENTURE_TYPE_CONTACT);
+		g_autoptr(GPtrArray) people = NULL;
+		gint64 company = 0, acme = 0;
+		g_autofree gchar *email = NULL;
+		venture_query_set_organization(q, f->org);
+		people = venture_database_find(f->db, q, NULL);
+		g_object_get(open, "company-id", &acme, NULL);
+		g_assert_cmpuint(people->len, ==, 2);
+		g_object_get(g_ptr_array_index(people, 0), "company-id", &company, "email", &email, NULL);
+		g_assert_cmpint(company, >, 0);
+		/* contact_details is off: nobody is reachable yet. */
+		g_assert_true(email == NULL || *email == '\0');
+	}
 	ok = venture_books_import_service_reconcile(service(f), batch, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_true(ok);
@@ -439,6 +460,8 @@ test_import_reconcile(Fixture *f, gconstpointer data)
 	text = report(batch);
 	g_assert_nonnull(strstr(text, "Result: reconciled"));
 	g_assert_nonnull(strstr(text, "PASS invoices 2025-02"));
+	g_assert_nonnull(strstr(text, "PASS contacts: Zoho 2 people, VENTURE 2"));
+	g_assert_nonnull(strstr(text, "PASS unapplied credit"));
 	g_assert_null(strstr(text, "FAIL"));
 }
 
@@ -455,6 +478,36 @@ test_import_idempotent(Fixture *f, gconstpointer data)
 	import(f, batch);
 	g_assert_cmpint(count(f, "invoice"), ==, invoices);
 	g_assert_cmpint(balance(f, "Checking"), ==, 169870);
+}
+
+/* A batch imported before people came over gets them on a second import,
+ * even once active, and nothing posts twice. */
+static void
+test_topup_people(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureBooksImport) batch = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	gboolean ok;
+	(void)data;
+	batch = preview(f);
+	import(f, batch);
+	ok = venture_books_import_service_reconcile(service(f), batch, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	ok = venture_books_import_service_activate(service(f), batch, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	/* What an older importer left behind: no people, no rows for them. */
+	g_assert_true(venture_database_execute(f->db, "DELETE FROM books_import_rows WHERE source_object = 'contact_person'", NULL, &error));
+	g_assert_true(venture_database_execute(f->db, "DELETE FROM contacts", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(count(f, "contact"), ==, 0);
+	import(f, batch);
+	g_assert_cmpint(count(f, "contact"), ==, 2);
+	g_assert_cmpint(balance(f, "Checking"), ==, 169870);
+	text = report(batch);
+	g_assert_nonnull(strstr(text, "added 2 people as contacts"));
 }
 
 /* A ledger that moved after the import no longer reconciles. */
@@ -568,6 +621,7 @@ main(int argc, char **argv)
 	g_test_add("/books-import/located-problem", Fixture, NULL, setup, test_located_problem, teardown);
 	g_test_add("/books-import/import-reconcile", Fixture, NULL, setup, test_import_reconcile, teardown);
 	g_test_add("/books-import/import-idempotent", Fixture, NULL, setup, test_import_idempotent, teardown);
+	g_test_add("/books-import/topup-people", Fixture, NULL, setup, test_topup_people, teardown);
 	g_test_add("/books-import/reconcile-drift", Fixture, NULL, setup, test_reconcile_drift, teardown);
 	g_test_add("/books-import/rollback-and-reimport", Fixture, NULL, setup, test_rollback_and_reimport, teardown);
 	g_test_add("/books-import/owned-elsewhere", Fixture, NULL, setup, test_owned_elsewhere, teardown);
