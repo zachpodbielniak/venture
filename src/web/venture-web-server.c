@@ -9995,8 +9995,15 @@ venture_web_organization_tree(
 
 	g_array_append_val(tree, root);
 
+	/*
+	 * Only an entity with a parent can join the tree, so only those are
+	 * read: on a shared install nearly every entity is somebody else's
+	 * top-level business, and reading them all cost every page a check per
+	 * business.
+	 */
 	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
 	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "parent-id", VENTURE_FILTER_OP_GT, 0, NULL);
 	all = venture_database_find(venture_context_get_database(self->context),
 	                            query, NULL);
 

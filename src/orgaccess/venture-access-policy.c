@@ -9,6 +9,17 @@ struct _VentureAccessPolicy
 	guint decide_signal;
 	const gchar *read_action;
 	gint64 organization_id;
+	/*
+	 * Answers that hold for the whole of one list read by one actor, so
+	 * its rows do not ask them again one by one: the workspace standing of
+	 * the reader, their memberships by organization, and the workspace's
+	 * consent per record type. Only set inside venture_access_policy_find().
+	 */
+	const VentureAuthPrincipal *batch_actor;
+	gboolean batch_principal;
+	gint batch_tenant_administrator;
+	GHashTable *batch_members;
+	GHashTable *batch_resources;
 };
 struct _VentureAccessScope
 {
@@ -175,12 +186,53 @@ venture_access_policy_is_administrator(const VentureAuthPrincipal *actor)
  * every site that shortcuts on administrator() for the platform roles has
  * to ask this too. API tokens never inherit it. */
 static gboolean
-tenant_administrator(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
+tenant_administrator_uncached(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
 {
 	return NULL != actor && actor->authenticated && actor->token_id == 0 &&
 		actor->role == VENTURE_USER_ROLE_EDITOR &&
 		venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)) &&
 		venture_tenant_service_is_member(venture_tenant_service_get(self->database), actor->user_id, TRUE);
+}
+static gboolean
+batched(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
+{
+	return NULL != actor && actor == self->batch_actor;
+}
+static gboolean
+tenant_administrator(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
+{
+	if (!batched(self, actor))
+		return tenant_administrator_uncached(self, actor);
+	if (self->batch_tenant_administrator < 0)
+		self->batch_tenant_administrator = tenant_administrator_uncached(self, actor);
+	return self->batch_tenant_administrator;
+}
+/* The workspace accepts this reader. A refusal is never kept, so its
+ * error is always the service's own. */
+static gboolean
+principal_allowed(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, GError **error)
+{
+	if (batched(self, actor) && self->batch_principal)
+		return TRUE;
+	if (!venture_tenant_service_check_principal(venture_tenant_service_get(self->database), actor, error))
+		return FALSE;
+	if (batched(self, actor))
+		self->batch_principal = TRUE;
+	return TRUE;
+}
+/* The workspace's consent to reading or writing this kind of record. */
+static gboolean
+resource_allowed(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity,
+	gboolean write, GError **error)
+{
+	gpointer key = GSIZE_TO_POINTER((gsize)G_OBJECT_TYPE(entity) | (write ? 1 : 0));
+	if (batched(self, actor) && g_hash_table_contains(self->batch_resources, key))
+		return TRUE;
+	if (!venture_tenant_service_check_resource(venture_tenant_service_get(self->database), G_OBJECT(entity), write, error))
+		return FALSE;
+	if (batched(self, actor))
+		g_hash_table_add(self->batch_resources, key);
+	return TRUE;
 }
 static gint
 token_role(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 org)
@@ -204,8 +256,22 @@ token_role(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 
 		return -1;
 	return (gint)json_object_get_int_member(json_node_get_object(node), key);
 }
+static VentureEntity *membership_uncached(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 org);
 static VentureEntity *
 membership(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 org)
+{
+	VentureEntity *member;
+	gpointer known;
+	if (!batched(self, actor))
+		return membership_uncached(self, actor, org);
+	if (g_hash_table_lookup_extended(self->batch_members, &org, NULL, &known))
+		return known ? g_object_ref(known) : NULL;
+	member = membership_uncached(self, actor, org);
+	g_hash_table_insert(self->batch_members, g_memdup2(&org, sizeof org), member ? g_object_ref(member) : NULL);
+	return member;
+}
+static VentureEntity *
+membership_uncached(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 org)
 {
 	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
@@ -557,7 +623,7 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 	}
 	if (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database))) {
 		VentureDataClass classification = venture_data_class_for_type(G_OBJECT_TYPE(entity));
-		if (!venture_tenant_service_check_principal(venture_tenant_service_get(self->database), actor, error)) return FALSE;
+		if (!principal_allowed(self, actor, error)) return FALSE;
 		/* An audit body inherits its exact target's hosted authority, including
 		 * platform records and private connectors, before a support shortcut. */
 		if (VENTURE_IS_AUDIT_ENTRY(entity)) {
@@ -579,7 +645,7 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 			if (!venture_tenant_service_support_allows(venture_tenant_service_get(self->database), actor, entity, !read, FALSE, error)) return FALSE;
 			goto allowed;
 		}
-		if (!venture_tenant_service_check_resource(venture_tenant_service_get(self->database), G_OBJECT(entity), !read, error)) return FALSE;
+		if (!resource_allowed(self, actor, entity, !read, error)) return FALSE;
 		if (classification == VENTURE_DATA_CLASS_UNKNOWN || classification == VENTURE_DATA_CLASS_PLATFORM) return refuse(error, read);
 		if (classification == VENTURE_DATA_CLASS_REFERENCE) {
 			if (!read) return refuse(error, FALSE);
@@ -777,16 +843,83 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	}
 	return TRUE;
 }
-GPtrArray *
-venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GError **error)
+/*
+ * The organizations a list read may keep rows from, or %NULL when every row
+ * must go through the full check. For an ordinary business record, read by
+ * somebody who is neither an administrator nor a workspace administrator,
+ * venture_access_policy_can() ends in membership(): a row outside the
+ * reader's active memberships is always refused. Reading those memberships
+ * once lets a list pass over every other business's rows on a shared install
+ * instead of refusing them one at a time, which cost each page several
+ * statements per business. Whatever may be allowed some other way --
+ * personal, reference and workspace records, comments, audit entries, users,
+ * inbox rows -- is still decided row by row.
+ */
+static GHashTable *
+member_organizations(VentureAccessPolicy *self, GType type)
 {
 	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureEntity) prototype = NULL;
+	g_autoptr(GPtrArray) fields = NULL;
+	VentureTenantService *tenant = venture_tenant_service_get(self->database);
+	const VentureAuthPrincipal *actor = self->actor;
+	GHashTable *organizations;
+	guint i;
+	if (NULL == actor || !actor->authenticated || actor->user_id <= 0 || administrator(actor))
+		return NULL;
+	if (type == VENTURE_TYPE_COMMENT || type == VENTURE_TYPE_USER || type == VENTURE_TYPE_AUDIT_ENTRY ||
+	    type == VENTURE_TYPE_NOTIFICATION || type == VENTURE_TYPE_WATCH)
+		return NULL;
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "organization_membership"))
+		return NULL;
+	if (venture_tenant_service_is_enabled(tenant) &&
+	    (venture_data_class_for_type(type) != VENTURE_DATA_CLASS_TENANT ||
+	     venture_tenant_service_get_support_organization(tenant) > 0))
+		return NULL;
+	prototype = g_object_new(type, NULL);
+	fields = venture_entity_get_field_specs(prototype);
+	for (i = 0; i < fields->len; i++)
+		if (venture_field_spec_get_flags(g_ptr_array_index(fields, i)) &
+		    (VENTURE_COLUMN_FLAG_PERSONAL_OWNER | VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER))
+			return NULL;
+	if (tenant_administrator(self, actor))
+		return NULL;
+	internal = venture_access_policy_enter(self, NULL);
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, actor->user_id, NULL);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
+	rows = venture_database_find(self->database, query, NULL);
+	if (NULL == rows)
+		return NULL;
+	organizations = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	for (i = 0; i < rows->len; i++) {
+		gint64 *org = g_new(gint64, 1);
+		*org = venture_entity_get_organization_id(g_ptr_array_index(rows, i));
+		g_hash_table_add(organizations, org);
+	}
+	return organizations;
+}
+static void
+unref_member(gpointer member)
+{
+	if (NULL != member)
+		g_object_unref(member);
+}
+static GPtrArray *
+find_visible(VentureAccessPolicy *self, VentureQuery *query, GError **error)
+{
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(GHashTable) members = NULL;
 	g_autoptr(GPtrArray) all = NULL;
 	GPtrArray *result = g_ptr_array_new_with_free_func(g_object_unref);
 	guint limit = venture_query_get_limit(query);
 	guint offset = venture_query_get_offset(query);
 	guint i;
 	guint visible = 0;
+	members = member_organizations(self, venture_query_get_entity_type(query));
 	internal = venture_access_policy_enter(self, NULL);
 	venture_query_set_limit(query, 0);
 	venture_query_set_offset(query, 0);
@@ -802,6 +935,9 @@ venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GErro
 	for (i = 0; i < all->len; i++)
 	{
 		VentureEntity *entity = g_ptr_array_index(all, i);
+		gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
+		if (NULL != members && !g_hash_table_contains(members, &org))
+			continue;
 		if (!venture_access_policy_check_read(self, entity, NULL))
 			continue;
 		if (visible++ < offset)
@@ -810,6 +946,25 @@ venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GErro
 			break;
 		g_ptr_array_add(result, g_object_ref(entity));
 	}
+	return result;
+}
+GPtrArray *
+venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GError **error)
+{
+	GPtrArray *result;
+	/* The outermost list read by an actor keeps its answers until it ends;
+	 * a read nested inside it shares them. */
+	if (NULL == self->actor || NULL != self->batch_actor)
+		return find_visible(self, query, error);
+	self->batch_actor = self->actor;
+	self->batch_principal = FALSE;
+	self->batch_tenant_administrator = -1;
+	self->batch_members = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, unref_member);
+	self->batch_resources = g_hash_table_new(g_direct_hash, g_direct_equal);
+	result = find_visible(self, query, error);
+	self->batch_actor = NULL;
+	g_clear_pointer(&self->batch_members, g_hash_table_unref);
+	g_clear_pointer(&self->batch_resources, g_hash_table_unref);
 	return result;
 }
 /* Where other people's records land (the default organization) and what

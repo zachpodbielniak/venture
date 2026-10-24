@@ -186,8 +186,8 @@ workspace_read(VentureTenantService *self, GError **error)
 	g_autoptr(OrmResult) result = NULL;
 	VentureEntity *workspace;
 	if (!self->database) { tenant_fail(error, "workspace repository is no longer available"); return NULL; }
-	result = orm_connection_query(venture_database_get_connection(self->database),
-		"SELECT * FROM tenant_workspaces ORDER BY id LIMIT 2", error);
+	result = venture_database_query_raw(self->database,
+		"SELECT * FROM tenant_workspaces ORDER BY id LIMIT 2", NULL, error);
 	if (!result || !orm_result_next(result)) return NULL;
 	workspace = g_object_new(VENTURE_TYPE_TENANT_WORKSPACE, NULL);
 	venture_schema_populate_entity(workspace, orm_result_get_row(result));

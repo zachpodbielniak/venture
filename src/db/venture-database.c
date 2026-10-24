@@ -60,6 +60,9 @@ struct _VentureDatabase
 	VentureMailOutbox *mail_outbox;
 	GThread			*transaction_owner;
 
+	/* Statements sent, for venture_database_get_statement_count(). */
+	guint64			 statements;
+
 	/*
 	 * Serialises every operation. SQLite admits one writer at a time
 	 * regardless, and for a single-operator system one connection behind
@@ -587,6 +590,7 @@ venture_database_execute(
 		return FALSE;
 	}
 
+	self->statements++;
 	ok = (NULL != params)
 		? orm_connection_execute_with_params(self->connection, sql,
 		                                     params, &local_error)
@@ -629,6 +633,7 @@ venture_database_query_raw(
 		return NULL;
 	}
 
+	self->statements++;
 	result = (NULL != params)
 		? orm_connection_query_with_params(self->connection, sql, params,
 		                                   &local_error)
@@ -2987,4 +2992,13 @@ GRecMutexLocker *
 venture_database_lock_scope(VentureDatabase *self)
 {
 	return g_rec_mutex_locker_new(&self->lock);
+}
+
+guint64
+venture_database_get_statement_count(
+	VentureDatabase	 *self
+){
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), 0);
+
+	return self->statements;
 }

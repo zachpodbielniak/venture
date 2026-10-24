@@ -40,6 +40,21 @@ checks individual reads and both the stored and proposed versions of writes.
 Queries filter before pagination, and counts ignore pagination. These checks
 also constrain records loaded by reports, widgets and reference pickers.
 
+A filtered query must cost what the reader's own organizations hold, not
+what the install holds. On a hosted install every business is somebody
+else's, and checking each of their rows one at a time cost an owner about
+ten statements per business on every page. So a query for an ordinary
+business record, by a reader who is neither an administrator nor a
+workspace administrator, first reads that reader's active memberships once
+and passes over rows outside them: those are refused by the membership rule
+anyway. Records that can be allowed another way (personal, reference and
+workspace records, comments, audit entries, users, inbox rows) are still
+judged row by row. Within one query the answers that cannot change between
+its rows -- the reader's workspace standing, their membership per
+organization, the workspace's consent per record type -- are asked once.
+=tests/test-venture-access-policy.c= holds every owner page to the same
+statement count beside twenty other businesses as alone.
+
 Global owners and admins retain their data authority. Other users require an
 active membership in the record's exact organization; a parent organization
 is a presentation hierarchy and never grants a child's membership. Finance
