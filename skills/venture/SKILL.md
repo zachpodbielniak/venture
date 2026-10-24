@@ -139,7 +139,9 @@ draft-only posting approval, business-midnight receipt dates, and the
 saved-bank confirmation pin. Marketing, sales, phone and text were updated
 against `e549807a` (2026-10-23): `mail preview`, designed email, the signed
 deliverability feed, journeys, telephony, `/conversations`, AI message
-drafts, and `venturectl settings`. The full-system baseline above remains
+drafts, and `venturectl settings`. Hosted deferred enrollment is a thirty-day
+setup window with no charge before go-live (`billing.md`, `api-routes.md`).
+The full-system baseline above remains
 the last complete inventory review.
 
 ## Topic guides
@@ -330,7 +332,7 @@ ids, notes) in words.
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
-| "Enroll a hosted business, defer its charge, or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll`, `prepay`, `setup`, `publish` (`published_at` optional), `first-charge`, `cancel`, `money-back` (thirty days from go-live), `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
+| "Enroll a hosted business or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll` (thirty-day setup window, no charge before go-live), `prepay`, `setup`, `publish` (`published_at` optional; publication is what first invoices), `first-charge`, `cancel` (unpublished and uninvoiced is free), `money-back` (thirty days from go-live), `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |
 | "What fields does X have?" | `describe X`; actions from `/api/v1/schema/X` | [records.md](references/records.md) |
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |

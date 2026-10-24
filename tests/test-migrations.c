@@ -1477,6 +1477,8 @@ test_hosted_identity_upgrade(gconstpointer data)
 		{ "5", NULL },             /* receipt belongs to another organization */
 		{ "6", "custom-6" },       /* an identity of its own is kept */
 		{ "7", "hosted:47" },      /* already migrated: unchanged */
+		{ "8", NULL },             /* prepaid with an empty identity is not deferred */
+		{ "9", "" },               /* enroll key that is not the reserved hosted key */
 	};
 	if (uri == NULL) { g_test_skip("Set VENTURE_TEST_MIGRATION_POSTGRES_URI for a disposable PostgreSQL server"); return; }
 	database = venture_database_new(uri, &error); g_assert_no_error(error);
@@ -1490,7 +1492,7 @@ test_hosted_identity_upgrade(gconstpointer data)
 	g_assert_true(venture_database_execute(database,
 		"CREATE TABLE customer_subscriptions (id BIGINT, organization_id BIGINT, external_id TEXT);"
 		"CREATE TABLE lightsite_billing_receipts (organization_id BIGINT, business_id BIGINT, idempotency_key TEXT, outcome TEXT, result TEXT);"
-		"INSERT INTO customer_subscriptions VALUES (1,7,NULL),(2,7,'prepaid:43'),(3,7,NULL),(4,7,''),(5,7,NULL),(6,7,'custom-6'),(7,7,'hosted:47');"
+		"INSERT INTO customer_subscriptions VALUES (1,7,NULL),(2,7,'prepaid:43'),(3,7,NULL),(4,7,''),(5,7,NULL),(6,7,'custom-6'),(7,7,'hosted:47'),(8,7,NULL),(9,7,'');"
 		"INSERT INTO lightsite_billing_receipts VALUES"
 		" (7,42,'hosted:42:enroll','enroll','{\"subscription_id\":1,\"enrolled_at\":\"2026-10-01T09:00:00Z\",\"charge_due_at\":\"2026-10-15T09:00:00Z\"}'),"
 		" (7,42,'hosted:42:publish','publish','{\"go_live_at\":\"2026-10-02T09:00:00Z\"}'),"
@@ -1499,7 +1501,9 @@ test_hosted_identity_upgrade(gconstpointer data)
 		" (8,45,'hosted:45:enroll','enroll','{\"subscription_id\":5}'),"
 		" (7,46,'hosted:46:enroll','enroll','{\"subscription_id\":6}'),"
 		" (7,47,'hosted:47:enroll','enroll','{\"subscription_id\":7}'),"
-		" (7,48,'operator-key','start','{\"subscription_id\":3}');",
+		" (7,48,'operator-key','start','{\"subscription_id\":3}'),"
+		" (7,49,'hosted:49:enroll','enroll','{\"subscription_id\":8,\"payment_path\":\"installments\"}'),"
+		" (7,50,'legacy:50:enroll','enroll','{\"subscription_id\":9,\"charge_due_at\":\"2026-10-15T09:00:00Z\"}');",
 		NULL, &error)); g_assert_no_error(error);
 	g_assert_true(g_file_get_contents(path, &script, NULL, &error)); g_assert_no_error(error);
 	g_assert_true(venture_migrations_execute_sql(venture_database_get_connection(database), script, &error)); g_assert_no_error(error);

@@ -155,12 +155,12 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /account/identity-link` | signed-in local member links provider identity | -- |
 | `GET /account-authority` | explicit active memberships and bounded site permissions | -- |
 | `POST /lightsite/billing/subscriptions` | trusted idempotent business-to-plan binding | -- |
-| `POST /lightsite/billing/enroll` | fourteen-day deferred enrollment, no invoice | -- |
+| `POST /lightsite/billing/enroll` | thirty-day setup window, no invoice and no charge before go-live | -- |
 | `POST /lightsite/billing/prepay` | frozen 24-month prepaid terms, no invoice until publication | -- |
 | `POST /lightsite/billing/setup` | hosted saved-method setup, no charge | -- |
 | `POST /lightsite/billing/publish` | record first go-live (`published_at` optional, stored once as `go_live_at`); may start the first charge | -- |
-| `POST /lightsite/billing/first-charge` | idempotent first collection at publication or day fourteen | -- |
-| `POST /lightsite/billing/cancel` | no-charge cancel before the deadline, else period end | -- |
+| `POST /lightsite/billing/first-charge` | first collection only at publication; unpublished and past `expires_at` is `expired` with no invoice | -- |
+| `POST /lightsite/billing/cancel` | unpublished and uninvoiced cancels free immediately; otherwise period end | -- |
 | `POST /lightsite/billing/money-back` | within 30 days of go-live, cancel now and refund settled card payments | -- |
 | `POST /lightsite/billing/guarantee` | one-time capped account credit from a retained measurement | -- |
 | `GET /lightsite/billing/:organization_id/made-back` | won, invoiced and overlap since go-live | -- |
