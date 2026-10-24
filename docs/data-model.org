@@ -294,6 +294,30 @@ ways across three records.
 Deals and interactions carry a company as well as a contact, because people
 move and accounts persist, and the pipeline is usually read by account.
 
+** Parent accounts
+
+A company may be a branch of another: a franchise location of its group, a
+school of its district, a site of a parent company. =company.parent_id=
+names the parent; it is optional, and a company without one is top-level.
+The save refuses a parent in another organization, the company itself, any
+branch beneath it (a loop), and a tree deeper than the category bound, using
+the same rule as category, location, goal and ticket trees.
+
+A company's page lists its branches and, when it has some, a rollup for the
+company alone and including every branch beneath it: open deals and their
+value, won revenue, open invoices, balance due, and open tickets. Lost deals,
+draft and void invoices and done or cancelled tickets do not count. Balance
+due comes from the receivables ledger per company, so a payment on account is
+counted. Amounts are in the organization's book currency; a deal in another
+currency is counted but left out of the sums, and the page says how many.
+Nothing is stored on the parent: the figures are read from the rows each
+time, through =venture_company_tree_rollup()=. A branch's page names the
+parent it is part of. A company with neither gets no hierarchy card.
+
+A [[file:dedupe.org][dedupe merge]] moves the loser's branches to the
+survivor. A survivor that was itself a branch of the loser takes the loser's
+place in the tree, so it never becomes its own parent.
+
 ** Every record has a detail page
 
 =/e/<type>/<id>= shows a record's fields and, beneath them, *every record

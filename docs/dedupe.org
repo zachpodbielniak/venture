@@ -82,9 +82,13 @@ transaction the service:
    interactions, activities, deals, quotes, invoices, bills, tickets, leads,
    payments, credits, subscriptions and a plugin's records are all covered,
    and an earlier loser's own =merged_into_id= now names the new survivor;
+   the loser's branches (=company.parent_id=) now hang under the survivor;
 2. fills each empty survivor field from the loser and keeps the survivor's
    value on conflict; booleans and enums count as never empty, so a
-   difference there is a conflict;
+   difference there is a conflict. A survivor's own-kind reference that
+   names the loser, or would name the survivor itself, takes the loser's
+   value instead, or none: a survivor that was a branch of the loser takes
+   the loser's place in the tree rather than becoming its own parent;
 3. writes an interaction of kind =note= on the survivor's timeline: what was
    taken, what the loser had that was not carried over, and which columns
    were re-pointed with row counts;

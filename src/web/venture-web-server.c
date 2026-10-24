@@ -12323,6 +12323,7 @@ venture_web_append_incident_block(
 #include "arbitrage/venture-arbitrage-web.inc"
 #include "web/venture-web-comments.inc"
 #include "web/venture-web-planning.inc"
+#include "web/venture-web-company-tree.inc"
 
 #ifdef VENTURE_HAVE_SQLITE
 /* In feeds/venture-feeds-web.inc, which comes in with the feeds routes. */
@@ -12456,6 +12457,7 @@ venture_web_ui_detail(
 	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
 	venture_jobs_web_append_block(self, content, record);
+	venture_web_append_company_tree(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);

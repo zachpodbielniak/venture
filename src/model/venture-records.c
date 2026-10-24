@@ -808,6 +808,10 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("address-city", "City code", "Sales-tax address code matched exactly by tax rules",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
+		"company", VENTURE_COLUMN_FLAG_INDEXED),
+	/* A branch names its parent account; src/core/venture-company-tree.c
+	 * refuses a loop and rolls the branches up on the parent's page. */
+	VENTURE_FIELD_REF("parent-id", "Parent account", "The company this one is a branch of",
 		"company", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
