@@ -187,6 +187,15 @@ organization. Use a scheduled rule, after business transactions commit.
 Inbound mail has its own handler, =venture->mail_sync=; see Inbound,
 Running it.
 
+A hosted workspace (=hosted.enabled: true=) needs no rule. Hosted mode
+does not start the automation engine, so no rule can run there. Instead
+the server sweeps the outbox of every active business every five seconds,
+the same bounded delivery =POST /api/v1/mail/deliver= runs. A business
+with no mail account yet is skipped: its mail stays =queued= and goes out
+once the account is set up, rather than failing. The sweep is
+=venture_mail_delivery_sweep()=; its timer runs only in hosted mode, and
+only while no automation engine is attached.
+
 * Invoices and receipts
 
 Sending an invoice attaches it as a PDF (=Invoice INV-0041.pdf=), drawn by
