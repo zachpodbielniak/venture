@@ -6,6 +6,7 @@
 #include <string.h>
 #include "venture-test-accounting.h"
 #include "venture-test-util.h"
+#include "db/venture-migrations.h"
 
 typedef struct {
 	VentureDatabase *db;
@@ -134,6 +135,30 @@ static void test_enrollment(Fixture *f, gconstpointer unused)
 	replay = call(f, "/api/v1/lightsite/billing/enroll", body, 200);
 	g_assert_cmpint(json_object_get_int_member(json_node_get_object(first), "subscription_id"), ==,
 		json_object_get_int_member(json_node_get_object(replay), "subscription_id"));
+	/* The receipt names the end of the 30-day setup window, never a charge
+	 * date: Lightsite's daemon deactivates on expires_at, and nothing in
+	 * Venture charges on it. A receipt with charge_due_at would make the
+	 * daemon promise a charge that never comes. */
+	{
+		JsonObject *receipt = json_node_get_object(first);
+		g_autoptr(GDateTime) enrolled_at = venture_time_from_string(json_object_get_string_member(receipt, "enrolled_at"), &error);
+		g_autoptr(GDateTime) expected = NULL;
+		g_autofree gchar *formatted = NULL, *identity = NULL;
+		g_autoptr(VentureEntity) sub = NULL;
+		g_assert_no_error(error); g_assert_nonnull(enrolled_at);
+		g_assert_false(json_object_has_member(receipt, "charge_due_at"));
+		g_assert_true(json_object_has_member(receipt, "expires_at"));
+		expected = g_date_time_add_days(enrolled_at, 30);
+		formatted = venture_time_to_string(expected);
+		g_assert_cmpstr(json_object_get_string_member(receipt, "expires_at"), ==, formatted);
+		g_assert_true(json_node_equal(first, replay));
+		sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, json_object_get_int_member(receipt, "subscription_id"), &error);
+		g_assert_no_error(error);
+		g_object_get(sub, "external-id", &identity, NULL);
+		g_clear_pointer(&formatted, g_free);
+		formatted = g_strdup_printf("hosted:%" G_GINT64_FORMAT, f->business);
+		g_assert_cmpstr(identity, ==, formatted);
+	}
 	venture_query_set_organization(query, f->billing);
 	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
 	g_assert_cmpuint(invoices->len, ==, 0);
@@ -494,6 +519,7 @@ static void test_prepaid_terms(Fixture *f, gconstpointer annual)
 	answer = call(f, "/api/v1/lightsite/billing/prepay", body, 409);
 }
 
+#include "test-hosted-window.inc"
 #include "test-hosted-cancel.inc"
 #include "test-hosted-notifications.inc"
 #include "test-hosted-publication.inc"
@@ -508,7 +534,11 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-billing/cancel-monthly", Fixture, NULL, setup, test_cancel_early, teardown);
 	g_test_add("/hosted-billing/cancel-prepaid", Fixture, "annual", setup, test_cancel_early, teardown);
 	g_test_add("/hosted-billing/cancel-published", Fixture, "published", setup, test_cancel_late, teardown);
-	g_test_add("/hosted-billing/cancel-deadline", Fixture, "deadline", setup, test_cancel_late, teardown);
+	g_test_add("/hosted-billing/cancel-unpublished-day-20", Fixture, "20", setup, test_cancel_unpublished_late, teardown);
+	g_test_add("/hosted-billing/cancel-unpublished-day-31", Fixture, "31", setup, test_cancel_unpublished_late, teardown);
+	g_test_add("/hosted-billing/window-sweeps", Fixture, NULL, setup, test_window_sweeps, teardown);
+	g_test_add("/hosted-billing/window-expired", Fixture, NULL, setup, test_window_expired, teardown);
+	g_test_add("/hosted-billing/window-legacy-enrollment", Fixture, NULL, setup, test_window_legacy, teardown);
 	g_test_add("/hosted-billing/cancel-missing", Fixture, NULL, setup, test_cancel_missing, teardown);
 	g_test_add("/hosted-billing/prepaid-enrollment", Fixture, "annual", setup, test_prepaid_enrollment, teardown);
 	g_test_add("/hosted-billing/prepaid-term-end", Fixture, "annual", setup, test_prepaid_term_end, teardown);

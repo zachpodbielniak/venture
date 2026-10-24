@@ -22,13 +22,19 @@ static void test_notifications(Fixture *f, gconstpointer unused)
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(before), "workspace_id"), ==, "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a");
 	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(before), "events")), ==, 0);
 	enrolled = call(f, "/api/v1/lightsite/billing/enroll", body, 201);
+	/* Nothing is charged before go-live, so there is no charge date to
+	 * announce: neither for a new enrollment nor for one made before the
+	 * 30-day window whose receipt still says charge_due_at tomorrow. */
+	soon = call(f, path, NULL, 200);
+	g_assert_null(notification(soon, "charge_due"));
+	g_clear_pointer(&soon, json_node_unref);
+	json_object_remove_member(json_node_get_object(enrolled), "expires_at");
 	json_object_set_string_member(json_node_get_object(enrolled), "charge_due_at", date);
 	stored = venture_json_to_string(enrolled, FALSE);
 	sql = g_strdup_printf("UPDATE lightsite_billing_receipts SET result='%s' WHERE business_id=%" G_GINT64_FORMAT " AND outcome='enroll'", stored, f->business);
 	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
 	soon = call(f, path, NULL, 200);
-	g_assert_nonnull(notification(soon, "charge_due"));
-	g_assert_cmpstr(json_object_get_string_member(notification(soon, "charge_due"), "due_at"), ==, date);
+	g_assert_null(notification(soon, "charge_due"));
 	cancel = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);
 	cancelled = call(f, "/api/v1/lightsite/billing/cancel", cancel, 200);
 	after = call(f, path, NULL, 200);

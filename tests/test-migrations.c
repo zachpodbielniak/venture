@@ -1452,6 +1452,68 @@ test_forms_private_upgrade(gconstpointer data)
 	if (postgres) { g_assert_true(venture_database_execute(database, cleanup_sql, NULL, &error)); g_assert_no_error(error); }
 }
 
+/* Hosted deferred enrollments made under the fourteen-day trial had no
+ * subscription identity, so the renewal sweep would invoice them at trial
+ * end before the site went live. The upgrade gives exactly those the
+ * reserved hosted:<business> identity; prepaid enrollments, subscriptions
+ * with an identity of their own, unrelated subscriptions and another
+ * organization's rows are left as they were, and receipts are not touched. */
+static void
+test_hosted_identity_upgrade(gconstpointer data)
+{
+	const gchar *backend = data;
+	gboolean postgres = g_str_equal(backend, "postgresql");
+	const gchar *uri = postgres ? g_getenv("VENTURE_TEST_MIGRATION_POSTGRES_URI") : "sqlite://:memory:";
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *uuid = NULL, *setup_sql = NULL, *cleanup_sql = NULL, *script = NULL, *text = NULL;
+	g_autofree gchar *path = g_build_filename("migrations", backend, "000956_hosted_deferred_identity.sql", NULL);
+	guint i;
+	static const struct { const gchar *id, *expected; } rows[] = {
+		{ "1", "hosted:42" },      /* legacy deferred enrollment, NULL identity */
+		{ "2", "prepaid:43" },     /* prepaid enrollment keeps its identity */
+		{ "3", NULL },             /* ordinary subscription, no receipt */
+		{ "4", "hosted:44" },      /* legacy deferred enrollment, empty identity */
+		{ "5", NULL },             /* receipt belongs to another organization */
+		{ "6", "custom-6" },       /* an identity of its own is kept */
+		{ "7", "hosted:47" },      /* already migrated: unchanged */
+	};
+	if (uri == NULL) { g_test_skip("Set VENTURE_TEST_MIGRATION_POSTGRES_URI for a disposable PostgreSQL server"); return; }
+	database = venture_database_new(uri, &error); g_assert_no_error(error);
+	if (postgres)
+	{
+		uuid = g_uuid_string_random(); g_strdelimit(uuid, "-", '_');
+		setup_sql = g_strdup_printf("CREATE SCHEMA hosted_%s; SET search_path TO hosted_%s", uuid, uuid);
+		cleanup_sql = g_strdup_printf("DROP SCHEMA hosted_%s CASCADE", uuid);
+		g_assert_true(venture_database_execute(database, setup_sql, NULL, &error)); g_assert_no_error(error);
+	}
+	g_assert_true(venture_database_execute(database,
+		"CREATE TABLE customer_subscriptions (id BIGINT, organization_id BIGINT, external_id TEXT);"
+		"CREATE TABLE lightsite_billing_receipts (organization_id BIGINT, business_id BIGINT, idempotency_key TEXT, outcome TEXT, result TEXT);"
+		"INSERT INTO customer_subscriptions VALUES (1,7,NULL),(2,7,'prepaid:43'),(3,7,NULL),(4,7,''),(5,7,NULL),(6,7,'custom-6'),(7,7,'hosted:47');"
+		"INSERT INTO lightsite_billing_receipts VALUES"
+		" (7,42,'hosted:42:enroll','enroll','{\"subscription_id\":1,\"enrolled_at\":\"2026-10-01T09:00:00Z\",\"charge_due_at\":\"2026-10-15T09:00:00Z\"}'),"
+		" (7,42,'hosted:42:publish','publish','{\"go_live_at\":\"2026-10-02T09:00:00Z\"}'),"
+		" (7,43,'hosted:43:enroll','enroll','{\"subscription_id\":2,\"payment_path\":\"single\"}'),"
+		" (7,44,'hosted:44:enroll','enroll','{\"subscription_id\":4,\"charge_due_at\":\"2026-10-15T09:00:00Z\"}'),"
+		" (8,45,'hosted:45:enroll','enroll','{\"subscription_id\":5}'),"
+		" (7,46,'hosted:46:enroll','enroll','{\"subscription_id\":6}'),"
+		" (7,47,'hosted:47:enroll','enroll','{\"subscription_id\":7}'),"
+		" (7,48,'operator-key','start','{\"subscription_id\":3}');",
+		NULL, &error)); g_assert_no_error(error);
+	g_assert_true(g_file_get_contents(path, &script, NULL, &error)); g_assert_no_error(error);
+	g_assert_true(venture_migrations_execute_sql(venture_database_get_connection(database), script, &error)); g_assert_no_error(error);
+	for (i = 0; i < G_N_ELEMENTS(rows); i++)
+	{
+		g_autofree gchar *sql = g_strdup_printf("SELECT COALESCE(external_id, '<null>') FROM customer_subscriptions WHERE id = %s", rows[i].id);
+		g_autofree gchar *value = query_text(database, sql);
+		g_assert_cmpstr(value, ==, rows[i].expected ? rows[i].expected : "<null>");
+	}
+	text = query_text(database, "SELECT result FROM lightsite_billing_receipts WHERE business_id = 42 AND outcome = 'enroll'");
+	g_assert_nonnull(strstr(text, "charge_due_at")); g_assert_null(strstr(text, "expires_at"));
+	if (postgres) { g_assert_true(venture_database_execute(database, cleanup_sql, NULL, &error)); g_assert_no_error(error); }
+}
+
 /* Reopen an existing jobs database with the module off during upgrade.
  * Its original work and assignments survive, additive links stay blank,
  * and enabling the module later must neither duplicate nor invent visits. */
@@ -1518,6 +1580,8 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_data_func("/migrations/forms-private-sqlite", "sqlite", test_forms_private_upgrade);
 	g_test_add_data_func("/migrations/forms-private-postgresql", "postgresql", test_forms_private_upgrade);
+	g_test_add_data_func("/migrations/hosted-identity-sqlite", "sqlite", test_hosted_identity_upgrade);
+	g_test_add_data_func("/migrations/hosted-identity-postgresql", "postgresql", test_hosted_identity_upgrade);
 	g_test_add_func("/migrations/generator", test_generator);
 	g_test_add_func("/migrations/optional-table", test_optional_table);
 	g_test_add_func("/migrations/optional-module", test_optional_module);

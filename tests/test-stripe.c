@@ -1215,7 +1215,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
 	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/hosted-saved-card", Fixture, NULL, set_up, test_hosted_saved_card, tear_down);
-	g_test_add("/stripe/hosted-day-fourteen", Fixture, "timer", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-expired-then-published", Fixture, "expired", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back", Fixture, "money-back", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-lost", Fixture, "money-back-lost", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-late", Fixture, "money-back-late", set_up, test_hosted_saved_card, tear_down);

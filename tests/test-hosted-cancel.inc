@@ -44,7 +44,7 @@ static void test_cancel_early(Fixture *f, gconstpointer annual)
 		g_autoptr(JsonNode) view = call(f, view_path, NULL, 200);
 		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(view), "state"), ==, "cancelled");
 	}
-	g_test_message("Early cancellation: retries identical, delayed publication and day-14 sweep create zero invoices");
+	g_test_message("Early cancellation: retries identical, delayed publication and a day-40 sweep create zero invoices");
 }
 
 static void test_cancel_late(Fixture *f, gconstpointer kind)
@@ -54,22 +54,13 @@ static void test_cancel_late(Fixture *f, gconstpointer kind)
 	g_autoptr(JsonNode) enrolled = call(f, "/api/v1/lightsite/billing/enroll", enroll, 201);
 	g_autoptr(JsonNode) published = NULL, cancelled = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GDateTime) now = venture_time_now(), past = g_date_time_add_days(now, -14);
-	g_autofree gchar *date = venture_time_to_string(past), *sql = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
 	gint64 subscription = json_object_get_int_member(json_node_get_object(enrolled), "subscription_id");
-	if (!strcmp(kind, "published")) {
-		g_autoptr(VentureEntity) activate = g_object_new(VENTURE_TYPE_BILLING_REQUEST,
-			"action", "activate", "subscription-id", subscription, "at", now, NULL);
-		published = call(f, "/api/v1/lightsite/billing/publish", body, 200);
-		venture_entity_set_organization_id(activate, f->billing); save(f, activate);
-	} else {
-		JsonObject *object = json_node_get_object(enrolled);
-		g_autofree gchar *text = NULL;
-		json_object_set_string_member(object, "enrolled_at", date);
-		text = venture_json_to_string(enrolled, FALSE);
-		sql = g_strdup_printf("UPDATE lightsite_billing_receipts SET result='%s' WHERE business_id=%" G_GINT64_FORMAT " AND outcome='enroll'", text, f->business);
-		g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
-	}
+	g_autoptr(VentureEntity) activate = g_object_new(VENTURE_TYPE_BILLING_REQUEST,
+		"action", "activate", "subscription-id", subscription, "at", now, NULL);
+	g_assert_cmpstr(kind, ==, "published");
+	published = call(f, "/api/v1/lightsite/billing/publish", body, 200);
+	venture_entity_set_organization_id(activate, f->billing); save(f, activate);
 	cancelled = call(f, "/api/v1/lightsite/billing/cancel", body, 200);
 	g_assert_false(json_object_get_boolean_member(json_node_get_object(cancelled), "no_charge"));
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(cancelled), "state"), ==, "cancel_at_period_end");
@@ -78,7 +69,7 @@ static void test_cancel_late(Fixture *f, gconstpointer kind)
 		gboolean scheduled = FALSE;
 		g_assert_no_error(error); g_object_get(sub, "cancel-at-period-end", &scheduled, NULL); g_assert_true(scheduled);
 	}
-	if (!strcmp(kind, "published")) {
+	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
 		g_autoptr(VentureQuery) credits = venture_query_new(VENTURE_TYPE_CUSTOMER_CREDIT);
 		g_autoptr(GPtrArray) invoices = NULL, refunds = NULL;
@@ -90,7 +81,47 @@ static void test_cancel_late(Fixture *f, gconstpointer kind)
 			venture_entity_get_id(g_ptr_array_index(invoices, 0)), NULL, &error);
 		g_assert_no_error(error); g_assert_cmpint(venture_money_get_amount(balance), ==, 1000);
 	}
-	g_test_message("Late cancellation: normal period-end cancellation, no free-trial promise or automatic refund");
+	g_test_message("Published cancellation: normal period-end cancellation, no free-trial promise or automatic refund");
+}
+
+/* Nothing is charged before go-live, so there is no paid period to run out:
+ * an unpublished enrollment with no invoice cancels now and free on day 20,
+ * inside the setup window, and on day 31, after Lightsite switched it off.
+ * A period-end cancellation here would leave a trial the sweep could still
+ * end in an invoice. */
+static void test_cancel_unpublished_late(Fixture *f, gconstpointer days)
+{
+	g_autofree gchar *enroll = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT "}", f->business, f->price);
+	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);
+	g_autoptr(JsonNode) enrolled = call(f, "/api/v1/lightsite/billing/enroll", enroll, 201);
+	g_autoptr(JsonNode) cancelled = NULL, replay = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), future = g_date_time_add_days(now, 40);
+	gint64 ago = g_ascii_strtoll(days, NULL, 10);
+	gint64 subscription = json_object_get_int_member(json_node_get_object(enrolled), "subscription_id");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(VentureEntity) sub = NULL;
+	gint state = 0;
+	JsonObject *object;
+	hosted_backdate(f, enrolled, ago, FALSE);
+	cancelled = call(f, "/api/v1/lightsite/billing/cancel", body, 200);
+	replay = call(f, "/api/v1/lightsite/billing/cancel", body, 200);
+	object = json_node_get_object(cancelled);
+	g_assert_true(json_node_equal(cancelled, replay));
+	g_assert_true(json_object_get_boolean_member(object, "no_charge"));
+	g_assert_cmpstr(json_object_get_string_member(object, "state"), ==, "cancelled");
+	g_assert_cmpstr(json_object_get_string_member(object, "effective_at"), ==, json_object_get_string_member(object, "cancelled_at"));
+	{
+		g_autoptr(VentureEntity) sweep = g_object_new(VENTURE_TYPE_BILLING_REQUEST, "action", "renew-sweep", "at", future, NULL);
+		venture_entity_set_organization_id(sweep, f->billing); save(f, sweep);
+	}
+	sub = venture_database_get(f->db, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, &error);
+	g_assert_no_error(error); g_object_get(sub, "status", &state, NULL); g_assert_cmpint(state, ==, 4);
+	venture_query_set_organization(query, f->billing);
+	invoices = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(invoices->len, ==, 0);
+	g_test_message("Unpublished cancellation on day %s: no_charge, cancelled now, zero invoices", (const gchar *)days);
 }
 
 static void test_cancel_published_prepaid(Fixture *f, gconstpointer unused)
