@@ -256,6 +256,8 @@ SERVER_ONLY_SRCS += src/leads/venture-lead-ai-score.c
 SERVER_ONLY_SRCS += $(wildcard src/money-calendar/*.c)
 CORE_SRCS += src/crm-import/venture-crm-import-records.c
 SERVER_ONLY_SRCS += src/crm-import/venture-crm-import-service.c
+CORE_SRCS += src/books-import/venture-books-import-records.c
+SERVER_ONLY_SRCS += src/books-import/venture-books-import-service.c
 # The documentation site generator is core: venturectl renders the site.
 CORE_SRCS += src/docs/venture-org-html.c src/docs/venture-docs-site.c
 CORE_SRCS += src/orgaccess/venture-mfa-records.c
@@ -352,6 +354,7 @@ PUBLIC_HDRS += $(wildcard src/equity/*.h)
 PUBLIC_HDRS += $(wildcard src/group/*.h)
 PUBLIC_HDRS += $(wildcard src/money-calendar/*.h)
 PUBLIC_HDRS += $(wildcard src/crm-import/*.h)
+PUBLIC_HDRS += $(wildcard src/books-import/*.h)
 PUBLIC_HDRS += $(wildcard src/dedupe/*.h)
 PUBLIC_HDRS += $(wildcard src/market/*.h)
 PUBLIC_HDRS += $(wildcard src/production/*.h)

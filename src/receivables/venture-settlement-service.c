@@ -3140,3 +3140,36 @@ venture_settlement_service_waive_late_fee(VentureSettlementService *self, gint64
 		return NULL;
 	return g_steal_pointer(&credit);
 }
+
+gboolean
+venture_settlement_service_free_number(VentureSettlementService *self, VentureInvoice *invoice,
+	const gchar *suffix, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autofree gchar *number = NULL;
+	g_autofree gchar *renamed = NULL;
+	gint status = 0;
+	gboolean ok;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), FALSE);
+	if (suffix == NULL || *suffix == '\0')
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Freeing an invoice number needs a suffix");
+	stored = venture_database_get(self->database, VENTURE_TYPE_INVOICE, venture_entity_get_id(VENTURE_ENTITY(invoice)), error);
+	if (stored == NULL)
+		return FALSE;
+	g_object_get(stored, "status", &status, "number", &number, NULL);
+	/* Only a void keeps no claim on its number: an open or paid invoice is
+	 * still the document a customer holds. */
+	if (status != VENTURE_INVOICE_STATUS_VOID)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Only a void invoice can give up its number");
+	if (number != NULL && g_str_has_suffix(number, suffix))
+		return TRUE;
+	if (!begin_operation(self, "invoice", error))
+		return FALSE;
+	renamed = g_strconcat(number != NULL ? number : "", suffix, NULL);
+	g_object_set(stored, "number", renamed, NULL);
+	ok = finish_operation(self, write_record(self, stored, actor, error), error);
+	if (ok)
+		venture_entity_copy_properties_from(VENTURE_ENTITY(invoice), stored, FALSE);
+	return ok;
+}

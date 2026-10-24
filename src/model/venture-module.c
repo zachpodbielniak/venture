@@ -860,6 +860,8 @@ static const gchar *const money_calendar_suggests[] = { "recurring", "dunning", 
 static const gchar *const money_calendar_reports[] = { "money_calendar", NULL };
 static const gchar *const crm_import_requires[] = { "crm", "pipelines", "activities", "leads", NULL };
 static GType (*const crm_import_types[]) (void) = { venture_crm_import_get_type, venture_crm_import_row_get_type, NULL };
+static const gchar *const books_import_requires[] = { "cutover", "receivables", "payables", NULL };
+static GType (*const books_import_types[]) (void) = { venture_books_import_get_type, venture_books_import_row_get_type, NULL };
 static const gchar *const dunning_requires[] = { "receivables", "mail", NULL };
 /* Escalation writes an activity, and a collection case on the same invoice
  * holds reminders back; the pay link needs only receivables, which is required. */
@@ -1370,6 +1372,11 @@ static const VentureModuleInfo venture_module_builtins[] = {
 		"crm_import", "CRM migration",
 		"HubSpot, Zoho CRM and Salesforce exports into companies, contacts, deals, history and next actions.",
 		crm_import_requires, NULL, crm_import_types, NULL, NULL, FALSE
+	},
+	{
+		"books_import", "Books migration",
+		"A whole Zoho Books backup with its history: contacts, invoices, payments, bills, expenses and transfers, replayed and reconciled.",
+		books_import_requires, NULL, books_import_types, NULL, NULL, FALSE
 	},
 	{
 		"dedupe", "Duplicates",
