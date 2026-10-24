@@ -142,28 +142,62 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(setup), "state"), ==, "card_ready");
 	assert_hosted_notice(f, business, "card_saved");
-	gboolean timer = data && !g_strcmp0(data, "timer");
-	if (timer) {
+	gboolean expired = data && !g_strcmp0(data, "expired");
+	if (expired) {
+		/* A saved card is not consent to charge before go-live. On day 31,
+		 * past expires_at, the sweep, the provider collector and the
+		 * unpublished first charge issue nothing and call the provider
+		 * for nothing; publishing then activates, invoices and collects. */
 		g_autoptr(JsonNode) waiting = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, FALSE, &error);
-		g_autoptr(GDateTime) now = venture_time_now(), past = g_date_time_add_days(now, -1);
-		g_autofree gchar *date = venture_time_to_string(past), *receipt = NULL, *sql = NULL;
-		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(JsonNode) late = NULL;
+		g_autoptr(GDateTime) now = venture_time_now(), enrolled_at = g_date_time_add_days(now, -31), end = g_date_time_add_days(enrolled_at, 30);
+		g_autofree gchar *start = venture_time_to_string(enrolled_at), *date = venture_time_to_string(end), *receipt = NULL, *sql = NULL;
+		g_autoptr(VentureAccessScope) internal = NULL;
+		g_autoptr(VentureEntity) sweep = record_new(f, "billing_request");
+		guint calls;
 		g_assert_no_error(error);
+		internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
 		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(waiting), "state"), ==, "building");
 		g_assert_cmpint(json_object_get_int_member(json_node_get_object(waiting), "invoice_id"), ==, 0);
-		json_object_set_string_member(json_node_get_object(enrolled), "charge_due_at", date);
+		json_object_set_string_member(json_node_get_object(enrolled), "enrolled_at", start);
+		json_object_set_string_member(json_node_get_object(enrolled), "expires_at", date);
 		receipt = venture_json_to_string(enrolled, FALSE);
 		sql = g_strdup_printf("UPDATE lightsite_billing_receipts SET result='%s' WHERE business_id=%" G_GINT64_FORMAT " AND outcome='enroll'", receipt, business);
 		g_assert_true(venture_database_execute(f->database, sql, NULL, &error)); g_assert_no_error(error);
 		g_clear_pointer(&sql, g_free);
 		sql = g_strdup_printf("UPDATE customer_subscriptions SET current_period_start='%s',current_period_end='%s',trial_end='%s',billing_anchor='%s',last_event_at='%s' WHERE id=%" G_GINT64_FORMAT,
-			date, date, date, date, date, json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"));
+			start, date, date, date, start, json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"));
 		g_assert_true(venture_database_execute(f->database, sql, NULL, &error)); g_assert_no_error(error);
+		calls = ((FakeTransport *)transport)->calls;
+		g_object_set(sweep, "action", "renew-sweep", "at", now, NULL); save(f, sweep);
+		g_assert_cmpint(venture_stripe_service_collect_due(provider, now, 10, NULL, &error), >=, 0); g_assert_no_error(error);
+		/* The hosted operation runs as the service token, as the API does. */
+		g_clear_object(&internal);
+		late = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, FALSE, &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(late), "state"), ==, "expired");
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(late), "invoice_id"), ==, 0);
+		internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_clear_pointer(&invoices, g_ptr_array_unref); invoices = rows(f, "invoice");
+		g_assert_cmpuint(invoices->len, ==, 0);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, calls);
+		g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 0);
+		g_test_message("Day 31 unpublished with a saved card: zero invoices, zero provider requests, state expired");
+		g_clear_object(&internal);
 	}
-	charged = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, !timer, &error);
+	charged = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, TRUE, &error);
 	g_assert_no_error(error); g_assert_nonnull(charged);
 	invoice = json_object_get_int_member(json_node_get_object(charged), "invoice_id"); g_assert_cmpint(invoice, >, 0);
-	repeated = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, !timer, &error);
+	if (expired) {
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(VentureEntity) sub = venture_database_get(f->database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
+			json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"), &error);
+		gint state = -1;
+		g_assert_no_error(error); g_object_get(sub, "status", &state, NULL);
+		g_assert_cmpint(state, ==, 1);
+		g_test_message("Published after the window: activated, one invoice, collection started");
+	}
+	repeated = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, TRUE, &error);
 	g_assert_no_error(error);
 	g_assert_cmpint(json_object_get_int_member(json_node_get_object(repeated), "invoice_id"), ==, invoice);
 	{

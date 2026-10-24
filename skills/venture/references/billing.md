@@ -217,10 +217,17 @@ and not `POST /lightsite/billing/subscriptions` (that binding still starts
 immediately). The routes are `enroll`, `prepay`, `setup`, `publish`,
 `first-charge`, `cancel`, `money-back`, `guarantee`, and GET `made-back` and
 `notifications` ([api-routes.md](api-routes.md)). Enrollment and prepay
-issue no invoice; setup charges nothing; the first charge is `paid` only
-after signed settlement; cancel before day fourteen charges nothing; a published
-prepaid cancel stores the twenty-four-month end and the renewal sweep ends it
-then without another invoice. `publish` accepts optional `published_at`
+issue no invoice. Enrollment opens a thirty-day setup window (`expires_at`
+on the receipt, no `charge_due_at`) and sets the subscription identity
+`hosted:<business>`, so the renewal sweep does not invoice that trial until
+publication activates it. Setup charges nothing. The first charge invoices
+only at publication, before or after the window; unpublished it stays
+`building` or `awaiting_card`, then `expired` with invoice id 0. It is
+`paid` only after signed settlement. An unpublished enrollment with no
+invoice cancels immediately and charges nothing, inside the window or after
+it; a published cancel is period end. A published prepaid cancel stores the
+twenty-four-month end and the renewal sweep ends it then without another
+invoice. `publish` accepts optional `published_at`
 (ISO 8601 with an offset). The first accepted time, or the receipt time
 when it is omitted, is the immutable `go_live_at`; a future time, a time
 before enrollment, or `published_at` on any other billing route is refused.

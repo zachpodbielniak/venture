@@ -46,7 +46,8 @@ organization is also 404. Nothing ever falls back to the default
 organization -- billing from whichever organization happens to be first is
 the failure this setting exists to rule out. The value is read on every
 request, like the other settings, and needs the billing module on.
-Deferred enrollment, the first charge, prepaid terms, made-back measurement,
+Deferred enrollment (a thirty-day setup window, never charged before
+go-live), the first charge, prepaid terms, made-back measurement,
 the one-time guarantee and cancellation are [[file:hosted-billing.org][Hosted enrollment and guarantee]].
 
 * Authority
@@ -274,13 +275,18 @@ It does not return payment methods, provider customer identities or sealed
 settings. The hosted caller owns email presentation and persists each handoff
 before sending through the mail outbox.
 
-Events cover verified saved methods, a first charge within two days, recorded
-receipts, unresolved failed collection, a second installment within two days,
+Events cover verified saved methods, recorded receipts, unresolved failed collection, a second installment within two days,
 committed cancellation, refunds, credit notes and a committed guarantee result.
 Opening balances are not new payment receipts. Cancelled or completed payment
 paths do not produce upcoming-installment notices. A later method revocation
 does not erase the fact that it was verified. A guarantee email requires an
 actual assessment receipt; this read never invents eligibility or grants money.
+
+There is no =charge_due= event for a deferred enrollment: nothing is charged
+before the site goes live, and publication itself issues the first invoice.
+The thirty-day setup window's =expires_at= is on the enrollment receipt;
+Lightsite sends its own reminders and switches the business off at expiry.
+Installment notices are unchanged.
 
 Customer quote acceptance enqueues its confirmation inside the acceptance
 transaction, using the quoted contact or customer email and a stable record

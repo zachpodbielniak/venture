@@ -178,7 +178,7 @@ venture_lightsite_billing_notifications(VentureDatabase *database, gint64 billin
 {
 	g_autoptr(GError) discarded = NULL;
 	g_autoptr(VentureAccessScope) internal = NULL;
-	g_autoptr(VentureEntity) company = NULL, price = NULL;
+	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(JsonNode) enrollment = NULL, cancellation = NULL, guarantee = NULL;
 	g_autoptr(JsonArray) events = json_array_new();
 	g_autoptr(GDateTime) now = venture_time_now();
@@ -198,25 +198,11 @@ venture_lightsite_billing_notifications(VentureDatabase *database, gint64 billin
 	guarantee = enrollment_read(database, billing, business, "guarantee", error);
 	if (*error) return NULL;
 	if (enrollment) {
-		g_autoptr(GDateTime) due = NULL;
-		const gchar *deadline;
+		/* No charge_due notice: a deferred enrollment is never charged before
+		 * go-live, and publication itself issues the first invoice. */
 		terms = json_node_get_object(enrollment);
 		subscription = json_object_get_int_member(terms, "subscription_id");
 		if (!mail_cards(database, billing, subscription, events, error)) return NULL;
-		deadline = json_object_has_member(terms, "charge_due_at") ? json_object_get_string_member(terms, "charge_due_at") : NULL;
-		if (deadline) due = venture_time_from_string(deadline, error);
-		if (*error) return NULL;
-		if (!cancellation && mail_approaching(due, now) && !enrollment_first_invoice(database, billing, subscription, error)) {
-			g_autoptr(VentureMoney) amount = NULL;
-			JsonObject *event;
-			if (*error) return NULL;
-			price = get_record(database, VENTURE_TYPE_PLAN_PRICE, json_object_get_int_member(terms, "plan_price_id"), error);
-			if (!price) return NULL;
-			g_object_get(price, "amount", &amount, NULL);
-			event = mail_fact(events, "charge_due", subscription, NULL, amount);
-			set_time(event, "due_at", due);
-		}
-		if (*error) return NULL;
 		if (!mail_installment(database, billing, subscription, events, now, error)) return NULL;
 	}
 	if (cancellation) {

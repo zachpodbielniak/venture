@@ -27,10 +27,11 @@ JsonNode *venture_lightsite_billing_notifications(VentureDatabase *database, gin
  * @business: enrolled customer business
  * @error: return location for an error
  *
- * Cancels an unpublished enrollment strictly before its fourteen-day deadline
- * without a charge. The subscription and immutable receipt commit together;
- * delayed publication, setup and collection cannot revive it. Publication or
- * deadline expiry uses normal period-end cancellation and preserves incurred
+ * Cancels an unpublished enrollment with no invoice immediately and without a
+ * charge, inside its thirty-day setup window or after it expired. The
+ * subscription and immutable receipt commit together; delayed publication,
+ * setup and collection cannot revive it. After publication or an invoice,
+ * cancellation uses normal period-end cancellation and preserves incurred
  * invoices, including outstanding prepaid installments. Requires the trusted
  * service authority; the hosted client authenticates its dashboard owner.
  *
@@ -65,7 +66,9 @@ JsonNode *venture_lightsite_billing_prepay(VentureDatabase *database, gint64 bil
  * @created: (out) (optional): whether enrollment was created
  * @error: return location for an error
  *
- * Starts a fourteen-day deferred subscription without issuing an invoice.
+ * Starts a deferred subscription with a thirty-day setup window and never
+ * invoices it before publication. The receipt carries enrolled_at and
+ * expires_at (enrolled_at plus thirty days), no charge_due_at.
  * Repeating its price is safe; changing the terms conflicts. Requires trusted
  * service authority and leaves the catalogue trial unchanged.
  *
@@ -96,8 +99,9 @@ JsonNode *venture_lightsite_billing_setup(VentureContext *context, gint64 billin
  * @published: whether this is a confirmed first-publication notification
  * @error: return location for an error
  *
- * Records go-live once, then starts the first paid period at publication or
- * after fourteen days. Verified saved-card authority is required. The durable
+ * Records go-live once, then starts the first paid period at publication,
+ * before or after the setup window expires. Without publication nothing is
+ * invoiced: building or awaiting_card, then expired from expires_at. Verified saved-card authority is required. The durable
  * invoice is reserved before calling the provider; retries collect that same
  * invoice. Provider success alone does not mean paid: normal signed settlement
  * updates the invoice. Publication remains recorded when collection fails.

@@ -9,7 +9,7 @@ venture_lightsite_billing_cancel(VentureDatabase *database, gint64 billing,
 	g_autoptr(JsonNode) enrollment = NULL, publication = NULL, result = NULL;
 	g_autoptr(VentureEntity) sub = NULL;
 	g_autoptr(VentureBillingRequest) instruction = NULL;
-	g_autoptr(GDateTime) now = venture_time_now(), enrolled_at = NULL, deadline = NULL, effective = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), effective = NULL;
 	VentureActor actor = { VENTURE_ACTOR_KIND_IMPORT, "Hosted cancellation", NULL, NULL, NULL };
 	JsonObject *object;
 	gint64 subscription, invoice;
@@ -37,14 +37,14 @@ venture_lightsite_billing_cancel(VentureDatabase *database, gint64 billing,
 	object = json_node_get_object(enrollment);
 	subscription = json_object_get_int_member(object, "subscription_id");
 	prepaid = json_object_has_member(object, "payment_path");
-	enrolled_at = venture_time_from_string(json_object_get_string_member(object, "enrolled_at"), error);
-	if (!enrolled_at) goto fail;
-	deadline = g_date_time_add_days(enrolled_at, 14);
 	invoice = enrollment_first_invoice(database, billing, subscription, error);
 	if (*error) goto fail;
 	sub = get_record(database, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription, error);
 	if (!sub) goto fail;
-	no_charge = !publication && g_date_time_compare(now, deadline) < 0 && !invoice;
+	/* Nothing is charged before go-live, so an unpublished enrollment with
+	 * no invoice has no paid period to run out: it ends now and free, inside
+	 * the setup window or after Lightsite switched the business off. */
+	no_charge = !publication && !invoice;
 	if (no_charge && g_strcmp0(enum_nick(sub, "status"), "trialing") &&
 		g_strcmp0(enum_nick(sub, "status"), "cancelled")) {
 		refuse(error, VENTURE_ERROR_CONFLICT, "enrollment already left its unpaid trial"); goto fail;
