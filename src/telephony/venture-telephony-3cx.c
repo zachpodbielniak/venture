@@ -108,6 +108,7 @@ token(VentureTelephonyLink *link, GError **error)
 	g_autoptr(GBytes) body = g_bytes_new(form, strlen(form));
 	g_autoptr(GBytes) answer = NULL;
 	g_autoptr(JsonNode) parsed = NULL;
+	g_autofree gchar *text = NULL;
 	guint status = 0;
 	const gchar *access;
 	/* The refusal body is never shown: a PBX may echo what it was sent. */
@@ -115,7 +116,9 @@ token(VentureTelephonyLink *link, GError **error)
 		"application/x-www-form-urlencoded", body, &status, &answer, error) ||
 		!venture_telephony_http_status_error(status == 400 ? 401 : status, LABEL, error))
 		return NULL;
-	parsed = json_from_string(g_bytes_get_data(answer, NULL), NULL);
+	/* Soup's answer is bytes, not a C string. */
+	text = g_strndup(g_bytes_get_data(answer, NULL), g_bytes_get_size(answer));
+	parsed = json_from_string(text, NULL);
 	access = parsed != NULL && JSON_NODE_HOLDS_OBJECT(parsed) ?
 		venture_json_object_get_string(json_node_get_object(parsed), "access_token", NULL) : NULL;
 	if (venture_string_is_empty(access))
@@ -134,6 +137,7 @@ click_to_call(VentureTelephonyConnector *self, VentureTelephonyLink *link, const
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	g_autoptr(JsonNode) request = NULL, parsed = NULL;
 	g_autoptr(GBytes) body = NULL, answer = NULL;
+	g_autofree gchar *text = NULL;
 	JsonObject *object, *result;
 	guint status = 0;
 	const gchar *p;
@@ -161,7 +165,8 @@ click_to_call(VentureTelephonyConnector *self, VentureTelephonyLink *link, const
 	if (!venture_telephony_link_request(link, "POST", path, authorization, "application/json", body, &status, &answer, error) ||
 		!venture_telephony_http_status_error(status, LABEL, error))
 		return FALSE;
-	parsed = json_from_string(g_bytes_get_data(answer, NULL), NULL);
+	text = g_strndup(g_bytes_get_data(answer, NULL), g_bytes_get_size(answer));
+	parsed = json_from_string(text, NULL);
 	object = parsed != NULL && JSON_NODE_HOLDS_OBJECT(parsed) ? json_node_get_object(parsed) : NULL;
 	if (object == NULL || g_strcmp0(venture_json_object_get_string(object, "finalstatus", NULL), "Success") != 0)
 	{

@@ -786,7 +786,9 @@ consent_change(VentureTelephonyService *self, VentureEntity *contact, gboolean g
 	}
 	if (key == NULL)
 	{
-		fresh = g_strdup_printf("text-consent:%s", g_uuid_string_random());
+		/* g_uuid_string_random() is owned; a printf argument would leak it. */
+		g_autofree gchar *uuid = g_uuid_string_random();
+		fresh = g_strdup_printf("text-consent:%s", uuid);
 		key = fresh;
 	}
 	row = venture_marketing_service_text_consent(venture_marketing_service_get(self->database),
@@ -941,7 +943,10 @@ queue(VentureTelephonyService *self, VentureEntity *contact, const gchar *body, 
 			return g_steal_pointer(&message);
 	}
 	else
-		key = g_strdup_printf("out:%s", g_uuid_string_random());
+	{
+		g_autofree gchar *uuid = g_uuid_string_random();
+		key = g_strdup_printf("out:%s", uuid);
+	}
 	if (!automatic)
 		until = venture_telephony_service_quiet_until(self, contact, now, error);
 	from = string(line, "phone-number");
@@ -1555,10 +1560,13 @@ sequence_text(VentureDatabase *database, VentureEntity *delivery, VentureEntity 
 	g_autoptr(VentureEntity) message = NULL;
 	g_autoptr(GError) refused = NULL;
 	g_autofree gchar *body = string(delivery, "body"), *key = string(delivery, "delivery-key"), *origin = NULL;
+	g_autofree gchar *made = NULL;
 	(void)step; (void)data;
 	if (!module_on())
 		return refuse(error, VENTURE_ERROR_CONFIG, "Phone and text is switched off, so this text step cannot send");
-	origin = g_strdup_printf("sequence:%s", key != NULL ? key : g_uuid_string_random());
+	if (key == NULL)
+		made = g_uuid_string_random();
+	origin = g_strdup_printf("sequence:%s", key != NULL ? key : made);
 	message = venture_telephony_service_queue_text(self, contact, body, NULL, origin, as_of, NULL, &refused);
 	if (message == NULL)
 	{

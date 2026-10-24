@@ -105,7 +105,7 @@ send_message(VentureTelephonyConnector *self, VentureTelephonyLink *link, const 
 	gchar **provider_id, GError **error)
 {
 	g_autoptr(GHashTable) form = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-	g_autofree gchar *did = ten_digits(message->from, "the line's number", error), *dst = NULL, *encoded = NULL;
+	g_autofree gchar *did = ten_digits(message->from, "the line's number", error), *dst = NULL, *encoded = NULL, *text = NULL;
 	g_autoptr(GBytes) body = NULL, answer = NULL;
 	g_autoptr(JsonNode) parsed = NULL;
 	gboolean mms;
@@ -140,7 +140,10 @@ send_message(VentureTelephonyConnector *self, VentureTelephonyLink *link, const 
 	if (!venture_telephony_link_request(link, "POST", "/api/v1/rest.php", NULL, "application/x-www-form-urlencoded",
 		body, &code, &answer, error) || !venture_telephony_http_status_error(code, LABEL, error))
 		return FALSE;
-	parsed = json_from_string(g_bytes_get_data(answer, NULL), NULL);
+	/* Soup's answer is bytes, not a C string. json_from_string() would read
+	 * past the end, and a refusal would sometimes be stored as unreadable. */
+	text = g_strndup(g_bytes_get_data(answer, NULL), g_bytes_get_size(answer));
+	parsed = json_from_string(text, NULL);
 	object = parsed != NULL && JSON_NODE_HOLDS_OBJECT(parsed) ? json_node_get_object(parsed) : NULL;
 	status = object != NULL ? venture_json_object_get_string(object, "status", NULL) : NULL;
 	if (g_strcmp0(status, "success") != 0)

@@ -270,12 +270,14 @@ static gboolean fake_send(VentureTelephonyConnector *self, VentureTelephonyLink 
 	g_autoptr(GBytes) body = g_bytes_new(json, strlen(json));
 	g_autoptr(GBytes) response = NULL;
 	g_autoptr(JsonNode) parsed = NULL;
+	g_autofree gchar *text = NULL;
 	guint status = 0;
 	(void)self;
 	if (!venture_telephony_link_request(link, "POST", "/fake/send", authorization, "application/json", body, &status, &response, error) ||
 		!venture_telephony_http_status_error(status, "Signed test carrier", error))
 		return FALSE;
-	parsed = json_from_string(g_bytes_get_data(response, NULL), NULL);
+	text = g_strndup(g_bytes_get_data(response, NULL), g_bytes_get_size(response));
+	parsed = json_from_string(text, NULL);
 	*provider_id = g_strdup(json_object_get_string_member(json_node_get_object(parsed), "id"));
 	return TRUE;
 }
