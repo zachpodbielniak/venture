@@ -114,7 +114,8 @@ venture_bill_compose_page(VentureWebServer *self, HtmxRequest *request)
 		venture_web_module_enabled(self, "recurring");
 	g_autofree gchar *accounts = NULL;
 	g_autofree gchar *currency = NULL;
-	g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+	g_autoptr(GDateTime) today = venture_payables_service_today(
+		venture_payables_service_get(venture_context_get_database(self->context)));
 	g_autofree gchar *day = venture_time_to_date_string(today, NULL);
 
 	/* The organization the post will file the bill under -- the same

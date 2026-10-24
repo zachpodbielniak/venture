@@ -360,15 +360,32 @@ check_vendor(VenturePayablesService *self, VentureEntity *record, GError **error
 	return TRUE;
 }
 
+/* Today's business date, read where receivables reads it, so both ledgers
+ * share one operator calendar instead of the process zone. */
+static GDateTime *
+business_today(VenturePayablesService *self)
+{
+	return venture_settlement_service_today(venture_settlement_service_get(self->database));
+}
+
 static gboolean
-check_date(GDateTime *date, GDateTime *earliest, GError **error)
+check_date(VenturePayablesService *self, GDateTime *date, GDateTime *earliest, GError **error)
 {
 	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) today = NULL;
 
 	now = venture_time_now();
 	if (date == NULL || (earliest != NULL && g_date_time_compare(date, earliest) < 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The date must not precede the source event");
-	if (g_date_time_compare(date, now) > 0)
+	/* The receivables rule: a calendar date is midnight UTC on the business
+	 * date. East of UTC today's encoded midnight is later than the current
+	 * instant, so exactly today's date is allowed; west of UTC tomorrow's
+	 * encoded midnight can already have passed, so a calendar date after
+	 * today is still refused. Never a future time or tomorrow's date. */
+	today = business_today(self);
+	if (venture_time_equal(date, today))
+		return TRUE;
+	if (g_date_time_compare(date, now) > 0 || (venture_time_is_calendar_date(date) && g_date_time_compare(date, today) > 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A financial event cannot be dated in the future");
 	return TRUE;
 }
@@ -917,7 +934,7 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 	if (opening != NULL && approval && (opening->opening_at == NULL || earliest == NULL ||
 		g_date_time_compare(earliest, opening->opening_at) >= 0))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening bill must be dated before its cutover instant");
-	if (!check_date(date, earliest, error) || !check_bill_chronology(self, venture_entity_get_id(bill), date, error))
+	if (!check_date(self, date, earliest, error) || !check_bill_chronology(self, venture_entity_get_id(bill), date, error))
 		return FALSE;
 	if (approval && !venture_purchasing_check_bill_approval(self->database, bill, error))
 		return FALSE;
@@ -1235,7 +1252,7 @@ perform_allocation(VenturePayablesService *self, VentureEntity *allocation,
 	g_object_get(allocation, "amount", &amount, "date", &date, NULL);
 	g_object_get(credit, "date", &source_date, NULL);
 	g_object_get(issued, "date", &issue_date, NULL);
-	if (!check_date(date, source_date, error) || !check_date(date, issue_date, error))
+	if (!check_date(self, date, source_date, error) || !check_date(self, date, issue_date, error))
 		return FALSE;
 	if (!check_bill_chronology(self, venture_entity_get_id(bill), date, error))
 		return FALSE;
@@ -1266,7 +1283,7 @@ perform_credit(VenturePayablesService *self, VentureEntity *credit,
 	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
 	if (g_strcmp0(kind, "credit_note") != 0 || get_id(credit, "payment-id") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Create a payment for a deposit or overpayment; only credit_note may be entered directly");
-	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_vendor(self, credit, error))
+	if (!check_amount(amount, error) || !check_date(self, date, NULL, error) || !check_vendor(self, credit, error))
 		return FALSE;
 	g_object_set(credit, "remaining", amount, NULL);
 	return write_record(self, credit, actor, error) && post(self, credit, date, amount, "2000", "6900", actor, error);
@@ -1287,7 +1304,7 @@ perform_payment(VenturePayablesService *self, VentureEntity *payment,
 	if (venture_entity_is_persisted(payment))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Payments are immutable; allocate unused funds or record a refund");
 	g_object_get(payment, "amount", &amount, "date", &date, "external-id", &external, NULL);
-	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_vendor(self, payment, error))
+	if (!check_amount(amount, error) || !check_date(self, date, NULL, error) || !check_vendor(self, payment, error))
 		return FALSE;
 	if (external != NULL && *external != '\0')
 	{
@@ -1467,7 +1484,7 @@ perform_refund(VenturePayablesService *self, VentureEntity *refund,
 		return FALSE;
 	if (get_id(refund, "vendor-id") != get_id(credit, "vendor-id"))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "The refund must belong to the source vendor");
-	if (!check_date(date, source_date, error) || !within(amount, available, error))
+	if (!check_date(self, date, source_date, error) || !within(amount, available, error))
 		return FALSE;
 	if (bill != NULL && !check_bill_chronology(self, venture_entity_get_id(bill), date, error))
 		return FALSE;
@@ -1763,6 +1780,13 @@ venture_payables_service_settle_bill(VenturePayablesService *self,
 		venture_accounting_operation_finish(operation, error);
 }
 
+GDateTime *
+venture_payables_service_today(VenturePayablesService *self)
+{
+	g_return_val_if_fail(VENTURE_IS_PAYABLES_SERVICE(self), NULL);
+	return business_today(self);
+}
+
 VentureMoney *
 venture_payables_service_vendor_balance(VenturePayablesService *self,
 	gint64 organization_id, gint64 vendor_id, GDateTime *as_of,
@@ -1956,7 +1980,7 @@ perform_credit_opening(VenturePayablesService *self, VentureEntity *credit, GDat
 	g_object_get(credit, "amount", &amount, "date", &date, "kind", &kind, NULL);
 	if (g_strcmp0(kind, "credit_note") != 0 || get_id(credit, "payment-id") != 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening vendor credit is a credit note");
-	if (!check_amount(amount, error) || !check_date(date, NULL, error) || !check_vendor(self, credit, error))
+	if (!check_amount(amount, error) || !check_date(self, date, NULL, error) || !check_vendor(self, credit, error))
 		return FALSE;
 	if (g_date_time_compare(date, opening_at) >= 0)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "An opening credit must be dated before its cutover instant");
@@ -2058,7 +2082,7 @@ venture_payables_service_prepare_action(VenturePayablesService *self,
 	if (date == NULL)
 	{
 		/* A repeated HTTP command must keep the same accounting day. */
-		date = venture_time_from_string("today", NULL);
+		date = business_today(self);
 		g_object_set(request, "date", date, NULL);
 	}
 	if (pay)
