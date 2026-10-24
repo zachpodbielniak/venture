@@ -520,6 +520,12 @@ test_rollback_and_reimport(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	later = state(f, again);
 	g_assert_cmpstr(later, ==, "active");
+	{
+		g_autoptr(VentureEntity) organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->org, NULL);
+		g_autofree gchar *basis = NULL;
+		g_object_get(organization, "pnl-basis", &basis, NULL);
+		g_assert_cmpstr(basis, ==, "ledger");
+	}
 	g_assert_false(venture_books_import_service_rollback(service(f), again, NULL, &error));
 	g_assert_nonnull(error);
 }

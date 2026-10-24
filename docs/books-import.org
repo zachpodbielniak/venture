@@ -117,8 +117,11 @@ earnings, so its trial balance carries every year's income and expense;
 Zoho's shows earlier years as retained earnings.
 
 Activate re-runs reconcile, reconciles and activates the opening cutover
-(which closes periods ending at the start) and sets =active=. An active
-batch is the books.
+(which closes periods ending at the start), sets the organization's
+=pnl-basis= to =ledger= -- its books are now the ledger, so its profit and
+loss page and dashboard card read the posted income and expense accounts,
+accrual, as the source system did, rather than sale and expense records --
+and sets =active=. An active batch is the books.
 
 * Rollback
 

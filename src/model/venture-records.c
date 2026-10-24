@@ -83,7 +83,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("marketing-resend-days", "Resend to non-openers after", "Days, 0 to 365; empty is 3", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-stop-reply", "STOP answer", "What a STOP text is answered with; {business} is your name; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-start-reply", "START answer", "What a START text is answered with; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("telephony-help-reply", "HELP answer", "What a HELP text is answered with; it must say how to stop; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("telephony-help-reply", "HELP answer", "What a HELP text is answered with; it must say how to stop; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("pnl-basis", "Profit and loss from", "ledger: the posted books (accrual, as the income statement); empty or records: sale and expense records", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,

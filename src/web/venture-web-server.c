@@ -3964,6 +3964,16 @@ venture_web_api_report(
 			json_object_set_string_member(report_options, "as_of", as_of);
 		if (!venture_string_is_empty(organization))
 			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+		else
+		{
+			/* No organization named: the one picked in the sidebar, as
+			 * every page answers. Falling back to the installation's
+			 * default showed one business's figures under another's
+			 * name. "All" (zero) and a token keep the default. */
+			gint64 active = venture_web_active_organization(self, request);
+			if (active > 0)
+				json_object_set_int_member(report_options, "organization_id", active);
+		}
 	}
 	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);
@@ -8146,6 +8156,16 @@ venture_web_ui_report(
 			json_object_set_string_member(report_options, "as_of", as_of);
 		if (!venture_string_is_empty(organization))
 			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+		else
+		{
+			/* No organization named: the one picked in the sidebar, as
+			 * every page answers. Falling back to the installation's
+			 * default showed one business's figures under another's
+			 * name. "All" (zero) and a token keep the default. */
+			gint64 active = venture_web_active_organization(self, request);
+			if (active > 0)
+				json_object_set_int_member(report_options, "organization_id", active);
+		}
 	}
 	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);

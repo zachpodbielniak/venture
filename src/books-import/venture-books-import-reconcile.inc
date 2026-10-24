@@ -677,7 +677,19 @@ venture_books_import_service_activate(VentureBooksImportService *self, VentureBo
 			!venture_cutover_service_activate(cutover, VENTURE_ACCOUNTING_CUTOVER(opening), actor, error))
 			return FALSE;
 	}
-	g_string_append_printf(block, "\n== Activated %s ==\nThe imported books are the organization's own.\n", stamp);
+	/* Its books are now the ledger: its P&L and dashboard read them, not
+	 * the sale and expense records an operational business keeps. */
+	{
+		g_autoptr(VentureEntity) organization = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION,
+			venture_entity_get_organization_id(stored), error);
+		if (organization == NULL)
+			return FALSE;
+		g_object_set(organization, "pnl-basis", "ledger", NULL);
+		if (!venture_database_save(self->database, organization, actor, error))
+			return FALSE;
+	}
+	g_string_append_printf(block, "\n== Activated %s ==\nThe imported books are the organization's own; "
+		"its profit and loss now reads the ledger.\n", stamp);
 	g_object_set(stored, "activated-at", now, NULL);
 	if (!append_report(self, stored, "active", block, actor, error))
 		return FALSE;
