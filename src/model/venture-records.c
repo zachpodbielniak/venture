@@ -521,7 +521,10 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	                  "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("event-id", "Event", "Optional: the planner event this paid for; counted against its budget",
 	                  "event", VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("expense-account-id", "Expense account",
+	                  "Ledger account to debit; empty uses the category map of the posting profile",
+	                  "account", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExpense, venture_expense, venture_expense_fields,
@@ -3234,7 +3237,13 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	VENTURE_FIELD("tax-rate-scaled", "Frozen tax rate", "Percent times 10000 applied at issuance; 0 when exempt",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issuance from the customer or the product",
-		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/* Migrated books credit more than one income account; a line may
+	 * name its own instead of the organization's income account. */
+	VENTURE_FIELD_REF("income-account-id", "Income account",
+		"Credit this account instead of the default income account", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("discount-account-id", "Discount account",
+		"Credit income before discount and debit the discount to this account", "account", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,

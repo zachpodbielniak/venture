@@ -296,6 +296,28 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 		}
 		if (tax_code != NULL && json_object_has_member(map, tax_code)) debit = venture_json_object_get_int(map, tax_code, 0);
 		if (debit == 0 && category != NULL && json_object_has_member(map, category)) debit = venture_json_object_get_int(map, category, 0);
+		/* An expense that names its account -- a migrated history does, it
+		 * carries the source ledger's account -- wins over the category map. */
+		{
+			gint64 named = 0;
+			g_object_get(source, "expense-account-id", &named, NULL);
+			if (named > 0) {
+				g_autoptr(VentureEntity) account = venture_database_get(db, VENTURE_TYPE_ACCOUNT, named, error);
+				gboolean active = FALSE;
+				if (account == NULL) {
+					if (error == NULL || *error == NULL)
+						g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+							"The expense names account %" G_GINT64_FORMAT ", which does not exist", named);
+					return NULL;
+				}
+				g_object_get(account, "active", &active, NULL);
+				if (!active || venture_entity_get_organization_id(account) != venture_entity_get_organization_id(source)) {
+					g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+						"The expense account must be active and in the expense's organization"); return NULL;
+				}
+				debit = named;
+			}
+		}
 		if (debit != 0) g_object_set(profile, "default-expense-account-id", debit, NULL);
 		{
 			g_autofree gchar *book = book_currency(db, source);

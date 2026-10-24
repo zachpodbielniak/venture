@@ -699,10 +699,28 @@ add_leg(GPtrArray *entries, VentureEntity *source, GDateTime *date, const gchar 
 	return TRUE;
 }
 
+/* One extra income-side leg of an issue journal: a line naming its own
+ * income account, or the discount a line names a discount account for. */
+typedef struct
+{
+	gint64 account;
+	VentureLedgerSide side;
+	VentureMoney *amount;
+} IncomeLeg;
+
+static void
+income_leg_free(gpointer data)
+{
+	IncomeLeg *leg = data;
+	venture_money_free(leg->amount);
+	g_free(leg);
+}
+
 static gboolean
 post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *date,
 	const VentureMoney *debit_ar, const VentureMoney *credit_income, const VentureMoney *credit_tax,
-	gboolean reverse, const VentureMoney *credit_deferred, const VentureActor *actor, GError **error)
+	gboolean reverse, const VentureMoney *credit_deferred, GPtrArray *income_legs,
+	const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) entries = g_ptr_array_new_with_free_func(g_object_unref);
 	g_autoptr(VentureExchangePolicy) policy = NULL;
@@ -745,6 +763,15 @@ post_split(VentureSettlementService *self, VentureEntity *source, GDateTime *dat
 	{
 		add_leg(entries, source, date, transaction, ar, VENTURE_LEDGER_SIDE_DEBIT, debit_ar);
 		add_leg(entries, source, date, transaction, income, VENTURE_LEDGER_SIDE_CREDIT, credit_income);
+		if (income_legs != NULL)
+		{
+			guint i;
+			for (i = 0; i < income_legs->len; i++)
+			{
+				IncomeLeg *leg = g_ptr_array_index(income_legs, i);
+				add_leg(entries, source, date, transaction, leg->account, leg->side, leg->amount);
+			}
+		}
 		add_leg(entries, source, date, transaction, deferred, VENTURE_LEDGER_SIDE_CREDIT, credit_deferred);
 		add_leg(entries, source, date, transaction, tax, VENTURE_LEDGER_SIDE_CREDIT, credit_tax);
 	}
@@ -979,6 +1006,98 @@ venture_settlement_service_refresh_invoice(VentureSettlementService *self,
 	ok = derive_invoice(self, invoice, effective, actor, error);
 	ok = finish_operation(self, ok, error);
 	return ok && venture_accounting_operation_finish(operation, error);
+}
+
+static gint64
+line_account(VentureSettlementService *self, VentureEntity *invoice, VentureEntity *line,
+	const gchar *field, GError **error)
+{
+	g_autoptr(VentureEntity) account = NULL;
+	gboolean active = FALSE;
+	gint64 id = get_id(line, field);
+	if (id <= 0)
+		return 0;
+	account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, id, error);
+	if (account == NULL)
+	{
+		if (error == NULL || *error == NULL)
+			refuse(error, VENTURE_ERROR_NOT_FOUND, "The invoice line names an account that does not exist");
+		return -1;
+	}
+	g_object_get(account, "active", &active, NULL);
+	if (!active || venture_entity_get_organization_id(account) != venture_entity_get_organization_id(invoice))
+	{
+		refuse(error, VENTURE_ERROR_VALIDATION,
+			"An invoice line account must be active and in the invoice's organization");
+		return -1;
+	}
+	return id;
+}
+
+/*
+ * The issue journal's extra income legs, read from the frozen lines. A line
+ * naming an income account credits it with its net instead of the
+ * organization's income account; a line naming a discount account credits
+ * income before the discount and debits the discount there, so a source
+ * ledger that keeps discounts apart (Zoho Books' Discount account) is
+ * reproduced exactly. @moved is the net taken away from the default income
+ * credit, NULL when no line names either account.
+ */
+static gboolean
+line_income_legs(VentureSettlementService *self, VentureEntity *invoice, GPtrArray **legs,
+	VentureMoney **moved, GError **error)
+{
+	g_autoptr(GPtrArray) lines = find_rows(self, VENTURE_TYPE_INVOICE_LINE, "invoice-id",
+		venture_entity_get_id(invoice), NULL, error);
+	gint64 org = venture_entity_get_organization_id(invoice);
+	guint i;
+	*legs = NULL;
+	*moved = NULL;
+	if (lines == NULL)
+		return FALSE;
+	for (i = 0; i < lines->len; i++)
+	{
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		g_autoptr(VentureMoney) net = NULL;
+		g_autoptr(VentureMoney) discount = NULL;
+		g_autoptr(VentureMoney) credit = NULL;
+		gint64 income, discount_account;
+		IncomeLeg *leg;
+		if (venture_entity_is_deleted(line))
+			continue;
+		income = line_account(self, invoice, line, "income-account-id", error);
+		discount_account = line_account(self, invoice, line, "discount-account-id", error);
+		if (income < 0 || discount_account < 0)
+			return FALSE;
+		if (income == 0 && discount_account == 0)
+			continue;
+		g_object_get(line, "income-amount", &net, "discount-amount", &discount, NULL);
+		if (net == NULL)
+			continue;
+		if (income == 0 && !resolve_code(self, "4000", org, &income, error))
+			return FALSE;
+		if (!accumulate(moved, net, FALSE, error))
+			return FALSE;
+		credit = discount_account != 0 && discount != NULL ? venture_money_add(net, discount, error) : venture_money_copy(net);
+		if (credit == NULL)
+			return FALSE;
+		if (*legs == NULL)
+			*legs = g_ptr_array_new_with_free_func(income_leg_free);
+		leg = g_new0(IncomeLeg, 1);
+		leg->account = income;
+		leg->side = VENTURE_LEDGER_SIDE_CREDIT;
+		leg->amount = g_steal_pointer(&credit);
+		g_ptr_array_add(*legs, leg);
+		if (discount_account != 0 && discount != NULL && !venture_money_is_zero(discount))
+		{
+			leg = g_new0(IncomeLeg, 1);
+			leg->account = discount_account;
+			leg->side = VENTURE_LEDGER_SIDE_DEBIT;
+			leg->amount = g_steal_pointer(&discount);
+			g_ptr_array_add(*legs, leg);
+		}
+	}
+	return TRUE;
 }
 
 static gboolean
@@ -1444,6 +1563,9 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		{
 			g_autoptr(VentureMoney) deferred = NULL;
 			g_autoptr(VentureMoney) income = NULL;
+			g_autoptr(GPtrArray) income_legs = NULL;
+			g_autoptr(VentureMoney) moved = NULL;
+			g_autoptr(VentureMoney) remaining = NULL;
 			if (!deferred_portion(self, invoice, &deferred, error))
 				return FALSE;
 			if (deferred != NULL && net != NULL)
@@ -1452,7 +1574,20 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 				if (income == NULL)
 					return FALSE;
 			}
-			if (!post_split(self, VENTURE_ENTITY(event), date, total, income != NULL ? income : net, tax, FALSE, deferred, actor, error) ||
+			if (!line_income_legs(self, invoice, &income_legs, &moved, error))
+				return FALSE;
+			if (moved != NULL)
+			{
+				if (deferred != NULL && !venture_money_is_zero(deferred))
+					return refuse(error, VENTURE_ERROR_VALIDATION,
+						"A line naming its own income or discount account cannot defer revenue");
+				remaining = venture_money_subtract(income != NULL ? income : net, moved, error);
+				if (remaining == NULL)
+					return FALSE;
+			}
+			if (!post_split(self, VENTURE_ENTITY(event), date, total,
+				remaining != NULL ? remaining : (income != NULL ? income : net), tax, FALSE, deferred,
+				income_legs, actor, error) ||
 				!schedule_recognition(self, invoice, deferred, date, actor, error) ||
 				!venture_inventory_service_issue_invoice(venture_inventory_service_get(self->database),
 					invoice, actor, error))
@@ -1727,7 +1862,7 @@ perform_credit(VentureSettlementService *self, VentureEntity *credit,
 			if (net == NULL)
 				return FALSE;
 			return write_record(self, credit, actor, error) &&
-				post_split(self, credit, date, amount, net, tax, TRUE, NULL, actor, error);
+				post_split(self, credit, date, amount, net, tax, TRUE, NULL, NULL, actor, error);
 		}
 	}
 	return write_record(self, credit, actor, error) && post(self, credit, date, amount, "4000", "1100", actor, error);
