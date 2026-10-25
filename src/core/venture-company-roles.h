@@ -37,7 +37,9 @@ gboolean venture_company_is_supplier(VentureEntity *company);
  * Registers the save rule that keeps the flags in step with the
  * relationship: a company saved as a customer is flagged a customer, and
  * one saved as a supplier is flagged a supplier. Clearing a flag is the
- * owner's to do; changing the relationship never clears one. Idempotent.
+ * owner's to do; changing the relationship never clears one. And an
+ * expense filed against a supplier with no vendor typed takes the
+ * supplier's name as its vendor. Idempotent.
  */
 void venture_company_roles_install(VentureDatabase *database);
 

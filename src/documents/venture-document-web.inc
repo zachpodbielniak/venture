@@ -188,6 +188,40 @@ document_spec_from_request(HtmxRequest *request, GError **error)
 	return json_object_ref(json_node_get_object(body));
 }
 
+/* One company in the customer picker, with what its record says about tax
+ * and its venture riding on the option. */
+static void
+document_append_company_option(GString *html, VentureEntity *row, gint64 chosen)
+{
+	g_autofree gchar *name = venture_entity_get_display_name(row);
+	g_autofree gchar *reason = NULL, *number = NULL;
+	gboolean exempt = FALSE;
+
+	/* What the customer's record already says about tax rides on the
+	 * option, so choosing them fills the exemption in. */
+	gint64 venture = 0;
+
+	g_object_get(row, "tax-exempt", &exempt, "tax-exempt-reason", &reason,
+		"tax-exemption-number", &number, "venture-id", &venture, NULL);
+	/* The customer's venture, so a plan picker can offer its plans. */
+	g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-venture=\"%" G_GINT64_FORMAT "\"",
+		venture_entity_get_id(row), venture);
+	if (exempt)
+	{
+		g_string_append(html, " data-exempt=\"1\" data-exempt-kind=\"");
+		venture_html_escape_append(html, reason != NULL ? reason : "");
+		g_string_append(html, "\" data-exempt-number=\"");
+		venture_html_escape_append(html, number != NULL ? number : "");
+		g_string_append(html, "\"");
+	}
+	/* Started from a customer's page: that customer. */
+	if (chosen > 0 && venture_entity_get_id(row) == chosen)
+		g_string_append(html, " selected");
+	g_string_append(html, ">");
+	venture_html_escape_append(html, name);
+	g_string_append(html, "</option>");
+}
+
 /*
  * The customer and contact pickers. A contact carries the company it
  * works for, so choosing a customer narrows "Attention of" to their
@@ -200,6 +234,7 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 	g_autoptr(VentureQuery) contacts = venture_query_new(VENTURE_TYPE_CONTACT);
 	g_autoptr(GPtrArray) company_rows = NULL;
 	g_autoptr(GPtrArray) contact_rows = NULL;
+	guint group;
 	guint i;
 
 	venture_query_set_limit(companies, 0);
@@ -215,38 +250,31 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 	contact_rows = venture_database_find(venture_context_get_database(self->context), contacts, NULL);
 
 	g_string_append(html, "<label class=\"doc-field doc-field-wide\"><span class=\"field-label\">Customer"
-		"<span class=\"required\">*</span></span><select name=\"company-id\" required data-doc-company>"
+		"<span class=\"required\">*</span></span><select name=\"company-id\" required data-doc-company data-picker-search>"
 		"<option value=\"\">Choose a customer\xe2\x80\xa6</option>");
-	for (i = 0; company_rows != NULL && i < company_rows->len; i++)
+	/* Customers first, then every other company under its own heading:
+	 * one alphabet of customers, suppliers and prospects read as if all
+	 * of them could be billed. */
+	for (group = 0; company_rows != NULL && group < 2; group++)
 	{
-		VentureEntity *row = g_ptr_array_index(company_rows, i);
-		g_autofree gchar *name = venture_entity_get_display_name(row);
-		g_autofree gchar *reason = NULL, *number = NULL;
-		gboolean exempt = FALSE;
+		gboolean opened = FALSE;
 
-		/* What the customer's record already says about tax rides on the
-		 * option, so choosing them fills the exemption in. */
-		gint64 venture = 0;
-
-		g_object_get(row, "tax-exempt", &exempt, "tax-exempt-reason", &reason,
-			"tax-exemption-number", &number, "venture-id", &venture, NULL);
-		/* The customer's venture, so a plan picker can offer its plans. */
-		g_string_append_printf(html, "<option value=\"%" G_GINT64_FORMAT "\" data-venture=\"%" G_GINT64_FORMAT "\"",
-			venture_entity_get_id(row), venture);
-		if (exempt)
+		for (i = 0; i < company_rows->len; i++)
 		{
-			g_string_append(html, " data-exempt=\"1\" data-exempt-kind=\"");
-			venture_html_escape_append(html, reason != NULL ? reason : "");
-			g_string_append(html, "\" data-exempt-number=\"");
-			venture_html_escape_append(html, number != NULL ? number : "");
-			g_string_append(html, "\"");
+			VentureEntity *row = g_ptr_array_index(company_rows, i);
+
+			if (venture_company_is_customer(row) != (0 == group))
+				continue;
+			if (!opened)
+			{
+				g_string_append(html, (0 == group) ? "<optgroup label=\"Customers\">"
+					: "<optgroup label=\"Other companies\">");
+				opened = TRUE;
+			}
+			document_append_company_option(html, row, chosen);
 		}
-		/* Started from a customer's page: that customer. */
-		if (chosen > 0 && venture_entity_get_id(row) == chosen)
-			g_string_append(html, " selected");
-		g_string_append(html, ">");
-		venture_html_escape_append(html, name);
-		g_string_append(html, "</option>");
+		if (opened)
+			g_string_append(html, "</optgroup>");
 	}
 	g_string_append(html, "</select></label>");
 
@@ -254,7 +282,7 @@ document_append_parties(VentureWebServer *self, GString *html, gint64 organizati
 	 * never for the attention of somebody at another. The save refuses it
 	 * as well; this only stops it being offered. */
 	g_string_append(html, "<label class=\"doc-field\"><span class=\"field-label\">Attention of</span>"
-		"<select name=\"contact-id\" data-doc-contact><option value=\"\">Nobody in particular</option>");
+		"<select name=\"contact-id\" data-doc-contact data-picker-search><option value=\"\">Nobody in particular</option>");
 	for (i = 0; contact_rows != NULL && i < contact_rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(contact_rows, i);

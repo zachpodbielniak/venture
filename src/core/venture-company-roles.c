@@ -47,6 +47,32 @@ roles_validate(VentureDatabase *database, VentureEntity *entity, VentureEntity *
 	return TRUE;
 }
 
+/* An expense filed against a supplier names it as the vendor too, so the
+ * reports that group expenses by vendor keep working. A vendor typed by
+ * hand is left as it is. */
+static gboolean
+expense_validate(VentureDatabase *database, VentureEntity *entity, VentureEntity *previous,
+	gpointer user_data, GError **error)
+{
+	g_autoptr(VentureEntity) supplier = NULL;
+	g_autofree gchar *vendor = NULL;
+	g_autofree gchar *name = NULL;
+	gint64 supplier_id = 0;
+	(void)previous; (void)user_data; (void)error;
+	if (!VENTURE_IS_EXPENSE(entity))
+		return TRUE;
+	g_object_get(entity, "supplier-id", &supplier_id, "vendor", &vendor, NULL);
+	if ((supplier_id <= 0) || !venture_string_is_empty(vendor))
+		return TRUE;
+	supplier = venture_database_get(database, VENTURE_TYPE_COMPANY, supplier_id, NULL);
+	if ((NULL == supplier) ||
+	    (venture_entity_get_organization_id(supplier) != venture_entity_get_organization_id(entity)))
+		return TRUE;
+	g_object_get(supplier, "name", &name, NULL);
+	g_object_set(entity, "vendor", name, NULL);
+	return TRUE;
+}
+
 void
 venture_company_roles_install(VentureDatabase *database)
 {
@@ -55,4 +81,5 @@ venture_company_roles_install(VentureDatabase *database)
 		return;
 	g_object_set_data(G_OBJECT(database), "venture-company-roles", GINT_TO_POINTER(1));
 	venture_database_add_save_validator(database, VENTURE_TYPE_COMPANY, roles_validate, NULL, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_EXPENSE, expense_validate, NULL, NULL);
 }

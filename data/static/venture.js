@@ -2074,7 +2074,12 @@
 		list.className = "picker-list";
 		list.setAttribute("role", "listbox");
 
-		if (select.options.length > PICKER_SEARCH_THRESHOLD) {
+		/* A record is found by typing, however few there are today;
+		 * a short list of fixed choices needs no box. */
+		var searchable = select.hasAttribute("data-picker-search")
+			|| select.options.length > PICKER_SEARCH_THRESHOLD;
+
+		if (searchable) {
 			panel.appendChild(filter);
 		}
 
@@ -2226,6 +2231,14 @@
 				    || event.key === " ") {
 					event.preventDefault();
 					open();
+				} else if (searchable && event.key.length === 1
+				           && !event.ctrlKey && !event.metaKey && !event.altKey) {
+					/* Typing on a closed picker opens it already
+					 * filtered by what was typed. */
+					event.preventDefault();
+					open();
+					filter.value = event.key;
+					applyFilter();
 				}
 
 				return;

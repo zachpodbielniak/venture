@@ -8797,6 +8797,77 @@ venture_web_member_users(VentureWebServer *self, gint64 organization)
 	return out;
 }
 
+/*
+ * The records of @target in @view, as a set of ids: the ones a reference
+ * that means that view offers first. %NULL when the view's filters do not
+ * apply, so the picker falls back to one list.
+ */
+static GHashTable *
+venture_web_reference_view_ids(
+	VentureWebServer		*self,
+	GType				 target,
+	const VentureEntityListView	*view,
+	gint64				 organization
+){
+	g_autoptr(VentureQuery) query = venture_query_new(target);
+	g_autoptr(GHashTable) filters = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_auto(GStrv) pairs = g_strsplit(view->query, "&", -1);
+	GHashTable *ids;
+	guint i;
+
+	for (i = 0; NULL != pairs[i]; i++)
+	{
+		g_auto(GStrv) pair = g_strsplit(pairs[i], "=", 2);
+
+		if (NULL != pair[0] && NULL != pair[1])
+			g_hash_table_replace(filters, g_strdup(pair[0]), g_strdup(pair[1]));
+	}
+	if (!venture_query_apply_query_string(query, filters, NULL))
+		return NULL;
+	venture_query_set_limit(query, 0);
+	if (organization > 0)
+		venture_query_set_organization(query, organization);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	if (NULL == rows)
+		return NULL;
+	ids = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	for (i = 0; i < rows->len; i++)
+	{
+		gint64 *id = g_new(gint64, 1);
+
+		*id = venture_entity_get_id(g_ptr_array_index(rows, i));
+		g_hash_table_add(ids, id);
+	}
+	return ids;
+}
+
+static void
+venture_web_append_reference_option(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record,
+	VentureEntity		*option,
+	const gchar		*current,
+	const gchar		*parent
+){
+	g_autofree gchar *display = venture_web_reference_option_label(self, record, option);
+	gint64 id = venture_entity_get_id(option);
+
+	g_string_append_printf(content, "<option value=\"%" G_GINT64_FORMAT "\"%s", id,
+		((NULL != current) && (g_ascii_strtoll(current, NULL, 10) == id)) ? " selected" : "");
+	if (NULL != parent)
+	{
+		gint64 owner = 0;
+
+		g_object_get(option, parent, &owner, NULL);
+		g_string_append_printf(content, " data-parent=\"%" G_GINT64_FORMAT "\"", owner);
+	}
+	g_string_append(content, ">");
+	venture_html_escape_append(content, display);
+	g_string_append(content, "</option>");
+}
+
 static void
 venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
@@ -8973,11 +9044,13 @@ venture_web_append_form_field_scoped(
 				parent = venture_entity_class_get_shared_parent(
 					VENTURE_ENTITY_GET_CLASS(record), name);
 
+			/* data-picker-search: a record is found by typing, however
+			 * few there are today. */
 			if (NULL != parent)
-				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\">",
+				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\" data-picker-search>",
 					name, parent);
 			else
-				g_string_append_printf(content, "<select name=\"%s\">", name);
+				g_string_append_printf(content, "<select name=\"%s\" data-picker-search>", name);
 			g_string_append(content, "<option value=\"\">—</option>");
 
 			if (G_TYPE_INVALID != target)
@@ -9003,33 +9076,60 @@ venture_web_append_form_field_scoped(
 			 */
 			if (NULL != options)
 			{
+				const VentureEntityListView *view = NULL;
+				g_autoptr(GHashTable) preferred = NULL;
 				guint i;
 
-				for (i = 0; i < options->len; i++)
+				/* A reference that means one view of its type -- an
+				 * invoice's customer, a bill's supplier -- offers that
+				 * view first, under its name, and the rest after. */
+				if ((NULL != record) && (G_TYPE_INVALID != target))
+					view = venture_entity_type_get_reference_view(G_OBJECT_TYPE(record), name);
+				if (NULL != view)
+					preferred = venture_web_reference_view_ids(self, target, view, organization);
+
+				if (NULL == preferred)
 				{
-					g_autofree gchar *display = NULL;
-					VentureEntity *option;
-					gint64 id;
+					for (i = 0; i < options->len; i++)
+						venture_web_append_reference_option(self, content, record,
+							g_ptr_array_index(options, i), current, parent);
+				}
+				else
+				{
+					g_autofree gchar *plural = venture_web_type_label(target, TRUE);
+					g_autofree gchar *lower = g_ascii_strdown(plural, -1);
+					guint group;
 
-					option = g_ptr_array_index(options, i);
-					id = venture_entity_get_id(option);
-					display = venture_web_reference_option_label(self, record, option);
-
-					g_string_append_printf(content,
-						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
-						((NULL != current) &&
-						 (g_ascii_strtoll(current, NULL, 10) == id))
-						 ? " selected" : "");
-					if (NULL != parent)
+					for (group = 0; group < 2; group++)
 					{
-						gint64 owner = 0;
+						gboolean opened = FALSE;
 
-						g_object_get(option, parent, &owner, NULL);
-						g_string_append_printf(content, " data-parent=\"%" G_GINT64_FORMAT "\"", owner);
+						for (i = 0; i < options->len; i++)
+						{
+							VentureEntity *option = g_ptr_array_index(options, i);
+							gint64 id = venture_entity_get_id(option);
+
+							if (g_hash_table_contains(preferred, &id) != (0 == group))
+								continue;
+							if (!opened)
+							{
+								g_string_append(content, "<optgroup label=\"");
+								if (0 == group)
+									venture_html_escape_append(content, view->label);
+								else
+								{
+									g_string_append(content, "Other ");
+									venture_html_escape_append(content, lower);
+								}
+								g_string_append(content, "\">");
+								opened = TRUE;
+							}
+							venture_web_append_reference_option(self, content, record,
+								option, current, parent);
+						}
+						if (opened)
+							g_string_append(content, "</optgroup>");
 					}
-					g_string_append(content, ">");
-					venture_html_escape_append(content, display);
-					g_string_append(content, "</option>");
 				}
 			}
 

@@ -14,7 +14,8 @@ static const VentureFieldDecl payment_fields[] = {
 	VENTURE_FIELD("bank-account-id", "Bank account", "Optional bank identifier", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("bill-id", "Allocate to bill", "Optional: applies up to the bill balance; the rest remains a credit", "vendor_bill", VENTURE_COLUMN_FLAG_NONE)
 };
-VENTURE_DEFINE_ENTITY(VentureBillPayment, venture_bill_payment, payment_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBillPayment, venture_bill_payment, payment_fields,
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "vendor-id", "Suppliers");)
 
 static const VentureFieldDecl allocation_fields[] = {
 	VENTURE_FIELD_REF("payment-id", "Payment", "Supply a payment or a credit, not both", "bill_payment", VENTURE_COLUMN_FLAG_NONE),
@@ -90,7 +91,8 @@ static const VentureFieldDecl bill_fields[] = {
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureVendorBill, venture_vendor_bill, bill_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = vendor_bill_display_name;
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Supplier bill", NULL);
-	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/bills/compose");)
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/bills/compose");
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "company-id", "Suppliers");)
 
 static const VentureFieldDecl bill_line_fields[] = {
 	VENTURE_FIELD_REF("bill-id", "Bill", NULL, "vendor_bill", VENTURE_COLUMN_FLAG_NOT_NULL),

@@ -65,7 +65,8 @@ static const VentureFieldDecl quote_fields[] = {
 		"customer_subscription", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureQuote, venture_quote, quote_fields,
-	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/quotes/compose");)
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/quotes/compose");
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "company-id", "Customers");)
 
 static const VentureFieldDecl quote_line_fields[] = {
 	VENTURE_FIELD_REF("quote-id", "Quote", NULL, "quote", VENTURE_COLUMN_FLAG_NOT_NULL),

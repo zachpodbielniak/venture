@@ -483,6 +483,10 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	                  "Leave unset for an expense that spans ventures",
 	                  "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("description", "Description", "What it was for"),
+	/* Who you paid, as the supplier record when there is one; saving it
+	 * names the vendor too (venture_company_roles_install()). */
+	VENTURE_FIELD_REF("supplier-id", "Supplier", "The supplier you paid",
+	                  "company", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("vendor", "Vendor", "Who you paid",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
@@ -525,7 +529,8 @@ static const VentureFieldDecl venture_expense_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExpense, venture_expense, venture_expense_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "supplier-id", "Suppliers");)
 
 VentureMoney *
 venture_expense_get_deductible_amount(
@@ -3211,7 +3216,8 @@ venture_invoice_display_name(VentureEntity *self)
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInvoice, venture_invoice, venture_invoice_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_invoice_display_name;
-	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");)
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "company-id", "Customers");)
 
 /*
  * One line of an invoice. The amount is quantity times unit price, computed

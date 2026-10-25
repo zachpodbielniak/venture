@@ -665,6 +665,38 @@ GPtrArray *
 venture_entity_type_get_list_views(GType type);
 
 /**
+ * venture_entity_class_set_reference_view:
+ * @klass: a #VentureEntityClass
+ * @field: a reference field of @klass, such as "company-id"
+ * @view: the label of a list view of the referenced type, such as "Customers"
+ *
+ * Says which of the referenced type's views (venture_entity_class_add_list_view())
+ * this field means: its picker offers that view's records first, under the
+ * view's name, and every other record after them. An invoice's company is
+ * a customer; a bill's vendor is a supplier.
+ */
+void
+venture_entity_class_set_reference_view(
+	VentureEntityClass	*klass,
+	const gchar		*field,
+	const gchar		*view
+);
+
+/**
+ * venture_entity_type_get_reference_view:
+ * @type: a #VentureEntity subtype
+ * @field: one of its reference fields
+ *
+ * Returns: (transfer none) (nullable): the referenced type's view this
+ *   field means, or %NULL for none
+ */
+const VentureEntityListView *
+venture_entity_type_get_reference_view(
+	GType		 type,
+	const gchar	*field
+);
+
+/**
  * venture_entity_class_set_commentable:
  * @klass: a #VentureEntityClass
  * @commentable: whether people may hold a discussion on its records

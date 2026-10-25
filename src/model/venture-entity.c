@@ -697,6 +697,77 @@ venture_entity_type_get_list_views(GType type)
 		g_quark_from_static_string("venture-entity-list-views"));
 }
 
+void
+venture_entity_class_set_reference_view(
+	VentureEntityClass	*klass,
+	const gchar		*field,
+	const gchar		*view
+){
+	GQuark quark = g_quark_from_static_string("venture-entity-reference-views");
+	GHashTable *views;
+
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != field && NULL != view);
+
+	/* Lives as long as the type, like the labels beside it. */
+	views = g_type_get_qdata(G_OBJECT_CLASS_TYPE(klass), quark);
+	if (NULL == views)
+	{
+		views = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass), quark, views);
+	}
+	g_hash_table_replace(views, g_strdup(field), g_strdup(view));
+}
+
+const VentureEntityListView *
+venture_entity_type_get_reference_view(
+	GType		 type,
+	const gchar	*field
+){
+	g_autoptr(GTypeClass) klass = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	g_autoptr(VentureEntity) prototype = NULL;
+	GHashTable *views;
+	const gchar *label;
+	GPtrArray *offered;
+	GType target;
+	guint i, j;
+
+	g_return_val_if_fail(g_type_is_a(type, VENTURE_TYPE_ENTITY), NULL);
+	g_return_val_if_fail(NULL != field, NULL);
+
+	klass = g_type_class_ref(type);
+	views = g_type_get_qdata(type, g_quark_from_static_string("venture-entity-reference-views"));
+	label = (NULL != views) ? g_hash_table_lookup(views, field) : NULL;
+	if (NULL == label)
+		return NULL;
+
+	/* The view belongs to the referenced type: found through the field. */
+	prototype = g_object_new(type, NULL);
+	specs = venture_entity_get_field_specs(prototype);
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+
+		if (0 != g_strcmp0(venture_field_spec_get_name(spec), field))
+			continue;
+		target = venture_entity_registry_lookup_any(venture_entity_registry_get_default(),
+			venture_field_spec_get_reference_type(spec));
+		if (G_TYPE_INVALID == target)
+			return NULL;
+		offered = venture_entity_type_get_list_views(target);
+		for (j = 0; (NULL != offered) && (j < offered->len); j++)
+		{
+			const VentureEntityListView *view = g_ptr_array_index(offered, j);
+
+			if (0 == g_strcmp0(view->label, label))
+				return view;
+		}
+		return NULL;
+	}
+	return NULL;
+}
+
 /*
  * Stored as an opt-out so that the absence of any qdata -- every type
  * that never thought about comments -- reads as "takes them".
