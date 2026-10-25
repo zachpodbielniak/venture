@@ -188,6 +188,7 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autoptr(VentureEntity) access = NULL;
 	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) comment = NULL;
 	g_autofree gchar *dir = g_dir_make_tmp("venture-portal-XXXXXX", NULL);
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *path = NULL;
@@ -196,6 +197,10 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	VentureActor actor;
 	(void)data;
 	actor_init(&actor);
+	comment = g_object_new(VENTURE_TYPE_COMMENT, "subject-type", "company",
+		"subject-id", f->company, "body", "Internal discussion marker 161",
+		"organization-id", f->org, NULL);
+	save(f, comment);
 	invoice = issued_invoice(f, f->company, "INV-WEB", "10 USD");
 	issued_invoice(f, f->other, "INV-HIDDEN", "50 USD");
 	access = venture_portal_service_invite(venture_portal_service_get(f->db),
@@ -213,12 +218,28 @@ test_http_isolation(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "INV-WEB"));
 	g_assert_null(strstr(body, "INV-HIDDEN"));
 	g_assert_nonnull(strstr(body, "Checkout"));
+	g_assert_null(strstr(body, "Internal discussion marker 161"));
 	{
 		g_autofree gchar *payload = g_strdup_printf("{\"company_id\":%" G_GINT64_FORMAT ",\"email\":\"billing@example.org\"}", f->company);
 		g_autofree gchar *reply = NULL;
 		g_object_set(f->config, "server-base-url", "https://venture.example.org", NULL);
 		g_assert_cmpuint(http_request(server, "POST", "/api/v1/customer_portal/invite", payload, &reply), ==, 201);
 		g_assert_null(strstr(reply, "\"token\""));
+	}
+	/* A portal link does not authenticate the internal discussion API. */
+	{
+		g_autofree gchar *discussion = g_strdup_printf(
+			"/api/v1/comments?subject_type=company&subject_id=%" G_GINT64_FORMAT "&token=%s", f->company, token);
+		g_autofree gchar *reply = NULL;
+		g_object_set(f->config, "security-require-auth", TRUE, NULL);
+		venture_web_server_stop(server);
+		g_clear_object(&server);
+		server = venture_web_server_new(f->context, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_web_server_start(server, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(http_request(server, "GET", discussion, NULL, &reply), ==, 401);
+		g_assert_null(strstr(reply, "Internal discussion marker 161"));
 	}
 	venture_config_set_module_enabled(f->config, "receivables", FALSE);
 	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL), ==, 404);

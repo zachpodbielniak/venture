@@ -310,3 +310,25 @@ database.
 Set =VENTURE_TEST_MIGRATION_POSTGRES_URI= for =test-migrations= to exercise
 all shipped migrations, including =000490=, in a separate temporary
 PostgreSQL schema. Ordinary runs require neither variable nor a server.
+
+* Record discussions and owner following
+
+Companies, contacts and deals use the shared [[file:comments.org][record discussion]]:
+internal, audited comments and replies on the timeline, with =@username=
+mentions delivered through the inbox. Only the comment author can edit the
+words. A mention and a follow produce one notification, never two, and
+recipients must still be able to read the record when delivery happens.
+These discussions are not customer-portal content.
+
+Creating a company, contact or deal with an =owner-user-id= follows it for
+that active, authorized user. Assigning a different owner does the same.
+A deal without an owner user uses its =owner= username instead. The existing
+sales validation keeps its owner username and user reference consistent.
+Existing records keep their current followers until an owner assignment or an explicit
+Follow; upgrading does not reset anyone's notification choices.
+
+Unfollow remains effective through ordinary edits and comments that do not
+mention you. A later assignment to you, your own comment, or a new mention
+can follow the record again. Reassignment does not remove an earlier
+owner's explicit follow; delivery always rechecks access. The same default
+applies to web, API, CLI and internal writes through the shared audit path.

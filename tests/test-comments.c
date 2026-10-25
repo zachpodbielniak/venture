@@ -153,7 +153,7 @@ fixture_set_up(Fixture *f, gconstpointer data)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) other = NULL;
-	gboolean open = (NULL != data);
+	gboolean open = (data == GINT_TO_POINTER(1));
 
 	g_setenv("VENTURE_TEST_SESSION_SECRET", "test-secret-value", TRUE);
 	f->state_dir = g_dir_make_tmp("venture-comments-XXXXXX", &error);
@@ -1370,6 +1370,75 @@ test_both_looks(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(industrial, "function wire_discussion"));
 }
 
+/* Owners hear the discussion without manually following, and an explicit
+ * Unfollow survives ordinary edits. Ownership never grants record access. */
+static void
+test_owner_follow(Fixture *f, gconstpointer data)
+{
+	const gchar *type = data;
+	gboolean legacy = g_strcmp0(type, "deal-username") == 0;
+	g_autoptr(VentureEntity) subject = NULL;
+	g_autoptr(VentureEntity) comment = NULL;
+	g_autoptr(GPtrArray) inbox = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAuthPrincipal admin;
+	gint64 id;
+	if (legacy) type = "deal";
+	subject = g_object_new(venture_entity_registry_lookup(venture_entity_registry_get_default(), type),
+		"name", "Owner discussion fixture", "organization-id", f->org, NULL);
+	if (legacy) g_object_set(subject, "owner", editor_name, NULL);
+	else g_object_set(subject, "owner-user-id", f->editor_id, NULL);
+	save(f, subject);
+	id = venture_entity_get_id(subject);
+	g_assert_true(venture_notify_is_watching(f->context, f->editor_id, type, id));
+	principal_for(&admin, f->admin_id, VENTURE_USER_ROLE_EDITOR, admin_name);
+	comment = comment_as(f, &admin, subject, 0, "@erin please review; @otto must not receive this.");
+	inbox = inbox_of(f, f->editor_id);
+	g_assert_cmpuint(count_kind(inbox, VENTURE_NOTIFICATION_KIND_MENTION), ==, 1);
+	g_assert_cmpuint(count_kind(inbox, VENTURE_NOTIFICATION_KIND_WATCHED), ==, 0);
+	g_clear_pointer(&inbox, g_ptr_array_unref);
+	inbox = inbox_of(f, f->outsider_id);
+	g_assert_cmpuint(inbox->len, ==, 0);
+	g_clear_pointer(&inbox, g_ptr_array_unref);
+	g_clear_object(&comment);
+	comment = comment_as(f, &admin, subject, 0, "A second note, without a mention.");
+	inbox = inbox_of(f, f->editor_id);
+	g_assert_cmpuint(count_kind(inbox, VENTURE_NOTIFICATION_KIND_WATCHED), ==, 1);
+	g_clear_pointer(&inbox, g_ptr_array_unref);
+
+	g_assert_true(venture_notify_unwatch(f->context, f->editor_id, type, id, &error));
+	g_assert_no_error(error);
+	g_object_set(subject, "name", "Renamed owner discussion", NULL);
+	save(f, subject);
+	g_assert_false(venture_notify_is_watching(f->context, f->editor_id, type, id));
+
+	g_clear_object(&comment);
+	comment = comment_as(f, &admin, subject, 0, "An unfollowed note.");
+	inbox = inbox_of(f, f->editor_id);
+	g_assert_cmpuint(count_kind(inbox, VENTURE_NOTIFICATION_KIND_WATCHED), ==, 1);
+	g_clear_pointer(&inbox, g_ptr_array_unref);
+
+	/* Assignment, including an internal writer, follows the new owner. */
+	if (legacy) g_object_set(subject, "owner", viewer_name, NULL);
+	else g_object_set(subject, "owner-user-id", f->viewer_id, NULL);
+	save(f, subject);
+	g_assert_true(venture_notify_is_watching(f->context, f->viewer_id, type, id));
+	g_assert_false(venture_notify_is_watching(f->context, f->editor_id, type, id));
+	/* Access loss is checked again when a comment is delivered. */
+	if (VENTURE_IS_DEAL(subject))
+		g_object_set(subject, "owner", admin_name, "owner-user-id", f->admin_id, NULL);
+	else g_object_set(subject, "owner-user-id", f->outsider_id, NULL);
+	save(f, subject);
+	g_assert_false(venture_notify_is_watching(f->context, f->outsider_id, type, id));
+	g_clear_object(&comment);
+	comment = comment_as(f, &admin, subject, 0, "No cross-organization notification.");
+	inbox = inbox_of(f, f->outsider_id);
+	g_assert_cmpuint(inbox->len, ==, 0);
+	g_clear_pointer(&inbox, g_ptr_array_unref);
+	inbox = inbox_of(f, f->viewer_id);
+	g_assert_cmpuint(inbox->len, ==, 0);
+}
+
 #define ADD(path, func) \
 	g_test_add("/comments/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 #define ADD_OPEN(path, func) \
@@ -1393,5 +1462,9 @@ main(int argc, char **argv)
 	ADD_OPEN("every-type", test_every_type);
 	ADD_OPEN("both-looks", test_both_looks);
 
+	g_test_add("/comments/owner-company", Fixture, "company", fixture_set_up, test_owner_follow, fixture_tear_down);
+	g_test_add("/comments/owner-contact", Fixture, "contact", fixture_set_up, test_owner_follow, fixture_tear_down);
+	g_test_add("/comments/owner-deal", Fixture, "deal", fixture_set_up, test_owner_follow, fixture_tear_down);
+	g_test_add("/comments/owner-deal-username", Fixture, "deal-username", fixture_set_up, test_owner_follow, fixture_tear_down);
 	return g_test_run();
 }
