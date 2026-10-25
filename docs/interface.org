@@ -10,6 +10,8 @@
 
 VENTURE's web UI is drawn from one stylesheet at a time, embedded into the server binary at build time; there is no build step, no framework and no web font. This page is what the stylesheet is made of, so that a page added to the server, a widget added to a dashboard, or a plugin's own markup lands in the same design instead of beside it.
 
+A page links the stylesheet for its look and the two scripts (=venture-hx.js=, then =venture.js=) rather than carrying them: they are served at =/pub/ui/<version>/<name>=, where the version is the first sixteen hex digits of the content's SHA-256, with =Cache-Control: public, max-age=31536000, immutable=. The browser fetches each once and keeps it until a release changes the content and so the address; a request naming an older version still gets the current file, uncached, so a page left open across a release keeps working. Together they are over four hundred kilobytes, and inlined they made every click download and parse half a megabyte. The route is public, because the sign-in page needs the stylesheet before there is a session. =tests/test-venture-page-assets.c= holds an owner's pages under 96 KB and checks the files come back byte for byte.
+
 ** Principles
 
 The interface is built for somebody running a business between other things, not for the person who designed the schema. Six rules decide every page, borrowed from the tools people find calm to use -- Apple's clarity and deference, Stripe's summary-first records, Linear's quiet density, and Nielsen's recognition over recall -- and each is enforced in code rather than hoped for:
@@ -148,7 +150,7 @@ A line or bar chart also carries its raw numbers as JSON in =<script type="appli
 - the low, high, latest and change of the first series shown, over the range in view;
 - Table, which shows the chart's table, and CSV, which downloads it.
 
-Its classes are =plot-*= (=.plot=, =.plot-svg=, =.plot-s1= … =.plot-s4= with =.plot-line=, =.plot-area=, =.plot-bridge=, =.plot-dot=, =.plot-ring=, =.plot-col=, =.plot-tip=, =.plot-key-1= … =.plot-key-4=, =.plot-controls=, =.plot-stats=, =.plot-tools=), in both stylesheets after the =chart-*= rules, and never a =chart-*= class: venture.js is inlined into every page, and a test that greps a page for =chart-line= would find the script. A chart wired once is marked, and the page's MutationObserver ignores changes inside a =.plot=, so the readout redrawing on every pointer move does not rescan the page's tables.
+Its classes are =plot-*= (=.plot=, =.plot-svg=, =.plot-s1= … =.plot-s4= with =.plot-line=, =.plot-area=, =.plot-bridge=, =.plot-dot=, =.plot-ring=, =.plot-col=, =.plot-tip=, =.plot-key-1= … =.plot-key-4=, =.plot-controls=, =.plot-stats=, =.plot-tools=), in both stylesheets after the =chart-*= rules, and never a =chart-*= class: venture.js was once inlined into every page, where a test that grepped a page for =chart-line= would have found the script; the prefix keeps the two apart either way. A chart wired once is marked, and the page's MutationObserver ignores changes inside a =.plot=, so the readout redrawing on every pointer move does not rescan the page's tables.
 
 *** Coins
 
