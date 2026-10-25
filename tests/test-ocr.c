@@ -226,7 +226,9 @@ static void test_deadline(Fixture *f, gconstpointer data)
 	gint64 start;
 	(void)data;
 	set_engine_script(f, "while :; do :; done\n");
-	engine = venture_ocr_local_new(f->binary, 50, &error); g_assert_no_error(error);
+	/* The same budget covers the version probe: allow process startup on
+	 * a loaded host while still proving the runaway extraction is killed. */
+	engine = venture_ocr_local_new(f->binary, 1000, &error); g_assert_no_error(error);
 	g_object_get(document, "path", &path, NULL); g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
 	bytes = g_bytes_new(contents, length); start = g_get_monotonic_time();
 	text = venture_ocr_engine_extract(engine, bytes, "image/png", 0, "eng", NULL, &error);
