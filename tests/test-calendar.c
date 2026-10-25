@@ -708,6 +708,101 @@ static void test_booking_capacity(Fixture *f, gconstpointer data)
 	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
 }
 
+/* The owner action uses ordinary organization access, without a capability. */
+static void test_booking_owner_cancel(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), booked = NULL, cancelled = NULL, reservation = NULL, refused = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GHashTable) params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_unref);
+	g_autofree gchar *url = NULL, *state = NULL, *secret = NULL;
+	VentureActionRegistry *registry = venture_database_get_action_registry(f->db);
+	gint64 cancelled_version;
+	gint status;
+	(void)data;
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z", "Synthetic Owner Test", "owner-test@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(booked), NULL);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	url = venture_booking_service_manage_url(f->booking, reservation, "https://book.example.test", &error);
+	g_assert_no_error(error); g_assert_nonnull(url);
+	refused = venture_action_registry_perform(registry, "activity", venture_entity_get_id(booked), "cancel_booking", params, NULL, VENTURE_USER_ROLE_VIEWER, &error);
+	g_assert_null(refused); g_assert_nonnull(error); g_clear_error(&error);
+	{
+		g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "booking-editor", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+		g_autoptr(VentureEntity) member = NULL;
+		g_autoptr(VentureAccessScope) scope = NULL;
+		VentureAuthPrincipal principal;
+		save(f, user);
+		principal.authenticated = TRUE; principal.user_id = venture_entity_get_id(user); principal.token_id = 0;
+		principal.role = VENTURE_USER_ROLE_EDITOR; principal.name = NULL; principal.provider_token = FALSE;
+		scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+		refused = venture_action_registry_perform(registry, "activity", venture_entity_get_id(booked), "cancel_booking", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
+		g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+		g_clear_object(&scope);
+		member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", venture_entity_get_id(user),
+			"organization-id", f->org, "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_EDITOR, NULL);
+		save(f, member);
+		scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+		cancelled = venture_action_registry_perform(registry, "activity", venture_entity_get_id(booked), "cancel_booking", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
+	}
+	g_assert_no_error(error); g_assert_nonnull(cancelled);
+	cancelled_version = venture_entity_get_version(cancelled);
+	g_object_get(cancelled, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_CANCELLED);
+	g_clear_object(&reservation);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error);
+	g_object_get(reservation, "state", &state, "secret", &secret, NULL);
+	g_assert_cmpstr(state, ==, "cancelled"); g_assert_true(venture_string_is_empty(secret));
+	refused = venture_booking_service_lookup_capability(f->booking, p, strrchr(url, '/') + 1, now, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND); g_clear_error(&error);
+	g_clear_object(&cancelled);
+	cancelled = venture_action_registry_perform(registry, "activity", venture_entity_get_id(booked), "cancel_booking", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_no_error(error); g_assert_nonnull(cancelled);
+	g_assert_cmpint(venture_entity_get_version(cancelled), ==, cancelled_version);
+	g_clear_object(&booked);
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z", "Replacement", "replacement@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+}
+
+static gboolean reject_booking_cancel(VentureDatabase *db, VentureEntity *row, VentureEntity *previous, gpointer data, GError **error)
+{
+	gint status;
+	(void)db; (void)previous; (void)data;
+	g_object_get(row, "status", &status, NULL);
+	if (status != VENTURE_ACTIVITY_STATUS_CANCELLED) return TRUE;
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE, "Injected meeting write failure");
+	return FALSE;
+}
+
+static void test_booking_cancel_rollback(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), booked = NULL, refused = NULL, reservation = NULL, fresh = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GHashTable) params = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_unref);
+	g_autofree gchar *state = NULL, *secret = NULL;
+	gint status;
+	(void)data;
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z", "Synthetic Rollback", "rollback@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_ACTIVITY, reject_booking_cancel, NULL, NULL);
+	refused = venture_action_registry_perform(venture_database_get_action_registry(f->db), "activity", venture_entity_get_id(booked), "cancel_booking", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE); g_clear_error(&error);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(booked), NULL);
+	reservation = venture_database_find_one(f->db, query, &error); g_assert_no_error(error);
+	g_object_get(reservation, "state", &state, "secret", &secret, NULL);
+	g_assert_cmpstr(state, ==, "confirmed"); g_assert_false(venture_string_is_empty(secret));
+	fresh = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(booked), &error); g_assert_no_error(error);
+	g_object_get(fresh, "status", &status, NULL); g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_PLANNED);
+}
+
 /* A hold has no business side effects and expires independently of cleanup.
  * Only a current signed capability may move or cancel the confirmed meeting. */
 static void test_booking_holds_and_capabilities(Fixture *f, gconstpointer data)
@@ -959,6 +1054,8 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/deletions-cancel", Fixture, NULL, setup, test_deletions_cancel, teardown);
 	g_test_add("/calendar/conflict-last-modified-wins", Fixture, NULL, setup, test_conflict_last_modified_wins, teardown);
 	g_test_add("/calendar/booking-holds-capabilities", Fixture, NULL, setup, test_booking_holds_and_capabilities, teardown);
+	g_test_add("/calendar/booking-owner-cancel", Fixture, NULL, setup, test_booking_owner_cancel, teardown);
+	g_test_add("/calendar/booking-cancel-rollback", Fixture, NULL, setup, test_booking_cancel_rollback, teardown);
 	g_test_add("/calendar/booking-capacity", Fixture, NULL, setup, test_booking_capacity, teardown);
 	g_test_add("/calendar/booking-slots", Fixture, NULL, setup, test_booking_slots, teardown);
 	g_test_add("/calendar/booking-books-and-refuses-double", Fixture, NULL, setup, test_booking_books_and_refuses_double, teardown);

@@ -221,6 +221,36 @@ static void test_booking_page(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(strstr(formed, "Booked"));
 	g_assert_cmpuint(request_as(f, "POST", "/book/intro", "application/x-www-form-urlencoded", form, NULL), ==, 409);
 	g_assert_cmpuint(request(f, "POST", "/book/intro", "{\"start\":\"\",\"name\":\"\",\"email\":\"\"}", NULL), ==, 422);
+	/* The owner API stages the shared action without touching the booking.
+	 * Approval cancels it; the generated CLI can safely repeat that action. */
+	{
+		g_autoptr(JsonNode) record = json_from_string(created, NULL), proposal = NULL;
+		g_autoptr(VentureEntity) current = NULL;
+		g_autofree gchar *id_text = NULL, *path = NULL, *stage_path = NULL, *staged = NULL, *approve = NULL, *result = NULL, *again = NULL;
+		gint64 id = venture_json_object_get_int(json_node_get_object(record), "id", 0);
+		const gchar *args[] = { "act", "activity", NULL, "cancel_booking", NULL };
+		JsonObject *card;
+		gint status;
+		g_assert_cmpint(id, >, 0);
+		id_text = g_strdup_printf("%" G_GINT64_FORMAT, id); args[2] = id_text;
+		path = g_strdup_printf("/api/v1/activity/%s/actions/cancel_booking", id_text);
+		stage_path = g_strconcat(path, "?stage=1", NULL);
+		g_assert_cmpuint(request(f, "POST", path, "{\"recipient\":\"elsewhere@example.test\"}", NULL), ==, 422);
+		g_assert_cmpuint(request(f, "POST", stage_path, "{}", &staged), ==, 202);
+		proposal = json_from_string(staged, NULL);
+		card = json_object_get_object_member(json_node_get_object(proposal), "confirmation");
+		approve = g_strdup_printf("/api/v1/confirmations/%s/approve", json_object_get_string_member(card, "id"));
+		current = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, id, NULL);
+		g_object_get(current, "status", &status, NULL); g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_PLANNED);
+		g_assert_cmpuint(request(f, "POST", approve, "{}", &result), ==, 200);
+		g_clear_object(&current);
+		current = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, id, NULL);
+		g_object_get(current, "status", &status, NULL); g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_CANCELLED);
+		g_assert_null(strstr(result, "secret")); g_assert_null(strstr(result, "/manage/"));
+		again = cli(f, args, TRUE);
+		g_assert_nonnull(strstr(again, "cancelled"));
+		g_assert_null(strstr(again, "secret"));
+	}
 }
 
 /* A stranger's X-Forwarded-For does not mint a new bucket. /book and manage share that rule. */

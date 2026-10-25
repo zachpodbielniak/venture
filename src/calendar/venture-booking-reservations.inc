@@ -231,6 +231,16 @@ absent:
 	return NULL;
 }
 
+/* Both the private customer link and the authenticated owner action settle
+ * the reservation and meeting under their caller's transaction. */
+static gboolean booking_cancel_records(VentureBookingService *self, VentureEntity *reservation,
+	VentureEntity *activity, const VentureActor *actor, GError **error)
+{
+	g_object_set(reservation, "state", "cancelled", "secret", NULL, NULL);
+	g_object_set(activity, "status", VENTURE_ACTIVITY_STATUS_CANCELLED, NULL);
+	return reservation_write(self, reservation, error) && venture_database_save(self->database, activity, actor, error);
+}
+
 VentureEntity *venture_booking_service_manage(VentureBookingService *self, VentureEntity *page,
 	const gchar *capability, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error)
 {
@@ -247,8 +257,7 @@ VentureEntity *venture_booking_service_manage(VentureBookingService *self, Ventu
 	if (activity == NULL) goto fail;
 	if (cancel)
 	{
-		g_object_set(reservation, "state", "cancelled", "secret", NULL, NULL);
-		g_object_set(activity, "status", VENTURE_ACTIVITY_STATUS_CANCELLED, NULL);
+		if (!booking_cancel_records(self, reservation, activity, actor, error)) goto fail;
 	}
 	else
 	{
@@ -263,8 +272,8 @@ VentureEntity *venture_booking_service_manage(VentureBookingService *self, Ventu
 		secret = venture_generate_token(32);
 		g_object_set(reservation, "owner", shape.owner, "starts-at", when, "ends-at", ends, "secret", secret, NULL);
 		page_clear(&shape);
+		if (!reservation_write(self, reservation, error) || !venture_database_save(self->database, activity, actor, error)) goto fail;
 	}
-	if (!reservation_write(self, reservation, error) || !venture_database_save(self->database, activity, actor, error)) goto fail;
 	if (!cancel)
 	{
 		contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, booking_int(activity, "contact-id"), error);
@@ -323,6 +332,8 @@ static gboolean booking_validate_reservation(VentureDatabase *database, VentureE
 		refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Booking reservations are maintained by the booking service");
 }
 
+#include "venture-booking-actions.inc"
+
 void venture_booking_service_install(VentureDatabase *database)
 {
 	g_return_if_fail(VENTURE_IS_DATABASE(database));
@@ -330,4 +341,5 @@ void venture_booking_service_install(VentureDatabase *database)
 	venture_database_add_save_validator(database, VENTURE_TYPE_BOOKING_PAGE, booking_validate_page, NULL, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_BOOKING_RESERVATION, booking_validate_reservation, NULL, NULL);
 	g_object_set_data(G_OBJECT(database), "venture-booking-installed", GINT_TO_POINTER(1));
+	booking_register_cancel(database);
 }

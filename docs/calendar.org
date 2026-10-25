@@ -248,3 +248,21 @@ Paid form bookings hold capacity for 45 minutes and confirm only after verified
 invoice settlement. Only slots starting after that window are offered. Failed
 or expired Checkout releases the hold; late payment requires an available
 replacement through the owner recovery action. See [[file:forms.org][Payments on forms]].
+
+* Owner cancellation through record actions
+
+The stageable =cancel_booking= action belongs to the booking's =activity=,
+so the normal organization access policy and editor-or-higher role apply.
+It takes no parameters and is available through
+=POST /api/v1/activity/<id>/actions/cancel_booking=, the generated record
+controls, =venturectl act activity <id> cancel_booking= and generated MCP
+proposal tools. Approval reloads the activity and checks its version and
+current eligibility through the shared action registry.
+
+Cancellation writes the meeting's cancelled status and the reservation's
+cancelled state together, clears its private management capability, and
+releases the reserved capacity. An exact repeated cancellation succeeds
+without another write. Non-booked activities, completed meetings and
+inconsistent reservation states are refused. Disabling the calendar module
+also refuses the operation. No private reservation or management URL is
+returned. This operation sends no email and does not issue a payment refund.
