@@ -570,16 +570,22 @@ sync_and_wait(
 	return run;
 }
 
+/* Counters are 64-bit but "trigger" is an enum: read through a GValue so a
+ * 32-bit field never leaves the upper half of the result uninitialized. */
 static gint64
 run_int(
 	VentureEntity	*run,
 	const gchar	*field
 ){
-	gint64 value;
+	GValue value = G_VALUE_INIT;
+	gint64 result;
 
-	g_object_get(run, field, &value, NULL);
+	g_value_init(&value, G_TYPE_INT64);
+	g_object_get_property(G_OBJECT(run), field, &value);
+	result = g_value_get_int64(&value);
+	g_value_unset(&value);
 
-	return value;
+	return result;
 }
 
 static VentureDataSourceRunStatus
