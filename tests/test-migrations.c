@@ -1578,6 +1578,54 @@ test_jobs_upgrade_restart(void)
 	venture_test_remove_tree(directory);
 }
 
+/* Upgrading preserves old documents and never invents a rounding amount. */
+static void
+test_cutover_adjustment_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *tables[] = { "invoices", "vendor_bills" };
+	guint i, run;
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	for (i = 0; i < G_N_ELEMENTS(tables); i++)
+	{
+		g_autofree gchar *sql = g_strdup_printf(
+			"INSERT INTO %s (uuid, organization_id, created_at, updated_at, version, number, company_id%s) VALUES "
+			"('00000000-0000-4000-8000-000000000057', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 'OLD-57', 1%s);"
+			"ALTER TABLE %s DROP COLUMN opening_adjustment_amount;"
+			"ALTER TABLE %s DROP COLUMN opening_adjustment_currency;"
+			"ALTER TABLE %s DROP COLUMN opening_adjustment_exponent;", tables[i], i == 1 ? ", bill_date, currency, status" : "",
+			i == 1 ? ", '2025-12-01T00:00:00Z', 'USD', 'draft'" : "", tables[i], tables[i], tables[i]);
+		if (!venture_database_execute(database, sql, NULL, &error))
+			g_assert_no_error(error);
+		g_assert_no_error(error);
+	}
+	g_assert_true(venture_database_execute(database, "DELETE FROM schema_migrations WHERE version >= 957", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		for (i = 0; i < G_N_ELEMENTS(tables); i++)
+		{
+			g_autofree gchar *sql = g_strdup_printf("SELECT number FROM %s WHERE opening_adjustment_amount IS NULL "
+				"AND opening_adjustment_currency IS NULL AND opening_adjustment_exponent IS NULL", tables[i]);
+			g_autofree gchar *number = query_text(database, sql);
+			g_assert_cmpstr(number, ==, "OLD-57");
+		}
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1593,6 +1641,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/upgrade-restart", test_upgrade_restart);
 	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
 	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
+	g_test_add_func("/migrations/cutover-adjustment-upgrade", test_cutover_adjustment_upgrade);
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);

@@ -25,12 +25,12 @@ static const gchar *const csv_chart_columns[] = { "code", "name", "kind", "activ
 static const gchar *const csv_map_columns[] = { "source_code", "venture_code", NULL };
 static const gchar *const csv_open_ar_columns[] = {
 	"source_id", "customer_source_id", "customer_name", "number", "date", "due_date", "terms", "currency",
-	"amount", "net", "tax", "paid", "balance", "tax_exempt", "tax_exempt_reason", "memo", NULL
+	"amount", "net", "tax", "adjustment", "paid", "balance", "tax_exempt", "tax_exempt_reason", "memo", NULL
 };
 /* One bill per source_id; each CSV row adds a line from its line_ columns. */
 static const gchar *const csv_open_ap_columns[] = {
 	"source_id", "vendor_source_id", "vendor_name", "number", "date", "due_date", "currency", "paid", "balance",
-	"memo", "line_description", "line_amount", "line_tax", "line_account_code", "line_category", NULL
+	"adjustment", "memo", "line_description", "line_amount", "line_tax", "line_account_code", "line_category", NULL
 };
 static const gchar *const csv_credit_columns[] = {
 	"source_id", "kind", "type", "customer_source_id", "customer_name", "vendor_source_id", "vendor_name",

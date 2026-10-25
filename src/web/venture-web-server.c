@@ -5138,6 +5138,7 @@ venture_web_invoice_lines(
 
 static VentureMoney *
 venture_web_invoice_total(
+	VentureEntity *invoice,
 	GPtrArray	 *lines,
 	GError		**error
 );
@@ -5641,7 +5642,7 @@ venture_web_ui_invoice_print(
 	{
 		g_autoptr(VentureMoney) total = NULL;
 
-		total = venture_web_invoice_total(lines, NULL);
+		total = venture_web_invoice_total(record, lines, NULL);
 
 		if (NULL != total)
 		{
@@ -10767,10 +10768,12 @@ venture_web_invoice_lines(
  */
 static VentureMoney *
 venture_web_invoice_total(
+	VentureEntity *invoice,
 	GPtrArray	 *lines,
 	GError		**error
 ){
 	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(VentureMoney) adjustment = NULL;
 	guint i;
 
 	for (i = 0; (NULL != lines) && (i < lines->len); i++)
@@ -10801,6 +10804,13 @@ venture_web_invoice_total(
 		}
 	}
 
+	g_object_get(invoice, "opening-adjustment", &adjustment, NULL);
+	if (adjustment != NULL && total != NULL)
+	{
+		VentureMoney *sum = venture_money_add(total, adjustment, error);
+		g_clear_pointer(&total, venture_money_free);
+		total = sum;
+	}
 	return g_steal_pointer(&total);
 }
 
@@ -11933,7 +11943,7 @@ venture_web_append_invoice_block(
 		g_autoptr(VentureMoney) total = NULL;
 		g_autoptr(GError) sum_error = NULL;
 
-		total = venture_web_invoice_total(lines, &sum_error);
+		total = venture_web_invoice_total(record, lines, &sum_error);
 
 		if (NULL != total)
 		{

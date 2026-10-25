@@ -3181,6 +3181,7 @@ static const VentureFieldDecl venture_invoice_fields[] = {
 	/* Set only by VentureSettlementService for a migrated invoice: the cutoff
 	 * its journal posts at. Tax filing and cash-report sales skip such an
 	 * invoice, because its revenue and tax belong to the source system. */
+	VENTURE_FIELD_MONEY("opening-adjustment", "Opening adjustment", "Signed source document adjustment set only by the cutover service"),
 	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated invoice entered the ledger",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };

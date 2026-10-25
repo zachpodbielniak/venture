@@ -84,6 +84,7 @@ static const VentureFieldDecl bill_fields[] = {
 	VENTURE_FIELD_TEXT("memo", "Memo", NULL),
 	/* Set only by VenturePayablesService for a migrated bill: the cutoff its
 	 * journal posts at, against opening clearing rather than expense. */
+	VENTURE_FIELD_MONEY("opening-adjustment", "Opening adjustment", "Signed source document adjustment set only by the cutover service"),
 	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated bill entered the ledger",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };

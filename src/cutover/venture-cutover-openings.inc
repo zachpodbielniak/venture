@@ -683,7 +683,8 @@ import_open_ar(Import *import, GError **error)
 		}
 		invoice = venture_invoice_new();
 		g_object_set(invoice, "number", row->number, "company-id", customer, "issued-at", row->date,
-			"due-at", row->due, "terms", row->terms, "notes", row->memo, NULL);
+			"due-at", row->due, "terms", row->terms, "notes", row->memo,
+			"opening-adjustment", row->adjustment, NULL);
 		if (row->tax_exempt)
 			g_object_set(invoice, "tax-exempt", TRUE, "tax-exempt-reason", row->tax_exempt_reason, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(invoice), plan->org);
@@ -729,7 +730,8 @@ import_open_ap(Import *import, GError **error)
 			return party_failed(plan, error);
 		bill = venture_vendor_bill_new();
 		g_object_set(bill, "number", row->number, "company-id", vendor, "currency", venture_money_get_currency(row->total),
-			"status", "draft", "bill-date", row->date, "due-date", row->due, "memo", row->memo, NULL);
+			"status", "draft", "bill-date", row->date, "due-date", row->due, "memo", row->memo,
+			"opening-adjustment", row->adjustment, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(bill), plan->org);
 		lines = g_ptr_array_new_with_free_func(g_object_unref);
 		for (l = 0; l < row->lines->len; l++)
