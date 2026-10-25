@@ -27,3 +27,55 @@ venturectl budget forecast 2026-08
 
 The web page is =/budgets=. Turning the module off hides the records, both
 reports and the page.
+
+* Monthly category envelopes
+
+An envelope is an ordinary =budget_line= with =envelope= enabled. Create an
+active budget, then a line for each category's expense account. Set the line's
+=period= to its first month (=YYYY-MM=), its =amount= to the monthly allocation
+in the organization's book currency, and choose =rollover= independently for
+each line. Leave Dimension empty. Each organization can have only one live
+envelope per expense account, including draft plans; edit or remove the old
+line before replacing it. Future start months and inactive or deleted plans
+are not shown. Ordinary business lines keep their existing period rules.
+
+The account is the category boundary. The expense posting profile already
+maps category codes to expense accounts; choose those same accounts here.
+Categories mapped to the same account share one envelope. Give categories
+separate expense accounts and posting mappings when they need separate limits.
+Bank transactions must be categorized and posted before they count as spending.
+Own-account transfers and card principal repayments do not hit expense accounts;
+fees and interest posted to an expense account do count. Refunds reduce spending.
+
+The monthly amount repeats from the start month, including months when no
+report was opened. With rollover off, Available is that month's amount. With
+rollover on, Rolled over is all earlier monthly allocations minus posted net
+spending since the start month. Both unused money and overspending carry over,
+including across year boundaries. Available is Monthly amount plus Rolled over;
+Left to spend is Available minus this month's Spent. These are planning amounts,
+not claims about the cash balance of a bank account, and no journal is created.
+
+Status is On track until at least 80% of Available is spent, then Running low.
+Exactly zero left is Used up; negative left is Over budget. Warnings are shown
+in the report when it is opened, not delivered as notifications. Calculations
+use integer minor units and refuse overflow and foreign-currency allocations.
+Editing an envelope's amount, start month or rollover choice recomputes its
+history from the current plan and posted ledger; it does not freeze past months.
+
+The household Budgets page defaults to Monthly envelopes and the current month.
+Select a month to see its amounts, statuses and total left to spend. The page
+links to the generated Budget and Budget line forms. Business viewers can select
+Monthly envelopes explicitly, while vs actual and cash forecast remain available
+for ordinary budget lines. Envelopes are separate from those two business reports.
+The API accepts an explicit =organization_id= and the UI follows the selected
+organization, within the normal access rules.
+
+#+begin_src sh
+venturectl budget envelopes 2027-01
+#+end_src
+
+The shared report is =budget_envelopes=; the direct endpoint is
+=/api/v1/budget_reports?kind=envelopes&period=2027-01=. Migration
+=000982_monthly_envelopes.sql= preserves existing business lines with both new
+flags off, on SQLite and PostgreSQL. An absent budgets table is an empty upgrade
+case; fresh rows get their defaults from the field metadata.

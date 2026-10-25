@@ -106,6 +106,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:payroll.org][Payroll import]] — imported pay runs, liability disbursement and reconciliation
 - [[file:accounting.org][Daily accounting home]] — guided next actions for the books
 - [[file:budgets.org][Budgets]] — vs-actual and cash forecasting
+- [[file:household.org][Household ventures]] — finance workflows for children 1–6; children 7–10 remain planned
 - [[file:equity.org][Owner equity]] — contributions, draws, loans and transfers
 - [[file:group.org][Intercompany group]] — optional consolidation and eliminations
 
@@ -245,3 +246,12 @@ screen's ordinary sync-and-import test.
 - [[file:ai-messages.org][AI on messages]] — drafted replies, intent and details from the message only, routing, after-hours and missed-call auto-replies, call summaries, grounded follow-ups, approval, and one switch; every send through consent and quiet hours.
 
 - [[file:settings.org][Settings: marketing, sales, phone and AI]] — every workflow setting with its default and limit, the settings screen, and changing one from chat, the API or venturectl through one audited path.
+- [[file:household.org][Household accounts and imports]] — account kinds, statement and bank-feed import, learned categories, and transfers that keep principal out of spending.
+
+- [[file:budgets.org::*Monthly category envelopes][Monthly category envelopes]]: rollover, left to spend and early warnings.
+
+- [[file:household.org][Household bills and subscriptions]] — due calendar, repeat-charge suggestions, twelve-month costs and opt-in inbox reminders.
+
+- [[file:household.org][Household wealth]] — monthly net worth and debt payoff dates, snowball/avalanche strategies and interest savings.
+
+- [[file:household.org][Linked savings goals]] — account or rollover-envelope progress, monthly amounts needed and contribution forecasts.

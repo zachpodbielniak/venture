@@ -352,6 +352,13 @@ venture_web_append_value(
 		GType target_type;
 
 		id = G_VALUE_HOLDS_INT64(&value) ? g_value_get_int64(&value) : 0;
+		if (id > 0 && ((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT) ||
+			((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER) &&
+			g_strcmp0(venture_field_spec_get_reference_type(spec), "user") == 0))) {
+			g_autofree gchar *label = venture_web_household_member_name(self, venture_entity_get_organization_id(record), id);
+			venture_html_escape_append(html, label);
+			return;
+		}
 		type_name = venture_field_spec_get_reference_type(spec);
 		target_type = venture_entity_registry_lookup(
 			venture_context_get_entity_registry(self->context), type_name);

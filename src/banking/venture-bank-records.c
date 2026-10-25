@@ -1,9 +1,33 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 
+GType
+venture_bank_account_kind_get_type(void)
+{
+	static gsize type_id = 0;
+	static const GEnumValue values[] = {
+		{ VENTURE_BANK_ACCOUNT_UNSPECIFIED, "VENTURE_BANK_ACCOUNT_UNSPECIFIED", "unspecified" },
+		{ VENTURE_BANK_ACCOUNT_CHECKING, "VENTURE_BANK_ACCOUNT_CHECKING", "checking" },
+		{ VENTURE_BANK_ACCOUNT_SAVINGS, "VENTURE_BANK_ACCOUNT_SAVINGS", "savings" },
+		{ VENTURE_BANK_ACCOUNT_CARD, "VENTURE_BANK_ACCOUNT_CARD", "card" },
+		{ VENTURE_BANK_ACCOUNT_CASH, "VENTURE_BANK_ACCOUNT_CASH", "cash" },
+		{ VENTURE_BANK_ACCOUNT_LOAN, "VENTURE_BANK_ACCOUNT_LOAN", "loan" },
+		{ VENTURE_BANK_ACCOUNT_INVESTMENT, "VENTURE_BANK_ACCOUNT_INVESTMENT", "investment" },
+		{ 0, NULL, NULL }
+	};
+	if (g_once_init_enter(&type_id))
+	{
+		GType registered = g_enum_register_static("VentureBankAccountKind", values);
+		g_once_init_leave(&type_id, registered);
+	}
+	return (GType)type_id;
+}
+
 static const VentureFieldDecl bank_account_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
-	VENTURE_FIELD_REF("account-id", "Account id", NULL, "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("account-id", "Ledger account", "Asset for checking, savings, cash or investments; liability for cards or loans", "account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
+	VENTURE_FIELD_ENUM("kind", "Account kind", "Choose how this account is used",
+		venture_bank_account_kind_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("currency", "Currency", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("last-statement-balance", "Last statement balance", NULL),
 	VENTURE_FIELD("last-statement-date", "Last statement date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
@@ -24,11 +48,15 @@ static const VentureFieldDecl bank_account_fields[] = {
 		VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("match-window-days", "Match window days", "Inclusive UTC calendar window for candidate discovery; 0 means 5",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payoff-enabled", "Include in debt planner", "Use this liability account in payoff estimates", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("payoff-apr-bps", "APR in basis points", "100 basis points = 1% yearly; 0 means interest-free", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_MONEY("payoff-minimum", "Fixed monthly minimum", "Positive monthly payment in the account currency"),
+	VENTURE_FIELD_MONEY("payoff-extra", "Extra monthly contribution", "Optional nonnegative amount pooled with other selected debts of the same currency"),
 };
 VENTURE_DEFINE_ENTITY(VentureBankAccount, venture_bank_account, bank_account_fields)
 
 static const VentureFieldDecl bank_statement_fields[] = {
-	VENTURE_FIELD_REF("bank-account-id", "Bank account id", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("bank-account-id", "Bank account id", NULL, "bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("period-start", "Period start", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("period-end", "Period end", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("opening-balance", "Opening balance", NULL),
@@ -36,11 +64,12 @@ static const VentureFieldDecl bank_statement_fields[] = {
 	VENTURE_FIELD("source-file-hash", "Source file hash", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("imported-at", "Imported at", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureBankStatement, venture_bank_statement, bank_statement_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankStatement, venture_bank_statement, bank_statement_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/e/bank_account");)
 
 static const VentureFieldDecl bank_transaction_fields[] = {
-	VENTURE_FIELD_REF("statement-id", "Statement id", NULL, "bank_statement", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("bank-account-id", "Bank account id", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("statement-id", "Statement id", NULL, "bank_statement", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
+	VENTURE_FIELD_REF("bank-account-id", "Bank account id", NULL, "bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
 	VENTURE_FIELD_NAME("description", "Description", NULL),
@@ -56,10 +85,11 @@ static const VentureFieldDecl bank_transaction_fields[] = {
 	VENTURE_FIELD_REF("suggested-rule-id", "Suggested rule", NULL, "bank_rule", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("suggested-action", "Suggested action", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureBankTransaction, venture_bank_transaction, bank_transaction_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankTransaction, venture_bank_transaction, bank_transaction_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/e/bank_account");)
 
 static const VentureFieldDecl bank_match_fields[] = {
-	VENTURE_FIELD_REF("transaction-id", "Transaction id", NULL, "bank_transaction", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("transaction-id", "Transaction id", NULL, "bank_transaction", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("record-type", "Record type", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("record-id", "Record id", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
@@ -71,7 +101,7 @@ static const VentureFieldDecl bank_match_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureBankMatch, venture_bank_match, bank_match_fields)
 
 static const VentureFieldDecl reconciliation_fields[] = {
-	VENTURE_FIELD_REF("bank-account-id", "Bank account id", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("bank-account-id", "Bank account id", NULL, "bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("period-end", "Period end", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("statement-balance", "Statement balance", NULL),
 	VENTURE_FIELD_MONEY("book-balance", "Book balance", NULL),
@@ -100,7 +130,7 @@ static const VentureFieldDecl bank_rule_fields[] = {
 	VENTURE_FIELD_MONEY("amount-min", "Amount min", "Inclusive signed amount bound; unset is unbounded"),
 	VENTURE_FIELD_MONEY("amount-max", "Amount max", "Inclusive signed amount bound; unset is unbounded"),
 	VENTURE_FIELD_REF("bank-account-id", "Bank account", "Empty means every account in the organization",
-		"bank_account", VENTURE_COLUMN_FLAG_NONE),
+		"bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_REF("account-id", "Ledger account", "Expense or income account for categorize",
 		"account", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("action", "Action", "categorize, match, split or transfer",
@@ -116,8 +146,8 @@ static const VentureFieldDecl bank_rule_fields[] = {
 VENTURE_DEFINE_ENTITY(VentureBankRule, venture_bank_rule, bank_rule_fields)
 
 static const VentureFieldDecl bank_transfer_fields[] = {
-	VENTURE_FIELD_REF("from-bank-account-id", "From bank", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("to-bank-account-id", "To bank", NULL, "bank_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("from-bank-account-id", "From bank", NULL, "bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
+	VENTURE_FIELD_REF("to-bank-account-id", "To bank", NULL, "bank_account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_MONEY("amount", "Amount", "Gross movement at the source, excluding optional fee"),
 	VENTURE_FIELD_MONEY("fee", "Fee", "Optional source-side fee; never income on the destination"),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
@@ -126,4 +156,19 @@ static const VentureFieldDecl bank_transfer_fields[] = {
 	VENTURE_FIELD("transfer-key", "Transfer key", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE),
 	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
-VENTURE_DEFINE_ENTITY(VentureBankTransfer, venture_bank_transfer, bank_transfer_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBankTransfer, venture_bank_transfer, bank_transfer_fields,
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/e/bank_account");)
+
+/* Only the shared obligation is disclosed. There is deliberately no private
+ * account, receipt or statement reference on this record. */
+static const VentureFieldDecl household_share_fields[] = {
+	VENTURE_FIELD_NAME("description", "Shared purchase", "Describe only what both people agreed to share"),
+	VENTURE_FIELD_REF("payer-id", "Who paid", "Member who paid for the purchase", "user", VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT | VENTURE_COLUMN_FLAG_IMMUTABLE),
+	VENTURE_FIELD_REF("member-id", "Who owes a share", "Member repaying their share", "user", VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT | VENTURE_COLUMN_FLAG_IMMUTABLE),
+	VENTURE_FIELD_MONEY("amount", "Share to repay", "Only the other member's share, not the full purchase"),
+	VENTURE_FIELD("date", "Purchase date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("settled", "Repaid", "Record a repayment already made; this never moves money", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("settled-at", "Repaid on", "Recorded when marked repaid", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+};
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureHouseholdShare, venture_household_share, household_share_fields,
+	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Shared purchase", NULL);)

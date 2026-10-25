@@ -201,3 +201,12 @@ See [jobs.md](jobs.md).
 | `POST /api/v1/late_fee/0/actions/decide` | editor | type-level, `organization_id`, `ids` |
 | `POST /api/v1/{invoice,company,late_fee_setting}/:id/actions/pause_late_fees` | editor | stageable; `resume_late_fees` too |
 | `POST /api/v1/invoice/:id/actions/late_fee_preview` | editor | writes nothing |
+
+## Household browser view and reports
+
+`GET /view/venture/:id` and `GET /view/venture/all` are authenticated browser
+routes outside `/api/v1`. They change navigation, not accounting/access scope.
+The existing `/api/v1/reports/:name` API serves `budget_envelopes`,
+`household_subscriptions`, `net_worth`, `debt_payoff`, and `savings_goals`.
+`GET /api/v1/budget_reports?kind=envelopes&period=YYYY-MM` also serves envelopes.
+See [household.md](household.md) for supported periods and forecast assumptions.

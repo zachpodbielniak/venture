@@ -30,7 +30,7 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 	{
 		static const gchar *const fields[] = { "format", "data", "period_start", "period_end", "opening_balance", "closing_balance", "reason", "type", "state",
 			"date_column", "amount_column", "description_column", "reference_column", "external_id_column",
-			"debit_column", "credit_column", "locale", "date_format", "category", "amount", "date", "memo", "mode", NULL };
+			"debit_column", "credit_column", "locale", "date_format", "category", "amount", "date", "memo", "mode", "fee", NULL };
 		JsonObject *object = json_object_new();
 		JsonArray *parts = json_array_new();
 		const gchar *customer = htmx_request_get_form_value(request, "customer_id");
@@ -49,7 +49,24 @@ venture_bank_web_action(HtmxRequest *request, GHashTable *params, gpointer user_
 			if (apply != NULL && *apply)
 				json_object_set_boolean_member(object, "apply", TRUE);
 		}
-		for (i = 0; i < 3; i++)
+		{
+			static const gchar *const links[] = { "from_transaction_id", "to_transaction_id", NULL };
+			for (i = 0; links[i] != NULL; i++)
+			{
+				const gchar *value = htmx_request_get_form_value(request, links[i]);
+				gint64 transaction_id;
+				if (value == NULL || !*value) continue;
+				if (!g_ascii_string_to_signed(value, 10, 1, G_MAXINT64, &transaction_id, NULL))
+				{
+					json_object_unref(object);
+					json_array_unref(parts);
+					g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+						"Statement line ID must be a positive integer");
+					return venture_web_error_response(error);
+				}
+				json_object_set_int_member(object, links[i], transaction_id);
+			}
+		}
 		for (i = 0; i < 50; i++)
 		{
 			g_autofree gchar *id_key = g_strdup_printf("record_id_%u", i);

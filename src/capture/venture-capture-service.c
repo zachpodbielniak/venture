@@ -210,6 +210,9 @@ venture_capture_service_convert(VentureCaptureService *self, VentureEntity *item
 	db = service_db(self);
 	if (db == NULL)
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed"), NULL;
+	if ((venture_access_policy_get_declared_owner(venture_database_get_access_policy(db), item) != 0))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"For a personal receipt, enter spending from its personal account and attach the receipt there"), NULL;
 	/* Bind the source and conversion choices before generating a financial row. */
 	if (options != NULL)
 		json_node_set_object(option_node, options);

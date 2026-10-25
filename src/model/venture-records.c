@@ -363,7 +363,7 @@ static const VentureFieldDecl venture_sale_fields[] = {
 	 * till's earnings; empty is the posting profile's cash account. */
 	VENTURE_FIELD_REF("cash-account-id", "Paid into",
 	                  "Ledger cash account or holding the takings went to; empty means the posting profile's",
-	                  "account", VENTURE_COLUMN_FLAG_NONE),
+	                  "account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("tags", "Tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE)
 };
@@ -512,7 +512,7 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("cash-account-id", "Cash account",
 	                  "Ledger cash or card account this payment used; empty means code 1000",
-	                  "account", VENTURE_COLUMN_FLAG_NONE),
+	                  "account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("receipt-url", "Receipt", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("external-id", "External ID",
@@ -589,6 +589,8 @@ venture_expense_get_deductible_amount(
 }
 
 static const VentureFieldDecl venture_account_fields[] = {
+	VENTURE_FIELD("household-shared", "Share with household", "The personal owner may share this account and all its statements, purchases and receipts with household members, or stop sharing.", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("private-owner-id", "Private owner", "Personal account owner; leave empty for a shared account. Choose when creating the account.", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD("code", "Code", "Chart of accounts number",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_UNIQUE | VENTURE_COLUMN_FLAG_INDEXED |
@@ -629,7 +631,7 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureAccount, venture_account, venture_account
 static const VentureFieldDecl venture_ledger_entry_fields[] = {
 	VENTURE_FIELD_REF("journal-line-id", "Journal line",
 		"Read-only projection of an authoritative journal line",
-		"journal_line", VENTURE_COLUMN_FLAG_INDEXED),
+		"journal_line", VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	/* Lines sharing a transaction identifier form one double-entry
 	 * transaction, and the repository refuses to commit a set whose
 	 * debits and credits do not balance. */
@@ -3154,7 +3156,7 @@ static const VentureFieldDecl venture_document_fields[] = {
 	                  VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("expense-id", "Expense",
 	                  "Set when this is a receipt", "expense",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_REF("ticket-id", "Support ticket", "Attachment received with support mail", "ticket", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("size-bytes", "Size", NULL, VENTURE_FIELD_KIND_INTEGER,
@@ -3169,7 +3171,14 @@ static const VentureFieldDecl venture_document_fields[] = {
 	 * model re-fetches the document record, not the file.
 	 */
 	VENTURE_FIELD_TEXT("extracted-text", "Extracted text",
-	                   "Text content pulled from the file at upload")
+	                   "Text content pulled from the file at upload"),
+	/* A receipt or warranty attached to a household purchase. */
+	VENTURE_FIELD("warranty-until", "Warranty ends", "For a warranty or guarantee: the last day it covers",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("warranty-reminder-user-id", "Remind person",
+	                  "Gets an inbox reminder in the last 30 days of the warranty", "user", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("warranty-reminded-at", "Reminded for", "The warranty end date last reminded about; set by the reminder sweep",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 VENTURE_DEFINE_ENTITY(VentureDocument, venture_document,

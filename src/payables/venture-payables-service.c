@@ -472,6 +472,17 @@ write_record_at(VenturePayablesService *self, VentureEntity *record, GDateTime *
 			self->database, venture_entity_get_organization_id(record), date, error))
 			return FALSE;
 	}
+	/* Shared bills have shared payable balances. Fund their shared account
+	 * through the privacy-preserving transfer operation first. */
+	if ((VENTURE_IS_BILL_PAYMENT(record) || VENTURE_IS_BILL_REFUND(record)) && self->cash_account > 0) {
+		g_autoptr(VentureEntity) cash = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, self->cash_account, error);
+		if (!cash) return FALSE;
+		if ((venture_access_policy_get_declared_owner(venture_database_get_access_policy(self->database), cash) != 0))
+			return refuse(error, VENTURE_ERROR_VALIDATION,
+				"Shared bills use a shared account. Transfer your personal contribution to that account first.");
+	}
+	if (VENTURE_IS_BILL_PAYMENT(record) && !venture_entity_is_persisted(record))
+		g_object_set(record, "cash-account-id", self->cash_account, NULL);
 	/* A one-use permit for this exact object. A signal handler saving a
 	 * different record during the transaction cannot borrow this authority. */
 	self->writing = record;

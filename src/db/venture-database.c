@@ -267,8 +267,9 @@ venture_database_init(VentureDatabase *self)
 	venture_mail_sync_install_validators(self);
 	venture_stripe_install_validators(self);
 	venture_document_install_validators(self);
+	venture_household_yearend_install(self);
+	venture_account_code_install(self);
 	venture_bankfeed_install_validators(self);
-	venture_access_policy_install_privacy(self);
 	venture_connector_install(self);
 	venture_marketing_install(self);
 	venture_attribution_install(self);
@@ -1396,6 +1397,9 @@ database_save_dispatch(
 		gboolean ok = venture_payables_expense_hook(self, entity, actor, &handled, error);
 		if (!ok || handled)
 			return ok;
+		ok = venture_bank_account_ledger_hook(self, entity, actor, &handled, error);
+		if (!ok || handled)
+			return ok;
 	}
 	if (!check_subsystem_write(self, entity, FALSE, error))
 		return FALSE;
@@ -1843,6 +1847,14 @@ database_save_unwrapped(VentureDatabase *self, VentureEntity *entity,
 				return FALSE;
 			}
 		}
+	}
+
+	/* Privacy last: the specific reference and scope errors above win, and
+	 * whatever they let through still fails closed here. */
+	if (!venture_access_policy_validate_privacy(self, entity, previous, error))
+	{
+		g_rec_mutex_unlock(&self->lock);
+		return FALSE;
 	}
 
 	/* Validators may fill ordinary defaults, but cannot grant a generic

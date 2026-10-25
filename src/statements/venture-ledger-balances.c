@@ -1480,10 +1480,16 @@ apply_cash_basis(Books *books, VentureDatabase *db, gint64 org, GError **error)
 	return TRUE;
 }
 
+#include "venture-household-wealth.inc"
+
 static VentureReportResult *
 generate_one(const gchar *name, Books *books, VentureDatabase *db, gint64 org,
 	VentureDateRange *period, JsonObject *options, GError **error)
 {
+	if (g_str_equal(name, "net_worth"))
+		return household_net_worth(books, period, error);
+	if (g_str_equal(name, "debt_payoff"))
+		return household_debt_report(books, period, error);
 	if (g_str_equal(name, "account_balances"))
 		return balance_rows(books, period, TRUE, error);
 	if (g_str_equal(name, "general_ledger"))
@@ -1522,6 +1528,14 @@ generate(const gchar *name, VentureContext *context, VentureDateRange *period,
 		as_of = venture_period_report_as_of(options, error);
 		if (as_of == NULL)
 			return NULL;
+	}
+	if ((g_str_equal(name, "net_worth") || g_str_equal(name, "debt_payoff")) &&
+		(compare != NULL || g_strcmp0(venture_json_object_get_string(options, "basis", "accrual"), "accrual") != 0 ||
+		venture_json_object_get_string(options, "dimension", NULL) != NULL))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Household wealth reports require accrual balances without compare_to or dimension filters");
+		return NULL;
 	}
 	if (compare != NULL)
 	{
@@ -1624,7 +1638,13 @@ statement_generate(VentureReport *self, VentureContext *context,
 static JsonNode *
 statement_parameters(VentureReport *self)
 {
-	(void)self;
+	if (g_str_equal(venture_report_get_name(self), "net_worth") ||
+		g_str_equal(venture_report_get_name(self), "debt_payoff"))
+		return venture_json_parse(
+			"{\"type\":\"object\",\"properties\":{"
+			"\"organization_id\":{\"type\":\"integer\",\"description\":\"One exact organization\"},"
+			"\"currency\":{\"type\":\"string\",\"description\":\"Uppercase book currency; omit for separate currency sections\"},"
+			"\"as_of\":{\"type\":\"string\",\"description\":\"Optional ISO date or timestamp cutoff\"}}}", NULL);
 	return venture_json_parse(
 		"{\"type\":\"object\",\"properties\":{"
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"One exact legal entity; defaults to the context organization\"},"
@@ -1658,16 +1678,21 @@ venture_statements_register_reports(VentureReportRegistry *registry)
 		{ "cash_flow", "Cash flow" },
 		{ "general_ledger", "General ledger" },
 		{ "account_balances", "Account balances" },
-		{ "pnl_reconciliation", "P&L reconciliation" }
+		{ "pnl_reconciliation", "P&L reconciliation" },
+		{ "net_worth", "Net worth over time" },
+		{ "debt_payoff", "Debt payoff planner" }
 	};
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(reports); i++)
 	{
 		VentureReport *report = g_object_new(VENTURE_TYPE_STATEMENT_REPORT,
 			"name", reports[i].name, "title", reports[i].title,
-			"description", "Posted ledger evidence, per legal entity and currency, with date cutoffs and prior-period comparatives", NULL);
+			"description", (g_str_equal(reports[i].name, "net_worth") || g_str_equal(reports[i].name, "debt_payoff")) ?
+				"Household wealth from posted balances; see report notes for scope and projection assumptions" :
+				"Posted ledger evidence, per legal entity and currency, with date cutoffs and prior-period comparatives", NULL);
 		venture_data_class_declare_resource(G_OBJECT(report), VENTURE_DATA_CLASS_TENANT);
-		g_object_set(report, "financial", TRUE, NULL);
+		g_object_set(report, "financial", !g_str_equal(reports[i].name, "net_worth") &&
+			!g_str_equal(reports[i].name, "debt_payoff"), NULL);
 		venture_report_registry_add(registry, report);
 	}
 }

@@ -23,6 +23,23 @@ VentureBankMatchService *venture_database_get_bank_match_service(VentureDatabase
  */
 gboolean venture_bank_check_write(VentureDatabase *database, VentureEntity *record, gboolean removal, GError **error);
 /**
+ * venture_bank_account_ledger_hook: (skip)
+ * @database: database
+ * @record: proposed record
+ * @actor: (nullable): who is writing
+ * @handled: (out): set when this hook performed the whole save
+ * @error: (out) (optional): error
+ *
+ * A new bank account with no ledger account gets its own: an asset for
+ * checking, savings, cash and investments, a liability for cards and
+ * loans, named after the bank account, in the book currency when none is
+ * given. Both are saved in one transaction, or neither.
+ *
+ * Returns: TRUE unless the save was attempted and failed
+ */
+gboolean venture_bank_account_ledger_hook(VentureDatabase *database, VentureEntity *record,
+	const VentureActor *actor, gboolean *handled, GError **error);
+/**
  * venture_bank_transaction_candidates:
  * @database: database
  * @transaction: bank transaction

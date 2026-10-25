@@ -173,3 +173,15 @@ venturectl report aggregate last_month type=sale measure=gross group_by=channel 
   assistant's and MCP's `venture_report`; `-f csv` exports the table.
   Dashboards' `sum` and `progress` widgets use the same arithmetic
   ([dashboards.md](dashboards.md)).
+
+## Household savings periods
+
+`savings_goals` requires one whole calendar month, such as `2026-10`,
+`this_month` or `last_month`; it refuses quarter/year periods and `as_of`.
+The browser offers only the two month shortcuts and a Month field. Options
+are `organization_id`, `goal_id` and `currency`. The linked goal's detail
+page uses this same report, never the unused manual progress fields.
+
+Currency and target presence narrow the savings query before its row bound;
+unrelated goals do not cause a limit error. Matching goals still obey the
+limit. Household report catalogue and assumptions: [household.md](household.md).

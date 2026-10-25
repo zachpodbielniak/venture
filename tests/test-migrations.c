@@ -1065,6 +1065,299 @@ test_account_holdings(void)
 	venture_test_remove_tree(directory);
 }
 
+/* An old account is unclassified, not guessed to be checking. Retain its
+ * identity and currency across upgrade and a second startup. */
+static void
+test_household_account_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO bank_accounts (uuid, organization_id, name, currency, account_id) "
+		"VALUES ('maple-old-account', 1, 'Maple savings', 'USD', 17);"
+		"UPDATE bank_accounts SET kind = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 981", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || currency || ':' || CAST(account_id AS TEXT) || ':' || CAST(kind AS TEXT) "
+			"FROM bank_accounts WHERE uuid = 'maple-old-account'");
+		g_assert_cmpstr(value, ==, "Maple savings:USD:17:0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+/* Existing business lines stay ordinary lines; restart must preserve the plan. */
+static void
+test_monthly_envelope_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO budget_lines (uuid, organization_id, budget_id, account_id, period, amount_amount, amount_currency, amount_exponent, dimension) "
+		"VALUES ('maple-old-budget', 1, 7, 17, '2026-12', 10000, 'USD', 2, 'workshop');"
+		"UPDATE budget_lines SET envelope = NULL, rollover = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 982", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT period || ':' || CAST(amount_amount AS TEXT) || ':' || amount_currency || ':' || CAST(amount_exponent AS TEXT) || ':' || dimension || ':' || CAST(account_id AS TEXT) "
+			"|| ':' || CAST(envelope AS TEXT) || ':' || CAST(rollover AS TEXT) "
+			"FROM budget_lines WHERE uuid = 'maple-old-budget'");
+		g_assert_cmpstr(value, ==, "2026-12:10000:USD:2:workshop:17:0:0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_monthly_envelope_without_lines(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE budget_lines; DELETE FROM schema_migrations WHERE version >= 982", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_household_savings_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO goals (uuid, organization_id, name, start_value, target_value, current_value) "
+		"VALUES ('pebble-old-goal', 1, 'Pebble target', 0, 100, 25);"
+		"UPDATE goals SET savings_account_id = NULL, savings_envelope_id = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 985", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || CAST(savings_account_id AS TEXT) || ':' || CAST(savings_envelope_id AS TEXT) || ':' || CAST(current_value AS TEXT) "
+			"FROM goals WHERE uuid = 'pebble-old-goal'");
+		g_assert_cmpstr(value, ==, "Pebble target:0:0:25.0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_savings_without_goals(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE goals; DELETE FROM schema_migrations WHERE version >= 985", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_household_wealth_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO bank_accounts (uuid, organization_id, name, currency, account_id) "
+		"VALUES ('pebble-old-loan', 1, 'Pebble loan', 'USD', 17);"
+		"UPDATE bank_accounts SET payoff_enabled = NULL, payoff_apr_bps = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 984", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || CAST(payoff_enabled AS TEXT) || ':' || CAST(payoff_apr_bps AS TEXT) "
+			"FROM bank_accounts WHERE uuid = 'pebble-old-loan'");
+		g_assert_cmpstr(value, ==, "Pebble loan:0:0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_wealth_without_accounts(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE bank_accounts; DELETE FROM schema_migrations WHERE version >= 984", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
+static void
+test_household_subscriptions_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO recurring_schedules (uuid, organization_id, name, kind, frequency, start_at) "
+		"VALUES ('pebble-old-schedule', 1, 'Pebble library', 2, 0, '2026-01-31T00:00:00Z');"
+		"UPDATE recurring_schedules SET subscription = NULL, projection_only = NULL, reminder_days = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 983", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT name || ':' || CAST(subscription AS TEXT) || ':' || CAST(projection_only AS TEXT) || ':' || CAST(reminder_days AS TEXT) "
+			"FROM recurring_schedules WHERE uuid = 'pebble-old-schedule'");
+		g_assert_cmpstr(value, ==, "Pebble library:0:0:0");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_subscriptions_without_lines(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE recurring_schedules; DELETE FROM schema_migrations WHERE version >= 983", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
+/* 000987: an existing document gains no warranty and reminds nobody, and
+ * running the migration twice changes nothing. */
+static void
+test_household_warranties_upgrade(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	guint run;
+	database = venture_database_new(uri, &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"INSERT INTO documents (uuid, organization_id, title) VALUES ('old-receipt', 1, 'Old receipt');"
+		"UPDATE documents SET warranty_reminder_user_id = NULL;"
+		"DELETE FROM schema_migrations WHERE version >= 987", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	for (run = 0; run < 2; run++)
+	{
+		g_autofree gchar *value = NULL;
+		database = venture_database_new(uri, &error);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		value = query_text(database,
+			"SELECT title || ':' || CAST(warranty_reminder_user_id AS TEXT) || ':' || "
+			"COALESCE(CAST(warranty_until AS TEXT), 'none') FROM documents WHERE uuid = 'old-receipt'");
+		g_assert_cmpstr(value, ==, "Old receipt:0:none");
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+static void
+test_household_warranties_without_documents(void)
+{
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(OrmMigrator) runner = NULL;
+	g_autoptr(GError) error = NULL;
+	database = venture_database_new("sqlite://:memory:", &error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DROP TABLE documents; DELETE FROM schema_migrations WHERE version >= 987", NULL, &error));
+	runner = venture_migrations_new(venture_database_get_connection(database),
+		venture_database_get_backend(database), &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_migrator_up(runner, 0, &error));
+	g_assert_no_error(error);
+}
+
 /*
  * 000710 where the accounts table is absent: accounts belong to the
  * finance module, and reconciliation never creates a hidden type's table.
@@ -1646,6 +1939,17 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);
+	g_test_add_func("/migrations/household-account-upgrade", test_household_account_upgrade);
+	g_test_add_func("/migrations/household-savings-upgrade", test_household_savings_upgrade);
+	g_test_add_func("/migrations/household-savings-without-goals", test_household_savings_without_goals);
+	g_test_add_func("/migrations/household-wealth-upgrade", test_household_wealth_upgrade);
+	g_test_add_func("/migrations/household-wealth-without-accounts", test_household_wealth_without_accounts);
+	g_test_add_func("/migrations/household-subscriptions-upgrade", test_household_subscriptions_upgrade);
+	g_test_add_func("/migrations/household-subscriptions-without-schedules", test_household_subscriptions_without_lines);
+	g_test_add_func("/migrations/household-warranties-upgrade", test_household_warranties_upgrade);
+	g_test_add_func("/migrations/household-warranties-without-documents", test_household_warranties_without_documents);
+	g_test_add_func("/migrations/monthly-envelope-upgrade", test_monthly_envelope_upgrade);
+	g_test_add_func("/migrations/monthly-envelope-without-lines", test_monthly_envelope_without_lines);
 	g_test_add_func("/migrations/account-holdings-without-accounts",
 	                test_account_holdings_without_accounts);
 	g_test_add_func("/migrations/backup-store-copies", test_backup_store_copies);

@@ -124,6 +124,8 @@ period_range(VentureEntity *period)
 GPtrArray *
 venture_period_report_snapshots(VentureContext *context, VentureEntity *period, GError **error)
 {
+	g_autoptr(VentureAccessScope) shared = venture_access_policy_enter_shared(
+		venture_database_get_access_policy(venture_context_get_database(context)), venture_entity_get_organization_id(period));
 	g_autoptr(GPtrArray) reports = NULL;
 	g_autoptr(GPtrArray) snapshots = g_ptr_array_new_with_free_func(g_object_unref);
 	g_autoptr(VentureDateRange) range = period_range(period);

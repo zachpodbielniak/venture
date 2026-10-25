@@ -4,7 +4,9 @@
 
 #include "money-calendar/venture-money-calendar.h"
 
-/* The six built-in sources, added to a fresh expander in kind order. */
+/* The built-in sources, added to a fresh expander in kind order. */
 void venture_money_calendar_add_builtin_sources(VentureMoneyCalendarExpander *expander);
+
+VentureReportResult *venture_report_household_subscriptions(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error);
 
 #endif

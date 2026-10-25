@@ -7175,6 +7175,50 @@
 		watchTables();
 	}
 
+	/*
+	 * Action forms: a form with a select[name="action"] shows only the
+	 * groups marked data-actions="a b" for the chosen action, and disables
+	 * the rest so they are not posted. Without script every group shows and
+	 * the server ignores fields an action does not read.
+	 */
+	function syncActionGroups(form) {
+		var select = form.querySelector('select[name="action"]');
+		if (!select) return;
+		form.querySelectorAll("[data-actions]").forEach(function (group) {
+			var on = group.getAttribute("data-actions").split(" ").indexOf(select.value) >= 0;
+			group.hidden = !on;
+			group.querySelectorAll("input, select, textarea").forEach(function (el) {
+				el.disabled = !on;
+			});
+		});
+	}
+
+	function syncAllActionGroups(root) {
+		(root || document).querySelectorAll("form").forEach(function (form) {
+			if (form.querySelector("[data-actions]")) syncActionGroups(form);
+		});
+	}
+
+	document.addEventListener("change", function (event) {
+		var target = event.target;
+		if (target.matches && target.matches('select[name="action"]') && target.form)
+			syncActionGroups(target.form);
+		/* A file picker beside a text box reads the file into it, so a
+		 * statement is chosen rather than pasted. */
+		if (target.matches && target.matches("input[type=file][data-fill]") && target.files && target.files[0]) {
+			var box = target.form && target.form.elements[target.getAttribute("data-fill")];
+			var reader = new FileReader();
+			reader.onload = function () { if (box) box.value = reader.result; };
+			reader.readAsText(target.files[0]);
+		}
+	});
+	document.addEventListener("htmx:load", function (event) { syncAllActionGroups(event.target); });
+	if (document.readyState === "loading") {
+		document.addEventListener("DOMContentLoaded", function () { syncAllActionGroups(document); });
+	} else {
+		syncAllActionGroups(document);
+	}
+
 	window.venture = {
 		toast: toast,
 		openModal: openModal,

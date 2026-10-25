@@ -1,5 +1,5 @@
 /*
- * venture-money-calendar-sources.c - the six built-in money calendar sources
+ * venture-money-calendar-sources.c - the built-in money calendar sources
  *
  * Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -341,8 +341,8 @@ generated_days(VentureDatabase *db, VentureEntity *schedule, GError **error)
 }
 
 static gboolean
-recurring_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint64 org,
-	const VentureDateRange *range, GDateTime *today, GPtrArray *events, GError **error)
+recurring_expand_full(VentureMoneyCalendarSource *self, VentureContext *context, gint64 org,
+	const VentureDateRange *range, GDateTime *today, GPtrArray *events, gboolean contract, GError **error)
 {
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(GPtrArray) schedules = rows_with_status(db, VENTURE_TYPE_RECURRING_SCHEDULE, org, NULL, NULL, error);
@@ -379,18 +379,38 @@ recurring_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint
 		if (flag(schedule, "paused") || start == NULL)
 			continue;
 		g_object_get(schedule, "kind", &kind, "frequency", &frequency, "cycle-index", &index, NULL);
+		if (contract) index = 0;
 		if (kind == KIND_JOURNAL)
 			continue;
 		zone = g_time_zone_new_identifier(venture_string_is_empty(zone_name) ? "UTC" : zone_name);
 		if (zone == NULL)
 			continue;
 		local_start = g_date_time_to_timezone(start, zone);
+		if (venture_date_range_get_start(range) != NULL)
+		{
+			GDateTime *from = venture_date_range_get_start(range);
+			gint64 skip = 0;
+			if (frequency == FREQUENCY_MONTHLY)
+				skip = (g_date_time_get_year(from) - g_date_time_get_year(local_start)) * 12 + g_date_time_get_month(from) - g_date_time_get_month(local_start) - 1;
+			else if (frequency == FREQUENCY_YEARLY)
+				skip = g_date_time_get_year(from) - g_date_time_get_year(local_start) - 1;
+			else
+				skip = g_date_time_difference(from, local_start) / G_TIME_SPAN_DAY / (frequency == FREQUENCY_WEEKLY ? 7 : 1) - 1;
+			index = MAX(index, skip);
+		}
 		if (end != NULL)
 		{
 			g_autoptr(GDateTime) local_end = g_date_time_to_timezone(end, zone);
 			end_day = day_text(local_end);
 		}
-		amount = template_amount(schedule, kind, book_currency, error);
+		if (org == 0)
+		{
+			g_autoptr(VentureEntity) owner = venture_database_get(db, VENTURE_TYPE_ORGANIZATION, venture_entity_get_organization_id(schedule), error);
+			g_autofree gchar *currency = owner ? text(owner, "default-currency") : NULL;
+			if (owner == NULL) return FALSE;
+			amount = template_amount(schedule, kind, venture_string_is_empty(currency) ? book_currency : currency, error);
+		}
+		else amount = template_amount(schedule, kind, book_currency, error);
 		if (amount == NULL)
 			return FALSE;
 		done = generated_days(db, schedule, error);
@@ -414,7 +434,7 @@ recurring_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint
 				if (g_strcmp0(day, stop) >= 0)
 					break;
 			}
-			if (!in_range(at, range) || g_hash_table_contains(done, day))
+			if (!in_range(at, range) || (!contract && g_hash_table_contains(done, day)))
 				continue;
 			title = g_strdup_printf("%s %s", kind == KIND_INVOICE ? "Recurring invoice"
 				: kind == KIND_BILL ? "Recurring bill" : "Recurring expense", name ? name : "");
@@ -425,6 +445,13 @@ recurring_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint
 		}
 	}
 	return TRUE;
+}
+
+static gboolean
+recurring_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint64 org,
+	const VentureDateRange *range, GDateTime *today, GPtrArray *events, GError **error)
+{
+	return recurring_expand_full(self, context, org, range, today, events, FALSE, error);
 }
 
 DEFINE_SOURCE(RecurringSource, recurring_source, "recurring", "recurring", recurring_expand)
@@ -789,13 +816,15 @@ tax_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint64 org
 
 DEFINE_SOURCE(TaxSource, tax_source, "tax", "tax_filing", tax_expand)
 
+#include "venture-household-bills.inc"
+
 /* --- Registration ---------------------------------------------------------------------------------- */
 
 void
 venture_money_calendar_add_builtin_sources(VentureMoneyCalendarExpander *expander)
 {
 	GType types[] = { recurring_source_get_type(), bill_source_get_type(), invoice_source_get_type(),
-		dunning_source_get_type(), payroll_source_get_type(), tax_source_get_type() };
+		dunning_source_get_type(), payroll_source_get_type(), tax_source_get_type(), repeat_source_get_type() };
 	guint i;
 	g_return_if_fail(VENTURE_IS_MONEY_CALENDAR_EXPANDER(expander));
 	for (i = 0; i < G_N_ELEMENTS(types); i++)

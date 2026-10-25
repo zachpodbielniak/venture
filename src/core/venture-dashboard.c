@@ -7710,6 +7710,51 @@ static const VentureDashboardTemplate venture_dashboard_templates[] = {
 		" {\"kind\": \"activity\", \"limit\": 8, \"span\": \"full\"}"
 		"]}"
 	},
+	/*
+	 * The household's own page, phone first: two columns on a desk that
+	 * stack into one on a phone, figures before tables. Personal, because
+	 * each member sees only what is shared with them.
+	 */
+	{
+		"household", "Household",
+		"A household's month at a glance: what was spent and on what, money "
+		"in against money out, the cash forecast and net worth over time.",
+		"finance",
+		"{"
+		"\"name\": \"Household\","
+		"\"slug\": \"household\","
+		"\"description\": \"Our money this month and where it is heading.\","
+		"\"purpose\": \"overview\","
+		"\"layout\": \"two_columns\","
+		"\"personal\": true,"
+		"\"widgets\": ["
+		" {\"kind\": \"metric\", \"title\": \"Spent this month\","
+		"  \"report_name\": \"household_spending\", \"period\": \"this_month\","
+		"  \"field\": \"total\"},"
+		" {\"kind\": \"metric\", \"title\": \"Money in this month\","
+		"  \"report_name\": \"pnl\", \"period\": \"this_month\","
+		"  \"field\": \"revenue\"},"
+		" {\"kind\": \"chart\", \"title\": \"Spending by category\","
+		"  \"report_name\": \"household_spending\", \"period\": \"this_month\","
+		"  \"columns\": \"category\", \"field\": \"spent\", \"limit\": 8},"
+		" {\"kind\": \"chart\", \"title\": \"Cash forecast\","
+		"  \"report_name\": \"household_cash_forecast\", \"period\": \"this_month\","
+		"  \"columns\": \"week\", \"field\": \"end\", \"limit\": 13},"
+		" {\"kind\": \"chart\", \"title\": \"Spending by month\","
+		"  \"report_name\": \"household_months\", \"period\": \"this_year\","
+		"  \"columns\": \"month\", \"field\": \"spent\", \"limit\": 12},"
+		" {\"kind\": \"chart\", \"title\": \"Net worth over time\","
+		"  \"report_name\": \"net_worth\", \"period\": \"this_year\","
+		"  \"columns\": \"key\", \"field\": \"net_worth\", \"limit\": 12},"
+		" {\"kind\": \"report\", \"title\": \"Money in and out by month\","
+		"  \"report_name\": \"household_months\", \"period\": \"this_year\","
+		"  \"span\": \"wide\"},"
+		" {\"kind\": \"actions\", \"title\": \"More\","
+		"  \"body\": \"Budgets | /budgets\\nDue calendar | /money/calendar\\n"
+		"Year-end for taxes | /reports/household_tax_year?period=last_year\\n"
+		"Warranties | /reports/household_warranties\"}"
+		"]}"
+	},
 	{ "form-results", "Form results", "Version-aware survey results; select a form and question keys after creation.", "forms",
 	  "{\"name\":\"Form results\",\"slug\":\"form-results\",\"description\":\"Set each widget record_id to a published form; choose stable question keys for choice and rating widgets.\",\"layout\":\"two_columns\",\"widgets\":[{\"kind\":\"form_responses\",\"title\":\"Responses over time\",\"record_id\":0,\"period\":\"all\",\"position\":1},{\"kind\":\"form_choices\",\"title\":\"Choices\",\"record_id\":0,\"period\":\"all\",\"position\":2,\"field\":\"choice\"},{\"kind\":\"form_nps\",\"title\":\"Net promoter score\",\"record_id\":0,\"period\":\"all\",\"position\":3,\"field\":\"rating\"},{\"kind\":\"form_rating\",\"title\":\"Average rating\",\"record_id\":0,\"period\":\"all\",\"position\":4,\"field\":\"rating\"},{\"kind\":\"form_scores\",\"title\":\"Quiz scores\",\"record_id\":0,\"period\":\"all\",\"position\":5},{\"kind\":\"form_dropoff\",\"title\":\"Unfinished pages\",\"record_id\":0,\"period\":\"all\",\"position\":6}]}" }
 };

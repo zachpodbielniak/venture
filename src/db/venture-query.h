@@ -127,6 +127,27 @@ venture_query_add_filter_string(
 );
 
 /**
+ * venture_query_add_money_currency:
+ * @self: a #VentureQuery
+ * @field: a money property in property or column spelling
+ * @currency: the currency to match exactly
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Restricts a money property's currency before limiting rows. Ordinary
+ * filters on money properties compare their integer minor-unit amount.
+ * The field must be declared as money; the currency is a bound parameter.
+ *
+ * Returns: %TRUE if the filter was accepted
+ */
+gboolean
+venture_query_add_money_currency(
+	VentureQuery *self,
+	const gchar *field,
+	const gchar *currency,
+	GError **error
+);
+
+/**
  * venture_query_add_filter_int:
  * @self: a #VentureQuery
  * @field: a field name

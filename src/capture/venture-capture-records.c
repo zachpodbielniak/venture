@@ -7,7 +7,7 @@ static const VentureFieldDecl capture_fields[] = {
 	VENTURE_FIELD_NAME("status", "Status", "inbox, converted or rejected; VentureCaptureService owns conversion"),
 	VENTURE_FIELD("source", "Source", "upload, email, scan, or an integration name",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_REF("document-id", "Document", "The filed original", "document", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("document-id", "Document", "The filed original", "document", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("vendor", "Vendor", "As printed on the document",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),

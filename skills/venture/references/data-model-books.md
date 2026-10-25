@@ -145,3 +145,29 @@ is *financial*: organization finance/admin/owner to write.
   `collection_step`, `collection_case` (owner, promise, dispute),
   `collection_notice`, `financial_batch` (*action* `apply (s)`). Report
   `collections_worklist`. Usage: [billing.md](billing.md).
+
+## Household additions (same record types)
+
+- `bank_account.kind`: unspecified/checking/savings/card/cash/loan/investment;
+  `payoff_enabled`, `payoff_apr_bps`, `payoff_minimum`, `payoff_extra` configure
+  debt estimates. Cards/loans require liability accounts; other kinds assets.
+- `budget_line`: monthly envelopes and per-category rollover; inspect
+  `describe budget_line` for the first month and allocation fields.
+- `recurring_schedule`: subscription and forecast-only flags, source bank and
+  merchant matching, opt-in reminder recipient and days before.
+
+[household.md](household.md) explains workflows, direct book balances, forecast
+limits and the shared-source caveat. No new household record type or access
+boundary is created; the venture's `venture_type` selects household navigation.
+
+### Household member privacy
+
+`account.private_owner_id -> user` is optional and immutable after creation:
+zero is shared. Bank evidence, purchases, receipts and ledger projections
+inherit it. `household_share` belongs to banking and holds only two active
+participants (`payer_id`, `member_id`), their shared amount/date and repayment
+state. It is private to its participants and never posts money. See
+[household.md](household.md) for personal/shared transfers and setup.
+
+Only the personal account owner may change `account.household_shared`; dependent
+financial records follow that account choice. Owner identity cannot be reassigned.

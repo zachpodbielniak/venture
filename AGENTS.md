@@ -835,8 +835,10 @@ than one that fails.
   seen last). The valuing reports read their `currency` option through
   `venture_market_valuing_currency()` and price with
   `venture_market_price_preferring()` (book currency wherever seen, else
-  any) or strictly in the named one. The query cannot filter on a money
-  field's currency, so the lookup pages newest-first; keep it paged.
+  any) or strictly in the named one. The market lookup pages newest-first
+  to implement currency preference; keep it paged. For an exact currency
+  restriction, `venture_query_add_money_currency()` filters a money field
+  before the row bound without exposing its storage columns.
 - **A holding has one truth per currency.** A holding is an `account`
   with `location_id`. A posted currency's holding is the account's journal
   lines (original `amount`, never `book-amount`); a memo currency's is

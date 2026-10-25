@@ -498,7 +498,7 @@ static const gchar *const venture_module_requires_core[] = { "core", NULL };
 
 /* The aggregate report reads any type, so it belongs to the module that is
  * always on; the types it reads are hidden by their own modules. */
-static const gchar *const venture_module_reports_core[] = { "aggregate", NULL };
+static const gchar *const venture_module_reports_core[] = { "aggregate", "household_warranties", NULL };
 static const gchar *const venture_module_requires_sales[] = { "sales", NULL };
 static const gchar *const venture_module_requires_invoicing[] = {
 	"finance", "crm", "ledger", NULL
@@ -528,7 +528,7 @@ static const gchar *const venture_module_reports_sales[] = {
 	"categories", "inventory", NULL
 };
 static const gchar *const venture_module_reports_finance[] = {
-	"pnl", "ventures", "monthly", "tax", "tax_liability", NULL
+	"pnl", "ventures", "monthly", "tax", "tax_liability", "household_tax_year", "household_spending", "household_months", NULL
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", "deals_without_decision_maker", "competitor_win_loss", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
@@ -729,7 +729,7 @@ static GType (*const banking_types[]) (void) = {
 	venture_bank_account_get_type, venture_bank_statement_get_type,
 	venture_bank_transaction_get_type, venture_bank_match_get_type,
 	venture_reconciliation_get_type, venture_bank_rule_get_type,
-	venture_bank_transfer_get_type, NULL
+	venture_bank_transfer_get_type, venture_household_share_get_type, NULL
 };
 static GType (*const venture_module_pipelines_types[]) (void) = {
 	venture_pipeline_get_type, venture_pipeline_stage_get_type,
@@ -788,7 +788,7 @@ static const gchar *const venture_module_suggests_accounting[] = {
 static const gchar *const venture_module_requires_statements[] = { "ledger", "periods", NULL };
 static const gchar *const venture_module_reports_statements[] = {
 	"balance_sheet", "income_statement", "cash_flow", "general_ledger", "account_balances", "pnl_reconciliation",
-	"year_end_pack", NULL
+	"year_end_pack", "net_worth", "debt_payoff", NULL
 };
 static const gchar *const cutover_requires[] = { "ledger", NULL };
 static const gchar *const setup_requires[] = { "ledger", "periods", NULL };
@@ -811,7 +811,7 @@ static const gchar *const venture_module_requires_tax_filing[] = { "finance", "p
 static const gchar *const venture_module_suggests_tax_filing[] = { "invoicing", "payables", NULL };
 static GType (*const budgets_types[]) (void) = { venture_budget_get_type, venture_budget_line_get_type, NULL };
 static const gchar *const budgets_requires[] = { "statements", NULL };
-static const gchar *const budgets_reports[] = { "budget_vs_actual", "cash_forecast", NULL };
+static const gchar *const budgets_reports[] = { "budget_vs_actual", "cash_forecast", "budget_envelopes", NULL };
 static GType (*const equity_types[]) (void) = { venture_equity_transaction_get_type, NULL };
 static const gchar *const equity_requires[] = { "ledger", "setup", NULL };
 static GType (*const group_types[]) (void) = { venture_intercompany_link_get_type, venture_elimination_get_type, NULL };
@@ -860,7 +860,7 @@ static const gchar *const headline_suggests[] = { "outreach", "recurring", "tick
 static const gchar *const headline_reports[] = { "cac", "customer_churn", "ltv", "ltv_cac", "customer_cohorts", NULL };
 static const gchar *const money_calendar_requires[] = { "receivables", "payables", NULL };
 static const gchar *const money_calendar_suggests[] = { "recurring", "dunning", "payroll", "tax_filing", NULL };
-static const gchar *const money_calendar_reports[] = { "money_calendar", NULL };
+static const gchar *const money_calendar_reports[] = { "money_calendar", "household_subscriptions", "household_cash_forecast", NULL };
 static const gchar *const crm_import_requires[] = { "crm", "pipelines", "activities", "leads", NULL };
 static GType (*const crm_import_types[]) (void) = { venture_crm_import_get_type, venture_crm_import_row_get_type, NULL };
 static const gchar *const books_import_requires[] = { "cutover", "receivables", "payables", NULL };
@@ -946,11 +946,11 @@ static const gchar *const sessions_reports[] = { "session_performance", NULL };
  * whose recipes a step may name and goal_materials multiplies out (the
  * reference is refused and the report refuses while it is off), and
  * market, whose observed prices that shopping list is priced at. */
-static const gchar *const goals_suggests[] = { "production", "market", NULL };
+static const gchar *const goals_suggests[] = { "production", "market", "ledger", "budgets", NULL };
 static GType (*const goals_types[]) (void) = {
 	venture_goal_get_type, venture_goal_step_get_type, NULL
 };
-static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", NULL };
+static const gchar *const goals_reports[] = { "goal_progress", "goal_materials", "savings_goals", NULL };
 
 /* Events and one calendar over every dated record. It requires only core:
  * a meeting names nothing else. It suggests the modules whose records the

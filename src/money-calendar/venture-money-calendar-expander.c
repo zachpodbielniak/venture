@@ -312,7 +312,7 @@ venture_money_calendar_ics(GPtrArray *events)
 		venture_activity_calendar_append_line(calendar, "SUMMARY", venture_money_calendar_event_get_title(event), TRUE);
 		venture_activity_calendar_append_line(calendar, "DESCRIPTION", description, TRUE);
 		venture_activity_calendar_append_line(calendar, "CATEGORIES", venture_money_calendar_event_get_kind(event), TRUE);
-		venture_activity_calendar_append_line(calendar, "STATUS", "CONFIRMED", FALSE);
+		venture_activity_calendar_append_line(calendar, "STATUS", g_strcmp0(venture_money_calendar_event_get_kind(event), "repeat_charge") == 0 ? "TENTATIVE" : "CONFIRMED", FALSE);
 		g_string_append(calendar, "END:VEVENT\r\n");
 	}
 	g_string_append(calendar, "END:VCALENDAR\r\n");

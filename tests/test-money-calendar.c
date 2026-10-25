@@ -618,6 +618,7 @@ test_module_off(Fixture *f, gconstpointer unused)
 	venture_config_set_module_enabled(f->config, "recurring", TRUE);
 	venture_config_set_module_enabled(f->config, "money_calendar", FALSE);
 	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "money_calendar"));
+	g_assert_null(venture_report_registry_lookup(venture_context_get_report_registry(f->context), "household_subscriptions"));
 	g_assert_null(venture_money_calendar_events(f->context, f->org, range, start, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 }
@@ -843,10 +844,230 @@ test_cli(ServerFixture *s, gconstpointer unused)
 	verb = cli(s, bad_verb, FALSE);
 }
 
+/* Household subscriptions are an explicit subset of outgoing schedules. */
+static void
+test_subscriptions(Fixture *f, gconstpointer unused)
+{
+	VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "household_subscriptions");
+	g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, "2026-01", NULL);
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(VentureEntity) row = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *cost = NULL;
+	gint64 id;
+	(void)unused;
+	g_assert_nonnull(report);
+	id = schedule(f, "Pebble library", "expense", "monthly", "UTC", "2026-01-31", "{\"amount\":\"12.00 USD\"}");
+	row = venture_database_get(f->db, VENTURE_TYPE_RECURRING_SCHEDULE, id, NULL);
+	g_object_set(row, "subscription", TRUE, "projection-only", TRUE, NULL);
+	save(f, row);
+	result = venture_report_generate(report, f->context, range, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+	cost = cell(result, 0, "yearly_cost");
+	g_assert_nonnull(strstr(cost, "144.00"));
+}
+
+static void
+test_repeat_charges(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) bank = record(f, "bank_account");
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL, rows = NULL;
+	g_autoptr(JsonObject) args = json_object_new();
+	g_autoptr(VentureEntity) statement = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureMoneyCalendarEvent *event;
+	gboolean irregular = GPOINTER_TO_INT(unused) == 1;
+	gboolean february = GPOINTER_TO_INT(unused) == 2;
+	gboolean transfers = GPOINTER_TO_INT(unused) == 3;
+	const gchar *from = transfers ? "2026-04-01" : february ? "2026-03-01" : "2026-01-01";
+	const gchar *to = transfers ? "2026-06-01" : february ? "2026-05-01" : "2026-03-01";
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_string(query, "code", VENTURE_FILTER_OP_EQ, "1000", NULL);
+	accounts = venture_database_find(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(accounts->len, ==, 1);
+	g_object_set(bank, "name", "Pebble checking", "currency", "USD",
+		"account-id", venture_entity_get_id(g_ptr_array_index(accounts, 0)),
+		"date-column", "Date", "amount-column", "Amount", "description-column", "Memo",
+		"external-id-column", "ID", "date-format", "%Y-%m-%d", "sign-convention", "normal", NULL);
+	save(f, bank);
+	json_object_set_string_member(args, "format", "csv");
+	json_object_set_string_member(args, "period_start", transfers ? "2026-01-01" : "2025-10-01");
+	json_object_set_string_member(args, "period_end", transfers ? "2026-03-31" : february ? "2026-02-28" : "2025-12-31");
+	json_object_set_string_member(args, "opening_balance", "0 USD");
+	json_object_set_string_member(args, "closing_balance", irregular ? "-37 USD" : "-36 USD");
+	json_object_set_string_member(args, "data", transfers ? "Date,Amount,Memo,ID\n2026-01-31,-12,Pebble library,p1\n2026-02-28,-12,Pebble library,p2\n2026-03-31,-12,Pebble library,p3\n" : february ? "Date,Amount,Memo,ID\n2025-12-31,-12,Pebble library,p1\n2026-01-31,-12,Pebble library,p2\n2026-02-28,-12,Pebble library,p3\n" : irregular ? "Date,Amount,Memo,ID\n2025-10-31,-12,Pebble library,p1\n2025-11-30,-12,Pebble library,p2\n2025-12-31,-13,Pebble library,p3\n" : "Date,Amount,Memo,ID\n2025-10-31,-12,Pebble library,p1\n2025-11-30,-12,Pebble library,p2\n2025-12-31,-12,Pebble library,p3\n");
+	statement = venture_bank_match_service_execute(venture_database_get_bank_match_service(f->db), "import",
+		venture_entity_get_id(bank), args, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(statement);
+	if (GPOINTER_TO_INT(unused) == 3) {
+		g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", "saving-owner", "active", TRUE, NULL);
+		g_autoptr(VentureEntity) member = NULL, account = NULL, personal = record(f, "bank_account");
+		guint n;
+		static const gchar *const dates[] = { "2026-01-31", "2026-02-28", "2026-03-31" };
+		save(f, user);
+		member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", f->org,
+			"user-id", venture_entity_get_id(user), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_FINANCE, NULL);
+		save(f, member);
+		account = g_object_new(VENTURE_TYPE_ACCOUNT, "organization-id", f->org, "code", "personal-savings",
+			"name", "Personal savings", "kind", VENTURE_ACCOUNT_KIND_ASSET, "active", TRUE, "private-owner-id", venture_entity_get_id(user), NULL);
+		save(f, account);
+		g_object_set(personal, "account-id", venture_entity_get_id(account), "name", "Personal savings", "currency", "USD", NULL);
+		save(f, personal);
+		for (n = 0; n < G_N_ELEMENTS(dates); n++) {
+			g_autoptr(JsonObject) transfer = json_object_new();
+			g_autoptr(VentureEntity) posted = NULL;
+			json_object_set_int_member(transfer, "counterparty_bank_account_id", venture_entity_get_id(personal));
+			json_object_set_int_member(transfer, "from_transaction_id", n + 1);
+			json_object_set_string_member(transfer, "amount", "12 USD");
+			json_object_set_string_member(transfer, "date", dates[n]);
+			posted = venture_bank_match_service_execute(venture_database_get_bank_match_service(f->db), "transfer",
+				venture_entity_get_id(bank), transfer, NULL, &error);
+			g_assert_no_error(error);
+			g_assert_nonnull(posted);
+		}
+		rows = events(f, from, to, from);
+		g_assert_cmpuint(count(rows, "repeat_charge"), ==, 0);
+		return;
+	}
+	rows = events(f, from, to, from);
+	if (irregular)
+	{
+		g_assert_cmpuint(count(rows, "repeat_charge"), ==, 0);
+		return;
+	}
+	g_assert_cmpuint(count(rows, "repeat_charge"), ==, 2);
+	event = find(rows, "repeat_charge", february ? "2026-04-30" : "2026-02-28");
+	g_assert_nonnull(event);
+	assert_amount(event, "12.00 USD");
+	g_assert_false(venture_money_calendar_event_get_counts_in_net(event));
+	{
+		g_autofree gchar *ics = venture_money_calendar_ics(rows);
+		g_assert_nonnull(strstr(ics, "STATUS:TENTATIVE"));
+	}
+	{
+		VentureReport *report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "household_subscriptions");
+		g_autoptr(VentureDateRange) range = venture_context_parse_period(f->context, february ? "2026-03" : "2026-01", NULL);
+		g_autoptr(VentureReportResult) result = venture_report_generate(report, f->context, range, NULL, &error);
+		g_autofree gchar *cost = NULL, *status = NULL;
+		g_assert_no_error(error);
+		g_assert_cmpuint(venture_report_result_get_row_count(result), ==, 1);
+		cost = cell(result, 0, "yearly_cost"); status = cell(result, 0, "status");
+		g_assert_nonnull(strstr(cost, "144.00"));
+		g_assert_cmpstr(status, ==, "Possible subscription");
+	}
+	{
+		g_autoptr(GDateTime) start = day("2026-01-01"), end = day("2026-03-01");
+		g_autoptr(VentureDateRange) range = venture_date_range_new(start, end);
+		g_autoptr(GPtrArray) other = venture_money_calendar_events(f->context, f->org + 123, range, start, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(count(other, "repeat_charge"), ==, 0);
+	}
+	{
+		g_autoptr(GPtrArray) stale = events(f, "2026-06-01", "2026-07-01", "2026-06-01");
+		g_assert_cmpuint(count(stale, "repeat_charge"), ==, 0);
+	}
+	if (!february)
+	{
+		g_autoptr(GPtrArray) paid_today = events(f, "2026-01-01", "2026-03-01", "2025-12-31");
+		g_assert_cmpuint(count(paid_today, "repeat_charge"), ==, 2);
+	}
+	/* Explicitly recording even a paused schedule suppresses the suggestion. */
+	{
+		gint64 id = schedule(f, "Pebble library", "expense", "monthly", "UTC", "2026-01-31", "{\"amount\":\"12.00 USD\"}");
+		g_autoptr(VentureEntity) tracked = venture_database_get(f->db, VENTURE_TYPE_RECURRING_SCHEDULE, id, NULL);
+		g_autoptr(GPtrArray) after = NULL;
+		g_object_set(tracked, "bank-account-id", venture_entity_get_id(bank), "merchant", "  PEBBLE LIBRARY  ", "paused", TRUE, NULL);
+		save(f, tracked);
+		after = events(f, from, to, from);
+		g_assert_cmpuint(count(after, "repeat_charge"), ==, 0);
+	}
+
+}
+
+static void
+test_subscription_surfaces(ServerFixture *s, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) row = NULL;
+	g_autofree gchar *html = NULL, *json = NULL, *out = NULL;
+	const gchar *args[] = { "report", "household_subscriptions", "2026-01", NULL };
+	gint64 id = schedule(&s->base, "Pebble library", "expense", "monthly", "UTC", "2026-01-31", "{\"amount\":\"12.00 USD\"}");
+	(void)unused;
+	row = venture_database_get(s->base.db, VENTURE_TYPE_RECURRING_SCHEDULE, id, NULL);
+	g_object_set(row, "subscription", TRUE, "projection-only", TRUE, NULL);
+	save(&s->base, row);
+	g_assert_cmpuint(request(s, "/reports/household_subscriptions?period=2026-01", &html, NULL), ==, 200);
+	g_assert_nonnull(strstr(html, "Pebble library"));
+	g_assert_nonnull(strstr(html, "144.00"));
+	g_assert_cmpuint(request(s, "/api/v1/reports/household_subscriptions?period=2026-01", &json, NULL), ==, 200);
+	g_assert_nonnull(strstr(json, "yearly_cost"));
+	out = cli(s, args, TRUE);
+	g_assert_nonnull(strstr(out, "144.00"));
+}
+
+static void
+test_subscription_reminders(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) user = record(f, "user"), row = NULL;
+	g_autoptr(GDateTime) now = day("2026-01-28"), later = day("2026-02-26");
+	g_autoptr(GDateTime) stamp = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id;
+	(void)unused;
+	g_object_set(user, "username", "pebble-reader", "role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	save(f, user);
+	id = schedule(f, "Pebble library", "expense", "monthly", "UTC", "2026-01-31", "{\"amount\":\"12.00 USD\"}");
+	row = venture_database_get(f->db, VENTURE_TYPE_RECURRING_SCHEDULE, id, NULL);
+	g_object_set(row, "subscription", TRUE, "projection-only", TRUE, "reminder-days", (gint64)3,
+		"reminder-user-id", venture_entity_get_id(user), NULL);
+	save(f, row);
+	g_assert_cmpint(venture_money_calendar_remind(f->context, f->org, now, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_calendar_remind(f->context, f->org, now, &error), ==, 0);
+	g_assert_no_error(error);
+	g_clear_object(&row);
+	row = venture_database_get(f->db, VENTURE_TYPE_RECURRING_SCHEDULE, id, NULL);
+	g_object_get(row, "reminder-date", &stamp, NULL);
+	g_assert_nonnull(stamp);
+	g_object_set(row, "reminder-date", later, NULL);
+	g_assert_false(venture_database_save(f->db, row, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(user, "active", FALSE, NULL); save(f, user);
+	g_assert_cmpint(venture_money_calendar_remind(f->context, f->org, later, &error), ==, 0);
+	g_assert_no_error(error);
+	g_object_set(user, "active", TRUE, NULL); save(f, user);
+	g_assert_cmpint(venture_money_calendar_remind(f->context, f->org, later, &error), ==, 1);
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_NOTIFICATION);
+		g_autoptr(GPtrArray) notices = NULL;
+		venture_query_add_filter_string(query, "target-type", VENTURE_FILTER_OP_EQ, "recurring_schedule", NULL);
+		venture_query_add_filter_int(query, "target-id", VENTURE_FILTER_OP_EQ, id, NULL);
+		notices = venture_database_find(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_cmpuint(notices->len, ==, 2);
+	}
+	/* Forecast-only schedules never generate an expense or ask for posting consent. */
+	g_assert_cmpint(venture_recurring_service_run(venture_recurring_service_get(f->db), f->org, later, FALSE, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/money-calendar/personal-transfers-not-subscriptions", Fixture, GINT_TO_POINTER(3), setup, test_repeat_charges, teardown);
+	g_test_add("/money-calendar/repeat-february", Fixture, GINT_TO_POINTER(2), setup, test_repeat_charges, teardown);
+	g_test_add("/money-calendar/web/subscriptions", ServerFixture, NULL, server_setup, test_subscription_surfaces, server_teardown);
+	g_test_add("/money-calendar/changed-charge", Fixture, GINT_TO_POINTER(1), setup, test_repeat_charges, teardown);
+	g_test_add("/money-calendar/subscription-reminders", Fixture, NULL, setup, test_subscription_reminders, teardown);
+	g_test_add("/money-calendar/repeat-charges", Fixture, NULL, setup, test_repeat_charges, teardown);
+	g_test_add("/money-calendar/subscriptions", Fixture, NULL, setup, test_subscriptions, teardown);
 	g_test_add("/money-calendar/recurring/month-end", Fixture, NULL, setup, test_recurring_month_end, teardown);
 	g_test_add("/money-calendar/recurring/dst", Fixture, NULL, setup, test_recurring_dst, teardown);
 	g_test_add("/money-calendar/recurring/exclusions", Fixture, NULL, setup, test_recurring_exclusions, teardown);

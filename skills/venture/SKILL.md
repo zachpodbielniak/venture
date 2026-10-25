@@ -91,6 +91,12 @@ way and less clearly. A token is minted at `/account/tokens` or `POST
 
 ## Skill baseline -- maintained
 
+Household children 1–7 checked against `aebfac60` plus the private accounts,
+owner-controlled sharing and settlement changes (2026-10-21). See
+[household.md](references/household.md) for scope, selector, reports and
+forecast limits. Children 8–10 remain open; this delivery does not close #201.
+The broader catalogue baseline follows.
+
 This skill was reviewed against VENTURE commit
 `9c97a87a02ecc0fce669040557997f0e7d22e87f` (2026-10-18, server version
 0.6.0): every verb, route, record type, module and report it names was read
@@ -153,6 +159,8 @@ The full-system baseline above remains
 the last complete inventory review.
 
 ## Topic guides
+
+- [`references/household.md`](references/household.md) -- household view, accounts, envelopes, bills, wealth, savings; partial epic scope
 
 The guides live in `references/` beside this file; read only the one the
 task needs. They link to each other by bare filename. If your harness has
@@ -369,6 +377,7 @@ ids, notes) in words.
 | "Move money between wallets/characters" | `act location ID transfer to_location_id= amount=` | [currencies.md](references/currencies.md) |
 | "Put products in a category tree / add a custom field" | `category` + `category_id`; `fields define` | [taxonomy.md](references/taxonomy.md) |
 | "Create a venture of a declared type" | `create venture venture_type=... attributes.NAME=...` | [taxonomy.md](references/taxonomy.md) |
+| "Manage household money or savings" | Select the entity, then Household view; `report savings_goals this_month` | [household.md](references/household.md) |
 | "Total anything by anything" | `report aggregate PERIOD type= measure= group_by= date_field=` | [reports.md](references/reports.md) |
 | "Build / read / export a dashboard" | `dashboard create TEMPLATE`, `dashboard SLUG`, `dashboard export` | [dashboards.md](references/dashboards.md) |
 | "Book a service visit / send a technician" | `describe job`, `act job ID assign`, `act maintenance_plan ID book` | [jobs.md](references/jobs.md) |

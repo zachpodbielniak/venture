@@ -59,9 +59,9 @@ VENTURE_DEFINE_ENTITY(VentureJournal, venture_journal, journal_fields)
 
 static const VentureFieldDecl journal_line_fields[] = {
 	VENTURE_FIELD_REF("journal-id", "Journal", NULL, "journal",
-		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_REF("account-id", "Account", NULL, "account",
-		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_ENUM("side", "Side", "Debit or credit",
 		venture_ledger_side_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("amount", "Original amount", "Nonnegative amount"),
@@ -104,7 +104,7 @@ VENTURE_DEFINE_ENTITY(VentureExchangeRate, venture_exchange_rate, exchange_rate_
 static const VentureFieldDecl holding_txn_fields[] = {
 	VENTURE_FIELD_REF("account-id", "Holding",
 		"The account whose holding moved; it carries a location", "account",
-		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+		VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_MONEY("amount", "Amount",
 		"Signed, in a memo currency: more held is positive, less is negative"),
 	VENTURE_FIELD_ENUM("kind", "Kind",

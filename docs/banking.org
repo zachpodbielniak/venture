@@ -22,18 +22,26 @@ records and any source documents and journals created by existing services.
 * Importing a statement
 
 Create a =bank_account= through the normal form or generic CLI, naming its
-organization, ledger =account_id= and currency. Store its CSV mapping in
+organization, ledger =account_id= and currency. Leave the ledger account
+empty and a new one is made with it, named after the bank account: an asset
+for checking, savings, cash and investments, a liability for cards and
+loans, coded =BANK-n=; an empty currency is the book currency. Both are
+saved in one transaction or neither. Store its CSV mapping in
 =date_column=, =amount_column=, =description_column=, =reference_column=,
 =external_id_column=, optional =debit_column= / =credit_column= and =locale=.
 Mappings name header cells exactly. The =map= action previews headers from a
 sample file and can save those columns. A debit column without a credit is a
 negative amount. Locale =de_DE= treats a comma as the decimal separator.
 Supported date formats
-are =%Y-%m-%d=, =%m/%d/%Y= and =%d/%m/%Y=. The sign convention is =normal= or
+are =%Y-%m-%d= (also used when none is saved), =%m/%d/%Y= and =%d/%m/%Y=. The sign convention is =normal= or
 =invert=. CSV supports quoted commas, doubled quotes and embedded newlines.
 
 The import action takes =format= (=csv=, =ofx= or =qfx=), file contents in
 =data=, =period_start=, =period_end=, =opening_balance= and =closing_balance=.
+Column names and =date_format= given with the import are used for it, and
+kept on the bank account only with =apply= ("Save mapping"). On the web, the
+Banking actions form shows only the chosen action's fields, and a statement
+file picker fills the contents box.
 Calendar end dates include the entire UTC day. OFX/QFX reads =STMTTRN= blocks
 with =DTPOSTED=, =TRNAMT=, =FITID= and optional =MEMO= and =CHECKNUM=, including
 SGML leaf tags without closing tags. FITID supplies the external ID.
@@ -67,6 +75,7 @@ venturectl bank unmatch 2
 venturectl bank exclude 2 '{"reason":"Duplicate supplied by bank"}'
 venturectl bank create 2 '{"type":"expense"}'
 venturectl bank create 3 '{"type":"receipt","customer_id":1}'
+venturectl bank create 4 '{"type":"income","category":"Pay"}'
 venturectl bank reconcile 1
 venturectl bank preview 1
 venturectl bank bulk 1 '{"mode":"categorize"}'
@@ -155,7 +164,14 @@ statement amount. The create action checks the actual posted balance change
 and rolls everything back if the rule selected another account. Bank-created expenses set =cash_account_id= on the expense so the built-in
 rule credits that ledger account instead of Cash (1000). Receipt creation
 selects the linked bank directly through the settlement service's public
-cash-account property.
+cash-account property. =income= is for money in with no customer or invoice
+behind it, such as a household's pay: it records a sale (Income) booked to
+the bank's ledger account, with the line's description and the optional
+category as its channel. In household books (the expense's venture is a
+household, or it names none and every venture of the organization is one),
+an expense category with no entry in the posting profile's category map
+books to the active expense account of the same name, ignoring case, before
+falling back to the default expense account. Business books are unchanged.
 
 To preserve an open review without finalizing it, call =reconcile= with
 ={"state":"open"}=. This records the balances and difference without locking
@@ -186,3 +202,26 @@ A transfer requires two bank accounts in the same currency, a positive amount an
 * Reversing bank categorization
 
 =reverse= cancels only expenses created by that bank categorization, including its split expenses. The reversal journal and expense soft deletion commit together, so both ledger and expense reports remove the categorization. A match to an existing document is reconciliation evidence: use =unmatch= to change that link. Receipts require the receivables refund operation rather than a journal-only bank reversal. Historical matches without creation provenance are treated as existing documents. Amount bounds on a bank rule match only the same currency as the bank transaction; no exchange conversion is inferred.
+
+* Household account kinds and correction scope
+
+A =bank_account.kind= is =unspecified=, =checking=, =savings=, =card=, =cash=,
+=loan= or =investment=. The shared save boundary requires an asset ledger
+account for checking, savings, cash and investments, or a liability for cards
+and loans. Existing identities remain unspecified after migration =000981=;
+a label-only edit does not reclassify them. Transfers recheck both current
+ledger accounts, refusing income, expense, equity, deleted or identical
+accounts before posting. Principal therefore stays off spending and income.
+
+The transfer web form also accepts =fee=, =from_transaction_id= and
+=to_transaction_id=, using the same service as REST and CLI. Link imported
+movement lines here before categorising other statement lines. Matched
+transfer lines are excluded from bulk categorisation; only a separate fee
+reaches the expense ledger.
+
+A spending correction learns an account-specific merchant rule with a real
+historical preview. It never changes another bank's or a broad merchant's
+rule. Learned rules match negative amounts in the statement currency, leaving
+refunds for review. Review and enable the rule before bulk use; another
+correction disables and refreshes it. Empty descriptions do not produce
+catch-all rules. Receipt corrections do not invent spending rules.

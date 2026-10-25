@@ -197,6 +197,67 @@ struct _AutoRule { GObject parent_instance; gchar *name; VenturePostingRule *fal
 static void rule_iface(VenturePostingRuleInterface *iface);
 G_DEFINE_FINAL_TYPE_WITH_CODE(AutoRule, auto_rule, G_TYPE_OBJECT, G_IMPLEMENT_INTERFACE(VENTURE_TYPE_POSTING_RULE, rule_iface))
 static const gchar *rule_name(VenturePostingRule *rule) { return ((AutoRule *)rule)->name; }
+/* Household books: the expense's venture is a household, or it names none
+ * and every venture of its organization is a household. */
+static gboolean
+household_books(VentureDatabase *db, VentureEntity *expense)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_VENTURE);
+	g_autoptr(GPtrArray) ventures = NULL;
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
+	gint64 venture = 0;
+	guint i;
+	g_object_get(expense, "venture-id", &venture, NULL);
+	if (venture > 0)
+	{
+		g_autoptr(VentureEntity) row = venture_database_get(db, VENTURE_TYPE_VENTURE, venture, NULL);
+		g_autofree gchar *kind = NULL;
+		if (row == NULL) return FALSE;
+		g_object_get(row, "venture-type", &kind, NULL);
+		return g_strcmp0(kind, "household") == 0;
+	}
+	venture_query_set_organization(query, venture_entity_get_organization_id(expense));
+	venture_query_set_limit(query, 0);
+	ventures = venture_database_find(db, query, NULL);
+	if (ventures == NULL || ventures->len == 0) return FALSE;
+	for (i = 0; i < ventures->len; i++)
+	{
+		g_autofree gchar *kind = NULL;
+		g_object_get(g_ptr_array_index(ventures, i), "venture-type", &kind, NULL);
+		if (g_strcmp0(kind, "household") != 0) return FALSE;
+	}
+	return TRUE;
+}
+
+/* The active, shared expense account whose name is @name, ignoring case. */
+static gint64
+expense_account_named(VentureDatabase *db, gint64 org, const gchar *name)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACCOUNT);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *wanted = g_utf8_casefold(name, -1);
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
+	guint i;
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_int(query, "kind", VENTURE_FILTER_OP_EQ, VENTURE_ACCOUNT_KIND_EXPENSE, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(db, query, NULL);
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *account = g_ptr_array_index(rows, i);
+		g_autofree gchar *label = NULL, *folded = NULL;
+		gboolean active = FALSE;
+		g_object_get(account, "name", &label, "active", &active, NULL);
+		if (!active || label == NULL)
+			continue;
+		folded = g_utf8_casefold(label, -1);
+		if (g_strcmp0(folded, wanted) == 0)
+			return venture_entity_get_id(account);
+	}
+	return 0;
+}
+
 static GPtrArray *
 rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source, GError **error)
 {
@@ -318,6 +379,12 @@ rule_lines(VenturePostingRule *rule, VentureDatabase *db, VentureEntity *source,
 				debit = named;
 			}
 		}
+		/* In household books a category with no map entry books to the
+		 * active expense account of the same name, so a "Groceries"
+		 * envelope sees the groceries without anyone editing the category
+		 * map. Business books keep the default expense account. */
+		if (debit == 0 && !venture_string_is_empty(category) && household_books(db, source))
+			debit = expense_account_named(db, venture_entity_get_organization_id(source), category);
 		if (debit != 0) g_object_set(profile, "default-expense-account-id", debit, NULL);
 		{
 			g_autofree gchar *book = book_currency(db, source);

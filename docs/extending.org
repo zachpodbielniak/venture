@@ -58,11 +58,13 @@ metrics:
   - revenue_per_listing
 #+end_src
 
-Five ship in =data/venture-types/=: =books=, =etsy=, =newsletter=,
+Six ship in =data/venture-types/=: =books=, =etsy=, =newsletter=,
 =virtual_economy= (trading, crafting or farming inside a game world or a
 platform's own economy: the world, the server or region, the currency code,
 the faction, the account handle, the main marketplace) and =general=
-(anything that is not a business: a household, a hobby, a club, a project).
+(anything that is not a business: a household, a hobby, a club, a project),
+and =household= (personal and shared household money, with the
+[[file:household.org][slim household view]]).
 [[file:examples/game-economy.org][The game-economy walkthrough]] uses
 =virtual_economy= from end to end.
 

@@ -582,6 +582,8 @@ test_venture_type_shipped_definitions_load(
 	                                                      "newsletter"));
 	g_assert_nonnull(venture_venture_type_registry_lookup(registry, "general"));
 
+	g_assert_nonnull(venture_venture_type_registry_lookup(registry, "household"));
+
 	type = venture_venture_type_registry_lookup(registry, "virtual_economy");
 	g_assert_nonnull(type);
 

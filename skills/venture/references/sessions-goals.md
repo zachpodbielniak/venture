@@ -157,3 +157,16 @@ venturectl report goal_materials all include_on_hand=false
 A dashboard `progress` widget on `goal` should set
 `options.start_field=start_value` beside `target_field=target_value`, or a
 downward goal reads as done before it starts.
+
+## Linked household savings
+
+A goal linked through `savings_account_id` or `savings_envelope_id` uses
+exact-money progress, not its manual numeric fields. Its detail page reads
+`savings_goals` for this month's closing balance and shows saved funds,
+target, remaining amount, monthly amount needed and forecast. An unreadable
+source shows a refusal instead of zero progress; ordinary goal steps remain.
+Use the page's report link to select another calendar month. See
+`docs/household.org` for source, contribution and forecast rules.
+
+See [household.md](household.md) for the six delivered children, setup,
+shared-source limits and the remaining epic scope.

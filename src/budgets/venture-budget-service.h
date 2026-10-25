@@ -42,6 +42,20 @@ gboolean venture_budget_check_write(VentureDatabase *database, VentureEntity *re
 VentureReportResult *venture_budget_service_vs_actual(VentureBudgetService *self,
 	gint64 organization_id, const gchar *period, const gchar *dimension, GError **error);
 /**
+ * venture_budget_service_envelopes:
+ * @self: the service
+ * @organization_id: one legal entity
+ * @period: month in YYYY-MM form
+ * @error: (out) (optional): return location for an error
+ *
+ * Computes monthly envelopes from posted expense-account movement. Rollover
+ * carries both positive and negative balances from each envelope's start month.
+ *
+ * Returns: (transfer full) (nullable): monthly amounts and warning states
+ */
+VentureReportResult *venture_budget_service_envelopes(VentureBudgetService *self,
+	gint64 organization_id, const gchar *period, GError **error);
+/**
  * venture_budget_service_cash_forecast:
  * @self: the service or registry instance
  * @organization_id: target legal entity ID

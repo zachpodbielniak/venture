@@ -17,13 +17,18 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 	if (!strcmp(name, "bank_account"))
 	{
 		g_string_append(content,
+			"<div data-actions=\"import map\">"
 			"<label>Format<select name=\"format\"><option>csv</option><option>ofx</option><option>qfx</option></select></label>"
+			"<label>Statement file<input type=\"file\" data-fill=\"data\" accept=\".csv,.ofx,.qfx,text/csv,text/plain\"></label>"
 			"<label>Statement contents<textarea name=\"data\"></textarea></label>"
+			"</div><div data-actions=\"import\">"
 			"<label>Period start<input type=\"date\" name=\"period_start\"></label>"
 			"<label>Period end<input type=\"date\" name=\"period_end\"></label>"
 			"<label>Opening balance<input name=\"opening_balance\"></label>"
 			"<label>Closing balance<input name=\"closing_balance\"></label>"
-			"<p>CSV mapping. Leave amount empty when the file uses debit and credit columns.</p>"
+			"</div><div data-actions=\"import map\">"
+			"<p>CSV columns, named as in the file's first row. Leave amount empty when the file uses debit and "
+			"credit columns. Import uses these; tick Save mapping to keep them for next month.</p>"
 			"<label>Date column<input name=\"date_column\"></label>"
 			"<label>Amount column<input name=\"amount_column\"></label>"
 			"<label>Debit column<input name=\"debit_column\"></label>"
@@ -31,11 +36,20 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 			"<label>Description column<input name=\"description_column\"></label>"
 			"<label>Reference column<input name=\"reference_column\"></label>"
 			"<label>External id column<input name=\"external_id_column\"></label>"
+			"<label>Date format<select name=\"date_format\"><option value=\"\">2026-09-30 (or as saved)</option>"
+			"<option value=\"%m/%d/%Y\">09/30/2026</option><option value=\"%d/%m/%Y\">30/09/2026</option></select></label>"
 			"<label>Locale<input name=\"locale\"></label>"
 			"<label><input type=\"checkbox\" name=\"apply\" value=\"true\"> Save mapping</label>"
+			"</div><div data-actions=\"transfer\">"
 			"<label>Transfer to bank ID<input type=\"number\" name=\"counterparty_bank_account_id\" min=\"1\"></label>"
 			"<label>Transfer amount<input name=\"amount\"></label>"
-			"<label>Transfer date<input type=\"date\" name=\"date\"></label>");
+			"<label>Transfer date<input type=\"date\" name=\"date\"></label>"
+			"<label>Transfer fee (optional)<input name=\"fee\"></label>"
+			"<label>Source statement line ID (optional)<input type=\"number\" name=\"from_transaction_id\" min=\"1\"></label>"
+			"<label>Destination statement line ID (optional)<input type=\"number\" name=\"to_transaction_id\" min=\"1\"></label>"
+			"<p>Moving money between your accounts, including card repayments and loan principal, is a transfer. "
+			"Link its statement lines here so they cannot also become spending. Only a separate fee counts as spending.</p>"
+			"</div>");
 	}
 	else if (!strcmp(name, "bank_statement"))
 		g_string_append(content, "<label>Reconciliation state<select name=\"state\">"
@@ -44,12 +58,15 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 	else if (!strcmp(name, "bank_transaction"))
 	{
 		g_string_append(content,
-			"<label>Exclusion reason<input name=\"reason\"></label>"
-			"<label>Create<select name=\"type\"><option value=\"expense\">Expense</option>"
-			"<option value=\"receipt\">Receipt</option></select></label>"
-			"<label>Category<input name=\"category\"></label>"
-			"<label>Customer ID for receipt<input type=\"number\" name=\"customer_id\" min=\"1\"></label>"
-			"<label>Candidate search<input name=\"search\" placeholder=\"description or reference\"></label>"
+			"<div data-actions=\"exclude unmatch\"><label>Reason<input name=\"reason\"></label></div>"
+			"<div data-actions=\"create\"><label>Create<select name=\"type\"><option value=\"expense\">Expense</option>"
+			"<option value=\"income\">Income (money in, no customer)</option>"
+			"<option value=\"receipt\">Receipt</option></select></label></div>"
+			"<div data-actions=\"create correct\"><label>Category<input name=\"category\"></label></div>"
+			"<div data-actions=\"correct\"><p>Use correct to change a spending category and learn a rule for this account. "
+			"Review and enable the saved rule in Category rules before applying it to other lines.</p></div>"
+			"<div data-actions=\"create\"><label>Customer ID for receipt<input type=\"number\" name=\"customer_id\" min=\"1\"></label></div>"
+			"<div data-actions=\"match\"><label>Candidate search<input name=\"search\" placeholder=\"description or reference\"></label>"
 			"<p>For matching, select the existing record and its signed amount. Add rows for a split, refund, journal or explicit fee adjustment. REST and CLI accept any number of parts.</p>");
 		for (i = 0; i < 12; i++)
 			g_string_append_printf(content,
@@ -62,6 +79,7 @@ venture_bank_append_actions(GString *content, VentureEntity *record)
 				"<option value=\"bill_payment\">Bill payment</option></select></label>"
 				"<label>Record ID<input type=\"number\" name=\"record_id_%u\" min=\"1\"></label>"
 				"<label>Amount (optional)<input name=\"match_amount_%u\"></label></fieldset>", i + 1, i, i, i);
+		g_string_append(content, "</div>");
 	}
 	g_string_append(content, "<button class=\"btn\" type=\"submit\">Apply</button></form></section>");
 }

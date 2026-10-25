@@ -1,0 +1,688 @@
+#+title: Household ventures
+#+description: Personal and household finance as a slimmed-down venture type
+
+* Status
+
+This branch delivers all ten children of issue #201, from the household
+type to the full-month walk below, and awaits review. Publication scope is
+"household finance workflows, children 1–10"; until the epic's review and
+merge, use =Refs #201=, not =Closes #201=.
+
+* What a household venture is
+
+A venture of type =household=: the same ledger, accounts and reports as any
+other venture, with navigation and words for a home instead of a business.
+Business ventures in the same organization are unchanged.
+
+* Built from what exists
+
+- Accounts and the ledger ([[file:ledger.org][ledger]]) hold checking, savings, cards, cash, loans and investments.
+- Bank feeds ([[file:bankfeed.org][bankfeed]]) and file import bring transactions in; categorisation rules sort them.
+- Budgets ([[file:budgets.org][budgets]]) become monthly category or envelope budgets with roll-over.
+- Recurring entries ([[file:recurring.org][recurring]]) and the money calendar ([[file:money-calendar.org][money calendar]]) become bills and subscriptions.
+- Goals ([[file:goals.org][goals]]) become savings goals tied to accounts.
+- Documents ([[file:documents.org][documents]]) hold receipts and warranties.
+- Dashboards ([[file:dashboards.org][dashboards]]) give the household home screen.
+
+* Gaps the epic fills
+
+1. Implemented: the =household= type and slim view (see below).
+2. Implemented: categorisation rules that learn, and transfers that never count as spending.
+3. Implemented: monthly category envelopes, rollover and early warnings (see below).
+4. Implemented: due calendar, repeat-charge suggestions, subscriptions with yearly cost and opt-in inbox reminders (see below).
+5. Implemented: monthly net worth and snowball/avalanche payoff estimates (see below).
+6. Implemented: savings goals tied to asset accounts or rollover envelopes (see below).
+7. Implemented: separate members, private accounts with owner-controlled household sharing, and settling up.
+8. Implemented: deductible tags, a year-end export for taxes, receipts and warranties on purchases with reminders (see below).
+9. Implemented: a phone-first household dashboard with spending by category, money in and out by month, a cash forecast and net worth over time (see below).
+10. Implemented: a full month walked as a household at 390 and 1440, every dead end fixed (see below).
+
+* Household type and slim view (child 1)
+
+Create a venture through Settings / Ventures and choose *Household* as its
+Type. The optional "What we are planning for" field is a note, not a required
+setup step. The declarative definition is =data/venture-types/household.yaml=;
+it uses the existing type registry and attribute storage, so no migration is
+needed. A =general= venture whose Kind says household is unchanged; change
+its Type to =household= explicitly to use this view.
+
+Pick its entity in the sidebar, then pick the household under *Venture view*.
+The view opens Spending (or the first available destination when finance is
+disabled). An entity with no household keeps its ordinary selector. The menu
+has these destinations, in order:
+
+| Area      | Destinations                     |
+|-----------+----------------------------------|
+| Money     | Income, Spending, Accounts, Bank feeds |
+| Bills     | Bills, Pay bills                 |
+| Budgets   | Budgets                          |
+| Goals     | Goals                            |
+| Documents | Documents                        |
+| Reports   | Reports                          |
+
+Income and Spending reuse the ordinary sale and expense records; Bills reuse
+payables, and Documents is the ordinary document list, where receipts can be
+filed. These are existing pages, not new accounting operations. New offers
+Spending and Bill. The list and new-entry headings use household words. The
+command palette uses the same household destinations and omits business
+record shortcuts. Plugin shortcuts, saved-view shortcuts and custom dashboard
+shortcuts are omitted from this menu. Links belonging to disabled modules
+stay hidden, including their otherwise empty headings.
+
+Pick a business venture or *Full view* to restore normal navigation. A
+household selection does not switch off any module or change a business
+venture's type, stored data or navigation. Accountant-only access keeps its
+Books menu. The menu still folds on a phone using the existing Menu button.
+
+This child changes navigation, not accounting scope: the existing pages and
+reports still answer for the selected entity. Use separate entities when
+household and business books must be separate. Household account kinds and imports are described in child 2 below;
+budgeting and household-specific reports are later children. Selecting this
+view does not create a data-access boundary. Direct URLs,
+the CLI and API retain their existing permissions and record contracts.
+
+=GET /view/venture/ID= requires a signed-in session and a live readable venture
+in the currently selected entity. =/view/venture/all= restores the full view.
+The =venture_view= cookie carries only the chosen ID (HttpOnly, SameSite=Lax).
+Every request rechecks its record and type under the caller's access scope;
+a forged, deleted, moved or retyped household cannot keep an obsolete view.
+Selecting All entities uses the full menu. The cookie never grants access.
+
+The household destination table lives in =src/web/venture-web-household.inc=.
+Later children append their destinations there; the business table stays
+separate. No migration is consumed by child 1; upstream's highest migration
+at implementation was =000920=; the household migrations were renumbered
+to 000981-000987 when this work was folded into the launch epic.
+
+Tests: =test-plugin /venture-type/shipped-definitions-load= checks the shipped
+type. =test-auth /auth/household-navigation= checks selection, plain labels,
+hidden business links in the sidebar and palette, every offered page, malformed
+IDs and switching back to a business. =/auth/household-view-scope= checks
+foreign selections, forged cookies and retyping. Both initial regressions
+were observed on the epic baseline before implementation.
+
+* Child 2: accounts, imports and transfers
+
+In the household Money menu, *Bank accounts* holds accounts that can receive
+statements: checking, savings, credit cards, cash wallets, loans and
+investments. *Accounts* remains the underlying chart of ledger accounts.
+Create a ledger account first, then a bank account linked to it, with its
+currency and account kind. Checking, savings, cash and investments require
+an asset ledger account; cards and loans require a liability. An investment
+account here records money movements, not security lots or market valuations.
+Existing accounts keep their identity and start as =unspecified=; choose a
+kind deliberately. The kind appears in the normal generated form, REST and
+CLI, and is checked at the shared save boundary.
+
+Accounts still belong to the selected entity, not the browser's venture-view
+cookie. Keep household and business books in different entities when their
+money must be separate. This child does not change access permissions.
+
+** Bring in statements
+
+Open a bank account and use its Banking actions to map columns and import
+CSV, OFX or QFX statement contents. New shortcuts on statements, statement
+lines and transfers return to the account list to choose the account whose
+actions create that evidence. Set the statement period and opening and
+closing balances. CSV supports either signed amounts or separate debit and
+credit columns; OFX/QFX uses FITID. Overlapping imports skip previously seen
+identities and an invalid new line rolls back the batch. See
+[[file:banking.org][Banking]] for the exact format and CLI examples.
+
+For a provider connection, enable the optional =bankfeed= module and open
+*Bank feeds*. Link the same bank account and configure that connection's
+settings. Sync imports statement evidence; it does not book spending.
+[[file:bankfeed.org][Bank feeds]] describes encrypted settings, provider support and sync.
+File import works without provider credentials. The implementation tests use
+local fake providers, never a real bank connection.
+
+** Review and learn categories
+
+*Statement lines* shows imported evidence. Use =create= for new spending,
+=match= for a document already entered, and =correct= to change a spending
+category. A correction reverses its old bank-created expense and creates its
+replacement atomically. It saves a rule for this account and merchant, with
+a real preview of matching historical statement lines. Learned spending rules
+match debits in the same currency; a merchant refund remains for review. In *Category rules*, review
+that preview, then =enable= the rule. The account's =inbox= previews suggestions;
+=bulk= applies unique enabled suggestions. Ambiguous matches remain for review.
+A corrected rule is disabled until reviewed and enabled again.
+
+Corrections do not rewrite another account's rule or a broader merchant,
+split or amount-bounded rule. Blank descriptions do not create catch-all
+rules. Reversals and corrections retain audit history and obey closed periods
+and reconciled statement locks.
+
+** Move money without counting it as spending
+
+Use =transfer= on the source bank account for a move to savings, investment
+funding, a cash withdrawal, card repayment or loan principal. Enter the
+destination bank account ID, amount and date. Both ends must use distinct
+asset or liability ledger accounts in the same entity and currency. The
+service checks the current ledger classes again before posting; a legacy
+account cannot send transfer principal to income or spending.
+
+If imported lines represent the movement, enter their source and destination
+statement line IDs in the transfer form. Their bank, direction and amount
+must agree exactly. The service marks both as transfer evidence in the same
+transaction as the paired journal, so subsequent categorisation leaves them
+alone. Do not create expenses from those lines. A duplicate transfer is
+refused. *Transfers* lists the saved movements.
+
+An optional fee is separate spending on the source account; only the
+principal moves to the destination. Enter loan interest as separate spending,
+not principal. Different-currency transfers require explicit exchange
+accounting and are refused by this action.
+
+Migration =000981_household_account_kinds.sql= adds no invented financial
+history: field metadata adds the kind column and the paired migrations mark
+previously unset kinds as unspecified, including when banking was disabled
+after use. Tests cover account-kind persistence and class refusal, populated
+upgrade/restart, correction isolation, imports, fake feed sync and transfers.
+
+* Monthly envelopes (child 3)
+
+Open Budgets in the household view to see this month's category amounts,
+rolled-over balance, spending, left to spend and status. Create an active Budget
+and add Budget lines with Monthly envelope enabled, a first month and a monthly
+amount. Choose Roll over separately for each category. Unspent money and
+overspending both carry forward when it is on; when it is off each month starts
+with its own allocation. The report warns at 80% used, then says Used up or
+Over budget. Warnings appear on the page, with no notification delivery.
+
+Each envelope uses one expense account, matching the expense-category posting
+map. Transfers between owned accounts do not consume envelopes; posted fees and
+interest do. Refunds restore room to spend. Each account has one live envelope
+per organization. Changing a plan recalculates past months; these are live plans,
+not locked monthly snapshots. See [[file:budgets.org][Budgets]] for setup, calculation
+rules, the CLI/API and migration 000982.
+
+* Child 4: bills and subscriptions
+
+The Bills menu includes *Due calendar*, *Subscriptions* and *Repeating bills*.
+The calendar combines open bills, outgoing recurring schedules and possible
+repeat charges. In the household browser view it shows only these outgoing
+items; the business view keeps its other sources. Dates and amounts come
+from the same calendar source used by reports, the planner and the ICS feed.
+
+** Confirm a subscription
+
+Open Repeating bills and create a bill or expense schedule. Set its start,
+frequency, timezone and template as described in [[file:recurring.org][Recurring work]].
+For an expense, a template such as ={"amount":"12.00 USD"}= supplies the
+forecast amount. Check *Subscription* to include it in the yearly list.
+Check *Forecast only* when charges already arrive through your bank: the
+schedule then produces dates, never expenses, bills or ledger entries.
+Ordinary recurring schedules keep their existing accounting behavior.
+
+To replace a detected suggestion, set *Paid from* to its bank account and
+copy the merchant's exact statement description into *Statement description*.
+Matching ignores letter case and outer spaces, but does not guess merchant
+aliases. This also suppresses detection while that schedule is paused, so a
+cancelled subscription does not reappear as a new suggestion. Pause or set
+an inclusive End date when payments stop. Neither operation cancels a vendor
+contract; it changes this forecast.
+
+** Detection and yearly cost
+
+A possible repeat charge requires three consecutive equal negative charges
+in one entity, bank account, merchant and currency, at an exact weekly,
+monthly or yearly cadence. Month-end dates clamp independently. Changed
+amounts, irregular intervals, excluded transactions, refunds and linked own
+account transfers are not evidence of a subscription. If the next expected
+payment is already past the report's as-of day, the suggestion is stale and
+omitted. A missed or shifted bank date can therefore hide a real subscription;
+create a schedule when its due date is known.
+
+Suggestions are labelled *Possible repeat charge*, marked tentative in ICS,
+and excluded from cash nets. They never create a bill, expense or payment.
+Reads do not save a classification. Detection fails visibly rather than
+silently truncating history beyond the configured aggregate row limit.
+
+Subscriptions you pay for lists confirmed schedules separately from possible
+subscriptions, with the next date, payment amount and cost over twelve months
+from the selected period's start. It counts actual calendar occurrences,
+respects start/end dates and pauses, and keeps currencies separate. Confirmed
+schedule costs include contractual occurrences even if their documents have
+already been generated; this is a forecast of the contract, not another
+spending total. The same report is available at
+=/api/v1/reports/household_subscriptions?period=2026-01= and through
+=venturectl report household_subscriptions 2026-01=.
+
+** Reminders
+
+Set *Remind days before* to 1–28 and choose *Remind person* on an outgoing
+schedule. Zero disables reminders. Visiting the due calendar or inbox runs a
+lazy sweep; =venturectl calendar remind= also runs it through the existing
+calendar reminder endpoint (planner enabled). There is no background timer,
+email or automatic payment. A due date is notified at most once, with the
+notification and its technical stamp saved in one transaction. The recipient
+must still be active and authorized to read the schedule. Paused schedules
+and already generated occurrences do not send schedule reminders. For bank
+subscriptions use Forecast only so the schedule retains its forecast dates.
+Polling ICS or reading reports never sends reminders.
+
+Migration =000983_household_subscriptions.sql= (SQLite and PostgreSQL) keeps
+existing schedules non-subscription, accounting-enabled and reminder-free;
+its optional-table guard supports installations without recurring schedules.
+Tests cover detection, stale and changed charges, tenant separation, suppressed
+suggestions, yearly totals, web/API/CLI, reminders, forecast-only sweeps and
+upgrade/restart behavior.
+
+* Net worth and debt payoff (child 5)
+
+Household Reports now links to *Net worth* and *Debt payoff*. Both reuse the
+statement engine, report web page, API, CLI, MCP and assistant report tools.
+They answer for one exact organization; currencies remain separate. They
+require =statements= and its ledger/period dependencies. Debt planning also
+requires =banking=. Turning a module off removes its registered reports.
+These exploratory reports are not captured in period-close statement snapshots.
+
+** Net worth over time
+
+=/reports/net_worth?period=2026= lists each month's assets, liabilities and
+net worth (assets minus liabilities). Balances include all earlier posted
+entries and stop at the month end, or the earlier =as_of= cutoff. The Through
+column shows that precise cutoff. Parent accounts never multiply totals;
+unposted transactions and statement imports alone do not change net worth.
+Use the existing posting and reconciliation workflows to bring those into
+the ledger. These are book values, not live investment or property prices.
+Current account classifications apply to historical rows. Requests are
+limited to 600 months. Choose a shorter period for a closer look.
+
+** Configure and compare debts
+
+On *Money / Bank accounts*, edit each liability account to plan:
+
+- Turn on *Include in debt planner*.
+- Enter *APR in basis points*: 100 means 1% per year; 0 is interest-free.
+- Enter a positive *Fixed monthly minimum* in the account's currency.
+- Optionally enter an *Extra monthly contribution*. Contributions from all
+  selected accounts of the same currency form one shared extra-payment pool.
+
+Open =/reports/debt_payoff?period=2026-01=. The starting amount is each selected
+liability account's direct posted balance at the end of January (or earlier
+=as_of=), never a copied statement balance or a parent subtotal. Select each
+ledger account at most once per currency. Unselected debts are excluded, and
+credit balances count as zero debt. A selected account with no debt still
+contributes its configured minimum and extra to the strategy budget; turn
+it off to remove that contribution. Edit the settings to compare scenarios.
+
+Each currency gets debt rows and an all-debts summary for three projections:
+
+| Projection | Payment rule |
+|------------+--------------|
+| minimum | Each debt's fixed minimum only; retired payments stop. |
+| snowball | All minimums, then remaining budget to the smallest balance. |
+| avalanche | All minimums, then remaining budget to the highest APR. |
+
+The latter two retain the sum of initial minimums plus extra contributions
+throughout the projection, recycling unused and retired minimums. Priorities
+are chosen after that month's interest and minimum payments; ties follow
+bank-account record order. The summary shows the initial monthly budget;
+individual debt rows show their minimum, not a promise of constant payment.
+Interest saved compares each completed projection with minimum-only, including
+the effect of both extra contributions and recycled payments.
+
+Payments start one month after the balance cutoff. Dates remain anchored to
+that cutoff's day, clamped in shorter months (January 31 gives February 28,
+then March 31). Each month charges APR/12 on its opening balance, rounded
+half to even in the currency's minor unit, then pays. Rates and fixed minimums
+stay constant; there are no fees, new charges or daily accrual. These are
+estimates, not lender payoff quotes, and the report creates no payments.
+
+The horizon is 600 months and at most 200 selected debts. An unfinished debt
+shows its remaining balance and interest accrued through that horizon, with
+no payoff date. Savings are blank whenever that projection or its minimum-only
+baseline is unfinished. Invalid currency, duplicate debt selection, invalid
+APR/payment or money overflow returns an error instead of a partial estimate.
+
+Both reports accept =period=, =organization_id=, =currency= and =as_of= through
+existing report surfaces. They require accrual balances and reject cash basis,
+comparative periods and dimension filters, which would misstate whole-account
+wealth. For example:
+
+#+begin_src sh
+venturectl report net_worth 2026 currency=USD
+venturectl report debt_payoff 2026-01 currency=USD as_of=2026-01-31
+#+end_src
+
+Migration =000984_household_wealth.sql= is paired for SQLite and PostgreSQL.
+Metadata reconciliation adds the bank-account fields; the guarded migration
+backfills planning off and APR zero, preserving existing accounts and payments.
+
+* Linked savings goals (child 6)
+
+Under *Goals*, create or edit a goal and choose exactly one source:
+
+- *Savings asset account*: an asset ledger account in the same organization.
+  The report reads its direct posted balance in the target currency, without
+  adding child-account balances or imported statements that have not posted.
+- *Savings rollover envelope*: a monthly envelope with rollover enabled in an
+  active budget in the same organization. The report reads its unspent amount,
+  including carried surplus or overspending. This is a budget allocation,
+  not a claim about cash held in a bank.
+
+Set a positive *Savings target*, optionally set *Due*, and enter *Planned
+monthly savings* in the same currency. Leave the ordinary numeric Start,
+Current and Target fields alone: linked savings use exact money, not those
+manual numbers. No due date leaves the amount needed per month blank; a
+missing or zero planned contribution leaves the future forecast blank.
+
+Open *Goals / Savings progress* (=savings_goals=). Choose one calendar month
+and optionally a currency or goal ID. It reports saved funds, target, remaining
+amount, progress, monthly amount needed and estimated target date. Balances
+are at that month's end in UTC, consistently for both source types. The same
+calculation is available through the API, CLI, MCP and assistant report tools:
+
+#+begin_src sh
+venturectl report savings_goals 2026-01 currency=USD
+venturectl report savings_goals 2026-01 goal_id=7
+#+end_src
+
+The API is =/api/v1/reports/savings_goals?period=2026-01=. Options are
+=organization_id=, =goal_id= and =currency=. A year or partial-month period,
+or an =as_of= override, is refused: use the calendar month whose closing
+balance you want. Target presence and currency are filtered before the goal
+row limit, so ordinary goals and goals in other currencies do not exhaust a
+narrowed request. Too many matching savings goals still refuse; narrow by
+=goal_id=. Invalid linked sources still refuse rather than disappear.
+Current goal and envelope settings apply to past periods.
+
+Contributions start one month after the cutoff and stay anchored to its day,
+clamped in shorter months: January 31 gives February 28 and March 31;
+February 28 gives March 28. Monthly needed is the remaining amount divided
+by the number of these contributions on or before the due date, rounded up
+to the smallest currency unit. If no contribution date remains, the full
+remaining amount is needed now. Negative balances increase the shortfall;
+progress can be negative or above 100%, while remaining never falls below zero.
+
+The forecast uses the planned *net* monthly contribution, with no additional
+withdrawals, interest, fees or currency changes. For an envelope, enter the
+amount expected to remain after future spending, not necessarily its gross
+monthly allocation. Forecasts stop at 1200 months; a longer result stays
+blank with an explanation. Paused, achieved and abandoned goals get no future
+contribution forecast. A source that already covers the target shows the
+selected cutoff as covered, not a claim about when it was first achieved.
+
+Several goals may refer to the same source; each sees its whole balance.
+These are alternative views of funds, not reservations or amounts to add
+together. The report makes no transfers and does not change goal status or
+manual progress. Missing, deleted, moved or invalid sources are errors rather
+than zero balances. Ledger and the source's optional module must be enabled.
+Ordinary goals keep their manual progress behavior; =goal_progress= directs
+linked savings goals to =savings_goals= instead of showing stale numeric values.
+
+Migration =000985_household_savings.sql= is paired for SQLite and PostgreSQL.
+Metadata reconciliation adds the money and reference fields; the guarded
+migration leaves old goals unlinked and preserves their existing progress.
+
+* Household walkthrough repairs
+
+A linked savings goal's own page shows the same exact-money progress as the
+Savings progress report for this month, including the amount still needed,
+monthly contribution and forecast date. It labels the month-end cutoff and
+never substitutes the unused manual Start/Current/Target values. If the
+source cannot be read, the page shows the refusal instead of zero progress.
+Its steps remain available. The report link selects this goal and entity.
+
+Savings progress offers This month and Last month shortcuts; use its Month
+field for another calendar month. Quarter and year shortcuts are omitted
+because the calculation requires exactly one month. Other reports retain
+all their period shortcuts, which wrap inside the screen on a phone.
+
+The due calendar's month and week grids scroll within a labelled, keyboard
+focusable region. Select Agenda for a vertical list. This keeps weekday and
+weekly-total columns from widening the phone page.
+
+The opt-in =tools/venture-test-household-browser.cjs= checks a populated local
+household at 390 and 1440 in both looks. It needs =playwright-core= available
+to Node (for example through =NODE_PATH=), =VENTURE_TEST_UI_URL=,
+=VENTURE_TEST_UI_USERNAME=, =VENTURE_TEST_UI_PASSWORD=,
+=VENTURE_TEST_HOUSEHOLD_ID= and =VENTURE_TEST_SAVINGS_GOAL_ID=. The fixture
+must contain a linked savings goal and a recurring bill. Optionally set
+=VENTURE_TEST_CHROMIUM= to an installed Chromium executable. It logs in,
+reads pages and follows a bill link; it does not seed or change records.
+
+* Members, account sharing and settling up (child 7)
+
+Personal accounts are private to their owner unless that owner explicitly
+checks *Share with household*. While unshared, other household members,
+including household administrators, cannot see the account, statements,
+receipts, reports, exports or underlying settlement evidence derived from it.
+When shared, all of those follow the account and become visible
+to the household's authorized finance members. Each member uses a separate
+login and an active membership in the household's organization.
+
+Settlement disclosures contain only the shared amounts the reader is a
+party to. They must never identify the private funding account, statement,
+receipt or journal behind those amounts. Installation administrators retain
+the existing service administration authority; household membership must not
+be implemented by granting that global role.
+
+This is the child-7 acceptance contract. Keep its policy tests together in
+=test-orgaccess= so a later policy decision can change the contract in one
+place. The existing optional personal-owner metadata is the enforcement
+primitive; a household navigation selection is never an access boundary.
+
+** Separate logins and personal accounts
+
+Use the existing user and organization membership screens to give each adult
+an individual login and an active membership in the household's entity.
+Use the organization Finance role for bookkeeping. Do not grant global Owner
+or Admin to a household member merely so they can enter spending: those are
+installation administration roles with access to all data.
+
+Open *Money / Accounts*. When creating an asset or liability ledger account,
+choose its *Private owner*
+for a personal account, or leave it empty for a joint account. The Bank account
+inherits that choice from its Ledger account. Existing accounts remain shared;
+ownership cannot be reassigned after saving. The owner can check or clear
+*Share with household* on the ledger account. Sharing includes historical
+activity; clearing it hides the account and its derived records again. It
+cannot recall exports someone already downloaded while sharing was enabled.
+Create a new personal account for future activity on a previously joint account. Spending categories stay shared; the purchase amounts inherit
+the funding account's privacy.
+
+Statement imports, statement lines, matches, category rules, feed connections,
+reconciliations, spending, income, receipts, savings goals and repeating bills
+inherit privacy through their declared references. Changing a reference within
+the same ownership remains possible; changing it to publish another person's
+private data is refused. Private postings hide both journal sides and their
+ledger projections, including from reports and record exports. Retained report
+packs and period-close snapshots contain shared records only, even when a
+scheduled service runs them. Live reports also include the reader's own
+personal records under the normal request authority.
+
+** Transfers involving a joint account
+
+A personal-to-joint transfer, or its reverse, creates two balanced journals
+through the shared *Household contributions* equity account. The journal for
+the joint account contains its amount and that equity account, never the
+personal account or the private transfer reference. Its statement match links
+to this shared journal. Each journal names only its own bank account; the transfer keeps both
+sides for authorized readers. Taken together the journals have the same asset/liability
+movement as a direct transfer; principal never becomes spending. A fee remains
+spending on the side that paid it. Transfers between joint accounts keep the ordinary single journal. Any
+personal account uses two journals even while shared, so stopping sharing
+later preserves the joint-side balance.
+
+The shared contribution account uses code =HH-CLEAR-<entity id>= and must
+remain shared equity. Its balance reflects the shared side of contributions
+when the other side is private to somebody else. Nothing here converts
+currencies or allows a member to use another member's personal account.
+
+** Who paid and settling up
+
+Open *Money / Settle up*. Add a shared purchase, choose *Who paid* and *Who owes
+a share*, enter only the amount to repay and the purchase date. The people
+picker lists active members by login name without opening their user records.
+Only those two members can read, export or edit the entry; organization
+administration alone grants no access. The label must describe the shared
+purchase only. There is no funding account, statement or private receipt field.
+
+After repayment happens, either participant can check *Repaid*. The date is
+recorded if left empty. A repaid entry keeps its amount, participants and dates;
+remove a mistaken entry and record its correction, with audit history retained.
+This is a record of an agreed obligation and an external repayment, not a bank
+payment or another spending entry. Import and reconcile actual bank movements
+through Money as usual so a shared purchase is never counted twice.
+
+Migration =000986_household_privacy.sql= preserves all old accounts as shared
+on SQLite and PostgreSQL. New reference metadata adds no invented account
+owners or historical repayments. The settlement table is created only when
+banking is enabled.
+
+Shared bill payments and invoice collections use a shared funding account.
+To fund a shared bill personally, first transfer the contribution to the joint
+account, then pay the bill there. This keeps its shared payable balance and
+payment evidence consistent without disclosing a personal account. A personal
+receipt cannot be allocated to a shared invoice. These refusals leave the
+operation unchanged; ordinary shared business accounting is unchanged.
+
+Personal subscription schedules use Forecast only and import their actual
+charges. Personal capture items inherit the original document's privacy;
+automatic conversion into a shared bill or expense is refused. Enter the
+purchase from its personal account and attach the receipt to that purchase.
+
+* Year-end and warranties (child 8)
+
+** Tag spending for tax
+
+Open a purchase under *Spending* and set *Deductibility*:
+
+- /Full/: deductible in full.
+- /Partial/: deductible at the *Business use* percentage.
+- /Capital/: spread over several years rather than claimed at once.
+- /Review/: not decided; it shows as "Ask your tax preparer" and counts
+  as zero until someone decides.
+- /None/: not for tax; the default for ordinary spending.
+
+** The year-end export
+
+*Reports / Year-end for taxes* opens last year's purchases tagged for tax,
+oldest first, with what, who was paid, category, the tax treatment, the
+amount, the deductible part and the titles of the receipts attached. A
+purchase with nothing attached says "No receipt attached", and the
+*Without a receipt* figure counts them. Pick another period with the period
+buttons; download it as CSV for whoever does the taxes. The business
+=year_end_pack= is unchanged.
+
+** Receipts and warranties on a purchase
+
+Attach a document to the purchase (its *Expense* field). For a warranty or
+guarantee, also set:
+
+- *Warranty ends*: the last day it covers.
+- *Remind person*: who gets an inbox reminder.
+
+*Documents / Warranties* lists every document with an end date, soonest
+first, with the days left or "Ended". The reminder arrives once per end date,
+in the last 30 days, when the inbox or planner sweeps reminders; changing
+the end date reminds again. Migration =000987= gives existing documents no
+reminder person.
+
+** Privacy
+
+The same contract as child 7. Every read runs as the member asking, so a
+purchase on another member's unshared personal account, its receipts and its
+warranties are absent from that member's export and list, and appear once
+the owner shares the account. A private purchase's warranty can remind only
+its owner; a reminder is also skipped if its person can no longer read the
+document, for example after the owner stops sharing.
+
+Tests: =tests/test-venture-household-yearend.c= (both privacy directions,
+reminder timing and once-only stamping, and the reminder person check).
+
+* Household dashboard (child 9)
+
+Picking a household under *Venture view* now opens *Overview*: each member's
+own household dashboard, made from the =household= template the first time
+they open it (a read-only member who has none yet gets *Spending by
+category* instead). It is personal, so another member's copy shows their
+own figures. Two columns on a desk, one stacked column on a phone:
+
+- *Spent this month* and *Money in this month*.
+- *Spending by category*: this month, biggest first.
+- *Cash forecast*: the end-of-week balance for the next 13 weeks.
+- *Spending by month* and *Net worth over time*: this year.
+- *Money in and out by month*: money in, spent and left over (=household_months=).
+- Links to budgets, the due calendar, the year-end export and warranties.
+
+Rearrange or remove widgets like any dashboard; *Dashboards / New* can
+make the template again.
+
+** The reports behind it
+
+=household_spending= groups the period's spending by category, biggest
+first and separately per currency, with each category's share. Transfers
+between your own accounts are not spending, as in child 2.
+
+=household_cash_forecast= starts from today's balance in checking, savings
+and cash accounts (posted ledger evidence), then adds what the due calendar
+says comes in and goes out, week by week from this week's Monday. Options:
+=as_of= (a date) and =weeks= (1 to 53, default 13). It is a guide, not a
+promise: spending nobody scheduled is not in it.
+
+=household_months= is the =monthly= series in household words: money in
+(income), spent and left over per month.
+
+** Privacy
+
+The same contract as child 7: every figure is computed as the member
+asking, so another member's unshared personal account, its spending and its
+balance stay out until the owner shares it.
+
+Tests: =tests/test-venture-household-dashboard.c= (both privacy directions,
+the forecast week by week, and the template).
+
+* A full month as a household (child 10)
+
+Two members, Rowan and Quinn, walked September in the web UI, once at 390
+and once at 1440 pixels wide, each time on an empty household, with no
+sideways scroll at any step:
+
+1. Sign in: the household overview opens.
+2. Bank accounts: /Joint checking/ (checking) and /Holiday savings/
+   (savings), each saved with only a name and kind.
+3. Joint checking / Banking actions / import: choose the statement file,
+   type its columns, tick Save mapping: 11 statement lines.
+4. Accounts: an expense account per spending category (Groceries, Housing,
+   Utilities, Transport, Subscriptions, Health).
+5. Statement lines / create: pay as Income, the rest as Expense with a
+   category; the move to savings linked as a transfer. Nothing left over.
+6. Budgets: a Groceries envelope of $420 shows $397.60 spent.
+7. Bills / New bill: City Electric added through "Not listed? Add them",
+   the bill approved and paid from Pay bills.
+8. Goals: Holiday fund on the savings account reaches 100%.
+9. Settle up: Rowan records a shared dinner; Quinn marks it repaid.
+10. The pharmacy purchase tagged deductible; Year-end for taxes lists it and
+    exports as CSV.
+11. The overview shows the month.
+
+** Dead ends found and fixed
+
+- A bank account would not save without a ledger account ("failed without
+  saying why; this is a bug"). Now one is made with it.
+- A taken account code showed a raw SQL error. Now it names the account
+  that has the code.
+- Members signed in to the full business view. An entity whose only
+  ventures are households now opens as the household until someone picks
+  Full view.
+- Importing meant pasting a file into a form that mixed five actions. The
+  form shows only the chosen action's fields and has a file picker.
+- Import ignored the column boxes beside it and failed every ISO date when
+  no date format was saved. It uses them, and an empty format means ISO.
+- Pay in from a statement line needed a business customer. *Income* records
+  it as household income.
+- Envelopes never saw categorised spending, which all posted to General
+  expenses. In household books a category books to the expense account of
+  the same name.
+
+** Left, low
+
+- A savings goal at 100% keeps the status Active until it is marked
+  achieved.
+- Report pages name their period buttons THIS_MONTH and so on and have no
+  "last year" button.
+- An account still needs a typed code; bank accounts make theirs.

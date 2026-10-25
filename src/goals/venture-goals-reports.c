@@ -17,6 +17,7 @@
 
 #include <math.h>
 #include <string.h>
+#include "venture-savings-common.inc"
 
 /* A forecast further out than this is no forecast: a pace that would
  * take a century is "not at this pace", and a GDateTime cannot hold much
@@ -608,6 +609,7 @@ venture_goals_progress(
 	gint64 category_id;
 	gboolean tickets_on;
 	guint i;
+	gboolean has_savings = FALSE;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
@@ -665,8 +667,11 @@ venture_goals_progress(
 	{
 		VentureEntity *goal;
 		GoalsProgressRow *row;
+		g_autoptr(VentureMoney) savings = NULL;
 
 		goal = g_ptr_array_index(goals, i);
+		g_object_get(goal, "savings-target", &savings, NULL);
+		if (savings != NULL) { has_savings = TRUE; continue; }
 
 		row = g_new0(GoalsProgressRow, 1);
 		row->goal = g_object_ref(goal);
@@ -730,6 +735,7 @@ venture_goals_progress(
 	/* --- The answer --- */
 
 	result = venture_report_result_new("Goal progress", period);
+	if (has_savings) venture_report_result_append_note(result, "Linked savings goals use posted money balances; see the savings_goals report for their progress and contribution forecasts.");
 	venture_report_result_add_column(result, "goal", "Goal", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "metric", "Metric", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "unit", "Unit", VENTURE_REPORT_COLUMN_TEXT);
@@ -1763,6 +1769,8 @@ goals_register(
 	venture_report_registry_add(registry, VENTURE_REPORT(report));
 }
 
+#include "venture-savings-report.inc"
+
 void
 venture_goals_register_reports(VentureReportRegistry *registry)
 {
@@ -1809,4 +1817,10 @@ venture_goals_register_reports(VentureReportRegistry *registry)
 		"wins wherever the product was seen in it, else the latest in any\"},"
 		"\"organization_id\":{\"type\":\"integer\",\"description\":\"The legal "
 		"entity; defaults to the default organization\"}}}");
+	goals_register(registry, "savings_goals", "Savings goals",
+		"Account or rollover-envelope balances, monthly amounts needed and contribution forecasts.", savings_generate,
+		"{\"type\":\"object\",\"properties\":{"
+		"\"organization_id\":{\"type\":\"integer\",\"description\":\"One exact organization\"},"
+		"\"goal_id\":{\"type\":\"integer\",\"description\":\"Only this savings goal\"},"
+		"\"currency\":{\"type\":\"string\",\"description\":\"Only targets in this uppercase book currency\"}}}");
 }

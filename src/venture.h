@@ -351,6 +351,8 @@
 #include "calendar/venture-calendar-sync-service.h"
 #include "calendar/venture-booking-service.h"
 #include "money-calendar/venture-money-calendar.h"
+#include "report/venture-household-yearend.h"
+#include "report/venture-household-dashboard.h"
 #include "crm-import/venture-crm-import-service.h"
 #include "books-import/venture-books-import-service.h"
 #include "dedupe/venture-dedupe-service.h"

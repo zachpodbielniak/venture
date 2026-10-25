@@ -1028,6 +1028,10 @@ typedef enum
  * @VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER: optional user or parent
  *   reference; zero is shared, positive inherits private ownership; invalid
  *   parent chains fail closed and saved ownership is immutable
+ * @VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT: user reference granting private
+ *   record access to one of several explicitly named participants
+ * @VENTURE_COLUMN_FLAG_PRIVACY_PARENT: inherit a referenced record's privacy;
+ *   changing the reference is allowed only within the same private ownership
  * @VENTURE_COLUMN_FLAG_HOST_RESOURCE: operator-owned host path or executable
  *   resource; hosted tenant writers cannot assign or change it
  * @VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME: string naming the assigned account;
@@ -1073,7 +1077,9 @@ typedef enum
 	VENTURE_COLUMN_FLAG_RETAIN_REFERENCE = 1 << 12,
 	VENTURE_COLUMN_FLAG_TECHNICAL = 1 << 14,
 	VENTURE_COLUMN_FLAG_SAME_PARENT = 1 << 15,
-	VENTURE_COLUMN_FLAG_BLANK_ZERO = 1 << 16
+	VENTURE_COLUMN_FLAG_BLANK_ZERO = 1 << 16,
+	VENTURE_COLUMN_FLAG_PRIVACY_PARENT = 1 << 17,
+	VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT = 1 << 18
 } VentureColumnFlags;
 
 /**

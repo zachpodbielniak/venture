@@ -3,6 +3,7 @@
 #include "venture.h"
 
 static const VentureFieldDecl payment_fields[] = {
+	VENTURE_FIELD_REF("cash-account-id", "Funding account", "Recorded by the payment service", "account", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_REF("vendor-id", "Vendor", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", "The amount paid, including any overpayment"),
@@ -18,8 +19,8 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureBillPayment, venture_bill_payment, paymen
 	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "vendor-id", "Suppliers");)
 
 static const VentureFieldDecl allocation_fields[] = {
-	VENTURE_FIELD_REF("payment-id", "Payment", "Supply a payment or a credit, not both", "bill_payment", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("credit-id", "Credit", "A credit note or unused payment", "vendor_credit", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("payment-id", "Payment", "Supply a payment or a credit, not both", "bill_payment", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
+	VENTURE_FIELD_REF("credit-id", "Credit", "A credit note or unused payment", "vendor_credit", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD_REF("bill-id", "Bill", NULL, "vendor_bill", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("date", "Date", "When this amount was applied", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
@@ -32,7 +33,7 @@ static const VentureFieldDecl credit_fields[] = {
 	VENTURE_FIELD_MONEY("amount", "Original amount", NULL),
 	VENTURE_FIELD_MONEY("remaining", "Remaining", "Derived from allocations and refunds"),
 	VENTURE_FIELD_NAME("kind", "Kind", "credit_note, deposit, or overpayment; payments create deposits and overpayments"),
-	VENTURE_FIELD_REF("payment-id", "Payment", "Set by the service for unused payments", "bill_payment", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("payment-id", "Payment", "Set by the service for unused payments", "bill_payment", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("opening-at", "Opening balance at", "Cutover instant a migrated credit entered the ledger",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
@@ -41,8 +42,8 @@ VENTURE_DEFINE_ENTITY(VentureVendorCredit, venture_vendor_credit, credit_fields)
 
 static const VentureFieldDecl refund_fields[] = {
 	VENTURE_FIELD_REF("vendor-id", "Vendor", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
-	VENTURE_FIELD_REF("allocation-id", "Allocation", "Refund an applied cash payment, or an unused credit", "bill_payment_allocation", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("credit-id", "Credit", NULL, "vendor_credit", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("allocation-id", "Allocation", "Refund an applied cash payment, or an unused credit", "bill_payment_allocation", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
+	VENTURE_FIELD_REF("credit-id", "Credit", NULL, "vendor_credit", VENTURE_COLUMN_FLAG_PRIVACY_PARENT),
 	VENTURE_FIELD("date", "Date", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_MONEY("amount", "Amount", NULL),
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
