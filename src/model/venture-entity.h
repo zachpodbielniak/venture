@@ -626,6 +626,45 @@ const gchar *
 venture_entity_type_get_create_path(GType type);
 
 /**
+ * VentureEntityListView:
+ * @label: what the view is called, plural: "Customers"
+ * @query: the list filter that makes it, as a query string: "customer=true"
+ *
+ * A named view of a type's list, drawn as a tab above it.
+ */
+typedef struct {
+	const gchar	*label;
+	const gchar	*query;
+} VentureEntityListView;
+
+/**
+ * venture_entity_class_add_list_view:
+ * @klass: a #VentureEntityClass
+ * @label: the view's name, plural, as the tab and the page heading
+ * @query: the filter, in the list's own query-string language
+ *
+ * Offers a view of the type's list as a tab above it: the companies list
+ * offers its customers and its suppliers. The view is an ordinary filter
+ * URL, so it can be bookmarked, sorted and exported like any other.
+ */
+void
+venture_entity_class_add_list_view(
+	VentureEntityClass	*klass,
+	const gchar		*label,
+	const gchar		*query
+);
+
+/**
+ * venture_entity_type_get_list_views:
+ * @type: a #VentureEntity subtype
+ *
+ * Returns: (transfer none) (nullable) (element-type VentureEntityListView):
+ *   the views in the order added, or %NULL for none
+ */
+GPtrArray *
+venture_entity_type_get_list_views(GType type);
+
+/**
  * venture_entity_class_set_commentable:
  * @klass: a #VentureEntityClass
  * @commentable: whether people may hold a discussion on its records

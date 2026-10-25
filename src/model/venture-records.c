@@ -746,6 +746,14 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_ENUM("kind", "Relationship", "What they are to you",
 	                   venture_company_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* Every way you deal with them, beside what they mainly are: a
+	 * company you sell to and buy from is in both lists. Saving a
+	 * relationship of customer or supplier sets its flag
+	 * (venture_company_roles_install()). */
+	VENTURE_FIELD("customer", "Customer", "They buy from you",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("supplier", "Supplier", "You buy from them",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("legal-name", "Legal name", "As registered, if it differs",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("industry", "Industry", NULL, VENTURE_FIELD_KIND_STRING,
@@ -812,7 +820,10 @@ static const VentureFieldDecl venture_company_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);
+	venture_entity_class_add_list_view(VENTURE_ENTITY_CLASS(klass), "Customers", "customer=true");
+	venture_entity_class_add_list_view(VENTURE_ENTITY_CLASS(klass), "Suppliers", "supplier=true");
+	venture_entity_class_add_list_view(VENTURE_ENTITY_CLASS(klass), "Prospects", "kind=prospect");)
 
 static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),

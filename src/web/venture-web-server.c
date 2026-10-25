@@ -6964,6 +6964,78 @@ venture_web_ui_import(
  * Renders a record list. The columns come from the type's field specs, so a
  * plugin's record type gets a usable list view with no UI code.
  */
+/*
+ * The type's named view this request is showing: every filter the view
+ * names is in the URL with its value. A view with more filters on top
+ * (a search, a sort, a page) is still that view.
+ */
+static const VentureEntityListView *
+venture_web_list_active_view(
+	HtmxRequest	*request,
+	GPtrArray	*views
+){
+	guint i;
+
+	for (i = 0; (NULL != views) && (i < views->len); i++)
+	{
+		const VentureEntityListView *view = g_ptr_array_index(views, i);
+		g_auto(GStrv) pairs = g_strsplit(view->query, "&", -1);
+		gboolean all = TRUE;
+		guint j;
+
+		for (j = 0; all && (NULL != pairs[j]); j++)
+		{
+			g_auto(GStrv) pair = g_strsplit(pairs[j], "=", 2);
+
+			all = (NULL != pair[1]) && (0 == g_strcmp0(
+				htmx_request_get_query_param(request, pair[0]), pair[1]));
+		}
+
+		if (all)
+			return view;
+	}
+
+	return NULL;
+}
+
+/* "All" and each view, as tabs over the list; the one shown is marked. */
+static void
+venture_web_append_list_views(
+	GString				*content,
+	const gchar			*type_name,
+	const gchar			*all_label,
+	GPtrArray			*views,
+	const VentureEntityListView	*active
+){
+	guint i;
+
+	if ((NULL == views) || (0 == views->len))
+		return;
+
+	g_string_append(content, "<nav class=\"tabs list-views\" aria-label=\"Views\">");
+	g_string_append_printf(content, "<a class=\"tab%s\"%s href=\"/e/%s\">",
+		(NULL == active) ? " active" : "",
+		(NULL == active) ? " aria-current=\"page\"" : "", type_name);
+	venture_html_escape_append(content, all_label);
+	g_string_append(content, "</a>");
+
+	for (i = 0; i < views->len; i++)
+	{
+		const VentureEntityListView *view = g_ptr_array_index(views, i);
+		g_autofree gchar *href = g_strdup_printf("/e/%s?%s", type_name, view->query);
+
+		g_string_append_printf(content, "<a class=\"tab%s\"%s href=\"",
+			(view == active) ? " active" : "",
+			(view == active) ? " aria-current=\"page\"" : "");
+		venture_html_escape_append(content, href);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content, view->label);
+		g_string_append(content, "</a>");
+	}
+
+	g_string_append(content, "</nav>");
+}
+
 static HtmxResponse *
 venture_web_ui_list(
 	HtmxRequest	*request,
@@ -6984,6 +7056,8 @@ venture_web_ui_list(
 	const gchar *type_name;
 	const gchar *current_order;
 	g_autofree gchar *path = NULL;
+	GPtrArray *views;
+	const VentureEntityListView *view;
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
@@ -7091,12 +7165,14 @@ venture_web_ui_list(
 
 	path = g_strdup_printf("/e/%s", type_name);
 	heading = venture_web_type_label(entity_type, TRUE);
+	views = venture_entity_type_get_list_views(entity_type);
+	view = venture_web_list_active_view(request, views);
 	content = g_string_new(NULL);
 
 	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">");
 	venture_web_append_crumbs(content, entity_type, type_name, FALSE);
 	g_string_append(content, "<h1>");
-	venture_html_escape_append(content, heading);
+	venture_html_escape_append(content, (NULL != view) ? view->label : heading);
 	g_string_append(content, "</h1><span class=\"subtitle\">");
 	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
 	                       (1 == total) ? "" : "s");
@@ -7142,6 +7218,12 @@ venture_web_ui_list(
 		g_string_append(content, "</a>");
 	}
 	g_string_append(content, "</div></div>");
+
+	{
+		g_autofree gchar *all_label = g_strdup_printf("All %s", heading);
+
+		venture_web_append_list_views(content, type_name, all_label, views, view);
+	}
 
 	/* The registry prototype is one process-wide object per type; a
 	 * request's active organization must not linger on it for the next

@@ -350,12 +350,11 @@ check_vendor(VenturePayablesService *self, VentureEntity *record, GError **error
 {
 	g_autoptr(VentureEntity) vendor = NULL;
 
-	gint kind;
 	vendor = venture_database_get(self->database, VENTURE_TYPE_COMPANY, get_id(record, "vendor-id"), error);
 	if (vendor == NULL || !same_owner(record, vendor, error))
 		return FALSE;
-	g_object_get(vendor, "kind", &kind, NULL);
-	if (kind != VENTURE_COMPANY_KIND_SUPPLIER)
+	/* A customer who also supplies you sends bills too. */
+	if (!venture_company_is_supplier(vendor))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "A bill vendor must be a supplier company");
 	return TRUE;
 }

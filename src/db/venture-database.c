@@ -275,6 +275,7 @@ venture_database_init(VentureDatabase *self)
 	venture_referrals_install(self);
 	venture_sequence_journeys_install(self);
 	venture_jobs_install(self);
+	venture_company_roles_install(self);
 }
 
 VentureQuoteService *

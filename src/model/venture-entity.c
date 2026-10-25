@@ -647,6 +647,56 @@ venture_entity_type_get_create_path(GType type)
 		g_quark_from_static_string("venture-entity-create-path"));
 }
 
+static void
+list_view_free(gpointer data)
+{
+	VentureEntityListView *view = data;
+	g_free((gchar *)view->label);
+	g_free((gchar *)view->query);
+	g_free(view);
+}
+
+void
+venture_entity_class_add_list_view(
+	VentureEntityClass	*klass,
+	const gchar		*label,
+	const gchar		*query
+){
+	GQuark quark = g_quark_from_static_string("venture-entity-list-views");
+	GPtrArray *views;
+	VentureEntityListView *view;
+
+	g_return_if_fail(VENTURE_IS_ENTITY_CLASS(klass));
+	g_return_if_fail(NULL != label && NULL != query && '\0' != query[0]);
+
+	/* Lives as long as the type, like the labels beside it. */
+	views = g_type_get_qdata(G_OBJECT_CLASS_TYPE(klass), quark);
+	if (NULL == views)
+	{
+		views = g_ptr_array_new_with_free_func(list_view_free);
+		g_type_set_qdata(G_OBJECT_CLASS_TYPE(klass), quark, views);
+	}
+	view = g_new0(VentureEntityListView, 1);
+	view->label = g_strdup(label);
+	view->query = g_strdup(query);
+	g_ptr_array_add(views, view);
+}
+
+GPtrArray *
+venture_entity_type_get_list_views(GType type)
+{
+	g_autoptr(GTypeClass) klass = NULL;
+
+	g_return_val_if_fail(g_type_is_a(type, VENTURE_TYPE_ENTITY), NULL);
+
+	/* Added in class_init, which has not run for a type nobody has
+	 * instantiated yet. */
+	klass = g_type_class_ref(type);
+
+	return g_type_get_qdata(type,
+		g_quark_from_static_string("venture-entity-list-views"));
+}
+
 /*
  * Stored as an opt-out so that the absence of any qdata -- every type
  * that never thought about comments -- reads as "takes them".

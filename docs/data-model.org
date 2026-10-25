@@ -286,6 +286,24 @@ suppliers, the marketplaces you sell on, partners. Distinct from *entities*,
 which are the businesses you *are*. That distinction is easy to blur and
 expensive to blur: one of them appears on your tax return.
 
+A company is a customer, a supplier, or both. Its relationship (=kind=)
+says what it mainly is; the =customer= and =supplier= flags say every way
+you deal with it, so the bakery that buys your widgets and sells you
+packaging is in both lists. Saving a relationship of customer or supplier
+sets its flag from any writer (=venture_company_roles_install()=); clearing
+a flag is left to the owner, and changing the relationship never clears
+one. =venture_company_is_customer()= and =venture_company_is_supplier()=
+answer from the flags and, for a row saved before they existed, from the
+relationship; a bill's vendor and a supplier-portal invitation ask the
+second, the customer health report the first. Migration =000980= flagged
+every company already filed as a customer or a supplier.
+
+The companies list offers /Customers/, /Suppliers/ and /Prospects/ as tabs
+over itself. Each is an ordinary filter URL (=/e/company?customer=true=),
+so it sorts, pages, exports and saves as a view like any other; its page
+heading is the view's name. Any type can offer views the same way with
+=venture_entity_class_add_list_view()= in its class initialiser.
+
 A contact belongs to a company by reference rather than by name. The
 free-text version could not answer "everything to do with this account",
 which is the question a CRM exists for, and it spelled the same company three

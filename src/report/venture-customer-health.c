@@ -756,8 +756,7 @@ health_read(
 static gboolean
 health_is_customer(VentureEntity *company)
 {
-	return VENTURE_IS_COMPANY(company) &&
-	       (VENTURE_COMPANY_KIND_CUSTOMER == health_enum(company, "kind"));
+	return VENTURE_IS_COMPANY(company) && venture_company_is_customer(company);
 }
 
 static gint
