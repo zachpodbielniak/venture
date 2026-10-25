@@ -33765,6 +33765,11 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/contractor-tax/:id/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, contractor_tax_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sales-tax/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, sales_tax_export_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/capture", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/capture/file", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_file_get, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/capture/file", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_file_post, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/capture/items/:id/photo", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_item_photo, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/capture/items/:id/file-as", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_item_file_as, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/capture/items/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, capture_item_get, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/commerce", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/commerce", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/commerce/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, commerce_import, self);

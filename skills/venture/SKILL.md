@@ -141,6 +141,8 @@ against `e549807a` (2026-10-23): `mail preview`, designed email, the signed
 deliverability feed, journeys, telephony, `/conversations`, AI message
 drafts, and `venturectl settings`. Hosted deferred enrollment is a thirty-day
 setup window with no charge before go-live (`billing.md`, `api-routes.md`).
+An owner snaps a receipt at `/capture/file` and files it as an expense or a
+supplier bill (`payables.md`).
 The full-system baseline above remains
 the last complete inventory review.
 
