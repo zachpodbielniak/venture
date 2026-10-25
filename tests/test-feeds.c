@@ -2707,6 +2707,7 @@ test_feeds_window_is_written_not_dropped(
 	g_autoptr(VentureEntity) removed_run = NULL;
 	g_autoptr(VentureEntity) stopped_run = NULL;
 	g_autoptr(VentureDataSourceProvider) http_json = NULL;
+	g_autoptr(GError) error = NULL;
 	g_autofree gchar *first = NULL;
 	g_autofree gchar *second = NULL;
 	gint64 removed;
@@ -2714,11 +2715,7 @@ test_feeds_window_is_written_not_dropped(
 
 	(void)user_data;
 
-	/* This test observes window closure, not the daily upkeep job.
-	 * Do not let wall-clock time insert an unrelated log message while
-	 * the provider-removal diagnostic is expected. */
-	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15,
-	             "series-upkeep-hour", (gint64)-1, NULL);
+	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15, NULL);
 	scripted_add(&fixture->http, "/first.json", 200, auction_body);
 	scripted_add(&fixture->http, "/second.json", 200, auction_body);
 	first = http_settings(fixture, "/first.json", NULL);
@@ -2726,6 +2723,12 @@ test_feeds_window_is_written_not_dropped(
 
 	removed = create_source(fixture, "Removed", "http_json", first, "auto");
 	wait_for_a_pass(fixture, removed);
+	/* A scheduled pass can finish before automatic upkeep logs its result.
+	 * Request counted upkeep and wait for it before expecting the unrelated
+	 * provider-removal diagnostic. -1 is a daily interval, not disabled. */
+	g_assert_true(venture_feeds_service_upkeep(service_of(fixture), removed, FALSE, &error));
+	g_assert_no_error(error);
+	settle(fixture);
 	g_assert_cmpint(count_runs(fixture, removed), ==, 0);
 
 	/* No provider by that name any more: the source cannot be frozen
