@@ -2004,7 +2004,8 @@ test_dashboard_http_round_trip(
 	g_assert_cmpuint(server_get(fixture, "/dashboards/my-work/edit", &page),
 	                 ==, SOUP_STATUS_OK);
 	g_assert_nonnull(strstr(page, "<h2>Newest</h2>"));
-	g_assert_nonnull(strstr(page, "span-wide"));
+	/* "wide" is two columns of the grid. */
+	g_assert_nonnull(strstr(page, "&middot; 2&times;"));
 	g_assert_nonnull(strstr(page, "Save settings"));
 	g_clear_pointer(&page, g_free);
 

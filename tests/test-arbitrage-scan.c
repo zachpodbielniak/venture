@@ -2503,10 +2503,13 @@ assert_arbitrage_classes_styled(
 ){
 	g_autoptr(GHashTable) seen = NULL;
 	g_autofree gchar *style = NULL;
+	g_autofree gchar *styled = NULL;
 	const gchar *end;
 	const gchar *cursor;
 
 	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	styled = venture_test_page_with_ui(page);
+	page = styled;
 
 	/* The stylesheet is inlined: everything before the last </style> is
 	 * rules, everything after is markup. */

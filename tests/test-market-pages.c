@@ -3119,10 +3119,19 @@ test_doors_and_looks(
 	}
 
 	/* Both looks carry the market rules. */
-	industrial = get_page(fixture, "/market/browse");
+	{
+		/* Each look's stylesheet, as the browser applies it. */
+		g_autofree gchar *page = get_page(fixture, "/market/browse");
+
+		industrial = venture_test_page_with_ui(page);
+	}
 	g_assert_nonnull(strstr(industrial, "instrument panel"));
 	g_object_set(fixture->config, "ui-look", "classic", NULL);
-	classic = get_page(fixture, "/market/browse");
+	{
+		g_autofree gchar *page = get_page(fixture, "/market/browse");
+
+		classic = venture_test_page_with_ui(page);
+	}
 	g_assert_nonnull(strstr(classic, "warm monochrome"));
 
 	for (i = 0; NULL != classes[i]; i++)

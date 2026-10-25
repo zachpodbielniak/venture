@@ -465,7 +465,7 @@ test_http_compose(Fixture *f, gconstpointer data)
 	json = venture_json_to_string(node, FALSE);
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/invoices/compose", json, NULL), ==, 200);
 	g_assert_cmpuint(http_request(server, "GET", "/invoices/compose", NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, "form-grid"));
+	g_assert_nonnull(strstr(body, "class=\"doc-field\""));
 	g_assert_nonnull(strstr(body, "line-0-description"));
 	g_assert_nonnull(strstr(body, "name=\"issued-at\""));
 	g_assert_nonnull(strstr(body, "name=\"due-at\""));
