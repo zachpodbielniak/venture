@@ -12,6 +12,10 @@
 
 #define CUSTOMER_ACCOUNT_PAYMENTS 5
 
+/* venture-customer-credits-web.inc: the credits section of the card. */
+static void customer_credits_append_card(VentureWebServer *self, GString *figures, GString *body,
+	VentureEntity *company);
+
 /* The day as the record lists show it, so the card and the list agree. */
 static gchar *
 customer_account_day(VentureWebServer *self, GDateTime *when)
@@ -196,6 +200,7 @@ venture_customer_account_web_append_block(VentureWebServer *self, GString *html,
 	g_autoptr(GPtrArray) owed = NULL;
 	g_autoptr(GPtrArray) late = NULL;
 	g_autoptr(GString) body = NULL;
+	g_autoptr(GString) credits = NULL;
 	g_autofree gchar *owes = NULL;
 	g_autofree gchar *overdue = NULL;
 	gint64 id = venture_entity_get_id(record);
@@ -208,7 +213,9 @@ venture_customer_account_web_append_block(VentureWebServer *self, GString *html,
 	owed = venture_money_totals_new();
 	late = venture_money_totals_new();
 	body = g_string_new(NULL);
+	credits = g_string_new(NULL);
 	customer_account_append_invoices(self, body, record, owed, late);
+	customer_credits_append_card(self, credits, body, record);
 	customer_account_append_payments(self, body, record);
 	customer_account_append_activity(self, body, record);
 	owes = customer_account_totals_text(owed);
@@ -222,6 +229,7 @@ venture_customer_account_web_append_block(VentureWebServer *self, GString *html,
 	g_string_append_printf(html, "<dt>Owes</dt><dd>%s</dd>", ('\0' != owes[0]) ? owes : "Nothing");
 	if ('\0' != overdue[0])
 		g_string_append_printf(html, "<dt>Overdue</dt><dd class=\"negative\">%s</dd>", overdue);
+	g_string_append_len(html, credits->str, credits->len);
 	g_string_append(html, "</dl>");
 	g_string_append_len(html, body->str, body->len);
 	g_string_append(html, "</div></section>");

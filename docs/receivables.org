@@ -42,6 +42,19 @@ empty tables, and a company that is only a supplier has no card. The card
 lives in =src/receivables/venture-customer-account-web.inc=; its test is
 =tests/test-venture-customer-account.c=.
 
+Unused credits are on the same card: the total beside /Owes/ as /Credit/,
+and each credit note, deposit or overpayment with what is left on it and a
+one-step /Apply/ form -- an open invoice already chosen and the smaller of
+the credit and the invoice balance already filled in. An open invoice of a
+customer with credit shows the same forms under /Credit to apply/. Both
+post to =/customer-credits/apply=, which saves one =payment_allocation=
+from the credit to the invoice through the settlement service, so the
+credit's remaining amount and the invoice's balance and status move in one
+transaction; more than the credit holds or the invoice owes, or a credit
+and invoice of different customers, is refused with nothing applied. The
+forms live in =src/receivables/venture-customer-credits-web.inc=; the test
+is =tests/test-venture-customer-credits.c=.
+
 * Receiving and allocating money
 
 =VentureSettlementService= owns every financial invoice transition. A

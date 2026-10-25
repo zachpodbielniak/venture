@@ -10627,6 +10627,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 #include "payables/venture-bill-compose-web.inc"
 #include "billing/venture-plan-web.inc"
 #include "receivables/venture-customer-account-web.inc"
+#include "receivables/venture-customer-credits-web.inc"
 #include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
 #include "billing/venture-lightsite-billing-web.inc"
@@ -12567,6 +12568,8 @@ venture_web_ui_detail(
 	if (VENTURE_TYPE_INVOICE == entity_type)
 	{
 		venture_web_append_invoice_block(self, content, record);
+		/* Their unused credits, each a click from this invoice. */
+		venture_customer_credits_web_append_invoice(self, content, record);
 		venture_late_fees_web_append_invoice(self, content, record);
 	}
 	venture_web_append_payment_receipt(self, content, record);
@@ -34315,6 +34318,7 @@ venture_web_server_new(
 	 * "calendar" as a record type. */
 	venture_planner_web_register(self);
 	venture_jobs_web_register(self);
+	venture_customer_credits_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
