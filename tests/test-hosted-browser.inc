@@ -197,3 +197,76 @@ static void test_browser_token_refusals(Fixture *f, gconstpointer data)
 		g_assert_null(session);
 	}
 }
+
+/* Ordinary owner navigation must use their business, not the workspace's
+ * billing organization. Compare the actual receivable and CSV to the
+ * explicitly scoped report so an empty successful report cannot pass. */
+static void test_browser_reports(Fixture *f, gconstpointer data)
+{
+	gint64 business, other;
+	g_autofree gchar *cookie = NULL, *path = NULL, *expected = NULL, *actual = NULL;
+	g_autoptr(VentureEntity) customer = NULL, invoice = NULL, line = NULL;
+	g_autoptr(GError) error = NULL;
+	const gchar *formats[] = { "json", "csv", NULL };
+	guint i;
+	(void)data;
+	business = sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", NULL);
+	other = sign_up(f, "other-signup", "other@example.test", "other-owner", "Other Example Co", NULL);
+	customer = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", business, "name", "Example Customer", NULL);
+	g_assert_true(venture_database_save(f->db, customer, NULL, &error));
+	g_assert_no_error(error);
+	invoice = g_object_new(VENTURE_TYPE_INVOICE, "organization-id", business,
+		"company-id", venture_entity_get_id(customer), "number", "SYNTHETIC-REPORT-1", NULL);
+	g_assert_true(venture_entity_set_field_from_string(invoice, "issued-at", "2026-01-01", &error));
+	g_assert_true(venture_database_save(f->db, invoice, NULL, &error));
+	g_assert_no_error(error);
+	line = g_object_new(VENTURE_TYPE_INVOICE_LINE, "organization-id", business,
+		"invoice-id", venture_entity_get_id(invoice), "description", "Synthetic work", "quantity", 1.0, NULL);
+	g_assert_true(venture_entity_set_field_from_string(line, "unit-price", "USD 125.00", &error));
+	g_assert_true(venture_database_save(f->db, line, NULL, &error));
+	g_assert_no_error(error);
+	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
+	g_assert_true(venture_database_save(f->db, invoice, NULL, &error));
+	g_assert_no_error(error);
+	cookie = browser_login(f, "/reports/receivables");
+	for (i = 0; formats[i]; i++) {
+		g_clear_pointer(&path, g_free);
+		g_clear_pointer(&expected, g_free);
+		g_clear_pointer(&actual, g_free);
+		path = g_strdup_printf("/api/v1/reports/receivables?period=2026&as_of=2026-10-25&format=%s&organization_id=%" G_GINT64_FORMAT, formats[i], business);
+		g_assert_cmpuint(exchange(f, "GET", path, cookie, NULL, NULL, NULL, &expected, NULL), ==, 200);
+		g_clear_pointer(&path, g_free);
+		path = g_strdup_printf("/api/v1/reports/receivables?period=2026&as_of=2026-10-25&format=%s", formats[i]);
+		g_assert_cmpuint(exchange(f, "GET", path, cookie, NULL, NULL, NULL, &actual, NULL), ==, 200);
+		g_assert_cmpstr(actual, ==, expected);
+	}
+	g_clear_pointer(&actual, g_free);
+	g_assert_cmpuint(exchange(f, "GET", "/reports/receivables?period=2026&as_of=2026-10-25", cookie, NULL, NULL, NULL, &actual, NULL), ==, 200);
+	g_assert_nonnull(strstr(actual, "125.00"));
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("organization_id=%" G_GINT64_FORMAT, business);
+	g_assert_nonnull(strstr(actual, path));
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/reports/receivables?organization_id=%" G_GINT64_FORMAT, other);
+	g_assert_cmpuint(exchange(f, "GET", path, cookie, NULL, NULL, NULL, NULL, NULL), ==, 404);
+}
+
+static void test_browser_report_selection(Fixture *f, gconstpointer data)
+{
+	gint64 own, other;
+	g_autofree gchar *cookie = NULL, *selected = NULL, *body = NULL, *expected = NULL, *path = NULL;
+	(void)data;
+	own = sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", NULL);
+	other = sign_up(f, "other-signup", "other@example.test", "other-owner", "Other Example Co", NULL);
+	cookie = browser_login(f, "/reports/balance_sheet");
+	path = g_strdup_printf("/api/v1/reports/balance_sheet?period=2026&organization_id=%" G_GINT64_FORMAT, own);
+	g_assert_cmpuint(exchange(f, "GET", path, cookie, NULL, NULL, NULL, &expected, NULL), ==, 200);
+	selected = g_strdup_printf("%s; venture_entity=%" G_GINT64_FORMAT, cookie, own);
+	g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/balance_sheet?period=2026", selected, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_cmpstr(body, ==, expected);
+	g_assert_cmpuint(exchange(f, "GET", "/reports/balance_sheet?period=2026", selected, NULL, NULL, NULL, NULL, NULL), ==, 200);
+	g_clear_pointer(&selected, g_free);
+	selected = g_strdup_printf("%s; venture_entity=%" G_GINT64_FORMAT, cookie, other);
+	g_assert_cmpuint(exchange(f, "GET", "/reports/receivables", selected, NULL, NULL, NULL, NULL, NULL), ==, 404);
+	g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/receivables?organization_id=invalid", cookie, NULL, NULL, NULL, NULL, NULL), ==, 400);
+}
