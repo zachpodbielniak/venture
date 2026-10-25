@@ -243,6 +243,22 @@ page(VentureWebServer *server, const gchar *path)
 	return text;
 }
 
+/* Company names in filter choices are not rows in the result set. */
+static gchar *
+list_rows(const gchar *html)
+{
+	const gchar *table = strstr(html, "data-list data-server-sort");
+	const gchar *start;
+	const gchar *end;
+
+	g_assert_nonnull(table);
+	start = strstr(table, "<tbody>");
+	g_assert_nonnull(start);
+	end = strstr(start, "</tbody>");
+	g_assert_nonnull(end);
+	return g_strndup(start, end - start);
+}
+
 /* The companies list offers Customers and Suppliers as views of itself,
  * and each holds exactly its companies under its own heading. */
 static void
@@ -256,6 +272,7 @@ test_list_views(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *directory = g_dir_make_tmp("venture-company-views-XXXXXX", NULL);
 	g_autofree gchar *all = NULL, *customers = NULL, *suppliers = NULL;
+	g_autofree gchar *customer_rows = NULL, *supplier_rows = NULL;
 	(void)data;
 	g_object_set(f->config, "state-dir", directory, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)0, "security-require-auth", FALSE, NULL);
@@ -266,16 +283,18 @@ test_list_views(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(all, "href=\"/e/company?supplier=true\">Suppliers</a>"));
 	g_assert_nonnull(strstr(all, "Not Yet"));
 	customers = page(server, "/e/company?customer=true");
+	customer_rows = list_rows(customers);
 	g_assert_nonnull(strstr(customers, "<h1>Customers</h1>"));
 	g_assert_nonnull(strstr(customers, "aria-current=\"page\" href=\"/e/company?customer=true\""));
-	g_assert_nonnull(strstr(customers, "Both Ways")); g_assert_nonnull(strstr(customers, "Only Buys"));
-	g_assert_null(strstr(customers, "Only Sells")); g_assert_null(strstr(customers, "Not Yet"));
+	g_assert_nonnull(strstr(customer_rows, "Both Ways")); g_assert_nonnull(strstr(customer_rows, "Only Buys"));
+	g_assert_null(strstr(customer_rows, "Only Sells")); g_assert_null(strstr(customer_rows, "Not Yet"));
 	/* The sidebar calls the customers list Customers, and marks it. */
 	g_assert_nonnull(strstr(customers, "<a class=\"nav-item active\" href=\"/e/company?customer=true\">"));
 	suppliers = page(server, "/e/company?supplier=true");
+	supplier_rows = list_rows(suppliers);
 	g_assert_nonnull(strstr(suppliers, "<h1>Suppliers</h1>"));
-	g_assert_nonnull(strstr(suppliers, "Both Ways")); g_assert_nonnull(strstr(suppliers, "Only Sells"));
-	g_assert_null(strstr(suppliers, "Only Buys"));
+	g_assert_nonnull(strstr(supplier_rows, "Both Ways")); g_assert_nonnull(strstr(supplier_rows, "Only Sells"));
+	g_assert_null(strstr(supplier_rows, "Only Buys"));
 	g_assert_nonnull(strstr(suppliers, "<a class=\"nav-item active\" href=\"/e/company?supplier=true\">"));
 	venture_web_server_stop(server);
 	venture_test_remove_tree(directory);

@@ -191,3 +191,23 @@ columns and cells, form groups and type pickers. Nothing in it names a
 record type. =tests/test-record-view.c= pins the classification, the type
 labels, the submission page (message shown, machinery folded, sensitive
 digest absent), the list's columns and the grouped form.
+
+* List filters
+
+Every generated list has a search and a Filters panel derived from its field
+declarations: status and type choices, yes/no flags, company and user
+pickers, owners, date bounds and money signs. Date bounds read “from”
+(inclusive) and “before” (exclusive). Money offers positive, zero and
+negative rather than comparing decimal amounts across currencies.
+
+Apply filters works without scripting. Search, sorting, pagination and CSV
+export retain the active filters; changing filters starts at the first page.
+Blank controls mean any value in this form only; ordinary API empty-value
+filters retain their existing meaning. Clear filters returns to the complete
+list. Technical and sensitive fields are never offered as controls.
+
+Applying filters also updates the browser address, so reloading, bookmarking
+or sharing the page keeps the selected filters.
+
+Live search retains keyboard focus and the selection after refreshing results.
+A cancelled or slower earlier search cannot replace a newer search result.

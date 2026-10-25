@@ -6082,3 +6082,9 @@ details.late-fee-waive[open] > summary { margin-bottom: 8px; }
 .company-people .people li { padding: var(--space-1) 0; border-bottom: 1px solid var(--border); }
 .company-people .people li:last-child { border-bottom: 0; }
 .company-people .people .person { font-weight: 600; }
+
+/* Shared list controls stay usable on a narrow screen. */
+#list-filters { margin-bottom: var(--space-5); }
+#list-filters > label { display: block; max-width: 32rem; }
+#list-filters details { margin: var(--space-3) 0; }
+#list-filters .form-grid { padding: var(--space-3) 0; }

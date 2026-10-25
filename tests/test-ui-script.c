@@ -2,9 +2,9 @@
 #include <glib.h>
 
 static void
-test_inline_forms(void)
+test_script(gconstpointer script)
 {
-	const gchar *argv[] = { "node", "tests/ui-inline-forms.cjs", NULL };
+	const gchar *argv[] = { "node", (const gchar *)script, NULL };
 	g_autofree gchar *output = NULL;
 	g_autofree gchar *failure = NULL;
 	g_autoptr(GError) error = NULL;
@@ -25,6 +25,8 @@ int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
-	g_test_add_func("/ui-script/inline-forms", test_inline_forms);
+	g_test_add_data_func("/ui-script/inline-forms", "tests/ui-inline-forms.cjs", test_script);
+	g_test_add_data_func("/ui-script/filter-race", "tests/ui-filter-race.cjs", test_script);
+	g_test_add_data_func("/ui-script/filter-focus", "tests/ui-filter-focus.cjs", test_script);
 	return g_test_run();
 }
