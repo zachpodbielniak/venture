@@ -28,6 +28,20 @@ not the derived key. An empty external ID is optional and may recur.
 
 Posting uses mapped cash, receivables, income and tax control accounts; see [[file:setup.org][Accounting setup]].
 
+* The customer's page
+
+A company flagged a customer opens on an /Account/ card, ahead of the work
+done for them: what they owe and how much of it is past due, every invoice
+still open with what is left to pay on it and its due day (late ones
+marked), their last five payments, newest first, and the last activity done
+for them and the next one planned. /Owes/ and /Left to pay/ are
+=venture_settlement_service_invoice_balance()= per issued or partly paid
+invoice -- the figure the invoice itself shows -- totalled per currency and
+never converted. A customer with no history reads /Owes: Nothing/ with no
+empty tables, and a company that is only a supplier has no card. The card
+lives in =src/receivables/venture-customer-account-web.inc=; its test is
+=tests/test-venture-customer-account.c=.
+
 * Receiving and allocating money
 
 =VentureSettlementService= owns every financial invoice transition. A

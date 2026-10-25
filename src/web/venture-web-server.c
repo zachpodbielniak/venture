@@ -10626,6 +10626,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 	gint64 organization, gint64 chosen);
 #include "payables/venture-bill-compose-web.inc"
 #include "billing/venture-plan-web.inc"
+#include "receivables/venture-customer-account-web.inc"
 #include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
 #include "billing/venture-lightsite-billing-web.inc"
@@ -12571,6 +12572,8 @@ venture_web_ui_detail(
 	venture_web_append_payment_receipt(self, content, record);
 	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
+	/* Where we stand with a customer, ahead of the work done for them. */
+	venture_customer_account_web_append_block(self, content, record);
 	venture_jobs_web_append_block(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);

@@ -6354,3 +6354,19 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 }
 details.late-fee-waive > summary { cursor: pointer; }
 details.late-fee-waive[open] > summary { margin-bottom: 8px; }
+
+/* The customer account card: the figures an owner asks first, then the
+ * open invoices, recent payments and the last and next activity. */
+.customer-account .account-figures,
+.customer-account .account-activity {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: var(--space-1) var(--space-4);
+	margin: 0 0 var(--space-4);
+}
+.customer-account .account-figures dd,
+.customer-account .account-activity dd { margin: 0; }
+.customer-account .account-figures dd { font-weight: 600; }
+.customer-account .account-figures dd.negative,
+.customer-account td.negative { color: var(--accent); }
+.customer-account h3 { margin: var(--space-4) 0 var(--space-2); }
