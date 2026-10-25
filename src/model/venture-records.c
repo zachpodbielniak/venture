@@ -83,7 +83,8 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("marketing-resend-days", "Resend to non-openers after", "Days, 0 to 365; empty is 3", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-stop-reply", "STOP answer", "What a STOP text is answered with; {business} is your name; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-start-reply", "START answer", "What a START text is answered with; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("telephony-help-reply", "HELP answer", "What a HELP text is answered with; it must say how to stop; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("telephony-help-reply", "HELP answer", "What a HELP text is answered with; it must say how to stop; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("pnl-basis", "Profit and loss from", "ledger: the posted books (accrual, as the income statement); empty or records: sale and expense records", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -525,7 +526,10 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	                  "campaign", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("event-id", "Event", "Optional: the planner event this paid for; counted against its budget",
 	                  "event", VENTURE_COLUMN_FLAG_INDEXED),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	VENTURE_FIELD_REF("expense-account-id", "Expense account",
+	                  "Ledger account to debit; empty uses the category map of the posting profile",
+	                  "account", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExpense, venture_expense, venture_expense_fields,
@@ -3255,7 +3259,13 @@ static const VentureFieldDecl venture_invoice_line_fields[] = {
 	VENTURE_FIELD("tax-rate-scaled", "Frozen tax rate", "Percent times 10000 applied at issuance; 0 when exempt",
 		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("tax-exempt", "Tax exempt", "Frozen at issuance from the customer or the product",
-		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/* Migrated books credit more than one income account; a line may
+	 * name its own instead of the organization's income account. */
+	VENTURE_FIELD_REF("income-account-id", "Income account",
+		"Credit this account instead of the default income account", "account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("discount-account-id", "Discount account",
+		"Credit income before discount and debit the discount to this account", "account", VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY(VentureInvoiceLine, venture_invoice_line,

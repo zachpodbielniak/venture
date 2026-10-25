@@ -991,6 +991,7 @@ test_disabled_migration(void)
 	venture_config_set_module_enabled(config, "goods", FALSE);
 	venture_config_set_module_enabled(config, "pnl_cuts", FALSE);
 	venture_config_set_module_enabled(config, "money_calendar", FALSE);
+	venture_config_set_module_enabled(config, "books_import", FALSE);
 	g_assert_true(venture_module_registry_configure(modules, config, &error));
 	g_assert_no_error(error);
 	venture_module_registry_apply(modules, registry);

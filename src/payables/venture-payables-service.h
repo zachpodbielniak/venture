@@ -224,5 +224,19 @@ gboolean venture_payables_service_pay_bills(VenturePayablesService *self, GArray
 	GDateTime *date, const gchar *method, const gchar *adapter, const gchar *reference,
 	const VentureActor *actor, GError **error);
 
+/**
+ * venture_payables_service_free_number:
+ * @self: payables service
+ * @bill: a void bill
+ * @suffix: appended to its number, e.g. "-rb7"
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Renames a void bill so its number can be used again, as a rolled-back
+ * migration must allow. A number already carrying @suffix is left alone.
+ * Returns: %TRUE when the number is free
+ */
+gboolean venture_payables_service_free_number(VenturePayablesService *self, VentureVendorBill *bill,
+	const gchar *suffix, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

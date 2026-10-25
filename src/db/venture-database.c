@@ -1337,6 +1337,7 @@ check_subsystem_write(VentureDatabase *self, VentureEntity *entity, gboolean rem
 		venture_sales_tax_check_write,
 		venture_backup_schedule_check_write,
 		venture_crm_import_check_write,
+		venture_books_import_check_write,
 		venture_integration_check_write,
 		venture_commerce_check_write,
 		venture_ai_provider_check_write,
@@ -2976,6 +2977,7 @@ venture_database_get_action_registry(VentureDatabase *self)
 		venture_late_fee_actions_register(self);
 		venture_backup_schedule_actions_register(self);
 		venture_crm_import_actions_register(self);
+		venture_books_import_actions_register(self);
 		venture_dedupe_actions_register(self);
 		venture_mfa_actions_register(self);
 		venture_ocr_actions_register(self);

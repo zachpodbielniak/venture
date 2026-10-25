@@ -688,8 +688,164 @@ venture_report_arbitrage(
  * Profit and loss
  * ========================================================================== */
 
+/*
+ * Whether this P&L reads the posted books: an explicit basis option
+ * (ledger or accrual; records or operational), else the organization's
+ * pnl-basis. The ledger needs the statements module's income statement.
+ */
+static gboolean
+venture_report_pnl_from_ledger(
+	VentureContext	*context,
+	JsonObject	*options
+){
+	const gchar *basis = (NULL != options) ? venture_json_object_get_string(options, "basis", NULL) : NULL;
+	g_autofree gchar *chosen = NULL;
+	gint64 organization_id;
+
+	if (NULL == venture_report_registry_lookup(venture_context_get_report_registry(context), "income_statement"))
+		return FALSE;
+	if (NULL != basis)
+		return 0 == g_strcmp0(basis, "ledger") || 0 == g_strcmp0(basis, "accrual");
+	organization_id = (NULL != options) ? venture_json_object_get_int(options, "organization_id", 0) : 0;
+	if (0 == organization_id)
+		organization_id = venture_context_get_default_organization_id(context);
+	{
+		g_autoptr(VentureEntity) organization = venture_database_get(venture_context_get_database(context),
+			VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+		if (NULL == organization)
+			return FALSE;
+		g_object_get(organization, "pnl-basis", &chosen, NULL);
+	}
+	return 0 == g_strcmp0(chosen, "ledger");
+}
+
+/*
+ * The P&L from the posted books: the income statement's total income,
+ * total expenses and net income per currency, laid out as the P&L's lines
+ * so the page and the dashboard card read it unchanged. The income
+ * statement is the accounting authority; nothing here recomputes it.
+ */
+static VentureReportResult *
+venture_report_pnl_ledger(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	VentureReport *statement = venture_report_registry_lookup(venture_context_get_report_registry(context), "income_statement");
+	g_autoptr(JsonObject) forwarded = json_object_new();
+	g_autoptr(VentureReportResult) income = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GPtrArray) currencies = g_ptr_array_new_with_free_func(g_free);
+	g_autofree gchar *book = venture_report_book_currency(context, options);
+	static const gchar *const passed[] = { "organization_id", "venture_id", "currency", "as_of", "dimension" };
+	guint i, row, rows;
+
+	/* Only what both reports mean the same by: "basis" here chooses the
+	 * books, there it means accrual or cash, and the books are accrual. */
+	for (i = 0; NULL != options && i < G_N_ELEMENTS(passed); i++)
+		if (json_object_has_member(options, passed[i]))
+			json_object_set_member(forwarded, passed[i], json_node_copy(json_object_get_member(options, passed[i])));
+	income = venture_report_generate(statement, context, period, forwarded, error);
+	if (NULL == income)
+		return NULL;
+	rows = venture_report_result_get_row_count(income);
+	g_ptr_array_add(currencies, g_strdup(book));
+	for (row = 0; row < rows; row++)
+	{
+		const GValue *currency = venture_report_result_get_cell(income, row, "currency");
+		if (NULL != currency && G_VALUE_HOLDS_STRING(currency) && NULL != g_value_get_string(currency) &&
+			!g_ptr_array_find_with_equal_func(currencies, g_value_get_string(currency), g_str_equal, NULL))
+			g_ptr_array_add(currencies, g_value_dup_string(currency));
+	}
+	result = venture_report_result_new("Profit and loss", period);
+	venture_report_result_add_column(result, "line", "Line", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "currency", "Currency", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "amount", "Amount", VENTURE_REPORT_COLUMN_MONEY);
+	for (i = 0; i < currencies->len; i++)
+	{
+		const gchar *code = g_ptr_array_index(currencies, i);
+		g_autoptr(VentureMoney) revenue = venture_money_new_zero(code);
+		g_autoptr(VentureMoney) expenses = venture_money_new_zero(code);
+		g_autoptr(VentureMoney) profit = venture_money_new_zero(code);
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(code);
+		struct { const gchar *label; VentureMoney *amount; } lines[7];
+		guint j;
+		for (row = 0; row < rows; row++)
+		{
+			const GValue *key = venture_report_result_get_cell(income, row, "key");
+			const GValue *currency = venture_report_result_get_cell(income, row, "currency");
+			const GValue *current = venture_report_result_get_cell(income, row, "current");
+			VentureMoney **slot = NULL;
+			if (NULL == key || !G_VALUE_HOLDS_STRING(key) || NULL == currency || !G_VALUE_HOLDS_STRING(currency) ||
+				0 != g_strcmp0(g_value_get_string(currency), code) || NULL == current ||
+				!G_VALUE_HOLDS(current, VENTURE_TYPE_MONEY) || NULL == g_value_get_boxed(current))
+				continue;
+			if (0 == g_strcmp0(g_value_get_string(key), "income"))
+				slot = &revenue;
+			else if (0 == g_strcmp0(g_value_get_string(key), "expenses"))
+				slot = &expenses;
+			else if (0 == g_strcmp0(g_value_get_string(key), "net_income"))
+				slot = &profit;
+			if (NULL != slot)
+			{
+				venture_money_free(*slot);
+				*slot = venture_money_copy(g_value_get_boxed(current));
+			}
+		}
+		lines[0].label = "Gross sales";
+		lines[0].amount = revenue;
+		lines[1].label = "Less refunds";
+		lines[1].amount = zero;
+		lines[2].label = "Less platform fees";
+		lines[2].amount = zero;
+		lines[3].label = "Less shipping cost";
+		lines[3].amount = zero;
+		lines[4].label = "Net revenue";
+		lines[4].amount = revenue;
+		lines[5].label = "Expenses";
+		lines[5].amount = expenses;
+		lines[6].label = "Profit";
+		lines[6].amount = profit;
+		for (j = 0; j < G_N_ELEMENTS(lines); j++)
+		{
+			venture_report_result_begin_row(result);
+			venture_report_result_set_text(result, "line", lines[j].label);
+			venture_report_result_set_text(result, "currency", code);
+			venture_report_result_set_money(result, "amount", lines[j].amount);
+		}
+		venture_report_result_add_metric(result, venture_report_currency_metric("revenue", "Net revenue", book, revenue));
+		venture_report_result_add_metric(result, venture_report_currency_metric("expenses", "Expenses", book, expenses));
+		venture_report_result_add_metric(result, venture_report_currency_metric("profit", "Profit", book, profit));
+	}
+	venture_report_result_append_note(result, "From the posted books (accrual), the income statement's totals: "
+		"income and expense accounts in the period, whatever was paid. basis=records shows the sale and "
+		"expense records instead.");
+	return g_steal_pointer(&result);
+}
+
+static VentureReportResult *
+venture_report_pnl_records(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+);
+
 static VentureReportResult *
 venture_report_pnl(
+	VentureContext		 *context,
+	VentureDateRange	 *period,
+	JsonObject		 *options,
+	GError			**error
+){
+	if (venture_report_pnl_from_ledger(context, options))
+		return venture_report_pnl_ledger(context, period, options, error);
+	return venture_report_pnl_records(context, period, options, error);
+}
+
+static VentureReportResult *
+venture_report_pnl_records(
 	VentureContext		 *context,
 	VentureDateRange	 *period,
 	JsonObject		 *options,

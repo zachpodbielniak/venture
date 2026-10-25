@@ -18,7 +18,7 @@ about it.
 
 | Name         | Answers                                                      |
 |--------------+--------------------------------------------------------------|
-| =pnl=        | revenue, expenses, finished arbitrage trades, profit; deductible shown separately; one block per currency, book first |
+| =pnl=        | revenue, expenses, finished arbitrage trades, profit; deductible shown separately; one block per currency, book first. =basis=ledger= (or the organization's =pnl-basis=) reads the posted books instead: the income statement's totals, accrual |
 | =ventures=   | sales, revenue, expenses, arbitrage and profit per venture and currency |
 | =categories= | sales grouped by a product field; genre by default           |
 | =inventory=  | quantity on hand and carrying value; reorder flags           |
@@ -1257,3 +1257,21 @@ reported as zero without an explicit business ID, and a selected balance
 sheet returning 404. They exercise a synthetic passwordless owner through
 HTTP, compare JSON and CSV with explicitly scoped results, check the HTML
 amount and export link, and refuse another business and malformed IDs.
+* Profit and loss from the posted books
+
+The =pnl= report counts sale and expense records: a sale when it is paid,
+an expense when one is recorded. That is the right figure for a shop that
+records sales as they happen; it is the wrong one for a business whose
+books are invoices and bills, where an unpaid October bill is October's
+expense. With =basis=ledger= (=accrual= is the same), or with the
+organization's =pnl-basis= set to =ledger=, =pnl= reads the =income_statement=
+instead: total income, total expenses and net income per currency, laid out
+as the P&L's lines and metrics, so the Reports page and the dashboard card
+show the books. =basis=records= asks for the record figure whatever the
+organization chose. A books migration sets =ledger= when it activates. It
+needs the statements module; without it the record figure is used.
+
+Reports name their organization with =organization_id=; without one they
+answer for the organization picked in the sidebar, and only then for the
+default one (a token, or "all"). =test-report-scope= and =test-pnl-ledger=
+cover both.

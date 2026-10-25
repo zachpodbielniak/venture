@@ -1,0 +1,177 @@
+#+title: Books migration
+#+description: A whole Zoho Books backup with its history, replayed through VENTURE's services and reconciled
+
+* What it brings
+
+The =books_import= module requires =cutover=, =receivables= and
+=payables=. It registers =books_import= (a batch) and =books_import_row=
+(one row per source document, or per record it became), and
+=VentureBooksImportService= owns preview, import, reconcile, activate,
+rollback preflight and rollback. Generic writes to either record are
+refused naming the service.
+
+The [[file:cutover.org][cutover]] brings balances: what was open at a cutoff.
+A books migration brings the history: every contact, every invoice since
+the source's first day (paid, open, draft and void), every customer and
+vendor payment, bill, expense, credit note, refund, deposit, transfer and
+manual journal. The day-one balances enter through an ordinary cutover
+batch at the start date; everything after is replayed in date order
+through the service that owns it, so the ledger is built by VENTURE, not
+summarised into journals, and aging, statements, customer history and the
+operational reports all show the business as it ran.
+
+Source: =zoho_books=, the standard backup (Settings > Data Backup, a zip of
+one CSV per object). QuickBooks and Xero are not covered yet.
+
+* The manifest
+
+#+begin_src json
+{"source": "zoho_books",
+ "start": "2024-12-01",
+ "export_date": "2026-10-24",
+ "currency": "USD",
+ "opening": [{"account": "Checking", "debit": "250.00"},
+             {"account": "Opening Balance Adjustments", "credit": "250.00"}],
+ "bank_charges_account": "Bank Fees and Charges",
+ "purchase_tax_account": "Tax Paid Expense",
+ "discount_account": "Discount",
+ "adjustment_account": "Other Charges",
+ "accounts": {"Sales": "4000"},
+ "contact_details": false,
+ "files": {"Invoice.csv": "...csv text...", "Bill.csv": "..."}}
+#+end_src
+
+| Member | Meaning |
+|--------+---------|
+| =start= | the source's first day; every document must be on or after it, and the opening balances enter here |
+| =export_date= | the last day the backup covers; reconcile checks it, and a document after it is a problem |
+| =opening= | the day-one balances, one row per Zoho account with a debit or a credit; they must balance |
+| =bank_charges_account= | where Zoho booked a payment's bank charges (Zoho's setting; the backup does not say) |
+| =purchase_tax_account= | where Zoho booked tax on bills and expenses |
+| =discount_account= | where Zoho booked line discounts |
+| =adjustment_account= | an invoice adjustment with no account of its own |
+| =accounts= | Zoho account name to VENTURE code, for an account matched some other way than by name |
+| =contact_details= | bring contacts' email and phone; off by default (see Mail) |
+| =files= | backup file name to its CSV text |
+
+The opening rows come from the owner: Zoho keeps opening balances in its
+settings, not in the backup. A Zoho account the chart names is matched, in
+order, to the receivables or payables control account for Zoho's control
+types, the code =accounts= maps it to, the one account of the same name
+(case does not matter), or a new account in its kind's range. Two accounts
+of one name are a problem to resolve by mapping. A contact is matched by
+external id (=zoho-c-ID= for customers, =zoho-v-ID= for vendors, the ids an
+opening cutover also uses), then by name, then created as a customer or a
+supplier.
+
+* How each document is replayed
+
+| Zoho | VENTURE |
+|------+---------|
+| invoice | draft with its lines, each naming its income account, then issued on its date; a line discount keeps its own discount account; draft stays a draft; void is issued and voided |
+| customer payment | receipt applied to its invoices, marked as bookkeeping; the deposit account and bank charges are a dated journal from the cash account |
+| payment before its invoice | the receipt's credit, applied when the invoice is issued |
+| bill | draft with a line per item and one for purchase tax, approved on its date; draft and void as for invoices |
+| bill adjustment (Zoho's rounding cent) | carried on the tax line, then a dated journal moves it to its account |
+| vendor payment | payment applied to its bills; paid-through account as a dated journal; before its bill, the payment's credit |
+| expense | an expense record naming its account and paid-through account; its tax is a second expense on the purchase tax account |
+| deposit, transfer | the capital service: an owner contribution, a draw or a transfer |
+| manual journal | a journal of the batch on its date |
+| credit note, refund, vendor credit, vendor refund | the credit, its application or refund, and a dated journal to the line accounts |
+
+Where VENTURE's own posting differs from Zoho's -- a receipt lands in the
+organization's cash account, a credit note debits its income account --
+the document posts the ordinary way and a journal linked to the batch moves
+the leg on the same date. Each is one document's correction, never a
+summary. These need the per-line income and discount accounts of invoice
+lines and the expense account of an expense (migration =000956=).
+
+Not imported, and listed on every preview with the reason: Zoho's activity
+log, budgets, tax settings, recurring profiles (their past documents are
+imported; set the schedules up again), fixed assets, projects, tasks,
+timesheets, quotes, sales and purchase orders, items and contact persons,
+and the files with no VENTURE record. Each is a line, not a refusal.
+
+* Preview, import, reconcile, activate
+
+Preview parses the whole backup without writing a document: the counts per
+object, the accounts and companies to be created, every located problem
+(=Invoice.csv row 12: account "Consulting" is not in Chart_of_Accounts.csv=)
+and every file left behind. A manifest that cannot be read at all -- an
+unknown source, no start, a file that is not CSV -- is refused and no batch
+is created. Import re-runs the same plan and refuses before its first write
+while any problem remains; it is one transaction, and a second import of an
+imported batch is a no-op. A source document another live batch imported
+is a problem: the same history is never counted twice.
+
+Reconcile rebuilds Zoho's own ledger from the backup -- the postings Zoho
+made for each document -- and compares every account of the organization
+with it at every month end from the start and at the export date, and each
+month's invoices, bills, customer and vendor payments and expenses by count
+and total with what VENTURE holds. An account Zoho never named (the cash
+account a receipt passed through) must be back at zero. The report is
+appended, with =PASS= and =FAIL= lines, the trial balance at the last date
+and =Result: reconciled= or =FAILED=; a reconciled batch that no longer
+ties returns to =imported=. VENTURE does not close years into retained
+earnings, so its trial balance carries every year's income and expense;
+Zoho's shows earlier years as retained earnings.
+
+Activate re-runs reconcile, reconciles and activates the opening cutover
+(which closes periods ending at the start), sets the organization's
+=pnl-basis= to =ledger= -- its books are now the ledger, so its profit and
+loss page and dashboard card read the posted income and expense accounts,
+accrual, as the source system did, rather than sale and expense records --
+and sets =active=. An active batch is the books.
+
+* Rollback
+
+Allowed before activation. One transaction, dated on the rollback day: the
+cash on every imported document is refunded, every invoice and bill is
+voided and its number takes the suffix =-rbID=, drafts are removed, the
+batch's own journals, expenses and capital postings are reversed, and the
+opening cutover is rolled back. Companies and accounts stay for a
+corrected batch. A credit note that was applied or refunded is a blocker:
+an applied credit cannot be unapplied.
+
+The ledger keeps the rolled-back history at its source dates, with the
+reversal on the rollback day. A corrected batch of the same books is
+reconciled net of it: each rolled-back batch's source ledger, from its
+dates until its rollback day.
+
+* Mail and collections
+
+Nothing is sent during an import. Receipts are marked as bookkeeping, so
+no customer is thanked for money paid years ago; issuing an invoice sends
+nothing. Imported invoices carry =dunning-disabled= and =late-fee-exempt=,
+and imported companies =dunning-opt-out= and =late-fee-exempt=: an overdue
+Zoho invoice must not draw a reminder or a fee the day the books arrive.
+Turn collections back on per customer when the owner decides. Email and
+phone come over only with =contact_details=: prove the installation's mail
+goes somewhere safe first.
+
+* Surfaces
+
+| Surface | Call |
+|---------+------|
+| REST | =POST /api/v1/books_imports/preview= with the manifest, into the selected legal entity |
+| REST | =POST /api/v1/books_imports/:id/import=, =/reconcile=, =/activate=, =/rollback_preflight=, =/rollback= |
+| CLI | =venturectl books preview DIR start=YYYY-MM-DD [export_date=...] [opening=@FILE] [name=value ...]= reads every CSV in DIR |
+| CLI | =venturectl books import ID=, =books reconcile ID=, =books activate ID=, =books rollback ID= |
+
+All require an editor and the module and answer 401 unauthenticated
+(=test-auth=). Reconcile on a large history takes minutes; the action keeps
+running if the client gives up, and the batch's report shows the result.
+
+* Verification
+
+=test-books-import= replays an invented company's backup in Zoho's CSV
+shapes -- a day-one bank balance, paid and open invoices with a discount
+and a late fee, a draft and a void, payments with bank charges and a
+clearing deposit account, bills with purchase tax and a rounding
+adjustment, expenses with inclusive tax, an owner deposit and a transfer --
+and checks every account to the cent, a mid-month balance, drafts, voids,
+the collections flags and that no mail was queued; reconcile passing and
+failing on drift; preview counts, refusals and located problems; idempotent
+import; rollback to zero and a reconciled re-import; the same history
+refused twice; and the generic-write refusal. =test-line-accounts= covers
+the line and expense accounts.

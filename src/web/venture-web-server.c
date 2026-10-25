@@ -4197,6 +4197,18 @@ venture_web_api_report(
 		}
 		if (!venture_string_is_empty(as_of))
 			json_object_set_string_member(report_options, "as_of", as_of);
+		if (!venture_string_is_empty(organization))
+			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+		else
+		{
+			/* No organization named: the one picked in the sidebar, as
+			 * every page answers. Falling back to the installation's
+			 * default showed one business's figures under another's
+			 * name. "All" (zero) and a token keep the default. */
+			gint64 active = venture_web_active_organization(self, request);
+			if (active > 0)
+				json_object_set_int_member(report_options, "organization_id", active);
+		}
 	}
 	if (!venture_web_report_organization(self, request, report_options, &error))
 		return venture_web_error_response(error);
@@ -8652,6 +8664,18 @@ venture_web_ui_report(
 		}
 		if (!venture_string_is_empty(as_of))
 			json_object_set_string_member(report_options, "as_of", as_of);
+		if (!venture_string_is_empty(organization))
+			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+		else
+		{
+			/* No organization named: the one picked in the sidebar, as
+			 * every page answers. Falling back to the installation's
+			 * default showed one business's figures under another's
+			 * name. "All" (zero) and a token keep the default. */
+			gint64 active = venture_web_active_organization(self, request);
+			if (active > 0)
+				json_object_set_int_member(report_options, "organization_id", active);
+		}
 	}
 	if (venture_web_report_organization(self, request, report_options, &error))
 		result = venture_report_generate(report, self->context, period, report_options,
@@ -34291,6 +34315,7 @@ venture_web_api_ticket_draft(
 #include "planner/venture-planner-web.inc"
 #include "jobs/venture-jobs-web.inc"
 #include "crm-import/venture-crm-import-web.inc"
+#include "books-import/venture-books-import-web.inc"
 #include "dedupe/venture-dedupe-web.inc"
 #include "report/venture-support-rollup-web.inc"
 #include "docs/venture-docs-web.inc"
@@ -34921,6 +34946,7 @@ venture_document_web_register(router, self);
 	venture_backup_web_register(router, self);
 	venture_accountant_web_register(router, self);
 	venture_crm_import_web_register(router, self);
+	venture_books_import_web_register(router, self);
 	venture_mfa_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/oidc/start", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_oidc_web_start, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/auth/hosted/start", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_hosted_browser_start, self);

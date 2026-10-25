@@ -289,5 +289,19 @@ VentureEntity *venture_settlement_service_add_late_fee(VentureSettlementService 
  */
 VentureEntity *venture_settlement_service_waive_late_fee(VentureSettlementService *self, gint64 event_id,
 	GDateTime *date, const gchar *reason, const VentureActor *actor, GError **error);
+/**
+ * venture_settlement_service_free_number:
+ * @self: settlement service
+ * @invoice: a void invoice
+ * @suffix: appended to its number, e.g. "-rb7"
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Renames a void invoice so its number can be issued again, as a rolled-back
+ * migration must allow. A number already carrying @suffix is left alone.
+ * Returns: %TRUE when the number is free
+ */
+gboolean venture_settlement_service_free_number(VentureSettlementService *self, VentureInvoice *invoice,
+	const gchar *suffix, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

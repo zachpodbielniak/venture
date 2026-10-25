@@ -4174,6 +4174,7 @@ venture_cli_command_mcp(
 #include "report/venture-customer-health-cli.inc"
 #include "money-calendar/venture-money-calendar-cli.inc"
 #include "crm-import/venture-crm-import-cli.inc"
+#include "books-import/venture-books-import-cli.inc"
 #include "dedupe/venture-dedupe-cli.inc"
 #include "report/venture-support-rollup-cli.inc"
 
@@ -4987,6 +4988,8 @@ main(
 		result = venture_cli_command_money(&cli, args, span_from, span_to, calendar_kind, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "crm"))
 		result = venture_cli_command_crm(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "books"))
+		result = venture_cli_command_books(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "dedupe"))
 		result = venture_cli_command_dedupe(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "support"))
