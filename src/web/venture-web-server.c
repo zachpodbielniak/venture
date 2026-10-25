@@ -572,9 +572,171 @@ venture_web_look(
 }
 
 /*
- * The stylesheet for the chosen look, inlined. One or the other, never
- * both: they are each the whole design, and the page is the same weight
- * it was when there was only one.
+ * The interface itself: the two looks' stylesheets, the hx-* client and
+ * the behaviour script. Together they are over four hundred kilobytes,
+ * and pasted into every page they made each click download and parse
+ * them again -- half a megabyte for a quote list, most of the second an
+ * owner waited on a phone. So a page links them, at
+ * /pub/ui/<version>/<name>, where the version is the start of the
+ * content's SHA-256: the browser fetches each once and keeps it until a
+ * release changes the content, and with it the address.
+ */
+#define VENTURE_WEB_UI_ASSET_INDUSTRIAL 0
+#define VENTURE_WEB_UI_ASSET_CLASSIC 1
+#define VENTURE_WEB_UI_ASSET_HX 2
+#define VENTURE_WEB_UI_ASSET_SCRIPT 3
+#define VENTURE_WEB_UI_ASSETS 4
+
+static const gchar *const venture_web_ui_asset_names[VENTURE_WEB_UI_ASSETS] = {
+	"venture-industrial.css", "venture-classic.css", "venture-hx.js", "venture.js",
+};
+
+static const gchar *
+venture_web_ui_asset_contents(guint index)
+{
+	switch (index)
+	{
+	case VENTURE_WEB_UI_ASSET_INDUSTRIAL: return venture_asset_venture_industrial_css;
+	case VENTURE_WEB_UI_ASSET_CLASSIC: return venture_asset_venture_classic_css;
+	case VENTURE_WEB_UI_ASSET_HX: return venture_asset_venture_hx_js;
+	default: return venture_asset_venture_js;
+	}
+}
+
+/* Sixteen hex digits of the content's SHA-256, worked out once. */
+static const gchar *
+venture_web_ui_asset_version(guint index)
+{
+	static gchar *versions[VENTURE_WEB_UI_ASSETS];
+	static gsize ready = 0;
+
+	if (g_once_init_enter(&ready))
+	{
+		guint i;
+
+		for (i = 0; i < VENTURE_WEB_UI_ASSETS; i++)
+		{
+			versions[i] = g_compute_checksum_for_string(G_CHECKSUM_SHA256,
+				venture_web_ui_asset_contents(i), -1);
+			versions[i][16] = '\0';
+		}
+		g_once_init_leave(&ready, 1);
+	}
+	return versions[index];
+}
+
+/*
+ * The same, gzipped, also worked out once: a first visit downloads about a
+ * fifth of the bytes. Only these are compressed here, never a page, which
+ * carries a form's token beside text a visitor chose.
+ */
+static GBytes *
+venture_web_ui_asset_gzipped(guint index)
+{
+	static GBytes *zipped[VENTURE_WEB_UI_ASSETS];
+	static gsize ready = 0;
+
+	if (g_once_init_enter(&ready))
+	{
+		guint i;
+
+		for (i = 0; i < VENTURE_WEB_UI_ASSETS; i++)
+		{
+			g_autoptr(GZlibCompressor) compressor = g_zlib_compressor_new(G_ZLIB_COMPRESSOR_FORMAT_GZIP, 9);
+			g_autoptr(GBytes) plain = NULL;
+			g_autoptr(GInputStream) source = NULL;
+			g_autoptr(GInputStream) stream = NULL;
+			g_autoptr(GOutputStream) sink = g_memory_output_stream_new_resizable();
+			const gchar *contents = venture_web_ui_asset_contents(i);
+
+			plain = g_bytes_new_static(contents, strlen(contents));
+			source = g_memory_input_stream_new_from_bytes(plain);
+			stream = g_converter_input_stream_new(source, G_CONVERTER(compressor));
+			if (g_output_stream_splice(sink, stream, G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET, NULL, NULL) >= 0)
+				zipped[i] = g_memory_output_stream_steal_as_bytes(G_MEMORY_OUTPUT_STREAM(sink));
+		}
+		g_once_init_leave(&ready, 1);
+	}
+	return zipped[index];
+}
+
+/* Whether the browser said it reads gzip. */
+static gboolean
+venture_web_accepts_gzip(HtmxRequest *request)
+{
+	SoupServerMessage *message = (NULL != request) ? htmx_request_get_message(request) : NULL;
+	const gchar *accept = (NULL != message)
+		? soup_message_headers_get_list(soup_server_message_get_request_headers(message), "Accept-Encoding")
+		: NULL;
+	g_auto(GStrv) codings = NULL;
+	guint i;
+
+	if (NULL == accept)
+		return FALSE;
+	codings = g_strsplit(accept, ",", -1);
+	for (i = 0; NULL != codings[i]; i++)
+	{
+		g_autofree gchar *coding = g_strstrip(g_strdup(codings[i]));
+
+		if (g_str_has_prefix(coding, "gzip") && (coding[4] == '\0' || coding[4] == ';' || coding[4] == ' '))
+			return NULL == strstr(coding, "q=0") || NULL != strstr(coding, "q=0.");
+	}
+	return FALSE;
+}
+
+static void
+venture_web_append_ui_asset_url(GString *html, guint index)
+{
+	g_string_append_printf(html, "/pub/ui/%s/%s", venture_web_ui_asset_version(index),
+	                       venture_web_ui_asset_names[index]);
+}
+
+/*
+ * GET /pub/ui/:version/:name. Anyone may have it: the sign-in page needs
+ * the stylesheet before there is a session, and none of it is private.
+ * The current version is cacheable for good. Any other is answered too,
+ * for a page left open across a release, but not kept.
+ */
+static HtmxResponse *
+venture_web_ui_asset(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	const gchar *version = g_hash_table_lookup(params, "version");
+	const gchar *name = g_hash_table_lookup(params, "name");
+	HtmxResponse *response;
+	guint i;
+
+	(void)data;
+	for (i = 0; i < VENTURE_WEB_UI_ASSETS; i++)
+		if (0 == g_strcmp0(name, venture_web_ui_asset_names[i]))
+			break;
+	if (VENTURE_WEB_UI_ASSETS == i)
+	{
+		response = htmx_response_new_with_content("Not found\n");
+		htmx_response_set_status(response, 404);
+		htmx_response_set_content_type(response, "text/plain; charset=utf-8");
+		return response;
+	}
+	if (venture_web_accepts_gzip(request) && NULL != venture_web_ui_asset_gzipped(i))
+	{
+		response = htmx_response_new();
+		htmx_response_set_bytes(response, venture_web_ui_asset_gzipped(i));
+		htmx_response_add_header(response, "Content-Encoding", "gzip");
+	}
+	else
+		response = htmx_response_new_with_content(venture_web_ui_asset_contents(i));
+	htmx_response_add_header(response, "Vary", "Accept-Encoding");
+	htmx_response_set_content_type(response, g_str_has_suffix(name, ".css")
+		? "text/css; charset=utf-8" : "application/javascript; charset=utf-8");
+	htmx_response_add_header(response, "Cache-Control",
+		0 == g_strcmp0(version, venture_web_ui_asset_version(i))
+			? "public, max-age=31536000, immutable" : "no-cache");
+	htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+	return response;
+}
+
+/*
+ * The stylesheet for the chosen look. One or the other, never both: they
+ * are each the whole design.
  */
 static void
 venture_web_append_stylesheet(
@@ -586,11 +748,10 @@ venture_web_append_stylesheet(
 
 	look = venture_web_look(self, request);
 
-	g_string_append(html, "<style>");
-	g_string_append(html, (0 == g_strcmp0(look, "classic"))
-		? venture_asset_venture_classic_css
-		: venture_asset_venture_industrial_css);
-	g_string_append(html, "</style>");
+	g_string_append(html, "<link rel=\"stylesheet\" href=\"");
+	venture_web_append_ui_asset_url(html, (0 == g_strcmp0(look, "classic"))
+		? VENTURE_WEB_UI_ASSET_CLASSIC : VENTURE_WEB_UI_ASSET_INDUSTRIAL);
+	g_string_append(html, "\">");
 }
 
 static gchar *
@@ -3209,11 +3370,11 @@ venture_web_page(
 
 	g_string_append(html, "</div>");
 
-	g_string_append(html, "<script>");
-	g_string_append(html, venture_asset_venture_hx_js);
-	g_string_append(html, "</script><script>");
-	g_string_append(html, venture_asset_venture_js);
-	g_string_append(html, "</script>");
+	g_string_append(html, "<script src=\"");
+	venture_web_append_ui_asset_url(html, VENTURE_WEB_UI_ASSET_HX);
+	g_string_append(html, "\"></script><script src=\"");
+	venture_web_append_ui_asset_url(html, VENTURE_WEB_UI_ASSET_SCRIPT);
+	g_string_append(html, "\"></script>");
 
 	g_string_append(html, "</body></html>");
 
@@ -34451,6 +34612,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);
 	/* The forms door: no session, a capability token, and the form's own
 	 * origin list. See src/forms/venture-forms-web.inc. */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/ui/:version/:name", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_asset, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/forms.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);

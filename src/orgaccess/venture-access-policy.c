@@ -1093,6 +1093,12 @@ public_capability_request(HtmxRequest *request)
 		return method == HTMX_METHOD_GET && (!g_strcmp0(suffix, "/fragment") || !g_strcmp0(suffix, "/schema"));
 	}
 	if (!g_strcmp0(path, "/pub/forms.js")) return method == HTMX_METHOD_GET;
+	/* The interface's stylesheets and scripts: /pub/ui/<version>/<name>. */
+	if (g_str_has_prefix(path, "/pub/ui/") && path[8] != '\0' && path[8] != '/')
+	{
+		suffix = strchr(path + 8, '/');
+		return method == HTMX_METHOD_GET && suffix != NULL && suffix[1] != '\0' && strchr(suffix + 1, '/') == NULL;
+	}
 	if (!g_str_has_prefix(path, "/q/") || path[3] == '\0' || path[3] == '/') return FALSE;
 	suffix = strchr(path + 3, '/');
 	if (!suffix) return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;

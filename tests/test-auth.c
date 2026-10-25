@@ -4550,8 +4550,8 @@ test_auth_look_switch_is_a_cookie(
 	 * other one. */
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", cookie,
 		NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "instrument panel"));
-	g_assert_null(strstr(page, "warm monochrome"));
+	g_assert_nonnull(strstr(page, "/venture-industrial.css\""));
+	g_assert_null(strstr(page, "/venture-classic.css\""));
 	g_assert_nonnull(strstr(page, "name=\"look\" value=\"classic\""));
 	g_assert_nonnull(strstr(page, ">Classic look</button>"));
 
@@ -4567,8 +4567,8 @@ test_auth_look_switch_is_a_cookie(
 	page = NULL;
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", both,
 		NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "warm monochrome"));
-	g_assert_null(strstr(page, "instrument panel"));
+	g_assert_nonnull(strstr(page, "/venture-classic.css\""));
+	g_assert_null(strstr(page, "/venture-industrial.css\""));
 	g_assert_nonnull(strstr(page, ">Industrial look</button>"));
 
 	/* The sign-in page follows the cookie, session or no session. */
@@ -4576,7 +4576,7 @@ test_auth_look_switch_is_a_cookie(
 	page = NULL;
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/login",
 		"venture_look=classic", NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "warm monochrome"));
+	g_assert_nonnull(strstr(page, "/venture-classic.css\""));
 
 	/* A forged value is the configuration again. */
 	forged = g_strdup_printf("%s; venture_look=../etc/passwd", cookie);
@@ -4584,7 +4584,7 @@ test_auth_look_switch_is_a_cookie(
 	page = NULL;
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", forged,
 		NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "instrument panel"));
+	g_assert_nonnull(strstr(page, "/venture-industrial.css\""));
 
 	/* An off-site "back" lands on the home page instead. */
 	g_free(set_cookie);

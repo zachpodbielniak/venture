@@ -495,7 +495,13 @@ get_page(
 	if (200 != status)
 		g_error("GET %s answered %u: %s", path, status, body);
 
-	return body;
+	/* The look's stylesheet, as the browser applies it. */
+	{
+		gchar *page = venture_test_page_with_ui(body);
+
+		g_free(body);
+		return page;
+	}
 }
 
 static JsonNode *
