@@ -1363,3 +1363,20 @@ not production transport limits.
 All 23 =test-http-limits= checks pass with this fixture, including TLS
 ordinary/oversized/slow-body requests, stalled-handshake shutdown, aggregate
 budget release and public form upload bounds.
+
+* Feed window polling
+
+The full DEBUG run and an unchanged focused rerun exposed
+=/feeds/window-is-written-not-dropped= recording a failed run before the
+worker stopped. A debugger trace showed =table meta already exists= while
+the worker created its store: the test's service-reader poll could open a
+second schema writer. The row-count helper now uses the strictly read-only
+=venture_series_store_open_reader()= and waits for the worker's schema.
+The zero-before-stop and one-after-stop assertions are unchanged. This is
+a fixture correction; it does not resolve concurrent upgrades through the
+production service-reader API.
+The same fixture also allows normal background upkeep messages during
+provider removal instead of queuing one exclusive expected log message.
+Removal is still checked through its persisted run, status and trigger.
+The repaired window test passes five consecutive focused runs, and all 43
+feed tests pass in the complete =test-feeds= binary.
