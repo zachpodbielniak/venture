@@ -1502,8 +1502,12 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		VENTURE_ICON("<path d=\"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9\"/><path d=\"M10 21h4\"/>"),
 		NULL, "dunning"
 	},
+	/* The companies you sell to, and those you buy from, each its own
+	 * list: one list of every company read as if suppliers were
+	 * customers. Both are views of the companies list, whose tabs
+	 * still offer all of them. */
 	{
-		"/e/company", "Companies",
+		"/e/company?customer=true", "Customers",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
 			"<path d=\"M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16\"/>"
@@ -1512,6 +1516,17 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M9 15h2\"/>"
 		),
 		"Relations",
+		"crm"
+	},
+	{
+		"/e/company?supplier=true", "Suppliers",
+		VENTURE_ICON(
+			"<path d=\"M3 7h11v10H3z\"/>"
+			"<path d=\"M14 10h4l3 3v4h-7z\"/>"
+			"<circle cx=\"7\" cy=\"18\" r=\"1.5\"/>"
+			"<circle cx=\"17\" cy=\"18\" r=\"1.5\"/>"
+		),
+		NULL,
 		"crm"
 	},
 	{
@@ -1928,7 +1943,7 @@ static const gchar *const venture_web_nav_money_in[] = {
 };
 
 static const gchar *const venture_web_nav_money_out[] = {
-	"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll",
+	"/e/company?supplier=true", "/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll",
 	NULL
 };
 
@@ -1946,7 +1961,7 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
+	"/e/company?customer=true", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
 	NULL
 };
 
@@ -7058,6 +7073,7 @@ venture_web_ui_list(
 	g_autofree gchar *path = NULL;
 	GPtrArray *views;
 	const VentureEntityListView *view;
+	g_autofree gchar *view_path = NULL;
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
@@ -7167,6 +7183,8 @@ venture_web_ui_list(
 	heading = venture_web_type_label(entity_type, TRUE);
 	views = venture_entity_type_get_list_views(entity_type);
 	view = venture_web_list_active_view(request, views);
+	/* A view the sidebar offers marks its own row. */
+	view_path = (NULL != view) ? g_strdup_printf("/e/%s?%s", type_name, view->query) : NULL;
 	content = g_string_new(NULL);
 
 	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">");
@@ -7433,7 +7451,7 @@ venture_web_ui_list(
 	g_string_append(content, "</div>");
 
 	return venture_web_html_response(
-		venture_web_page(self, request, path, heading, content->str), 200);
+		venture_web_page(self, request, (NULL != view) ? view_path : path, heading, content->str), 200);
 }
 
 static HtmxResponse *

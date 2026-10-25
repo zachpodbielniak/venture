@@ -270,10 +270,13 @@ test_list_views(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(customers, "aria-current=\"page\" href=\"/e/company?customer=true\""));
 	g_assert_nonnull(strstr(customers, "Both Ways")); g_assert_nonnull(strstr(customers, "Only Buys"));
 	g_assert_null(strstr(customers, "Only Sells")); g_assert_null(strstr(customers, "Not Yet"));
+	/* The sidebar calls the customers list Customers, and marks it. */
+	g_assert_nonnull(strstr(customers, "<a class=\"nav-item active\" href=\"/e/company?customer=true\">"));
 	suppliers = page(server, "/e/company?supplier=true");
 	g_assert_nonnull(strstr(suppliers, "<h1>Suppliers</h1>"));
 	g_assert_nonnull(strstr(suppliers, "Both Ways")); g_assert_nonnull(strstr(suppliers, "Only Sells"));
 	g_assert_null(strstr(suppliers, "Only Buys"));
+	g_assert_nonnull(strstr(suppliers, "<a class=\"nav-item active\" href=\"/e/company?supplier=true\">"));
 	venture_web_server_stop(server);
 	venture_test_remove_tree(directory);
 }
