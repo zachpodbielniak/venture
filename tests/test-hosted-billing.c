@@ -279,10 +279,26 @@ static void test_made_back_paid(Fixture *f, gconstpointer unused)
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
 	g_autoptr(GPtrArray) allocations = NULL;
-	gint64 invoice = json_object_get_int_member(json_node_get_object(published), "invoice_id");
-	(void)unused;
+	g_autoptr(VentureEntity) activate = g_object_new(VENTURE_TYPE_BILLING_REQUEST, "action", "activate", NULL);
+	g_autoptr(VentureQuery) events = venture_query_new(VENTURE_TYPE_SUBSCRIPTION_EVENT);
+	g_autoptr(GPtrArray) issued_events = NULL;
+	gint64 invoice = 0;
+	guint i;
+	(void)unused; (void)published;
+	/* No card was saved, so publication issued nothing; issue the first bill. */
+	venture_entity_set_organization_id(activate, f->billing);
+	g_object_set(activate, "subscription-id", json_object_get_int_member(json_node_get_object(enrolled), "subscription_id"), "at", now, NULL);
+	save(f, activate);
+	venture_query_set_organization(events, f->billing);
+	issued_events = venture_database_find(f->db, events, &error); g_assert_no_error(error);
+	for (i = 0; i < issued_events->len; i++) {
+		gint64 candidate = 0;
+		g_object_get(g_ptr_array_index(issued_events, i), "invoice-id", &candidate, NULL);
+		if (candidate > 0) invoice = candidate;
+	}
 	/* Issued is not paid. */
 	g_assert_cmpint(invoice, >, 0);
+	g_clear_pointer(&issued, json_node_unref); issued = call(f, path, NULL, 200);
 	g_assert_cmpstr(money_member(issued, "paid"), ==, "0.00");
 	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), invoice, now, NULL, &error));
 	g_assert_no_error(error);

@@ -88,6 +88,67 @@ guarantee_acquisition(GPtrArray *bindings, gint64 deal, gint64 company, GDateTim
 	return found;
 }
 
+/* What the business actually paid for its plan in the window: cash receipts
+ * applied to the subscription's invoices, less refunds of them. Issued
+ * invoices, applied credits and bookkeeping receipts are not payments. */
+static VentureMoney *
+guarantee_paid(VentureDatabase *db, gint64 billing, gint64 subscription,
+	GDateTime *start, GDateTime *end, const gchar *currency, GError **error)
+{
+	g_autoptr(VentureQuery) events = venture_query_new(VENTURE_TYPE_SUBSCRIPTION_EVENT);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) invoices = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autoptr(VentureMoney) paid = venture_money_new_zero(currency);
+	guint i, j;
+	venture_query_set_organization(events, billing);
+	venture_query_add_filter_int(events, "subscription-id", VENTURE_FILTER_OP_EQ, subscription, NULL);
+	venture_query_add_filter_int(events, "invoice-id", VENTURE_FILTER_OP_GT, 0, NULL);
+	rows = find(db, events, error);
+	if (!rows) return NULL;
+	for (i = 0; i < rows->len; i++) {
+		gint64 invoice = number(g_ptr_array_index(rows, i), "invoice-id");
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) allocations = NULL;
+		if (g_hash_table_contains(invoices, &invoice)) continue;
+		g_hash_table_add(invoices, g_memdup2(&invoice, sizeof invoice));
+		query = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
+		venture_query_set_organization(query, billing);
+		venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, invoice, NULL);
+		allocations = find(db, query, error);
+		if (!allocations) return NULL;
+		for (j = 0; j < allocations->len; j++) {
+			VentureEntity *allocation = g_ptr_array_index(allocations, j);
+			g_autoptr(VentureEntity) payment = NULL;
+			g_autoptr(VentureQuery) refunds = NULL;
+			g_autoptr(GPtrArray) returned = NULL;
+			g_autoptr(GDateTime) date = NULL;
+			g_autoptr(VentureMoney) amount = NULL;
+			guint k;
+			g_object_get(allocation, "date", &date, "amount", &amount, NULL);
+			if (number(allocation, "payment-id") <= 0 || !guarantee_within(date, start, end)) continue;
+			payment = get_record(db, VENTURE_TYPE_PAYMENT, number(allocation, "payment-id"), error);
+			if (!payment) return NULL;
+			if (venture_entity_is_deleted(payment) || venture_payment_is_bookkeeping(VENTURE_PAYMENT(payment))) continue;
+			if (!guarantee_add(&paid, amount, error)) return NULL;
+			refunds = venture_query_new(VENTURE_TYPE_REFUND);
+			venture_query_set_organization(refunds, billing);
+			venture_query_add_filter_int(refunds, "allocation-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(allocation), NULL);
+			returned = find(db, refunds, error);
+			if (!returned) return NULL;
+			for (k = 0; k < returned->len; k++) {
+				g_autoptr(GDateTime) when = NULL;
+				g_autoptr(VentureMoney) back = NULL, negative = NULL;
+				g_object_get(g_ptr_array_index(returned, k), "date", &when, "amount", &back, NULL);
+				if (!guarantee_within(when, start, end)) continue;
+				if (!back) { refuse(error, VENTURE_ERROR_VALIDATION, "refund has no exact amount"); return NULL; }
+				negative = venture_money_multiply_int(back, -1, error);
+				if (!negative || !guarantee_add(&paid, negative, error)) return NULL;
+			}
+		}
+	}
+	return g_steal_pointer(&paid);
+}
+
 static JsonNode *
 made_back_impl(VentureDatabase *database, gint64 billing, gint64 business,
 	GDateTime *until, GError **error)
@@ -99,7 +160,7 @@ made_back_impl(VentureDatabase *database, gint64 billing, gint64 business,
 	g_autoptr(GPtrArray) deals = NULL, quotes = NULL, events = NULL, qualified = g_ptr_array_new();
 	g_autoptr(GHashTable) won_by_deal = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)venture_money_free);
 	g_autoptr(GHashTable) invoiced_by_deal = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)venture_money_free);
-	g_autoptr(VentureMoney) cap = NULL, won = NULL, invoiced = NULL, overlap = NULL, total = NULL, gross = NULL;
+	g_autoptr(VentureMoney) cap = NULL, paid = NULL, won = NULL, invoiced = NULL, overlap = NULL, total = NULL, gross = NULL;
 	GHashTableIter iterator;
 	gpointer key, value;
 	JsonObject *object;
@@ -126,6 +187,9 @@ made_back_impl(VentureDatabase *database, gint64 billing, gint64 business,
 	}
 	cap = enrollment_money(json_node_get_object(enrollment), "guarantee_cap", error);
 	if (!cap) return NULL;
+	paid = guarantee_paid(database, billing, json_object_get_int_member(json_node_get_object(enrollment), "subscription_id"),
+		start, end, venture_money_get_currency(cap), error);
+	if (!paid) return NULL;
 	won = venture_money_new_zero(venture_money_get_currency(cap));
 	invoiced = venture_money_copy(won); overlap = venture_money_copy(won);
 #define ROWS(variable, type) variable = guarantee_rows(database, type, business, error); if (!variable) return NULL
@@ -211,6 +275,7 @@ made_back_impl(VentureDatabase *database, gint64 billing, gint64 business,
 	json_object_set_member(object, "invoiced", money_node(invoiced));
 	json_object_set_member(object, "overlap", money_node(overlap));
 	json_object_set_member(object, "made_back", money_node(total));
+	json_object_set_member(object, "paid", money_node(paid));
 	return g_steal_pointer(&result);
 }
 

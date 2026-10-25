@@ -75,8 +75,8 @@ does not post cash. Collection problems do not suspend the business or its site.
 * Made-back measurement
 
 =GET /api/v1/lightsite/billing/:organization_id/made-back= returns =won=,
-=invoiced=, =overlap= and =made_back= as exact money, together with =go_live_at=
-and an exclusive =until=. The default end is the earlier of now and ninety days
+=invoiced=, =overlap=, =made_back= and =paid= as exact money, together with
+=go_live_at= and an exclusive =until=. The default end is the earlier of now and ninety days
 after go-live. The C API can request an earlier end in that window.
 
 Only acquisition bindings whose original submission retained a verified hosted
@@ -97,6 +97,11 @@ excluding tax and shipping. The event's recorded instant places it in the
 window; a calendar book date at midnight must not exclude a same-day issue.
 Explicit quote/deal links identify overlap: a won
 job of 20.00 with a linked invoice of 15.00 contributes 20.00, not 35.00.
+=paid= is what the business actually paid for its plan in the same window:
+cash receipts applied to the enrolled subscription's invoices, dated by their
+application, less refunds of those receipts. Issued but unpaid invoices,
+applied credits (including a guarantee credit) and bookkeeping receipts are
+not payments. It is in the enrolled currency.
 Currency mismatches, ambiguous acquisition and missing qualifying financial
 amounts fail rather than producing a guessed total. The reader does not convert
 currencies. The measurement must be retained by the caller at its decision time;
