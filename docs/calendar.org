@@ -155,7 +155,13 @@ The page is public: no session, the same per-address rate limit and
 request-size cap as lead capture, 404 for an unknown or inactive slug or
 when the module is off, and what a stranger types is bounded — a name over
 200 bytes, an address over 254 bytes or notes over 4000 bytes are refused with 422
-before anything is written.
+before anything is written. The limit key is the socket peer.
+=security.booking_trusted_relays= (empty by default) names relays whose
+last =X-Forwarded-For= hop is that key instead, on =/book/<slug>= and
+=/book/<slug>/manage/<capability>=. Any other header, or a last hop that is
+not an address, leaves the peer key in place, so a visitor cannot mint
+buckets by sending the header. A successful book or change stores that
+same address on the meeting's audit entry.
 
 * Running it
 
@@ -213,7 +219,8 @@ oversized-input refusals, the organization sweep, and migration =000380=
 with the module on, off and against a half-present schema. =test-auth= covers anonymous refusal
 of the sync route, owner-only =calendar_account= and the =calendar_event=
 write refusal. =test-calendar-surfaces= drives =venturectl calendar sync=
-and =/book/<slug>= over HTTP against a private server.
+and =/book/<slug>= over HTTP against a private server, including a trusted
+relay's per-visitor limit and an untrusted peer's ignored =X-Forwarded-For=.
 
 * Seat capacity and private management links
 

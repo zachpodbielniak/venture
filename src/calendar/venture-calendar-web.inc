@@ -50,7 +50,85 @@ static HtmxResponse *venture_web_calendar_sync(HtmxRequest *request, GHashTable 
 
 /* The public scheduling link: GET offers the free slots, POST books one.
  * No session is involved; the page's owner and organization come from the
- * slug, and the same per-address rate limit as lead capture applies. */
+ * slug, and the same per-address rate limit as lead capture applies.
+ * A peer listed in security.booking_trusted_relays may name the visitor
+ * with the last X-Forwarded-For hop. Anyone else is limited as the socket
+ * peer, even when they send that header. */
+
+static gboolean venture_web_booking_relay_trusted(VentureWebServer *self, const gchar *peer)
+{
+	g_auto(GStrv) relays = NULL;
+	g_autoptr(GInetAddress) mine = NULL;
+	guint i;
+	if (venture_string_is_empty(peer)) return FALSE;
+	mine = g_inet_address_new_from_string(peer);
+	if (mine == NULL) return FALSE;
+	g_object_get(venture_context_get_config(self->context), "security-booking-trusted-relays", &relays, NULL);
+	for (i = 0; (relays != NULL) && (relays[i] != NULL); i++)
+	{
+		g_autoptr(GInetAddress) item = g_inet_address_new_from_string(relays[i]);
+		if ((item != NULL) && g_inet_address_equal(item, mine)) return TRUE;
+	}
+	return FALSE;
+}
+/* The hop the trusted relay appended. A missing or non-address value is not a key. */
+static gchar *venture_web_booking_forwarded_client(HtmxRequest *request)
+{
+	SoupServerMessage *message = htmx_request_get_message(request);
+	SoupMessageHeaders *headers;
+	const gchar *header, *start;
+	g_autofree gchar *last = NULL;
+	g_autoptr(GInetAddress) parsed = NULL;
+	if (message == NULL) return NULL;
+	headers = soup_server_message_get_request_headers(message);
+	if (headers == NULL) return NULL;
+	header = soup_message_headers_get_list(headers, "X-Forwarded-For");
+	if (venture_string_is_empty(header)) return NULL;
+	start = strrchr(header, ',');
+	start = (start != NULL) ? start + 1 : header;
+	last = g_strstrip(g_strdup(start));
+	if (last[0] == '\0') return NULL;
+	parsed = g_inet_address_new_from_string(last);
+	if (parsed == NULL) return NULL;
+	return g_inet_address_to_string(parsed);
+}
+static gchar *venture_web_booking_client_address(VentureWebServer *self, HtmxRequest *request)
+{
+	g_autofree gchar *peer = venture_auth_remote_address(request);
+	if (venture_web_booking_relay_trusted(self, peer))
+	{
+		gchar *forwarded = venture_web_booking_forwarded_client(request);
+		if (forwarded != NULL) return forwarded;
+	}
+	return g_strdup((peer != NULL) ? peer : "unknown");
+}
+static void venture_web_booking_note_address(VentureDatabase *database, VentureEntity *activity, const gchar *address)
+{
+	/* The public page has no signed-in actor. The audit row is still a
+	 * system write, so a hosted organization scope must not hide it or
+	 * refuse the address that this request just decided. */
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	guint i;
+	if ((activity == NULL) || venture_string_is_empty(address) || (g_strcmp0(address, "unknown") == 0)) return;
+	query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	venture_query_add_filter_string(query, "target-type", VENTURE_FILTER_OP_EQ, venture_entity_get_entity_name(activity), NULL);
+	venture_query_add_filter_int(query, "target-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(activity), NULL);
+	entries = venture_database_find(database, query, NULL);
+	if (entries == NULL) return;
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autoptr(GError) error = NULL;
+		VentureEntity *entry = g_ptr_array_index(entries, i);
+		g_autofree gchar *current = NULL;
+		g_object_get(entry, "ip-address", &current, NULL);
+		if (!venture_string_is_empty(current)) continue;
+		g_object_set(entry, "ip-address", address, NULL);
+		if (!venture_database_save(database, entry, NULL, &error))
+			g_warning("Cannot record the booking address: %s", error->message);
+	}
+}
 static HtmxResponse *venture_web_booking_plain(guint status, const gchar *text)
 {
 	HtmxResponse *response = htmx_response_new_with_content(text);
@@ -75,7 +153,7 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 	g_autoptr(VentureEntity) page = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) slots = NULL;
-	g_autofree gchar *address = venture_auth_remote_address(request);
+	g_autofree gchar *address = venture_web_booking_client_address(self, request);
 	const gchar *slug = g_hash_table_lookup(params, "slug");
 	GBytes *bytes = htmx_request_get_body_bytes(request);
 	gint64 rate = 0, max_mb = 0;
@@ -116,6 +194,7 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 			if (venture_web_booking_wants_json(request)) return venture_web_error_response(error);
 			return venture_web_booking_plain(status, status == 409 ? "<p>That time was just taken. Please choose another.</p>" : "<p>Please check the name, email and time.</p>");
 		}
+		venture_web_booking_note_address(venture_context_get_database(self->context), activity, address);
 		if (venture_web_booking_wants_json(request)) {
 			g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(activity), FALSE);
 			return venture_web_json_response(node, 201);
@@ -168,7 +247,7 @@ static HtmxResponse *venture_web_booking_manage(HtmxRequest *request, GHashTable
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) slots = NULL;
 	g_autoptr(GString) html = NULL;
-	g_autofree gchar *address = venture_auth_remote_address(request);
+	g_autofree gchar *address = venture_web_booking_client_address(self, request);
 	const gchar *slug = g_hash_table_lookup(params, "slug"), *capability = g_hash_table_lookup(params, "capability");
 	GBytes *bytes = htmx_request_get_body_bytes(request);
 	guint i;
@@ -198,6 +277,7 @@ static HtmxResponse *venture_web_booking_manage(HtmxRequest *request, GHashTable
 			g_strcmp0(operation, "cancel") == 0 ? NULL : start, NULL, &actor, &error);
 		if (activity == NULL) return venture_web_booking_plain(g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND) ? 404 : 409,
 			"The booking could not be changed. Reload and choose an available time.");
+		venture_web_booking_note_address(database, activity, address);
 		if (g_strcmp0(operation, "cancel") == 0) return venture_web_booking_plain(200, "<p>Your booking has been cancelled.</p>");
 		return venture_web_booking_plain(200, "<p>Your booking has been rescheduled. A new private link will be sent when confirmation email is configured.</p>");
 	}

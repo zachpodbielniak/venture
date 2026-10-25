@@ -76,6 +76,29 @@ static guint request(Fixture *f, const gchar *method, const gchar *path, const g
 {
 	return request_as(f, method, path, "application/json", body, out);
 }
+/* xff NULL sends no X-Forwarded-For. The peer of this fixture is 127.0.0.1. body NULL sends no entity. */
+static guint request_xff(Fixture *f, const gchar *method, const gchar *path, const gchar *xff, const gchar *body, gchar **out)
+{
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 15, NULL);
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(f->server), path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new(method, url);
+	Result result;
+	memset(&result, 0, sizeof(result));
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (xff != NULL)
+		soup_message_headers_replace(soup_message_get_request_headers(message), "X-Forwarded-For", xff);
+	if (body != NULL)
+	{
+		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
+		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, http_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	if (out) *out = g_strndup(g_bytes_get_data(result.bytes, NULL), g_bytes_get_size(result.bytes));
+	g_bytes_unref(result.bytes);
+	return soup_message_get_status(message);
+}
 static void cli_done(GObject *source, GAsyncResult *result, gpointer data)
 {
 	Result *r = data;
@@ -200,11 +223,72 @@ static void test_booking_page(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(request(f, "POST", "/book/intro", "{\"start\":\"\",\"name\":\"\",\"email\":\"\"}", NULL), ==, 422);
 }
 
+/* A stranger's X-Forwarded-For does not mint a new bucket. /book and manage share that rule. */
+static void test_booking_untrusted_ignores_forwarded(Fixture *f, gconstpointer unused)
+{
+	(void)unused;
+	g_object_set(f->config, "security-login-rate-limit", (gint64)2, NULL);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.10", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.11", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.12", NULL, NULL), ==, 429);
+	/* Manage shares the spent peer bucket; a spoofed hop does not open a new one. */
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody/manage/nope", "203.0.113.20", NULL, NULL), ==, 429);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody/manage/nope", "203.0.113.21", NULL, NULL), ==, 429);
+}
+
+/* A configured relay's last X-Forwarded-For hop is the limiter key and the audit address. */
+static void test_booking_relay_limits_by_visitor(Fixture *f, gconstpointer unused)
+{
+	const gchar *relays[] = { "127.0.0.1", NULL };
+	g_autoptr(VentureEntity) page = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) entries = NULL;
+	g_autofree gchar *json = NULL, *created = NULL, *body = NULL, *first = NULL, *address = NULL;
+	g_autoptr(JsonNode) slots = NULL;
+	(void)unused;
+	g_object_set(f->config, "security-login-rate-limit", (gint64)2,
+		"security-booking-trusted-relays", relays, NULL);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.10", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.10", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.10", NULL, NULL), ==, 429);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.11", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "198.51.100.1, 203.0.113.11", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "198.51.100.1, 203.0.113.11", NULL, NULL), ==, 429);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.12", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.12, not-an-address", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "not-an-address", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", NULL, NULL, NULL), ==, 429);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/nobody", "203.0.113.10", NULL, NULL), ==, 429);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/relay/manage/nope", "203.0.113.40", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/relay/manage/nope", "203.0.113.40", NULL, NULL), ==, 404);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/relay/manage/nope", "203.0.113.40", NULL, NULL), ==, 429);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/relay/manage/nope", "203.0.113.41", NULL, NULL), ==, 404);
+	page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org, "title", "Relay call", "slug", "relay", "owner", "ben",
+		"duration-minutes", (gint64)30, "buffer-minutes", (gint64)0, "timezone", "UTC",
+		"availability", "{\"mon\":\"00:00-24:00\",\"tue\":\"00:00-24:00\",\"wed\":\"00:00-24:00\",\"thu\":\"00:00-24:00\",\"fri\":\"00:00-24:00\",\"sat\":\"00:00-24:00\",\"sun\":\"00:00-24:00\"}",
+		"horizon-days", (gint64)3, "active", TRUE, NULL);
+	save(f, page);
+	g_assert_cmpuint(request_xff(f, "GET", "/book/relay?format=json", "203.0.113.50", NULL, &json), ==, 200);
+	slots = json_from_string(json, NULL);
+	first = g_strdup(venture_json_object_get_string(json_array_get_object_element(json_node_get_array(slots), 0), "start", ""));
+	body = g_strdup_printf("{\"start\":\"%s\",\"name\":\"Pat Example\",\"email\":\"pat@example.com\"}", first);
+	g_assert_cmpuint(request_xff(f, "POST", "/book/relay", "198.51.100.1, 203.0.113.50", body, &created), ==, 201);
+	query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
+	venture_query_add_filter_string(query, "target-type", VENTURE_FILTER_OP_EQ, "activity", NULL);
+	entries = venture_database_find(f->db, query, NULL);
+	g_assert_nonnull(entries);
+	g_assert_cmpuint(entries->len, >=, 1);
+	g_object_get(g_ptr_array_index(entries, 0), "ip-address", &address, NULL);
+	g_assert_cmpstr(address, ==, "203.0.113.50");
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/calendar-surfaces/cli-sync", Fixture, NULL, setup, test_cli_sync, teardown);
 	g_test_add("/calendar-surfaces/api-guards", Fixture, NULL, setup, test_api_guards, teardown);
 	g_test_add("/calendar-surfaces/booking-page", Fixture, NULL, setup, test_booking_page, teardown);
+	g_test_add("/calendar-surfaces/booking-untrusted-forwarded", Fixture, NULL, setup, test_booking_untrusted_ignores_forwarded, teardown);
+	g_test_add("/calendar-surfaces/booking-relay", Fixture, NULL, setup, test_booking_relay_limits_by_visitor, teardown);
 	return g_test_run();
 }

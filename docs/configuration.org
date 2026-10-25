@@ -225,7 +225,9 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *server* — bind address, port, TLS, request limits
 - *metrics* — =access= (=off=): who may read =GET /metrics= -- =off=, =loopback=, =token= or =loopback_or_token=. See [[*Metrics][Metrics]] below
 - *database* — URI, pool size, automatic migration
-- *security* — authentication, sessions, password iterations, rate limit
+- *security* — authentication, sessions, password iterations, rate limit.
+  =booking_trusted_relays= (empty) is the socket addresses whose last
+  =X-Forwarded-For= hop keys public booking limits; see [[file:calendar.org][Scheduling links]]
 - *locale* — currency, timezone, fiscal year start
 - *ai* — provider, model, policy, auto-approved tools, prompt extras, and
   the confirmation queue (see below)

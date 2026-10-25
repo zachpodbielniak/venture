@@ -140,6 +140,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        8, "Shortest password accepted when one is set or changed"),
 	VC_INT ("security-login-rate-limit", "security", "login_rate_limit", 10,
 	        "Sign-in attempts allowed per address per minute; 0 disables"),
+	VC_STRV("security-booking-trusted-relays", "security", "booking_trusted_relays",
+	        "Socket addresses allowed to supply the visitor for public booking limits; empty trusts none"),
 
 	/* Preserve legacy embedding settings for migration; explicit encrypted
 	 * organization bindings authorize every actual embedding request. */
