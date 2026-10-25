@@ -116,8 +116,11 @@ static void setup(Fixture *f, gconstpointer data)
 	f->config = venture_config_new();
 	g_object_set(f->config, "state-dir", f->state, "server-port", (gint64)f->port,
 		"security-require-auth", FALSE, "server-max-request-size-mb", (gint64)1,
-		"server-request-timeout", (gint64)(data == GINT_TO_POINTER(2) ? 5 : 1), "server-max-connections", (gint64)2, "server-max-buffered-request-mb", (gint64)1, NULL);
-	f->tls = data == GINT_TO_POINTER(1);
+		"server-request-timeout", (gint64)((data == GINT_TO_POINTER(2) || data == GINT_TO_POINTER(3)) ? 5 : 1), "server-max-connections", (gint64)2, "server-max-buffered-request-mb", (gint64)1, NULL);
+	/* The first successful TLS request may initialize the TLS backend.
+	 * Give that functional test room under load; deadline/stall tests
+	 * retain their one-second budget. */
+	f->tls = data == GINT_TO_POINTER(1) || data == GINT_TO_POINTER(3);
 	if (f->tls)
 	{
 		g_autofree gchar *cert = g_canonicalize_filename("tests/fixtures/federation/tls-cert.pem", NULL);
@@ -480,7 +483,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/idle", Fixture, NULL, setup, test_idle, teardown);
 	g_test_add("/http-limits/idle-after-error", Fixture, NULL, setup, test_idle_after_error, teardown);
 	g_test_add_func("/http-limits/invalid-before-binding", test_invalid);
-	g_test_add("/http-limits/tls-ordinary", Fixture, GINT_TO_POINTER(1), setup, test_ordinary, teardown);
+	g_test_add("/http-limits/tls-ordinary", Fixture, GINT_TO_POINTER(3), setup, test_ordinary, teardown);
 	g_test_add("/http-limits/tls-declared", Fixture, GINT_TO_POINTER(1), setup, test_declared, teardown);
 	g_test_add("/http-limits/tls-slow-body", Fixture, GINT_TO_POINTER(1), setup, test_slow_body, teardown);
 	g_test_add("/http-limits/connections-and-neighbor", Fixture, GINT_TO_POINTER(2), setup, test_connections, teardown);

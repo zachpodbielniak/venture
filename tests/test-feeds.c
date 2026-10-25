@@ -2714,7 +2714,11 @@ test_feeds_window_is_written_not_dropped(
 
 	(void)user_data;
 
-	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15, NULL);
+	/* This test observes window closure, not the daily upkeep job.
+	 * Do not let wall-clock time insert an unrelated log message while
+	 * the provider-removal diagnostic is expected. */
+	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15,
+	             "series-upkeep-hour", (gint64)-1, NULL);
 	scripted_add(&fixture->http, "/first.json", 200, auction_body);
 	scripted_add(&fixture->http, "/second.json", 200, auction_body);
 	first = http_settings(fixture, "/first.json", NULL);

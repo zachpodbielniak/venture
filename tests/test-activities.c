@@ -739,14 +739,27 @@ test_related_prefill_and_open(Fixture *f, gconstpointer data)
 	open_link = g_strdup_printf("href=\"/e/activity/%" G_GINT64_FORMAT "\"", venture_entity_get_id(open));
 	closed_link = g_strdup_printf("href=\"/e/activity/%" G_GINT64_FORMAT "\"", venture_entity_get_id(closed));
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, open_link));
-	g_assert_null(strstr(body, closed_link));
+	/* Completed work belongs in the account's Last activity, but not
+	 * among the related activities still waiting to be done. */
+	{
+		const gchar *start = strstr(body, "<section class=\"card related-records\">");
+		const gchar *end;
+		g_autofree gchar *related = NULL;
+
+		g_assert_nonnull(start);
+		end = strstr(start, "</section>");
+		g_assert_nonnull(end);
+		related = g_strndup(start, (gsize)(end - start));
+		g_assert_nonnull(strstr(related, open_link));
+		g_assert_null(strstr(related, closed_link));
+		g_assert_nonnull(strstr(body, closed_link));
+	}
 	g_clear_pointer(&body, g_free);
 	g_clear_pointer(&path, g_free);
 	path = g_strdup_printf("/e/activity/new?company_id=%" G_GINT64_FORMAT, venture_entity_get_id(VENTURE_ENTITY(company)));
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, &body), ==, 200);
 	{
-		const gchar *field = strstr(body, "<select name=\"company-id\">");
+		const gchar *field = strstr(body, "<select name=\"company-id\"");
 		const gchar *end;
 		g_autofree gchar *options = NULL;
 		g_autofree gchar *selected = g_strdup_printf("value=\"%" G_GINT64_FORMAT "\" selected", venture_entity_get_id(VENTURE_ENTITY(company)));
