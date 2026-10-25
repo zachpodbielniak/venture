@@ -22,6 +22,23 @@ G_DECLARE_FINAL_TYPE(VentureMailOutbox, venture_mail_outbox, VENTURE, MAIL_OUTBO
  */
 VentureMailOutbox *venture_mail_outbox_new(VentureDatabase *database, VentureMailer *mailer);
 /**
+ * venture_mail_outbox_create_external_user:
+ * @self: canonical database outbox
+ * @user: unsaved passwordless user provisioned by an external service
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): validation or persistence failure
+ *
+ * Saves through the ordinary database validation and access checks, omitting
+ * only the Venture welcome because the provisioning service owns onboarding.
+ * Existing users and password-bearing users are refused. Later ordinary
+ * password changes still queue their security notification. The exception
+ * applies only to this save, including when persistence fails.
+ *
+ * Returns: whether the user was saved
+ */
+gboolean venture_mail_outbox_create_external_user(VentureMailOutbox *self,
+	VentureEntity *user, const VentureActor *actor, GError **error);
+/**
  * venture_mail_outbox_enqueue:
  * @self: outbox
  * @message: unsaved message with organization and idempotency key

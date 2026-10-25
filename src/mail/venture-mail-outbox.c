@@ -508,6 +508,23 @@ gboolean venture_mail_outbox_retry(VentureMailOutbox *self, gint64 org, gint64 i
 	return save(self, row, actor, error);
 }
 
+gboolean venture_mail_outbox_create_external_user(VentureMailOutbox *self,
+	VentureEntity *user, const VentureActor *actor, GError **error)
+{
+	g_autofree gchar *password = NULL;
+	gboolean saved;
+	g_return_val_if_fail(VENTURE_IS_MAIL_OUTBOX(self), FALSE);
+	if (!VENTURE_IS_USER(user) || venture_entity_get_id(user) != 0)
+		return refuse(error, "External provisioning requires a new passwordless user");
+	g_object_get(user, "password-hash", &password, NULL);
+	if (!venture_string_is_empty(password) || self->user_permit != NULL)
+		return refuse(error, "External provisioning requires a new passwordless user");
+	self->user_permit = user;
+	saved = venture_database_save(self->database, user, actor, error);
+	self->user_permit = NULL;
+	return saved;
+}
+
 gboolean venture_mail_save_user(VentureMailOutbox *self, VentureEntity *user, const VentureActor *actor, gboolean *handled, GError **error)
 {
 	g_autoptr(VentureEntity) previous = NULL, original = NULL;

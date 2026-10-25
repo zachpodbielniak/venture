@@ -892,6 +892,31 @@ test_business_takes_money(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 }
 
+/* Lightsite owns its welcome email; neither provisioning nor a retry may
+ * introduce a second, unrelated Venture welcome into this business. */
+static void
+test_no_venture_welcome(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *payload = body_for("signup:mail-1", "mail.owner@example.test", "kc-sub-mail", "Example Mail");
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) messages = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GError) error = NULL;
+	gint64 business;
+	guint i;
+	(void)data;
+	for (i = 0; i < 2; i++) {
+		g_clear_pointer(&result, json_node_unref);
+		result = signup(f, payload, i ? 200 : 201);
+		business = json_object_get_int_member(json_node_get_object(result), "organization_id");
+		internal = venture_access_policy_enter(venture_database_get_access_policy(f->db), NULL);
+		venture_query_set_organization(messages, business);
+		g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 0);
+		g_assert_no_error(error);
+		g_clear_object(&internal);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -899,6 +924,7 @@ main(int argc, char **argv)
 	g_test_add("/signup/person-names", Fixture, NULL, setup, test_person_names, teardown);
 	g_test_add("/signup/required-names", Fixture, NULL, setup, test_required_names, teardown);
 	g_test_add("/lightsite-signup/creates-owner", Fixture, NULL, setup, test_creates_owner, teardown);
+	g_test_add("/lightsite-signup/no-venture-welcome", Fixture, NULL, setup, test_no_venture_welcome, teardown);
 	g_test_add("/lightsite-signup/business-takes-money", Fixture, NULL, setup, test_business_takes_money, teardown);
 	g_test_add("/lightsite-signup/links-existing", Fixture, NULL, setup, test_links_existing, teardown);
 	g_test_add("/lightsite-signup/replay", Fixture, NULL, setup, test_replay, teardown);
