@@ -187,6 +187,15 @@ organization. Use a scheduled rule, after business transactions commit.
 Inbound mail has its own handler, =venture->mail_sync=; see Inbound,
 Running it.
 
+A hosted workspace (=hosted.enabled: true=) needs no rule. Hosted mode
+does not start the automation engine, so no rule can run there. Instead
+the server sweeps the outbox of every active business every five seconds,
+the same bounded delivery =POST /api/v1/mail/deliver= runs. A business
+with no mail account yet is skipped: its mail stays =queued= and goes out
+once the account is set up, rather than failing. The sweep is
+=venture_mail_delivery_sweep()=; its timer runs only in hosted mode, and
+only while no automation engine is attached.
+
 * Invoices and receipts
 
 Sending an invoice attaches it as a PDF (=Invoice INV-0041.pdf=), drawn by
@@ -890,3 +899,28 @@ enqueue path calls that same function. =test-mail-preview= holds the
 preview to the stored row for invoices, quotes, reminders and campaigns,
 covers each check passing and failing, the private-link rule, the test
 send and the page's access and frames.
+
+* Support mailbox and tickets
+
+On a shared mail account, turn on =Create support tickets= and sync its
+support folder or inbox. Use a dedicated address. A new human message
+creates one external ticket with its subject as the title, its plain-text
+body as the first public comment, the matched contact when one exists, and
+its original sender address for replies. An unknown sender also appears in
+the unmatched-senders list. MIME attachments remain document records linked
+to the ticket. Ordinary ticket routing and service-level rules apply.
+
+A reply joins the ticket through a =[#ticket-number]= subject reference or
+an =In-Reply-To=/=References= Message-ID from mail already filed there. The
+message must arrive through the same support account and from the same
+requester. Replies to a completed ticket reopen it. The message's UID and
+Message-ID deduplication prevent a repeated sync or a copy in another
+folder from adding another comment. Automatic mail, mailing lists and the
+account's own sent mail do not create tickets.
+
+Saving a public staff comment queues one outbox message in the same
+transaction. The subject includes the ticket number and the message answers
+the latest inbound Message-ID. Internal notes stay inside Venture. Configure
+the organization's SMTP =From= to equal the support account address; a
+support reply with a different configured sender is refused at delivery.
+The queue is durable; syncing and commenting do not make a network send.

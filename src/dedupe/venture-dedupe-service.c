@@ -676,6 +676,33 @@ repoint_references(VentureDedupeService *self, const gchar *kind, gint64 survivo
 	}
 	return TRUE;
 }
+/* A record type that nests -- a company's parent account -- names its own
+ * kind. The survivor was read before the references were re-pointed, so a
+ * survivor that hung under the loser still names the loser, and one that
+ * took the loser's parent may now name itself. It takes the loser's place:
+ * the loser's parent, or none. */
+static void
+fold_own_kind(VentureEntity *survivor, VentureEntity *loser, const gchar *kind, gint64 survivor_id, gint64 loser_id)
+{
+	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(survivor);
+	guint i;
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		const gchar *name = venture_field_spec_get_name(spec);
+		gint64 value = 0;
+		if (field_is_machinery(spec) ||
+		    venture_field_spec_get_kind(spec) != VENTURE_FIELD_KIND_REFERENCE ||
+		    g_strcmp0(venture_field_spec_get_reference_type(spec), kind) != 0)
+			continue;
+		g_object_get(survivor, name, &value, NULL);
+		if (value == loser_id)
+			g_object_get(loser, name, &value, NULL);
+		if (value == survivor_id || value == loser_id)
+			value = 0;
+		g_object_set(survivor, name, value, NULL);
+	}
+}
 /* Fill what the survivor lacks; keep what it has, noting the loser's. */
 static void
 union_fields(VentureEntity *survivor, VentureEntity *loser, JsonObject *took, JsonObject *kept)
@@ -788,6 +815,7 @@ venture_dedupe_service_merge_records(VentureDedupeService *self, const gchar *ki
 
 	if (!repoint_references(self, kind, survivor_id, loser_id, repointed, error)) goto fail;
 	union_fields(survivor, loser, took, kept);
+	fold_own_kind(survivor, loser, kind, survivor_id, loser_id);
 	if (!venture_database_save(self->database, survivor, actor, error)) goto fail;
 
 	/* The note is the human-readable half of the audit entry, on the

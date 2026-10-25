@@ -210,3 +210,43 @@ revision. It does not copy the customer's billing address. Existing quotes
 remain unspecified after migration =000943_quote_service_address=; the
 paired backend scripts verify the additive column. A new linked job uses
 this address unless the job or its selected property supplies one.
+
+* Built-in discount approval
+
+An owner can enable =quotes.discount-approval= in Settings, then set
+=quotes.max-line-discount-percent= (0–100) and
+=quotes.discount-approver= (=owner=, the default, or =admin=). These are
+organization settings shared by the web, settings API and CLI. The role
+means a global owner, or a global administrator/owner respectively. This
+policy limits each line's percentage; it does not set a currency amount
+limit. It is disabled by default, including on upgraded databases.
+
+A line strictly above the limit makes Send or Share link queue an approval
+instead of issuing the quote. Exactly at the limit sends directly. The
+quote page says Pending discount approval, and eligible active approvers
+receive an inbox notification. API sends return 202 with =staged=true= and
+the existing confirmation; =venturectl quote send ID= reports that it is
+waiting. Nothing is mailed and no customer link is issued before approval.
+
+The quote page offers Approve quote and Reject discount, with a required
+rejection reason. The same decisions are
+=POST /api/v1/confirmations/ID/approve= and
+=POST /api/v1/confirmations/ID/reject=; rejection accepts JSON
+={"reason":"Discount exceeds margin"}=. The authenticated quote author
+and the person requesting approval cannot decide their own request, even
+when they are owners. Repeating an approval cannot send twice.
+
+The existing confirmation queue holds the pending action; the underlying
+quote remains an editable draft. Editing it invalidates the version that
+was submitted: the approver must request a fresh proposal. A new revision
+has its own author and must obtain approval again if still above the
+limit. Rejection leaves the quote in draft and records the reason. History
+records the request, decision time, deciding user and threshold that
+triggered approval. Old quotes have no invented author; their authenticated
+proposer still cannot approve the request.
+
+Pending requests use the confirmation queue's existing expiration and
+capacity. They are in memory and expire or disappear on restart; request
+approval again from the draft. Recorded history and notifications remain.
+The =before-action= hook enforces this policy for every quote writer;
+custom policy hooks still run on an approved send.

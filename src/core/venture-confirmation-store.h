@@ -19,8 +19,9 @@
  *
  * Two properties are the whole point, and both are load-bearing:
  *
- *   - Staging changes nothing. The record is built and validated in memory
- *     and the database is not touched until an approval.
+ *   - Staging does not apply the proposed mutation. Policy workflows may
+ *     record a pending request and notify approvers, but the staged action
+ *     itself is not applied until approval.
  *
  *   - Approval applies the staged object, so it cannot produce a different
  *     outcome from the diff that was shown. It also cannot overwrite work
@@ -309,6 +310,24 @@ VentureConfirmation *venture_confirmation_store_stage_deal_move(
 	VentureConfirmationStore *self, VentureDeal *deal, gint64 stage_id,
 	const gchar *note, const VentureActor *actor, const gchar *via, GError **error);
 
+/**
+ * venture_confirmation_store_reject_with_reason:
+ * @self: queue
+ * @id: confirmation identifier
+ * @approver: (nullable): audit name
+ * @reason: (nullable): required for discount rejection
+ * @error: (out) (optional): refusal
+ * Returns: TRUE if rejected
+ */
+gboolean venture_confirmation_store_reject_with_reason(VentureConfirmationStore *self,
+	const gchar *id, const gchar *approver, const gchar *reason, GError **error);
+/**
+ * venture_confirmation_store_find_quote_discount:
+ * @self: queue
+ * @quote: current quote snapshot
+ * Returns: (transfer none) (nullable): visible pending discount for this version
+ */
+VentureConfirmation *venture_confirmation_store_find_quote_discount(VentureConfirmationStore *self, VentureEntity *quote);
 G_END_DECLS
 
 #endif /* VENTURE_CONFIRMATION_STORE_H */

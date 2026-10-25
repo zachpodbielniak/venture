@@ -77,6 +77,7 @@ static void ensure_registered(void)
 		venture_telephony_settings_register();
 		venture_inbox_settings_register();
 		venture_ai_messages_settings_register();
+		venture_quotes_settings_register();
 		g_once_init_leave(&done, 1);
 	}
 }

@@ -6,6 +6,10 @@ The =sequences= module requires =crm=. Its five records are =sequence=,
 =sequence_step=, =sequence_enrollment=, =sequence_delivery= and =suppression=.
 Their fields drive the ordinary record surfaces. A sequence belongs to one
 organization; its contacts, steps and optional deal must belong there too.
+An enrollment with a deal names somebody on the deal: its own contact or
+anyone with a role on it. One that names the deal and no contact goes to
+the deal's primary contact (see [[file:pipelines.org][Contact roles]]), and
+is refused when the deal has nobody.
 The optional =lead_id= is an external identifier, with no dependency on a
 lead module.
 

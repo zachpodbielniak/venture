@@ -929,6 +929,7 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_books_import_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_books_import_row_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_deal_line_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deal_contact_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sequence_link_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_sequence_tracking_event_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_duplicate_candidate_get_type, VENTURE_DATA_CLASS_TENANT },
@@ -989,6 +990,8 @@ venture_entity_registry_register_builtins(VentureEntityRegistry *self)
 		{ venture_property_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_equipment_get_type, VENTURE_DATA_CLASS_TENANT },
 		{ venture_maintenance_plan_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_competitor_get_type, VENTURE_DATA_CLASS_TENANT },
+		{ venture_deal_competitor_get_type, VENTURE_DATA_CLASS_TENANT },
 
 
 	};

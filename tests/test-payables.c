@@ -1339,6 +1339,65 @@ test_prepared_action_approval(Fixture *f, gconstpointer data)
 }
 
 
+/* The test instant's date in the process zone and in one of these two zones
+ * differ (one is twelve hours behind UTC, the other fourteen ahead), so the
+ * returned zone's "today" provably differs from the process date. */
+static const gchar *
+zone_with_other_date(GDateTime *local_today)
+{
+	static const gchar *const zones[] = { "Etc/GMT+12", "Pacific/Kiritimati" };
+	gsize i;
+	for (i = 0; i < G_N_ELEMENTS(zones); i++)
+	{
+		g_autoptr(GTimeZone) zone = g_time_zone_new_identifier(zones[i]);
+		g_autoptr(GDateTime) today = NULL;
+		g_assert_nonnull(zone);
+		today = venture_time_today(zone);
+		if (!venture_time_equal(today, local_today)) return zones[i];
+	}
+	g_assert_not_reached();
+	return NULL;
+}
+
+static void
+test_business_zone_date(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GDateTime) local_today = venture_time_today(NULL);
+	const gchar *name = zone_with_other_date(local_today);
+	g_autoptr(GTimeZone) zone = g_time_zone_new_identifier(name);
+	g_autoptr(GDateTime) today = venture_time_today(zone);
+	g_autoptr(GDateTime) tomorrow = g_date_time_add_days(today, 1);
+	g_autoptr(GDateTime) service_today = NULL;
+	g_autoptr(GDateTime) implicit = NULL;
+	g_autoptr(VentureEntity) b = bill(f, "ZONE");
+	g_autoptr(VentureEntity) request = NULL;
+	g_autoptr(GError) error = NULL;
+	VenturePayablesService *service = venture_payables_service_get(f->db);
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "payables-test";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	g_object_set(f->config, "locale-timezone", name, NULL);
+	approve(f, b);
+	service_today = venture_payables_service_today(service);
+	g_assert_true(venture_time_equal(service_today, today));
+	/* An implicit pay date is the business zone's date, not the process's. */
+	request = venture_payables_service_prepare_action(service, venture_entity_get_id(b), "pay", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(request);
+	g_object_get(request, "date", &implicit, NULL);
+	g_assert_true(venture_time_equal(implicit, today));
+	g_assert_false(venture_time_equal(implicit, local_today));
+	/* A calendar date after the business date is refused on either side of
+	 * UTC; the business date itself is allowed, east of UTC included. */
+	g_assert_false(venture_payables_service_settle_bill(service, venture_entity_get_id(b), tomorrow, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	g_assert_true(venture_payables_service_settle_bill(service, venture_entity_get_id(b), today, &actor, &error));
+	g_assert_no_error(error);
+	status(f, b, "paid");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1370,5 +1429,6 @@ main(int argc, char **argv)
 	g_test_add("/payables/no-due-and-cutoff", Fixture, NULL, setup, test_no_due_and_cutoff, teardown);
 	g_test_add_func("/payables/disabled-migration-restart", test_disabled_migration);
 	g_test_add("/payables/organization-uniqueness", Fixture, NULL, setup, test_organization_uniqueness, teardown);
+	g_test_add("/payables/business-zone-date", Fixture, NULL, setup, test_business_zone_date, teardown);
 	return g_test_run();
 }

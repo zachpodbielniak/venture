@@ -67,7 +67,9 @@ cannot be sent again. Viewers can read the card but not approve.
 
 *Draft a reply* asks for a new draft for their latest message; *Draft a
 follow-up* (on the card, on a contact and on a deal) drafts a follow-up and
-suggests a next step.
+suggests a next step. From a deal it goes to the deal's primary contact, or
+to the deal's own contact when nobody on it is marked primary (see
+[[file:pipelines.org][Contact roles]]).
 
 * What the AI never does
 

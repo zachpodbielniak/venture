@@ -879,6 +879,9 @@ http(SoupSession *session, const gchar *base, const gchar *method, const gchar *
 	HttpResult r = { FALSE, NULL, NULL };
 	guint code;
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	if (g_object_get_data(G_OBJECT(session), "quote-test-bearer") != NULL)
+		soup_message_headers_replace(soup_message_get_request_headers(message), "Authorization",
+			g_object_get_data(G_OBJECT(session), "quote-test-bearer"));
 	if (body != NULL)
 	{
 		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
@@ -1221,11 +1224,330 @@ test_percentage_parts(Fixture *f, gconstpointer data)
 	g_assert_cmpint(venture_money_get_amount(total), ==, 9450);
 }
 
+/* The discount gate uses the ordinary confirmation queue, including for a
+ * generic quote_action save. No sent evidence may precede approval. */
+static void
+test_discount_approval(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureSettingValue) enabled = NULL;
+	g_autoptr(VentureSettingValue) threshold = NULL;
+	g_autoptr(VentureEntity) q = NULL;
+	g_autoptr(VentureEntity) l = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autoptr(GPtrArray) deliveries = NULL;
+	g_autoptr(VentureEntity) author = g_object_new(VENTURE_TYPE_USER,
+		"username", "quote-author", "active", TRUE, "role", VENTURE_USER_ROLE_OWNER, NULL);
+	g_autoptr(VentureEntity) approver = g_object_new(VENTURE_TYPE_USER,
+		"username", "quote-approver", "active", TRUE, "role", VENTURE_USER_ROLE_OWNER, NULL);
+	g_autofree gchar *confirmation_id = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	VentureAuthPrincipal principal = {0};
+	gint scenario = GPOINTER_TO_INT(data);
+	save(f, author);
+	save(f, approver);
+	principal.authenticated = TRUE;
+	principal.user_id = venture_entity_get_id(author);
+	principal.role = VENTURE_USER_ROLE_OWNER;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	enabled = venture_settings_set(f->context, f->org, "quotes.discount-approval", "true", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(enabled);
+	threshold = venture_settings_set(f->context, f->org, "quotes.max-line-discount-percent", scenario == 3 ? "10" : "5", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(threshold);
+	if (scenario == 7)
+	{
+		g_autoptr(VentureSettingValue) role = venture_settings_set(f->context, f->org,
+			"quotes.discount-approver", "admin", NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(role);
+	}
+	q = quote(f, "Discount approval");
+	l = line(f, q);
+	g_assert_cmpint(integer(q, "author-user-id"), ==, venture_entity_get_id(author));
+	{
+		g_autoptr(VentureEntity) forged = fresh(f, "quote", venture_entity_get_id(q));
+		g_object_set(forged, "author-user-id", venture_entity_get_id(approver), NULL);
+		g_assert_false(venture_database_save(f->db, forged, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+		g_clear_error(&error);
+	}
+	if (scenario == 3)
+	{
+		action(f, q, "send");
+		status(f, q, "sent");
+		pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(f->context));
+		g_assert_cmpuint(pending->len, ==, 0);
+		return;
+	}
+	g_assert_false(try_action(f, q, scenario == 4 ? "share" : "send", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AI_CONFIRMATION_REQUIRED);
+	g_clear_error(&error);
+	status(f, q, "draft");
+	deliveries = rows(f, "quote_delivery");
+	g_assert_cmpuint(deliveries->len, ==, 0);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(f->context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	confirmation_id = g_strdup(venture_confirmation_get_id(g_ptr_array_index(pending, 0)));
+	g_assert_false(venture_confirmation_store_approve_as(venture_context_get_confirmations(f->context),
+		venture_confirmation_get_id(g_ptr_array_index(pending, 0)), "quote-author", VENTURE_USER_ROLE_OWNER, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+	g_clear_error(&error);
+	status(f, q, "draft");
+	if (scenario == 0)
+	{
+		g_autoptr(VentureEntity) generic = request(f, q, "send");
+		VentureConfirmation *proposal = venture_confirmation_store_stage(venture_context_get_confirmations(f->context),
+			VENTURE_AUDIT_ACTION_CREATE, generic, NULL, NULL, "api", &error);
+		g_autofree gchar *generic_id = NULL;
+		g_assert_no_error(error);
+		g_assert_nonnull(proposal);
+		generic_id = g_strdup(venture_confirmation_get_id(proposal));
+		g_assert_false(venture_confirmation_store_approve_as(venture_context_get_confirmations(f->context),
+			generic_id, "forged approver", VENTURE_USER_ROLE_OWNER, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AI_CONFIRMATION_REQUIRED);
+		g_clear_error(&error);
+		status(f, q, "draft");
+		g_assert_true(venture_confirmation_store_reject(venture_context_get_confirmations(f->context), generic_id, "quote-author", &error));
+		g_assert_no_error(error);
+	}
+	/* Retrying a send must retain one request and one notification. */
+	g_assert_false(try_action(f, q, scenario == 4 ? "share" : "send", &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AI_CONFIRMATION_REQUIRED);
+	g_clear_error(&error);
+	g_clear_pointer(&pending, g_ptr_array_unref);
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(f->context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	{
+		g_autoptr(GPtrArray) notices = rows(f, "notification");
+		g_assert_cmpuint(notices->len, ==, 1);
+		g_assert_cmpint(integer(g_ptr_array_index(notices, 0), "user-id"), ==, venture_entity_get_id(approver));
+	}
+	if (scenario == 1 || scenario == 6)
+	{
+		g_autoptr(VentureEntity) current = fresh(f, "quote_line", venture_entity_get_id(l));
+		if (scenario == 6) g_object_set(current, "description", "Changed scope of work", NULL);
+		else field(current, "discount-percent", "20");
+		save(f, current);
+	}
+	g_clear_object(&scope);
+	principal.user_id = venture_entity_get_id(approver);
+	if (scenario == 7) principal.role = VENTURE_USER_ROLE_ADMIN;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	if (scenario != 7)
+	{
+		g_autoptr(VentureAccessScope) limited = NULL;
+		VentureAuthPrincipal administrator = principal;
+		administrator.role = VENTURE_USER_ROLE_ADMIN;
+		limited = venture_access_policy_enter(venture_database_get_access_policy(f->db), &administrator);
+		g_assert_false(venture_confirmation_store_approve_as(venture_context_get_confirmations(f->context),
+			confirmation_id, "quote-approver", VENTURE_USER_ROLE_OWNER, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+		g_clear_error(&error);
+	}
+	if (scenario == 1 || scenario == 6)
+	{
+		g_assert_false(venture_confirmation_store_approve_as(venture_context_get_confirmations(f->context),
+			confirmation_id, "quote-approver", VENTURE_USER_ROLE_OWNER, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+		status(f, q, "draft");
+		return;
+	}
+	if (scenario == 2)
+	{
+		g_assert_false(venture_confirmation_store_reject(venture_context_get_confirmations(f->context),
+			confirmation_id, "quote-approver", &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		g_assert_true(venture_confirmation_store_reject_with_reason(venture_context_get_confirmations(f->context),
+			confirmation_id, "quote-approver", "Discount exceeds margin", &error));
+		g_assert_no_error(error);
+		status(f, q, "draft");
+		return;
+	}
+	g_assert_true(venture_confirmation_store_approve_as(venture_context_get_confirmations(f->context),
+		confirmation_id, "quote-approver", VENTURE_USER_ROLE_OWNER, &error));
+	g_assert_no_error(error);
+	status(f, q, "sent");
+	g_assert_false(venture_confirmation_store_approve_as(venture_context_get_confirmations(f->context),
+		confirmation_id, "quote-approver", VENTURE_USER_ROLE_OWNER, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_clear_error(&error);
+	g_clear_pointer(&deliveries, g_ptr_array_unref);
+	deliveries = rows(f, "quote_delivery");
+	g_assert_cmpuint(deliveries->len, ==, 1);
+	{
+		g_autoptr(VentureEntity) revision = request(f, q, "revise");
+		g_autoptr(VentureEntity) next = NULL;
+		save(f, revision);
+		next = fresh(f, "quote", integer(revision, "result-quote-id"));
+		g_assert_false(try_action(f, next, "send", &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_AI_CONFIRMATION_REQUIRED);
+		status(f, next, "draft");
+	}
+}
+
+static void
+test_discount_http(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) author = g_object_new(VENTURE_TYPE_USER, "username", "http-author", "active", TRUE, "role", VENTURE_USER_ROLE_OWNER, NULL);
+	g_autoptr(VentureEntity) approver = g_object_new(VENTURE_TYPE_USER, "username", "http-approver", "active", TRUE, "role", VENTURE_USER_ROLE_OWNER, NULL);
+	g_autoptr(VentureApiToken) author_token = venture_api_token_new();
+	g_autoptr(VentureApiToken) approver_token = venture_api_token_new();
+	g_autofree gchar *author_secret = venture_api_token_generate(author_token);
+	g_autofree gchar *approver_secret = venture_api_token_generate(approver_token);
+	g_autofree gchar *author_bearer = g_strconcat("Bearer ", author_secret, NULL);
+	g_autofree gchar *approver_bearer = g_strconcat("Bearer ", approver_secret, NULL);
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(VentureSettingValue) setting = NULL;
+	g_autoptr(VentureEntity) q = NULL;
+	g_autoptr(VentureEntity) l = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = soup_session_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *dir = g_dir_make_tmp("venture-discount-http-XXXXXX", NULL);
+	g_autofree gchar *base = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *decision_path = NULL;
+	VentureAuthPrincipal principal = {0};
+	VentureConfirmation *pending;
+	g_autoptr(GPtrArray) deliveries = NULL;
+	(void)data;
+	save(f, author);
+	save(f, approver);
+	g_object_set(author_token, "name", "test-author", "user-id", venture_entity_get_id(author), "role", VENTURE_USER_ROLE_OWNER, NULL);
+	g_object_set(approver_token, "name", "test-approver", "user-id", venture_entity_get_id(approver), "role", VENTURE_USER_ROLE_OWNER, NULL);
+	save(f, VENTURE_ENTITY(author_token));
+	save(f, VENTURE_ENTITY(approver_token));
+	principal.authenticated = TRUE;
+	principal.user_id = venture_entity_get_id(author);
+	principal.role = VENTURE_USER_ROLE_OWNER;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(f->db), &principal);
+	setting = venture_settings_set(f->context, f->org, "quotes.discount-approval", "true", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(setting);
+	q = quote(f, "HTTP approval");
+	l = line(f, q);
+	g_clear_object(&scope);
+	g_object_set(f->config, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
+		"security-require-auth", TRUE, "state-dir", dir, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	base = g_strdup_printf("http://127.0.0.1:%u", venture_web_server_get_port(server));
+	path = g_strdup_printf("/api/v1/quotes/%" G_GINT64_FORMAT "/send", venture_entity_get_id(q));
+	g_object_set_data(G_OBJECT(session), "quote-test-bearer", author_bearer);
+	g_assert_cmpuint(http(session, base, "POST", path, "{}", &body), ==, 202);
+	g_assert_nonnull(strstr(body, "staged"));
+	g_clear_pointer(&body, g_free);
+	g_clear_object(&q);
+	q = fresh(f, "quote", integer(l, "quote-id"));
+	{
+		g_autofree gchar *edit_path = g_strdup_printf("/e/quote/%" G_GINT64_FORMAT "/edit", venture_entity_get_id(q));
+		g_autofree gchar *page_path = g_strdup_printf("/e/quote/%" G_GINT64_FORMAT, venture_entity_get_id(q));
+		g_assert_cmpuint(http(session, base, "GET", edit_path, NULL, &body), ==, 200);
+		g_assert_nonnull(strstr(body, "name=\"terms\""));
+		g_assert_null(strstr(body, "name=\"author-user-id\""));
+		g_clear_pointer(&body, g_free);
+		g_assert_cmpuint(http(session, base, "GET", page_path, NULL, &body), ==, 200);
+		g_assert_nonnull(strstr(body, "Pending discount approval"));
+		g_assert_nonnull(strstr(body, "approval threshold"));
+		g_clear_pointer(&body, g_free);
+	}
+	pending = venture_confirmation_store_find_quote_discount(venture_context_get_confirmations(f->context), q);
+	g_assert_nonnull(pending);
+	decision_path = g_strdup_printf("/api/v1/confirmations/%s/approve", venture_confirmation_get_id(pending));
+	g_assert_cmpuint(http(session, base, "POST", decision_path, "{}", &body), ==, 403);
+	g_clear_pointer(&body, g_free);
+	g_object_set_data(G_OBJECT(session), "quote-test-bearer", approver_bearer);
+	g_assert_cmpuint(http(session, base, "POST", decision_path, "{}", &body), ==, 200);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http(session, base, "POST", decision_path, "{}", &body), ==, 404);
+	status(f, q, "sent");
+	deliveries = rows(f, "quote_delivery");
+	g_assert_cmpuint(deliveries->len, ==, 1);
+	venture_web_server_stop(server);
+	g_clear_object(&server);
+	venture_test_remove_tree(dir);
+}
+
+static void
+test_discount_upgrade(void)
+{
+	g_autofree gchar *dir = g_dir_make_tmp("venture-discount-upgrade-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/data.db", dir);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) q = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 id, org_id;
+	guint i;
+	g_object_set(config, "state-dir", dir, NULL);
+	db = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	context = venture_context_new(config, db);
+	org_id = venture_context_get_default_organization_id(context);
+	q = g_object_new(VENTURE_TYPE_QUOTE, "number", "Retained draft", "currency", "USD", "organization-id", org_id, NULL);
+	g_assert_true(venture_database_save(db, q, NULL, &error));
+	g_assert_no_error(error);
+	id = venture_entity_get_id(q);
+	g_assert_true(venture_database_execute(db,
+		"DROP INDEX idx_quotes_author_user_id; ALTER TABLE quotes DROP COLUMN author_user_id;"
+		"ALTER TABLE organizations DROP COLUMN quote_discount_approval;"
+		"ALTER TABLE organizations DROP COLUMN quote_max_line_discount_percent;"
+		"ALTER TABLE organizations DROP COLUMN quote_discount_approver;"
+		"DELETE FROM schema_migrations WHERE version >= 965", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&q);
+	g_clear_object(&context);
+	g_clear_object(&db);
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureEntity) org = NULL;
+		g_autofree gchar *number = NULL;
+		gboolean enabled = TRUE;
+		db = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		context = venture_context_new(config, db);
+		q = venture_database_get(db, VENTURE_TYPE_QUOTE, id, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(q);
+		g_object_get(q, "number", &number, NULL);
+		g_assert_cmpstr(number, ==, "Retained draft");
+		g_assert_cmpint(integer(q, "author-user-id"), ==, 0);
+		org = venture_database_get(db, VENTURE_TYPE_ORGANIZATION, org_id, &error);
+		g_assert_no_error(error);
+		g_object_get(org, "quote-discount-approval", &enabled, NULL);
+		g_assert_false(enabled);
+		g_clear_object(&q);
+		g_clear_object(&context);
+		g_clear_object(&db);
+	}
+	venture_test_remove_tree(dir);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	venture_entity_registry_get_default();
+	g_test_add_func("/quotes/discount-upgrade", test_discount_upgrade);
+	g_test_add("/quotes/discount-http", Fixture, NULL, setup, test_discount_http, teardown);
+	g_test_add("/quotes/discount-approval", Fixture, NULL, setup, test_discount_approval, teardown);
+	g_test_add("/quotes/discount-stale", Fixture, GINT_TO_POINTER(1), setup, test_discount_approval, teardown);
+	g_test_add("/quotes/discount-stale-description", Fixture, GINT_TO_POINTER(6), setup, test_discount_approval, teardown);
+	g_test_add("/quotes/discount-reject", Fixture, GINT_TO_POINTER(2), setup, test_discount_approval, teardown);
+	g_test_add("/quotes/discount-under-limit", Fixture, GINT_TO_POINTER(3), setup, test_discount_approval, teardown);
+	g_test_add("/quotes/discount-share", Fixture, GINT_TO_POINTER(4), setup, test_discount_approval, teardown);
+	g_test_add("/quotes/discount-admin", Fixture, GINT_TO_POINTER(7), setup, test_discount_approval, teardown);
 	g_test_add("/quotes/percentage-parts", Fixture, NULL, setup, test_percentage_parts, teardown);
 	g_test_add("/quotes/delivery-mail", Fixture, NULL, setup, test_delivery_mail, teardown);
 	g_test_add("/quotes/delivery-remind", Fixture, NULL, setup, test_delivery_remind, teardown);

@@ -74,7 +74,8 @@ The bill page has Approve and Pay actions. REST accepts
 =POST /api/v1/vendor_bill/:id/approve=, =/pay= and =/void= with ordinary
 record fields in a JSON body; =?stage=1= queues the same request for
 confirmation. The bill ID and organization come from the URL's bill.
-An omitted action date means now. Pay defaults to the outstanding amount
+An omitted action date means today in the business zone (see Business
+date below). Pay defaults to the outstanding amount
 and accepts =amount=, =date=, =method=, =reference=, =external_id= and
 =bank_account_id=.
 
@@ -167,4 +168,19 @@ Batch payments use the same second-actor approval checks as individual payments.
 
 Second-actor consent covers a complete payment command, including every selected vendor in a workbench batch and all derived journals. A post or pay rule requests one operation proposal before business writes; the same command from a different actor applies it atomically. Bill transitions, direct settlement and allocation/refund writes use the same whole-operation boundary. Changed arguments or financial state require a new proposal.
 
-Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight of the current UTC day. Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.
+Omitted dates in the invoice status buttons and payables action/workbench surfaces resolve to midnight UTC on the current business date (see Business date). Repeating a proposal on that day retains its accounting date; a later-day request is a different proposal. Explicit dates remain unchanged.
+
+* Business date
+
+Every date payables fills in for you (the pay and approve actions, the
+bulk pay workbench and the new-bill form) is today's calendar date in the
+configured =locale.timezone=, not the server's own zone. It comes from
+=venture_payables_service_today()=, which reads the same business date as
+receivables, so a bill payment and an invoice receipt made at the same
+moment land on the same day. A calendar date is stored as midnight UTC on
+that day.
+
+Payables applies the same date check as receivables: today's business date
+is accepted on either side of UTC (east of UTC its encoded midnight is still
+ahead of the clock), and a calendar date after the business date is refused,
+as is any instant in the future.

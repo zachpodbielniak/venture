@@ -5610,6 +5610,7 @@ static void venture_jobs_web_append_today(VentureWebServer *self, GString *html,
 	VentureAuthPrincipal *principal);
 static void venture_jobs_web_append_home(VentureWebServer *self, GString *html, HtmxRequest *request);
 static void venture_web_deal_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static void venture_web_append_deal_contacts(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_web_lead_ai_score_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_reply_block(VentureWebServer *self, GString *content, VentureEntity *record);
 static void venture_web_mail_oauth_block(VentureWebServer *self, GString *content, VentureEntity *record);
@@ -9844,6 +9845,10 @@ venture_web_ui_form(
 
 		spec = g_ptr_array_index(specs, i);
 		flags = venture_field_spec_get_flags(spec);
+		/* Immutable values remain in the stored snapshot; an edit form
+		 * must not offer a different identity or erase an unseen picker. */
+		if (id != 0 && (flags & VENTURE_COLUMN_FLAG_IMMUTABLE) != 0)
+			continue;
 
 		/* A manual receipt has familiar choices; provider receipts still
 		 * retain their string method in the shared service and API. */
@@ -11282,6 +11287,11 @@ venture_web_append_related(
 		 * prices and the total; a list of their names below it is the
 		 * same thing said worse. */
 		if (VENTURE_TYPE_INVOICE_LINE == types[i])
+			continue;
+
+		/* A deal's people are its Buying committee panel, and a
+		 * contact's deals its On deals panel, each with the role. */
+		if (VENTURE_TYPE_DEAL_CONTACT == types[i])
 			continue;
 
 		/* A comment names its record by type and id, but it does
@@ -13024,6 +13034,7 @@ venture_web_append_incident_block(
 #include "arbitrage/venture-arbitrage-web.inc"
 #include "web/venture-web-comments.inc"
 #include "web/venture-web-planning.inc"
+#include "web/venture-web-company-tree.inc"
 
 #ifdef VENTURE_HAVE_SQLITE
 /* In feeds/venture-feeds-web.inc, which comes in with the feeds routes. */
@@ -13163,9 +13174,11 @@ venture_web_ui_detail(
 	/* And whom to call there. */
 	venture_company_people_web_append_block(self, content, record);
 	venture_jobs_web_append_block(self, content, record);
+	venture_web_append_company_tree(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
 	venture_web_deal_buttons(self, content, record);
+	venture_web_append_deal_contacts(self, content, record);
 
 	if (VENTURE_TYPE_FIXED_ASSET == entity_type)
 		venture_web_append_asset_actions(self, content, record);
@@ -20382,9 +20395,9 @@ venture_web_chat_append_confirmations(
 			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
 			"Apply</button>"
 			"<button class=\"btn btn-sm\" type=\"button\" "
-			"hx-post=\"/ui/chat/confirm/%s/reject\" "
+			"hx-post=\"/ui/chat/confirm/%s/reject\" hx-include=\"closest .confirm-card\" "
 			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
-			"Discard</button></div></div>", id, id);
+			"Discard</button><label>Rejection reason <input name=\"reason\" placeholder=\"Required for discount rejection\"></label></div></div>", id, id);
 	}
 }
 
@@ -20460,8 +20473,8 @@ venture_web_ui_chat_decide(
 	decided = approve
 		? venture_confirmation_store_approve_as(store, id,
 			principal->name, principal->role, &error)
-		: venture_confirmation_store_reject(store, id,
-			(NULL != principal) ? principal->name : NULL, &error);
+		: venture_confirmation_store_reject_with_reason(store, id,
+			(NULL != principal) ? principal->name : NULL, htmx_request_get_form_value(request, "reason"), &error);
 
 	html = g_string_new("<div class=\"msg ai\">"
 	                    "<span class=\"msg-avatar\">"
@@ -22700,6 +22713,8 @@ venture_web_api_decide(
 	VentureConfirmationStore *store;
 	const gchar *id;
 	gboolean ok;
+	g_autoptr(JsonNode) body = NULL;
+	const gchar *reason;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -22744,15 +22759,27 @@ venture_web_api_decide(
 		}
 	}
 
+	body = htmx_request_get_json(request, NULL);
+	reason = htmx_request_get_form_value(request, "reason");
+	if (body != NULL && JSON_NODE_HOLDS_OBJECT(body))
+		reason = venture_json_object_get_string(json_node_get_object(body), "reason", "");
 	ok = approve
 		? venture_confirmation_store_approve_as(store, id,
 			principal->name, principal->role, &error)
-		: venture_confirmation_store_reject(store, id,
-			(NULL != principal) ? principal->name : NULL, &error);
+		: venture_confirmation_store_reject_with_reason(store, id,
+			(NULL != principal) ? principal->name : NULL, reason, &error);
 
 	if (!ok)
 		return venture_web_error_response(error);
 
+	{
+		const gchar *back = htmx_request_get_form_value(request, "quote_id");
+		if (back != NULL && back[0] != '\0' && strspn(back, "0123456789") == strlen(back))
+		{
+			g_autofree gchar *destination = g_strdup_printf("/e/quote/%s", back);
+			return venture_web_redirect_to(destination);
+		}
+	}
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "id");
@@ -34252,6 +34279,7 @@ venture_web_api_ticket_draft(
 #include "marketing/venture-deliverability-web.inc"
 #include "quotes/venture-quote-web.inc"
 #include "pipelines/venture-pipeline-web.inc"
+#include "web/venture-web-deal-contacts.inc"
 
 #include "leads/venture-lead-web.inc"
 #include "leads/venture-lead-ai-score-web.inc"
@@ -34895,6 +34923,8 @@ venture_web_server_new(
 	venture_inbox_pages_register(self);
 	/* AI on messages: approval, drafts, follow-ups and the rules page. */
 	venture_ai_messages_pages_register(self);
+	/* A deal's buying committee: add and remove people with a role. */
+	venture_deal_contacts_pages_register(self);
 	/* One settings API: the screen and /api/v1/settings. */
 	venture_settings_pages_register(self);
 	venture_marketdata_accounts_pages_register(self);
@@ -35042,6 +35072,7 @@ venture_web_server_start(
 			g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
 			venture_federation_sync_start(self->context);
 			venture_stripe_collection_start(self->context);
+			venture_mail_delivery_start(self->context);
 			return TRUE;
 		}
 	}
@@ -35065,6 +35096,7 @@ venture_web_server_start(
 
 	venture_federation_sync_start(self->context);
 	venture_stripe_collection_start(self->context);
+	venture_mail_delivery_start(self->context);
 	return TRUE;
 }
 
@@ -35075,6 +35107,7 @@ venture_web_server_stop(VentureWebServer *self)
 
 	venture_federation_sync_stop(self->context);
 	venture_stripe_collection_stop(self->context);
+	venture_mail_delivery_stop(self->context);
 	venture_http_limits_shutdown(htmx_server_get_soup_server(self->server));
 	soup_server_disconnect(htmx_server_get_soup_server(self->server));
 	htmx_server_stop(self->server);

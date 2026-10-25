@@ -1273,6 +1273,30 @@ venture_notify_record_comment(
 	venture_notify_conversation(context, &conversation);
 }
 
+/* Default following is established only on creation or owner assignment.
+ * Repeating it on ordinary edits would silently undo an explicit Unfollow. */
+static void
+venture_notify_record_owner(VentureContext *context, VentureEntity *target,
+	VentureAuditAction action, const gchar *diff)
+{
+	gint64 owner = 0;
+	g_autofree gchar *username = NULL;
+	const gchar *type = venture_entity_get_entity_name(target);
+	if (!VENTURE_IS_COMPANY(target) && !VENTURE_IS_CONTACT(target) && !VENTURE_IS_DEAL(target)) return;
+	g_object_get(target, "owner-user-id", &owner, NULL);
+	if (action != VENTURE_AUDIT_ACTION_CREATE &&
+		(action != VENTURE_AUDIT_ACTION_UPDATE ||
+		 (!venture_notify_diff_has(diff, "owner_user_id") &&
+		  !(owner <= 0 && VENTURE_IS_DEAL(target) && venture_notify_diff_has(diff, "owner"))))) return;
+	if (owner <= 0 && VENTURE_IS_DEAL(target))
+	{
+		g_object_get(target, "owner", &username, NULL);
+		owner = venture_notify_user_id_for_username(context, username);
+	}
+	if (owner > 0 && venture_comment_user_can_read(context, owner, target))
+		venture_notify_watch(context, owner, type, venture_entity_get_id(target), NULL);
+}
+
 /*
  * Every audited change comes through here. The audit entry carries the
  * actor, the target and the diff, which is all the inbox needs -- and
@@ -1313,6 +1337,7 @@ venture_notify_on_audit(
 		/* Private data is never published through organization-wide
 		 * notification excerpts or outbound integration events. */
 		if (!target || venture_access_policy_record_is_personal(venture_database_get_access_policy(database), target)) return;
+		venture_notify_record_owner(context, target, action, diff);
 	}
 
 

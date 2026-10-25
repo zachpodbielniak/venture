@@ -41,6 +41,6 @@ venture_cli_command_quote(VentureCli *cli, gchar **args, GError **error)
 	path = g_strdup_printf("/api/v1/quotes/%s/%s", args[2], args[1]);
 	result = venture_cli_request(cli, "POST", path, body, error);
 	if (result == NULL) return -1;
-	venture_cli_output(cli, result);
+	if (!venture_cli_report_staged(cli, result)) venture_cli_output(cli, result);
 	return 0;
 }

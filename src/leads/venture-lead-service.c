@@ -893,6 +893,15 @@ venture_lead_service_convert(VentureLeadService *self, VentureEntity *lead,
 			"company-id", company_id, "contact-id", venture_entity_get_id(contact), "venture-id", venture,
 			"source", source, "campaign-id", campaign, "owner", owner, "territory-id", territory, "team-id", team, "owner-user-id", owner_id, NULL);
 		if (!venture_database_save(self->database, deal, actor, error)) goto fail;
+		/* The person the lead was is who the deal is with: its primary
+		 * contact. Nobody has said yet what they are on it. */
+		{
+			g_autoptr(VentureEntity) role = VENTURE_ENTITY(venture_deal_contact_new());
+			g_object_set(role, "organization-id", venture_entity_get_organization_id(deal),
+				"deal-id", venture_entity_get_id(deal), "contact-id", venture_entity_get_id(contact),
+				"role", VENTURE_DEAL_CONTACT_ROLE_OTHER, "primary", TRUE, NULL);
+			if (!venture_database_save(self->database, role, actor, error)) goto fail;
+		}
 	}
 	{
 		g_autoptr(GDateTime) now = venture_time_now();

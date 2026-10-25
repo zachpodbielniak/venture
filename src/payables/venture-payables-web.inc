@@ -99,7 +99,7 @@ venture_web_payables_workbench(HtmxRequest *request, GHashTable *params, gpointe
 			if (date == NULL) return venture_web_error_response(error);
 		}
 		if (date == NULL)
-			date = venture_time_from_string("today", NULL);
+			date = venture_payables_service_today(venture_payables_service_get(venture_context_get_database(self->context)));
 		if (!venture_payables_service_pay_bills(venture_payables_service_get(venture_context_get_database(self->context)),
 			ids, date, venture_json_object_get_string(object, "method", NULL),
 			venture_json_object_get_string(object, "adapter", "transfer"),
@@ -116,7 +116,8 @@ venture_web_payables_workbench(HtmxRequest *request, GHashTable *params, gpointe
 		g_autoptr(GString) content = g_string_new(NULL);
 		g_autoptr(VentureQuery) query = NULL;
 		g_autoptr(GPtrArray) rows = NULL;
-		g_autoptr(GDateTime) today = venture_time_from_string("today", NULL);
+		g_autoptr(GDateTime) today = venture_payables_service_today(
+			venture_payables_service_get(venture_context_get_database(self->context)));
 		guint i, shown = 0;
 		gate = venture_web_ui_require_session(self, request);
 		if (gate != NULL)
@@ -201,7 +202,8 @@ venture_web_payables_workbench_pay(HtmxRequest *request, GHashTable *params, gpo
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-	g_autoptr(GDateTime) date = venture_time_from_string("today", NULL);
+	g_autoptr(GDateTime) date = venture_payables_service_today(
+		venture_payables_service_get(venture_context_get_database(self->context)));
 	VentureActor actor;
 	HtmxResponse *gate;
 	(void)params;

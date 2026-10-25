@@ -655,6 +655,148 @@ static void test_sync_matches_and_threads(Fixture *f, gconstpointer data)
 	}
 }
 
+static void test_support_mail_creates_ticket(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	VentureActor sync_actor = { VENTURE_ACTOR_KIND_USER, "agent", NULL, NULL, NULL };
+	VentureEntity *ticket;
+	gint64 contact_id = 0;
+	gint kind = 0;
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(a),
+	                                              "creates-tickets"));
+	g_object_set(a, "creates-tickets", TRUE, NULL);
+	save(f, a);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 1,
+		"From: Ada <ada@example.test>\r\nTo: ops@venture.test\r\n"
+		"Subject: Broken widget\r\nDate: Mon, 14 Sep 2026 10:00:00 +0000\r\n"
+		"Message-ID: <support-one@example.test>\r\nMIME-Version: 1.0\r\n"
+		"Content-Type: multipart/mixed; boundary=\"support\"\r\n\r\n"
+		"--support\r\nContent-Type: text/plain\r\n\r\nPlease repair it.\r\n"
+		"--support\r\nContent-Type: text/plain; name=\"photo.txt\"\r\n"
+		"Content-Disposition: attachment; filename=\"photo.txt\"\r\n\r\n"
+		"widget photo\r\n--support--\r\n");
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, &sync_actor, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "ticket"), ==, 1);
+	g_assert_cmpint(count_type(f, "mail_message"), ==, 0);
+	tickets = rows(f, VENTURE_TYPE_TICKET);
+	ticket = g_ptr_array_index(tickets, 0);
+	g_object_get(ticket, "contact-id", &contact_id, "kind", &kind, NULL);
+	g_assert_cmpint(contact_id, ==, f->contact);
+	g_assert_cmpint(kind, ==, VENTURE_TICKET_KIND_EXTERNAL);
+	g_assert_cmpint(count_type(f, "ticket_comment"), ==, 1);
+	{
+		g_autoptr(VentureQuery) documents = venture_query_new(VENTURE_TYPE_DOCUMENT);
+		g_autoptr(VentureEntity) attachment = NULL;
+		g_autofree gchar *title = NULL, *doc_kind = NULL;
+		venture_query_set_organization(documents, f->org);
+		venture_query_add_filter_int(documents, "ticket-id", VENTURE_FILTER_OP_EQ,
+			venture_entity_get_id(ticket), NULL);
+		attachment = venture_database_find_one(f->db, documents, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(attachment);
+		g_object_get(attachment, "title", &title, "kind", &doc_kind, NULL);
+		g_assert_cmpstr(title, ==, "photo.txt");
+		g_assert_cmpstr(doc_kind, ==, "support");
+	}
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "ticket"), ==, 1);
+	g_object_set(ticket, "status", VENTURE_TICKET_STATUS_DONE, NULL);
+	save(f, ticket);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 2,
+		"From: Ada <ada@example.test>\r\nTo: ops@venture.test\r\n"
+		"Subject: Re: Broken widget\r\nDate: Mon, 14 Sep 2026 11:00:00 +0000\r\n"
+		"Message-ID: <support-two@example.test>\r\n"
+		"In-Reply-To: <support-one@example.test>\r\n"
+		"References: <support-one@example.test>\r\nContent-Type: text/plain\r\n"
+		"\r\nIt is still broken.\r\n");
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "ticket"), ==, 1);
+	g_assert_cmpint(count_type(f, "ticket_comment"), ==, 2);
+	{
+		g_autoptr(VentureEntity) reloaded = venture_database_get(f->db,
+			VENTURE_TYPE_TICKET, venture_entity_get_id(ticket), &error);
+		gint status;
+		g_assert_no_error(error);
+		g_object_get(reloaded, "status", &status, NULL);
+		g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_TODO);
+	}
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 3,
+		"From: automatic@example.test\r\nTo: ops@venture.test\r\n"
+		"Subject: Automatic response\r\nDate: Mon, 14 Sep 2026 12:00:00 +0000\r\n"
+		"Message-ID: <support-auto@example.test>\r\nAuto-Submitted: auto-replied\r\n"
+		"Content-Type: text/plain\r\n\r\nAway.\r\n");
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 4,
+		"From: ops@venture.test\r\nTo: Ada <ada@example.test>\r\n"
+		"Subject: Re: Broken widget\r\nDate: Mon, 14 Sep 2026 12:01:00 +0000\r\n"
+		"Message-ID: <support-own@example.test>\r\nContent-Type: text/plain\r\n\r\nOwn.\r\n");
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 5,
+		"From: Mailer Daemon <postmaster@example.test>\r\nTo: ops@venture.test\r\n"
+		"Return-Path: <>\r\nSubject: Delivery failure\r\n"
+		"Date: Mon, 14 Sep 2026 12:02:00 +0000\r\n"
+		"Message-ID: <support-bounce@example.test>\r\n"
+		"Content-Type: text/plain\r\n\r\nUndeliverable.\r\n");
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 3);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "ticket"), ==, 1);
+	g_assert_cmpint(count_type(f, "ticket_comment"), ==, 2);
+	{
+		VentureActor actor = { VENTURE_ACTOR_KIND_USER, "agent", NULL, NULL, NULL };
+		g_autoptr(VentureEntity) public_reply = g_object_new(VENTURE_TYPE_TICKET_COMMENT,
+			"organization-id", f->org,
+			"ticket-id", venture_entity_get_id(ticket), "body", "Please try again.",
+			"author", "agent", "internal", FALSE, NULL);
+		g_autoptr(GPtrArray) outgoing = NULL;
+		g_autofree gchar *recipient = NULL, *subject = NULL, *reply_to = NULL;
+		g_autofree gchar *in_reply_to = NULL;
+		g_assert_true(venture_database_save(f->db, public_reply, &actor, &error));
+		g_assert_no_error(error);
+		g_assert_cmpint(count_type(f, "mail_message"), ==, 1);
+		outgoing = rows(f, VENTURE_TYPE_MAIL_MESSAGE);
+		g_object_get(g_ptr_array_index(outgoing, 0), "to", &recipient,
+			"subject", &subject, "reply-to", &reply_to,
+			"in-reply-to", &in_reply_to, NULL);
+		g_assert_cmpstr(recipient, ==, "ada@example.test");
+		g_assert_nonnull(strstr(subject, "[#"));
+		g_assert_cmpstr(reply_to, ==, "ops@venture.test");
+		g_assert_cmpstr(in_reply_to, ==, "<support-two@example.test>");
+		{
+			g_autoptr(VentureEntity) note = g_object_new(VENTURE_TYPE_TICKET_COMMENT,
+				"organization-id", f->org,
+				"ticket-id", venture_entity_get_id(ticket), "body", "Internal only.",
+				"author", "agent", "internal", TRUE, NULL);
+			g_assert_true(venture_database_save(f->db, note, &actor, &error));
+			g_assert_no_error(error);
+			g_assert_cmpint(count_type(f, "mail_message"), ==, 1);
+		}
+	}
+	{
+		g_autofree gchar *same_subject = g_strdup_printf("From: Ada <ada@example.test>\r\n"
+			"To: ops@venture.test\r\nSubject: [#%" G_GINT64_FORMAT "] New detail\r\n"
+			"Date: Mon, 14 Sep 2026 13:00:00 +0000\r\n"
+			"Message-ID: <support-three@example.test>\r\n"
+			"Content-Type: text/plain\r\n\r\nSame requester.\r\n",
+			venture_entity_get_id(ticket));
+		g_autofree gchar *other_subject = g_strdup_printf("From: Stranger <stranger@example.test>\r\n"
+			"To: ops@venture.test\r\nSubject: [#%" G_GINT64_FORMAT "] My own problem\r\n"
+			"Date: Mon, 14 Sep 2026 13:01:00 +0000\r\n"
+			"Message-ID: <support-stranger@example.test>\r\n"
+			"Content-Type: text/plain\r\n\r\nDifferent requester.\r\n",
+			venture_entity_get_id(ticket));
+		venture_fake_imap_client_add_message(f->imap, "INBOX", 6, same_subject);
+		venture_fake_imap_client_add_message(f->imap, "INBOX", 7, other_subject);
+		g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 2);
+		g_assert_no_error(error);
+		g_assert_cmpint(count_type(f, "ticket"), ==, 2);
+		g_assert_cmpint(count_type(f, "ticket_comment"), ==, 6);
+		g_assert_cmpint(count_type(f, "mail_unmatched_sender"), >=, 1);
+	}
+}
+
 /* Rule 4: capture-address mail becomes an inbox item with its attachment; same hash is not duplicated. */
 static void test_capture(Fixture *f, gconstpointer data)
 {
@@ -2029,5 +2171,7 @@ int main(int argc, char **argv)
 	g_test_add("/mail-sync/leads-and-deals", Fixture, NULL, setup, test_leads_and_deals, teardown);
 	g_test_add("/mail-sync/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add("/mail-sync/socket-xoauth2", Fixture, NULL, setup, test_socket_xoauth2, teardown);
+	g_test_add("/mail-sync/support-creates-ticket", Fixture, NULL, setup,
+	           test_support_mail_creates_ticket, teardown);
 	return g_test_run();
 }

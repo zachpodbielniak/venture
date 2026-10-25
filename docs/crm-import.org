@@ -100,7 +100,7 @@ Zoho CRM defaults: =Record Id=, =Account Name=, =Website=, =Phone=,
 =Task Owner=, =Related To.id=, =Closed Time=.
 
 Salesforce defaults: =Id=, =Name=, =Website=, =Phone=, =Industry=,
-=OwnerId=, =CreatedDate=; =FirstName=, =LastName=, =Email=, =AccountId=,
+=OwnerId=, =CreatedDate=, =ParentId=; =FirstName=, =LastName=, =Email=, =AccountId=,
 =Title=; =Amount=, =CurrencyIsoCode=, =StageName=, =CloseDate=,
 =ContactId=; notes =Title=, =Body=, =CreatedById=, =ParentId=; tasks
 =Subject=, =Description=, =ActivityDate=, =Status=, =WhoId=, =WhatId=,
@@ -146,6 +146,13 @@ is recorded as an =exception= naming each difference; the existing
 record is never overwritten, and the row still resolves to it so the
 source's deals and history attach correctly. New records are =imported=
 with =created= set and =source= naming the vendor.
+
+A company's =parent_id= (Salesforce =ParentId= on an account) becomes its
+[[file:data-model.org][parent account]]. Parents are linked once every
+company of the batch exists, so a branch may come before its parent in the
+file. Only companies the import created are linked; a company matched to an
+existing record keeps the hierarchy it has. A parent that is neither in the
+file nor in an earlier batch leaves the company top-level.
 
 A contact's =company_id= resolves through the company rows. An unknown
 company creates the contact without one and records the exception on

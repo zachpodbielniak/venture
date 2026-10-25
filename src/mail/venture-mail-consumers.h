@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #ifndef VENTURE_MAIL_CONSUMERS_H
 #define VENTURE_MAIL_CONSUMERS_H
+/* Ticket replies and their outbox rows commit as one business command. */
+gboolean venture_mail_support_save_comment(VentureDatabase *database,
+	VentureEntity *comment, const VentureActor *actor,
+	gboolean (*save_next)(VentureDatabase *, VentureEntity *,
+	                      const VentureActor *, GError **), GError **error);
 /**
  * venture_mail_send_invoice:
  * @context: application context
@@ -60,4 +65,30 @@ VentureMailMessage *venture_mail_user_message(VentureEntity *user, gboolean rese
  * Registers the invoice and account mail preview kinds.
  */
 void venture_mail_consumers_preview_register(void);
+/**
+ * venture_mail_delivery_sweep:
+ * @context: application context
+ * @error: (out) (optional): a sweep that could not run at all
+ *
+ * Delivers the due outbox mail of every active business that can send. A
+ * business that has not set up a mail account is skipped, so its mail stays
+ * queued until it has one, rather than being given up on.
+ * Returns: messages attempted, or -1 with @error set
+ */
+gint venture_mail_delivery_sweep(VentureContext *context, GError **error);
+/**
+ * venture_mail_delivery_start:
+ * @context: application context
+ *
+ * Runs venture_mail_delivery_sweep() on a timer in a hosted workspace that
+ * has no automation engine attached. Hosted mode refuses the engine, so no
+ * mail_deliver rule can run there. Elsewhere the rules own delivery and the
+ * timer does nothing. Calling it again is harmless.
+ */
+void venture_mail_delivery_start(VentureContext *context);
+/**
+ * venture_mail_delivery_stop:
+ * @context: application context
+ */
+void venture_mail_delivery_stop(VentureContext *context);
 #endif

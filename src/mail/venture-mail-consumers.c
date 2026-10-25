@@ -1,6 +1,83 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <string.h>
+
+gboolean
+venture_mail_support_save_comment(VentureDatabase *database, VentureEntity *comment,
+	const VentureActor *actor,
+	gboolean (*save_next)(VentureDatabase *, VentureEntity *,
+	                      const VentureActor *, GError **), GError **error)
+{
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(VentureEntity) inbound = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureMailMessage) message = NULL;
+	g_autoptr(VentureMailMessage) queued = NULL;
+	g_autofree gchar *recipient = NULL, *address = NULL, *title = NULL;
+	g_autofree gchar *body = NULL, *subject = NULL, *message_id = NULL;
+	g_autofree gchar *angle = NULL, *key = NULL;
+	gint64 ticket_id = 0, account_id = 0;
+	gboolean internal = FALSE;
+	gint kind = 0;
+	gchar *cursor;
+	if (venture_entity_is_persisted(comment) || actor == NULL ||
+	    actor->kind == VENTURE_ACTOR_KIND_SYSTEM)
+		return save_next(database, comment, actor, error);
+	g_object_get(comment, "ticket-id", &ticket_id, "internal", &internal,
+	             "body", &body, NULL);
+	if (internal || ticket_id <= 0) return save_next(database, comment, actor, error);
+	ticket = venture_database_get(database, VENTURE_TYPE_TICKET, ticket_id, error);
+	if (!ticket) return error && *error ? FALSE : save_next(database, comment, actor, error);
+	g_object_get(ticket, "support-account-id", &account_id,
+	             "requester-email", &recipient, "title", &title,
+	             "kind", &kind, NULL);
+	if (account_id <= 0 || kind != VENTURE_TICKET_KIND_EXTERNAL ||
+	    !recipient || !strchr(recipient, '@') || strpbrk(recipient, "\r\n,;<> "))
+		return save_next(database, comment, actor, error);
+	account = venture_database_get(database, VENTURE_TYPE_MAIL_ACCOUNT, account_id, error);
+	if (!account || venture_entity_get_organization_id(account) !=
+	                venture_entity_get_organization_id(ticket))
+		return error && *error ? FALSE : save_next(database, comment, actor, error);
+	g_object_get(account, "address", &address, NULL);
+	if (!address || !*address) return save_next(database, comment, actor, error);
+	query = venture_query_new(VENTURE_TYPE_MAIL_INBOUND);
+	venture_query_set_organization(query, venture_entity_get_organization_id(ticket));
+	venture_query_add_filter_int(query, "ticket-id", VENTURE_FILTER_OP_EQ,
+	                            ticket_id, NULL);
+	venture_query_add_filter_int(query, "duplicate-of-id", VENTURE_FILTER_OP_EQ,
+	                            0, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 1);
+	inbound = venture_database_find_one(database, query, error);
+	if (error && *error) return FALSE;
+	if (inbound) g_object_get(inbound, "message-id", &message_id, NULL);
+	if (message_id && *message_id && !strpbrk(message_id, "<> \r\n,;") &&
+	    strchr(message_id, '@'))
+		angle = g_strdup_printf("<%s>", message_id);
+	for (cursor = title; cursor && *cursor; cursor++)
+		if (*cursor == '\r' || *cursor == '\n') *cursor = ' ';
+	subject = g_strdup_printf("Re: [#%" G_GINT64_FORMAT "] %.800s",
+	                          ticket_id, title ? title : "Support request");
+	key = g_strdup_printf("support-comment:%s", venture_entity_get_uuid(comment));
+	message = venture_mail_message_new();
+	g_object_set(message,
+	             "organization-id", venture_entity_get_organization_id(ticket),
+	             "to", recipient, "reply-to", address, "sender-address", address,
+	             "subject", subject, "text-body", body ? body : "",
+	             "in-reply-to", angle, "reply-references", angle,
+	             "related-type", "ticket_comment", "idempotency-key", key, NULL);
+	if (!venture_database_begin(database, error)) return FALSE;
+	if (!save_next(database, comment, actor, error)) goto rollback;
+	g_object_set(message, "related-id", venture_entity_get_id(comment), NULL);
+	queued = venture_mail_outbox_enqueue(venture_database_get_mail_outbox(database),
+	                                     message, actor, error);
+	if (!queued) goto rollback;
+	return venture_database_commit(database, error);
+rollback:
+	venture_database_rollback(database);
+	return FALSE;
+}
 static gchar *invoice_html(VentureDatabase *db, VentureEntity *invoice, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE_LINE);

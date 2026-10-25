@@ -120,7 +120,7 @@ static const gchar *const zoho_tasks[] = {
 };
 static const gchar *const salesforce_companies[] = {
 	"id", "Id", "name", "Name", "website", "Website", "phone", "Phone", "industry", "Industry",
-	"owner", "OwnerId", "created_at", "CreatedDate", NULL
+	"owner", "OwnerId", "created_at", "CreatedDate", "parent_id", "ParentId", NULL
 };
 static const gchar *const salesforce_contacts[] = {
 	"id", "Id", "first_name", "FirstName", "last_name", "LastName", "email", "Email", "phone", "Phone",
@@ -1189,6 +1189,47 @@ match_accounting_company(Run *run, Table *table, gchar **row, GError **error)
 	return by_source != NULL ? g_steal_pointer(&by_source) : g_steal_pointer(&by_name);
 }
 
+/* A parent account (Salesforce ParentId) names another company row, which
+ * may come later in the file, so parents are linked once every company of
+ * the batch exists. Only companies this import created are touched; one
+ * matched to an existing record keeps the hierarchy it already has. A
+ * parent outside the file and every earlier batch leaves the company
+ * top-level. */
+static gboolean
+link_parent_companies(Run *run, Table *table, GError **error)
+{
+	guint r;
+	for (r = 1; r < table->rows->len; r++)
+	{
+		gchar **row = g_ptr_array_index(table->rows, r);
+		const gchar *id = cell(table, row, "id");
+		const gchar *parent_source = cell(table, row, "parent_id");
+		VentureEntity *tracking = blank(id) ? NULL : run_row(run, "company", id);
+		g_autoptr(VentureEntity) company = NULL;
+		g_autofree gchar *status = NULL;
+		gboolean created = FALSE;
+		gint64 record_id = 0;
+		gint64 parent_id;
+		if (tracking == NULL || blank(parent_source))
+			continue;
+		g_object_get(tracking, "status", &status, "record-id", &record_id, "created", &created, NULL);
+		if (g_strcmp0(status, "imported") != 0 || !created || record_id <= 0)
+			continue;
+		parent_id = resolve_ref(run, "company", parent_source, error);
+		if (parent_id < 0)
+			return FALSE;
+		if (parent_id == 0 || parent_id == record_id)
+			continue;
+		company = venture_database_get(run->self->database, VENTURE_TYPE_COMPANY, record_id, error);
+		if (company == NULL)
+			return FALSE;
+		g_object_set(company, "parent-id", parent_id, NULL);
+		if (!venture_database_save(run->self->database, company, run->actor, error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
 static gboolean
 import_companies(Run *run, Table *table, GError **error)
 {
@@ -1247,7 +1288,7 @@ import_companies(Run *run, Table *table, GError **error)
 		if (!finish_row(run, tracking, "imported", NULL, "company", venture_entity_get_id(VENTURE_ENTITY(company)), TRUE, error))
 			return FALSE;
 	}
-	return TRUE;
+	return link_parent_companies(run, table, error);
 }
 
 static gchar *

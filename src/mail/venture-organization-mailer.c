@@ -159,6 +159,16 @@ static VentureMailer *prepare(VentureMailer *mailer, VentureMailMessage *message
 	settings = venture_integration_service_resolve_version(service, org,
 		venture_entity_get_id(VENTURE_ENTITY(connection)), venture_entity_get_version(VENTURE_ENTITY(connection)), FALSE, error);
 	if (settings == NULL || !endpoint_allowed(self, json_node_get_object(settings), error)) return NULL;
+	{
+		g_autofree gchar *required_sender = NULL;
+		const gchar *configured_sender = venture_json_object_get_string(json_node_get_object(settings), "from", "");
+		g_object_get(message, "sender-address", &required_sender, NULL);
+		if (required_sender && *required_sender &&
+		    g_ascii_strcasecmp(required_sender, configured_sender) != 0) {
+			refuse(error, "The support mailbox must match the configured SMTP sender");
+			return NULL;
+		}
+	}
 	g_object_get(self->config, "mail-tls-ca-file", &ca_file, NULL);
 	if (ca_file != NULL && *ca_file != '\0')
 		json_object_set_string_member(json_node_get_object(settings), "tls-ca-file", ca_file);

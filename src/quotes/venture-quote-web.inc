@@ -255,7 +255,29 @@ quote_route(HtmxRequest *request, GHashTable *params, gpointer data)
 		}
 	}
 	if (!venture_quote_service_execute(venture_database_get_quote_service(venture_context_get_database(self->context)),
-		action, "manual", NULL, &actor, &error)) return venture_web_error_response(error);
+		action, "manual", NULL, &actor, &error))
+	{
+		VentureConfirmation *pending = venture_confirmation_store_find_quote_discount(
+			venture_context_get_confirmations(self->context), quote);
+		if (g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_AI_CONFIRMATION_REQUIRED) && pending != NULL)
+		{
+			g_autoptr(JsonBuilder) builder = json_builder_new();
+			if (!api)
+			{
+				g_autofree gchar *destination = g_strdup_printf("/e/quote/%" G_GINT64_FORMAT, id);
+				return venture_web_redirect_to(destination);
+			}
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "staged");
+			json_builder_add_boolean_value(builder, TRUE);
+			json_builder_set_member_name(builder, "confirmation");
+			json_builder_add_value(builder, venture_confirmation_to_json(pending));
+			json_builder_end_object(builder);
+			result = json_builder_get_root(builder);
+			return venture_web_json_response(result, 202);
+		}
+		return venture_web_error_response(error);
+	}
 	if (!api)
 	{
 		gint64 result_id = 0;
@@ -371,6 +393,26 @@ quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record)
 	gint state = 0;
 	if (!VENTURE_IS_QUOTE(record)) return;
 	id = venture_entity_get_id(record);
+	{
+		VentureConfirmation *pending = venture_confirmation_store_find_quote_discount(
+			venture_context_get_confirmations(self->context), record);
+		if (pending != NULL)
+		{
+			const gchar *confirmation_id = venture_confirmation_get_id(pending);
+			JsonNode *diff = venture_confirmation_get_diff(pending);
+			g_string_append(html, "<section class=\"banner banner-warn\"><h3>Pending discount approval</h3><p>The quote has not been sent. Another user in the configured approver role must decide.</p>");
+			if (diff != NULL && JSON_NODE_HOLDS_OBJECT(diff))
+			{
+				g_string_append(html, "<p>");
+				venture_html_escape_append(html, venture_json_object_get_string(json_node_get_object(diff), "reason", ""));
+				g_string_append(html, "</p>");
+			}
+			g_string_append_printf(html,
+				"<form method=\"post\" action=\"/api/v1/confirmations/%s/approve\"><input type=\"hidden\" name=\"quote_id\" value=\"%" G_GINT64_FORMAT "\"><button>Approve quote</button></form>"
+				"<form method=\"post\" action=\"/api/v1/confirmations/%s/reject\"><input type=\"hidden\" name=\"quote_id\" value=\"%" G_GINT64_FORMAT "\"><label>Reason <input name=\"reason\" required></label><button>Reject discount</button></form></section>",
+				confirmation_id, id, confirmation_id, id);
+		}
+	}
 	quote_subscription_block(self, html, record);
 	quote_link_block(self, html, record);
 	g_object_get(record, "status", &state, "billing-mode", &mode, "company-id", &company, NULL);

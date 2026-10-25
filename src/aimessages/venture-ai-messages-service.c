@@ -1451,8 +1451,9 @@ venture_ai_messages_follow_up(VentureAiMessages *self, VentureEntity *subject, c
 			refuse(error, VENTURE_ERROR_NOT_FOUND, "Deal not found");
 			return NULL;
 		}
-		if (number(deal, "contact-id") > 0)
-			contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, number(deal, "contact-id"), NULL);
+		/* The deal's primary contact, or its own contact when nobody on
+		 * it is marked primary. */
+		contact = venture_deal_contact_primary(self->database, deal, NULL);
 		if (contact == NULL)
 		{
 			refuse(error, VENTURE_ERROR_VALIDATION, "The deal has no contact to follow up with");

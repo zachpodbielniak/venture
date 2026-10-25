@@ -426,6 +426,63 @@ static void test_refusals(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(venture_entity_get_id(result), ==, c);
 }
 
+/* Parent accounts follow the merge. B's branches point at the survivor
+ * once B is folded away, or the hierarchy would hang off a deleted row.
+ * A survivor that was itself a branch of the folded record takes that
+ * record's place in the tree instead of becoming its own parent. */
+static void test_merge_reparents_branches(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDedupeService *service = venture_dedupe_service_get(f->db);
+	gint64 group, b, twin, north, south, region, depot;
+	(void)unused;
+	group = company(f, "Harbor Group", "", "", "");
+	b = company(f, "Harbor Plumbing", "office@harbor.example", "", "");
+	twin = company(f, "Harbor Plumbing LLC", "office@harbor.example", "", "");
+	north = company(f, "Harbor Plumbing North", "", "", "");
+	south = company(f, "Harbor Plumbing South", "", "", "");
+	{
+		g_autoptr(VentureEntity) row = venture_database_get(f->db, VENTURE_TYPE_COMPANY, b, NULL);
+		g_object_set(row, "parent-id", group, NULL);
+		save(f, row);
+		g_clear_object(&row);
+		row = venture_database_get(f->db, VENTURE_TYPE_COMPANY, north, NULL);
+		g_object_set(row, "parent-id", b, NULL);
+		save(f, row);
+		g_clear_object(&row);
+		row = venture_database_get(f->db, VENTURE_TYPE_COMPANY, south, NULL);
+		g_object_set(row, "parent-id", b, NULL);
+		save(f, row);
+	}
+
+	result = venture_dedupe_service_merge_records(service, "company", twin, b, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(ref_id(f, "company", north, "parent-id"), ==, twin);
+	g_assert_cmpint(ref_id(f, "company", south, "parent-id"), ==, twin);
+	/* The survivor had no parent; it takes the folded record's. */
+	g_assert_cmpint(ref_id(f, "company", twin, "parent-id"), ==, group);
+	g_clear_object(&result);
+
+	/* The survivor is a branch of the record folded into it. */
+	region = company(f, "Lakeside Region", "", "", "");
+	depot = company(f, "Lakeside Depot", "", "", "");
+	{
+		g_autoptr(VentureEntity) row = venture_database_get(f->db, VENTURE_TYPE_COMPANY, region, NULL);
+		g_object_set(row, "parent-id", group, NULL);
+		save(f, row);
+		g_clear_object(&row);
+		row = venture_database_get(f->db, VENTURE_TYPE_COMPANY, depot, NULL);
+		g_object_set(row, "parent-id", region, NULL);
+		save(f, row);
+	}
+	result = venture_dedupe_service_merge_records(service, "company", depot, region, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(result);
+	g_assert_cmpint(ref_id(f, "company", depot, "parent-id"), ==, group);
+}
+
 /* Candidates and the forwarding pointer are written by the service only. */
 static void test_generic_writes(Fixture *f, gconstpointer unused)
 {
@@ -677,6 +734,7 @@ int main(int argc, char **argv)
 	g_test_add("/dedupe/merge", Fixture, NULL, setup, test_merge, teardown);
 	g_test_add("/dedupe/merge-atomic", Fixture, NULL, setup, test_merge_atomic, teardown);
 	g_test_add("/dedupe/refusals", Fixture, NULL, setup, test_refusals, teardown);
+	g_test_add("/dedupe/merge-reparents-branches", Fixture, NULL, setup, test_merge_reparents_branches, teardown);
 	g_test_add("/dedupe/generic-writes", Fixture, NULL, setup, test_generic_writes, teardown);
 	g_test_add("/dedupe/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/dedupe/surfaces", ServerFixture, NULL, server_setup, test_surfaces, server_teardown);

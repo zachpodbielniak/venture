@@ -1275,3 +1275,13 @@ Reports name their organization with =organization_id=; without one they
 answer for the organization picked in the sidebar, and only then for the
 default one (a token, or "all"). =test-report-scope= and =test-pnl-ledger=
 cover both.
+* Competitor win/loss
+
+=competitor_win_loss= reports =faced=, =won=, =lost=, =win_rate= and
+=value_lost= per competitor and currency. Closed opportunities are selected
+by closing date; open opportunities by creation date. A loss is credited
+only to its explicitly named winning competitor, while a win counts against
+every linked competitor. The win rate uses won plus named losses, excluding
+open and unattributed outcomes. Empty competitors report zeros. Money is
+never combined across currencies. See [[file:pipelines.org][Sales pipelines]]
+for recording rivals and the full counting rules.

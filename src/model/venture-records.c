@@ -84,7 +84,10 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("telephony-stop-reply", "STOP answer", "What a STOP text is answered with; {business} is your name; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-start-reply", "START answer", "What a START text is answered with; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("telephony-help-reply", "HELP answer", "What a HELP text is answered with; it must say how to stop; empty is the default", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("pnl-basis", "Profit and loss from", "ledger: the posted books (accrual, as the income statement); empty or records: sale and expense records", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("pnl-basis", "Profit and loss from", "ledger: the posted books (accrual, as the income statement); empty or records: sale and expense records", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("quote-discount-approval", "Require discount approval", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("quote-max-line-discount-percent", "Maximum unapproved line discount", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("quote-discount-approver", "Discount approver role", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,
@@ -825,6 +828,10 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD("address-city", "City code", "Sales-tax address code matched exactly by tax rules",
 		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("merged-into-id", "Merged into", "Set by a dedupe merge on the record that was folded away; its old id forwards here",
+		"company", VENTURE_COLUMN_FLAG_INDEXED),
+	/* A branch names its parent account; src/core/venture-company-tree.c
+	 * refuses a loop and rolls the branches up on the parent's page. */
+	VENTURE_FIELD_REF("parent-id", "Parent account", "The company this one is a branch of",
 		"company", VENTURE_COLUMN_FLAG_INDEXED)
 };
 
@@ -937,6 +944,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("next-action-at", "Next action", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("loss-reason-id", "Loss reason", NULL, "loss_reason", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("lost-note", "Lost note", NULL),
+	VENTURE_FIELD_REF("lost-to-competitor-id", "Lost to", "Competitor who won the loss, if known", "competitor", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	VENTURE_FIELD("probability-overridden", "Override probability", "Keep the deal probability on stage moves", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("committed", "Committed", "Include in the committed forecast", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
@@ -982,6 +990,41 @@ venture_deal_get_weighted_value(
 
 	return venture_money_multiply_rational(value, probability, 100, error);
 }
+
+/* Who on the customer's side is on a deal, and as what. The rules -- one
+ * primary a deal, one row a person -- are save validators in
+ * src/core/venture-deal-contact.c. */
+GType
+venture_deal_contact_role_get_type(void)
+{
+	static gsize type_id;
+	static const GEnumValue values[] = {
+		{ VENTURE_DEAL_CONTACT_ROLE_DECISION_MAKER, "VENTURE_DEAL_CONTACT_ROLE_DECISION_MAKER", "decision_maker" },
+		{ VENTURE_DEAL_CONTACT_ROLE_ECONOMIC_BUYER, "VENTURE_DEAL_CONTACT_ROLE_ECONOMIC_BUYER", "economic_buyer" },
+		{ VENTURE_DEAL_CONTACT_ROLE_CHAMPION, "VENTURE_DEAL_CONTACT_ROLE_CHAMPION", "champion" },
+		{ VENTURE_DEAL_CONTACT_ROLE_INFLUENCER, "VENTURE_DEAL_CONTACT_ROLE_INFLUENCER", "influencer" },
+		{ VENTURE_DEAL_CONTACT_ROLE_TECHNICAL, "VENTURE_DEAL_CONTACT_ROLE_TECHNICAL", "technical" },
+		{ VENTURE_DEAL_CONTACT_ROLE_USER, "VENTURE_DEAL_CONTACT_ROLE_USER", "user" },
+		{ VENTURE_DEAL_CONTACT_ROLE_OTHER, "VENTURE_DEAL_CONTACT_ROLE_OTHER", "other" },
+		{ 0, NULL, NULL }
+	};
+
+	if (g_once_init_enter(&type_id))
+		g_once_init_leave(&type_id, g_enum_register_static("VentureDealContactRole", values));
+
+	return type_id;
+}
+
+static const VentureFieldDecl deal_contact_fields[] = {
+	VENTURE_FIELD_REF("deal-id", "Deal", NULL, "deal", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("contact-id", "Contact", NULL, "contact", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_ENUM("role", "Role", "What they are on this deal", venture_deal_contact_role_get_type,
+		VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("primary", "Primary contact", "Who mail about the deal goes to; one a deal",
+		VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("note", "Note", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureDealContact, venture_deal_contact, deal_contact_fields)
 
 /* ==========================================================================
  * Growth
@@ -1462,6 +1505,8 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureKbLink, venture_kb_link, venture_kb_link_
  */
 static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),
+	VENTURE_FIELD_REF("support-account-id", "Support mailbox", "Shared mailbox handling customer replies", "mail_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("requester-email", "Requester email", "Original sender for support mail without a matched contact", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("kind", "Kind", "Internal work, or somebody else's request",
 	                   venture_ticket_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
@@ -3110,6 +3155,7 @@ static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD_REF("expense-id", "Expense",
 	                  "Set when this is a receipt", "expense",
 	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("ticket-id", "Support ticket", "Attachment received with support mail", "ticket", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("size-bytes", "Size", NULL, VENTURE_FIELD_KIND_INTEGER,
 	              VENTURE_COLUMN_FLAG_NONE),
@@ -3910,3 +3956,18 @@ venture_audit_entry_new_for_change(
 
 	return entry;
 }
+
+static const VentureFieldDecl competitor_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD("website", "Website", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureCompetitor, venture_competitor, competitor_fields)
+
+static const VentureFieldDecl deal_competitor_fields[] = {
+	VENTURE_FIELD_REF("deal-id", "Deal", NULL, "deal", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("competitor-id", "Competitor", NULL, "competitor", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("strengths", "Strengths", NULL),
+	VENTURE_FIELD_TEXT("weaknesses", "Weaknesses", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureDealCompetitor, venture_deal_competitor, deal_competitor_fields)

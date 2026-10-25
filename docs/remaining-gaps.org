@@ -1,0 +1,44 @@
+#+title: Remaining gaps epic
+#+description: Plan for the open feature issues not covered by another epic
+
+* Scope
+
+One branch, one PR, lanes in order; each lane sees the previous lane's work.
+Tests first in every lane; the full suite stays green after each lane.
+
+| Lane | Issue | What                                                        |
+|------+-------+-------------------------------------------------------------|
+| 1    | #131  | Implicit bill-payment dates follow the venture's time zone  |
+| 2    | #174  | A hosted workspace delivers its queued outbox mail          |
+| 3    | #156  | Parent accounts: company hierarchy with branch rollups      |
+| 4    | #160  | Contact roles on deals (buying committee, primary contact)  |
+| 5    | #157  | Competitors on deals; win/loss by competitor                |
+| 6    | #158  | Discount approval before a quote is sent                    |
+| 7    | #161  | Finish comments: record owners follow by default            |
+| 8    | #159  | Email-to-ticket: a support mailbox creates and threads tickets |
+| 9    | #165  | AI answers the business line (built against fakes only)     |
+
+#162 (gaps vs Salesforce) closes when lanes 3-7 land.
+
+* Progress
+
+Each lane ticks its issue's done-when on the issue, with the commit and the
+test that proves it.
+
+* Remaining shared resources
+
+The remaining lanes run sequentially on this branch. Migration pairs are
+reserved here before their implementations. Renumbered when this branch was
+folded into the launch epic, after master and the books import took
+000957-000961; parent accounts are 000962 and contact roles 000963:
+
+| Issue | Migration | Shared entries |
+|-------+-----------+----------------|
+| #157 | 000964 | CRM types and competitor report |
+| #158 | 000965 | Quote approval settings and history |
+| #161 | (none)  | Owner-follow behavior, if storage changes |
+| #159 | 000966 | Support mailbox threading |
+| #165 | 000967 | Inbound voice configuration and call records |
+
+Append registry and report entries in lane order; extend existing option
+lists. An unused migration reservation does not require an empty script.

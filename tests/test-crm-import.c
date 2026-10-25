@@ -892,6 +892,45 @@ test_vendor_maps(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count(f, VENTURE_TYPE_DEAL), ==, 2);
 }
 
+/* Salesforce's ParentId becomes the company's parent account, whichever
+ * order the rows come in. A parent outside the file leaves the company
+ * top-level rather than failing the import. */
+static void
+test_salesforce_parent_accounts(Fixture *f, gconstpointer data)
+{
+	static const gchar *const files[] = { "companies", "salesforce-account-tree.csv", NULL };
+	g_autoptr(JsonObject) payload = manifest(f, "salesforce", files, "{}", NULL);
+	g_autoptr(VentureEntity) batch = NULL;
+	g_autoptr(JsonObject) defaults = NULL;
+	(void)data;
+
+	defaults = venture_crm_import_default_columns("salesforce", "companies");
+	g_assert_cmpstr(json_object_get_string_member(defaults, "parent_id"), ==, "ParentId");
+
+	batch = preview(f, payload);
+	import(f, batch);
+	{
+		g_autoptr(VentureEntity) district = record_of(f, batch, "company", "001P1", VENTURE_TYPE_COMPANY);
+		g_autoptr(VentureEntity) schools = record_of(f, batch, "company", "001P2", VENTURE_TYPE_COMPANY);
+		g_autoptr(VentureEntity) north = record_of(f, batch, "company", "001P3", VENTURE_TYPE_COMPANY);
+		g_autoptr(VentureEntity) annex = record_of(f, batch, "company", "001P4", VENTURE_TYPE_COMPANY);
+		g_assert_cmpint(int_of(district, "parent-id"), ==, 0);
+		g_assert_cmpint(int_of(schools, "parent-id"), ==, venture_entity_get_id(district));
+		g_assert_cmpint(int_of(north, "parent-id"), ==, venture_entity_get_id(schools));
+		g_assert_cmpint(int_of(annex, "parent-id"), ==, 0);
+	}
+	/* Linking parents does not get in the way of undoing the batch. */
+	{
+		g_autoptr(GError) error = NULL;
+		VentureActor actor;
+		actor_init(&actor);
+		g_assert_true(venture_crm_import_service_rollback(venture_crm_import_service_get(f->db),
+			VENTURE_CRM_IMPORT(batch), &actor, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 0);
+	}
+}
+
 /* Batches and rows belong to the service: a generic write is refused. */
 static void
 test_generic_write_refused(Fixture *f, gconstpointer data)
@@ -1281,6 +1320,7 @@ main(int argc, char **argv)
 	g_test_add("/crm-import/history-and-tasks", Fixture, NULL, setup, test_history_and_tasks, teardown);
 	g_test_add("/crm-import/rollback-exact", Fixture, NULL, setup, test_rollback_exact, teardown);
 	g_test_add("/crm-import/vendor-maps", Fixture, NULL, setup, test_vendor_maps, teardown);
+	g_test_add("/crm-import/salesforce-parent-accounts", Fixture, NULL, setup, test_salesforce_parent_accounts, teardown);
 	g_test_add("/crm-import/generic-write", Fixture, NULL, setup, test_generic_write_refused, teardown);
 	g_test_add("/crm-import/import-atomic", Fixture, NULL, setup, test_import_atomic, teardown);
 	g_test_add("/crm-import/source-ids-scoped-by-vendor", Fixture, NULL, setup, test_source_ids_scoped_by_vendor, teardown);

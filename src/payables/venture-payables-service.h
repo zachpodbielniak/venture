@@ -49,6 +49,19 @@ gboolean venture_payables_service_transition(VenturePayablesService *self,
 	const VentureActor *actor, GError **error);
 
 /**
+ * venture_payables_service_today:
+ * @self: the service
+ *
+ * Today's calendar date in the business zone (=locale.timezone=), encoded
+ * as midnight UTC like a date-picker receipt. It is the receivables
+ * settlement service's date, so an implicit bill payment and an implicit
+ * invoice receipt land on the same operator calendar day.
+ *
+ * Returns: (transfer full): midnight UTC on the business date
+ */
+GDateTime *venture_payables_service_today(VenturePayablesService *self);
+
+/**
  * venture_payables_service_settle_bill:
  * @self: the service
  * @bill_id: the bill

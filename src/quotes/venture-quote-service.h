@@ -88,5 +88,39 @@ gboolean venture_quotes_remove_hook(VentureDatabase *database, VentureEntity *re
 gboolean venture_quote_service_import_history(VentureQuoteService *self, VentureQuote *quote,
  gint status, GDateTime *issued, GDateTime *changed, const gchar *by,
  const VentureActor *actor, GError **error);
+/**
+ * venture_quotes_settings_register: (skip)
+ * Registers the organization's built-in discount policy.
+ */
+void venture_quotes_settings_register(void);
+/**
+ * venture_quotes_bind_context: (skip)
+ * @context: wiring, held weakly by its quote service
+ */
+void venture_quotes_bind_context(VentureContext *context);
+/**
+ * venture_quote_service_decide_discount: (skip)
+ * @self: quote service
+ * @request: staged action
+ * @proposer: authenticated proposing user id
+ * @approve: whether to send
+ * @reason: (nullable): mandatory rejection reason
+ * @actor: audit attribution
+ * @error: (out) (optional): refusal
+ * Returns: TRUE if the decision committed
+ */
+gboolean venture_quote_service_decide_discount(VentureQuoteService *self,
+	VentureEntity *request, gint64 proposer, gboolean approve, const gchar *reason,
+	const VentureActor *actor, GError **error);
+/**
+ * venture_quote_service_discount_pending: (skip)
+ * @self: service
+ * @request: staged discount action
+ * @actor: (nullable): audit attribution
+ * @error: (out) (optional): refusal
+ * Returns: TRUE after history and inbox notifications commit
+ */
+gboolean venture_quote_service_discount_pending(VentureQuoteService *self,
+	VentureEntity *request, const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

@@ -1,0 +1,5 @@
+Id,Name,Website,Phone,Industry,OwnerId,CreatedDate,ParentId
+001P3,Riverbend School North,https://north.riverbend.example,,Education,005X,2025-02-01T08:00:00.000Z,001P2
+001P2,Riverbend Elementary Schools,https://schools.riverbend.example,,Education,005X,2025-02-01T08:00:00.000Z,001P1
+001P1,Riverbend School District,https://riverbend.example,,Education,005X,2025-02-01T08:00:00.000Z,
+001P4,Riverbend Annex,https://annex.riverbend.example,,Education,005X,2025-02-01T08:00:00.000Z,001ZZ
