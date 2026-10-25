@@ -300,7 +300,7 @@ test_upgrade(void)
 		"DROP TABLE deal_competitors; DROP TABLE competitors;"
 		"DROP INDEX idx_deals_lost_to_competitor_id;"
 		"ALTER TABLE deals DROP COLUMN lost_to_competitor_id;"
-		"DELETE FROM schema_migrations WHERE version = 958", NULL, &error));
+		"DELETE FROM schema_migrations WHERE version >= 958", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&old);
 	g_clear_object(&context);
