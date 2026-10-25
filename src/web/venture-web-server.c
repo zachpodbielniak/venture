@@ -1064,6 +1064,10 @@ venture_web_active_organization(
 	HtmxRequest		*request
 );
 
+static gboolean
+venture_web_report_organization(VentureWebServer *self, HtmxRequest *request,
+	JsonObject *options, GError **error);
+
 static HtmxResponse *
 venture_web_redirect_to(const gchar *path);
 
@@ -3944,7 +3948,6 @@ venture_web_api_report(
 
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
-		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "kind", "from", "to", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", "language", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "milestone_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
 		guint i;
@@ -3962,9 +3965,9 @@ venture_web_api_report(
 		}
 		if (!venture_string_is_empty(as_of))
 			json_object_set_string_member(report_options, "as_of", as_of);
-		if (!venture_string_is_empty(organization))
-			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
 	}
+	if (!venture_web_report_organization(self, request, report_options, &error))
+		return venture_web_error_response(error);
 	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);
 
@@ -8126,7 +8129,6 @@ venture_web_ui_report(
 
 	{
 		const gchar *as_of = htmx_request_get_query_param(request, "as_of");
-		const gchar *organization = htmx_request_get_query_param(request, "organization_id");
 		static const gchar *const strings[] = { "currency", "group_by", "owner", "compare_to", "basis", "dimension", "by", "band", "sort", "product", "bucket", "model", "details", "type", "measure", "aggregate", "date_field", "filter", "per", "source", "price_source", "status", "include_on_hand", "venue", "group_key", "category_path", "min_value", "max_pct", "strategy", "kind", "buy_venues", "sell_venues", "instrument", "sell_basis", "total_stake", "min_profit", "min_roi", "min_sale_rate", "max_capital", "max_buy_pct", "min_confidence", "share", "account_key", "place", "login", "language", NULL };
 		static const gchar *const integers[] = { "customer_id", "venture_id", "vendor_id", "pipeline_id", "statement_id", "account_id", "days", "weeks", "band_size", "min_tickets", "company", "category_depth", "product_id", "category_id", "goal_id", "milestone_id", "location_id", "data_source_id", "watchlist_id", "top", "preset_id", "recipe_id", "recipe_category_id", "units", "buy_sources", "max_age_hours", "expiring_hours", "mail_days", "stale_days", "dead_days", "form_id", NULL };
 		guint i;
@@ -8144,11 +8146,10 @@ venture_web_ui_report(
 		}
 		if (!venture_string_is_empty(as_of))
 			json_object_set_string_member(report_options, "as_of", as_of);
-		if (!venture_string_is_empty(organization))
-			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
 	}
-	result = venture_report_generate(report, self->context, period, report_options,
-	                                 &error);
+	if (venture_web_report_organization(self, request, report_options, &error))
+		result = venture_report_generate(report, self->context, period, report_options,
+		                                 &error);
 
 	if (NULL == result)
 	{
@@ -9971,6 +9972,81 @@ venture_web_entity_picked(HtmxRequest *request)
 	selected = venture_web_read_cookie(request, VENTURE_WEB_ENTITY_COOKIE);
 
 	return (NULL != selected);
+}
+
+/* A workspace default is not necessarily one of this owner's businesses.
+ * Resolve once for both renderers and exports, under the caller's existing
+ * access policy. A stale or foreign explicit selection never falls back. */
+static gboolean
+venture_web_report_organization(VentureWebServer *self, HtmxRequest *request,
+	JsonObject *options, GError **error)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	const gchar *requested = htmx_request_get_query_param(request, "organization_id");
+	g_autofree gchar *cookie = venture_web_read_cookie(request, VENTURE_WEB_ENTITY_COOKIE);
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(GError) failure = NULL;
+	gint64 id;
+
+	if (venture_string_is_empty(requested))
+	{
+		/* Preserve the existing portfolio request; individual report engines
+		 * decide whether they support an unscoped result. */
+		if (!g_strcmp0(cookie, "all"))
+			return TRUE;
+		requested = cookie;
+	}
+	if (requested != NULL)
+	{
+		if (!g_ascii_string_to_signed(requested, 10, 1, G_MAXINT64, &id, NULL))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Choose a valid business for this report.");
+			return FALSE;
+		}
+	}
+	else
+		id = venture_context_get_default_organization_id(self->context);
+
+	if (id > 0)
+		organization = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, id, &failure);
+	if (organization == NULL)
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) available = NULL;
+
+		if (failure != NULL &&
+		    !g_error_matches(failure, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND))
+		{
+			g_propagate_error(error, g_steal_pointer(&failure));
+			return FALSE;
+		}
+		if (requested != NULL)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+				"No such business.");
+			return FALSE;
+		}
+		query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+		venture_query_set_limit(query, 2);
+		available = venture_database_find(database, query, error);
+		if (available == NULL)
+			return FALSE;
+		/* Reports that query accessible rows can return an empty result for
+		 * an account without memberships. Keep their existing contract;
+		 * database access checks still apply to every report query. */
+		if (available->len == 0)
+			return TRUE;
+		if (available->len != 1)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Choose a business in the sidebar before opening this report.");
+			return FALSE;
+		}
+		id = venture_entity_get_id(g_ptr_array_index(available, 0));
+	}
+	json_object_set_int_member(options, "organization_id", id);
+	return TRUE;
 }
 
 /*
