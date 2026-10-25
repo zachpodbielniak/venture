@@ -26,7 +26,8 @@ static const VentureFieldDecl account_fields[] = {
 	VENTURE_FIELD("sync-since", "Sync since", "A folder's first sync starts at mail received on or after this date; empty means everything", VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("cursors", "Cursors", "Per folder: last synced UID, UIDVALIDITY and a failing message's attempts; maintained by the sync service", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("sync-lease-until", "Sync lease", "Held while a sync runs so an overlapping caller skips the account", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_REF("oauth-provider-id", "Sign-in provider", "Token sign-in (OAuth 2.0 and XOAUTH2) through this provider instead of a password; empty uses the password", "mail_oauth_provider", VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD_REF("oauth-provider-id", "Sign-in provider", "Token sign-in (OAuth 2.0 and XOAUTH2) through this provider instead of a password; empty uses the password", "mail_oauth_provider", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("creates-tickets", "Create support tickets", "Mail arriving in this shared account becomes customer tickets; use a dedicated support mailbox", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY(VentureMailAccount, venture_mail_account, account_fields)
 /* One row per fetched message. The UID key is what makes a rerun a no-op
@@ -48,7 +49,8 @@ static const VentureFieldDecl inbound_fields[] = {
 	VENTURE_FIELD_REF("capture-item-id", "Capture item", NULL, "capture_item", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("outbound", "Outbound", "Sent from the account address", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("duplicate-of-id", "Duplicate of", "The row first filed with this Message-ID; this one records only another folder or account holding it", "mail_inbound", VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("skip-reason", "Skip reason", "Why the message was filed as a stub rather than processed")
+	VENTURE_FIELD_TEXT("skip-reason", "Skip reason", "Why the message was filed as a stub rather than processed"),
+	VENTURE_FIELD_REF("ticket-id", "Support ticket", "Ticket created or updated by this message", "ticket", VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureMailInbound, venture_mail_inbound, inbound_fields,
 	/* The sync's memory of what it filed; the message it filed is what to discuss. */

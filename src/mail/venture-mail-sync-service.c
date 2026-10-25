@@ -253,7 +253,11 @@ static gboolean message_is_bulk(GMimeObject *message)
 {
 	const gchar *precedence = g_mime_object_get_header(message, "Precedence");
 	const gchar *automatic = g_mime_object_get_header(message, "Auto-Submitted");
+	const gchar *return_path = g_mime_object_get_header(message, "Return-Path");
+	const gchar *content_type = g_mime_object_get_header(message, "Content-Type");
 	if (g_mime_object_get_header(message, "List-Id")) return TRUE;
+	if (return_path && g_strstr_len(return_path, -1, "<>")) return TRUE;
+	if (content_type && g_strrstr(content_type, "delivery-status")) return TRUE;
 	if (precedence) {
 		g_autofree gchar *value = address_lower(precedence);
 		if (!strcmp(value, "bulk") || !strcmp(value, "list") || !strcmp(value, "junk")) return TRUE;
@@ -958,6 +962,102 @@ void venture_mail_sync_add_inbound_hook(VentureMailInboundHook hook)
 		if (g_array_index(inbound_hooks, VentureMailInboundHook, i) == hook) return;
 	g_array_append_val(inbound_hooks, hook);
 }
+static VentureEntity *support_ticket_for_message(SyncRun *run, const gchar *message_id,
+	GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_INBOUND);
+	g_autoptr(VentureEntity) inbound = NULL;
+	gint64 ticket_id = 0;
+	venture_query_set_organization(query, run->org);
+	venture_query_add_filter_string(query, "message-id", VENTURE_FILTER_OP_EQ,
+	                                message_id, NULL);
+	venture_query_set_limit(query, 1);
+	inbound = venture_database_find_one(run->db, query, error);
+	if (!inbound) return NULL;
+	g_object_get(inbound, "ticket-id", &ticket_id, NULL);
+	return ticket_id > 0 ? venture_database_get(run->db, VENTURE_TYPE_TICKET,
+	                                             ticket_id, error) : NULL;
+}
+
+static gboolean support_file_message(SyncRun *run, Parsed *p, VentureEntity *inbound,
+	GError **error)
+{
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) comment = NULL;
+	g_autofree gchar *title = NULL;
+	gint64 account_id = 0, contact_id = 0;
+	gboolean enabled = FALSE;
+	guint i;
+	const gchar *reference;
+	if (!type_on("ticket")) return TRUE;
+	g_object_get(run->account, "creates-tickets", &enabled, NULL);
+	if (!enabled || p->bulk || !p->from || !*p->from ||
+	    (run->own_normal && !g_strcmp0(run->own_normal, p->from))) return TRUE;
+	if (!run->contacts && !(run->contacts = email_index(run->db,
+		VENTURE_TYPE_CONTACT, run->org, error))) return FALSE;
+	if (p->subject && (reference = strstr(p->subject, "[#"))) {
+		gchar *end = NULL;
+		gint64 id = g_ascii_strtoll(reference + 2, &end, 10);
+		if (id > 0 && end && *end == ']')
+			ticket = venture_database_get(run->db, VENTURE_TYPE_TICKET, id, error);
+		if (error && *error) return FALSE;
+	}
+	if (!ticket && p->in_reply_to && *p->in_reply_to) {
+		ticket = support_ticket_for_message(run, p->in_reply_to, error);
+		if (error && *error) return FALSE;
+	}
+	for (i = 0; !ticket && i < p->references->len; i++) {
+		ticket = support_ticket_for_message(run, g_ptr_array_index(p->references, i), error);
+		if (error && *error) return FALSE;
+	}
+	if (ticket) {
+		g_autofree gchar *requester = NULL;
+		g_object_get(ticket, "support-account-id", &account_id, NULL);
+		g_object_get(ticket, "requester-email", &requester, NULL);
+		if (venture_entity_get_organization_id(ticket) != run->org ||
+		    account_id != run->account_id ||
+		    g_ascii_strcasecmp(requester ? requester : "", p->from) != 0)
+			g_clear_object(&ticket);
+	}
+	if (!ticket) {
+		GPtrArray *matches = g_hash_table_lookup(run->contacts, p->from);
+		g_autofree gchar *subject = g_strdup(p->subject && *p->subject ? p->subject : "(no subject)");
+		if (matches && matches->len)
+			contact_id = venture_entity_get_id(g_ptr_array_index(matches, 0));
+		ticket = g_object_new(VENTURE_TYPE_TICKET, "organization-id", run->org,
+			"title", subject, "kind", VENTURE_TICKET_KIND_EXTERNAL,
+			"contact-id", contact_id, "support-account-id", run->account_id,
+			"requester-email", p->from, NULL);
+		if (!venture_database_save(run->db, ticket, run->actor, error)) return FALSE;
+	} else {
+		VentureTicketStatus status;
+		g_object_get(ticket, "status", &status, NULL);
+		if (status == VENTURE_TICKET_STATUS_DONE) {
+			g_object_set(ticket, "status", VENTURE_TICKET_STATUS_TODO, NULL);
+			if (!venture_database_save(run->db, ticket, run->actor, error)) return FALSE;
+		}
+	}
+	comment = g_object_new(VENTURE_TYPE_TICKET_COMMENT,
+		"organization-id", run->org,
+		"ticket-id", venture_entity_get_id(ticket),
+		"body", p->text && *p->text ? p->text : "(empty message)",
+		"author", p->from, "internal", FALSE, "occurred-at", p->date, NULL);
+	{
+		VentureActor mail_actor = { VENTURE_ACTOR_KIND_SYSTEM, "mail sync", NULL, NULL, NULL };
+		if (!venture_database_save(run->db, comment, &mail_actor, error)) return FALSE;
+	}
+	for (i = 0; i < p->attachments->len; i++) {
+		Attachment *attachment = g_ptr_array_index(p->attachments, i);
+		g_autoptr(VentureEntity) document = file_document(run, attachment->name,
+			"support", attachment->mime, attachment->data, NULL, error);
+		if (!document) return FALSE;
+		g_object_set(document, "ticket-id", venture_entity_get_id(ticket), NULL);
+		if (!venture_database_save(run->db, document, run->actor, error)) return FALSE;
+	}
+	g_object_set(inbound, "ticket-id", venture_entity_get_id(ticket), NULL);
+	return TRUE;
+}
+
 static gboolean run_inbound_hooks(SyncRun *run, GBytes *raw, GError **error)
 {
 	guint i;
@@ -984,10 +1084,10 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	if (existing) {
 		/* Another copy of mail already filed: record where this one sits,
 		 * point at what the first copy created, and create nothing new. */
-		gint64 root = 0, document = 0, contact = 0, interaction = 0, item = 0;
-		g_object_get(existing, "duplicate-of-id", &root, "document-id", &document, "contact-id", &contact, "interaction-id", &interaction, "capture-item-id", &item, NULL);
+		gint64 root = 0, document = 0, contact = 0, interaction = 0, item = 0, ticket = 0;
+		g_object_get(existing, "duplicate-of-id", &root, "document-id", &document, "contact-id", &contact, "interaction-id", &interaction, "capture-item-id", &item, "ticket-id", &ticket, NULL);
 		g_object_set(inbound, "duplicate-of-id", root ? root : venture_entity_get_id(existing), "contact-id", live_reference(run->db, VENTURE_TYPE_CONTACT, contact),
-			"interaction-id", live_reference(run->db, VENTURE_TYPE_INTERACTION, interaction), NULL);
+			"interaction-id", live_reference(run->db, VENTURE_TYPE_INTERACTION, interaction), "ticket-id", live_reference(run->db, VENTURE_TYPE_TICKET, ticket), NULL);
 		if (item && type_on("capture_item")) g_object_set(inbound, "capture-item-id", live_reference(run->db, VENTURE_TYPE_CAPTURE_ITEM, item), NULL);
 		document = live_reference(run->db, VENTURE_TYPE_DOCUMENT, document);
 		if (!document) {
@@ -1013,6 +1113,7 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	 * reason says why. */
 	if (!capture) {
 		if (!file_participants(run, p, thread, body, outbound, inbound, error)) return FALSE;
+		if (!skip_reason && !outbound && !support_file_message(run, p, inbound, error)) return FALSE;
 	} else if (!skip_reason && type_on("capture_item")) {
 		if (!file_capture(run, p, inbound, error)) return FALSE;
 	}

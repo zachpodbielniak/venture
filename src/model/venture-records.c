@@ -1484,6 +1484,8 @@ VENTURE_DEFINE_ENTITY_WITH_CODE(VentureKbLink, venture_kb_link, venture_kb_link_
  */
 static const VentureFieldDecl venture_ticket_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", NULL),
+	VENTURE_FIELD_REF("support-account-id", "Support mailbox", "Shared mailbox handling customer replies", "mail_account", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("requester-email", "Requester email", "Original sender for support mail without a matched contact", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("kind", "Kind", "Internal work, or somebody else's request",
 	                   venture_ticket_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
@@ -3130,6 +3132,7 @@ static const VentureFieldDecl venture_document_fields[] = {
 	VENTURE_FIELD_REF("expense-id", "Expense",
 	                  "Set when this is a receipt", "expense",
 	                  VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("ticket-id", "Support ticket", "Attachment received with support mail", "ticket", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
 	VENTURE_FIELD("size-bytes", "Size", NULL, VENTURE_FIELD_KIND_INTEGER,
 	              VENTURE_COLUMN_FLAG_NONE),

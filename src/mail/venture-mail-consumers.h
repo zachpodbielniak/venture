@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #ifndef VENTURE_MAIL_CONSUMERS_H
 #define VENTURE_MAIL_CONSUMERS_H
+/* Ticket replies and their outbox rows commit as one business command. */
+gboolean venture_mail_support_save_comment(VentureDatabase *database,
+	VentureEntity *comment, const VentureActor *actor,
+	gboolean (*save_next)(VentureDatabase *, VentureEntity *,
+	                      const VentureActor *, GError **), GError **error);
 /**
  * venture_mail_send_invoice:
  * @context: application context

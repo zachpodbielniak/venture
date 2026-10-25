@@ -1350,7 +1350,11 @@ database_save_after_sales(VentureDatabase *self, VentureEntity *entity, const Ve
 {
 	gboolean handled = FALSE;
 	gboolean ok = venture_sequences_save_hook(self, entity, actor, database_save_unwrapped, &handled, error);
-	return handled || !ok ? ok : database_save_unwrapped(self, entity, actor, error);
+	if (handled || !ok) return ok;
+	if (VENTURE_IS_TICKET_COMMENT(entity))
+		return venture_mail_support_save_comment(self, entity, actor,
+			                                     database_save_unwrapped, error);
+	return database_save_unwrapped(self, entity, actor, error);
 }
 
 static gboolean

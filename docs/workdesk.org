@@ -201,3 +201,15 @@ defined in [[file:reporting.org][Reporting]].
 Nothing is stored and no ticket is touched: the rollup reads the tickets
 and worklogs at the moment of asking, so a worklog corrected afterwards
 corrects the cost.
+
+* Email-to-ticket
+
+A shared mail account with =Create support tickets= turned on feeds incoming
+customer mail into the workdesk. New mail creates an external ticket and a
+public first comment, matching the sender to a contact when possible. The
+ticket gets the usual routing and service-level rules. Attachments are
+linked documents. Replies from the same requester thread by ticket number
+or mail headers, and reopen a completed ticket. A public staff comment
+queues exactly one reply from the support address; an internal note does
+not. [[file:mail.org][Mail]] describes setup, loop protection and the SMTP
+sender requirement.
