@@ -42,6 +42,7 @@ Forcing extraction does not authorize overwriting somebody's corrections.
 | Raster | 4096 pixels per dimension, approximately 150 DPI for ordinary PDF pages |
 | Text | 1 MiB per page and per completed document |
 | Tesseract process | 30 seconds, including bounded pipe reads |
+| Version probe | 2 seconds, separate from a shorter page deadline |
 | Inbox batch | At most 25 frozen capture rows |
 | Step | One document page |
 
@@ -53,8 +54,10 @@ incomplete text layer may require operator correction. A scanned page with
 no text layer is rasterized and sent to Tesseract.
 
 Native PDF parsing and image decoding happen on the calling thread within
-the file/page/raster bounds. The process deadline applies to Tesseract,
-not a hard real-time deadline for those library calls. Use modest batches
+the file/page/raster bounds. The process deadline applies to Tesseract
+page extraction, not a hard real-time deadline for those library calls.
+Identifying the executable (--version) uses its own two-second budget, so
+a short page deadline can still construct the engine. Use modest batches
 on a busy server. There is no automatic background worker: continue a job
 or batch explicitly, or invoke its ordinary action from automation.
 

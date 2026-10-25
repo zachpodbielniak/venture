@@ -68,7 +68,8 @@ gboolean venture_ocr_local_check(const gchar *executable, GError **error);
 /**
  * venture_ocr_local_new:
  * @executable: operator-configured Tesseract executable
- * @timeout_ms: per-process deadline, from 1 to 30000 milliseconds
+ * @timeout_ms: page-process deadline, from 1 to 30000 milliseconds.
+ * The version probe uses a separate two-second budget.
  * @error: (out) (optional): configuration or version probe failure
  * Returns: (transfer full) (nullable): a local Tesseract/Poppler engine
  */
