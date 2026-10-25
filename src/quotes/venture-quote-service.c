@@ -13,8 +13,12 @@ struct _VentureQuoteService {
 	VentureEntity *removing;
 	gboolean busy;
 	gchar *base_url;
+	GWeakRef context;
+	VentureEntity *approved_request;
 };
 G_DEFINE_FINAL_TYPE(VentureQuoteService, venture_quote_service, G_TYPE_OBJECT)
+
+static GError *discount_gate(VentureQuoteService *self, VentureEntity *q, const gchar *verb, gpointer data);
 
 static gboolean
 refuse(GError **error, VentureError code, const gchar *message)
@@ -54,6 +58,7 @@ finalize(GObject *object)
 {
 	VentureQuoteService *self = VENTURE_QUOTE_SERVICE(object);
 	g_free(self->base_url);
+	g_weak_ref_clear(&self->context);
 	if (self->database != NULL)
 		g_object_remove_weak_pointer(G_OBJECT(self->database), (gpointer *)&self->database);
 	G_OBJECT_CLASS(venture_quote_service_parent_class)->finalize(object);
@@ -99,7 +104,8 @@ venture_quote_service_class_init(VentureQuoteServiceClass *klass)
 static void
 venture_quote_service_init(VentureQuoteService *self)
 {
-	(void)self;
+	g_weak_ref_init(&self->context, NULL);
+	g_signal_connect(self, "before-action", G_CALLBACK(discount_gate), NULL);
 }
 
 static gint64
@@ -283,6 +289,9 @@ check_refs(VentureQuoteService *self, VentureEntity *r, GError **error)
 		type = venture_entity_registry_lookup(venture_entity_registry_get_default(), target);
 		if (type == G_TYPE_INVALID)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "referenced module is disabled");
+		/* The authenticated author is service-owned; ordinary reference
+		 * validation checks a newly written id without exposing user rows. */
+		if (g_strcmp0(target, "user") == 0 && g_strcmp0(venture_field_spec_get_name(spec), "author-user-id") == 0) continue;
 		other = get(self, type, venture_entity_get_organization_id(r), id, error);
 		if (other == NULL) return FALSE;
 	}
@@ -482,6 +491,14 @@ save_draft(VentureQuoteService *self, VentureEntity *r, const VentureActor *acto
 	if (!check_refs(self, r, error)) goto done;
 	if (VENTURE_IS_QUOTE(r))
 	{
+		const VentureAuthPrincipal *principal = venture_access_policy_get_actor(venture_database_get_access_policy(self->database));
+		if (previous == NULL)
+			g_object_set(r, "author-user-id", principal != NULL ? principal->user_id : (gint64)0, NULL);
+		else if (integer(r, "author-user-id") != integer(previous, "author-user-id"))
+		{
+			refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "the quote author cannot be changed");
+			goto done;
+		}
 		if (state(r) != VENTURE_QUOTE_DRAFT || (previous != NULL && state(previous) != VENTURE_QUOTE_DRAFT))
 		{
 			refuse(error, VENTURE_ERROR_VALIDATION, "status and sent proposals are service-owned");
@@ -703,11 +720,12 @@ revise(VentureQuoteService *self, VentureEntity *q, VentureEntity *request, cons
 	g_autofree gchar *number = NULL;
 	g_autofree gchar *new_number = NULL;
 	gint64 revision = integer(q, "revision") + 1;
+	const VentureAuthPrincipal *principal = venture_access_policy_get_actor(venture_database_get_access_policy(self->database));
 	guint i;
 	g_object_get(q, "number", &number, NULL);
 	new_number = g_strdup_printf("%s-R%" G_GINT64_FORMAT, number, revision);
 	venture_entity_set_organization_id(next, venture_entity_get_organization_id(q));
-	g_object_set(next, "number", new_number, "revision", revision, "parent-id", venture_entity_get_id(q),
+	g_object_set(next, "author-user-id", principal != NULL ? principal->user_id : (gint64)0, "number", new_number, "revision", revision, "parent-id", venture_entity_get_id(q),
 		"status", VENTURE_QUOTE_DRAFT, "issued-at", NULL, "valid-until", NULL,
 		"acceptance-token", NULL, "invoice-id", (gint64)0, "subscription-id", (gint64)0, NULL);
 	if (!write_record(self, next, actor, error)) return FALSE;
@@ -1001,6 +1019,8 @@ subscription_posts(VentureQuoteService *self, VentureEntity *q)
 	return plan == NULL || integer(plan, "trial-days") == 0;
 }
 
+#include "venture-quote-approval.inc"
+
 /* Bind consent before this operation creates derived rows or enters nested
  * transactions. All generated financial effects share this root proposal. */
 gboolean
@@ -1024,7 +1044,7 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
 	g_object_get(request, "action", &verb, NULL);
 	if (g_strcmp0(verb, "accept") != 0 && g_strcmp0(verb, "start-subscription") != 0)
-		return venture_quote_service_execute_impl(self, request, method, ip, actor, error);
+		return execute_with_discount(self, request, method, ip, actor, error);
 	quote = get(self, VENTURE_TYPE_QUOTE, venture_entity_get_organization_id(request), integer(request, "quote-id"), error);
 	if (quote == NULL)
 		return FALSE;

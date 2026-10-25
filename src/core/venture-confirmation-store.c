@@ -472,6 +472,8 @@ venture_confirmation_store_stage(
 		existing = value;
 
 		if ((existing->action != action) ||
+		    ((VENTURE_IS_QUOTE_ACTION(staged) || VENTURE_IS_QUOTE_ACTION(existing->staged)) &&
+		     g_strcmp0(existing->via, via) != 0) ||
 		    (0 != g_strcmp0(existing->summary, summary)) ||
 		    (0 != g_strcmp0(existing->origin, origin ? origin->name : NULL)))
 			continue;
@@ -529,6 +531,13 @@ venture_confirmation_store_stage(
 	confirmation->created_at = g_date_time_ref(now);
 	confirmation->expires_at = g_date_time_add_seconds(now,
 		(gdouble)self->ttl_seconds);
+
+	if (via != NULL && g_str_has_prefix(via, "quote-discount:") &&
+		!venture_quote_service_discount_pending(venture_database_get_quote_service(self->database), staged, origin, error))
+	{
+		g_object_unref(confirmation);
+		return NULL;
+	}
 
 	g_hash_table_insert(self->pending, g_strdup(confirmation->id),
 	                    confirmation);
@@ -701,6 +710,10 @@ venture_confirmation_store_approve_as(
 	    !venture_settings_check_approval(self->database, confirmation->staged, confirmation->via, error))
 		return FALSE;
 
+	if (confirmation->via != NULL && g_str_has_prefix(confirmation->via, "quote-discount:"))
+		ok = venture_quote_service_decide_discount(venture_database_get_quote_service(self->database),
+			confirmation->staged, confirmation->proposer_user_id, TRUE, NULL, &actor, &local_error);
+	else
 	if (NULL != confirmation->via && g_str_has_prefix(confirmation->via, "orgaccess:journal-post:"))
 		ok = venture_orgaccess_apply_post(self->database, confirmation->original, confirmation->via, &actor, role, &local_error);
 	else
@@ -809,10 +822,11 @@ venture_confirmation_store_approve_as(
 }
 
 gboolean
-venture_confirmation_store_reject(
+venture_confirmation_store_reject_with_reason(
 	VentureConfirmationStore	 *self,
 	const gchar			 *confirmation_id,
 	const gchar			 *approver,
+	const gchar *reason,
 	GError				**error
 ){
 	g_autoptr(VentureAuditEntry) entry = NULL;
@@ -831,6 +845,18 @@ venture_confirmation_store_reject(
 		            "There is no change waiting with id %s. It may have "
 		            "expired, or already been decided.", confirmation_id);
 		return FALSE;
+	}
+
+	if (confirmation->via != NULL && g_str_has_prefix(confirmation->via, "quote-discount:"))
+	{
+		VentureActor actor;
+		actor.kind = confirmation->origin_kind;
+		actor.name = confirmation->origin;
+		actor.prompt = confirmation->prompt;
+		actor.request_id = confirmation->id;
+		actor.approved_by = approver;
+		if (!venture_quote_service_decide_discount(venture_database_get_quote_service(self->database),
+			confirmation->staged, confirmation->proposer_user_id, FALSE, reason, &actor, error)) return FALSE;
 	}
 
 	confirmation->state = VENTURE_CONFIRMATION_STATE_REJECTED;
@@ -1036,4 +1062,28 @@ venture_confirmation_store_approve(VentureConfirmationStore *self, const gchar *
 		}
 	}
 	return venture_confirmation_store_approve_as(self, id, approver, role, error);
+}
+
+gboolean
+venture_confirmation_store_reject(VentureConfirmationStore *self, const gchar *id,
+	const gchar *approver, GError **error)
+{
+	return venture_confirmation_store_reject_with_reason(self, id, approver, NULL, error);
+}
+
+VentureConfirmation *
+venture_confirmation_store_find_quote_discount(VentureConfirmationStore *self, VentureEntity *quote)
+{
+	g_autoptr(GPtrArray) pending = venture_confirmation_store_list_pending(self);
+	guint i;
+	for (i = 0; i < pending->len; i++)
+	{
+		VentureConfirmation *c = g_ptr_array_index(pending, i);
+		gint64 id = 0, version = 0;
+		if (c->via == NULL || !g_str_has_prefix(c->via, "quote-discount:") || !VENTURE_IS_QUOTE_ACTION(c->staged)) continue;
+		g_object_get(c->staged, "quote-id", &id, "expected-version", &version, NULL);
+		if (id == venture_entity_get_id(quote) && version == venture_entity_get_version(quote) &&
+			venture_entity_get_organization_id(c->staged) == venture_entity_get_organization_id(quote)) return c;
+	}
+	return NULL;
 }

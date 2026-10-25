@@ -167,6 +167,7 @@ venture_context_new(
 	venture_company_tree_install(self);
 	venture_deal_contact_install(self);
 	venture_competitor_install(self);
+	venture_quotes_bind_context(self);
 
 	/* A comment stays on its record, in its record's organization, under
 	 * the author it was written by -- whichever door wrote it. */

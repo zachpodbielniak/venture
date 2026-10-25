@@ -9238,6 +9238,10 @@ venture_web_ui_form(
 
 		spec = g_ptr_array_index(specs, i);
 		flags = venture_field_spec_get_flags(spec);
+		/* Immutable values remain in the stored snapshot; an edit form
+		 * must not offer a different identity or erase an unseen picker. */
+		if (id != 0 && (flags & VENTURE_COLUMN_FLAG_IMMUTABLE) != 0)
+			continue;
 
 		/* A manual receipt has familiar choices; provider receipts still
 		 * retain their string method in the shared service and API. */
@@ -19684,9 +19688,9 @@ venture_web_chat_append_confirmations(
 			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
 			"Apply</button>"
 			"<button class=\"btn btn-sm\" type=\"button\" "
-			"hx-post=\"/ui/chat/confirm/%s/reject\" "
+			"hx-post=\"/ui/chat/confirm/%s/reject\" hx-include=\"closest .confirm-card\" "
 			"hx-target=\"#chat-log\" hx-swap=\"beforeend\">"
-			"Discard</button></div></div>", id, id);
+			"Discard</button><label>Rejection reason <input name=\"reason\" placeholder=\"Required for discount rejection\"></label></div></div>", id, id);
 	}
 }
 
@@ -19762,8 +19766,8 @@ venture_web_ui_chat_decide(
 	decided = approve
 		? venture_confirmation_store_approve_as(store, id,
 			principal->name, principal->role, &error)
-		: venture_confirmation_store_reject(store, id,
-			(NULL != principal) ? principal->name : NULL, &error);
+		: venture_confirmation_store_reject_with_reason(store, id,
+			(NULL != principal) ? principal->name : NULL, htmx_request_get_form_value(request, "reason"), &error);
 
 	html = g_string_new("<div class=\"msg ai\">"
 	                    "<span class=\"msg-avatar\">"
@@ -22002,6 +22006,8 @@ venture_web_api_decide(
 	VentureConfirmationStore *store;
 	const gchar *id;
 	gboolean ok;
+	g_autoptr(JsonNode) body = NULL;
+	const gchar *reason;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -22046,15 +22052,27 @@ venture_web_api_decide(
 		}
 	}
 
+	body = htmx_request_get_json(request, NULL);
+	reason = htmx_request_get_form_value(request, "reason");
+	if (body != NULL && JSON_NODE_HOLDS_OBJECT(body))
+		reason = venture_json_object_get_string(json_node_get_object(body), "reason", "");
 	ok = approve
 		? venture_confirmation_store_approve_as(store, id,
 			principal->name, principal->role, &error)
-		: venture_confirmation_store_reject(store, id,
-			(NULL != principal) ? principal->name : NULL, &error);
+		: venture_confirmation_store_reject_with_reason(store, id,
+			(NULL != principal) ? principal->name : NULL, reason, &error);
 
 	if (!ok)
 		return venture_web_error_response(error);
 
+	{
+		const gchar *back = htmx_request_get_form_value(request, "quote_id");
+		if (back != NULL && back[0] != '\0' && strspn(back, "0123456789") == strlen(back))
+		{
+			g_autofree gchar *destination = g_strdup_printf("/e/quote/%s", back);
+			return venture_web_redirect_to(destination);
+		}
+	}
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "id");

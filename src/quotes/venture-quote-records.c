@@ -62,7 +62,8 @@ static const VentureFieldDecl quote_fields[] = {
 	VENTURE_FIELD_MONEY("tax", "Tax", NULL),
 	VENTURE_FIELD_MONEY("total", "Total", NULL),
 	VENTURE_FIELD_REF("subscription-id", "Started subscription", "Set by Start subscription on an accepted quote",
-		"customer_subscription", VENTURE_COLUMN_FLAG_NONE)
+		"customer_subscription", VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_REF("author-user-id", "Author", "Authenticated creator; service-owned", "user", VENTURE_COLUMN_FLAG_IMMUTABLE | VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureQuote, venture_quote, quote_fields,
 	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/quotes/compose");)
