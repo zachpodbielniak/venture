@@ -1,0 +1,2 @@
+Record Id,Number,Account Name.id,Contact Name.id,Owner,Status,Legacy Label,Issued At,Due At,Status At
+invoice-1,ZC-SYN-I-210,company-1,contact-1,owner-1,draft,synthetic-invoices,2025-04-03T00:00:00Z,2025-05-03T00:00:00Z,2025-04-05T00:00:00Z

@@ -250,7 +250,7 @@ test_lifecycle_idempotent(Fixture *f, gconstpointer data)
 	batch = preview(f, payload);
 	g_object_get(batch, "state", &state, "report", &report, NULL);
 	g_assert_cmpstr(state, ==, "preview");
-	g_assert_nonnull(strstr(report, "attachments"));
+	g_assert_nonnull(strstr(report, "Unsupported: none"));
 	rows = live(f, VENTURE_TYPE_CRM_IMPORT_ROW);
 	g_assert_cmpuint(rows->len, ==, 3 + 4 + 3 + 4 + 3);
 	g_clear_pointer(&status, g_free);
@@ -440,6 +440,10 @@ test_deals(Fixture *f, gconstpointer data)
 	g_assert_cmpint(stage, ==, VENTURE_DEAL_STAGE_WON);
 	g_assert_cmpint(int_of(won, "stage-id"), ==, stage_id(f, "won"));
 	g_assert_nonnull(closed);
+	{
+		g_autofree gchar *date = g_date_time_format(closed, "%Y-%m-%d");
+		g_assert_cmpstr(date, ==, "2025-03-31");
+	}
 
 	lost = record_of(f, batch, "deal", "303", VENTURE_TYPE_DEAL);
 	g_clear_pointer(&value, venture_money_free);
@@ -488,7 +492,7 @@ test_unmapped_stage_refused(Fixture *f, gconstpointer data)
 }
 
 /* A lost stage needs a loss reason, a deal amount needs a currency, and
- * attachments are unsupported: each refused at preview with nothing written. */
+ * malformed attachment headers are refused at preview with nothing written. */
 static void
 test_manifest_refusals(Fixture *f, gconstpointer data)
 {
@@ -522,7 +526,7 @@ test_manifest_refusals(Fixture *f, gconstpointer data)
 		g_assert_null(batch);
 		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 		g_assert_nonnull(strstr(error->message, "attachments"));
-		g_assert_nonnull(strstr(error->message, "unsupported"));
+		g_assert_nonnull(strstr(error->message, "source id"));
 		g_clear_error(&error);
 	}
 	{
@@ -1062,10 +1066,13 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_autofree gchar *manifest_path = NULL;
 	g_autofree gchar *manifest_text = NULL;
 	g_autofree gchar *status = NULL;
+	g_autofree gchar *attachment_url = NULL;
 	g_autoptr(JsonObject) object = manifest(f, "hubspot", hubspot_files, NULL, NULL);
 	guint port;
 	guint i;
 	(void)data;
+	json_object_set_string_member(json_object_get_object_member(object, "csv"), "attachments",
+		"Record ID,Name,Parent Object,Parent Id,Content Base64\nattachment-1,evidence.txt,contact,201,U3ludGhldGljIGV2aWRlbmNlLgo=\n");
 	port = 0;
 	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
@@ -1085,9 +1092,22 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "\"imported\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DOCUMENT);
+		g_autoptr(VentureEntity) document = venture_database_find_one(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(document);
+		attachment_url = g_strdup_printf("/api/v1/crm_imports/attachments/%" G_GINT64_FORMAT, venture_entity_get_id(document));
+		g_assert_cmpuint(http_request(server, "GET", attachment_url, NULL, NULL, &body), ==, 200);
+		g_assert_cmpstr(body, ==, "Synthetic evidence.\n");
+		g_clear_pointer(&body, g_free);
+	}
+
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/crm_imports/1/rollback", "application/json", "{}", &body), ==, 200);
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 0);
+	g_assert_cmpuint(http_request(server, "GET", attachment_url, NULL, NULL, &body), ==, 404);
+	g_clear_pointer(&body, g_free);
 	/* A rolled-back batch refuses import over HTTP with the validation
 	 * status, and the refusal names the service. */
 	g_assert_cmpuint(http_request(server, "POST", "/api/v1/crm_imports/1/import", "application/json", "{}", &body), ==, 422);
@@ -1101,12 +1121,24 @@ test_surfaces(Fixture *f, gconstpointer data)
 		g_autofree gchar *path = g_build_filename(dir, hubspot_files[i + 1], NULL);
 		g_assert_true(g_file_set_contents(path, text, -1, NULL));
 	}
+	{
+		g_autofree gchar *attachment_path = g_build_filename(dir, "evidence.txt", NULL);
+		g_autofree gchar *csv_path = g_build_filename(dir, "attachments.csv", NULL);
+		JsonObject *attachment_files = json_object_new();
+		g_assert_true(g_file_set_contents(attachment_path, "Synthetic evidence.\n", -1, &error));
+		g_assert_no_error(error);
+		g_assert_true(g_file_set_contents(csv_path, "Record ID,Name,Parent Object,Parent Id,Content Base64\nattachment-1,evidence.txt,contact,201,\n", -1, &error));
+		g_assert_no_error(error);
+		json_object_set_string_member(attachment_files, "attachment-1", "evidence.txt");
+		json_object_set_object_member(object, "attachment_files", attachment_files);
+	}
 	json_object_remove_member(object, "csv");
 	{
 		g_autoptr(JsonObject) files = json_object_new();
 		g_autoptr(JsonNode) node = json_node_new(JSON_NODE_OBJECT);
 		for (i = 0; hubspot_files[i] != NULL; i += 2)
 			json_object_set_string_member(files, hubspot_files[i], hubspot_files[i + 1]);
+		json_object_set_string_member(files, "attachments", "attachments.csv");
 		json_object_set_object_member(object, "files", g_steal_pointer(&files));
 		json_node_set_object(node, json_object_ref(object));
 		manifest_text = venture_json_to_string(node, FALSE);
@@ -1121,6 +1153,15 @@ test_surfaces(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(body, "\"imported\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_DOCUMENT);
+		g_autoptr(VentureEntity) document = venture_database_find_one(f->db, query, &error);
+		g_autofree gchar *encoded = NULL;
+		g_assert_no_error(error);
+		g_assert_nonnull(document);
+		g_object_get(document, "content-base64", &encoded, NULL);
+		g_assert_cmpstr(encoded, ==, "U3ludGhldGljIGV2aWRlbmNlLgo=");
+	}
 	g_assert_true(run_cli(server, "crm", "rollback", "2", &body));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 0);

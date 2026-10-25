@@ -25,8 +25,12 @@ venture_cli_crm_manifest(const gchar *path, GError **error)
 	manifest = json_node_get_object(root);
 	files = json_object_has_member(manifest, "files") && JSON_NODE_HOLDS_OBJECT(json_object_get_member(manifest, "files"))
 		? json_object_get_object_member(manifest, "files") : NULL;
-	if (files == NULL)
-		return g_steal_pointer(&root);
+	if (json_object_has_member(manifest, "files") && files == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "files must map modules to filenames");
+		return NULL;
+	}
+
 	csv = json_object_has_member(manifest, "csv") && JSON_NODE_HOLDS_OBJECT(json_object_get_member(manifest, "csv"))
 		? json_object_get_object_member(manifest, "csv") : NULL;
 	if (csv == NULL)
@@ -35,15 +39,68 @@ venture_cli_crm_manifest(const gchar *path, GError **error)
 		json_object_set_object_member(manifest, "csv", csv);
 	}
 	dir = g_path_get_dirname(path);
-	names = json_object_get_members(files);
+	names = files != NULL ? json_object_get_members(files) : NULL;
 	for (l = names; l != NULL; l = l->next)
 	{
-		const gchar *file = json_object_get_string_member(files, l->data);
-		g_autofree gchar *full = g_path_is_absolute(file) ? g_strdup(file) : g_build_filename(dir, file, NULL);
+		JsonNode *filename = json_object_get_member(files, l->data);
+		const gchar *file;
+		g_autofree gchar *full = NULL;
 		g_autofree gchar *text = NULL;
+		if (!JSON_NODE_HOLDS_VALUE(filename) || json_node_get_value_type(filename) != G_TYPE_STRING)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "files entries must be filenames");
+			return NULL;
+		}
+		file = json_node_get_string(filename);
+		full = g_path_is_absolute(file) ? g_strdup(file) : g_build_filename(dir, file, NULL);
 		if (!g_file_get_contents(full, &text, NULL, error))
 			return NULL;
 		json_object_set_string_member(csv, l->data, text);
+	}
+	{
+		JsonNode *node = json_object_get_member(manifest, "attachment_files");
+		JsonObject *attachments = node != NULL && JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
+		g_autoptr(GList) ids = attachments != NULL ? json_object_get_members(attachments) : NULL;
+		g_autoptr(JsonObject) payloads = NULL;
+		JsonNode *existing = json_object_get_member(manifest, "attachment_data");
+		if ((node != NULL && attachments == NULL) || (existing != NULL && !JSON_NODE_HOLDS_OBJECT(existing)))
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "attachment_files and attachment_data must be objects");
+			return NULL;
+		}
+		payloads = existing != NULL ? json_object_ref(json_node_get_object(existing)) : json_object_new();
+		for (l = ids; l != NULL; l = l->next)
+		{
+			JsonNode *filename = json_object_get_member(attachments, l->data);
+			const gchar *file;
+			g_autofree gchar *full = NULL;
+			g_autofree gchar *content = g_malloc(8 * 1024 * 1024 + 1);
+			g_autofree gchar *encoded = NULL;
+			g_autoptr(GFile) input = NULL;
+			g_autoptr(GFileInputStream) stream = NULL;
+			gsize length;
+			if (!JSON_NODE_HOLDS_VALUE(filename) || json_node_get_value_type(filename) != G_TYPE_STRING)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "attachment_files entries must be filenames");
+				return NULL;
+			}
+			file = json_node_get_string(filename);
+			full = g_path_is_absolute(file) ? g_strdup(file) : g_build_filename(dir, file, NULL);
+			input = g_file_new_for_path(full);
+			stream = g_file_read(input, NULL, error);
+			if (stream == NULL || !g_input_stream_read_all(G_INPUT_STREAM(stream), content,
+				8 * 1024 * 1024 + 1, &length, NULL, error)) return NULL;
+			if (length > 8 * 1024 * 1024)
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "CRM attachments are limited to 8 MiB each");
+				return NULL;
+			}
+			encoded = g_base64_encode((const guchar *)content, length);
+			json_object_set_string_member(payloads, l->data, encoded);
+		}
+		if (attachments != NULL)
+			json_object_set_object_member(manifest, "attachment_data", g_steal_pointer(&payloads));
+		json_object_remove_member(manifest, "attachment_files");
 	}
 	json_object_remove_member(manifest, "files");
 	return g_steal_pointer(&root);

@@ -1,0 +1,2 @@
+Record ID,Number,Associated Company IDs,Currency,Status,Legacy Label,Ordered At,Shipped At
+order-1,HS-SYN-SO-210,company-1,USD,fulfilled,synthetic-sales_orders,2025-04-02T00:00:00Z,2025-04-03T00:00:00Z

@@ -1,0 +1,2 @@
+Record ID,Number,Associated Company IDs,Associated Contact IDs,Owner,Status,Legacy Label,Issued At,Due At,Status At
+invoice-1,HS-SYN-I-210,company-1,contact-1,owner-1,paid,synthetic-invoices,2025-04-03T00:00:00Z,2025-05-03T00:00:00Z,2025-04-05T00:00:00Z

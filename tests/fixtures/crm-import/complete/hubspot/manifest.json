@@ -1,0 +1,409 @@
+{
+  "source": "hubspot",
+  "files": {
+    "companies": "companies.csv",
+    "contacts": "contacts.csv",
+    "deals": "deals.csv",
+    "leads": "leads.csv",
+    "products": "products.csv",
+    "price_books": "price_books.csv",
+    "price_book_entries": "price_book_entries.csv",
+    "quotes": "quotes.csv",
+    "quote_lines": "quote_lines.csv",
+    "sales_orders": "sales_orders.csv",
+    "sales_order_lines": "sales_order_lines.csv",
+    "invoices": "invoices.csv",
+    "invoice_lines": "invoice_lines.csv",
+    "campaigns": "campaigns.csv",
+    "cases": "cases.csv",
+    "vendors": "vendors.csv",
+    "users": "users.csv",
+    "attachments": "attachments.csv",
+    "stage_history": "stage_history.csv",
+    "notes": "notes.csv",
+    "emails": "emails.csv",
+    "calls": "calls.csv",
+    "meetings": "meetings.csv",
+    "tasks": "tasks.csv",
+    "installations": "installations.csv"
+  },
+  "columns": {
+    "companies": {
+      "id": "Record ID",
+      "name": "Name",
+      "website": "Website URL"
+    },
+    "contacts": {
+      "id": "Record ID",
+      "first_name": "First Name",
+      "last_name": "Last Name",
+      "email": "Email",
+      "company_id": "Associated Company IDs"
+    },
+    "deals": {
+      "id": "Record ID",
+      "name": "Name",
+      "amount": "Amount",
+      "currency": "Currency",
+      "stage": "Deal Stage",
+      "owner": "Owner",
+      "company_id": "Associated Company IDs",
+      "contact_id": "Associated Contact IDs"
+    },
+    "leads": {
+      "id": "Record ID",
+      "first_name": "First Name",
+      "last_name": "Last Name",
+      "email": "Email",
+      "company_name": "CompanyName",
+      "owner": "Owner"
+    },
+    "products": {
+      "id": "Record ID",
+      "name": "Name",
+      "sku": "Sku",
+      "description": "Description"
+    },
+    "price_books": {
+      "id": "Record ID",
+      "name": "Name",
+      "currency": "Currency"
+    },
+    "price_book_entries": {
+      "id": "Record ID",
+      "price_book_id": "PriceBookId",
+      "product_id": "ProductId",
+      "unit_price": "UnitPrice",
+      "currency": "Currency"
+    },
+    "quotes": {
+      "id": "Record ID",
+      "number": "Number",
+      "company_id": "Associated Company IDs",
+      "contact_id": "Associated Contact IDs",
+      "deal_id": "Associated Deal IDs",
+      "currency": "Currency",
+      "status": "Status",
+      "issued_at": "Issued At",
+      "status_at": "Status At",
+      "accepted_by": "Accepted By"
+    },
+    "quote_lines": {
+      "id": "Record ID",
+      "quote_id": "QuoteId",
+      "product_id": "ProductId",
+      "description": "Description",
+      "quantity": "Quantity",
+      "unit_price": "UnitPrice",
+      "currency": "Currency"
+    },
+    "sales_orders": {
+      "id": "Record ID",
+      "number": "Number",
+      "company_id": "Associated Company IDs",
+      "currency": "Currency",
+      "status": "Status",
+      "ordered_at": "Ordered At",
+      "shipped_at": "Shipped At"
+    },
+    "sales_order_lines": {
+      "id": "Record ID",
+      "sales_order_id": "SalesOrderId",
+      "product_id": "ProductId",
+      "description": "Description",
+      "quantity": "Quantity",
+      "unit_price": "UnitPrice",
+      "currency": "Currency"
+    },
+    "invoices": {
+      "id": "Record ID",
+      "number": "Number",
+      "company_id": "Associated Company IDs",
+      "contact_id": "Associated Contact IDs",
+      "owner": "Owner",
+      "status": "Status",
+      "issued_at": "Issued At",
+      "due_at": "Due At",
+      "status_at": "Status At"
+    },
+    "invoice_lines": {
+      "id": "Record ID",
+      "invoice_id": "InvoiceId",
+      "product_id": "ProductId",
+      "description": "Description",
+      "quantity": "Quantity",
+      "unit_price": "UnitPrice",
+      "currency": "Currency"
+    },
+    "campaigns": {
+      "id": "Record ID",
+      "name": "Name",
+      "description": "Description"
+    },
+    "cases": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "company_id": "Associated Company IDs",
+      "contact_id": "Associated Contact IDs",
+      "owner": "Owner"
+    },
+    "vendors": {
+      "id": "Record ID",
+      "name": "Name",
+      "email": "Email"
+    },
+    "users": {
+      "id": "Record ID",
+      "name": "Name",
+      "email": "Email"
+    },
+    "attachments": {
+      "id": "Record ID",
+      "name": "Name",
+      "mime_type": "MimeType",
+      "parent_object": "ParentObject",
+      "parent_id": "ParentId",
+      "content_base64": "ContentBase64"
+    },
+    "stage_history": {
+      "id": "Record ID",
+      "deal_id": "Associated Deal IDs",
+      "stage": "Deal Stage",
+      "occurred_at": "Activity date",
+      "owner": "Owner"
+    },
+    "notes": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "contact_id": "Associated Contact IDs",
+      "occurred_at": "Activity date",
+      "author": "Activity assigned to"
+    },
+    "emails": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "contact_id": "Associated Contact IDs",
+      "occurred_at": "Activity date",
+      "author": "Activity assigned to"
+    },
+    "calls": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "contact_id": "Associated Contact IDs",
+      "occurred_at": "Activity date",
+      "author": "Activity assigned to"
+    },
+    "meetings": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "contact_id": "Associated Contact IDs",
+      "occurred_at": "Activity date",
+      "author": "Activity assigned to"
+    },
+    "tasks": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "contact_id": "Associated Contact IDs",
+      "owner": "Owner",
+      "due_at": "DueAt",
+      "status": "Status"
+    },
+    "installations": {
+      "id": "Record ID",
+      "subject": "Title",
+      "body": "Body",
+      "company_id": "Associated Company IDs",
+      "contact_id": "Associated Contact IDs",
+      "owner": "Owner"
+    }
+  },
+  "currency": "USD",
+  "owner_map": {
+    "owner-1": "synthetic-operator"
+  },
+  "stage_map": {
+    "proposal": 0
+  },
+  "unsupported": [],
+  "custom_fields": {
+    "companies": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "contacts": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "deals": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "leads": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "products": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "price_books": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "price_book_entries": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "quotes": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "quote_lines": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "sales_orders": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "sales_order_lines": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "invoices": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "invoice_lines": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "campaigns": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "cases": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "vendors": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "attachments": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "stage_history": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "notes": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "emails": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "calls": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "meetings": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "tasks": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ],
+    "installations": [
+      {
+        "header": "Legacy Label",
+        "name": "legacy_label",
+        "kind": "string"
+      }
+    ]
+  },
+  "custom_objects": {
+    "installations": {
+      "target": "cases"
+    }
+  }
+}

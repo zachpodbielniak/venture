@@ -58,10 +58,56 @@ venture_crm_import_web_action(HtmxRequest *request, GHashTable *params, gpointer
 	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE), 200);
 }
 
+static HtmxResponse *
+venture_crm_import_web_attachment(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) document = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *encoded = NULL, *kind = NULL, *name = NULL;
+	g_autofree gchar *escaped = NULL, *disposition = NULL;
+	g_autofree guchar *data = NULL;
+	const gchar *id = g_hash_table_lookup(params, "id");
+	gsize length;
+	HtmxResponse *response = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	if (response != NULL) return response;
+	response = venture_web_require_module_api(self, "crm_import");
+	if (response != NULL) return response;
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!venture_web_require_for_type(self, principal, VENTURE_TYPE_DOCUMENT, VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+	document = venture_database_get(database, VENTURE_TYPE_DOCUMENT, id != NULL ? g_ascii_strtoll(id, NULL, 10) : 0, NULL);
+	if (document == NULL || venture_entity_is_deleted(document) ||
+		!venture_access_policy_check_read(venture_database_get_access_policy(database), document, NULL))
+		goto missing;
+	g_object_get(document, "kind", &kind, "content-base64", &encoded, "title", &name, NULL);
+	if (g_strcmp0(kind, "crm-import") != 0 || encoded == NULL || strlen(encoded) > 11184812)
+		goto missing;
+	data = g_base64_decode(encoded, &length);
+	bytes = g_bytes_new_take(g_steal_pointer(&data), length);
+	escaped = g_uri_escape_string(name != NULL ? name : "attachment", NULL, FALSE);
+	disposition = g_strdup_printf("attachment; filename=\"attachment\"; filename*=UTF-8''%s", escaped);
+	response = htmx_response_new();
+	htmx_response_set_bytes(response, bytes);
+	htmx_response_set_content_type(response, "application/octet-stream");
+	htmx_response_add_header(response, "Content-Disposition", disposition);
+	htmx_response_add_header(response, "X-Content-Type-Options", "nosniff");
+	htmx_response_add_header(response, "Cache-Control", "no-store, private");
+	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
+	return response;
+missing:
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Attachment not found");
+	return venture_web_error_response(error);
+}
+
 static void
 venture_crm_import_web_register(HtmxRouter *router, VentureWebServer *self)
 {
 	(void)router;
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/crm_imports/attachments/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_crm_import_web_attachment, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/crm_imports/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_crm_import_web_preview, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/crm_imports/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_crm_import_web_action, self);
 }
