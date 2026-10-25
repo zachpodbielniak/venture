@@ -10,13 +10,15 @@ Generic writes to either record are refused naming the service. It
 mirrors the accounting cutover ([[file:cutover.org][cutover]]): a mapped
 manifest, a preview that refuses before writing, an import that is one
 transaction, a row per source id so a rerun is idempotent, and a rollback
-that removes exactly what the import created. It calls no vendor API,
-imports no attachments and touches no accounting record.
+that removes imported live data and retains immutable financial evidence. It
+calls no vendor API. It stores attachment bytes and imports commercial history
+through dated service operations, including invoice issuance and payments.
 
 =crm_import= holds =source=, =state=, the =manifest= as submitted (CSV
 text inlined), the preview =report= and =activated_at=. =crm_import_row=
 holds =import_id=, =source= (the vendor), =source_object= (=company=,
-=contact=, =deal=, =note= or =task=), =source_id=, the =record_type= and
+=contact=, =deal=, =note=, =task= or an additional module namespace),
+=source_id=, the =record_type= and
 =record_id= it became or matched, =status= (=preview=, =imported=,
 =matched=, =exception=, =skipped=, =rolled_back=), the =exception= text
 and =created=, set only when this batch made the record. Both tables come
@@ -39,7 +41,7 @@ result and closes the door on rollback.
  "currency": "USD",
  "owner_map": {"Jane Doe": "jane"},
  "columns": {"contacts": {"email": "Email address"}},
- "unsupported": ["attachments", "custom objects"]}
+ "unsupported": []}
 #+end_src
 
 - =source= is =hubspot=, =zoho_crm= or =salesforce=; anything else is refused.
@@ -47,9 +49,8 @@ result and closes the door on rollback.
   reads them and sends their text under =csv=; a caller of the REST route
   sends =csv= directly. The objects are =companies=, =contacts=, =deals=,
   =notes=, =emails=, =calls=, =meetings= and =tasks=. An unknown object is
-  refused, and =attachments= is refused with a message saying it is
-  unsupported: list it under =unsupported= instead, where it appears in
-  the preview report.
+  refused unless it has an explicit =custom_objects= mapping described below.
+  The additional modules and attachment format are listed below.
 - =stage_map= maps every source deal stage to a =pipeline_stage= id in the
   organization. The mapped stage's pipeline becomes the deal's pipeline.
 - =loss_reason_id= names an active =loss_reason=; required when any deal
@@ -113,7 +114,7 @@ earlier imports. Timestamps accept ISO 8601 and =YYYY-MM-DD[ HH:MM[:SS]]=.
 
 Preview validates before any write and refuses, writing nothing, when:
 the organization is zero (a migration lands in one legal entity, so the
-"all entities" selection is refused); the source is unknown; an object is unknown or =attachments=; a CSV
+"all entities" selection is refused); the source is unknown; an object is unknown; a CSV
 cannot be parsed or lacks a required column; a deal names a stage
 missing from =stage_map=; a mapped stage id does not exist in the
 organization; a lost stage is mapped without an active =loss_reason_id=;
@@ -127,8 +128,10 @@ The report lists row counts per object and the unsupported objects.
 
 Import runs in one transaction; a failure after the first write, such as
 an unreadable note date, leaves nothing persisted and the batch in
-=preview=. Rows resolve in manifest order: companies, contacts, deals,
-then notes, emails, calls, meetings and tasks.
+=preview=. Rows resolve in dependency order: users, companies and vendors, contacts,
+campaigns, leads, products and price books, deals and their history,
+commercial documents and lines, cases, activities, mapped custom objects,
+then attachments.
 
 A source id already imported by this batch or by an earlier batch of
 the same vendor that was not rolled back is =matched= to that record;
@@ -153,8 +156,10 @@ Deals carry =value= as =VentureMoney= with the row or manifest currency,
 the mapped stage. They are created in the mapped stage's pipeline and
 moved through =VentureDealService=, so stage history records
 "Imported from hubspot stage …", won and lost stages stamp =closed_at=
-and lost deals carry =loss_reason_id=. =closed_at= is the import time:
-the deal service stamps it and a generic write cannot backdate it.
+and lost deals carry =loss_reason_id=. Closed deals use the original
+=close_date= for =closed_at= and the immutable sales booking. The initial stage
+uses =created_at= when supplied. Explicit =stage_history= rows retain every
+exported transition and its original timestamp and owner.
 
 Notes, emails, calls and meetings become =interaction= records of that
 kind on the contact, company and deal the row names, at the original
@@ -168,13 +173,18 @@ appears on the worklist as a next action.
 
 * Rollback and activation
 
-Rollback is allowed in =preview= and =imported=. It soft-deletes exactly
-the records whose rows carry =created= (history and activities first,
+Rollback is allowed in =preview= and =imported=. For draft-only imports it
+soft-deletes records whose rows carry =created= (history and activities first,
 then deals, contacts, companies), leaves matched and exception matches
 untouched, marks every row =rolled_back= and the batch =rolled_back=.
 A rolled-back batch cannot be imported again, and its source ids no
 longer count as imported, so a fresh preview and import recreates them.
-Repeating a rollback is a no-op. Stage history of a deleted deal is
+Financial imports instead use the evidence-preserving rollback below.
+Repeating a rollback is a no-op. Reimporting the same vendor/object/source id
+restores its deleted native draft records, preserving unique document numbers.
+Existing accounting documents match by source id or document number within
+the same organization. A customer conflict or changed custom object destination
+type is refused. Stage history of a deleted deal is
 retained, as for any deleted deal. =activate= moves an imported batch to
 =active= and stamps =activated_at=; an active batch refuses rollback.
 
@@ -206,3 +216,134 @@ reversal and removals share the rollback transaction. If that pipeline has
 no available open stage, rollback refuses without partially removing rows;
 restore an open stage and retry. Existing matched customer/deal rows are
 still preserved, and activated batches still cannot be rolled back.
+
+* Additional export modules
+
+The importer accepts =leads=, =products=, =price_books=,
+=price_book_entries=, =quotes=, =quote_lines=, =sales_orders=,
+=sales_order_lines=, =invoices=, =invoice_lines=, =campaigns=, =cases=,
+=vendors=, =users=, =payments=, =stage_history= and =attachments=. Each row needs a
+source =id=. References use source ids, never destination database ids.
+Commercial lines resolve their header and product; price book entries
+resolve their price book and product. Missing references fail the entire
+import. Money uses exact minor units and a row or manifest currency.
+
+These modules use writable native fields, with underscores in canonical
+column names (=unit_price=, =company_id=, =issued_at=). Use =columns= to
+name the actual headers in the export, and =value_maps= to translate
+source enumerations, for example:
+
+#+begin_src json
+{"columns": {"cases": {"title": "Subject"}},
+ "value_maps": {"cases": {"status": {"New": "open"}}}}
+#+end_src
+
+Quotes, sales orders and invoices retain their original commercial states.
+Headers and lines are composed first, then source events are applied in the
+same transaction:
+
+- Invoices require =issued_at= when issued. =payments= exports supply
+  =id=, =invoice_id=, =date=, =amount=, =currency=, =method=, =reference=
+  and optional =external_id=; =customer_id= may be omitted for an invoice
+  payment. The settlement service posts ordinary historical issue/payment
+  journals on their original dates, never opening balances. Paid and
+  partially paid statuses must reconcile to actual imported receipts.
+  Other invoice transitions use their original =status_at=.
+- Quotes use =issued_at=, =status_at= and =accepted_by=. The quote service
+  freezes totals and records original send/accept/decline/expiry evidence.
+  Imported acceptance does not create a second invoice or start new work.
+  =invoice_id= links an exported invoice where present.
+- Sales orders use =ordered_at=, =shipped_at= and optional =invoice_id=.
+  Lines may supply =allocated_qty=, =fulfilled_qty= and =invoiced_qty=.
+  A fully fulfilled state supplies the full quantity when a line omits its
+  fulfilled count. The service records original fulfillment evidence without
+  consuming today's inventory. CRM exports do not describe historical stock
+  cost layers; current inventory items are not attached to these lines.
+
+Commercial documents match existing organization-scoped document numbers.
+Customers also reuse accounting-cutover party identities, with a unique
+name fallback when the source supplies no website or email. Ambiguous names
+require =accounting_source_id=. Invoices match source ids retained by the accounting cutover;
+=accounting_source_id= explicitly names a different accounting-system id.
+Existing line descriptions, quantities, prices, discounts and taxes must
+agree. Payment =external_id= matches an existing receipt only when customer,
+date, amount and currency agree. A receipt with another id may match the
+same invoice by unique date and amount. For a pre-existing accounting-cutover
+receipt, the retained ledger date remains the cutover date: CRM preserves its
+original receipt date in the source manifest and states this in the match
+report, without reposting cash. Ambiguous receipts require an explicit identity.
+Matched rows and their destination ids appear
+in the completed import report; matches are not posted again.
+
+Rollback refunds this batch's receipts and voids its issued invoices through
+the settlement service. Original documents, lines, payments, quote events,
+fulfillments, journal evidence and the parties/catalog records they reference
+remain reconstructable. The rollback report identifies retained evidence.
+A historical invoice number continues to identify its retained document;
+rollback does not erase issued accounting history. Draft-only batches retain
+the ordinary soft-delete/reimport behavior described above.
+
+Import never sends a historical email or SMS: audit evidence is saved, but
+audit event delivery to automation is muted within preview, import, activation
+and rollback. Ordinary writes after the operation still publish audit events.
+Imported invoices have reminders and late fees disabled.
+
+=vendors= creates supplier companies. =users= requires an explicit
+=owner_map= entry for every exported user id and adds its exported name
+and email as aliases for that mapping. It creates no login, membership,
+role or credential. Existing owner membership validation still applies.
+
+=stage_history= takes =deal_id=, =stage=, optional =from_stage=,
+=occurred_at=, =owner= and =note=. Both stage names use =stage_map=.
+It records the original timestamp and mapped owner through the pipeline
+service without replaying a stage transition or booking another win.
+These immutable entries remain as evidence if the imported deal is later
+rolled back, as existing stage history does.
+
+* Custom fields and objects
+
+Declare custom fields by module. Definitions are validated during preview;
+import creates missing organization-scoped definitions through the custom
+field service. Existing definitions must agree in type, choices and required
+status. A matching deleted definition is restored, and rollback restores its
+deleted state. Rollback also retires the derived custom-value index rows for
+removed business records; retained stage evidence keeps its values. Values
+are stored as the record's typed custom attributes.
+
+#+begin_src json
+{"custom_fields": {"contacts": [
+  {"header": "Legacy Label", "name": "legacy_label", "kind": "string"}]},
+ "custom_objects": {"installations": {"target": "cases"}},
+ "columns": {"installations": {"id": "Record ID", "title": "Name"}},
+ "unsupported": [{"object": "Territory hierarchy",
+                   "reason": "No equivalent destination relationship"}]}
+#+end_src
+
+A custom object CSV can target a supported native module, excluding users,
+attachments and stage history. It has its own source id namespace and can
+have its own =columns=, =value_maps= and =custom_fields=. This is an
+explicit mapping to an existing entity shape, not creation of an arbitrary
+schema. Exported users cannot define account custom fields. Objects without
+a suitable destination belong in =unsupported= with a reason; the preview
+prints each entry, or =Unsupported: none=. Duplicate source ids within a
+source-object namespace are refused before preview writes anything.
+
+* Attachments
+
+=attachments= rows supply =id=, =name=, =parent_object=, =parent_id=,
+optional =mime_type= and =content_base64=. The parent object is a tracking
+namespace such as =contact=, =company=, =deal= or =custom:installations=.
+Alternatively place base64 bytes in =attachment_data= keyed by attachment
+source id. For local CLI imports, =attachment_files= maps those ids to
+paths relative to the manifest; the CLI reads and inlines their bytes.
+Each decoded attachment is limited to 8 MiB and base64 must be canonical.
+A missing parent or invalid payload rolls back the entire import.
+
+The document stores the original bytes, size, hash and MIME label. A
+=record_link= joins it to the imported parent. The authenticated viewer
+route =GET /api/v1/crm_imports/attachments/:id= returns a download, scoped
+by the usual document access policy; deleted documents return 404.
+Responses use an attachment disposition, octet-stream and no-store.
+Rollback soft-deletes the new links and documents in dependency order.
+It retains deleted bytes and audit evidence, consistent with the database's
+soft-delete contract; it is not a physical erasure operation.

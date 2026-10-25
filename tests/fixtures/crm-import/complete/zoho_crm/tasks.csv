@@ -1,0 +1,2 @@
+Record Id,Subject,Description,Contact Name.id,Owner,DueAt,Status,Legacy Label
+task-1,Synthetic follow-up,Synthetic open task,contact-1,owner-1,2025-04-04T09:30:00Z,Not Started,synthetic-tasks

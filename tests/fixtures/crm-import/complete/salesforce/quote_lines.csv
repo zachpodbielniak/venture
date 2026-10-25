@@ -1,0 +1,2 @@
+Id,QuoteId,ProductId,Description,Quantity,UnitPrice,CurrencyIsoCode,Legacy Label
+quote-line-1,quote-1,product-1,Synthetic service,1,125.50,USD,synthetic-quote_lines

@@ -3070,6 +3070,8 @@ VENTURE_DEFINE_ENTITY(VentureAgentBudget, venture_agent_budget,
                       venture_agent_budget_fields)
 
 static const VentureFieldDecl venture_document_fields[] = {
+	VENTURE_FIELD("content-base64", "Stored content", "Transactionally stored attachment bytes; use the authorized download route",
+		VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD_REF("form-upload-id", "Form upload", "Service-owned attachment; downloaded only through its response", "form_upload", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("private-owner-id", "Private owner", "Private attachment owner; zero is a shared business document", "user", VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER),
 	VENTURE_FIELD_NAME("title", "Title", NULL),

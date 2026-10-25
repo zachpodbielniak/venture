@@ -156,13 +156,13 @@ static gboolean save_line(VentureDealService *self, VentureDatabase *db, Venture
 
 static gboolean
 initialize_deal(VentureDealService *self, VentureDatabase *db, VentureEntity *input,
-	const VentureActor *actor, GError **error)
+	GDateTime *at, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDeal) deal = venture_deal_new();
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PIPELINE_STAGE);
 	g_autoptr(VentureEntity) stage = NULL;
 	g_autoptr(VentureEntity) process = NULL;
-	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autoptr(GDateTime) now = at != NULL ? g_date_time_ref(at) : g_date_time_new_now_utc();
 	gint64 org, pipeline;
 	gint legacy;
 
@@ -284,7 +284,7 @@ venture_pipelines_save(VentureDatabase *db, VentureEntity *entity,
 	if (!venture_entity_is_persisted(entity))
 	{
 		*handled = TRUE;
-		return initialize_deal(self, db, entity, actor, error);
+		return initialize_deal(self, db, entity, NULL, actor, error);
 	}
 	previous = venture_database_get(db, VENTURE_TYPE_DEAL, venture_entity_get_id(entity), error);
 	if (NULL == previous)
@@ -362,16 +362,52 @@ required_populated(VentureDeal *deal, const gchar *list, GError **error)
 	return TRUE;
 }
 
+gboolean
+venture_deal_service_import_history(VentureDealService *self, VentureDealStageEntry *entry,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+	g_autoptr(VentureEntity) deal = NULL;
+	g_autoptr(VentureEntity) stage = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	gint64 org, from, to, pipeline;
+	g_return_val_if_fail(VENTURE_IS_DEAL_STAGE_ENTRY(entry), FALSE);
+	if (venture_entity_is_persisted(VENTURE_ENTITY(entry)))
+		return refuse(error, "historical entries can only be appended");
+	org = venture_entity_get_organization_id(VENTURE_ENTITY(entry));
+	g_object_get(entry, "entered-at", &when, NULL);
+	if (when == NULL || org <= 0)
+		return refuse(error, "historical entries need an organization and source timestamp");
+	deal = live_reference(db, VENTURE_TYPE_DEAL, integer(G_OBJECT(entry), "deal-id"), org, error);
+	if (deal == NULL) return FALSE;
+	pipeline = integer(G_OBJECT(deal), "pipeline-id");
+	from = integer(G_OBJECT(entry), "from-stage");
+	to = integer(G_OBJECT(entry), "to-stage");
+	stage = live_reference(db, VENTURE_TYPE_PIPELINE_STAGE, to, org, error);
+	if (stage == NULL) return FALSE;
+	if (integer(G_OBJECT(stage), "pipeline-id") != pipeline)
+		return refuse(error, "historical stages must belong to the deal's pipeline");
+	if (from > 0)
+	{
+		g_clear_object(&stage);
+		stage = live_reference(db, VENTURE_TYPE_PIPELINE_STAGE, from, org, error);
+		if (stage == NULL) return FALSE;
+		if (integer(G_OBJECT(stage), "pipeline-id") != pipeline)
+			return refuse(error, "historical stages must belong to the deal's pipeline");
+	}
+	return save_permitted(self, db, VENTURE_ENTITY(entry), actor, error);
+}
+
 VentureDeal *
-venture_deal_service_move_stage(VentureDealService *self, VentureDeal *input,
-	gint64 stage_id, const gchar *note, const VentureActor *actor, GError **error)
+venture_deal_service_move_stage_at(VentureDealService *self, VentureDeal *input,
+	gint64 stage_id, GDateTime *at, const gchar *note, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(VentureEntity) previous = NULL;
 	g_autoptr(VentureEntity) stage = NULL;
 	g_autoptr(VentureEntity) pipeline = NULL;
 	g_autoptr(VentureDeal) deal = venture_deal_new();
-	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	g_autoptr(GDateTime) now = at != NULL ? g_date_time_ref(at) : g_date_time_new_now_utc();
 	g_autofree gchar *required = NULL;
 	gint64 org, pipeline_id, from, position;
 	gint kind, legacy;
@@ -500,7 +536,7 @@ venture_pipelines_migrate(VentureDatabase *db, GError **error)
 		{
 			VentureEntity *deal = g_ptr_array_index(deals, j);
 			if (0 == integer(G_OBJECT(deal), "stage-id") &&
-				!initialize_deal(self, db, deal, NULL, error))
+				!initialize_deal(self, db, deal, NULL, NULL, error))
 				goto fail;
 		}
 	}
@@ -843,4 +879,20 @@ venture_deal_service_create_quote(VentureDealService *self, VentureDeal *input,
 fail:
 	venture_database_rollback(db);
 	return NULL;
+}
+
+VentureDeal *
+venture_deal_service_move_stage(VentureDealService *self, VentureDeal *deal,
+	gint64 stage_id, const gchar *note, const VentureActor *actor, GError **error)
+{
+	return venture_deal_service_move_stage_at(self, deal, stage_id, NULL, note, actor, error);
+}
+
+gboolean
+venture_deal_service_create_at(VentureDealService *self, VentureDeal *deal, GDateTime *at,
+ const VentureActor *actor, GError **error)
+{
+ g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
+ if (venture_entity_is_persisted(VENTURE_ENTITY(deal))) return refuse(error, "dated creation requires a new deal");
+ return initialize_deal(self, db, VENTURE_ENTITY(deal), at, actor, error);
 }

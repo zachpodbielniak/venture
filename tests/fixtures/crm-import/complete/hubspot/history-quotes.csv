@@ -1,0 +1,2 @@
+Record ID,Number,Associated Company IDs,Associated Contact IDs,Associated Deal IDs,Currency,Status,Legacy Label,Issued At,Status At,Accepted By
+quote-1,HS-SYN-Q-210,company-1,contact-1,deal-1,USD,accepted,synthetic-quotes,2025-04-01T00:00:00Z,2025-04-02T00:00:00Z,Casey Example

@@ -1,0 +1,2 @@
+Record Id,InvoiceId,ProductId,Description,Quantity,UnitPrice,Currency,Legacy Label
+invoice-line-1,invoice-1,product-1,Synthetic service,1,125.50,USD,synthetic-invoice_lines

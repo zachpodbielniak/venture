@@ -875,6 +875,11 @@ venture_database_record_audit(
 		return;
 	}
 
+	/* Historical CRM rows retain their audit trail without becoming new
+	 * business events for notification, webhook or sending automations. */
+	if (g_object_get_data(G_OBJECT(self), "venture-crm-import-quiet") != NULL)
+		return;
+
 	/* Notifications, outbound webhooks and automation are trusted service
 	 * reactions to an already-authorized write, including other recipients. */
 	venture_accounting_operation_suspend(self);

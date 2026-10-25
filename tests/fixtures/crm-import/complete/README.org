@@ -1,0 +1,31 @@
+#+title: Synthetic complete CRM exports
+
+All names, ids, addresses and attachment bytes here are invented test data.
+No vendor account, production export or network access is required.
+
+Each vendor directory has one CSV per supported module and a manifest with
+explicit column maps. The manifests intentionally exercise the same business
+scenario with different vendor header conventions. They are mapped exports,
+not evidence that every vendor exposes every module in one stock export.
+
+The fixture includes one record per module, one supplier, one mapped custom
+installation (a case), typed custom attributes, one original stage event and
+three attachments (on a contact, a note and an email). The base manifest uses
+draft quotes, sales orders and invoices. The historical manifest adds original
+states, dates, closed deals and a payment.
+
+The test supplies an existing venture and proposal stage id at runtime.
+For a manual import, set venture_id and stage_map.proposal to corresponding
+ids in a disposable destination organization before running venturectl crm.
+owner_map maps an exported synthetic user to a historical operator label;
+no login or membership is created.
+
+Salesforce price book reference headers follow its documented PricebookEntry
+fields: [[https://help.salesforce.com/s/articleView?id=000384199&language=en_US&type=1][Salesforce Data Loader price book guidance]].
+Additional columns always remain explicit in each manifest because export
+labels and enabled modules differ across installations.
+
+For =history-manifest.json=, supply =stage_map.won=, =stage_map.lost= and
+=loss_reason_id= as well. It imports original dated open/won/lost deals,
+accepted quotes, fulfilled orders and a paid invoice with =payments.csv=.
+All identities and financial amounts are invented.

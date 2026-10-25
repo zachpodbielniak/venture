@@ -547,3 +547,134 @@ venture_sales_order_service_invoice_fulfilled(VentureSalesOrderService *self, gi
 		return FALSE;
 	return result;
 }
+
+gboolean
+venture_sales_order_service_set_draft_deleted(VentureSalesOrderService *self,
+	VentureEntity *record, gboolean deleted, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureEntity) parent = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autofree gchar *status = NULL;
+	VentureEntity *previous;
+	gboolean ok;
+	g_return_val_if_fail(VENTURE_IS_SALES_ORDER_SERVICE(self), FALSE);
+	if (!VENTURE_IS_SALES_ORDER(record) && !VENTURE_IS_SALES_ORDER_LINE(record))
+		return refuse(error, "only sales order drafts can be retired here");
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	stored = venture_database_get(self->database, G_OBJECT_TYPE(record), venture_entity_get_id(record), error);
+	if (stored == NULL) goto fail;
+	parent = VENTURE_IS_SALES_ORDER(stored) ? g_object_ref(stored) :
+		venture_database_get(self->database, VENTURE_TYPE_SALES_ORDER, get_id(stored, "sales-order-id"), error);
+	if (parent == NULL) goto fail;
+	g_object_get(parent, "status", &status, NULL);
+	if (g_strcmp0(status, "draft") != 0)
+	{
+		refuse(error, "only a draft sales order can be retired");
+		goto fail;
+	}
+	if (VENTURE_IS_SALES_ORDER_LINE(stored))
+	{
+		if (!deleted && venture_entity_is_deleted(parent))
+		{
+			refuse(error, "restore the draft parent before its lines");
+			goto fail;
+		}
+		if (get_int(stored, "allocated-qty") != 0 || get_int(stored, "fulfilled-qty") != 0 || get_int(stored, "invoiced-qty") != 0)
+		{
+			refuse(error, "a line with goods history cannot be retired");
+			goto fail;
+		}
+	}
+	else if (deleted)
+	{
+		lines = find_rows(self, VENTURE_TYPE_SALES_ORDER_LINE, "sales-order-id", venture_entity_get_id(stored), error);
+		if (lines == NULL) goto fail;
+		if (lines->len > 0)
+		{
+			refuse(error, "retire the draft's own lines before its header");
+			goto fail;
+		}
+	}
+	previous = self->writing;
+	self->writing = stored;
+	g_object_set_data(G_OBJECT(self->database), "venture-sales-order-writing", stored);
+	ok = deleted ? venture_database_delete(self->database, stored, actor, error) :
+		venture_database_restore(self->database, stored, actor, error);
+	g_object_set_data(G_OBJECT(self->database), "venture-sales-order-writing", previous);
+	self->writing = previous;
+	if (!ok || !venture_database_commit(self->database, error)) goto fail;
+	return TRUE;
+fail:
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+/* A source CRM shipment is historical evidence, not a request to consume
+ * today's inventory. Imported lines deliberately carry no inventory item. */
+gboolean
+venture_sales_order_service_import_history(VentureSalesOrderService *self, VentureSalesOrder *order,
+	const gchar *status, GDateTime *shipped_at, GPtrArray *lines,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autofree gchar *old_status = NULL;
+	VentureEntity *record = VENTURE_ENTITY(order);
+	gint64 org = venture_entity_get_organization_id(record);
+	gboolean ok = FALSE;
+	g_autoptr(GDateTime) ordered_at = NULL, now = g_date_time_new_now_utc();
+	gint64 total = 0, shipped = 0, billed = 0, reserved = 0;
+	guint i;
+	if (g_strcmp0(status, "allocated") && g_strcmp0(status, "partial") &&
+		g_strcmp0(status, "fulfilled") && g_strcmp0(status, "invoiced") && g_strcmp0(status, "cancelled"))
+		return refuse(error, "invalid source sales order status");
+	g_object_get(record, "ordered-at", &ordered_at, NULL);
+	if (ordered_at == NULL || g_date_time_compare(ordered_at, now) > 0 ||
+		(shipped_at != NULL && (g_date_time_compare(shipped_at, ordered_at) < 0 || g_date_time_compare(shipped_at, now) > 0)))
+		return refuse(error, "historical orders need ordered original dates");
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	stored = venture_database_get(self->database, VENTURE_TYPE_SALES_ORDER, venture_entity_get_id(record), error);
+	if (stored == NULL) goto done;
+	g_object_get(stored, "status", &old_status, NULL);
+	if (g_strcmp0(old_status, "draft") || venture_entity_get_version(record) != venture_entity_get_version(stored)) {
+		refuse(error, "historical order requires an unchanged draft"); goto done;
+	}
+	for (i = 0; i < lines->len; i++) {
+		VentureEntity *line = g_ptr_array_index(lines, i);
+		gint64 quantity, allocated, fulfilled, invoiced;
+		if (!VENTURE_IS_SALES_ORDER_LINE(line) || venture_entity_get_organization_id(line) != org ||
+			get_id(line, "sales-order-id") != venture_entity_get_id(record) || get_id(line, "inventory-item-id") != 0) {
+			refuse(error, "source order lines must belong to this order without current inventory reservations"); goto done;
+		}
+		quantity = get_int(line, "quantity"); allocated = get_int(line, "allocated-qty");
+		fulfilled = get_int(line, "fulfilled-qty"); invoiced = get_int(line, "invoiced-qty");
+		if (quantity <= 0 || allocated < 0 || allocated > quantity || fulfilled < 0 || fulfilled > quantity ||
+			invoiced < 0 || invoiced > quantity || (fulfilled > 0 && shipped_at == NULL)) {
+			refuse(error, "historical order quantities or shipment date are invalid"); goto done;
+		}
+		total += quantity; shipped += fulfilled; billed += invoiced; reserved += allocated;
+		if (!save_owned(self, line, actor, error)) goto done;
+		if (fulfilled > 0) {
+			g_autoptr(VentureFulfillment) shipment = venture_fulfillment_new();
+			venture_entity_set_organization_id(VENTURE_ENTITY(shipment), org);
+			g_object_set(shipment, "sales-order-id", venture_entity_get_id(record), "sales-order-line-id", venture_entity_get_id(line),
+				"quantity", fulfilled, "shipped-at", shipped_at, "status", "shipped", "memo", "Imported CRM shipment", NULL);
+			if (!save_owned(self, VENTURE_ENTITY(shipment), actor, error)) goto done;
+		}
+	}
+	if ((!g_strcmp0(status, "fulfilled") && (total <= 0 || shipped != total)) ||
+		(!g_strcmp0(status, "partial") && (shipped <= 0 || shipped >= total)) ||
+		(!g_strcmp0(status, "invoiced") && (total <= 0 || billed != total)) ||
+		(!g_strcmp0(status, "allocated") && reserved <= 0)) {
+		refuse(error, "source order quantities do not reconcile to its status"); goto done;
+	}
+	if (!g_strcmp0(status, "invoiced") && get_id(record, "invoice-id") == 0) {
+		refuse(error, "an invoiced source order needs its imported or matched invoice"); goto done;
+	}
+	g_object_set(record, "status", status, NULL);
+	ok = save_owned(self, record, actor, error);
+done:
+	if (ok) return venture_database_commit(self->database, error);
+	venture_database_rollback(self->database);
+	return FALSE;
+}
