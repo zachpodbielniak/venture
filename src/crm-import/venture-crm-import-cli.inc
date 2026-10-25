@@ -1,5 +1,63 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/* A name the manifest gives for a file beside it. Absolute paths and
+ * "." or ".." segments are refused before anything is opened. The path
+ * is then resolved, symlinks included, and must stay inside the
+ * manifest directory: an attachment is stored and later downloaded, so
+ * a link out of that directory would publish whatever the process can
+ * read. The same rule covers the CSV "files" map. */
+static gboolean
+manifest_file(const gchar *dir, const gchar *file, gchar **full, GError **error)
+{
+	g_autofree gchar *slashed = NULL;
+	g_autofree gchar *joined = NULL;
+	g_autofree gchar *real_dir = NULL;
+	g_autofree gchar *real_file = NULL;
+	g_autofree gchar *prefix = NULL;
+	gchar **parts = NULL;
+	guint i;
+	if (file == NULL || file[0] == '\0' || g_path_is_absolute(file))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"manifest files must be relative paths under the manifest directory");
+		return FALSE;
+	}
+	slashed = g_strdup(file);
+	for (i = 0; slashed[i] != '\0'; i++)
+		if (slashed[i] == '\\')
+			slashed[i] = '/';
+	parts = g_strsplit(slashed, "/", -1);
+	for (i = 0; parts[i] != NULL; i++)
+	{
+		if (parts[i][0] == '\0' || g_strcmp0(parts[i], ".") == 0 || g_strcmp0(parts[i], "..") == 0)
+		{
+			g_strfreev(parts);
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"manifest files must be relative paths under the manifest directory");
+			return FALSE;
+		}
+	}
+	g_strfreev(parts);
+	joined = g_build_filename(dir, file, NULL);
+	real_dir = realpath(dir, NULL);
+	real_file = realpath(joined, NULL);
+	if (real_dir == NULL || real_file == NULL)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			"%s cannot be read under the manifest directory", file);
+		return FALSE;
+	}
+	prefix = g_str_has_suffix(real_dir, "/") ? g_strdup(real_dir) : g_strconcat(real_dir, "/", NULL);
+	if (!g_str_has_prefix(real_file, prefix))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"manifest files must stay under the manifest directory");
+		return FALSE;
+	}
+	*full = g_steal_pointer(&real_file);
+	return TRUE;
+}
+
 /* Reads a manifest file and inlines the CSV files its "files" member
  * names, relative to the manifest, under "csv" the way the service
  * expects. A manifest that already carries "csv" is sent as is. */
@@ -52,8 +110,7 @@ venture_cli_crm_manifest(const gchar *path, GError **error)
 			return NULL;
 		}
 		file = json_node_get_string(filename);
-		full = g_path_is_absolute(file) ? g_strdup(file) : g_build_filename(dir, file, NULL);
-		if (!g_file_get_contents(full, &text, NULL, error))
+		if (!manifest_file(dir, file, &full, error) || !g_file_get_contents(full, &text, NULL, error))
 			return NULL;
 		json_object_set_string_member(csv, l->data, text);
 	}
@@ -85,7 +142,8 @@ venture_cli_crm_manifest(const gchar *path, GError **error)
 				return NULL;
 			}
 			file = json_node_get_string(filename);
-			full = g_path_is_absolute(file) ? g_strdup(file) : g_build_filename(dir, file, NULL);
+			if (!manifest_file(dir, file, &full, error))
+				return NULL;
 			input = g_file_new_for_path(full);
 			stream = g_file_read(input, NULL, error);
 			if (stream == NULL || !g_input_stream_read_all(G_INPUT_STREAM(stream), content,

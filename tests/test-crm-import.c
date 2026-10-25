@@ -491,6 +491,60 @@ test_unmapped_stage_refused(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count(f, VENTURE_TYPE_CRM_IMPORT), ==, 0);
 }
 
+/* A closed stage without a past close date would book the win or loss
+ * today, because the stage move substitutes now for a missing timestamp.
+ * Preview refuses the blank and the future date and writes nothing. An
+ * open deal may still omit the date. */
+static void
+test_closed_deal_date(Fixture *f, gconstpointer data)
+{
+	static const gchar *header =
+		"Record ID,Deal Name,Amount,Currency,Deal Stage,Pipeline,Close Date,Deal owner,Associated Company IDs,Associated Contact IDs,Create Date\n";
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	{
+		g_autoptr(JsonObject) payload = manifest(f, "hubspot", hubspot_files, NULL, NULL);
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *csv = g_strconcat(header,
+			"302,Globex renewal,4000,USD,closedwon,Sales Pipeline,,Jane Doe,102,202,2025-02-05 10:00\n", NULL);
+		json_object_set_string_member(json_object_get_object_member(payload, "csv"), "deals", csv);
+		g_assert_null(venture_crm_import_service_preview(venture_crm_import_service_get(f->db), f->org, payload, &actor, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "close date"));
+		g_assert_nonnull(strstr(error->message, "302"));
+	}
+	{
+		g_autoptr(JsonObject) payload = manifest(f, "hubspot", hubspot_files, NULL, NULL);
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *csv = g_strconcat(header,
+			"303,Initech pilot,900.50,EUR,closedlost,Sales Pipeline,2099-01-01,Sam Lee,103,203,2025-03-10 11:00\n", NULL);
+		json_object_set_string_member(json_object_get_object_member(payload, "csv"), "deals", csv);
+		g_assert_null(venture_crm_import_service_preview(venture_crm_import_service_get(f->db), f->org, payload, &actor, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "future"));
+		g_assert_nonnull(strstr(error->message, "303"));
+	}
+	g_assert_cmpuint(count(f, VENTURE_TYPE_CRM_IMPORT), ==, 0);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_DEAL), ==, 0);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_SALES_CREDIT), ==, 0);
+	{
+		g_autoptr(JsonObject) payload = manifest(f, "hubspot", hubspot_files, NULL, NULL);
+		g_autoptr(VentureEntity) batch = NULL;
+		g_autoptr(VentureEntity) open_deal = NULL;
+		g_autoptr(GDateTime) closed = NULL;
+		g_autofree gchar *csv = g_strconcat(header,
+			"301,Acme rollout,100,USD,presentationscheduled,Sales Pipeline,,Jane Doe,,,2025-01-15 09:00\n", NULL);
+		json_object_set_string_member(json_object_get_object_member(payload, "csv"), "deals", csv);
+		batch = preview(f, payload);
+		import(f, batch);
+		open_deal = record_of(f, batch, "deal", "301", VENTURE_TYPE_DEAL);
+		g_object_get(open_deal, "closed-at", &closed, NULL);
+		g_assert_null(closed);
+		g_assert_cmpuint(count(f, VENTURE_TYPE_SALES_CREDIT), ==, 0);
+	}
+}
+
 /* A lost stage needs a loss reason, a deal amount needs a currency, and
  * malformed attachment headers are refused at preview with nothing written. */
 static void
@@ -1033,7 +1087,7 @@ cli_received(GObject *source, GAsyncResult *result, gpointer data)
 }
 
 static gboolean
-run_cli(VentureWebServer *server, const gchar *a, const gchar *b, const gchar *c, gchar **out)
+run_cli(VentureWebServer *server, const gchar *a, const gchar *b, const gchar *c, gchar **out, gchar **err)
 {
 	g_autoptr(GSubprocess) process = NULL;
 	g_autoptr(GError) error = NULL;
@@ -1048,6 +1102,7 @@ run_cli(VentureWebServer *server, const gchar *a, const gchar *b, const gchar *c
 	g_test_message("CLI stderr: %s", reply.err != NULL ? reply.err : "");
 	ok = g_subprocess_get_successful(process);
 	if (out != NULL) *out = g_steal_pointer(&reply.out);
+	if (err != NULL) *err = g_steal_pointer(&reply.err);
 	g_free(reply.out);
 	g_free(reply.err);
 	return ok;
@@ -1145,11 +1200,11 @@ test_surfaces(Fixture *f, gconstpointer data)
 	}
 	manifest_path = g_build_filename(dir, "manifest.json", NULL);
 	g_assert_true(g_file_set_contents(manifest_path, manifest_text, -1, NULL));
-	g_assert_true(run_cli(server, "crm", "preview", manifest_path, &body));
+	g_assert_true(run_cli(server, "crm", "preview", manifest_path, &body, NULL));
 	g_assert_nonnull(strstr(body, "\"preview\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 0);
-	g_assert_true(run_cli(server, "crm", "import", "2", &body));
+	g_assert_true(run_cli(server, "crm", "import", "2", &body, NULL));
 	g_assert_nonnull(strstr(body, "\"imported\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
@@ -1162,15 +1217,51 @@ test_surfaces(Fixture *f, gconstpointer data)
 		g_object_get(document, "content-base64", &encoded, NULL);
 		g_assert_cmpstr(encoded, ==, "U3ludGhldGljIGV2aWRlbmNlLgo=");
 	}
-	g_assert_true(run_cli(server, "crm", "rollback", "2", &body));
+	g_assert_true(run_cli(server, "crm", "rollback", "2", &body, NULL));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 0);
 	/* crm import FILE previews and imports in one go. */
-	g_assert_true(run_cli(server, "crm", "import", manifest_path, &body));
+	g_assert_true(run_cli(server, "crm", "import", manifest_path, &body, NULL));
 	g_assert_nonnull(strstr(body, "\"imported\""));
 	g_clear_pointer(&body, g_free);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
-	g_assert_false(run_cli(server, "crm", "bogus", "1", NULL));
+	g_assert_false(run_cli(server, "crm", "bogus", "1", NULL, NULL));
+	/* An attachment name cannot leave the manifest directory: absolute,
+	 * dot segments, and a symlink that resolves outside are all refused
+	 * before any byte is stored. */
+	{
+		const gchar *bad[] = { "/etc/passwd", "../passwd", "nested/../../passwd", "./evidence.txt", NULL };
+		guint b;
+		for (b = 0; bad[b] != NULL; b++)
+		{
+			g_autofree gchar *bad_path = g_build_filename(dir, "bad.json", NULL);
+			g_autofree gchar *bad_text = g_strdup_printf("{\"attachment_files\":{\"attachment-1\":\"%s\"}}", bad[b]);
+			g_autofree gchar *err = NULL;
+			g_assert_true(g_file_set_contents(bad_path, bad_text, -1, NULL));
+			g_assert_false(run_cli(server, "crm", "preview", bad_path, NULL, &err));
+			g_assert_nonnull(err);
+			g_assert_nonnull(strstr(err, "manifest directory"));
+		}
+		{
+			g_autofree gchar *secret = g_strconcat(dir, "-outside.txt", NULL);
+			g_autofree gchar *link_path = g_build_filename(dir, "link.txt", NULL);
+			g_autofree gchar *link_manifest = g_build_filename(dir, "link.json", NULL);
+			g_autoptr(GFile) link_file = g_file_new_for_path(link_path);
+			g_autoptr(GError) link_error = NULL;
+			g_autofree gchar *err = NULL;
+			g_assert_true(g_file_set_contents(secret, "secret\n", -1, &error));
+			g_assert_no_error(error);
+			g_assert_true(g_file_make_symbolic_link(link_file, secret, NULL, &link_error));
+			g_assert_no_error(link_error);
+			g_assert_true(g_file_set_contents(link_manifest,
+				"{\"attachment_files\":{\"attachment-1\":\"link.txt\"}}", -1, NULL));
+			g_assert_false(run_cli(server, "crm", "preview", link_manifest, NULL, &err));
+			g_assert_nonnull(err);
+			g_assert_nonnull(strstr(err, "manifest directory"));
+			g_unlink(secret);
+		}
+		g_assert_cmpuint(count(f, VENTURE_TYPE_COMPANY), ==, 3);
+	}
 	venture_web_server_stop(server);
 	g_clear_object(&server);
 	venture_test_remove_tree(dir);
@@ -1184,6 +1275,7 @@ main(int argc, char **argv)
 	g_test_add("/crm-import/lifecycle-idempotent", Fixture, NULL, setup, test_lifecycle_idempotent, teardown);
 	g_test_add("/crm-import/dedupe-and-links", Fixture, NULL, setup, test_dedupe_and_links, teardown);
 	g_test_add("/crm-import/deals", Fixture, NULL, setup, test_deals, teardown);
+	g_test_add("/crm-import/closed-deal-date", Fixture, NULL, setup, test_closed_deal_date, teardown);
 	g_test_add("/crm-import/unmapped-stage-refused", Fixture, NULL, setup, test_unmapped_stage_refused, teardown);
 	g_test_add("/crm-import/manifest-refusals", Fixture, NULL, setup, test_manifest_refusals, teardown);
 	g_test_add("/crm-import/history-and-tasks", Fixture, NULL, setup, test_history_and_tasks, teardown);

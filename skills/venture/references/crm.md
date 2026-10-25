@@ -12,7 +12,9 @@ attribution) is in [outreach.md](outreach.md); mail and calendars in
 
 *Companies* are the outside businesses you deal with (customers, prospects,
 suppliers, marketplaces, partners) -- distinct from *organizations*, which
-are the businesses you are. Contacts belong to companies by reference;
+are the businesses you are. A company carries `customer` and `supplier`
+flags beside `kind`, so one company can be both; saving a customer or
+supplier relationship sets the matching flag. Contacts belong to companies by reference;
 deals, interactions and tickets carry both. Every record's page lists
 everything that points at it (derived from the references). Company,
 contact, deal, ticket and venture carry `owner_user_id` and an optional
@@ -163,9 +165,18 @@ quota period -- not posted accounting revenue. `sales_credit` and
 
 HubSpot, Zoho CRM or Salesforce CSV exports, mirroring the accounting
 cutover: a mapped manifest, a preview that refuses before writing, an
-import in one transaction, a row per source id (reruns are idempotent), and
-a rollback that removes exactly what the import created. No vendor API, no
-attachments, no accounting records.
+import in one transaction, a row per source id (reruns are idempotent).
+No vendor API. A complete export may include custom fields, supported
+custom objects, attachment bytes (8 MiB each) and dated commercial
+history. A won or lost deal needs a close date that is not in the
+future, or preview refuses it. Invoices and receipts post on their source dates. Quotes keep
+lifecycle evidence without sending. Orders keep fulfillment evidence
+without consuming today's inventory. A rollback removes imported live
+records. Issued documents, fulfillment and quote events stay; financial
+rollback posts compensating refunds and voids and names what it kept.
+=files= and =attachment_files= name paths under the manifest directory
+only; an absolute path, =..=, or a symlink that leaves that directory is
+refused.
 
 ```bash
 venturectl crm preview manifest.json        # {"source":"hubspot","files":{"companies":"companies.csv",...},"stage_map":{...},"currency":"USD","owner_map":{...}}
@@ -174,6 +185,6 @@ venturectl crm activate 3                   # accept; closes the door on rollbac
 venturectl crm rollback 3
 ```
 
-Objects: companies, contacts, deals, notes, emails, calls, meetings, tasks;
-list unsupported ones (attachments) under `unsupported`. Generic writes to
+Objects: companies, contacts, deals, notes, emails, calls, meetings, tasks,
+plus the additional modules named in `docs/crm-import.org`. Generic writes to
 `crm_import`/`crm_import_row` are refused. See `docs/crm-import.org`.

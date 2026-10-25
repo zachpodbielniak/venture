@@ -225,7 +225,10 @@ static gboolean
 resource_allowed(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, VentureEntity *entity,
 	gboolean write, GError **error)
 {
-	gpointer key = GSIZE_TO_POINTER((gsize)G_OBJECT_TYPE(entity) | (write ? 1 : 0));
+	/* GType values are consecutive, so the write bit has to sit below the
+	 * type. OR-ing it in would make a write of one type look like a read
+	 * of the next. */
+	gpointer key = GSIZE_TO_POINTER(((gsize)G_OBJECT_TYPE(entity) << 1) | (write ? 1u : 0u));
 	if (batched(self, actor) && g_hash_table_contains(self->batch_resources, key))
 		return TRUE;
 	if (!venture_tenant_service_check_resource(venture_tenant_service_get(self->database), G_OBJECT(entity), write, error))

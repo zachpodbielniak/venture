@@ -157,8 +157,11 @@ the mapped stage. They are created in the mapped stage's pipeline and
 moved through =VentureDealService=, so stage history records
 "Imported from hubspot stage …", won and lost stages stamp =closed_at=
 and lost deals carry =loss_reason_id=. Closed deals use the original
-=close_date= for =closed_at= and the immutable sales booking. The initial stage
-uses =created_at= when supplied. Explicit =stage_history= rows retain every
+=close_date= for =closed_at= and the immutable sales booking. A closed
+stage with a blank close date, or a close date still in the future, is
+refused at preview: a missing date would otherwise book the win or loss
+on the day of the import. The initial stage
+uses =created_at= when supplied. An open deal may omit =close_date=. Explicit =stage_history= rows retain every
 exported transition and its original timestamp and owner.
 
 Notes, emails, calls and meetings become =interaction= records of that
@@ -336,6 +339,9 @@ namespace such as =contact=, =company=, =deal= or =custom:installations=.
 Alternatively place base64 bytes in =attachment_data= keyed by attachment
 source id. For local CLI imports, =attachment_files= maps those ids to
 paths relative to the manifest; the CLI reads and inlines their bytes.
+The same confinement covers =files=. An absolute path, a =.= or =..=
+segment, or a path that resolves outside the manifest directory,
+including through a symlink, is refused before any byte is read.
 Each decoded attachment is limited to 8 MiB and base64 must be canonical.
 A missing parent or invalid payload rolls back the entire import.
 

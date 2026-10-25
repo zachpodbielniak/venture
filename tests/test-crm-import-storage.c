@@ -30,9 +30,12 @@ test_attachment_upgrade(void)
 		g_assert_no_error(error);
 		id = venture_entity_get_id(VENTURE_ENTITY(document));
 	}
+	/* History is a prefix, so every version after the attachment check
+	 * has to be forgotten with it. Reconciliation puts the column back
+	 * and 000958 only verifies that; 000980 is safe to run again. */
 	g_assert_true(venture_database_execute(database,
 		"ALTER TABLE documents DROP COLUMN content_base64;"
-		"DELETE FROM schema_migrations WHERE version = 957", NULL, &error));
+		"DELETE FROM schema_migrations WHERE version >= 958", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&context);
 	g_clear_object(&database);

@@ -9,6 +9,9 @@ attribution, territories, mail and calendars. Conventions are in
 
 - `company` -- an outside business: customer, prospect, supplier,
   marketplace or partner (`kind` [customer|prospect|supplier|platform|partner|other]).
+  `customer` and `supplier` are separate flags, so one company can be both.
+  Saving `kind` customer or supplier sets the matching flag. Bills, the
+  supplier portal and customer health follow the flags.
   **name**, `legal_name`, `email`, `phone`, `website`, address fields
   (`address_state/county/city` pick sales tax), `owner_user_id -> user`,
   `team_id -> team`, `venture_id`, `default_price_list_id`, `campaign_id`,

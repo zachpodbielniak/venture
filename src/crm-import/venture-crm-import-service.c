@@ -623,6 +623,9 @@ deal_amount(JsonObject *manifest, Table *table, gchar **row, const gchar *id, GE
 }
 
 static gboolean
+parse_time(const gchar *text, GDateTime **out, const gchar *object, const gchar *id, const gchar *field, GError **error);
+
+static gboolean
 validate_deals(VentureCrmImportService *self, gint64 org, JsonObject *manifest, GPtrArray *tables, GError **error)
 {
 	guint t, r;
@@ -654,6 +657,22 @@ validate_deals(VentureCrmImportService *self, gint64 org, JsonObject *manifest, 
 					g_object_get(reason, "active", &active, NULL);
 				if (reason == NULL || !active || venture_entity_get_organization_id(reason) != org)
 					return refuse(error, "stage \"%s\" is a lost stage: the manifest needs loss_reason_id naming an active loss reason", stage);
+			}
+			/* A closed stage books closed-at and the sales credit on the
+			 * source close date. move_stage_at() substitutes now when that
+			 * timestamp is missing, which would date the win or loss on
+			 * the day of the import. Refuse that, and a date still ahead. */
+			if (target.kind != 0)
+			{
+				g_autoptr(GDateTime) close = NULL;
+				g_autoptr(GDateTime) now = NULL;
+				if (!parse_time(cell(table, row, "close_date"), &close, "deal", id, "close date", error))
+					return FALSE;
+				if (close == NULL)
+					return refuse(error, "deal %s is in a closed stage and needs a close date; a blank date would book the win or loss today", id);
+				now = g_date_time_new_now_utc();
+				if (g_date_time_compare(close, now) > 0)
+					return refuse(error, "deal %s: close date is in the future", id);
 			}
 			money = deal_amount(manifest, table, row, id, error);
 			if (money == NULL)
@@ -1375,6 +1394,10 @@ import_deals(Run *run, Table *table, GError **error)
 			!venture_deal_service_create_at(deals, deal, created_at, run->actor, error))
 			return FALSE;
 		note = g_strdup_printf("Imported from %s stage \"%s\"", run->source, cell(table, row, "stage"));
+		/* Pass the source close date through. NULL would make move_stage_at()
+		 * stamp now, which preview already refuses for a closed stage. */
+		if (target.kind != 0 && close == NULL)
+			return refuse(error, "deal %s is in a closed stage and needs a close date; a blank date would book the win or loss today", id);
 		moved = venture_deal_service_move_stage_at(deals, deal, target.stage_id, target.kind == 0 ? created_at : close, note, run->actor, error);
 		if (moved == NULL)
 			return FALSE;
