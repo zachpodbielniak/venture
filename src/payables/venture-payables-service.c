@@ -748,7 +748,7 @@ derive_bill(VenturePayablesService *self, VentureEntity *bill, GDateTime *date,
 }
 
 static VentureMoney *
-bill_total(VenturePayablesService *self, VentureEntity *bill, GError **error)
+bill_total(VenturePayablesService *self, VentureEntity *bill, gboolean opening, GError **error)
 {
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(VentureMoney) total = NULL;
@@ -776,6 +776,13 @@ bill_total(VenturePayablesService *self, VentureEntity *bill, GError **error)
 			return NULL;
 		}
 		if (amount == NULL || !check_amount(amount, error) || !accumulate(&total, amount, FALSE, error))
+			return NULL;
+	}
+	if (opening)
+	{
+		g_autoptr(VentureMoney) adjustment = NULL;
+		g_object_get(bill, "opening-adjustment", &adjustment, NULL);
+		if (adjustment != NULL && !accumulate(&total, adjustment, FALSE, error))
 			return NULL;
 	}
 	if (!check_amount(total, error))
@@ -922,7 +929,7 @@ perform_transition(VenturePayablesService *self, VentureEntity *bill, VentureVen
 	if (approval && !venture_purchasing_check_bill_approval(self->database, bill, error))
 		return FALSE;
 	if (approval)
-		total = bill_total(self, bill, error);
+		total = bill_total(self, bill, opening != NULL, error);
 	else
 	{
 		issued = issue_event(self, venture_entity_get_id(bill), NULL, error);
@@ -1499,14 +1506,16 @@ check_bill_edit(VenturePayablesService *self, VentureEntity *record,
 	static const gchar *const financial[] = {
 		"company_id", "organization_id", "venture_id", "bill_date", "due_date", "number", "currency", "deleted_at", NULL
 	};
-	static const gchar *const service_owned[] = { "opening_at", NULL };
+	static const gchar *const service_owned[] = { "opening_at", "opening_adjustment", NULL };
+	g_autoptr(VentureMoney) adjustment = NULL;
 	gint phase = bill_phase(record);
 	gint old = previous != NULL ? bill_phase(previous) : VENTURE_VENDOR_BILL_STATUS_DRAFT;
 	if (phase < 0 || phase != old)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Financial status is derived; approve, pay or void through VenturePayablesService");
 	/* The opening stamp decides whether a bill is expensed here or was
 	 * expensed by the source system; only the cutover sets it. */
-	if ((previous == NULL && opening_record(record)) ||
+	g_object_get(record, "opening-adjustment", &adjustment, NULL);
+	if ((previous == NULL && (opening_record(record) || adjustment != NULL)) ||
 		(previous != NULL && has_changed(previous, record, service_owned)))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Opening balance marks are set by the cutover through VenturePayablesService");
 	if (previous != NULL && old != VENTURE_VENDOR_BILL_STATUS_DRAFT && has_changed(previous, record, financial))

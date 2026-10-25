@@ -238,6 +238,7 @@ static void
 invoice_totals(
 	GPtrArray		*lines,
 	VentureMoney	*shipping,
+	VentureMoney	*adjustment,
 	VentureMoney	**subtotal,
 	VentureMoney	**tax_total,
 	VentureMoney	**total
@@ -266,6 +267,7 @@ invoice_totals(
 		accumulate(total, amount);
 	}
 	accumulate(total, shipping);
+	accumulate(total, adjustment);
 }
 
 GBytes *
@@ -279,7 +281,7 @@ venture_financial_documents_invoice_pdf(
 	g_autoptr(GPtrArray) lines = NULL;
 	g_autoptr(VentureEntity) company = NULL;
 	g_autoptr(GDateTime) issued = NULL, due = NULL;
-	g_autoptr(VentureMoney) subtotal = NULL, tax_total = NULL, total = NULL, balance = NULL, shipping = NULL;
+	g_autoptr(VentureMoney) subtotal = NULL, tax_total = NULL, total = NULL, balance = NULL, shipping = NULL, adjustment = NULL;
 	g_autofree gchar *number = NULL, *terms = NULL, *title = NULL, *issued_text = NULL, *due_text = NULL;
 	g_autofree gchar *exempt_reason = NULL;
 	gint64 company_id = 0;
@@ -293,7 +295,7 @@ venture_financial_documents_invoice_pdf(
 
 	db = venture_context_get_database(context);
 	g_object_get(invoice, "number", &number, "terms", &terms, "issued-at", &issued,
-	             "due-at", &due, "company-id", &company_id, "shipping-amount", &shipping,
+	             "due-at", &due, "company-id", &company_id, "shipping-amount", &shipping, "opening-adjustment", &adjustment,
 	             "status", &status, "tax-exempt", &exempt, "tax-exempt-reason", &exempt_reason, NULL);
 
 	lines = invoice_lines(db, invoice, error);
@@ -364,7 +366,7 @@ venture_financial_documents_invoice_pdf(
 
 	}
 
-	invoice_totals(lines, shipping, &subtotal, &tax_total, &total);
+	invoice_totals(lines, shipping, adjustment, &subtotal, &tax_total, &total);
 	if (y > DOC_BOTTOM - 120)
 	{
 		venture_pdf_writer_new_page(pdf);
@@ -379,6 +381,8 @@ venture_financial_documents_invoice_pdf(
 	}
 	if (NULL != shipping && !venture_money_is_zero(shipping))
 		y = draw_total(pdf, y, "Shipping", shipping, FALSE);
+	if (adjustment != NULL && !venture_money_is_zero(adjustment))
+		y = draw_total(pdf, y, "Adjustment", adjustment, FALSE);
 	y = draw_total(pdf, y, "Total", total, TRUE);
 
 	balance = venture_settlement_service_invoice_balance(venture_settlement_service_get(db),
@@ -963,6 +967,7 @@ venture_financial_documents_thermal(
 		g_autoptr(VentureMoney)	subtotal = NULL;
 		g_autoptr(VentureMoney)	tax = NULL;
 		g_autoptr(VentureMoney)	shipping = NULL;
+		g_autoptr(VentureMoney)	adjustment = NULL;
 		g_autoptr(VentureMoney)	balance = NULL;
 		guint					i;
 
@@ -970,7 +975,7 @@ venture_financial_documents_thermal(
 		{
 			return NULL;
 		}
-		g_object_get(record, "number", &number, "issued-at", &date, "shipping-amount", &shipping,
+		g_object_get(record, "number", &number, "issued-at", &date, "shipping-amount", &shipping, "opening-adjustment", &adjustment,
 					 NULL);
 		title = g_strdup_printf("Invoice %s", number ? number : "");
 		for (i = 0; i < lines->len; i++)
@@ -987,7 +992,7 @@ venture_financial_documents_thermal(
 			g_object_get(line, "description", &description, NULL);
 			thermal_money(body, description ? description : "Item", line_amount);
 		}
-		invoice_totals(lines, shipping, &subtotal, &tax, &amount);
+		invoice_totals(lines, shipping, adjustment, &subtotal, &tax, &amount);
 		thermal_money(body, "Subtotal", subtotal);
 		if (tax)
 		{
@@ -997,6 +1002,8 @@ venture_financial_documents_thermal(
 		{
 			thermal_money(body, "Shipping", shipping);
 		}
+		if (adjustment != NULL && !venture_money_is_zero(adjustment))
+			thermal_money(body, "Adjustment", adjustment);
 		thermal_money(body, "Total", amount);
 		balance = venture_settlement_service_invoice_balance(
 			venture_settlement_service_get(db), venture_entity_get_id(record), NULL, NULL);
