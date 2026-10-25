@@ -309,6 +309,14 @@ free-text version could not answer "everything to do with this account",
 which is the question a CRM exists for, and it spelled the same company three
 ways across three records.
 
+A company's page lists the people at it under /People/ -- name, what they
+do there, email and phone as links -- with /Add a person/ opening the
+contact form with the company already chosen. A contact's company is
+flagged searchable, and a searchable reference matches by the name of what
+it points at, so searching contacts for "pine" finds everybody at Blue Pine
+Bakery. The card is =src/web/venture-company-people-web.inc=; its test is
+=tests/test-venture-company-people-web.c=.
+
 Deals and interactions carry a company as well as a contact, because people
 move and accounts persist, and the pipeline is usually read by account.
 

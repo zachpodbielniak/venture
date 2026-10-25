@@ -831,8 +831,9 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("phone", "Phone", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	/* Searchable: the people at a company are found by its name. */
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("role", "Role", "Their job title there",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),

@@ -10628,6 +10628,7 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 #include "billing/venture-plan-web.inc"
 #include "receivables/venture-customer-account-web.inc"
 #include "receivables/venture-customer-credits-web.inc"
+#include "web/venture-company-people-web.inc"
 #include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
 #include "billing/venture-lightsite-billing-web.inc"
@@ -12577,6 +12578,8 @@ venture_web_ui_detail(
 	quote_buttons(self, content, record);
 	/* Where we stand with a customer, ahead of the work done for them. */
 	venture_customer_account_web_append_block(self, content, record);
+	/* And whom to call there. */
+	venture_company_people_web_append_block(self, content, record);
 	venture_jobs_web_append_block(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);

@@ -6370,3 +6370,9 @@ details.late-fee-waive[open] > summary { margin-bottom: 8px; }
 .customer-account .account-figures dd.negative,
 .customer-account td.negative { color: var(--accent); }
 .customer-account h3 { margin: var(--space-4) 0 var(--space-2); }
+
+/* The people at a company, one line each: name, role, email, phone. */
+.company-people .people { list-style: none; margin: 0; padding: 0; }
+.company-people .people li { padding: var(--space-1) 0; border-bottom: 1px solid var(--border); }
+.company-people .people li:last-child { border-bottom: 0; }
+.company-people .people .person { font-weight: 600; }
