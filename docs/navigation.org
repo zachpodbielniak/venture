@@ -16,7 +16,7 @@ This is grouping and labels only. Every page keeps its URL; nothing is moved or 
 
 * The section map
 
-Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds a row (below). Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
+Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds a row (below). Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system. /Customers/ is who the customers are -- the customers, the people at them, the conversations with them; /Jobs/ is the work done for them -- jobs, the day, visits, properties and equipment. One Customers heading over both read as the whole business.
 
 | Area      | Part              | Pages                                                                                                                                              |
 |-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -24,7 +24,8 @@ Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds
 |           | Money out         | Suppliers, Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
 |           | Bank              | Bank feeds, Money calendar                                                                                                                         |
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
-| Customers |                   | Customers, Contacts, Properties, Equipment, Jobs, Day, Visits due, My day, Duplicates                                                              |
+| Customers |                   | Customers, Contacts, Conversations, Duplicates                                                                                                     |
+| Jobs      |                   | Jobs, Day, Visits due, My day, Properties, Equipment                                                                                               |
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts, Forms                                                                                           |
 | Support   |                   | Tickets, Sprints, Milestones, Knowledge                                                                                                            |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |

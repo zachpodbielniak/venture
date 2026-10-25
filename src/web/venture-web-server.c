@@ -1961,7 +1961,15 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company?customer=true", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
+	"/e/company?customer=true", "/e/contact", "/conversations", "/customers/duplicates",
+	NULL
+};
+
+/* The work done for customers: its own question, not the customers'.
+ * Under one Customers heading with the jobs, visits and equipment, that
+ * heading read as the whole business. */
+static const gchar *const venture_web_nav_jobs[] = {
+	"/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/e/property", "/e/equipment",
 	NULL
 };
 
@@ -2048,6 +2056,7 @@ static const VentureWebNavSection venture_web_nav_sections[] = {
 	{ "Bank", "Money", venture_web_nav_bank },
 	{ "Books", "Money", venture_web_nav_books },
 	{ "Customers", NULL, venture_web_nav_customers },
+	{ "Jobs", NULL, venture_web_nav_jobs },
 	{ "Growth", NULL, venture_web_nav_growth },
 	{ "Support", NULL, venture_web_nav_support },
 	{ "Operations", NULL, venture_web_nav_operations },

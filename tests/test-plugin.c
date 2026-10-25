@@ -1356,8 +1356,14 @@ test_web_navigation_groups_by_question(
 		"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
 		"/e/accounting_cutover", "/e/currency", NULL
 	};
+	/* Who the customers are, and nothing else: the work done for them
+	 * is its own question. */
 	static const gchar *const customers[] = {
-		"/e/company?customer=true", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
+		"/e/company?customer=true", "/e/contact", "/conversations", "/customers/duplicates",
+		NULL
+	};
+	static const gchar *const jobs[] = {
+		"/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/e/property", "/e/equipment",
 		NULL
 	};
 	static const gchar *const growth[] = {
@@ -1404,6 +1410,7 @@ test_web_navigation_groups_by_question(
 		{ "Bank", "Money", bank },
 		{ "Books", "Money", books },
 		{ "Customers", NULL, customers },
+		{ "Jobs", NULL, jobs },
 		{ "Growth", NULL, growth },
 		{ "Support", NULL, support },
 		{ "Operations", NULL, operations },
