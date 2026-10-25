@@ -679,7 +679,18 @@ venture_web_accepts_gzip(HtmxRequest *request)
 		g_autofree gchar *coding = g_strstrip(g_strdup(codings[i]));
 
 		if (g_str_has_prefix(coding, "gzip") && (coding[4] == '\0' || coding[4] == ';' || coding[4] == ' '))
-			return NULL == strstr(coding, "q=0") || NULL != strstr(coding, "q=0.");
+		{
+			const gchar *q = strstr(coding, "q=0");
+
+			/* q=0.1 through q=0.9 still want gzip. q=0, q=0.0, q=0.05 and
+			 * q=00 do not. The old check treated any "q=0." as a yes, so
+			 * q=0.0 was compressed. */
+			if (NULL == q)
+				return TRUE;
+			if (q[3] == '.' && q[4] >= '1' && q[4] <= '9')
+				return TRUE;
+			return FALSE;
+		}
 	}
 	return FALSE;
 }

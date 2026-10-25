@@ -3,14 +3,14 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-10-09]
+#+updated: [2026-10-25]
 #+version: 0.7.0
 
 * The interface
 
 VENTURE's web UI is drawn from one stylesheet at a time, embedded into the server binary at build time; there is no build step, no framework and no web font. This page is what the stylesheet is made of, so that a page added to the server, a widget added to a dashboard, or a plugin's own markup lands in the same design instead of beside it.
 
-A page links the stylesheet for its look and the two scripts (=venture-hx.js=, then =venture.js=) rather than carrying them: they are served at =/pub/ui/<version>/<name>=, where the version is the first sixteen hex digits of the content's SHA-256, with =Cache-Control: public, max-age=31536000, immutable=. The browser fetches each once and keeps it until a release changes the content and so the address; a request naming an older version still gets the current file, uncached, so a page left open across a release keeps working. Together they are over four hundred kilobytes, and inlined they made every click download and parse half a megabyte. The route is public, because the sign-in page needs the stylesheet before there is a session. =tests/test-venture-page-assets.c= holds an owner's pages under 96 KB and checks the files come back byte for byte.
+A page links the stylesheet for its look and the two scripts (=venture-hx.js=, then =venture.js=) rather than carrying them: they are served at =/pub/ui/<version>/<name>=, where the version is the first sixteen hex digits of the content's SHA-256, with =Cache-Control: public, max-age=31536000, immutable=. The browser fetches each once and keeps it until a release changes the content and so the address; a request naming an older version still gets the current file, uncached, so a page left open across a release keeps working. Together they are over four hundred kilobytes, and inlined they made every click download and parse half a megabyte. The route is public, because the sign-in page needs the stylesheet before there is a session. A browser that names gzip at a quality above zero (=gzip=, =gzip;q=0.1=) receives the gzip body; =gzip;q=0= and =gzip;q=0.0= receive the plain file. =tests/test-venture-page-assets.c= holds an owner's pages under 96 KB and checks the files come back byte for byte.
 
 ** Principles
 

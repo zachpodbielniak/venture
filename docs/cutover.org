@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-09-17]
+#+updated: [2026-10-25]
 #+version: 0.7.0
 
 * Cutover
@@ -339,9 +339,12 @@ the trial balance's inventory row with the ledger.
 
 =account_code= (required, mapped), optional =name=, =currency=, and =debit=
 and/or =credit= (nonnegative, one currency). An account may appear once per
-currency. Debits must equal credits in every currency; the difference is
-reported only when every row has valid money figures. Missing accounts do
-not remove otherwise valid amounts from that sum. See [[The trial balance]].
+currency. Debits must equal credits in every currency. A row with no usable
+figure is an error of its own and is left out of the sum; a gap among the
+rows that do have figures is still reported. A currency whose running total
+overflows is an error, and that partial sum is not reported as a difference.
+Other currencies are still checked. Missing accounts do not remove otherwise
+valid amounts from the sum. See [[The trial balance]].
 
 ** Modules
 

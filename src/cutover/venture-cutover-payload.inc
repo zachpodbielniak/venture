@@ -1460,31 +1460,35 @@ check_trial_balance(Plan *plan)
 {
 	g_autoptr(GHashTable) debits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)venture_money_free);
 	g_autoptr(GHashTable) accounts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(GHashTable) overflowed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	GHashTableIter iter;
 	gpointer key, value;
 	guint i;
-	/* Incomplete figures cannot prove a difference; account lookup errors can. */
-	for (i = 0; i < plan->trial_balance->len; i++)
-		if (((Row *)g_ptr_array_index(plan->trial_balance, i))->total == NULL)
-			return;
+	/* A row with no figure is its own error and stays out of the sum. The
+	 * rows that do have figures still have to show a real gap. An overflow
+	 * drops that currency's partial sum and does not hide another currency. */
 	for (i = 0; i < plan->trial_balance->len; i++)
 	{
 		Row *row = g_ptr_array_index(plan->trial_balance, i);
 		g_autofree gchar *slot = NULL;
 		VentureMoney *sum;
 		const gchar *currency;
+		if (row->total == NULL)
+			continue;
 		currency = venture_money_get_currency(row->total);
 		slot = g_strdup_printf("%s|%s", row->account_code != NULL ? row->account_code : row->source_id, currency);
 		if (g_hash_table_contains(accounts, slot))
-		{
 			row_error(plan, row, "account %s appears twice in trial_balance for %s", row->account_code, currency);
-		}
 		g_hash_table_insert(accounts, g_steal_pointer(&slot), GINT_TO_POINTER(1));
+		if (g_hash_table_contains(overflowed, currency))
+			continue;
 		sum = money_sum(g_hash_table_lookup(debits, currency), row->total);
 		if (sum == NULL)
 		{
 			row_error(plan, row, "trial balance totals overflow in %s", currency);
-			return;
+			g_hash_table_insert(overflowed, g_strdup(currency), GINT_TO_POINTER(1));
+			g_hash_table_remove(debits, currency);
+			continue;
 		}
 		g_hash_table_insert(debits, g_strdup(currency), sum);
 	}

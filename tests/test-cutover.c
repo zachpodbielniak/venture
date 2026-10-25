@@ -2352,6 +2352,36 @@ test_trial_balance_missing_account(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(report, "debits exceed credits by 1.00 USD"));
 }
 
+/* A bad figure is its own error. It must not hide a real gap in the rows
+ * that parsed, and an overflow in one currency must not hide another. */
+static void
+test_trial_balance_partial_sum(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) batch = NULL;
+	g_autofree gchar *report = NULL;
+	(void)data;
+	batch = preview_payload(f, "{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"trial_balance\":[{\"account_code\":\"1000\",\"debit\":\"not-money\"},"
+		"{\"account_code\":\"1100\",\"debit\":\"100\"},{\"account_code\":\"3000\",\"credit\":\"99\"}]}");
+	report = report_of(batch);
+	g_assert_nonnull(strstr(report, "not-money"));
+	g_assert_nonnull(strstr(report, "debits exceed credits by 1.00 USD"));
+	g_clear_object(&batch);
+	g_clear_pointer(&report, g_free);
+	batch = preview_payload(f, "{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"trial_balance\":["
+		"{\"account_code\":\"1000\",\"debit\":\"92233720368547758.07\"},"
+		"{\"account_code\":\"1100\",\"debit\":\"0.01\"},"
+		"{\"account_code\":\"1000\",\"debit\":\"2 EUR\"},"
+		"{\"account_code\":\"3000\",\"credit\":\"1 EUR\"}]}");
+	report = report_of(batch);
+	g_assert_nonnull(strstr(report, "trial balance totals overflow in USD"));
+	g_assert_nonnull(strstr(report, "debits exceed credits by 1.00 EUR"));
+	/* The partial USD sum is the max debit. It must not be reported once
+	 * the following cent overflows that currency. */
+	g_assert_null(strstr(report, "92233720368547758.07"));
+}
+
 /* A subsidiary can use the documented bare codes with its scoped chart. */
 static void
 test_scoped_chart(Fixture *f, gconstpointer data)
@@ -2389,6 +2419,7 @@ main(int argc, char **argv)
 	g_test_add("/cutover/adjustment-refusals", Fixture, NULL, setup, test_adjustment_refusals, teardown);
 	g_test_add("/cutover/opening-adjustment", Fixture, NULL, setup, test_opening_adjustment, teardown);
 	g_test_add("/cutover/missing-account-balance", Fixture, NULL, setup, test_trial_balance_missing_account, teardown);
+	g_test_add("/cutover/trial-balance-partial-sum", Fixture, NULL, setup, test_trial_balance_partial_sum, teardown);
 	g_test_add("/cutover/scoped-chart", Fixture, NULL, setup, test_scoped_chart, teardown);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add("/cutover/preview-import-activate", Fixture, NULL, setup, test_preview_import_activate, teardown);

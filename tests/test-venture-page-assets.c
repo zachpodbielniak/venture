@@ -418,6 +418,42 @@ test_assets_gzipped(Fixture *f, gconstpointer data)
 	answer_clear(&page);
 }
 
+/* Quality zero means the browser refused gzip, including the written-out
+ * q=0.0 that used to match the "q=0." acceptance check. */
+static void
+test_assets_gzip_quality(Fixture *f, gconstpointer data)
+{
+	Answer page = { 0 };
+	g_autofree gchar *href = NULL;
+	static const struct { const gchar *encoding; gboolean gzip; } cases[] = {
+		{ "gzip", TRUE },
+		{ "gzip;q=0.1", TRUE },
+		{ "gzip;q=0.9", TRUE },
+		{ "gzip;q=0", FALSE },
+		{ "gzip;q=0.0", FALSE },
+		{ "gzip;q=0.05", FALSE },
+		{ "gzip;q=00", FALSE },
+		{ "identity, gzip;q=0.0", FALSE }
+	};
+	guint i;
+	(void)data;
+	exchange(f, "GET", "/e/quote", NULL, TRUE, &page, NULL);
+	g_assert_cmpuint(page.status, ==, 200);
+	href = linked(page.body, "src", "/venture.js");
+	g_assert_nonnull(href);
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autofree gchar *encoding = NULL;
+		g_autoptr(GBytes) body = fetch_raw(f, href, cases[i].encoding, &encoding);
+		g_assert_nonnull(body);
+		if (cases[i].gzip)
+			g_assert_cmpstr(encoding, ==, "gzip");
+		else
+			g_assert_null(encoding);
+	}
+	answer_clear(&page);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -426,6 +462,7 @@ main(int argc, char **argv)
 	g_test_add("/page-assets/served", Fixture, NULL, setup, test_assets_served, teardown);
 	g_test_add("/page-assets/classic-look", Fixture, NULL, setup, test_classic_look, teardown);
 	g_test_add("/page-assets/gzipped", Fixture, NULL, setup, test_assets_gzipped, teardown);
+	g_test_add("/page-assets/gzip-quality", Fixture, NULL, setup, test_assets_gzip_quality, teardown);
 	g_test_add("/page-assets/old-and-unknown", Fixture, NULL, setup, test_old_and_unknown, teardown);
 	return g_test_run();
 }
