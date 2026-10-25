@@ -350,6 +350,74 @@ test_old_and_unknown(Fixture *f, gconstpointer data)
 	answer_clear(&answer);
 }
 
+/* The raw answer for @path with @encoding asked for, undecoded. */
+static GBytes *
+fetch_raw(Fixture *f, const gchar *path, const gchar *encoding, gchar **out_encoding)
+{
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(f->server), path, NULL);
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 30, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
+	SoupMessageHeaders *headers = soup_message_get_request_headers(message);
+	Reply reply = { FALSE, NULL, NULL };
+	soup_session_remove_feature_by_type(session, SOUP_TYPE_CONTENT_DECODER);
+	soup_message_headers_replace(headers, "Host", AUTHORITY);
+	if (encoding)
+		soup_message_headers_replace(headers, "Accept-Encoding", encoding);
+	else
+		soup_message_headers_remove(headers, "Accept-Encoding");
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, received, &reply);
+	while (!reply.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(reply.error);
+	g_assert_cmpuint(soup_message_get_status(message), ==, 200);
+	*out_encoding = g_strdup(soup_message_headers_get_one(soup_message_get_response_headers(message), "Content-Encoding"));
+	return reply.body;
+}
+
+/* A first visit downloads the interface once; gzipped it is a fraction of
+ * the bytes, for a browser that says it reads gzip, and plain otherwise. */
+static void
+test_assets_gzipped(Fixture *f, gconstpointer data)
+{
+	static const gchar *const names[] = { "venture-industrial.css", "venture-hx.js", "venture.js" };
+	Answer page = { 0 };
+	guint i;
+	(void)data;
+	exchange(f, "GET", "/e/quote", NULL, TRUE, &page, NULL);
+	g_assert_cmpuint(page.status, ==, 200);
+	for (i = 0; i < G_N_ELEMENTS(names); i++) {
+		g_autofree gchar *name = g_strconcat("/", names[i], NULL);
+		g_autofree gchar *href = linked(page.body, i == 0 ? "href" : "src", name);
+		g_autofree gchar *contents = asset(names[i]);
+		g_autofree gchar *encoding = NULL;
+		g_autofree gchar *plain_encoding = NULL;
+		g_autoptr(GBytes) zipped = NULL;
+		g_autoptr(GBytes) plain = NULL;
+		g_autoptr(GConverter) decompressor = G_CONVERTER(g_zlib_decompressor_new(G_ZLIB_COMPRESSOR_FORMAT_GZIP));
+		g_autoptr(GInputStream) raw = NULL;
+		g_autoptr(GInputStream) stream = NULL;
+		g_autoptr(GOutputStream) sink = g_memory_output_stream_new_resizable();
+		g_autoptr(GError) error = NULL;
+		g_autoptr(GBytes) unzipped = NULL;
+		g_assert_nonnull(href);
+		zipped = fetch_raw(f, href, "gzip, deflate, br", &encoding);
+		g_assert_cmpstr(encoding, ==, "gzip");
+		g_test_message("%s: %" G_GSIZE_FORMAT " bytes gzipped of %" G_GSIZE_FORMAT,
+			names[i], g_bytes_get_size(zipped), strlen(contents));
+		g_assert_cmpuint(g_bytes_get_size(zipped) * 3, <, strlen(contents));
+		raw = g_memory_input_stream_new_from_bytes(zipped);
+		stream = g_converter_input_stream_new(raw, decompressor);
+		g_assert_cmpint(g_output_stream_splice(sink, stream, G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET, NULL, &error), >=, 0);
+		g_assert_no_error(error);
+		unzipped = g_memory_output_stream_steal_as_bytes(G_MEMORY_OUTPUT_STREAM(sink));
+		g_assert_cmpuint(g_bytes_get_size(unzipped), ==, strlen(contents));
+		g_assert_true(memcmp(g_bytes_get_data(unzipped, NULL), contents, strlen(contents)) == 0);
+		plain = fetch_raw(f, href, NULL, &plain_encoding);
+		g_assert_null(plain_encoding);
+		g_assert_cmpuint(g_bytes_get_size(plain), ==, strlen(contents));
+	}
+	answer_clear(&page);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -357,6 +425,7 @@ main(int argc, char **argv)
 	g_test_add("/page-assets/pages-link", Fixture, NULL, setup, test_pages_link, teardown);
 	g_test_add("/page-assets/served", Fixture, NULL, setup, test_assets_served, teardown);
 	g_test_add("/page-assets/classic-look", Fixture, NULL, setup, test_classic_look, teardown);
+	g_test_add("/page-assets/gzipped", Fixture, NULL, setup, test_assets_gzipped, teardown);
 	g_test_add("/page-assets/old-and-unknown", Fixture, NULL, setup, test_old_and_unknown, teardown);
 	return g_test_run();
 }

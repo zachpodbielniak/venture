@@ -625,6 +625,65 @@ venture_web_ui_asset_version(guint index)
 	return versions[index];
 }
 
+/*
+ * The same, gzipped, also worked out once: a first visit downloads about a
+ * fifth of the bytes. Only these are compressed here, never a page, which
+ * carries a form's token beside text a visitor chose.
+ */
+static GBytes *
+venture_web_ui_asset_gzipped(guint index)
+{
+	static GBytes *zipped[VENTURE_WEB_UI_ASSETS];
+	static gsize ready = 0;
+
+	if (g_once_init_enter(&ready))
+	{
+		guint i;
+
+		for (i = 0; i < VENTURE_WEB_UI_ASSETS; i++)
+		{
+			g_autoptr(GZlibCompressor) compressor = g_zlib_compressor_new(G_ZLIB_COMPRESSOR_FORMAT_GZIP, 9);
+			g_autoptr(GBytes) plain = NULL;
+			g_autoptr(GInputStream) source = NULL;
+			g_autoptr(GInputStream) stream = NULL;
+			g_autoptr(GOutputStream) sink = g_memory_output_stream_new_resizable();
+			const gchar *contents = venture_web_ui_asset_contents(i);
+
+			plain = g_bytes_new_static(contents, strlen(contents));
+			source = g_memory_input_stream_new_from_bytes(plain);
+			stream = g_converter_input_stream_new(source, G_CONVERTER(compressor));
+			if (g_output_stream_splice(sink, stream, G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET, NULL, NULL) >= 0)
+				zipped[i] = g_memory_output_stream_steal_as_bytes(G_MEMORY_OUTPUT_STREAM(sink));
+		}
+		g_once_init_leave(&ready, 1);
+	}
+	return zipped[index];
+}
+
+/* Whether the browser said it reads gzip. */
+static gboolean
+venture_web_accepts_gzip(HtmxRequest *request)
+{
+	SoupServerMessage *message = (NULL != request) ? htmx_request_get_message(request) : NULL;
+	const gchar *accept = (NULL != message)
+		? soup_message_headers_get_list(soup_server_message_get_request_headers(message), "Accept-Encoding")
+		: NULL;
+	g_auto(GStrv) codings = NULL;
+	guint i;
+
+	if (NULL == accept)
+		return FALSE;
+	codings = g_strsplit(accept, ",", -1);
+	for (i = 0; NULL != codings[i]; i++)
+	{
+		g_autofree gchar *coding = g_strstrip(g_strdup(codings[i]));
+
+		if (g_str_has_prefix(coding, "gzip") && (coding[4] == '\0' || coding[4] == ';' || coding[4] == ' '))
+			return NULL == strstr(coding, "q=0") || NULL != strstr(coding, "q=0.");
+	}
+	return FALSE;
+}
+
 static void
 venture_web_append_ui_asset_url(GString *html, guint index)
 {
@@ -646,7 +705,6 @@ venture_web_ui_asset(HtmxRequest *request, GHashTable *params, gpointer data)
 	HtmxResponse *response;
 	guint i;
 
-	(void)request;
 	(void)data;
 	for (i = 0; i < VENTURE_WEB_UI_ASSETS; i++)
 		if (0 == g_strcmp0(name, venture_web_ui_asset_names[i]))
@@ -658,7 +716,15 @@ venture_web_ui_asset(HtmxRequest *request, GHashTable *params, gpointer data)
 		htmx_response_set_content_type(response, "text/plain; charset=utf-8");
 		return response;
 	}
-	response = htmx_response_new_with_content(venture_web_ui_asset_contents(i));
+	if (venture_web_accepts_gzip(request) && NULL != venture_web_ui_asset_gzipped(i))
+	{
+		response = htmx_response_new();
+		htmx_response_set_bytes(response, venture_web_ui_asset_gzipped(i));
+		htmx_response_add_header(response, "Content-Encoding", "gzip");
+	}
+	else
+		response = htmx_response_new_with_content(venture_web_ui_asset_contents(i));
+	htmx_response_add_header(response, "Vary", "Accept-Encoding");
 	htmx_response_set_content_type(response, g_str_has_suffix(name, ".css")
 		? "text/css; charset=utf-8" : "application/javascript; charset=utf-8");
 	htmx_response_add_header(response, "Cache-Control",
