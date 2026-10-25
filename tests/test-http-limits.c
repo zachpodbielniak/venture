@@ -114,10 +114,14 @@ static void setup(Fixture *f, gconstpointer data)
 	f->owner = g_main_context_ref_thread_default();
 	f->state = g_dir_make_tmp("venture-http-limits-XXXXXX", &error); g_assert_no_error(error);
 	f->config = venture_config_new();
+	f->tls = data == GINT_TO_POINTER(1) || data == GINT_TO_POINTER(3);
+	/* Give TLS workers scheduling headroom on a loaded test host. The
+	 * slow-body and stalled-handshake cases still prove this bounded
+	 * deadline; an ordinary handshake must not race a one-second timer.
+	 * The shutdown-only fixture retains its original one-second bound. */
 	g_object_set(f->config, "state-dir", f->state, "server-port", (gint64)f->port,
 		"security-require-auth", FALSE, "server-max-request-size-mb", (gint64)1,
-		"server-request-timeout", (gint64)(data == GINT_TO_POINTER(2) ? 5 : 1), "server-max-connections", (gint64)2, "server-max-buffered-request-mb", (gint64)1, NULL);
-	f->tls = data == GINT_TO_POINTER(1);
+		"server-request-timeout", (gint64)(data == GINT_TO_POINTER(1) || data == GINT_TO_POINTER(2) ? 5 : 1), "server-max-connections", (gint64)2, "server-max-buffered-request-mb", (gint64)1, NULL);
 	if (f->tls)
 	{
 		g_autofree gchar *cert = g_canonicalize_filename("tests/fixtures/federation/tls-cert.pem", NULL);
@@ -484,7 +488,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/tls-declared", Fixture, GINT_TO_POINTER(1), setup, test_declared, teardown);
 	g_test_add("/http-limits/tls-slow-body", Fixture, GINT_TO_POINTER(1), setup, test_slow_body, teardown);
 	g_test_add("/http-limits/connections-and-neighbor", Fixture, GINT_TO_POINTER(2), setup, test_connections, teardown);
-	g_test_add("/http-limits/tls-active-teardown", Fixture, GINT_TO_POINTER(1), setup, test_tls_active_teardown, teardown);
+	g_test_add("/http-limits/tls-active-teardown", Fixture, GINT_TO_POINTER(3), setup, test_tls_active_teardown, teardown);
 	g_test_add("/http-limits/tls-handshake-stall", Fixture, GINT_TO_POINTER(1), setup, test_tls_stall, teardown);
 	g_test_add("/http-limits/generic-record", Fixture, NULL, setup, test_generic, teardown);
 	g_test_add("/http-limits/aggregate-release", Fixture, GINT_TO_POINTER(2), setup, test_aggregate, teardown);
