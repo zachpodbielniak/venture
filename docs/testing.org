@@ -1339,3 +1339,13 @@ the completed-batch guard, this failed with "Refund allocations through
 VentureSettlementService to reopen a settled invoice": issuance was replayed
 against the paid invoice. Completed atomic batches now return without replaying
 commercial transitions; the existing counts and dated balances stay unchanged.
+** CSV import into the selected business
+
+=build/debug/tests/test-auth -p /auth/csv-selected-business= exercises the
+browser's multipart POST as an owner who belongs only to a second business.
+Before the fix, the valid upload returned 404 instead of 200 because rows were
+stamped with the installation's default organization. The regression checks
+that both contacts land in the sidebar's business despite a conflicting CSV
+organization column, that a bad row leaves neither row saved, and that choosing
+an inaccessible business still returns 404 without writing. The existing
+=/auth/csv-import-is-all-or-nothing= test covers the default-business path.

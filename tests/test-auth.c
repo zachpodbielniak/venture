@@ -2517,6 +2517,8 @@ test_auth_csv_import_is_all_or_nothing(
 	                ==, 2);
 }
 
+#include "test-auth-csv-scope.inc"
+
 /*
  * A conversation belongs to the account that had it. Without this property,
  * any signed-in editor could read what the owner has been asking the AI
@@ -7503,6 +7505,8 @@ main(
 	           server_fixture_set_up,
 	           test_auth_invoice_paid_creates_the_sale,
 	           server_fixture_tear_down);
+	g_test_add("/auth/csv-selected-business", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_csv_selected_business, server_fixture_tear_down);
 	g_test_add("/auth/csv-import-is-all-or-nothing", ServerFixture, NULL,
 	           server_fixture_set_up,
 	           test_auth_csv_import_is_all_or_nothing,
