@@ -4,7 +4,9 @@
 * The supplier's bill
 
 The =payables= module requires =finance=, =ledger= and =crm=. The last
-requirement supplies the supplier company; switching the module off hides
+requirement supplies the supplier company -- any company flagged a
+supplier, including a customer who also supplies you (see "CRM" in
+[[file:data-model.org][the data model]]); switching the module off hides
 its records and reports together. Bills belong to one organization and
 numbering is unique inside that organization.
 

@@ -946,7 +946,7 @@ test_attention_of_same_customer(Fixture *f, gconstpointer data)
 	page = get(f, "/e/invoice/new");
 	parent = g_strdup_printf("data-parent=\"%" G_GINT64_FORMAT "\">Elon</option>",
 		venture_entity_get_id(tesla));
-	g_assert_nonnull(strstr(page, "<select name=\"contact-id\" data-same-parent=\"company-id\">"));
+	g_assert_nonnull(strstr(page, "<select name=\"contact-id\" data-same-parent=\"company-id\" data-picker-search>"));
 	g_assert_nonnull(strstr(page, parent));
 
 	/* Every "New invoice" goes to the composer -- the customer's related
@@ -1060,9 +1060,9 @@ test_attention_of_deals_and_tickets(Fixture *f, gconstpointer data)
 	deal_page = get(f, "/e/deal/new");
 	ticket_page = get(f, "/e/ticket/new");
 	g_assert_nonnull(strstr(deal_page,
-		"<select name=\"contact-id\" data-same-parent=\"company-id\">"));
+		"<select name=\"contact-id\" data-same-parent=\"company-id\" data-picker-search>"));
 	g_assert_nonnull(strstr(ticket_page,
-		"<select name=\"contact-id\" data-same-parent=\"company-id\">"));
+		"<select name=\"contact-id\" data-same-parent=\"company-id\" data-picker-search>"));
 }
 
 /*

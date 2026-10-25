@@ -1506,8 +1506,12 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 		VENTURE_ICON("<path d=\"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9\"/><path d=\"M10 21h4\"/>"),
 		NULL, "dunning"
 	},
+	/* The companies you sell to, and those you buy from, each its own
+	 * list: one list of every company read as if suppliers were
+	 * customers. Both are views of the companies list, whose tabs
+	 * still offer all of them. */
 	{
-		"/e/company", "Companies",
+		"/e/company?customer=true", "Customers",
 		VENTURE_ICON(
 			"<path d=\"M3 21h18\"/>"
 			"<path d=\"M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16\"/>"
@@ -1516,6 +1520,17 @@ static const VentureWebNavLink venture_web_nav_links[] = {
 			"<path d=\"M9 15h2\"/>"
 		),
 		"Relations",
+		"crm"
+	},
+	{
+		"/e/company?supplier=true", "Suppliers",
+		VENTURE_ICON(
+			"<path d=\"M3 7h11v10H3z\"/>"
+			"<path d=\"M14 10h4l3 3v4h-7z\"/>"
+			"<circle cx=\"7\" cy=\"18\" r=\"1.5\"/>"
+			"<circle cx=\"17\" cy=\"18\" r=\"1.5\"/>"
+		),
+		NULL,
 		"crm"
 	},
 	{
@@ -1932,7 +1947,7 @@ static const gchar *const venture_web_nav_money_in[] = {
 };
 
 static const gchar *const venture_web_nav_money_out[] = {
-	"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll",
+	"/e/company?supplier=true", "/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll",
 	NULL
 };
 
@@ -1950,7 +1965,15 @@ static const gchar *const venture_web_nav_books[] = {
 };
 
 static const gchar *const venture_web_nav_customers[] = {
-	"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
+	"/e/company?customer=true", "/e/contact", "/conversations", "/customers/duplicates",
+	NULL
+};
+
+/* The work done for customers: its own question, not the customers'.
+ * Under one Customers heading with the jobs, visits and equipment, that
+ * heading read as the whole business. */
+static const gchar *const venture_web_nav_jobs[] = {
+	"/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/e/property", "/e/equipment",
 	NULL
 };
 
@@ -2037,6 +2060,7 @@ static const VentureWebNavSection venture_web_nav_sections[] = {
 	{ "Bank", "Money", venture_web_nav_bank },
 	{ "Books", "Money", venture_web_nav_books },
 	{ "Customers", NULL, venture_web_nav_customers },
+	{ "Jobs", NULL, venture_web_nav_jobs },
 	{ "Growth", NULL, venture_web_nav_growth },
 	{ "Support", NULL, venture_web_nav_support },
 	{ "Operations", NULL, venture_web_nav_operations },
@@ -3249,9 +3273,45 @@ venture_web_build_query(
 ){
 	g_autoptr(VentureQuery) query = NULL;
 	GHashTable *url_params;
+	g_autoptr(GHashTable) controls = NULL;
 
 	query = venture_query_new(entity_type);
 	url_params = htmx_request_get_query_params(request);
+
+	/* Blank controls mean "any" only in this list form. An ordinary
+	 * API filter with an empty value still means an empty field. */
+	if (0 == g_strcmp0(htmx_request_get_query_param(request, "list_filters"), "1"))
+	{
+		GHashTableIter iter;
+		gpointer key, value;
+		g_autoptr(VentureEntityClass) klass = g_type_class_ref(entity_type);
+
+		controls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		g_hash_table_iter_init(&iter, url_params);
+		while (g_hash_table_iter_next(&iter, &key, &value))
+		{
+			GParamSpec *spec;
+			g_autofree gchar *property = NULL;
+
+			if (0 == g_strcmp0(key, "list_filters") || venture_string_is_empty(value))
+				continue;
+			property = venture_entity_column_to_property(key);
+			spec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+			/* A sign comparison is meaningful across currencies; a
+			 * decimal threshold without a currency would not be. */
+			if (spec && spec->value_type == VENTURE_TYPE_MONEY &&
+			    (0 == g_strcmp0(value, "positive") || 0 == g_strcmp0(value, "zero") ||
+			     0 == g_strcmp0(value, "negative")))
+			{
+				const gchar *op = 0 == g_strcmp0(value, "positive") ? "gt" :
+					0 == g_strcmp0(value, "negative") ? "lt" : "eq";
+				g_hash_table_insert(controls, g_strdup_printf("%s__%s", (gchar *)key, op), g_strdup("0"));
+			}
+			else
+				g_hash_table_insert(controls, g_strdup(key), g_strdup(value));
+		}
+		url_params = controls;
+	}
 
 	if (!venture_query_apply_query_string(query, url_params, error))
 		return NULL;
@@ -4021,6 +4081,36 @@ static void
 venture_web_support_rollup_append_company_block(VentureWebServer *self,
 	HtmxRequest *request, GString *content, VentureEntity *record);
 
+static void
+venture_web_append_owner_jobs(VentureWebServer *self, HtmxRequest *request,
+	GString *content)
+{
+	static const struct { const gchar *label, *path, *module, *type; gboolean write; } jobs[] = {
+		{ "Find a customer", "/e/company?customer=true", "crm", "company", FALSE },
+		{ "Find a person", "/e/contact", "crm", "contact", FALSE },
+		{ "New invoice", "/invoices/compose", "invoicing", "invoice", TRUE },
+		{ "Log expense", "/e/expense/new", "finance", "expense", TRUE },
+		{ "Profit and loss", "/reports/pnl", "finance", "expense", FALSE }
+	};
+	g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+	guint i;
+
+	g_string_append(content, "<nav class=\"owner-jobs\" aria-label=\"Everyday tasks\">");
+	for (i = 0; i < G_N_ELEMENTS(jobs); i++)
+	{
+		GType type = venture_entity_registry_lookup(
+			venture_context_get_entity_registry(self->context), jobs[i].type);
+
+		if (!venture_web_module_enabled(self, jobs[i].module) ||
+		    !venture_web_require_for_type(self, principal, type,
+		        jobs[i].write ? VENTURE_USER_ROLE_EDITOR : VENTURE_USER_ROLE_VIEWER, NULL))
+			continue;
+		g_string_append_printf(content, "<a class=\"btn\" href=\"%s\">%s</a>",
+			jobs[i].path, jobs[i].label);
+	}
+	g_string_append(content, "</nav>");
+}
+
 /*
  * GET / - the home page: a dashboard marked as home, if the viewer may
  * see one; else the five headline cards, unless the organisation opted
@@ -4065,6 +4155,8 @@ venture_web_ui_overview(
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(JsonObject) report_options = json_object_new();
+	gboolean home;
 	g_autoptr(GError) error = NULL;
 	static const gchar *const dashboard_reports[] = {
 		"pnl", "ventures", NULL
@@ -4091,6 +4183,15 @@ venture_web_ui_overview(
 	                         "<span class=\"subtitle\">This month across every "
 	                         "venture</span></div></div>");
 
+	home = 0 == g_strcmp0(htmx_request_get_path(request), "/");
+	if (home)
+	{
+		venture_web_append_owner_jobs(self, request, content);
+		g_string_append(content, "<details class=\"owner-overview\"><summary>Business overview</summary>");
+	}
+	json_object_set_int_member(report_options, "organization_id",
+		venture_web_active_organization(self, request));
+
 	period = venture_context_parse_period(self->context, "this_month", &error);
 
 	for (i = 0; NULL != dashboard_reports[i]; i++)
@@ -4107,7 +4208,7 @@ venture_web_ui_overview(
 		if (NULL == report)
 			continue;
 
-		result = venture_report_generate(report, self->context, period, NULL,
+		result = venture_report_generate(report, self->context, period, report_options,
 		                                 &local_error);
 
 		if (NULL == result)
@@ -4432,6 +4533,9 @@ venture_web_ui_overview(
 	}
 
 	g_string_append(content, "</div>");
+
+	if (home)
+		g_string_append(content, "</details>");
 
 	return venture_web_html_response(
 		venture_web_page(self, request, "/", "Dashboard", content->str), 200);
@@ -6133,40 +6237,45 @@ venture_web_list_query_string(
 	const gchar	*order,
 	gint64		 page
 ){
-	GString *out;
-	const gchar *search;
-	gchar separator;
+	GString *out = g_string_new(NULL);
+	GHashTable *params = htmx_request_get_query_params(request);
+	GList *keys = params ? g_hash_table_get_keys(params) : NULL;
+	GList *item;
+	gchar separator = '?';
 
-	out = g_string_new(NULL);
-	separator = '?';
-	search = htmx_request_get_query_param(request, "search");
-
-	if (NULL == order)
-		order = htmx_request_get_query_param(request, "order");
-
-	if (!venture_string_is_empty(search))
+	keys = g_list_sort(keys, (GCompareFunc)g_strcmp0);
+	for (item = keys; item; item = item->next)
 	{
-		g_autofree gchar *escaped = NULL;
+		const gchar *name = item->data;
+		const gchar *value = g_hash_table_lookup(params, name);
+		g_autofree gchar *escaped_name = NULL;
+		g_autofree gchar *escaped_value = NULL;
 
-		escaped = g_uri_escape_string(search, NULL, FALSE);
-		g_string_append_printf(out, "%csearch=%s", separator, escaped);
+		if (0 == g_strcmp0(name, "page") || 0 == g_strcmp0(name, "offset"))
+			continue;
+		if (0 == g_strcmp0(name, "order") && order)
+			value = order;
+		escaped_name = g_uri_escape_string(name, NULL, FALSE);
+		escaped_value = g_uri_escape_string(value, NULL, FALSE);
+		g_string_append_printf(out, "%c%s=%s", separator, escaped_name, escaped_value);
 		separator = '&';
 	}
-
-	if (!venture_string_is_empty(order))
+	g_list_free(keys);
+	if (order && (!params || !g_hash_table_contains(params, "order")))
 	{
-		g_autofree gchar *escaped = NULL;
-
-		escaped = g_uri_escape_string(order, NULL, FALSE);
+		g_autofree gchar *escaped = g_uri_escape_string(order, NULL, FALSE);
 		g_string_append_printf(out, "%corder=%s", separator, escaped);
 		separator = '&';
 	}
-
 	if (page > 1)
-		g_string_append_printf(out, "%cpage=%" G_GINT64_FORMAT,
-		                       separator, page);
+		g_string_append_printf(out, "%cpage=%" G_GINT64_FORMAT, separator, page);
 
-	return g_string_free(out, FALSE);
+	/* Every consumer puts this suffix in an HTML attribute. */
+	{
+		gchar *escaped = venture_html_escape(out->str);
+		g_string_free(out, TRUE);
+		return escaped;
+	}
 }
 
 /*
@@ -6968,6 +7077,220 @@ venture_web_ui_import(
  * Renders a record list. The columns come from the type's field specs, so a
  * plugin's record type gets a usable list view with no UI code.
  */
+/*
+ * The type's named view this request is showing: every filter the view
+ * names is in the URL with its value. A view with more filters on top
+ * (a search, a sort, a page) is still that view.
+ */
+static const VentureEntityListView *
+venture_web_list_active_view(
+	HtmxRequest	*request,
+	GPtrArray	*views
+){
+	guint i;
+
+	for (i = 0; (NULL != views) && (i < views->len); i++)
+	{
+		const VentureEntityListView *view = g_ptr_array_index(views, i);
+		g_auto(GStrv) pairs = g_strsplit(view->query, "&", -1);
+		gboolean all = TRUE;
+		guint j;
+
+		for (j = 0; all && (NULL != pairs[j]); j++)
+		{
+			g_auto(GStrv) pair = g_strsplit(pairs[j], "=", 2);
+
+			all = (NULL != pair[1]) && (0 == g_strcmp0(
+				htmx_request_get_query_param(request, pair[0]), pair[1]));
+		}
+
+		if (all)
+			return view;
+	}
+
+	return NULL;
+}
+
+/* "All" and each view, as tabs over the list; the one shown is marked. */
+static void
+venture_web_append_list_views(
+	GString				*content,
+	const gchar			*type_name,
+	const gchar			*all_label,
+	GPtrArray			*views,
+	const VentureEntityListView	*active
+){
+	guint i;
+
+	if ((NULL == views) || (0 == views->len))
+		return;
+
+	g_string_append(content, "<nav class=\"tabs list-views\" aria-label=\"Views\">");
+	g_string_append_printf(content, "<a class=\"tab%s\"%s href=\"/e/%s\">",
+		(NULL == active) ? " active" : "",
+		(NULL == active) ? " aria-current=\"page\"" : "", type_name);
+	venture_html_escape_append(content, all_label);
+	g_string_append(content, "</a>");
+
+	for (i = 0; i < views->len; i++)
+	{
+		const VentureEntityListView *view = g_ptr_array_index(views, i);
+		g_autofree gchar *href = g_strdup_printf("/e/%s?%s", type_name, view->query);
+
+		g_string_append_printf(content, "<a class=\"tab%s\"%s href=\"",
+			(view == active) ? " active" : "",
+			(view == active) ? " aria-current=\"page\"" : "");
+		venture_html_escape_append(content, href);
+		g_string_append(content, "\">");
+		venture_html_escape_append(content, view->label);
+		g_string_append(content, "</a>");
+	}
+
+	g_string_append(content, "</nav>");
+}
+
+/* Filters reuse the field declaration, including reference pickers. */
+static void
+venture_web_filter_option(GString *html, const gchar *value,
+	const gchar *label, const gchar *current)
+{
+	g_string_append(html, "<option value=\"");
+	venture_html_escape_append(html, value);
+	g_string_append(html, 0 == g_strcmp0(value, current) ? "\" selected>" : "\">");
+	venture_html_escape_append(html, label);
+	g_string_append(html, "</option>");
+}
+
+static void
+venture_web_append_list_filters(VentureWebServer *self, HtmxRequest *request,
+	GString *html, const gchar *path, GType type, GPtrArray *specs)
+{
+	g_autoptr(GHashTable) handled = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(VentureEntity) sample = g_object_new(type, NULL);
+	GHashTable *params = htmx_request_get_query_params(request);
+	guint i;
+
+	g_string_append_printf(html, "<form id=\"list-filters\" method=\"get\" action=\"%s\" "
+		"hx-get=\"%s\" hx-target=\"body\" hx-push-url=\"true\" hx-trigger=\"submit, input delay:300ms from:[data-search-input]\">"
+		"<input type=\"hidden\" name=\"list_filters\" value=\"1\">"
+		"<label>Search<input id=\"list-search\" type=\"search\" name=\"search\" data-search-input value=\"", path, path);
+	venture_html_escape_append(html, htmx_request_get_query_param(request, "search"));
+	g_string_append(html, "\" placeholder=\"Search records\"></label>"
+		"<details><summary>Filters</summary><div class=\"form-grid\">");
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		VentureFieldKind kind = venture_field_spec_get_kind(spec);
+		VentureFieldRole role = venture_field_spec_get_role(spec);
+		const gchar *name = venture_field_spec_get_name(spec);
+		const gchar *current = htmx_request_get_query_param(request, name);
+		g_autofree gchar *escaped_name = venture_html_escape(name);
+
+		if (role == VENTURE_FIELD_ROLE_TECHNICAL || role == VENTURE_FIELD_ROLE_STRUCTURED ||
+		    role == VENTURE_FIELD_ROLE_CONTENT)
+			continue;
+		if (kind == VENTURE_FIELD_KIND_REFERENCE)
+		{
+			const gchar *target = venture_field_spec_get_reference_type(spec);
+			g_autoptr(VentureFieldSpec) copy = NULL;
+
+			if (0 != g_strcmp0(target, "user") && 0 != g_strcmp0(target, "company"))
+				continue;
+			copy = venture_field_spec_copy(spec);
+			copy->required = FALSE;
+			if (!venture_string_is_empty(current))
+				venture_entity_set_field_from_string(sample, name, current, NULL);
+			venture_web_append_form_field_scoped(self, html, copy, sample,
+				venture_web_active_organization(self, request));
+			g_hash_table_add(handled, g_strdup(name));
+			continue;
+		}
+		if (kind != VENTURE_FIELD_KIND_ENUM && kind != VENTURE_FIELD_KIND_BOOLEAN &&
+		    kind != VENTURE_FIELD_KIND_DATE && kind != VENTURE_FIELD_KIND_DATETIME &&
+		    kind != VENTURE_FIELD_KIND_MONEY && role != VENTURE_FIELD_ROLE_STATUS &&
+		    0 != g_strcmp0(name, "owner") && 0 != g_strcmp0(name, "assignee") &&
+		    0 != g_strcmp0(name, "kind") && 0 != g_strcmp0(name, "type"))
+			continue;
+		if (kind == VENTURE_FIELD_KIND_DATE || kind == VENTURE_FIELD_KIND_DATETIME)
+		{
+			guint bound;
+
+			for (bound = 0; bound < 2; bound++)
+			{
+				g_autofree gchar *key = g_strdup_printf("%s__%s", name, bound ? "lt" : "gte");
+				g_hash_table_add(handled, g_strdup(key));
+				g_string_append(html, "<label>");
+				venture_html_escape_append(html, venture_field_spec_get_label(spec));
+				g_string_append_printf(html, " %s<input type=\"date\" name=\"%s__%s\" value=\"",
+					bound ? "before" : "from", escaped_name, bound ? "lt" : "gte");
+				venture_html_escape_append(html, htmx_request_get_query_param(request, key));
+				g_string_append(html, "\"></label>");
+			}
+			continue;
+		}
+		g_hash_table_add(handled, g_strdup(name));
+		g_string_append(html, "<label>");
+		venture_html_escape_append(html, venture_field_spec_get_label(spec));
+		if (kind == VENTURE_FIELD_KIND_ENUM || kind == VENTURE_FIELD_KIND_BOOLEAN ||
+		    kind == VENTURE_FIELD_KIND_MONEY)
+		{
+			g_string_append_printf(html, "<select name=\"%s\">", escaped_name);
+			venture_web_filter_option(html, "", "Any", current);
+			if (kind == VENTURE_FIELD_KIND_BOOLEAN)
+			{
+				venture_web_filter_option(html, "true", "Yes", current);
+				venture_web_filter_option(html, "false", "No", current);
+			}
+			else if (kind == VENTURE_FIELD_KIND_MONEY)
+			{
+				venture_web_filter_option(html, "positive", "Greater than zero", current);
+				venture_web_filter_option(html, "zero", "Zero", current);
+				venture_web_filter_option(html, "negative", "Less than zero", current);
+			}
+			else
+			{
+				const gchar *const *choices = venture_field_spec_get_choices(spec);
+				guint j;
+				for (j = 0; choices && choices[j]; j++)
+				{
+					g_autofree gchar *label = venture_web_choice_label(spec, choices[j]);
+					venture_web_filter_option(html, choices[j], label, current);
+				}
+			}
+			g_string_append(html, "</select>");
+		}
+		else
+		{
+			g_string_append_printf(html, "<input name=\"%s\" value=\"", escaped_name);
+			venture_html_escape_append(html, current);
+			g_string_append(html, "\">");
+		}
+		g_string_append(html, "</label>");
+	}
+	g_string_append(html, "</div></details>");
+	/* Keep advanced URL filters too, without carrying the old page. */
+	if (params)
+	{
+		GHashTableIter iter;
+		gpointer key, value;
+		g_hash_table_iter_init(&iter, params);
+		while (g_hash_table_iter_next(&iter, &key, &value))
+		{
+			if (g_hash_table_contains(handled, key) ||
+			    0 == g_strcmp0(key, "search") || 0 == g_strcmp0(key, "page") ||
+			    0 == g_strcmp0(key, "offset") || 0 == g_strcmp0(key, "list_filters"))
+				continue;
+			g_string_append(html, "<input type=\"hidden\" name=\"");
+			venture_html_escape_append(html, key);
+			g_string_append(html, "\" value=\"");
+			venture_html_escape_append(html, value);
+			g_string_append(html, "\">");
+		}
+	}
+	g_string_append(html, "<button class=\"btn\" type=\"submit\">Apply filters</button> ");
+	g_string_append_printf(html, "<a class=\"btn\" href=\"%s\">Clear filters</a></form>", path);
+}
+
 static HtmxResponse *
 venture_web_ui_list(
 	HtmxRequest	*request,
@@ -6988,6 +7311,9 @@ venture_web_ui_list(
 	const gchar *type_name;
 	const gchar *current_order;
 	g_autofree gchar *path = NULL;
+	GPtrArray *views;
+	const VentureEntityListView *view;
+	g_autofree gchar *view_path = NULL;
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
@@ -7095,20 +7421,20 @@ venture_web_ui_list(
 
 	path = g_strdup_printf("/e/%s", type_name);
 	heading = venture_web_type_label(entity_type, TRUE);
+	views = venture_entity_type_get_list_views(entity_type);
+	view = venture_web_list_active_view(request, views);
+	/* A view the sidebar offers marks its own row. */
+	view_path = (NULL != view) ? g_strdup_printf("/e/%s?%s", type_name, view->query) : NULL;
 	content = g_string_new(NULL);
 
 	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">");
 	venture_web_append_crumbs(content, entity_type, type_name, FALSE);
 	g_string_append(content, "<h1>");
-	venture_html_escape_append(content, heading);
+	venture_html_escape_append(content, (NULL != view) ? view->label : heading);
 	g_string_append(content, "</h1><span class=\"subtitle\">");
 	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
 	                       (1 == total) ? "" : "s");
 	g_string_append(content, "</span></div><div class=\"page-actions\">");
-	g_string_append_printf(content,
-		"<input type=\"search\" name=\"search\" placeholder=\"Search\" "
-		"data-search-input hx-get=\"%s\" hx-trigger=\"keyup changed delay:300ms\" "
-		"hx-target=\"body\">", path);
 
 	{
 		g_autofree gchar *suffix = NULL;
@@ -7146,6 +7472,13 @@ venture_web_ui_list(
 		g_string_append(content, "</a>");
 	}
 	g_string_append(content, "</div></div>");
+
+	{
+		g_autofree gchar *all_label = g_strdup_printf("All %s", heading);
+
+		venture_web_append_list_views(content, type_name, all_label, views, view);
+	}
+	venture_web_append_list_filters(self, request, content, path, entity_type, specs);
 
 	/* The registry prototype is one process-wide object per type; a
 	 * request's active organization must not linger on it for the next
@@ -7355,7 +7688,7 @@ venture_web_ui_list(
 	g_string_append(content, "</div>");
 
 	return venture_web_html_response(
-		venture_web_page(self, request, path, heading, content->str), 200);
+		venture_web_page(self, request, (NULL != view) ? view_path : path, heading, content->str), 200);
 }
 
 static HtmxResponse *
@@ -8690,6 +9023,77 @@ venture_web_member_users(VentureWebServer *self, gint64 organization)
 	return out;
 }
 
+/*
+ * The records of @target in @view, as a set of ids: the ones a reference
+ * that means that view offers first. %NULL when the view's filters do not
+ * apply, so the picker falls back to one list.
+ */
+static GHashTable *
+venture_web_reference_view_ids(
+	VentureWebServer		*self,
+	GType				 target,
+	const VentureEntityListView	*view,
+	gint64				 organization
+){
+	g_autoptr(VentureQuery) query = venture_query_new(target);
+	g_autoptr(GHashTable) filters = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_auto(GStrv) pairs = g_strsplit(view->query, "&", -1);
+	GHashTable *ids;
+	guint i;
+
+	for (i = 0; NULL != pairs[i]; i++)
+	{
+		g_auto(GStrv) pair = g_strsplit(pairs[i], "=", 2);
+
+		if (NULL != pair[0] && NULL != pair[1])
+			g_hash_table_replace(filters, g_strdup(pair[0]), g_strdup(pair[1]));
+	}
+	if (!venture_query_apply_query_string(query, filters, NULL))
+		return NULL;
+	venture_query_set_limit(query, 0);
+	if (organization > 0)
+		venture_query_set_organization(query, organization);
+	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
+	if (NULL == rows)
+		return NULL;
+	ids = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	for (i = 0; i < rows->len; i++)
+	{
+		gint64 *id = g_new(gint64, 1);
+
+		*id = venture_entity_get_id(g_ptr_array_index(rows, i));
+		g_hash_table_add(ids, id);
+	}
+	return ids;
+}
+
+static void
+venture_web_append_reference_option(
+	VentureWebServer	*self,
+	GString			*content,
+	VentureEntity		*record,
+	VentureEntity		*option,
+	const gchar		*current,
+	const gchar		*parent
+){
+	g_autofree gchar *display = venture_web_reference_option_label(self, record, option);
+	gint64 id = venture_entity_get_id(option);
+
+	g_string_append_printf(content, "<option value=\"%" G_GINT64_FORMAT "\"%s", id,
+		((NULL != current) && (g_ascii_strtoll(current, NULL, 10) == id)) ? " selected" : "");
+	if (NULL != parent)
+	{
+		gint64 owner = 0;
+
+		g_object_get(option, parent, &owner, NULL);
+		g_string_append_printf(content, " data-parent=\"%" G_GINT64_FORMAT "\"", owner);
+	}
+	g_string_append(content, ">");
+	venture_html_escape_append(content, display);
+	g_string_append(content, "</option>");
+}
+
 static void
 venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
@@ -8866,11 +9270,13 @@ venture_web_append_form_field_scoped(
 				parent = venture_entity_class_get_shared_parent(
 					VENTURE_ENTITY_GET_CLASS(record), name);
 
+			/* data-picker-search: a record is found by typing, however
+			 * few there are today. */
 			if (NULL != parent)
-				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\">",
+				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\" data-picker-search>",
 					name, parent);
 			else
-				g_string_append_printf(content, "<select name=\"%s\">", name);
+				g_string_append_printf(content, "<select name=\"%s\" data-picker-search>", name);
 			g_string_append(content, "<option value=\"\">—</option>");
 
 			if (G_TYPE_INVALID != target)
@@ -8896,33 +9302,60 @@ venture_web_append_form_field_scoped(
 			 */
 			if (NULL != options)
 			{
+				const VentureEntityListView *view = NULL;
+				g_autoptr(GHashTable) preferred = NULL;
 				guint i;
 
-				for (i = 0; i < options->len; i++)
+				/* A reference that means one view of its type -- an
+				 * invoice's customer, a bill's supplier -- offers that
+				 * view first, under its name, and the rest after. */
+				if ((NULL != record) && (G_TYPE_INVALID != target))
+					view = venture_entity_type_get_reference_view(G_OBJECT_TYPE(record), name);
+				if (NULL != view)
+					preferred = venture_web_reference_view_ids(self, target, view, organization);
+
+				if (NULL == preferred)
 				{
-					g_autofree gchar *display = NULL;
-					VentureEntity *option;
-					gint64 id;
+					for (i = 0; i < options->len; i++)
+						venture_web_append_reference_option(self, content, record,
+							g_ptr_array_index(options, i), current, parent);
+				}
+				else
+				{
+					g_autofree gchar *plural = venture_web_type_label(target, TRUE);
+					g_autofree gchar *lower = g_ascii_strdown(plural, -1);
+					guint group;
 
-					option = g_ptr_array_index(options, i);
-					id = venture_entity_get_id(option);
-					display = venture_web_reference_option_label(self, record, option);
-
-					g_string_append_printf(content,
-						"<option value=\"%" G_GINT64_FORMAT "\"%s", id,
-						((NULL != current) &&
-						 (g_ascii_strtoll(current, NULL, 10) == id))
-						 ? " selected" : "");
-					if (NULL != parent)
+					for (group = 0; group < 2; group++)
 					{
-						gint64 owner = 0;
+						gboolean opened = FALSE;
 
-						g_object_get(option, parent, &owner, NULL);
-						g_string_append_printf(content, " data-parent=\"%" G_GINT64_FORMAT "\"", owner);
+						for (i = 0; i < options->len; i++)
+						{
+							VentureEntity *option = g_ptr_array_index(options, i);
+							gint64 id = venture_entity_get_id(option);
+
+							if (g_hash_table_contains(preferred, &id) != (0 == group))
+								continue;
+							if (!opened)
+							{
+								g_string_append(content, "<optgroup label=\"");
+								if (0 == group)
+									venture_html_escape_append(content, view->label);
+								else
+								{
+									g_string_append(content, "Other ");
+									venture_html_escape_append(content, lower);
+								}
+								g_string_append(content, "\">");
+								opened = TRUE;
+							}
+							venture_web_append_reference_option(self, content, record,
+								option, current, parent);
+						}
+						if (opened)
+							g_string_append(content, "</optgroup>");
 					}
-					g_string_append(content, ">");
-					venture_html_escape_append(content, display);
-					g_string_append(content, "</option>");
 				}
 			}
 
@@ -10072,8 +10505,15 @@ venture_web_organization_tree(
 
 	g_array_append_val(tree, root);
 
+	/*
+	 * Only an entity with a parent can join the tree, so only those are
+	 * read: on a shared install nearly every entity is somebody else's
+	 * top-level business, and reading them all cost every page a check per
+	 * business.
+	 */
 	query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
 	venture_query_set_limit(query, 0);
+	venture_query_add_filter_int(query, "parent-id", VENTURE_FILTER_OP_GT, 0, NULL);
 	all = venture_database_find(venture_context_get_database(self->context),
 	                            query, NULL);
 
@@ -10587,6 +11027,9 @@ static void document_append_parties(VentureWebServer *self, GString *html,
 	gint64 organization, gint64 chosen);
 #include "payables/venture-bill-compose-web.inc"
 #include "billing/venture-plan-web.inc"
+#include "receivables/venture-customer-account-web.inc"
+#include "receivables/venture-customer-credits-web.inc"
+#include "web/venture-company-people-web.inc"
 #include "billing/venture-subscription-web.inc"
 #include "billing/venture-billing-web.inc"
 #include "billing/venture-lightsite-billing-web.inc"
@@ -12536,11 +12979,17 @@ venture_web_ui_detail(
 	if (VENTURE_TYPE_INVOICE == entity_type)
 	{
 		venture_web_append_invoice_block(self, content, record);
+		/* Their unused credits, each a click from this invoice. */
+		venture_customer_credits_web_append_invoice(self, content, record);
 		venture_late_fees_web_append_invoice(self, content, record);
 	}
 	venture_web_append_payment_receipt(self, content, record);
 	venture_web_append_print_control(self, content, record);
 	quote_buttons(self, content, record);
+	/* Where we stand with a customer, ahead of the work done for them. */
+	venture_customer_account_web_append_block(self, content, record);
+	/* And whom to call there. */
+	venture_company_people_web_append_block(self, content, record);
 	venture_jobs_web_append_block(self, content, record);
 	venture_web_append_payables_actions(self, content, record);
 	venture_web_append_claims_actions(self, content, record);
@@ -34282,6 +34731,7 @@ venture_web_server_new(
 	 * "calendar" as a record type. */
 	venture_planner_web_register(self);
 	venture_jobs_web_register(self);
+	venture_customer_credits_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);

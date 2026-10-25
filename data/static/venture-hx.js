@@ -314,6 +314,8 @@
 	}
 
 	function performSwap(target, html, swapSpec) {
+		var active = document.activeElement;
+		var focusId, selection, replacement;
 		var fragment;
 		var inserted = [];
 		var i;
@@ -329,6 +331,13 @@
 		if (swapSpec.style === "delete") {
 			target.parentNode.removeChild(target);
 			return inserted;
+		}
+
+		/* Body refreshes must let the operator continue typing in Search. */
+		if (active && active.id && target.contains(active)) {
+			focusId = active.id;
+			selection = [active.selectionStart, active.selectionEnd,
+			             active.selectionDirection];
 		}
 
 		fragment = parseFragment(html);
@@ -365,6 +374,18 @@
 			if (inserted[i].nodeType === 1) {
 				inserted[i].classList.add("swapped-in");
 				process(inserted[i]);
+			}
+		}
+
+		if (focusId && document.activeElement !== active) {
+			replacement = document.getElementById(focusId);
+			if (replacement) {
+				replacement.focus({ preventScroll: true });
+				if (selection[0] != null && replacement.setSelectionRange) {
+					try {
+						replacement.setSelectionRange(selection[0], selection[1], selection[2]);
+					} catch (ignore) { /* Some input types have no selection. */ }
+				}
 			}
 		}
 
@@ -682,6 +703,8 @@
 			var finalTarget = target;
 			var finalSwap = swapSpec;
 
+			/* A cancelled predecessor must not clear or replace its successor. */
+			if (inFlight.get(el) !== controller) return;
 			inFlight.delete(el);
 			setRequesting(el, false);
 
@@ -764,6 +787,8 @@
 					replaceUrl === "true" ? requestUrl : replaceUrl);
 			}
 		}).catch(function (error) {
+			/* A cancelled predecessor must not clear or replace its successor. */
+			if (inFlight.get(el) !== controller) return;
 			inFlight.delete(el);
 			setRequesting(el, false);
 

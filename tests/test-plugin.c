@@ -1224,9 +1224,25 @@ test_web_navigation_links_all_resolve(
 
 		if (g_str_has_prefix(path, "/e/"))
 		{
-			const gchar *type_name;
+			g_autofree gchar *type_name = NULL;
+			const gchar *query;
 
-			type_name = path + strlen("/e/");
+			/* A row may open one of the type's own views
+			 * ("/e/company?customer=true"), never an arbitrary filter. */
+			query = strchr(path, '?');
+			type_name = g_strndup(path + strlen("/e/"),
+				(NULL != query) ? (gsize)(query - path) - strlen("/e/") : strlen(path));
+			if (NULL != query)
+			{
+				GPtrArray *views = venture_entity_type_get_list_views(
+					venture_entity_registry_lookup(venture_context_get_entity_registry(fixture->context), type_name));
+				gboolean declared = FALSE;
+				guint v;
+
+				for (v = 0; (NULL != views) && (v < views->len); v++)
+					declared = declared || (0 == g_strcmp0(((VentureEntityListView *)g_ptr_array_index(views, v))->query, query + 1));
+				g_assert_true(declared);
+			}
 
 			/*
 			 * A list page is served for any registered record type. If
@@ -1329,7 +1345,7 @@ test_web_navigation_groups_by_question(
 		"/e/listing", "/e/price_observation", NULL
 	};
 	static const gchar *const money_out[] = {
-		"/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll", NULL
+		"/e/company?supplier=true", "/e/vendor_bill", "/payables", "/e/expense", "/purchasing", "/claims", "/payroll", NULL
 	};
 	static const gchar *const bank[] = {
 		"/bankfeed", "/money/calendar", NULL
@@ -1340,8 +1356,14 @@ test_web_navigation_groups_by_question(
 		"/e/fixed_asset", "/budgets", "/equity", "/group", "/capture", "/setup",
 		"/e/accounting_cutover", "/e/currency", NULL
 	};
+	/* Who the customers are, and nothing else: the work done for them
+	 * is its own question. */
 	static const gchar *const customers[] = {
-		"/e/company", "/e/contact", "/e/property", "/e/equipment", "/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/customers/duplicates", "/conversations",
+		"/e/company?customer=true", "/e/contact", "/conversations", "/customers/duplicates",
+		NULL
+	};
+	static const gchar *const jobs[] = {
+		"/e/job", "/jobs/day", "/jobs/visits", "/worklist", "/e/property", "/e/equipment",
 		NULL
 	};
 	static const gchar *const growth[] = {
@@ -1388,6 +1410,7 @@ test_web_navigation_groups_by_question(
 		{ "Bank", "Money", bank },
 		{ "Books", "Money", books },
 		{ "Customers", NULL, customers },
+		{ "Jobs", NULL, jobs },
 		{ "Growth", NULL, growth },
 		{ "Support", NULL, support },
 		{ "Operations", NULL, operations },

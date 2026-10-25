@@ -16,21 +16,24 @@ This is grouping and labels only. Every page keeps its URL; nothing is moved or 
 
 * The section map
 
-Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds a row (below). Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system.
+Eight areas after the overview, plus a ninth, /Plugins/, only when a plugin adds a row (below). Money is one area -- the money that comes in, goes out, sits in the bank and is kept in the books -- with a small label for each part, not four headings in four places. Build holds ideas, code and the factory; Settings holds the business, people and access, and the system. /Customers/ is who the customers are -- the customers, the people at them, the conversations with them; /Jobs/ is the work done for them -- jobs, the day, visits, properties and equipment. One Customers heading over both read as the whole business.
 
 | Area      | Part              | Pages                                                                                                                                              |
 |-----------+-------------------+----------------------------------------------------------------------------------------------------------------------------------------------------|
 | Money     | Money in          | Sales, Invoices, New invoice, New quote, Payments, Allocations, Customer credits, Refunds, Collections, Late fees, Payment reminders, Subscriptions, Sales orders, Products, Inventory, Listings, Prices seen |
-|           | Money out         | Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
+|           | Money out         | Suppliers, Expenses, Pay bills, Purchasing, Claims, Payroll, Recurring                                                                                        |
 |           | Bank              | Bank feeds, Money calendar                                                                                                                         |
 |           | Books             | Books, Accounts, Journals, Journal lines, Tax, Tax filings, Fiscal years, Period close, Budgets, Owner equity, Group, Capture inbox, Setup, Cutover |
-| Customers |                   | Companies, Contacts, Properties, Equipment, Jobs, Day, Visits due, My day, Duplicates                                                              |
+| Customers |                   | Customers, Contacts, Conversations, Duplicates                                                                                                     |
+| Jobs      |                   | Jobs, Day, Visits due, My day, Properties, Equipment                                                                                               |
 | Growth    |                   | Sales board, Deals, Campaigns, Newsletters, Posts, Forms                                                                                           |
 | Support   |                   | Tickets, Sprints, Milestones, Knowledge                                                                                                            |
 | Operations |                  | Categories, Locations, Recipes, Sessions, Goals                                                                                                    |
 | Trading   | Your accounts, Markets | Overview, Inventory, Profit and loss; Browse, Deals, Venues, Watchlists, Alerts, Arbitrage, Crafting, Recipe lists, Flip planner, Calculators, Trades, Market data |
 | Build     | Ideas, Code, Factory | Ideas, Research; Repositories, Agent rules, Harness, Runs, Forges; Factory, Releases, Builds, Environments, Deployments, Incidents |
 | Settings  | Your business, People and access, System | Ventures, Entities, Modules; Your account, API tokens, Users, Assistant; Settings, Automations, Plugins, Webhooks, Federation, Mail outbox, Audit log |
+
+/Customers/ and /Suppliers/ are not two pages but two views of the companies list (=/e/company?customer=true=, =/e/company?supplier=true=; see "CRM" in [[file:data-model.org][the data model]]). One row named /Companies/ opened every company, suppliers and prospects included, under a heading that said Customers; an owner looking for a customer read it as the whole book. A row may name one of its type's declared views and nothing else -- =test-plugin= checks the query against the type's =venture_entity_class_add_list_view()= list -- and the list page marks that row as the page you are on. The tabs over the list still open all companies and the prospects.
 
 Every page is named once. Only the overview (Dashboard, Dashboards, Reports) keeps the heading its row carries; the old headings -- Business, Money, Accounting, Relations, Thinking, Code, Factory, System -- are gone. A section with a group is drawn inside that group's area with its heading as a label; the area is open when the current page is in it.
 

@@ -2705,29 +2705,28 @@ test_feeds_window_is_written_not_dropped(
 	gconstpointer	 user_data
 ){
 	g_autoptr(VentureEntity) removed_run = NULL;
-	g_autoptr(VentureEntity) stopped_run = NULL;
-	g_autoptr(VentureDataSourceProvider) http_json = NULL;
+	g_autoptr(GError) error = NULL;
 	g_autofree gchar *first = NULL;
-	g_autofree gchar *second = NULL;
 	gint64 removed;
-	gint64 stopped;
 
 	(void)user_data;
 
 	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15, NULL);
 	scripted_add(&fixture->http, "/first.json", 200, auction_body);
-	scripted_add(&fixture->http, "/second.json", 200, auction_body);
 	first = http_settings(fixture, "/first.json", NULL);
-	second = http_settings(fixture, "/second.json", NULL);
 
 	removed = create_source(fixture, "Removed", "http_json", first, "auto");
 	wait_for_a_pass(fixture, removed);
+	/* A scheduled pass can finish before automatic upkeep logs its result.
+	 * Request counted upkeep and wait for it before expecting the unrelated
+	 * provider-removal diagnostic. -1 is a daily interval, not disabled. */
+	g_assert_true(venture_feeds_service_upkeep(service_of(fixture), removed, FALSE, &error));
+	g_assert_no_error(error);
+	settle(fixture);
 	g_assert_cmpint(count_runs(fixture, removed), ==, 0);
 
 	/* No provider by that name any more: the source cannot be frozen
 	 * and comes off the worker, its open window written as it goes. */
-	http_json = g_object_ref(venture_data_source_provider_registry_lookup(
-		venture_context_get_data_source_providers(fixture->context), "http_json"));
 	g_assert_true(venture_data_source_provider_registry_remove(
 		venture_context_get_data_source_providers(fixture->context), "http_json"));
 	g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, "*is not scheduled*");
@@ -2739,10 +2738,23 @@ test_feeds_window_is_written_not_dropped(
 	g_assert_cmpint(run_status(removed_run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
 	g_assert_cmpint(run_int(removed_run, "trigger"), ==, VENTURE_DATA_SOURCE_RUN_TRIGGER_SCHEDULE);
 
-	/* Stopped where the loop still runs: written there. */
-	g_assert_true(venture_data_source_provider_registry_add(
-		venture_context_get_data_source_providers(fixture->context), http_json, NULL));
-	stopped = create_source(fixture, "Stopped", "http_json", second, "auto");
+}
+
+/* A fresh scheduled source writes its open window when the worker stops. */
+static void
+test_feeds_window_is_written_on_stop(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) stopped_run = NULL;
+	g_autofree gchar *settings = NULL;
+	gint64 stopped;
+
+	(void)user_data;
+	g_object_set(fixture->config, "feeds-run-window-minutes", (gint64)15, NULL);
+	scripted_add(&fixture->http, "/stop.json", 200, auction_body);
+	settings = http_settings(fixture, "/stop.json", NULL);
+	stopped = create_source(fixture, "Stopped", "http_json", settings, "auto");
 	wait_for_a_pass(fixture, stopped);
 	g_assert_cmpint(count_runs(fixture, stopped), ==, 0);
 	venture_feeds_stop(fixture->context);
@@ -3805,6 +3817,8 @@ main(
 	           test_feeds_test_action_is_bounded, fixture_tear_down);
 	g_test_add("/feeds/window-is-written-not-dropped", Fixture, NULL, fixture_set_up,
 	           test_feeds_window_is_written_not_dropped, fixture_tear_down);
+	g_test_add("/feeds/window-is-written-on-stop", Fixture, NULL, fixture_set_up,
+	           test_feeds_window_is_written_on_stop, fixture_tear_down);
 	g_test_add("/feeds/attribution-is-one-line", Fixture, NULL, fixture_set_up,
 	           test_feeds_attribution_is_one_line, fixture_tear_down);
 	g_test_add("/feeds/runs-reach-the-default-context", Fixture, NULL, fixture_set_up,

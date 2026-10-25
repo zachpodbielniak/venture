@@ -483,6 +483,10 @@ static const VentureFieldDecl venture_expense_fields[] = {
 	                  "Leave unset for an expense that spans ventures",
 	                  "venture", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_NAME("description", "Description", "What it was for"),
+	/* Who you paid, as the supplier record when there is one; saving it
+	 * names the vendor too (venture_company_roles_install()). */
+	VENTURE_FIELD_REF("supplier-id", "Supplier", "The supplier you paid",
+	                  "company", VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("vendor", "Vendor", "Who you paid",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
@@ -525,7 +529,8 @@ static const VentureFieldDecl venture_expense_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureExpense, venture_expense, venture_expense_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), FALSE);
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "supplier-id", "Suppliers");)
 
 VentureMoney *
 venture_expense_get_deductible_amount(
@@ -746,6 +751,14 @@ static const VentureFieldDecl venture_company_fields[] = {
 	VENTURE_FIELD_ENUM("kind", "Relationship", "What they are to you",
 	                   venture_company_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* Every way you deal with them, beside what they mainly are: a
+	 * company you sell to and buy from is in both lists. Saving a
+	 * relationship of customer or supplier sets its flag
+	 * (venture_company_roles_install()). */
+	VENTURE_FIELD("customer", "Customer", "They buy from you",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD("supplier", "Supplier", "You buy from them",
+	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("legal-name", "Legal name", "As registered, if it differs",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("industry", "Industry", NULL, VENTURE_FIELD_KIND_STRING,
@@ -812,7 +825,10 @@ static const VentureFieldDecl venture_company_fields[] = {
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCompany, venture_company, venture_company_fields,
-	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);)
+	venture_entity_class_set_federation_access(VENTURE_ENTITY_CLASS(klass), TRUE);
+	venture_entity_class_add_list_view(VENTURE_ENTITY_CLASS(klass), "Customers", "customer=true");
+	venture_entity_class_add_list_view(VENTURE_ENTITY_CLASS(klass), "Suppliers", "supplier=true");
+	venture_entity_class_add_list_view(VENTURE_ENTITY_CLASS(klass), "Prospects", "kind=prospect");)
 
 static const VentureFieldDecl venture_contact_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", NULL),
@@ -820,8 +836,9 @@ static const VentureFieldDecl venture_contact_fields[] = {
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("phone", "Phone", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_SEARCHABLE),
+	/* Searchable: the people at a company are found by its name. */
 	VENTURE_FIELD_REF("company-id", "Company", NULL, "company",
-	                  VENTURE_COLUMN_FLAG_NONE),
+	                  VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("role", "Role", "Their job title there",
 	              VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),
@@ -3202,7 +3219,8 @@ venture_invoice_display_name(VentureEntity *self)
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureInvoice, venture_invoice, venture_invoice_fields,
 	VENTURE_ENTITY_CLASS(klass)->get_display_name = venture_invoice_display_name;
-	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");)
+	venture_entity_class_set_create_path(VENTURE_ENTITY_CLASS(klass), "/invoices/compose");
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "company-id", "Customers");)
 
 /*
  * One line of an invoice. The amount is quantity times unit price, computed

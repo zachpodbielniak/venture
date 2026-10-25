@@ -2244,6 +2244,20 @@ test_home_page_roles(ServerFixture *f, gconstpointer unused)
 	status = server_request(f, "GET", "/", NULL, &page);
 	g_assert_cmpuint(status, ==, 200);
 	g_assert_nonnull(strstr(page, "data-state=\"restricted\""));
+	/* Read-only owners can browse, but the home must not offer writes. */
+	{
+		const gchar *start = strstr(page, "class=\"owner-jobs\"");
+		const gchar *end;
+		g_autofree gchar *jobs = NULL;
+
+		g_assert_nonnull(start);
+		end = strstr(start, "</nav>");
+		g_assert_nonnull(end);
+		jobs = g_strndup(start, end - start);
+		g_assert_nonnull(strstr(jobs, "Find a customer"));
+		g_assert_null(strstr(jobs, "/invoices/compose"));
+		g_assert_null(strstr(jobs, "/e/expense/new"));
+	}
 	g_clear_pointer(&f->cookie, g_free);
 	g_clear_pointer(&api, g_free);
 	g_clear_pointer(&node, json_node_unref);

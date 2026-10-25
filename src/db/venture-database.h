@@ -528,6 +528,22 @@ venture_database_query_raw(
 );
 
 /**
+ * venture_database_get_statement_count:
+ * @self: a #VentureDatabase
+ *
+ * How many SQL statements this handle has sent since it was opened: every
+ * execute and every query, whatever issued it. A page that grows this with
+ * the size of the whole database, rather than its own organization, is the
+ * kind of cost it exists to catch.
+ *
+ * Returns: the running count
+ */
+guint64
+venture_database_get_statement_count(
+	VentureDatabase	 *self
+);
+
+/**
  * venture_database_has_transaction:
  * @self: database
  *
