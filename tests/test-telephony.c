@@ -7,6 +7,7 @@
  * the same one-line registration a real one uses, has a signed webhook and
  * delivery receipts. Nothing leaves the machine and no number is real. */
 #include <venture.h>
+#include "telephony/telephony.h"
 #include <string.h>
 #include <libsoup/soup.h>
 #include "venture-test-util.h"
@@ -1373,6 +1374,174 @@ test_no_secrets(Fixture *f, gconstpointer data)
 	}
 }
 
+static void
+voice_on(Fixture *f, const gchar *mode)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) org = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, 1, &error);
+	g_autofree gchar *username = g_strdup_printf("owner-%s", mode);
+	g_autoptr(VentureEntity) owner = g_object_new(VENTURE_TYPE_USER, "username", username,
+		"role", VENTURE_USER_ROLE_OWNER, "active", TRUE, NULL);
+	g_autoptr(VentureEntity) desk = g_object_new(VENTURE_TYPE_VOICE_DESK, "organization-id", (gint64)1,
+		"mode", mode, "services", "Drains and heaters", "service-area", "Exampleton",
+		"booking-rules", "Weekday mornings", NULL);
+	g_assert_no_error(error);
+	g_object_set(org, "name", "Example Plumbing", "business-hours", "Mon-Fri 09:00-17:00",
+		"timezone", "UTC", "telephony-recording-links", TRUE, NULL);
+	persist(f, org);
+	persist(f, owner);
+	persist(f, desk);
+}
+
+static gchar *
+voice_say(Fixture *f, const gchar *call_id, const gchar *number, const gchar *said,
+	const gchar *model, const gchar *when)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = at(when);
+	gchar *spoken = NULL;
+	g_assert_true(venture_telephony_service_voice_turn(f->db, 1, call_id, number, said, model, now, &spoken, &error));
+	g_assert_no_error(error);
+	g_assert_nonnull(spoken);
+	g_assert_cmpuint(strlen(spoken), >, 0);
+	return spoken;
+}
+
+static void
+test_voice_unknown_lead(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = at("2026-09-14T20:00:00Z");
+	g_autofree gchar *spoken = NULL;
+	g_autoptr(GPtrArray) leads = NULL;
+	g_autofree gchar *source = NULL, *notes = NULL, *transcript = NULL;
+	(void)data;
+	voice_on(f, "always");
+	spoken = voice_say(f, "call-new", "+1 555 010 9999", "The sink is blocked",
+		"We repair drains in Exampleton.", "2026-09-14T20:00:00Z");
+	g_assert_true(g_str_has_prefix(spoken, "This call is recorded."));
+	g_assert_nonnull(strstr(spoken, "Drains and heaters"));
+	g_assert_nonnull(strstr(spoken, "Exampleton"));
+	g_assert_nonnull(strstr(spoken, "Weekday mornings"));
+	g_assert_nonnull(strstr(spoken, "We repair drains in Exampleton."));
+	g_assert_true(venture_telephony_service_voice_finish(f->db, 1, "call-new", NULL, NULL, NULL, FALSE, now, &error));
+	g_assert_no_error(error);
+	leads = rows_of(f, VENTURE_TYPE_LEAD, NULL, 0);
+	g_assert_cmpuint(leads->len, ==, 1);
+	g_object_get(g_ptr_array_index(leads, 0), "source", &source, "notes", &notes, NULL);
+	g_assert_cmpstr(source, ==, "phone");
+	g_assert_nonnull(strstr(notes, "The sink is blocked"));
+	g_assert_nonnull(strstr(notes, "Summary:"));
+	{
+		g_autoptr(GPtrArray) calls = rows_of(f, VENTURE_TYPE_ACTIVITY, "lead-id",
+			venture_entity_get_id(g_ptr_array_index(leads, 0)));
+		g_assert_cmpuint(calls->len, ==, 1);
+		g_object_get(g_ptr_array_index(calls, 0), "call-transcript", &transcript, NULL);
+		g_assert_nonnull(strstr(transcript, "The sink is blocked"));
+	}
+}
+
+static void
+test_voice_known_contact(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = at("2026-09-14T20:05:00Z");
+	g_autofree gchar *spoken = NULL;
+	g_autoptr(VentureEntity) call = NULL;
+	g_autoptr(GPtrArray) leads = NULL;
+	g_autofree gchar *transcript = NULL;
+	(void)data;
+	voice_on(f, "always");
+	spoken = voice_say(f, "call-ada", "(555) 010-0123", "Ada calling about the heater",
+		"We service heaters.", "2026-09-14T20:05:00Z");
+	g_assert_true(g_str_has_prefix(spoken, "This call is recorded."));
+	g_assert_true(venture_telephony_service_voice_finish(f->db, 1, "call-ada", NULL, NULL, NULL, FALSE, now, &error));
+	g_assert_no_error(error);
+	leads = rows_of(f, VENTURE_TYPE_LEAD, NULL, 0);
+	g_assert_cmpuint(leads->len, ==, 0);
+	call = only_call(f, f->ada);
+	g_object_get(call, "call-transcript", &transcript, NULL);
+	g_assert_nonnull(strstr(transcript, "Ada calling about the heater"));
+}
+
+static void
+test_voice_books_once(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) start = at("2026-09-15T09:00:00Z");
+	g_autoptr(GDateTime) end = at("2026-09-15T11:00:00Z");
+	g_autoptr(GDateTime) now = at("2026-09-14T20:10:00Z");
+	g_autoptr(GPtrArray) jobs = NULL;
+	g_autoptr(GDateTime) window = NULL;
+	(void)data;
+	voice_on(f, "always");
+	g_free(voice_say(f, "call-book", "+1 555 010 8888", "Please come Tuesday morning",
+		"Tuesday morning is open.", "2026-09-14T20:10:00Z"));
+	g_assert_true(venture_telephony_service_voice_finish(f->db, 1, "call-book", "Blocked sink", start, end, FALSE, now, &error));
+	g_assert_no_error(error);
+	jobs = rows_of(f, VENTURE_TYPE_JOB, NULL, 0);
+	g_assert_cmpuint(jobs->len, ==, 1);
+	g_object_get(g_ptr_array_index(jobs, 0), "window-start", &window, NULL);
+	g_assert_cmpint(g_date_time_compare(window, start), ==, 0);
+	g_free(voice_say(f, "call-book-2", "+1 555 010 7777", "Same Tuesday morning",
+		"Let me check.", "2026-09-14T20:11:00Z"));
+	g_assert_false(venture_telephony_service_voice_finish(f->db, 1, "call-book-2", "Another sink", start, end, FALSE, now, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_clear_pointer(&jobs, g_ptr_array_unref);
+	jobs = rows_of(f, VENTURE_TYPE_JOB, NULL, 0);
+	g_assert_cmpuint(jobs->len, ==, 1);
+}
+
+static void
+test_voice_model_failure(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = at("2026-09-14T20:20:00Z");
+	g_autofree gchar *spoken = NULL;
+	g_autoptr(GPtrArray) leads = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autoptr(GPtrArray) notices = NULL;
+	(void)data;
+	voice_on(f, "always");
+	spoken = voice_say(f, "call-fail", "+1 555 010 6666", "This is urgent, the pipe burst",
+		NULL, "2026-09-14T20:20:00Z");
+	g_assert_true(g_str_has_prefix(spoken, "This call is recorded."));
+	g_assert_nonnull(strstr(spoken, "leave a message"));
+	notices = rows_of(f, VENTURE_TYPE_NOTIFICATION, NULL, 0);
+	g_assert_cmpuint(notices->len, >=, 1);
+	g_assert_true(venture_telephony_service_voice_finish(f->db, 1, "call-fail", NULL, NULL, NULL, TRUE, now, &error));
+	g_assert_no_error(error);
+	leads = rows_of(f, VENTURE_TYPE_LEAD, NULL, 0);
+	g_assert_cmpuint(leads->len, ==, 1);
+	g_object_get(g_ptr_array_index(leads, 0), "notes", &notes, NULL);
+	g_assert_nonnull(strstr(notes, "Message taken"));
+	g_clear_pointer(&notices, g_ptr_array_unref);
+	notices = rows_of(f, VENTURE_TYPE_NOTIFICATION, NULL, 0);
+	g_assert_cmpuint(notices->len, >=, 2);
+}
+
+static void
+test_voice_after_hours(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) open = at("2026-09-14T15:00:00Z");
+	g_autoptr(GDateTime) shut = at("2026-09-14T20:00:00Z");
+	gchar *spoken = NULL;
+	(void)data;
+	voice_on(f, "off");
+	g_assert_false(venture_telephony_service_voice_turn(f->db, 1, "call-off", "+1 555 010 5555", "Hello", "Hi", open, &spoken, &error));
+	g_assert_no_error(error);
+	g_assert_null(spoken);
+	voice_on(f, "after-hours");
+	g_assert_false(venture_telephony_service_voice_turn(f->db, 1, "call-day", "+1 555 010 5555", "Hello", "Hi", open, &spoken, &error));
+	g_assert_no_error(error);
+	spoken = voice_say(f, "call-night", "+1 555 010 5555", "Hello after hours", "We are closed and still here.", "2026-09-14T20:00:00Z");
+	g_assert_nonnull(strstr(spoken, "This call is recorded."));
+	g_free(spoken);
+	(void)shut;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1395,5 +1564,10 @@ main(int argc, char **argv)
 	g_test_add("/telephony/sequences/text-step", Fixture, NULL, setup, test_sequence_text_step, teardown);
 	g_test_add("/telephony/marketing/text-campaign", Fixture, NULL, setup, test_text_campaign, teardown);
 	g_test_add("/telephony/no-secrets", Fixture, NULL, setup, test_no_secrets, teardown);
+	g_test_add("/telephony/voice/unknown-lead", Fixture, NULL, setup, test_voice_unknown_lead, teardown);
+	g_test_add("/telephony/voice/known-contact", Fixture, NULL, setup, test_voice_known_contact, teardown);
+	g_test_add("/telephony/voice/books-once", Fixture, NULL, setup, test_voice_books_once, teardown);
+	g_test_add("/telephony/voice/model-failure", Fixture, NULL, setup, test_voice_model_failure, teardown);
+	g_test_add("/telephony/voice/after-hours", Fixture, NULL, setup, test_voice_after_hours, teardown);
 	return g_test_run();
 }

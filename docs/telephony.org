@@ -239,6 +239,33 @@ relying on them:
 | Texts sent per run | -- | 100 |
 | HELP answers | once a day per contact | -- |
 
+* Answering the business line
+
+Add one voice desk for the organization. Its mode is =off= (also the
+default when no desk exists), =always=, or =after-hours=. After-hours uses
+the organization's business hours and time zone: the line picks up only
+while those hours are closed. Three fields are the business details the
+opening line may say: services, service area, and booking rules.
+
+Point the provider or PBX DID, or its no-answer forward, at whatever
+adapter feeds turns into Venture. Venture opens no SIP socket and does not
+speak to a trunk by itself. The adapter, or a test, hands each caller turn
+to the voice API. A call that is still in progress lives in this process
+only; a restart drops that live call and does not invent a lead for it.
+
+The first thing said on every answered call is "This call is recorded."
+A failed or empty model reply is spoken as "I didn't catch that. Please
+leave a message and we will call you back." The line does not go silent.
+
+When the call ends, an unknown number becomes one lead whose source is
+=phone=, with the transcript and a summary. That source is what the
+attribution report counts when the lead has no earlier touch. A number
+that matches a contact
+is logged on that contact instead, and no second lead is made. A requested
+arrival window becomes one job on the calendar. The same window cannot be
+booked twice. An utterance containing "urgent" tells every owner
+immediately. Every finished call tells them again when the caller hangs up.
+
 * Storage and upgrade
 
 Paired migrations =000950_telephony_lines_and_texts= (lines, extensions,
