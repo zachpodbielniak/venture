@@ -177,3 +177,19 @@ venturectl crm rollback 3
 Objects: companies, contacts, deals, notes, emails, calls, meetings, tasks;
 list unsupported ones (attachments) under `unsupported`. Generic writes to
 `crm_import`/`crm_import_row` are refused. See `docs/crm-import.org`.
+
+## Competitors on deals
+
+Use `describe competitor` and `describe deal_competitor`, then ordinary
+`create`/`update` commands. Link a competitor with `deal_id` and
+`competitor_id`, and optionally record `strengths` and `weaknesses`.
+Set a deal's `lost_to_competitor_id` to name the winner alongside its loss
+reason. Same-organization references and duplicate-link checks apply to
+all writers. The field is optional and only counts while the deal is lost.
+
+`venturectl report competitor_win_loss period=2026` uses the same report as
+`/reports/competitor_win_loss` and `/api/v1/reports/competitor_win_loss`.
+It counts wins against every linked rival, losses only against the named
+winner, and keeps money separate by currency. Win rate is won / (won +
+named losses); zero outcomes yield zero. Closed deals use closing date,
+open deals creation date, and unused competitors remain visible with zeros.

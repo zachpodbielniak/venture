@@ -28,7 +28,12 @@ attribution, territories, mail and calendars. Conventions are in
   `pipeline_id`/`stage_id` (moved only by `deal move`), `company_id`,
   `contact_id` (same company), `owner_user_id`, `territory_id`,
   `expected_close_at`, `next_step`/`next_action_at`, `loss_reason_id`,
+  `lost_to_competitor_id -> competitor`,
   `committed`. *action* `handoff (s)` (to a client project).
+
+- `competitor` -- **name**, `website`, `notes`, scoped to the organization.
+- `deal_competitor` -- `deal_id`, `competitor_id`, `strengths`, `weaknesses`;
+  at most one live link per pair. Report `competitor_win_loss`.
 
 ## leads (requires crm)
 

@@ -24,3 +24,19 @@ Tests first in every lane; the full suite stays green after each lane.
 
 Each lane ticks its issue's done-when on the issue, with the commit and the
 test that proves it.
+
+* Remaining shared resources
+
+The remaining lanes run sequentially on this branch. Migration pairs are
+reserved here before their implementations:
+
+| Issue | Migration | Shared entries |
+|-------+-----------+----------------|
+| #157 | 000958 | CRM types and competitor report |
+| #158 | 000959 | Quote approval settings and history |
+| #161 | 000960 | Owner-follow behavior, if storage changes |
+| #159 | 000961 | Support mailbox threading |
+| #165 | 000962 | Inbound voice configuration and call records |
+
+Append registry and report entries in lane order; extend existing option
+lists. An unused migration reservation does not require an empty script.

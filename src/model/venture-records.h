@@ -184,6 +184,11 @@ typedef enum
 GType venture_deal_contact_role_get_type(void) G_GNUC_CONST;
 #define VENTURE_TYPE_DEAL_CONTACT_ROLE (venture_deal_contact_role_get_type())
 
+#define VENTURE_TYPE_COMPETITOR (venture_competitor_get_type())
+VENTURE_DECLARE_ENTITY(VentureCompetitor, venture_competitor, COMPETITOR)
+#define VENTURE_TYPE_DEAL_COMPETITOR (venture_deal_competitor_get_type())
+VENTURE_DECLARE_ENTITY(VentureDealCompetitor, venture_deal_competitor, DEAL_COMPETITOR)
+
 #define VENTURE_TYPE_DEAL_CONTACT (venture_deal_contact_get_type())
 VENTURE_DECLARE_ENTITY(VentureDealContact, venture_deal_contact, DEAL_CONTACT)
 /**

@@ -525,3 +525,12 @@ Every persistent feature also ships paired SQLite/PostgreSQL migration SQL, repr
 =crm=. Interactions may reference a lead before there is a contact; company,
 contact and deal gain original =campaign_id= attribution. Lead conversion
 references are service-owned. See [[file:leads.org][leads]].
+
+* Competitor records
+
+The CRM's =competitor= has a name, website and notes. =deal_competitor=
+references a deal and competitor in the same organization, with optional
+strengths and weaknesses; only one live link per pair is allowed. A deal's
+optional =lost_to_competitor_id= identifies the winning rival separately
+from its loss reason. Existing opportunities receive no invented attribution.
+See [[file:pipelines.org][Sales pipelines]] for report semantics.

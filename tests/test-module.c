@@ -453,8 +453,8 @@ test_module_describe(void)
 			needed = json_object_get_array_member(module, "required_by");
 
 			g_assert_true(json_object_get_boolean_member(module, "enabled"));
-			/* company, contact, interaction, deal, deal_contact */
-			g_assert_cmpuint(json_array_get_length(types), ==, 5);
+			/* company, contact, interaction, deal, deal_contact, competitor, deal_competitor */
+			g_assert_cmpuint(json_array_get_length(types), ==, 7);
 			g_assert_cmpstr(json_array_get_string_element(types, 0), ==,
 			                "company");
 			g_assert_cmpstr(json_array_get_string_element(types, 4), ==,

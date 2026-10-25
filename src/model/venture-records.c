@@ -920,6 +920,7 @@ static const VentureFieldDecl venture_deal_fields[] = {
 	VENTURE_FIELD("next-action-at", "Next action", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_REF("loss-reason-id", "Loss reason", NULL, "loss_reason", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("lost-note", "Lost note", NULL),
+	VENTURE_FIELD_REF("lost-to-competitor-id", "Lost to", "Competitor who won the loss, if known", "competitor", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("owner", "Owner", "Username, like a ticket assignee", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
 	VENTURE_FIELD("probability-overridden", "Override probability", "Keep the deal probability on stage moves", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("committed", "Committed", "Include in the committed forecast", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
@@ -3918,3 +3919,18 @@ venture_audit_entry_new_for_change(
 
 	return entry;
 }
+
+static const VentureFieldDecl competitor_fields[] = {
+	VENTURE_FIELD_NAME("name", "Name", NULL),
+	VENTURE_FIELD("website", "Website", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureCompetitor, venture_competitor, competitor_fields)
+
+static const VentureFieldDecl deal_competitor_fields[] = {
+	VENTURE_FIELD_REF("deal-id", "Deal", NULL, "deal", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_REF("competitor-id", "Competitor", NULL, "competitor", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
+	VENTURE_FIELD_TEXT("strengths", "Strengths", NULL),
+	VENTURE_FIELD_TEXT("weaknesses", "Weaknesses", NULL)
+};
+VENTURE_DEFINE_ENTITY(VentureDealCompetitor, venture_deal_competitor, deal_competitor_fields)

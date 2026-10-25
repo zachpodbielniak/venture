@@ -1232,3 +1232,14 @@ preflight. The outbox resolves and durably binds the current account at the
 first real delivery attempt, so queued reports still honor later rotation
 or disconnect. The pack's delivery stamp records acceptance into the outbox,
 not relay acceptance or arrival in a recipient's inbox.
+
+* Competitor win/loss
+
+=competitor_win_loss= reports =faced=, =won=, =lost=, =win_rate= and
+=value_lost= per competitor and currency. Closed opportunities are selected
+by closing date; open opportunities by creation date. A loss is credited
+only to its explicitly named winning competitor, while a win counts against
+every linked competitor. The win rate uses won plus named losses, excluding
+open and unattributed outcomes. Empty competitors report zeros. Money is
+never combined across currencies. See [[file:pipelines.org][Sales pipelines]]
+for recording rivals and the full counting rules.

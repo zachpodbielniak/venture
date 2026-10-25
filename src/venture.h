@@ -281,6 +281,7 @@
 #include "core/venture-ticket-tree.h"
 #include "core/venture-company-tree.h"
 #include "core/venture-deal-contact.h"
+#include "core/venture-competitor.h"
 #include "core/venture-venture-type-check.h"
 #include "billing/venture-billing-service.h"
 #include "billing/venture-billing-usage.h"

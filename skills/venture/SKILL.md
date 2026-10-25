@@ -116,10 +116,13 @@ text (mail preview, designed email, deliverability, journeys, telephony,
 the one inbox, AI on messages, workflow settings) are in it too, against
 `e549807a`. The full inventory remains `9c97a87a`.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-23 against e549807a -->
+Competitor records and win/loss reporting were added on the remaining-gaps
+epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
+
+<!-- skill-baseline:start -- incrementally updated 2026-10-25 against 27c34e4a -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=e549807a
+base=27c34e4a
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says

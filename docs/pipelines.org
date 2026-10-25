@@ -251,3 +251,29 @@ person, lead conversion producing exactly one primary, a deleted contact's
 roles going with it while the deals stay, the primary as recipient with its
 fallback and a sequence enrollment by deal, the report, and the deal and
 contact pages with add, refusal and remove.
+
+* Competitors
+
+The CRM records =competitor= (name, website and notes) and =deal_competitor=
+(deal, competitor, strengths and weaknesses) use the ordinary record forms,
+API and CLI. A deal's related records list its competitors. Duplicate live
+links are refused, and both ends must belong to the same organization.
+
+Set =lost_to_competitor_id= on the deal to record who won a loss, alongside
+its loss reason. It is optional; an unnamed winner is not guessed from the
+competitors faced. A named winner is counted even without a separate link.
+Reopening a deal makes its old loss attribution inactive until it is lost
+again; update or clear the field when the outcome changes.
+
+The =competitor_win_loss= report counts each deal once per competitor.
+Closed deals use =closed_at= in the requested half-open period; open deals
+use their creation date. =faced= counts these opportunities, =won= counts
+wins against that competitor and =lost= counts losses naming that competitor
+as winner. =win_rate= is 100 times won divided by won plus lost, or zero
+without either outcome. =value_lost= is the exact value of those named losses.
+Rows remain separate by currency. A competitor with no matching deals has
+one zero row in the organization's book currency.
+
+The report is available at =/reports/competitor_win_loss=,
+=GET /api/v1/reports/competitor_win_loss= and
+=venturectl report competitor_win_loss period=2026=.

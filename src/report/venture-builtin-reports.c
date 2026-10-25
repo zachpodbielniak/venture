@@ -3741,6 +3741,7 @@ venture_report_registry_register_builtins(VentureReportRegistry *self)
 	venture_activity_register_reports(self);
 	venture_pipeline_reports_register(self);
 	venture_deal_contact_register_reports(self);
+	venture_competitor_register_reports(self);
 	venture_sales_reports_register(self);
 	venture_sequences_register_reports(self);
 	venture_marketing_register_reports(self);
