@@ -279,6 +279,41 @@ test_apply_from_invoice(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(form, "name=\"amount\" value=\"50.00\""));
 }
 
+static void
+test_apply_refuses_currency(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) open = invoice(f, "INV-1", "2099-01-31", data ? "20 EUR" : "20 USD");
+	g_autoptr(VentureEntity) goodwill = credit(f, "50 USD", "Goodwill");
+	g_autofree gchar *form = NULL;
+
+	form = g_strdup_printf("credit_id=%" G_GINT64_FORMAT "&invoice_id=%" G_GINT64_FORMAT "&amount=%s",
+		venture_entity_get_id(goodwill), venture_entity_get_id(open), data ? "5%20USD" : "5%20EUR");
+	g_assert_cmpuint(post(f, "/customer-credits/apply", form, NULL), ==, 422);
+	g_assert_cmpint(remaining(f, goodwill), ==, 5000);
+	g_assert_cmpint(balance(f, open), ==, 2000);
+}
+
+static void
+test_apply_return_stays_local(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) open = invoice(f, "INV-1", "2099-01-31", "20 USD");
+	g_autoptr(VentureEntity) goodwill = credit(f, "50 USD", "Goodwill");
+	g_autofree gchar *form = NULL;
+	g_autofree gchar *location = NULL;
+	g_autofree gchar *expected = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT,
+		venture_entity_get_id(open));
+	(void)data;
+
+	/* Browsers remove the tab and interpret this as an external URL. */
+	form = g_strdup_printf("credit_id=%" G_GINT64_FORMAT "&invoice_id=%" G_GINT64_FORMAT
+		"&amount=5.00&back=%%2F%%09%%2Fexample.invalid",
+		venture_entity_get_id(goodwill), venture_entity_get_id(open));
+	g_assert_cmpuint(post(f, "/customer-credits/apply", form, &location), ==, 303);
+	g_assert_cmpstr(location, ==, expected);
+	g_assert_cmpint(remaining(f, goodwill), ==, 4500);
+	g_assert_cmpint(balance(f, open), ==, 1500);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -287,5 +322,8 @@ main(int argc, char **argv)
 	g_test_add("/customer-credits/apply-from-customer", Fixture, NULL, setup, test_apply_from_customer, teardown);
 	g_test_add("/customer-credits/apply-refuses-too-much", Fixture, NULL, setup, test_apply_refuses_too_much, teardown);
 	g_test_add("/customer-credits/apply-from-invoice", Fixture, NULL, setup, test_apply_from_invoice, teardown);
+	g_test_add("/customer-credits/refuses-amount-currency", Fixture, NULL, setup, test_apply_refuses_currency, teardown);
+	g_test_add("/customer-credits/refuses-invoice-currency", Fixture, GINT_TO_POINTER(1), setup, test_apply_refuses_currency, teardown);
+	g_test_add("/customer-credits/return-stays-local", Fixture, NULL, setup, test_apply_return_stays_local, teardown);
 	return g_test_run();
 }

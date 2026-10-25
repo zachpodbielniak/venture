@@ -326,3 +326,32 @@ beneath each title. The same table keeps its sort links, checkboxes and
 pagination. The assistant launcher follows the document on phones, so it
 cannot cover quote totals, buttons or rows while scrolling. Both looks
 use the same layout.
+
+* The owner's starting page
+
+When no custom dashboard is marked as home, the starting page offers five
+frequent jobs: find a customer, find a person, create an invoice, log an
+expense, and read profit and loss. Only enabled modules are offered, and
+creation links require permission to write the corresponding record type.
+The existing numbers and activity remain under Business overview, initially
+collapsed. A custom home dashboard keeps its own layout; =/overview= still
+opens the full built-in dashboard.
+
+The ordinary report page and its API export use the business selected in the
+sidebar when =organization_id= is omitted. An explicit =organization_id=
+still overrides that selection, within the caller's record access policy.
+This keeps the P&L reached from Home on the same business as its expenses.
+
+Ordinary same-origin links show a pressed state and progress cursor as soon
+as they are clicked. Repeated clicks on the pending destination are ignored.
+History restoration, Escape and a bounded timeout clear the busy state;
+modified clicks, downloads, external links and hx requests retain their
+existing behavior.
+
+* Applying a customer credit
+
+The entered amount, credit and invoice must use the same currency. A
+mismatch returns a validation error without changing either balance; the
+form does not infer an exchange rate. Successful applications return to a
+local page, falling back to the invoice when the supplied return path is
+not local or contains browser-normalized control characters or backslashes.

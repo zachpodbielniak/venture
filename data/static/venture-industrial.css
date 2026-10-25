@@ -6382,3 +6382,12 @@ details.late-fee-waive[open] > summary { margin-bottom: 8px; }
 #list-filters > label { display: block; max-width: 32rem; }
 #list-filters details { margin: var(--space-3) 0; }
 #list-filters .form-grid { padding: var(--space-3) 0; }
+
+/* Keep the frequent jobs visible before the detailed business overview. */
+.owner-jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem; margin: 1rem 0 1.5rem; }
+.owner-jobs .btn { min-height: 4rem; justify-content: center; text-align: center; white-space: normal; }
+.owner-overview > summary { cursor: pointer; padding: .75rem 0; font-weight: 600; }
+a.navigation-pending { opacity: .65; transform: translateY(1px); }
+body.navigation-pending, body.navigation-pending a { cursor: progress; }
+#list-filters .form-grid > label { display: flex; flex-direction: column; gap: .35rem; }
+#list-filters .form-grid select { width: 100%; }

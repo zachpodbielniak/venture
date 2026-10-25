@@ -4024,6 +4024,9 @@ venture_web_api_report(
 			json_object_set_string_member(report_options, "as_of", as_of);
 		if (!venture_string_is_empty(organization))
 			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+		else
+			json_object_set_int_member(report_options, "organization_id",
+				venture_web_active_organization(self, request));
 	}
 	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);
@@ -4078,6 +4081,36 @@ static void
 venture_web_support_rollup_append_company_block(VentureWebServer *self,
 	HtmxRequest *request, GString *content, VentureEntity *record);
 
+static void
+venture_web_append_owner_jobs(VentureWebServer *self, HtmxRequest *request,
+	GString *content)
+{
+	static const struct { const gchar *label, *path, *module, *type; gboolean write; } jobs[] = {
+		{ "Find a customer", "/e/company?customer=true", "crm", "company", FALSE },
+		{ "Find a person", "/e/contact", "crm", "contact", FALSE },
+		{ "New invoice", "/invoices/compose", "invoicing", "invoice", TRUE },
+		{ "Log expense", "/e/expense/new", "finance", "expense", TRUE },
+		{ "Profit and loss", "/reports/pnl", "finance", "expense", FALSE }
+	};
+	g_autoptr(VentureAuthPrincipal) principal = venture_auth_authenticate(self->auth, request);
+	guint i;
+
+	g_string_append(content, "<nav class=\"owner-jobs\" aria-label=\"Everyday tasks\">");
+	for (i = 0; i < G_N_ELEMENTS(jobs); i++)
+	{
+		GType type = venture_entity_registry_lookup(
+			venture_context_get_entity_registry(self->context), jobs[i].type);
+
+		if (!venture_web_module_enabled(self, jobs[i].module) ||
+		    !venture_web_require_for_type(self, principal, type,
+		        jobs[i].write ? VENTURE_USER_ROLE_EDITOR : VENTURE_USER_ROLE_VIEWER, NULL))
+			continue;
+		g_string_append_printf(content, "<a class=\"btn\" href=\"%s\">%s</a>",
+			jobs[i].path, jobs[i].label);
+	}
+	g_string_append(content, "</nav>");
+}
+
 /*
  * GET / - the home page: a dashboard marked as home, if the viewer may
  * see one; else the five headline cards, unless the organisation opted
@@ -4122,6 +4155,8 @@ venture_web_ui_overview(
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(VentureDateRange) period = NULL;
+	g_autoptr(JsonObject) report_options = json_object_new();
+	gboolean home;
 	g_autoptr(GError) error = NULL;
 	static const gchar *const dashboard_reports[] = {
 		"pnl", "ventures", NULL
@@ -4148,6 +4183,15 @@ venture_web_ui_overview(
 	                         "<span class=\"subtitle\">This month across every "
 	                         "venture</span></div></div>");
 
+	home = 0 == g_strcmp0(htmx_request_get_path(request), "/");
+	if (home)
+	{
+		venture_web_append_owner_jobs(self, request, content);
+		g_string_append(content, "<details class=\"owner-overview\"><summary>Business overview</summary>");
+	}
+	json_object_set_int_member(report_options, "organization_id",
+		venture_web_active_organization(self, request));
+
 	period = venture_context_parse_period(self->context, "this_month", &error);
 
 	for (i = 0; NULL != dashboard_reports[i]; i++)
@@ -4164,7 +4208,7 @@ venture_web_ui_overview(
 		if (NULL == report)
 			continue;
 
-		result = venture_report_generate(report, self->context, period, NULL,
+		result = venture_report_generate(report, self->context, period, report_options,
 		                                 &local_error);
 
 		if (NULL == result)
@@ -4489,6 +4533,9 @@ venture_web_ui_overview(
 	}
 
 	g_string_append(content, "</div>");
+
+	if (home)
+		g_string_append(content, "</details>");
 
 	return venture_web_html_response(
 		venture_web_page(self, request, "/", "Dashboard", content->str), 200);
@@ -8435,6 +8482,9 @@ venture_web_ui_report(
 			json_object_set_string_member(report_options, "as_of", as_of);
 		if (!venture_string_is_empty(organization))
 			json_object_set_int_member(report_options, "organization_id", g_ascii_strtoll(organization, NULL, 10));
+		else
+			json_object_set_int_member(report_options, "organization_id",
+				venture_web_active_organization(self, request));
 	}
 	result = venture_report_generate(report, self->context, period, report_options,
 	                                 &error);

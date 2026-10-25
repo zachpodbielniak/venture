@@ -4044,6 +4044,59 @@
 		});
 	}
 
+	/* A normal browser navigation can take time before the next page paints.
+	 * Acknowledge it now and suppress repeated clicks on that destination. */
+	function wireNavigationFeedback() {
+		var pending = null;
+		var timer;
+
+		function clear() {
+			if (pending) {
+				pending.link.classList.remove("navigation-pending");
+				if (pending.busy === null) pending.link.removeAttribute("aria-busy");
+				else pending.link.setAttribute("aria-busy", pending.busy);
+				pending = null;
+			}
+			document.body.classList.remove("navigation-pending");
+			window.clearTimeout(timer);
+		}
+
+		document.addEventListener("click", function (event) {
+			if (event.defaultPrevented || event.button !== 0 || event.ctrlKey ||
+			    event.metaKey || event.shiftKey || event.altKey) return;
+			var link = event.target.closest && event.target.closest("a[href]");
+			if (!link || link.hasAttribute("download") ||
+			    (link.getAttribute("target") && link.getAttribute("target") !== "_self") ||
+			    link.hasAttribute("hx-get") || link.hasAttribute("hx-post") ||
+			    link.closest("[hx-boost='true']")) return;
+			var href = link.getAttribute("href");
+			if (!href || href.charAt(0) === "#") return;
+			var destination;
+			try { destination = new URL(href, window.location.href); }
+			catch (ignore) { return; }
+			if (destination.origin !== window.location.origin ||
+			    (destination.protocol !== "https:" && destination.protocol !== "http:")) return;
+			var current = new URL(window.location.href);
+			if (destination.hash && destination.pathname === current.pathname &&
+			    destination.search === current.search) return;
+			if (pending && pending.href === destination.href) {
+				event.preventDefault();
+				return;
+			}
+			clear();
+			pending = {link: link, href: destination.href, busy: link.getAttribute("aria-busy")};
+			link.setAttribute("aria-busy", "true");
+			link.classList.add("navigation-pending");
+			document.body.classList.add("navigation-pending");
+			/* A cancelled download or navigation must never strand a link. */
+			timer = window.setTimeout(clear, 15000);
+		});
+		window.addEventListener("pageshow", clear);
+		document.addEventListener("keydown", function (event) {
+			if (event.key === "Escape") clear();
+		});
+	}
+
 	function init() {
 		applyTheme(storedTheme());
 
@@ -4116,6 +4169,7 @@
 		document.addEventListener("submit", discussion_submit, true);
 		wire_discussion(document);
 		wireInlineForms();
+		wireNavigationFeedback();
 		wirePickers(document);
 		wireRecordPickers(document);
 		wireHarness(document);

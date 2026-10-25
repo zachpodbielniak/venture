@@ -165,8 +165,11 @@ venture_web_render_headline_home(
 		return venture_web_page(self, request, "/", "Home", body->str);
 	}
 
-	content = g_string_new("<div class=\"page-head\"><div class=\"page-title\">"
-	                       "<h1>The headline numbers</h1><span class=\"subtitle\">");
+	content = g_string_new("<h1>Home</h1>");
+	venture_web_append_owner_jobs(self, request, content);
+	g_string_append(content, "<details class=\"owner-overview\"><summary>Business overview</summary>");
+	g_string_append(content, "<div class=\"page-head\"><div class=\"page-title\">"
+	                       "<h2>The headline numbers</h2><span class=\"subtitle\">");
 	venture_html_escape_append(content, venture_date_range_get_label(period));
 	g_string_append(content, ", against the period before</span></div>"
 	                         "<div class=\"page-actions\"><div class=\"btn-group\">");
@@ -203,6 +206,8 @@ venture_web_render_headline_home(
 	g_string_append(content, "<div class=\"headline-cards widget-grid\">");
 	g_string_append(content, cards);
 	g_string_append(content, "</div>");
+
+	g_string_append(content, "</details>");
 
 	return venture_web_page(self, request, "/", "Home", content->str);
 }

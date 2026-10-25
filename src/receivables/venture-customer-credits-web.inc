@@ -224,8 +224,15 @@ customer_credits_id(const gchar *text)
 static gchar *
 customer_credits_back(const gchar *back, gint64 invoice_id)
 {
-	if ((NULL != back) && ('/' == back[0]) && ('/' != back[1]) && ('\\' != back[1]) &&
-	    (NULL == strpbrk(back, "\r\n")))
+	const gchar *cursor;
+	gboolean local = (NULL != back) && ('/' == back[0]) && ('/' != back[1]);
+
+	/* Browsers remove tabs/newlines and treat backslashes as slashes.
+	 * Reject those spellings before deciding that the path is local. */
+	for (cursor = back; local && *cursor; cursor++)
+		if (((guchar)*cursor < 0x20) || ((guchar)*cursor == 0x7f) || ('\\' == *cursor))
+			local = FALSE;
+	if (local)
 		return g_strdup(back);
 	return g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, invoice_id);
 }
@@ -288,6 +295,15 @@ venture_customer_credits_web_apply(HtmxRequest *request, GHashTable *params, gpo
 		venture_money_get_currency(left), &error);
 	if (NULL == amount)
 		return venture_web_error_response(error);
+	/* Money comparisons cannot invent an exchange rate. Refuse before
+	 * comparison so a form error cannot produce a warning or an allocation. */
+	if ((0 != g_strcmp0(venture_money_get_currency(amount), venture_money_get_currency(left))) ||
+	    (0 != g_strcmp0(venture_money_get_currency(amount), venture_money_get_currency(owed))))
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"The amount, credit and invoice must use the same currency");
+		return venture_web_error_response(error);
+	}
 	if (venture_money_is_zero(amount) || venture_money_is_negative(amount) ||
 	    (venture_money_compare(amount, left) > 0) || (venture_money_compare(amount, owed) > 0))
 	{
