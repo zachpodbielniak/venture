@@ -257,6 +257,56 @@ static void test_guarantee(Fixture *f, gconstpointer unused)
 		}
 	}
 }
+/* What the owner actually paid for the plan in the window: settled payments
+ * against the subscription's invoices, less refunds, never invoices merely
+ * issued. Paid and made back share the enrolled currency. */
+static const gchar *money_member(JsonNode *answer, const gchar *member)
+{
+	JsonObject *money = json_object_get_object_member(json_node_get_object(answer), member);
+	g_assert_nonnull(money);
+	g_assert_cmpstr(json_object_get_string_member(money, "currency"), ==, "USD");
+	return json_object_get_string_member(money, "amount");
+}
+static void test_made_back_paid(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *enroll = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT "}", f->business, f->price);
+	g_autofree gchar *body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", f->business);
+	g_autofree gchar *path = g_strdup_printf("/api/v1/lightsite/billing/%" G_GINT64_FORMAT "/made-back", f->business);
+	g_autoptr(JsonNode) enrolled = call(f, "/api/v1/lightsite/billing/enroll", enroll, 201);
+	g_autoptr(JsonNode) published = call(f, "/api/v1/lightsite/billing/publish", body, 200);
+	g_autoptr(JsonNode) issued = call(f, path, NULL, 200);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYMENT_ALLOCATION);
+	g_autoptr(GPtrArray) allocations = NULL;
+	gint64 invoice = json_object_get_int_member(json_node_get_object(published), "invoice_id");
+	(void)unused;
+	/* Issued is not paid. */
+	g_assert_cmpint(invoice, >, 0);
+	g_assert_cmpstr(money_member(issued, "paid"), ==, "0.00");
+	g_assert_true(venture_settlement_service_settle_invoice(venture_settlement_service_get(f->db), invoice, now, NULL, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(JsonNode) settled = call(f, path, NULL, 200);
+		g_assert_cmpstr(money_member(settled, "paid"), ==, "10.00");
+		g_assert_cmpstr(money_member(settled, "made_back"), ==, "0.00");
+	}
+	/* A refund of part of it comes off what was paid. */
+	venture_query_set_organization(query, f->billing);
+	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, invoice, NULL);
+	allocations = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(allocations->len, ==, 1);
+	{
+		g_autoptr(VentureEntity) refund = g_object_new(VENTURE_TYPE_REFUND, "organization-id", f->billing,
+			"customer-id", json_object_get_int_member(json_node_get_object(enrolled), "company_id"),
+			"allocation-id", venture_entity_get_id(g_ptr_array_index(allocations, 0)), "date", now, NULL);
+		g_autoptr(JsonNode) refunded = NULL;
+		g_assert_true(venture_entity_set_field_from_string(refund, "amount", "4 USD", &error)); g_assert_no_error(error);
+		save(f, refund);
+		refunded = call(f, path, NULL, 200);
+		g_assert_cmpstr(money_member(refunded, "paid"), ==, "6.00");
+	}
+}
 static void test_made_back(Fixture *f, gconstpointer unused)
 {
 	g_autofree gchar *enroll = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"plan_price_id\":%" G_GINT64_FORMAT "}", f->business, f->price);
@@ -555,6 +605,7 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-billing/guarantee-zero", Fixture, "zero", setup, test_guarantee, teardown);
 	g_test_add("/hosted-billing/guarantee-ineligible", Fixture, "ineligible", setup, test_guarantee, teardown);
 	g_test_add("/hosted-billing/made-back", Fixture, NULL, setup, test_made_back, teardown);
+	g_test_add("/hosted-billing/made-back-paid", Fixture, NULL, setup, test_made_back_paid, teardown);
 	g_test_add("/hosted-billing/made-back-unsigned", Fixture, "unsigned", setup, test_made_back, teardown);
 	g_test_add("/hosted-billing/made-back-mixed", Fixture, "mixed", setup, test_made_back, teardown);
 	g_test_add("/hosted-billing/authority", Fixture, NULL, setup, test_boundary, teardown);
