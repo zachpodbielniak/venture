@@ -1349,3 +1349,17 @@ that both contacts land in the sidebar's business despite a conflicting CSV
 organization column, that a bad row leaves neither row saved, and that choosing
 an inaccessible business still returns 404 without writing. The existing
 =/auth/csv-import-is-all-or-nothing= test covers the default-business path.
+
+* TLS transport fixtures on a loaded host
+
+The complete DEBUG run reproduced =/http-limits/tls-ordinary= failing
+before HTTP dispatch with a terminated TLS handshake. Its one-second
+request deadline also covered TLS backend startup. Completed TLS exchanges
+now use a five-second fixture deadline while retaining their exact 200,
+413 and 408 response assertions and write-count checks. The separate
+stalled-handshake fixture keeps its one-second deadline; plaintext timeout
+and resource-release checks are unchanged. This changes test configuration,
+not production transport limits.
+All 23 =test-http-limits= checks pass with this fixture, including TLS
+ordinary/oversized/slow-body requests, stalled-handshake shutdown, aggregate
+budget release and public form upload bounds.
