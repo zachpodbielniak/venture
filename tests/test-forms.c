@@ -5135,6 +5135,9 @@ test_upload_external_scanner(Fixture *f, gconstpointer data)
 	g_assert_cmpint(g_get_monotonic_time() - started, <, 3 * G_USEC_PER_SEC);
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_SUBMISSION), ==, 0);
+	/* The next cases check scanner exit classifications, not a 100 ms
+	 * scheduling deadline on a loaded host. */
+	g_object_set(f->config, "forms-scanner-timeout-ms", (gint64)5000, NULL);
 	g_assert_true(g_file_set_contents(scanner, "#!/bin/sh\ncat >/dev/null\nexit 1\n", -1, &error));
 	g_assert_cmpuint(upload_post(f, form, "hello", 5, "file.txt", 1, NULL), ==, 422);
 	g_assert_cmpint(count(f, VENTURE_TYPE_FORM_UPLOAD), ==, 0);
