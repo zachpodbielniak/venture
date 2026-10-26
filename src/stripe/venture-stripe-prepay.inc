@@ -272,6 +272,8 @@ prepay_leg(VentureStripeService *self, VentureEntity *group, JsonNode *journal, 
 		request->payment_method = g_strdup(string_member(leg, "method"));
 		request->mandate = g_strdup(string_member(leg, "mandate"));
 		request->payment_kind = !strcmp(path, "wire") ? STRIPE_SAVED_BANK_TRANSFER : !strcmp(path, "ach") ? STRIPE_SAVED_US_BANK : STRIPE_SAVED_CARD;
+		if (request->payment_kind == STRIPE_SAVED_CARD)
+			request->statement_descriptor_suffix = g_strdup(self->descriptor_suffix);
 		request->manual_capture = !strcmp(path, "split");
 		request->metadata_key = g_strdup("prepayment");
 		request->metadata_value = g_strdup_printf("%s:%u", venture_entity_get_uuid(group), slot);

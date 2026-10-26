@@ -33,6 +33,8 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 	gint64 subscription_id;
 	(void)data;
 	json_object_set_string_member(json_node_get_object(settings), "api_version", "2024-06-20");
+	if (data && !g_strcmp0(data, "collection"))
+		json_object_set_string_member(json_node_get_object(settings), "statement_descriptor_suffix", "LIGHTSITE");
 	if (data && !g_strcmp0(data, "bank"))
 	{
 		json_object_set_boolean_member(json_node_get_object(settings), "ach_enabled", TRUE);
@@ -514,6 +516,8 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 			}
 			checkout = venture_stripe_service_collect_invoice(service, invoice_id, NULL, &error);
 			g_assert_no_error(error); g_assert_nonnull(checkout);
+			if (!g_strcmp0(data, "collection"))
+				g_assert_cmpstr(((FakeTransport *)transport)->invoice_suffix, ==, "LIGHTSITE");
 			if (!g_strcmp0(data, "pay-retry"))
 			{
 				g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);

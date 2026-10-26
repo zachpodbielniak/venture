@@ -10,6 +10,7 @@ typedef struct {
 	guint mismatch;
 	gboolean bank, settled, drop_confirmation, drop_refund, wrong_customer;
 	gboolean expire_setup;
+	const gchar *expected_suffix;
 } PrepaidTransport;
 typedef struct { GObjectClass parent; } PrepaidTransportClass;
 GType prepaid_transport_get_type(void);
@@ -37,6 +38,7 @@ static StripeResponse *prepaid_send(StripeTransport *transport, const StripeHttp
 	if (!strcmp(path, "/v1/checkout/sessions") && !strcmp(request->method, "POST")) {
 		g_autofree gchar *session_id = NULL, *method_id = NULL, *setup_id = NULL;
 		JsonObject *setup, *method, *custom, *submit;
+		g_assert_null(g_hash_table_lookup(form, "payment_intent_data[statement_descriptor_suffix]"));
 		if (existing) return prepaid_response(g_hash_table_lookup(self->objects, existing));
 		self->sessions++;
 		session_id = g_strdup_printf("cs_prepaid_%u", self->sessions);
@@ -79,6 +81,7 @@ static StripeResponse *prepaid_send(StripeTransport *transport, const StripeHttp
 		JsonObject *metadata;
 		if (existing) return prepaid_response(g_hash_table_lookup(self->objects, existing));
 		g_assert_cmpstr(g_hash_table_lookup(form, "confirm"), ==, "false");
+		g_assert_cmpstr(g_hash_table_lookup(form, "statement_descriptor_suffix"), ==, self->expected_suffix);
 		self->intents++; intent = g_strdup_printf("pi_prepaid_%u", self->intents);
 		object = json_object_new(); metadata = json_object_new();
 		json_object_set_string_member(object, "id", intent); json_object_set_string_member(object, "customer", g_hash_table_lookup(form, "customer"));

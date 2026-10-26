@@ -154,6 +154,9 @@ drafts, and `venturectl settings`. Hosted deferred enrollment is a thirty-day
 setup window with no charge before go-live (`billing.md`, `api-routes.md`).
 An owner snaps a receipt at `/capture/file` and files it as an expense or a
 supplier bill (`payables.md`).
+A Stripe connection stores an optional statement-descriptor suffix; card
+charges send it as a suffix, and an invoice uses it as the full descriptor
+only at 5 characters or more (`billing.md`).
 Public booking limits use a relay's last `X-Forwarded-For` hop only when
 that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 A company can be a customer and a supplier (`crm.md`). Browser reports

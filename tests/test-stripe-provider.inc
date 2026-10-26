@@ -48,6 +48,8 @@ fake_invoice_send(FakeTransport *self, const StripeHttpRequest *request)
 		g_assert_cmpstr(request->method, ==, "POST");
 		g_assert_cmpstr(g_hash_table_lookup(form, "auto_advance"), ==, "false");
 		g_assert_cmpstr(g_hash_table_lookup(form, "pending_invoice_items_behavior"), ==, "exclude");
+		g_free(self->invoice_suffix);
+		self->invoice_suffix = g_strdup(g_hash_table_lookup(form, "statement_descriptor"));
 		if (prior_id) invoice = g_hash_table_lookup(self->invoices, prior_id);
 		else
 		{

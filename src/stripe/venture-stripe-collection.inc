@@ -169,7 +169,16 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 		g_object_get(checkout, "collection-phase", &phase, "provider-invoice-id", &provider_id, NULL);
 		g_clear_pointer(&request, stripe_request_free); g_clear_pointer(&resource, stripe_resource_free);
 		if (!g_strcmp0(phase, "requested") || stripe_number(VENTURE_ENTITY(checkout), "payment-id")) break;
-		if (!g_strcmp0(phase, "reserved")) { request = stripe_request_new(STRIPE_INVOICE_CREATE); step = "create"; next = "draft"; }
+		if (!g_strcmp0(phase, "reserved"))
+		{
+			request = stripe_request_new(STRIPE_INVOICE_CREATE);
+			/* The invoice field is the full descriptor, which Stripe keeps
+			 * to 5-22 characters. A shorter card suffix still goes out on
+			 * Checkout and saved-card charges. */
+			if (self->descriptor_suffix && strlen(self->descriptor_suffix) >= 5)
+				request->statement_descriptor_suffix = g_strdup(self->descriptor_suffix);
+			step = "create"; next = "draft";
+		}
 		else if (!g_strcmp0(phase, "draft")) { request = stripe_request_new(STRIPE_INVOICE_ITEM_CREATE); step = "item"; next = "itemized"; }
 		else if (!g_strcmp0(phase, "itemized")) { request = stripe_request_new(STRIPE_INVOICE_FINALIZE); step = "finalize"; next = "finalized"; }
 		else if (!g_strcmp0(phase, "finalized") || !g_strcmp0(phase, "paying"))
