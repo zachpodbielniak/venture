@@ -16,7 +16,10 @@ record rules every write obeys are in [records.md](records.md). Source:
 - **Bearer token**: `Authorization: Bearer vk_...`. A token carries the role
   of whoever minted it (there is no scope parameter) and a snapshot of their
   memberships; it acts as `API token #N`. Mint one at *Your account -> API
-  tokens* (`/account/tokens`), or with a session:
+  tokens* (`/account/tokens`) while signed in, or with a session. The page
+  lists only the caller's tokens unless the global role is `owner` or
+  `admin`. A bearer token cannot mint another token. Below those two roles
+  the token expires within 90 days:
 
 ```bash
 curl -s -c jar --data-urlencode username=owner --data-urlencode "password=$PW" "$B/login" -o /dev/null

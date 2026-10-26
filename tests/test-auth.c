@@ -1063,6 +1063,24 @@ server_fixture_create_member(ServerFixture *fixture, const gchar *username,
 		*out_id = id;
 }
 
+static void
+server_fixture_set_organization_role(ServerFixture *fixture, gint64 user_id,
+	VentureOrganizationRole role)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	g_autoptr(GPtrArray) members = NULL;
+	VentureEntity *member;
+
+	g_assert_true(venture_query_add_filter_int(query, "user-id",
+		VENTURE_FILTER_OP_EQ, user_id, NULL));
+	members = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(members);
+	g_assert_cmpuint(members->len, ==, 1);
+	member = g_ptr_array_index(members, 0);
+	g_object_set(member, "role", role, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL, NULL));
+}
+
 /*
  * Signs in over HTTP and returns the session cookie, name=value only.
  */
@@ -3859,18 +3877,18 @@ server_fixture_mint_token(
 }
 
 /*
- * The page is admin-only: it lists and revokes every token, not only the
- * caller's. An editor mints their own token, bound to their own role and
- * memberships, with a session at POST /api/v1/tokens instead
- * (tests/test-account-identity.c).
+ * An editor opens the page for their own tokens. It used to be admin-only
+ * because it listed every credential. "Never" stays an administrator's
+ * option; posting it as an editor does not create a token.
  */
 static void
-test_auth_tokens_page_is_admin_only(
+test_auth_tokens_page_limits_member(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
 	g_autofree gchar *editor_cookie = NULL;
 	g_autofree gchar *admin_cookie = NULL;
+	g_autofree gchar *editor_page = NULL;
 	g_autofree gchar *page = NULL;
 
 	server_fixture_create_member(fixture, "edna", "e-long-password",
@@ -3882,17 +3900,124 @@ test_auth_tokens_page_is_admin_only(
 	admin_cookie = server_fixture_login(fixture, "adam", "a-long-password");
 
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
-		editor_cookie, NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+		editor_cookie, NULL, &editor_page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(editor_page, "never</option>"));
 
-	/* And the POST, not merely the page: refusing to draw the button
-	 * while still honouring the request would protect nothing. */
+	/* Posting the administrator's "never" value must not mint one. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/tokens",
 		editor_cookie, "name=sneaky&expires_in_days=0", NULL, NULL),
-		==, SOUP_STATUS_FORBIDDEN);
+		==, SOUP_STATUS_FOUND);
+	g_clear_pointer(&editor_page, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		editor_cookie, NULL, &editor_page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(editor_page, "sneaky"));
 
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
 		admin_cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
 	g_assert_nonnull(strstr(page, "Mint a token"));
+	g_assert_nonnull(strstr(page, "never</option>"));
+}
+
+/*
+ * A business owner is an editor, not a platform administrator. The page
+ * docs/mcp.org sends them to must mint a token that carries their own role,
+ * expires, and lists only their own credentials. Another person's token
+ * stays invisible and unrevokable, and "never" is not a choice they have.
+ */
+static void
+test_auth_owner_mints_own_token(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *owner_cookie = NULL;
+	g_autofree gchar *admin_cookie = NULL;
+	g_autofree gchar *operator_secret = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *owner_page = NULL;
+	g_autofree gchar *account = NULL;
+	g_autofree gchar *after_forever = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tokens = NULL;
+	g_autoptr(GDateTime) expires_at = NULL;
+	VentureUserRole role = VENTURE_USER_ROLE_VIEWER;
+	gint64 owner_id = 0;
+	gint64 minted_user = 0;
+	gboolean found = FALSE;
+	guint i;
+
+	server_fixture_create_member(fixture, "olivia", "o-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &owner_id);
+	server_fixture_set_organization_role(fixture, owner_id,
+		VENTURE_ORGANIZATION_ROLE_OWNER);
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	owner_cookie = server_fixture_login(fixture, "olivia", "o-long-password");
+	admin_cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	operator_secret = server_fixture_mint_token(fixture, admin_cookie,
+		"name=operator-only&expires_in_days=0", NULL);
+	g_assert_nonnull(operator_secret);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		owner_cookie, NULL, &owner_page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(owner_page, "Mint a token"));
+	g_assert_null(strstr(owner_page, "operator-only"));
+	g_assert_null(strstr(owner_page, "never</option>"));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account",
+		owner_cookie, NULL, &account, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(account, "Manage API"));
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/account/tokens/1/revoke", owner_cookie, "", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, operator_secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_OK);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/tokens",
+		owner_cookie, "name=forever-denied&expires_in_days=0", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		owner_cookie, NULL, &after_forever, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(after_forever, "forever-denied"));
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/tokens",
+		owner_cookie, "name=bad-expiry&expires_in_days=30junk", NULL, NULL),
+		==, SOUP_STATUS_FOUND);
+	g_clear_pointer(&after_forever, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		owner_cookie, NULL, &after_forever, NULL), ==, SOUP_STATUS_OK);
+	g_assert_null(strstr(after_forever, "bad-expiry"));
+
+	secret = server_fixture_mint_token(fixture, owner_cookie,
+		"name=owner-agent&expires_in_days=30", NULL);
+	g_assert_nonnull(secret);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/account/tokens", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_FORBIDDEN);
+
+	query = venture_query_new(VENTURE_TYPE_API_TOKEN);
+	tokens = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(tokens);
+	for (i = 0; i < tokens->len; i++)
+	{
+		g_autofree gchar *name = NULL;
+		VentureEntity *entity = g_ptr_array_index(tokens, i);
+
+		g_object_get(entity, "name", &name, NULL);
+		if (0 != g_strcmp0(name, "owner-agent"))
+			continue;
+		found = TRUE;
+		g_object_get(entity, "role", &role, "expires-at", &expires_at,
+		             "user-id", &minted_user, NULL);
+	}
+	g_assert_true(found);
+	g_assert_cmpint(role, ==, VENTURE_USER_ROLE_EDITOR);
+	g_assert_nonnull(expires_at);
+	g_assert_cmpint(minted_user, ==, owner_id);
 }
 
 /*
@@ -7569,8 +7694,11 @@ main(
 	           server_fixture_set_up, test_auth_pages_refuse_anonymous_requests,
 	           server_fixture_tear_down);
 
-	g_test_add("/auth/tokens-page-is-admin-only", ServerFixture, NULL,
-	           server_fixture_set_up, test_auth_tokens_page_is_admin_only,
+	g_test_add("/auth/tokens-page-limits-member", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_tokens_page_limits_member,
+	           server_fixture_tear_down);
+	g_test_add("/auth/owner-mints-own-token", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_owner_mints_own_token,
 	           server_fixture_tear_down);
 	g_test_add("/auth/tokens-refuse-anonymous", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_tokens_refuse_anonymous,
