@@ -87,7 +87,9 @@ curl -s -H "Authorization: Bearer $VENTURE_TOKEN" "$VENTURE_SERVER/api/v1/schema
 
 If `health` fails, stop and fix that: every other command fails the same
 way and less clearly. A token is minted at `/account/tokens` or `POST
-/api/v1/tokens` with a session ([api.md](references/api.md)).
+/api/v1/tokens` with a browser session ([api.md](references/api.md)).
+Below global `owner`/`admin` it expires within 90 days and the page lists
+only that user's tokens. A bearer token cannot mint another.
 
 ## Skill baseline -- maintained
 

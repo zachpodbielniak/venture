@@ -26,10 +26,12 @@ are in [operations.md](operations.md). Sources: `docs/configuration.org`,
   the account.
 - Global roles `owner`, `admin`, `editor`, `viewer`, `service` (see
   [system.md](system.md)). Tokens: `/account/tokens` or `POST
-  /api/v1/tokens` (`{"name":...}`) with a session; shown once; carry the
-  minter's role and membership snapshot; act as `API token #N`. A token
-  cannot be minted by an editor -- the demo's colleagues comment through
-  `--session-file` for that reason.
+  /api/v1/tokens` (`{"name":...}`) with a browser session; shown once;
+  carry the minter's role and membership snapshot; act as `API token #N`.
+  Below global `owner`/`admin` the token expires (default 30 days, at most
+  90) and the page lists only that user's tokens. A bearer token cannot
+  mint another. The demo's colleagues comment through `--session-file`
+  because a token's actor string is `API token #N`, not their name.
 - `venturectl user mfa reset USER` (an id or username; owner only, audited)
   turns off a user's second factor -- the break-glass path.
 
