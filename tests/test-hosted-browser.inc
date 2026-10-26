@@ -303,3 +303,60 @@ static void test_browser_report_selection(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(exchange(f, "GET", "/reports/receivables", selected, NULL, NULL, NULL, NULL, NULL), ==, 404);
 	g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/receivables?organization_id=invalid", cookie, NULL, NULL, NULL, NULL, NULL), ==, 400);
 }
+
+/* Webhook controls may expose only the current business's destinations and
+ * must retain the owner-only credential boundary after hosted classification. */
+static void test_browser_webhooks(Fixture *f, gconstpointer data)
+{
+	gint64 own, other, editor;
+	g_autoptr(VentureEntity) hook = NULL, foreign = NULL, stored = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *cookie = NULL, *body = NULL, *path = NULL, *payload = NULL;
+	g_autofree gchar *secret = NULL, *editor_token = NULL;
+	(void)data;
+	own = sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", NULL);
+	other = sign_up(f, "other-signup", "other@example.test", "other-owner", "Other Example Co", NULL);
+	hook = g_object_new(VENTURE_TYPE_WEBHOOK, "organization-id", own,
+		"name", "Synthetic own webhook", "url", "https://hooks.example.test/own",
+		"secret", "synthetic-own-secret", "active", FALSE, NULL);
+	foreign = g_object_new(VENTURE_TYPE_WEBHOOK, "organization-id", other,
+		"name", "Synthetic foreign webhook", "url", "https://hooks.example.test/foreign",
+		"secret", "synthetic-foreign-secret", "active", FALSE, NULL);
+	if (!venture_database_save(f->db, hook, NULL, &error))
+		g_error("own webhook setup: %s", error ? error->message : "unknown error");
+	if (!venture_database_save(f->db, foreign, NULL, &error))
+		g_error("foreign webhook setup: %s", error ? error->message : "unknown error");
+	cookie = browser_login(f, "/webhooks");
+	g_assert_cmpuint(exchange(f, "GET", "/webhooks", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "Synthetic own webhook"));
+	g_assert_null(strstr(body, "Synthetic foreign webhook"));
+	g_assert_null(strstr(body, "synthetic-own-secret"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(exchange(f, "GET", "/api/v1/webhooks", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "Synthetic own webhook"));
+	g_assert_null(strstr(body, "Synthetic foreign webhook"));
+	g_assert_null(strstr(body, "synthetic-own-secret"));
+	g_assert_cmpuint(exchange(f, "GET", "/e/webhook/new", cookie, NULL, NULL, NULL, NULL, NULL), ==, 200);
+	payload = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"name\":\"Synthetic created webhook\",\"url\":\"https://hooks.example.test/new\",\"active\":false}", own);
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/webhook", cookie, NULL, "application/json", payload, NULL, NULL), ==, 201);
+	path = g_strdup_printf("/api/v1/webhooks/%" G_GINT64_FORMAT "/secret", venture_entity_get_id(hook));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(exchange(f, "POST", path, cookie, NULL, "application/json", "{\"secret\":\"synthetic-rotated-secret\"}", &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "synthetic-rotated-secret"));
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/webhooks/%" G_GINT64_FORMAT "/secret", venture_entity_get_id(foreign));
+	g_assert_cmpuint(exchange(f, "POST", path, cookie, NULL, "application/json", "{}", NULL, NULL), ==, 404);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/webhook/%" G_GINT64_FORMAT, venture_entity_get_id(foreign));
+	g_assert_cmpuint(exchange(f, "GET", path, cookie, NULL, NULL, NULL, NULL, NULL), ==, 404);
+	stored = venture_database_get(f->db, VENTURE_TYPE_WEBHOOK, venture_entity_get_id(foreign), &error);
+	g_assert_no_error(error); g_assert_nonnull(stored);
+	g_object_get(stored, "secret", &secret, NULL);
+	g_assert_cmpstr(secret, ==, "synthetic-foreign-secret");
+	editor = member_with_password(f, "synthetic-webhook-editor", own, VENTURE_ORGANIZATION_ROLE_EDITOR);
+	editor_token = mint(f->db, editor, VENTURE_USER_ROLE_EDITOR);
+	g_assert_cmpuint(exchange(f, "GET", "/api/v1/webhooks", NULL, editor_token, NULL, NULL, NULL, NULL), ==, 403);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/webhooks/%" G_GINT64_FORMAT "/secret", venture_entity_get_id(hook));
+	g_assert_cmpuint(exchange(f, "POST", path, NULL, editor_token, "application/json", "{}", NULL, NULL), ==, 403);
+}

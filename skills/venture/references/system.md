@@ -117,7 +117,8 @@ record's exact organization, and:
   or a record under an assigned venture). A viewer's create becomes a
   proposal (202) rather than a write.
 - Owner-only on the generic routes: `user`, `api_token`, `forge`,
-  `webhook`, `federation_peer`, `federation_grant`, and the personal
+  `webhook` (a hosted workspace asks that business's owner, not the
+  platform owner), `federation_peer`, `federation_grant`, and the personal
   `chat_thread`, `chat_message`, `notification`, `watch`, `comment` (their
   own routes filter to the caller). Admin-only: `forge_rule`,
   `plugin_config`, writing `currency` or a `data_source`. Mailbox and

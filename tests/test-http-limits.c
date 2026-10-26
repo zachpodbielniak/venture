@@ -116,7 +116,8 @@ static void setup(Fixture *f, gconstpointer data)
 	f->config = venture_config_new();
 	f->tls = data == GINT_TO_POINTER(1) || data == GINT_TO_POINTER(3);
 	/* Completed TLS exchanges may initialize the TLS backend and get five
-	 * seconds. Stalled handshakes and shutdown keep the one-second budget. */
+	 * seconds. Stalled handshakes and shutdown keep the one-second budget.
+	 * Pointer 3 is the completed TLS case; pointer 1 stays the short one. */
 	g_object_set(f->config, "state-dir", f->state, "server-port", (gint64)f->port,
 		"security-require-auth", FALSE, "server-max-request-size-mb", (gint64)1,
 		"server-request-timeout", (gint64)((data == GINT_TO_POINTER(2) || data == GINT_TO_POINTER(3)) ? 5 : 1), "server-max-connections", (gint64)2, "server-max-buffered-request-mb", (gint64)1, NULL);

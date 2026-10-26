@@ -125,7 +125,8 @@ derived), `incident` (`severity` [sev1..sev4], `status`
 `webhook` (**name**, **url**, `format` [venture|gotify|ntfy], `events`
 (patterns), `secret` (sensitive), `priority` (pushes, 0-10),
 `include_record`, `active`, `failure_count`; a push's token is sealed,
-never a field) -- owner-only; and
+never a field) -- owner-only (on a hosted workspace, that business's
+owner; another business's row is not found); and
 `webhook_delivery` (`event`, `state` [pending|succeeded|failed],
 `status_code`, `duration_ms`, `request_body`, `response_excerpt`) --
 read-only evidence.

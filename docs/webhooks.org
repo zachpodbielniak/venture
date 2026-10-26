@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-10-09]
+#+updated: [2026-10-25]
 #+version: 0.6.2
 
 * What this is
@@ -11,6 +11,8 @@
 VENTURE has always accepted webhooks from a git forge. This is the other direction: a record changed here, and something outside wants to know. A =webhook= is a URL, a list of events and a signing secret; every audited change matching one is POSTed to it, signed the way VENTURE signs nothing else and verifies everything it receives, and what happened is kept as a =webhook_delivery=.
 
 The module is =webhooks= and it requires only =core=. Turning it off stops every delivery without deleting anything, which is the switch to reach for when an endpoint is melting.
+
+On a hosted workspace, webhooks and delivery history belong to the business that created them. An owner can manage only that business's destinations from =/webhooks= or the webhook API; an editor cannot list, redirect, test or rotate a webhook's credentials. A different business's webhook remains inaccessible even when its record ID is known.
 
 * Events
 

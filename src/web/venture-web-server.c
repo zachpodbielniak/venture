@@ -905,6 +905,76 @@ venture_web_require_module_ui(
 }
 
 /*
+ * A webhook names where a business's changes are posted and holds the
+ * secret that signs them. On a hosted workspace the business owner is an
+ * ordinary member of the install, so the gate is that organization's
+ * owner role. A self-hosted install keeps the platform owner.
+ */
+static gboolean
+venture_web_webhook_manage(
+	VentureWebServer		*self,
+	HtmxRequest			*request,
+	VentureAuthPrincipal		*principal,
+	gint64				 organization_id,
+	GError				**error
+){
+	static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER };
+	VentureDatabase *database;
+	VentureAccessPolicy *policy;
+	VentureTenantService *service;
+
+	database = venture_context_get_database(self->context);
+	policy = venture_database_get_access_policy(database);
+	service = venture_tenant_service_get(database);
+
+	/* Generic record routes already admitted the caller and have no
+	 * request to classify. The webhook pages pass the request through. */
+	if (NULL != request)
+	{
+		if (!venture_web_hosted_auth_require(self, request, principal,
+		                                     VENTURE_USER_ROLE_VIEWER, error))
+			return FALSE;
+	}
+	else if (!venture_auth_require(self->auth, principal,
+	                               VENTURE_USER_ROLE_VIEWER, error))
+		return FALSE;
+
+	if (!venture_tenant_service_is_enabled(service))
+		return venture_auth_require(self->auth, principal,
+		                            VENTURE_USER_ROLE_OWNER, error);
+
+	/* Support admission was already checked above. */
+	if (venture_tenant_service_get_support_organization(service) > 0)
+		return TRUE;
+
+	if (organization_id <= 0)
+	{
+		g_autoptr(VentureAccessScope) internal = NULL;
+		g_autoptr(VentureEntity) user = NULL;
+
+		internal = venture_access_policy_enter(policy, NULL);
+		user = venture_database_get(database, VENTURE_TYPE_USER,
+		                            principal->user_id, error);
+
+		if (NULL == user)
+			return FALSE;
+
+		g_object_get(user, "organization-id", &organization_id, NULL);
+	}
+
+	if (!venture_access_policy_has_organization_role(policy, principal,
+	        organization_id, roles, G_N_ELEMENTS(roles)))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "Only the business owner can manage webhooks");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
  * Raises the role a request needs when the record type is itself part of
  * access control.
  *
@@ -999,10 +1069,17 @@ venture_web_require_for_type(
 	 * business data is posted to. An editor who could change its URL
 	 * could point every change in the books at a server they control,
 	 * and the staged diff would show nothing but a URL moving. Same
-	 * reasoning as a forge.
+	 * reasoning as a forge. Hosted mode asks the business owner instead
+	 * of the platform owner; that return is above.
 	 */
 	if (VENTURE_TYPE_WEBHOOK == entity_type)
+	{
+		if (venture_tenant_service_is_enabled(venture_tenant_service_get(
+		        venture_context_get_database(self->context))))
+			return venture_web_webhook_manage(self, NULL, principal, 0, error);
+
 		needed = VENTURE_USER_ROLE_OWNER;
+	}
 
 	/*
 	 * A rule decides whether a model runs unattended, which runner it
@@ -33404,11 +33481,9 @@ venture_web_ui_webhooks(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	/* A webhook names the host this install's business data is posted
-	 * to, and holds the secret that signs it. Same reasoning as a
-	 * forge: that is access management, not data entry. */
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_OWNER,
-	                          &error))
+	/* A webhook names the host this business's data is posted to, and
+	 * holds the secret that signs it. The business owner manages it. */
+	if (!venture_web_webhook_manage(self, request, principal, 0, &error))
 		return venture_web_error_response(error);
 
 	node = venture_webhook_describe(self->context, &error);
@@ -33618,7 +33693,9 @@ venture_web_webhook_load(
 
 	if (api)
 	{
-		gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_OWNER);
+		/* Viewer first, so an anonymous call stays unauthenticated.
+		 * The business-owner check is after the record is loaded. */
+		gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
 		if (NULL != gate)
 			return gate;
@@ -33632,16 +33709,17 @@ venture_web_webhook_load(
 	}
 
 	*out_principal = venture_auth_authenticate(self->auth, request);
-
-	if (!venture_web_hosted_auth_require(self, request, *out_principal,
-	                          VENTURE_USER_ROLE_OWNER, &error))
-		return venture_web_error_response(error);
-
 	*out_webhook = venture_database_get(
 		venture_context_get_database(self->context), VENTURE_TYPE_WEBHOOK,
 		g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10), &error);
 
 	if (NULL == *out_webhook)
+		return venture_web_error_response(error);
+
+	/* A foreign id is already not found. A same-business editor can
+	 * read the row and is still refused here. */
+	if (!venture_web_webhook_manage(self, request, *out_principal,
+	        venture_entity_get_organization_id(*out_webhook), &error))
 		return venture_web_error_response(error);
 
 	return NULL;
@@ -33763,6 +33841,7 @@ venture_web_api_webhooks(
 	gpointer	 user_data
 ){
 	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
 	HtmxResponse *gate;
@@ -33774,10 +33853,15 @@ venture_web_api_webhooks(
 	if (NULL != gate)
 		return gate;
 
-	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_OWNER);
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
 
 	if (NULL != gate)
 		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_webhook_manage(self, request, principal, 0, &error))
+		return venture_web_error_response(error);
 
 	node = venture_webhook_describe(self->context, &error);
 
@@ -34633,10 +34717,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/runs/table", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_runs_table, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/incidents/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_incident_ticket, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/e/:type/bulk", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_ui_bulk, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/webhooks", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhooks, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/test", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_test, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_secret, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/webhooks", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhooks, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/test", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_test, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/secret", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/:id/token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_webhook_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tickets/:id/assist", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_assist, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_triage, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/satisfaction", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_satisfaction, self);
@@ -34908,10 +34992,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/runs", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_runs, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/budgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_budgets, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/palette", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_palette, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/webhooks", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhooks, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/test", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_test, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/secret", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_secret, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/token", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/webhooks", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhooks, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/test", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_test, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/secret", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_secret, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/webhooks/:id/token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhook_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/triage", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_triage, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/summary", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_summary, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/draft", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_draft, self);
