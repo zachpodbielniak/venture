@@ -64,6 +64,16 @@ test_descriptor_suffix(Fixture *f, gconstpointer data)
 			f->organization_id, settings, venture_entity_get_version(VENTURE_ENTITY(connection)),
 			venture_entity_get_id(VENTURE_ENTITY(connection)), STRIPE_TRANSPORT(transport), NULL, &error);
 		g_assert_null(rejected); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "letters, digits and spaces"));
+		g_clear_error(&error);
+	}
+	json_object_set_string_member(object, "statement_descriptor_suffix", "1234");
+	{
+		g_autoptr(VentureIntegrationConnection) rejected = venture_stripe_settings_configure(f->database,
+			f->organization_id, settings, venture_entity_get_version(VENTURE_ENTITY(connection)),
+			venture_entity_get_id(VENTURE_ENTITY(connection)), STRIPE_TRANSPORT(transport), NULL, &error);
+		g_assert_null(rejected); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "needs a letter"));
 	}
 }
 

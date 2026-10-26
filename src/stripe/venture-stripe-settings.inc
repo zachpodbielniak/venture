@@ -49,14 +49,23 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 	{
 		JsonNode *node = json_object_get_member(object, "statement_descriptor_suffix");
 		const gchar *p;
+		gboolean letter = FALSE;
 		if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING)
 			return refuse(error, "Statement descriptor suffix must be text");
 		suffix = json_node_get_string(node);
 		if (strlen(suffix) > 22)
 			return refuse(error, "Statement descriptor suffix is too long");
 		for (p = suffix; *p; p++)
+		{
 			if (!g_ascii_isalnum(*p) && *p != ' ')
 				return refuse(error, "Statement descriptor suffix permits letters, digits and spaces");
+			if (g_ascii_isalpha(*p))
+				letter = TRUE;
+		}
+		/* Stripe refuses a suffix with no letter, on the card suffix and on
+		 * the invoice descriptor this name is copied into. */
+		if (*suffix && !letter)
+			return refuse(error, "Statement descriptor suffix needs a letter");
 	}
 	if (json_object_has_member(object, "ach_enabled"))
 	{

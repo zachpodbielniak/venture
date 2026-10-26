@@ -172,7 +172,11 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 		if (!g_strcmp0(phase, "reserved"))
 		{
 			request = stripe_request_new(STRIPE_INVOICE_CREATE);
-			request->statement_descriptor_suffix = g_strdup(self->descriptor_suffix);
+			/* The invoice field is the full descriptor, which Stripe keeps
+			 * to 5-22 characters. A shorter card suffix still goes out on
+			 * Checkout and saved-card charges. */
+			if (self->descriptor_suffix && strlen(self->descriptor_suffix) >= 5)
+				request->statement_descriptor_suffix = g_strdup(self->descriptor_suffix);
 			step = "create"; next = "draft";
 		}
 		else if (!g_strcmp0(phase, "draft")) { request = stripe_request_new(STRIPE_INVOICE_ITEM_CREATE); step = "item"; next = "itemized"; }

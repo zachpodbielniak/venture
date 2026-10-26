@@ -20,14 +20,18 @@ restricted-key account discovery are outside this adapter's contract.
 An optional =statement_descriptor_suffix= names the product on card statements.
 For example, set the billing organization's suffix to =LIGHTSITE= to distinguish
 those charges. Set the account's shortened descriptor prefix in Stripe first.
-The prefix, =* = separator and suffix must fit within 22 characters; the suffix
-accepts ASCII letters, digits and spaces. Venture checks the prefix returned by
-Stripe while saving the connection. An empty suffix leaves Stripe's default.
-The settings page shows the saved suffix and lets the owner change it with
-*Save statement name* without reentering credentials. Hosted
-payment Checkout and saved-card PaymentIntents send it to Stripe; automatically
-collected invoices use Stripe's invoice descriptor equivalent. Setup Checkout
-only collects payment permission and carries no descriptor suffix.
+The prefix, =* = separator and suffix must fit within 22 characters. The suffix
+accepts ASCII letters, digits and spaces, and must contain a letter: Stripe
+refuses a suffix of digits alone. With no prefix on the account, the suffix is
+held to 10 characters, which is what still fits beside a 10-character prefix.
+Venture checks the prefix returned by Stripe while saving the connection. An
+empty suffix leaves Stripe's default. The settings page shows the saved suffix
+and lets the owner change it with *Save statement name* without reentering
+credentials. Hosted payment Checkout and saved-card PaymentIntents send it as
+the card suffix. An automatically collected invoice has no suffix field, so a
+name of at least 5 characters is sent as that invoice's full statement
+descriptor; a shorter name is left off the invoice and Stripe's default stays.
+Setup Checkout only collects payment permission and carries no descriptor suffix.
 
 The settings page supports connect, test, same-account rotation and disconnect.
 Credential inputs are always blank and write-only, including after failure.

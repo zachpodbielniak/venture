@@ -146,6 +146,13 @@ many documents all-or-nothing. A non-admin must name the organization.
 
 ## Stripe (module `stripe`, opt-in)
 
+- **Statement name**: on the connection's settings page, *Save statement
+  name* stores `statement_descriptor_suffix` without reentering credentials
+  (`docs/stripe.org`). ASCII letters, digits and spaces, at least one letter,
+  and the account prefix plus `* ` plus the name must fit in 22 characters
+  (10 when Stripe returns no prefix). Card Checkout and saved-card charges
+  send it as the suffix. An invoice uses it as the full descriptor only when
+  it is at least 5 characters. Empty clears it.
 - **Hosted checkout**: `venturectl invoice checkout ID` returns a Stripe
   Checkout URL for an eligible sent invoice (editor, module on).
 - **Saved-bank collection**: create the charge unconfirmed, then confirm
