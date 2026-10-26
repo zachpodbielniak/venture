@@ -127,10 +127,10 @@ the one inbox, AI on messages, workflow settings) are in it too, against
 Competitor records and win/loss reporting were added on the remaining-gaps
 epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-25 against 27c34e4a -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-26 against c8279bde -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=27c34e4a
+base=c8279bde
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
