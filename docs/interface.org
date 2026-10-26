@@ -23,6 +23,15 @@ The interface is built for somebody running a business between other things, not
 - *Know where you are.* Every record, list and form carries a trail -- "Customers / Contacts" -- read from the same map as the sidebar, and the sidebar opens the group you are in and folds the others.
 - *Derive, never hand-write.* All of the above comes from the field table through one classification (=venture_field_spec_get_role()=). A new record type, or a plugin's, reads this way the day it registers; no page is written per type.
 
+** Importing a spreadsheet
+
+The record list's Import page accepts a CSV and offers a header template.
+Select the destination business in the sidebar before uploading: every row
+belongs to that business, even if the spreadsheet contains an
+=organization_id= column. With no selection or All selected, the installation's
+default business remains the destination. Your role must allow creating those
+records there. Validation or a save failure leaves the entire file unimported.
+
 ** Two looks
 
 There are two designs, and every page exists in both. The switch at the bottom of the sidebar (a form, so it works without scripting) sets a cookie; =ui.look= in the configuration is the default until a browser has chosen.

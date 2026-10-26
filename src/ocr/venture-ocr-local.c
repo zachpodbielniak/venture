@@ -238,7 +238,9 @@ VentureOcrEngine *venture_ocr_local_new(const gchar *executable, guint timeout_m
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "OCR process deadline must be from 1 to 30000 milliseconds"); return NULL;
 	}
 	argv[0] = executable != NULL ? executable : "tesseract"; argv[1] = "--version"; argv[2] = NULL;
-	version = run_process(argv, MIN(timeout_ms, 2000), NULL, error);
+	/* Configuration probing needs time to start even when extraction has a
+	 * deliberately short deadline, as in the timeout test. */
+	version = run_process(argv, 2000, NULL, error);
 	if (version == NULL) return NULL;
 	g_strdelimit(version, "\r\n", ' ');
 	if (strlen(version) > 256) version[256] = '\0';

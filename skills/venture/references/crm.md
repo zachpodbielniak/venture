@@ -189,6 +189,12 @@ Objects: companies, contacts, deals, notes, emails, calls, meetings, tasks,
 plus the additional modules named in `docs/crm-import.org`. Generic writes to
 `crm_import`/`crm_import_row` are refused. See `docs/crm-import.org`.
 
+Browser CSV imports (`/e/contact/import`, and the other record lists) use the
+business selected in the sidebar for every row. A CSV `organization_id` column
+does not override it. No selection or All uses the installation default;
+ordinary organization permissions still apply, and a failed row rolls back the
+whole upload.
+
 ## Competitors on deals
 
 Use `describe competitor` and `describe deal_competitor`, then ordinary

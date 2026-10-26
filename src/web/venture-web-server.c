@@ -7230,9 +7230,13 @@ venture_web_ui_import(
 		    venture_serializable_from_json(VENTURE_SERIALIZABLE(record),
 		                                   values, &row_error))
 		{
-			venture_entity_set_organization_id(record,
-				venture_context_get_default_organization_id(
-					self->context));
+			gint64 organization = venture_web_active_organization(self, request);
+			/* Like a new record form, import into the selected business.
+			 * The CSV cannot override that destination; database save
+			 * still checks the caller's membership and role there. */
+			if (organization == 0)
+				organization = venture_context_get_default_organization_id(self->context);
+			venture_entity_set_organization_id(record, organization);
 
 			if (venture_entity_validate(record, &row_error))
 			{
