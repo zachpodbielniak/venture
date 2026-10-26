@@ -1643,8 +1643,9 @@ than one that fails.
   on the comment. The inbox, `venture_notify_to_json()` and a webhook's
   `record.url` give `/comments/N` for a comment target.
 - **The demo's colleagues post as themselves through `--session-file`.**
-  An editor may not mint a token, and a comment's author is the
-  credential; Bob, Carol and Dave are finance members (the trades they
+  A comment's author is the credential, and a token acts as
+  `API token #N` rather than the person who minted it; Bob, Carol and Dave
+  are finance members (the trades they
   discuss are books) with a random password used once to sign in. A
   body goes on standard input (`comments add TYPE ID -`), never in argv:
   `venturectl` parses argv with GOptionContext, which refuses UTF-8 it
