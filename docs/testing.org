@@ -1117,7 +1117,12 @@ as a public PKCE client does not authenticate with a client secret. Requiring
 an advertised =none= method originally refused this valid handoff. The edit
 page case also checks quote and invoice access as the enrolled owner; it
 caught an internal service instruction leaking into the quote's field help,
-which now describes the owner's actions in plain language.
+which now describes the owner's actions in plain language. The calendar case
+asks =GET /api/v1/calendar= with no organization id and no sidebar cookie.
+Before the fix that read the install's default organization and answered
+404. It now lists the owner's own event, the first page shows Calendar, and
+the calendar page does not show the Venture id box. Another organization's
+id stays unread.
 
 * Hosted invoice payment browser origin
 
