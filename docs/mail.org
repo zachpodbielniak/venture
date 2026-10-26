@@ -189,12 +189,14 @@ Running it.
 
 A hosted workspace (=hosted.enabled: true=) needs no rule. Hosted mode
 does not start the automation engine, so no rule can run there. Instead
-the server sweeps the outbox of every active business every five seconds,
-the same bounded delivery =POST /api/v1/mail/deliver= runs. A business
-with no mail account yet is skipped: its mail stays =queued= and goes out
-once the account is set up, rather than failing. The sweep is
+every five seconds the server runs due sequence steps for every active
+business, which queues the mail, and then sweeps that outbox. Delivery is
+the same bounded pass =POST /api/v1/mail/deliver= runs. A business with no
+mail account yet still runs its sequences: its mail stays =queued= and goes
+out once the account is set up, rather than failing. The sweep is
 =venture_mail_delivery_sweep()=; its timer runs only in hosted mode, and
-only while no automation engine is attached.
+only while no automation engine is attached. There is still no database
+worker thread.
 
 * Invoices and receipts
 
@@ -268,6 +270,12 @@ GMime encodes the attachment bytes; Bcc addresses stay envelope-only.
 - =POST /api/v1/mail/send=: message fields; returns the queued row (202).
 - =POST /api/v1/mail/test=: =to=; one immediate test submission.
 - =POST /api/v1/mail/deliver=: =organization_id= and =limit= (1–1000).
+- =POST /api/v1/mail/connect=: body exactly ={"organization_id":N,"from":"owner@example.test"}=.
+  An organization owner or admin turns on that business's mail. The relay is
+  the operator's one plaintext endpoint, also listed in the allowed endpoints;
+  the request carries no host, port, or password, and the response is only
+  ={"connected":true}=. A missing or extra field, or an address that is not
+  one mailbox, is 422. Zero relays, or more than one, is 409.
 - =POST /api/v1/mail_messages/:id/retry=: deliberate retry, optional organization.
 - =POST /api/v1/invoices/:id/send=: atomic issue/enqueue/event, returns the message.
 - =POST /api/v1/mail/sync=: the inbound sweep; =organization_id= and =limit= (1–1000 accounts).

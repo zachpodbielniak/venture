@@ -297,7 +297,41 @@ static void test_cli_preview(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(request(f, "GET", "/api/v1/mail/preview/alert/1", NULL, &page), ==, 404);
 	g_assert_cmpuint(venture_log_mailer_get_messages(f->mailer)->len, ==, 0);
 }
-int main(int argc, char **argv)
+/* Lightsite turns mail on with the address customers should see. The relay
+ * is the operator's single plaintext endpoint, never something the owner types. */
+static void
+test_connect_one_relay(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autofree gchar *body = NULL, *json = NULL, *bad_from = NULL, *extra = NULL;
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	(void)unused;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	g_assert_no_error(error);
+	g_object_set(f->config, "mail-allowed-endpoints", "127.0.0.1:1025", "mail-plaintext-endpoints", "", NULL);
+	json = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"owner@example.test\"}", org);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, NULL), ==, 409);
+	g_object_set(f->config, "mail-plaintext-endpoints", "127.0.0.1:1025,127.0.0.1:1026", NULL);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, NULL), ==, 409);
+	g_object_set(f->config, "mail-plaintext-endpoints", "127.0.0.1:1025", NULL);
+	bad_from = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"not-an-email\"}", org);
+	extra = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"owner@example.test\",\"host\":\"evil.test\"}", org);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", bad_from, NULL), ==, 422);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", extra, NULL), ==, 422);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "\"connected\""));
+	g_assert_null(strstr(body, "127.0.0.1"));
+	g_assert_null(strstr(body, "password"));
+	g_assert_null(strstr(body, "owner@example.test"));
+	connection = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(connection);
+}
+
+int
+main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/mail-surfaces/cli-delivery", Fixture, NULL, setup, test_cli_delivery, teardown);
@@ -306,6 +340,7 @@ int main(int argc, char **argv)
 	g_test_add("/mail-surfaces/smtp-policy", Fixture, NULL, setup, test_smtp_policy, teardown);
 	g_test_add("/mail-surfaces/inbound-actions", Fixture, NULL, setup, test_inbound_actions, teardown);
 	g_test_add("/mail-surfaces/organization-settings", Fixture, NULL, setup, test_organization_settings, teardown);
+	g_test_add("/mail-surfaces/connect-one-relay", Fixture, NULL, setup, test_connect_one_relay, teardown);
 	g_test_add("/mail-surfaces/cli-preview", Fixture, NULL, setup, test_cli_preview, teardown);
 	return g_test_run();
 }
