@@ -244,7 +244,7 @@ and a =deals_without_decision_maker= metric for a dashboard tile. It reads
 the deals as they stand; the period is not used. It takes
 =organization_id=.
 
-Migration =000963_deal_contact_roles= checks the table's columns; it starts
+Migration =000992_deal_contact_roles= checks the table's columns; it starts
 empty and nothing is backfilled. =test-venture-deal-contact= covers the
 record, the refused second primary (saved and promoted) and the repeated
 person, lead conversion producing exactly one primary, a deleted contact's

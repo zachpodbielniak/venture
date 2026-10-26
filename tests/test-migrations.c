@@ -1871,6 +1871,37 @@ test_jobs_upgrade_restart(void)
 	venture_test_remove_tree(directory);
 }
 
+/* 000980 is already applied on master. History must stay a prefix of the
+ * embedded list, so a script must not take a number between 000958 and
+ * 000980: that install would refuse to start. */
+static void
+test_master_980_stays_a_prefix(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(database,
+		"DELETE FROM schema_migrations WHERE version > 958 AND version < 980", NULL, &error));
+	g_assert_no_error(error);
+	g_clear_object(&database);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	if (!venture_database_migrate(database, venture_entity_registry_get_default(), &error))
+		g_error("master history refused: %s", error->message);
+	g_assert_no_error(error);
+	g_assert_cmpstr(query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version > 958 AND version < 980"), ==, "0");
+	g_assert_cmpstr(query_text(database,
+		"SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 980"), ==, "1");
+	venture_test_remove_tree(directory);
+}
+
 /* Upgrading preserves old documents and never invents a rounding amount. */
 static void
 test_cutover_adjustment_upgrade(void)
@@ -1935,6 +1966,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/token-actor-names", test_token_actor_names);
 	g_test_add_func("/migrations/quote-subscriptions-and-usage", test_quote_subscriptions_and_usage);
 	g_test_add_func("/migrations/cutover-adjustment-upgrade", test_cutover_adjustment_upgrade);
+	g_test_add_func("/migrations/master-980-prefix", test_master_980_stays_a_prefix);
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);

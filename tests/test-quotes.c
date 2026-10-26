@@ -1502,7 +1502,7 @@ test_discount_upgrade(void)
 		"ALTER TABLE organizations DROP COLUMN quote_discount_approval;"
 		"ALTER TABLE organizations DROP COLUMN quote_max_line_discount_percent;"
 		"ALTER TABLE organizations DROP COLUMN quote_discount_approver;"
-		"DELETE FROM schema_migrations WHERE version >= 965", NULL, &error));
+		"DELETE FROM schema_migrations WHERE version >= 994", NULL, &error));
 	g_assert_no_error(error);
 	g_clear_object(&q);
 	g_clear_object(&context);

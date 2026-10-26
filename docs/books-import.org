@@ -84,7 +84,7 @@ organization's cash account, a credit note debits its income account --
 the document posts the ordinary way and a journal linked to the batch moves
 the leg on the same date. Each is one document's correction, never a
 summary. These need the per-line income and discount accounts of invoice
-lines and the expense account of an expense (migration =000956=).
+lines and the expense account of an expense (migration =000988=).
 
 Not imported, and listed on every preview with the reason: Zoho's activity
 log, budgets, tax settings, recurring profiles (their past documents are
