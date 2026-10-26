@@ -163,7 +163,18 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 		json_object_set_string_member(values, "from-name", name != NULL ? g_strstrip(name) : "");
 		selector = venture_organization_mailer_new(venture_context_get_database(self->context),
 			venture_context_get_config(self->context));
-		connection = venture_organization_mailer_configure(selector, org, values, 0, 0, &actor, &error);
+		connection = venture_integration_service_find(venture_integration_service_get(
+			venture_context_get_database(self->context)), org, "smtp", &error);
+		if (error != NULL && !g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG))
+			return venture_web_error_response(error);
+		g_clear_error(&error);
+		{
+			gint64 current_id = connection != NULL ? venture_entity_get_id(VENTURE_ENTITY(connection)) : 0;
+			gint64 current_version = connection != NULL ? venture_entity_get_version(VENTURE_ENTITY(connection)) : 0;
+			g_clear_object(&connection);
+			connection = venture_organization_mailer_configure(selector, org, values,
+				current_version, current_id, &actor, &error);
+		}
 		if (!connection) return venture_web_error_response(error);
 		json_builder_begin_object(result);
 		json_builder_set_member_name(result, "connected");

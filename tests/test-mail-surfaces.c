@@ -304,8 +304,9 @@ test_connect_one_relay(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
-	g_autoptr(VentureIntegrationConnection) connection = NULL;
-	g_autofree gchar *body = NULL, *json = NULL, *bad_from = NULL, *extra = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL, changed = NULL;
+	g_autoptr(JsonNode) settings = NULL;
+	g_autofree gchar *body = NULL, *json = NULL, *bad_from = NULL, *extra = NULL, *new_from = NULL;
 	gint64 org = venture_context_get_default_organization_id(f->context);
 	(void)unused;
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
@@ -328,6 +329,18 @@ test_connect_one_relay(Fixture *f, gconstpointer unused)
 	connection = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(connection);
+	/* A retry and an address change both finish from the same owner screen. */
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, NULL), ==, 200);
+	new_from = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"new-owner@example.test\"}", org);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", new_from, NULL), ==, 200);
+	changed = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(changed);
+	settings = venture_integration_service_resolve_version(venture_integration_service_get(f->db), org,
+		venture_entity_get_id(VENTURE_ENTITY(changed)), venture_entity_get_version(VENTURE_ENTITY(changed)), FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(settings);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "from"), ==, "new-owner@example.test");
 }
 /* Customers see the business as the sender, never the name of the tool. */
 static void

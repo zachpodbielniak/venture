@@ -97,7 +97,7 @@ supply a local CA/DKIM file, another transport's endpoint or an environment
 variable reference. Passwords beginning =env:= are literal passwords.
 Certificates are verified. =starttls= and =implicit= TLS are supported;
 unencrypted SMTP is refused unless the operator explicitly grants the
-staging-only endpoint exception described below. The socket I/O timeout is at most 30 seconds,
+operator-owned relay endpoint exception described below. The socket I/O timeout is at most 30 seconds,
 and mail-glib retries are zero because the outbox owns retry decisions.
 
 As an organization owner/admin, open *Mail settings* on its record, or
@@ -275,7 +275,8 @@ GMime encodes the attachment bytes; Bcc addresses stay envelope-only.
   the operator's one plaintext endpoint, also listed in the allowed endpoints;
   the request carries no host, port, or password, and the response is only
   ={"connected":true}=. A missing or extra field, or an address that is not
-  one mailbox, is 422. Zero relays, or more than one, is 409.
+  one mailbox, is 422. Zero relays, or more than one, is 409. Repeating the
+  request is safe; using a new address updates the sender for later mail.
 - =POST /api/v1/mail_messages/:id/retry=: deliberate retry, optional organization.
 - =POST /api/v1/invoices/:id/send=: atomic issue/enqueue/event, returns the message.
 - =POST /api/v1/mail/sync=: the inbound sweep; =organization_id= and =limit= (1–1000 accounts).

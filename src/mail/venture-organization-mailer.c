@@ -12,7 +12,7 @@ typedef struct {
 static const SettingField fields[] = {
 	{ "host", "Relay hostname", NULL, FALSE, FALSE },
 	{ "port", "Relay port", "587", TRUE, FALSE },
-	{ "tls", "TLS mode (starttls, implicit; staging-only none)", "starttls", FALSE, FALSE },
+	{ "tls", "TLS mode (starttls, implicit; operator-approved relay only for none)", "starttls", FALSE, FALSE },
 	{ "auth", "Authentication (plain, login or none)", "plain", FALSE, FALSE },
 	{ "username", "Account username", NULL, FALSE, TRUE },
 	{ "password", "Account password", NULL, FALSE, TRUE },

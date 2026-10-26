@@ -33,10 +33,10 @@ mail_delivery_run_sequences(VentureContext *context, gint64 organization)
 	gint ran;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") == G_TYPE_INVALID)
 		return;
+	if (!venture_context_module_enabled(context, "sequences")) return;
 	ran = venture_sequence_service_run_due(venture_sequence_service_get(
 		venture_context_get_database(context)), organization, now, NULL, &error);
-	if (ran < 0 && !(error && error->code == VENTURE_ERROR_NOT_FOUND &&
-		!g_strcmp0(error->message, "The sequences module is disabled")))
+	if (ran < 0)
 		g_warning("Sequence sweep for organization %" G_GINT64_FORMAT ": %s",
 			organization, error ? error->message : "failed");
 }
