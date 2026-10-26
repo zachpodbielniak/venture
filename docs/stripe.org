@@ -17,6 +17,18 @@ without credentials. The adapter verifies the account through authenticated
 =GET /v1/account= before encrypting settings. Stripe Connect delegation and
 restricted-key account discovery are outside this adapter's contract.
 
+An optional =statement_descriptor_suffix= names the product on card statements.
+For example, set the billing organization's suffix to =LIGHTSITE= to distinguish
+those charges. Set the account's shortened descriptor prefix in Stripe first.
+The prefix, =* = separator and suffix must fit within 22 characters; the suffix
+accepts ASCII letters, digits and spaces. Venture checks the prefix returned by
+Stripe while saving the connection. An empty suffix leaves Stripe's default.
+The settings page shows the saved suffix and lets the owner change it with
+*Save statement name* without reentering credentials. Hosted
+payment Checkout and saved-card PaymentIntents send it to Stripe; automatically
+collected invoices use Stripe's invoice descriptor equivalent. Setup Checkout
+only collects payment permission and carries no descriptor suffix.
+
 The settings page supports connect, test, same-account rotation and disconnect.
 Credential inputs are always blank and write-only, including after failure.
 The page shows account/environment identity and its exact webhook endpoint.

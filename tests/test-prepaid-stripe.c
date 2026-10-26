@@ -54,6 +54,11 @@ static void prepaid_setup(Fixture *f, gconstpointer data)
 		json_array_add_int_element(shares, 500); json_array_add_int_element(shares, 700); json_array_add_int_element(shares, 800);
 	}
 	json_object_set_string_member(json_node_get_object(settings), "api_version", "2024-06-20");
+	if (!strcmp(scenario, "single"))
+	{
+		json_object_set_string_member(json_node_get_object(settings), "statement_descriptor_suffix", "LIGHTSITE");
+		fixture->expected_suffix = "LIGHTSITE";
+	}
 	json_object_set_boolean_member(json_node_get_object(settings), "ach_enabled", TRUE);
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->database), key, &error));
 	connection = venture_stripe_settings_configure(f->database, f->organization_id, settings, 0, 0, STRIPE_TRANSPORT(transport), NULL, &error);

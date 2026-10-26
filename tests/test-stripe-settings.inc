@@ -25,6 +25,48 @@ binding_signature(const gchar *body, const gchar *secret)
 	return g_strdup_printf("t=%" G_GINT64_FORMAT ",v1=%s", timestamp, mac);
 }
 
+static void
+test_descriptor_suffix(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(JsonNode) settings = binding_settings("whsec_descriptor");
+	g_autoptr(GBytes) encryption_key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(VentureStripeService) service = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureStripeCheckout) checkout = NULL;
+	JsonObject *object = json_node_get_object(settings);
+	(void)data;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->database), encryption_key, &error));
+	json_object_set_string_member(object, "statement_descriptor_suffix", "LIGHTSITE");
+	connection = venture_stripe_settings_configure(f->database, f->organization_id, settings,
+		0, 0, STRIPE_TRANSPORT(transport), NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(connection);
+	service = venture_stripe_service_for_organization(f->database, f->organization_id,
+		STRIPE_TRANSPORT(transport), &error);
+	g_assert_no_error(error); g_assert_nonnull(service);
+	invoice = invoice_new(f, "descriptor-invoice", "2026-01-01", "100 USD");
+	checkout = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(checkout);
+	g_assert_cmpstr(((FakeTransport *)transport)->checkout_suffix, ==, "LIGHTSITE");
+	json_object_set_string_member(object, "statement_descriptor_suffix", "TOO LONG FOR VENDOR");
+	{
+		g_autoptr(VentureIntegrationConnection) rejected = venture_stripe_settings_configure(f->database,
+			f->organization_id, settings, venture_entity_get_version(VENTURE_ENTITY(connection)),
+			venture_entity_get_id(VENTURE_ENTITY(connection)), STRIPE_TRANSPORT(transport), NULL, &error);
+		g_assert_null(rejected); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+	}
+	json_object_set_string_member(object, "statement_descriptor_suffix", "BAD*");
+	{
+		g_autoptr(VentureIntegrationConnection) rejected = venture_stripe_settings_configure(f->database,
+			f->organization_id, settings, venture_entity_get_version(VENTURE_ENTITY(connection)),
+			venture_entity_get_id(VENTURE_ENTITY(connection)), STRIPE_TRANSPORT(transport), NULL, &error);
+		g_assert_null(rejected); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	}
+}
+
 static gboolean
 binding_event(VentureStripeService *service, const gchar *id, const gchar *secret,
 	gboolean live, const gchar *account, GError **error)
@@ -51,6 +93,8 @@ test_binding(Fixture *f, gconstpointer data)
 	g_autoptr(VentureStripeCheckout) checkout = NULL;
 	gint64 id;
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->database), encryption_key, &error));
+	if (!strcmp(mode, "settings-ui"))
+		json_object_set_string_member(json_node_get_object(settings), "statement_descriptor_suffix", "LIGHTSITE");
 	connection = venture_stripe_settings_configure(f->database, f->organization_id, settings, 0, 0, STRIPE_TRANSPORT(transport), NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(connection);
@@ -73,8 +117,23 @@ test_binding(Fixture *f, gconstpointer data)
 		}
 		g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);
 		g_assert_nonnull(strstr(body, "acct_offline"));
+		g_assert_nonnull(strstr(body, "Name on card statements"));
+		g_assert_nonnull(strstr(body, "Save statement name"));
+		g_assert_nonnull(strstr(body, "Save statement name</button></form>"));
+		g_assert_true(strstr(body, "Save statement name</button></form>") <
+			strstr(body, "Credentials are write-only"));
+		g_assert_nonnull(strstr(body, "LIGHTSITE"));
 		g_assert_null(strstr(body, "whsec_original"));
 		g_assert_null(strstr(body, "sk_test_fixture_only"));
+		{
+			g_autofree gchar *edit = g_strdup_printf("operation=descriptor&version=%" G_GINT64_FORMAT
+				"&connection_id=%" G_GINT64_FORMAT "&statement_descriptor_suffix=BAD%%2A",
+				venture_entity_get_version(VENTURE_ENTITY(connection)), id);
+			g_clear_pointer(&body, g_free);
+			g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", edit, &body), ==, 400);
+			g_assert_nonnull(strstr(body, "letters, digits and spaces"));
+			g_assert_nonnull(strstr(body, "LIGHTSITE"));
+		}
 		g_clear_pointer(&body, g_free);
 		g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", "operation=configure&secret_key=do-not-echo", &body), ==, 400);
 		g_assert_null(strstr(body, "do-not-echo"));

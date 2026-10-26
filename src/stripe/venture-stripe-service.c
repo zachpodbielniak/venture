@@ -20,6 +20,7 @@ struct _VentureStripeService
 	gchar *api_version;
 	gchar *success_url;
 	gchar *cancel_url;
+	gchar *descriptor_suffix;
 	gboolean ach_enabled;
 };
 G_DEFINE_TYPE(VentureStripeService, venture_stripe_service, G_TYPE_OBJECT)
@@ -164,6 +165,7 @@ finalize(GObject *object)
 	g_free(self->api_version);
 	g_free(self->success_url);
 	g_free(self->cancel_url);
+	g_free(self->descriptor_suffix);
 	G_OBJECT_CLASS(venture_stripe_service_parent_class)->finalize(object);
 }
 

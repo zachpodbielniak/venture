@@ -40,10 +40,24 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 	g_autoptr(StripeClient) client = NULL;
 	g_autofree gchar *yaml = NULL;
 	JsonObject *object;
+	const gchar *suffix = NULL;
 	guint i;
 	if (!settings || !JSON_NODE_HOLDS_OBJECT(settings))
 		return refuse(error, "Stripe settings must be an object");
 	object = json_node_get_object(settings);
+	if (json_object_has_member(object, "statement_descriptor_suffix"))
+	{
+		JsonNode *node = json_object_get_member(object, "statement_descriptor_suffix");
+		const gchar *p;
+		if (!JSON_NODE_HOLDS_VALUE(node) || json_node_get_value_type(node) != G_TYPE_STRING)
+			return refuse(error, "Statement descriptor suffix must be text");
+		suffix = json_node_get_string(node);
+		if (strlen(suffix) > 22)
+			return refuse(error, "Statement descriptor suffix is too long");
+		for (p = suffix; *p; p++)
+			if (!g_ascii_isalnum(*p) && *p != ' ')
+				return refuse(error, "Statement descriptor suffix permits letters, digits and spaces");
+	}
 	if (json_object_has_member(object, "ach_enabled"))
 	{
 		JsonNode *node = json_object_get_member(object, "ach_enabled");
@@ -86,6 +100,8 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 	self->cancel_url = g_strdup(values[5]);
 	g_free(self->environment);
 	self->environment = g_strdup(values[6]);
+	g_free(self->descriptor_suffix);
+	self->descriptor_suffix = suffix && *suffix ? g_strdup(suffix) : NULL;
 	g_signal_connect(self->client, "event", G_CALLBACK(audit_event), self);
 	return TRUE;
 }
@@ -95,6 +111,7 @@ settings_verify_account(VentureStripeService *self, GError **error)
 {
 	g_autoptr(StripeRequest) request = stripe_request_new(STRIPE_ACCOUNT_RETRIEVE);
 	g_autoptr(StripeResource) resource = stripe_client_execute(self->client, request, NULL, NULL);
+	g_autoptr(JsonObject) details = NULL;
 	const gchar *account;
 	if (!resource)
 	{
@@ -106,6 +123,24 @@ settings_verify_account(VentureStripeService *self, GError **error)
 	{
 		refuse(error, "Stripe account verification returned no account identity");
 		return NULL;
+	}
+	if (self->descriptor_suffix)
+	{
+		JsonObject *settings = NULL, *card = NULL;
+		JsonNode *node;
+		const gchar *prefix = NULL;
+		details = stripe_resource_get_json(resource);
+		node = details ? json_object_get_member(details, "settings") : NULL;
+		if (node && JSON_NODE_HOLDS_OBJECT(node)) settings = json_node_get_object(node);
+		node = settings ? json_object_get_member(settings, "card_payments") : NULL;
+		if (node && JSON_NODE_HOLDS_OBJECT(node)) card = json_node_get_object(node);
+		if (card) prefix = settings_string(card, "statement_descriptor_prefix");
+		if ((prefix && *prefix && strlen(prefix) + 2 + strlen(self->descriptor_suffix) > 22) ||
+			((!prefix || !*prefix) && strlen(self->descriptor_suffix) > 10))
+		{
+			refuse(error, "Statement descriptor suffix and account prefix exceed Stripe's 22-character limit");
+			return NULL;
+		}
 	}
 	return g_strdup(account);
 }

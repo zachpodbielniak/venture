@@ -196,6 +196,7 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 	request->success_url = g_steal_pointer(&success_url);
 	request->cancel_url = g_steal_pointer(&cancel_url);
 	request->payment_methods = ach ? STRIPE_CHECKOUT_CARD_AND_US_BANK : STRIPE_CHECKOUT_CARD;
+	request->statement_descriptor_suffix = g_strdup(self->descriptor_suffix);
 	g_free(request->idempotency_key);
 	request->idempotency_key = g_strdup_printf("venture-checkout-%s", venture_entity_get_uuid(VENTURE_ENTITY(checkout)));
 	resource = stripe_client_execute(self->client, request, NULL, error);

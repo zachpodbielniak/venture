@@ -315,7 +315,7 @@ test_missing_key(void)
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; gchar *checkout_suffix; gchar *invoice_suffix; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
 	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live; gchar *last_invoice_id; guint invoice_count, payment_calls;
 	gint64 refund_amount; guint refund_creates; gboolean drop_refund; gchar *refund_key, *refund_intent; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
@@ -333,7 +333,7 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	self->calls++;
 	if (g_str_has_suffix(request->url, "/account"))
 	{
-		g_autofree gchar *body = g_strdup_printf("{\"id\":\"%s\",\"object\":\"account\"}", self->account_id ? self->account_id : "acct_offline");
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"%s\",\"object\":\"account\",\"settings\":{\"card_payments\":{\"statement_descriptor_prefix\":\"VENDOR\"}}}", self->account_id ? self->account_id : "acct_offline");
 		g_assert_cmpstr(request->method, ==, "GET");
 		return stripe_response_new(200, body, NULL, NULL);
 	}
@@ -411,6 +411,8 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	self->checkout_ach = strstr(request->body, "us_bank_account") != NULL;
 	{
 		g_autoptr(GHashTable) form = soup_form_decode(request->body);
+		g_free(self->checkout_suffix);
+		self->checkout_suffix = g_strdup(g_hash_table_lookup(form, "payment_intent_data[statement_descriptor_suffix]"));
 		g_free(self->deadline);
 		self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
 		if (self->early_service)
@@ -441,6 +443,8 @@ static void fake_finalize(GObject *object)
 	g_free(((FakeTransport *)object)->deadline);
 	g_free(((FakeTransport *)object)->setup_reference);
 	g_free(((FakeTransport *)object)->setup_consent);
+	g_free(((FakeTransport *)object)->checkout_suffix);
+	g_free(((FakeTransport *)object)->invoice_suffix);
 	g_free(((FakeTransport *)object)->last_invoice_id);
 	g_free(((FakeTransport *)object)->refund_key);
 	g_free(((FakeTransport *)object)->refund_intent);
@@ -913,7 +917,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "a871a247aca422ebdd4c40b0c766fa1cbaa763f1");
+		g_assert_cmpstr(g_strstrip(out), ==, "39e4805526f93a897c2a0e8004626efbe692817d");
 	}
 }
 
@@ -1209,6 +1213,7 @@ main(int argc, char **argv)
 	g_test_add_func("/stripe/account-binding-metadata", test_account_binding_metadata);
 	g_test_add("/stripe/binding-organizations", Fixture, NULL, set_up, test_binding_organizations, tear_down);
 	g_test_add("/stripe/binding-settings-ui", Fixture, "settings-ui", set_up, test_binding, tear_down);
+	g_test_add("/stripe/descriptor-suffix", Fixture, NULL, set_up, test_descriptor_suffix, tear_down);
 	g_test_add("/stripe/binding-migration", Fixture, NULL, set_up, test_binding_migration, tear_down);
 	g_test_add("/stripe/binding-rotation", Fixture, "rotation", set_up, test_binding, tear_down);
 	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);

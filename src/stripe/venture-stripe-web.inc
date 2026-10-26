@@ -11,10 +11,13 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureIntegrationConnection) connection = NULL;
 	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(JsonNode) stored_settings = NULL;
 	g_autoptr(GString) content = g_string_new("<h1>Stripe settings</h1>");
 	g_autoptr(GError) error = NULL;
+	g_autoptr(GError) read_error = NULL;
 	g_autofree gchar *account = NULL;
 	g_autofree gchar *environment = NULL;
+	const gchar *suffix = NULL;
 	gint64 id = g_ascii_strtoll(g_hash_table_lookup(params, "id"), NULL, 10);
 	gint64 version = 0;
 	guint i;
@@ -52,7 +55,29 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 				const gchar *value = htmx_request_get_form_value(request, fields[i]);
 				json_object_set_string_member(object, fields[i], value ? value : "");
 			}
+			json_object_set_string_member(object, "statement_descriptor_suffix",
+				htmx_request_get_form_value(request, "statement_descriptor_suffix") ?
+				htmx_request_get_form_value(request, "statement_descriptor_suffix") : "");
 			connection = venture_stripe_settings_configure(database, id, settings, version, expected_connection, NULL, &actor, &error);
+		}
+		else if (!g_strcmp0(operation, "descriptor"))
+		{
+			g_autoptr(VentureIntegrationConnection) current = venture_integration_service_find(integrations, id, "stripe", &error);
+			g_autoptr(JsonNode) settings = NULL;
+			if (current && venture_entity_get_id(VENTURE_ENTITY(current)) != expected_connection)
+				g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+					"Stripe connection changed; reload settings before retrying");
+			if (current && !error)
+				settings = venture_integration_service_resolve_version(integrations, id,
+					expected_connection, version, FALSE, &error);
+			if (settings)
+			{
+				const gchar *value = htmx_request_get_form_value(request, "statement_descriptor_suffix");
+				json_object_set_string_member(json_node_get_object(settings),
+					"statement_descriptor_suffix", value ? value : "");
+				connection = venture_stripe_settings_configure(database, id, settings,
+					version, expected_connection, NULL, &actor, &error);
+			}
 		}
 		else if (!g_strcmp0(operation, "test"))
 		{
@@ -79,6 +104,14 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 	version = connection ? venture_entity_get_version(VENTURE_ENTITY(connection)) : 0;
 	if (connection)
 	{
+		JsonNode *suffix_node;
+		stored_settings = venture_integration_service_resolve_version(integrations, id,
+			venture_entity_get_id(VENTURE_ENTITY(connection)), version, FALSE, &read_error);
+		if (!stored_settings) return venture_web_error_response(read_error);
+		suffix_node = json_object_get_member(json_node_get_object(stored_settings), "statement_descriptor_suffix");
+		if (suffix_node && JSON_NODE_HOLDS_VALUE(suffix_node) &&
+			json_node_get_value_type(suffix_node) == G_TYPE_STRING)
+			suffix = json_node_get_string(suffix_node);
 		g_object_get(connection, "account-id", &account, "environment", &environment, NULL);
 		g_string_append(content, "<p>Connected account: ");
 		venture_html_escape_append(content, account);
@@ -87,14 +120,23 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 		g_string_append_printf(content, "</p><p>Webhook path: <code>/webhooks/stripe/%" G_GINT64_FORMAT "</code></p>", venture_entity_get_id(VENTURE_ENTITY(connection)));
 	}
 	else g_string_append(content, "<p>No Stripe account is connected to this organization.</p>");
+	if (connection)
+	{
+		g_string_append_printf(content, "<form method=\"post\"><input type=\"hidden\" name=\"version\" value=\"%" G_GINT64_FORMAT "\"><input type=\"hidden\" name=\"connection_id\" value=\"%" G_GINT64_FORMAT "\"><label>Name on card statements<input name=\"statement_descriptor_suffix\" maxlength=\"22\" value=\"", version, venture_entity_get_id(VENTURE_ENTITY(connection)));
+		venture_html_escape_append(content, suffix ? suffix : "");
+		g_string_append(content, "\"></label><p>Stripe calls this a statement descriptor suffix. The shortened account prefix, separator and name must fit within 22 characters. Leave it empty for Stripe's default.</p><button name=\"operation\" value=\"descriptor\">Save statement name</button></form>");
+	}
 	g_string_append(content, "<p>Credentials are write-only. Supply all values when connecting or rotating. To change account or environment, disconnect first.</p><form method=\"post\">");
 	g_string_append_printf(content, "<input type=\"hidden\" name=\"version\" value=\"%" G_GINT64_FORMAT "\">", version);
 	g_string_append_printf(content, "<input type=\"hidden\" name=\"connection_id\" value=\"%" G_GINT64_FORMAT "\">", connection ? venture_entity_get_id(VENTURE_ENTITY(connection)) : 0);
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)
 	{
-		g_string_append_printf(content, "<label>%s<input name=\"%s\" type=\"%s\" autocomplete=\"off\"></label>", labels[i], fields[i], i < 3 ? "password" : "text");
+		g_string_append_printf(content, "<label>%s<input name=\"%s\" type=\"%s\" autocomplete=\"off\"></label>",
+			labels[i], fields[i], i < 3 ? "password" : "text");
 	}
-	g_string_append(content, "<label><input type=\"checkbox\" name=\"ach_enabled\">Offer ACH debit alongside cards for USD invoices of at least $0.50</label><p>Enable ACH Direct Debit in Stripe first. Supply this choice again when rotating credentials. Bank verification and mandate acceptance take place on Stripe Checkout.</p><p>Environment: test or live. Return URLs: HTTPS. API version: your pinned Stripe API version.</p><button name=\"operation\" value=\"configure\">Connect or rotate</button>");
+	g_string_append(content, "<input type=\"hidden\" name=\"statement_descriptor_suffix\" value=\"");
+	venture_html_escape_append(content, suffix ? suffix : "");
+	g_string_append(content, "\"><label><input type=\"checkbox\" name=\"ach_enabled\">Offer ACH debit alongside cards for USD invoices of at least $0.50</label><p>Enable ACH Direct Debit in Stripe first. Supply this choice again when rotating credentials. Bank verification and mandate acceptance take place on Stripe Checkout.</p><p>Environment: test or live. Return URLs: HTTPS. API version: your pinned Stripe API version.</p><button name=\"operation\" value=\"configure\">Connect or rotate</button>");
 	if (connection) g_string_append(content, "<button name=\"operation\" value=\"test\">Test connection</button><button name=\"operation\" value=\"disconnect\">Disconnect</button>");
 	g_string_append(content, "</form>");
 	return venture_web_html_response(venture_web_page(self, request, "/organizations", "Stripe settings", content->str), error ? 400 : 200);
