@@ -1962,7 +1962,10 @@ static void test_sync_since(Fixture *f, gconstpointer data)
  * must never import another business's reply, even with a matching contact. */
 static void test_reply_alias_scope(Fixture *f, gconstpointer data)
 {
-	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(VentureEntity) a = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org,
+		"address", "ops@venture.test", "imap-host", "imap.venture.test", "imap-port", (gint64)993,
+		"imap-tls", "tls", "username", "ops@venture.test", "folders", "INBOX",
+		"reply-alias-prefix", "r-first+", "active", TRUE, NULL);
 	g_autoptr(VentureQuery) scheduled = venture_query_new(VENTURE_TYPE_MAIL_ACCOUNT);
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GPtrArray) inbound = NULL, due = NULL;
@@ -1974,8 +1977,8 @@ static void test_reply_alias_scope(Fixture *f, gconstpointer data)
 	g_autofree gchar *forged = mail("Ada <ada@example.test>", "r-first+3@lightsite.app", "Re: Booking", "forged@example.test",
 		"X-Original-To: replies@lightsite.app\r\nX-Original-To: r-first+3@lightsite.app\r\n", "Forged delivery header.");
 	(void)data;
-	g_object_set(a, "reply-alias-prefix", "r-first+", NULL);
 	save(f, a);
+	configure_account(f, a, "app-password");
 	venture_query_add_filter_string(scheduled, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
 	venture_query_add_filter_string(scheduled, "reply-alias-prefix", VENTURE_FILTER_OP_NE, "", NULL);
 	due = venture_database_find(f->db, scheduled, &error);
