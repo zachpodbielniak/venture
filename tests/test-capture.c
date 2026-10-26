@@ -378,15 +378,19 @@ static void
 test_owner_snap_signed_out(WebFixture *f, gconstpointer unused)
 {
 	g_autofree gchar *location = NULL;
+	g_autoptr(GBytes) empty = NULL;
+	g_autoptr(GBytes) expense = NULL;
 
 	(void)unused;
+	empty = g_bytes_new_static("", 0);
+	expense = g_bytes_new_static("as=expense", 10);
 	g_assert_true(f->require_auth);
 	g_assert_cmpuint(web_request(f, "GET", "/capture/file", NULL, NULL, NULL, &location), ==, 302);
 	g_assert_cmpstr(location, ==, "/login");
 	g_free(location);
 	location = NULL;
 	g_assert_cmpuint(web_request(f, "POST", "/capture/file", "multipart/form-data; boundary=SNAPBND",
-		g_bytes_new_static("", 0), NULL, &location), ==, 302);
+		empty, NULL, &location), ==, 302);
 	g_assert_cmpstr(location, ==, "/login");
 	g_free(location);
 	location = NULL;
@@ -399,7 +403,7 @@ test_owner_snap_signed_out(WebFixture *f, gconstpointer unused)
 	g_free(location);
 	location = NULL;
 	g_assert_cmpuint(web_request(f, "POST", "/capture/items/1/file-as",
-		"application/x-www-form-urlencoded", g_bytes_new_static("as=expense", 10), NULL, &location), ==, 302);
+		"application/x-www-form-urlencoded", expense, NULL, &location), ==, 302);
 	g_assert_cmpstr(location, ==, "/login");
 }
 

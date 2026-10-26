@@ -18,25 +18,6 @@ capture_see_other(const gchar *path)
 }
 
 static HtmxResponse *
-capture_fail(VentureWebServer *self, HtmxRequest *request, const GError *error)
-{
-	g_autoptr(GString) content = NULL;
-	const gchar *message;
-	guint status;
-
-	message = (error != NULL && error->message != NULL)
-		? error->message : "Could not file that receipt";
-	status = (error != NULL) ? venture_error_to_http_status((VentureError)error->code) : 500;
-	if (error != NULL && error->domain != VENTURE_ERROR)
-		status = 500;
-	content = g_string_new("<div class=\"card\"><p>");
-	venture_html_escape_append(content, message);
-	g_string_append(content, "</p><p><a href=\"/capture\">Back to the inbox</a></p></div>");
-	return venture_web_html_response(
-		venture_web_page(self, request, "/capture", "Capture", content->str), status);
-}
-
-static HtmxResponse *
 capture_gate(VentureWebServer *self, HtmxRequest *request, gboolean write)
 {
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
@@ -53,7 +34,7 @@ capture_gate(VentureWebServer *self, HtmxRequest *request, gboolean write)
 		return NULL;
 	principal = venture_auth_authenticate(self->auth, request);
 	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_EDITOR, &error))
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	return NULL;
 }
 
@@ -421,13 +402,13 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 		htmx_request_get_content_type(request),
 		htmx_request_get_body_bytes(request), &form, &error);
 	if (files == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	photo = capture_photo_part(files);
 	if (photo == NULL)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Choose a photo of the receipt");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	if (htmx_uploaded_file_get_size(photo) == 0 ||
 	    htmx_uploaded_file_get_size(photo) > VENTURE_WEB_ATTACHMENT_MAX_BYTES)
@@ -435,7 +416,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"That file is empty or over the %d MB limit",
 			VENTURE_WEB_ATTACHMENT_MAX_BYTES / (1024 * 1024));
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	filename = htmx_uploaded_file_get_filename(photo);
 	if (venture_string_is_empty(filename))
@@ -445,7 +426,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Use a photo or a PDF. SVG files are not accepted");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	kind = capture_form_text(form, "kind");
 	if (venture_string_is_empty(kind))
@@ -454,7 +435,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"File this as a receipt or a supplier bill");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	title = capture_form_text(form, "title");
 	if (venture_string_is_empty(title))
@@ -467,7 +448,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Pick a business before filing a receipt");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	amount_text = capture_form_text(form, "amount");
 	if (!venture_string_is_empty(amount_text))
@@ -476,7 +457,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 			venture_context_get_database(self->context), organization_id);
 		amount = venture_money_from_string(amount_text, book, &error);
 		if (amount == NULL)
-			return capture_fail(self, request, error);
+			return venture_web_error_response(error);
 	}
 	date_text = capture_form_text(form, "date");
 	if (venture_string_is_empty(date_text))
@@ -485,7 +466,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	{
 		when = venture_time_from_string(date_text, &error);
 		if (when == NULL)
-			return capture_fail(self, request, error);
+			return venture_web_error_response(error);
 	}
 	/* Bytes land only after the picture, amount and date are acceptable. */
 	safe_name = g_strcanon(g_strdup(filename),
@@ -498,11 +479,11 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (g_mkdir_with_parents(directory, 0700) != 0)
 	{
 		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "Cannot create %s", directory);
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	path = g_build_filename(directory, stored_name, NULL);
 	if (!htmx_uploaded_file_save(photo, path, &error))
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	bytes = htmx_uploaded_file_get_data(photo);
 	checksum = g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, bytes);
 	extracted = venture_document_extract_text(
@@ -525,7 +506,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 		document, directory, &actor, &error))
 	{
 		g_unlink(path);
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	item = venture_capture_service_ingest_for_organization(
 		venture_capture_service_get(venture_context_get_database(self->context)),
@@ -533,7 +514,7 @@ capture_file_post(HtmxRequest *request, GHashTable *params, gpointer data)
 		venture_string_is_empty(vendor) ? NULL : vendor,
 		amount, when, NULL, &actor, &error);
 	if (item == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	location = g_strdup_printf("/capture/items/%" G_GINT64_FORMAT, venture_entity_get_id(item));
 	return capture_see_other(location);
 }
@@ -562,10 +543,10 @@ capture_item_get(HtmxRequest *request, GHashTable *params, gpointer data)
 		return gate;
 	id = capture_path_id(params, &error);
 	if (id <= 0)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	item = capture_item_in_organization(self, request, id, &error);
 	if (item == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	g_object_get(item, "title", &title, "kind", &kind, "status", &status,
 		"result-type", &result_type, "vendor", &vendor, "document-id", &document_id, NULL);
 	if (g_strcmp0(status, "converted") == 0 && g_strcmp0(result_type, "expense") == 0)
@@ -637,16 +618,16 @@ capture_item_photo(HtmxRequest *request, GHashTable *params, gpointer data)
 		return gate;
 	id = capture_path_id(params, &error);
 	if (id <= 0)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	item = capture_item_in_organization(self, request, id, &error);
 	if (item == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	g_object_get(item, "document-id", &document_id, NULL);
 	if (document_id <= 0)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 			"That receipt has no photo");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	document = venture_database_get(venture_context_get_database(self->context),
 		VENTURE_TYPE_DOCUMENT, document_id, &error);
@@ -656,7 +637,7 @@ capture_item_photo(HtmxRequest *request, GHashTable *params, gpointer data)
 		g_clear_error(&error);
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 			"That receipt is not in this business");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	g_object_get(document, "mime-type", &stored_mime, NULL);
 	mime = capture_upload_mime(stored_mime, NULL);
@@ -664,7 +645,7 @@ capture_item_photo(HtmxRequest *request, GHashTable *params, gpointer data)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
 			"That file cannot be shown");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	directory = g_build_filename(
 		venture_config_get_state_dir(venture_context_get_config(self->context)),
@@ -673,7 +654,7 @@ capture_item_photo(HtmxRequest *request, GHashTable *params, gpointer data)
 		venture_document_service_get(venture_context_get_database(self->context)),
 		document, directory, VENTURE_WEB_ATTACHMENT_MAX_BYTES, &error);
 	if (bytes == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	response = htmx_response_new();
 	htmx_response_set_bytes(response, bytes);
 	htmx_response_set_content_type(response, mime);
@@ -702,16 +683,16 @@ capture_item_file_as(HtmxRequest *request, GHashTable *params, gpointer data)
 		return gate;
 	id = capture_path_id(params, &error);
 	if (id <= 0)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	item = capture_item_in_organization(self, request, id, &error);
 	if (item == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	as = htmx_request_get_form_value(request, "as");
 	if (g_strcmp0(as, "expense") != 0 && g_strcmp0(as, "vendor_bill") != 0)
 	{
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"File this as an expense or a supplier bill");
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	}
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
@@ -719,7 +700,7 @@ capture_item_file_as(HtmxRequest *request, GHashTable *params, gpointer data)
 		venture_capture_service_get(venture_context_get_database(self->context)),
 		item, as, NULL, &actor, &error);
 	if (result == NULL)
-		return capture_fail(self, request, error);
+		return venture_web_error_response(error);
 	location = g_strdup_printf("/capture/items/%" G_GINT64_FORMAT, id);
 	return capture_see_other(location);
 }
