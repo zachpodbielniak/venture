@@ -34,7 +34,7 @@ There is deliberately no =--token=. An argv is world-readable through =/proc= an
 
 *** Minting a token
 
-Sign in to the web UI and go to *Your account → API tokens* (=/account/tokens=). Name it for the agent that will hold it, give it an expiry if the agent is temporary, and copy the secret: it is shown exactly once and only its hash is stored. The same page revokes it later, which is what you want the moment an agent's config leaks. =POST /api/v1/tokens= does the same thing over HTTP if you already hold a session. With no token set, =venturectl mcp= refuses at startup and says this, rather than starting and letting every call fail with a 401.
+Sign in to the web UI and go to *Your account → API tokens* (=/account/tokens=). Name it for the agent that will hold it and copy the secret: it is shown exactly once and only its hash is stored. A business owner uses that same page. The token carries their own role, lists and revokes only their own credentials, and expires within 90 days. An administrator can still see every token and can mint one that does not expire. The page does not grant platform administration. =POST /api/v1/tokens= does the same thing over HTTP if you already hold a session. A bearer token cannot mint another token. With no token set, =venturectl mcp= refuses at startup and says this, rather than starting and letting every call fail with a 401.
 
 That refusal is not politeness. Every request failing identically reads, to an agent, like a server whose records are all missing — and an agent that believes a record is missing creates it again.
 

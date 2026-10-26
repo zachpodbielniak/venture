@@ -18,10 +18,11 @@ export VENTURE_TOKEN=vk_...                     # or --token/-t
 venturectl health                               # stop and fix this first if it fails
 ```
 
-Mint a token at Settings -> API tokens (`/account/tokens`, admins only) or
+Mint a token at Your account -> API tokens (`/account/tokens`) or
 `POST /api/v1/tokens` ([api.md](api.md)): any signed-in user may mint their
-own token there with a browser session, but a bearer token may mint only if
-it is admin. The token carries the minter's role and memberships. A
+own token there with a browser session. The page lists only that user's
+tokens unless they are an owner or administrator. A bearer token may mint
+only if it is admin. The token carries the minter's role and memberships. A
 non-admin's token expires (`expires_in_days`, default 30, 1..90); an expired
 token is a 401, not a missing record. It is shown once. If
 `health` fails, every other command fails the same way and less clearly.

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-14]
+#+updated: [2026-10-26]
 #+version: 0.6.0
 
 * Testing
@@ -1388,3 +1388,15 @@ provider removal instead of queuing one exclusive expected log message.
 Removal is still checked through its persisted run, status and trigger.
 The repaired window test passes five consecutive focused runs, and all 43
 feed tests pass in the complete =test-feeds= binary.
+
+* Hosted owner MCP token
+
+=/auth/owner-mints-own-token= signs in as a business owner with an
+organization owner membership, opens =/account/tokens=, mints a token and
+uses it as a bearer credential. It checks the token's user, role and expiry,
+and refuses access to another person's token. Before the expiry parser fix,
+the same test failed because =expires_in_days=30junk= created a token.
+The token form now refuses malformed day counts. The neighboring token
+tests cover revocation, one-time reveal and anonymous refusal;
+=/account-identity/member-mints-own-token= and =/accountant/token-snapshot=
+cover hosted membership and the intersection of captured and live authority.

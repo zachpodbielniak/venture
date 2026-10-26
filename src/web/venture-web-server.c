@@ -459,6 +459,34 @@ venture_web_ui_require_session(
 	HtmxRequest		*request
 );
 
+/* A signed-in person mints their own token. A bearer token minting another
+ * stays an administrative act, matching POST /api/v1/tokens. */
+static VentureUserRole
+venture_web_token_page_minimum(const VentureAuthPrincipal *principal)
+{
+	if (principal->authenticated && (0 == principal->token_id) &&
+	    (0 < principal->user_id))
+		return VENTURE_USER_ROLE_VIEWER;
+
+	return VENTURE_USER_ROLE_ADMIN;
+}
+
+static gboolean
+venture_web_token_page_sees_all(const VentureAuthPrincipal *principal)
+{
+	return (VENTURE_USER_ROLE_OWNER == principal->role) ||
+	       (VENTURE_USER_ROLE_ADMIN == principal->role);
+}
+
+/* A token minted below the admin role: its default and longest life. */
+#define VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS 30
+#define VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS 90
+/* Bounds an admin's explicit expiry so the date arithmetic cannot overflow. */
+#define VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS 3650
+
+static gint64 mint_organization(VentureWebServer *self,
+                                const VentureAuthPrincipal *principal);
+
 static void
 venture_web_chat_append_starters(
 	VentureWebServer	*self,
@@ -15547,11 +15575,12 @@ venture_web_ui_account(
 
 		/*
 		 * Signposted from here because this is where somebody looks for
-		 * their own credentials. The page itself is admin-gated, so the
-		 * link is shown only to somebody it will let in.
+		 * their own credentials. Shown only when the tokens page will
+		 * let this session in: a business owner mints their own token
+		 * there, and a bearer token still cannot mint another one.
 		 */
 		if (venture_web_hosted_auth_require(self, request, principal,
-		                         VENTURE_USER_ROLE_ADMIN, NULL))
+		                         venture_web_token_page_minimum(principal), NULL))
 			g_string_append(content,
 				"<h2>API tokens</h2>"
 				"<p class=\"muted small\">Credentials for venturectl and "
@@ -15634,12 +15663,11 @@ venture_web_ui_account_password(
 /*
  * The API tokens page.
  *
- * Admin-only. A token carries the role of whoever minted it, and this page
- * lists and revokes every token, not only the caller's; POST /api/v1/tokens
- * is where anyone else mints their own. This page exists because the
- * alternative was two curl calls -- sign in for a cookie, then post with
- * it -- which is a lot of ceremony for something an operator needs before
- * they can use the CLI at all.
+ * A signed-in person mints, lists and revokes their own tokens here. That
+ * is the page docs/mcp.org sends a business owner to, and that owner is
+ * not a platform administrator. An owner or administrator still sees every
+ * token. A bearer token does not mint another one from this page.
+ * POST /api/v1/tokens is the same rule over HTTP.
  */
 static HtmxResponse *
 venture_web_ui_tokens(
@@ -15667,12 +15695,18 @@ venture_web_ui_tokens(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                          venture_web_token_page_minimum(principal),
 	                          &error))
 		return venture_web_error_response(error);
 
 	query = venture_query_new(VENTURE_TYPE_API_TOKEN);
 	venture_query_set_limit(query, 0);
+
+	if (!venture_web_token_page_sees_all(principal) &&
+	    !venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ,
+	                                  principal->user_id, &error))
+		return venture_web_error_response(error);
 	tokens = venture_database_find(venture_context_get_database(self->context),
 	                               query, &error);
 
@@ -15743,22 +15777,40 @@ venture_web_ui_tokens(
 		"<p class=\"muted small\">It will carry your own role (%s). There is "
 		"no way to mint one with more access than you have, and none to "
 		"narrow it either --- for a token that may do less, sign in as a user "
-		"who may do less.</p>"
+		"who may do less.",
+		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)principal->role));
+
+	if (venture_web_token_page_sees_all(principal))
+		g_string_append(content, "</p>");
+	else
+		g_string_append(content,
+			" Yours expires within 90 days, and this list shows only "
+			"your tokens.</p>");
+
+	g_string_append(content,
 		"<form method=\"post\" action=\"/account/tokens\">"
 		"<label>Name"
 		"<input type=\"text\" name=\"name\" required maxlength=\"120\" "
 		"placeholder=\"laptop venturectl\"></label>"
 		"<label>Expires"
-		"<select name=\"expires_in_days\">"
-		"<option value=\"0\">never</option>"
-		"<option value=\"30\">in 30 days</option>"
-		"<option value=\"90\">in 90 days</option>"
-		"<option value=\"365\">in a year</option>"
+		"<select name=\"expires_in_days\">");
+
+	if (venture_web_token_page_sees_all(principal))
+		g_string_append(content,
+			"<option value=\"0\">never</option>"
+			"<option value=\"30\">in 30 days</option>"
+			"<option value=\"90\">in 90 days</option>"
+			"<option value=\"365\">in a year</option>");
+	else
+		g_string_append(content,
+			"<option value=\"30\" selected>in 30 days</option>"
+			"<option value=\"90\">in 90 days</option>");
+
+	g_string_append(content,
 		"</select></label>"
 		"<button class=\"btn btn-primary\" type=\"submit\">Mint token</button>"
 		"</form>"
-		"</div></div>",
-		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)principal->role));
+		"</div></div>");
 
 	g_string_append(content, "<div class=\"card\"><div class=\"card-body\">"
 	                         "<table class=\"table\"><thead><tr>"
@@ -15856,8 +15908,9 @@ venture_web_ui_tokens(
 /*
  * Mints a token and redirects to the page that will show it once.
  *
- * Admin-only like the page it belongs to; the token carries the minter's
- * role. venture_web_api_mint_token() is the route open to every session.
+ * The same people who can open the page. Below owner and administrator the
+ * token expires, matching venture_web_api_mint_token(): thirty days unless
+ * fewer are asked for, ninety at most. "Never" is not available to them.
  */
 static HtmxResponse *
 venture_web_ui_tokens_create(
@@ -15886,7 +15939,8 @@ venture_web_ui_tokens_create(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                          venture_web_token_page_minimum(principal),
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -15907,16 +15961,44 @@ venture_web_ui_tokens_create(
 		g_object_set(token, "user-id", principal->user_id, NULL);
 
 	venture_entity_set_organization_id(VENTURE_ENTITY(token),
-		venture_context_get_default_organization_id(self->context));
+		mint_organization(self, principal));
 
-	if (!venture_string_is_empty(expires_in))
 	{
-		gint64 days;
+		gboolean given = !venture_string_is_empty(expires_in);
+		gchar *end = NULL;
+		gint64 days = given ? g_ascii_strtoll(expires_in, &end, 10) : 0;
+		const gchar *digit;
 
-		days = g_ascii_strtoll(expires_in, NULL, 10);
+		if (given)
+		{
+			if (end == expires_in || '\0' != *end)
+				return venture_web_redirect_to("/account/tokens?notice=failed");
+			for (digit = expires_in; '\0' != *digit; digit++)
+			{
+				if (!g_ascii_isdigit(*digit))
+					return venture_web_redirect_to("/account/tokens?notice=failed");
+			}
+		}
 
-		/* Zero is the "never" option rather than "expired on creation",
-		 * so anything that is not a positive number means no expiry. */
+		/*
+		 * Zero is the administrator's "never" option. Anyone else gets
+		 * the same bound as POST /api/v1/tokens, and a posted zero is
+		 * a refusal rather than a credential that does not expire.
+		 */
+		if (!venture_web_token_page_sees_all(principal))
+		{
+			if (!given)
+				days = VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS;
+
+			if ((days < 1) || (days > VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS))
+				return venture_web_redirect_to("/account/tokens?notice=failed");
+		}
+		else if (given && (days != 0) &&
+		         ((days < 1) || (days > VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS)))
+		{
+			return venture_web_redirect_to("/account/tokens?notice=failed");
+		}
+
 		if (days > 0)
 		{
 			g_autoptr(GDateTime) now = NULL;
@@ -15980,7 +16062,8 @@ venture_web_ui_tokens_revoke(
 
 	principal = venture_auth_authenticate(self->auth, request);
 
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_ADMIN,
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                          venture_web_token_page_minimum(principal),
 	                          &error))
 		return venture_web_error_response(error);
 
@@ -15992,6 +16075,16 @@ venture_web_ui_tokens_revoke(
 
 	if (NULL == entity)
 		return venture_web_redirect_to("/account/tokens?notice=failed");
+
+	if (!venture_web_token_page_sees_all(principal))
+	{
+		gint64 owner = 0;
+
+		g_object_get(entity, "user-id", &owner, NULL);
+
+		if (owner != principal->user_id)
+			return venture_web_redirect_to("/account/tokens?notice=failed");
+	}
 
 	g_object_set(entity, "active", FALSE, NULL);
 	venture_auth_to_actor(principal, &actor);
@@ -21619,12 +21712,6 @@ venture_web_ui_chat(
 
 
 /* --- API tokens ---------------------------------------------------------- */
-
-/* A token minted below the admin role: its default and longest life. */
-#define VENTURE_WEB_MEMBER_TOKEN_DEFAULT_DAYS 30
-#define VENTURE_WEB_MEMBER_TOKEN_MAX_DAYS 90
-/* Bounds an admin's explicit expiry so the date arithmetic cannot overflow. */
-#define VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS 3650
 
 /*
  * The organization a minted token is filed under. The workspace's default
