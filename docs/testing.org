@@ -769,6 +769,9 @@ migration 000610.
 Engine-independent tests still run without optional OCR libraries; real OCR
 requires the explicit test executable described in [[file:ocr.org][the OCR guide]].
 The combined epic revision is validated separately in the acceptance ledger.
+=/capture/owner-snap= in =test-capture= files a PNG through =/capture/file=,
+reads those photo bytes back, and converts the row into an expense.
+=/capture/owner-snap-signed-out= requires a redirect to =/login=.
 * Organization SMTP routing
 
 =test-mail-routing= verifies main-thread credential selection, account-bound

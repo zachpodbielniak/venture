@@ -150,6 +150,8 @@ against `e549807a` (2026-10-23): `mail preview`, designed email, the signed
 deliverability feed, journeys, telephony, `/conversations`, AI message
 drafts, and `venturectl settings`. Hosted deferred enrollment is a thirty-day
 setup window with no charge before go-live (`billing.md`, `api-routes.md`).
+An owner snaps a receipt at `/capture/file` and files it as an expense or a
+supplier bill (`payables.md`).
 Public booking limits use a relay's last `X-Forwarded-For` hop only when
 that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 A company can be a customer and a supplier (`crm.md`). Browser reports

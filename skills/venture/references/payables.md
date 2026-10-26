@@ -72,6 +72,14 @@ venturectl capture convert 2 as=vendor_bill company_id=1
 venturectl capture reject 3 reason=personal
 ```
 
+An owner files a picture from the capture inbox. **Snap a receipt** opens
+`/capture/file`: a photo or PDF (not SVG), a preview before send, and title,
+vendor, amount and date. It does not ask for status, source or result
+fields. The filed row is `/capture/items/ID`. **File it as an expense** or
+**File it as a supplier bill** posts to that row; a supplier bill still
+needs a matching vendor company. Signed-out requests redirect to `/login`.
+The picture is `/capture/items/ID/photo` for the same business only.
+
 Document file paths are service-owned: generic create/import/update cannot
 assign or replace `document.path` or move a filed attachment to another
 organization -- use upload or mail filing (valid legacy originals stay

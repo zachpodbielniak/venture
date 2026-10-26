@@ -99,6 +99,7 @@ in the repository lists today's.
 | `POST /bank_accounts\|bank_statements\|bank_transactions\|bank_rules/:id/:action`, `POST /reconciliation/suggest` | `bank ...`, `reconcile suggest` |
 | `POST /bankfeed/:id/sync` | `bankfeed sync ID` |
 | `POST /capture`, `POST /capture/:id/:action` | `capture ...` |
+| `GET /capture`, `GET`/`POST /capture/file`, `GET /capture/items/:id`, `GET /capture/items/:id/photo`, `POST /capture/items/:id/file-as` (site root, session) | owner snap, preview and file-as |
 | `POST /expense_claim/:id/:action` | `claim ...` |
 | `POST /payroll/import`, `POST /payroll_run/:id/:action` | `payroll ...` |
 | `POST /tax-filings/prepare`, `POST /tax-filings/:id/:action` | `tax-filing ...` |
