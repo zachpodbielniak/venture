@@ -6097,3 +6097,8 @@ a.navigation-pending { opacity: .65; transform: translateY(1px); }
 body.navigation-pending, body.navigation-pending a { cursor: progress; }
 #list-filters .form-grid > label { display: flex; flex-direction: column; gap: .35rem; }
 #list-filters .form-grid select { width: 100%; }
+
+/* Keep the receipt and its next action together on an owner screen. */
+.capture-receipt-image { display: block; max-width: 100%; max-height: 320px; width: auto; height: auto; object-fit: contain; margin: var(--space-3) 0; }
+.capture-receipt-preview { max-height: 180px; }
+.capture-receipt-preview:not([src]) { display: none; }

@@ -333,7 +333,7 @@ capture_file_get(HtmxRequest *request, GHashTable *params, gpointer data)
 		"<form class=\"card\" method=\"post\" action=\"/capture/file\" enctype=\"multipart/form-data\">"
 		"<label>Photo <input id=\"receipt-photo\" type=\"file\" name=\"photo\" "
 		"accept=\"image/*,application/pdf,.heic,.heif\" capture=\"environment\"></label>"
-		"<img id=\"receipt-preview\" alt=\"Receipt preview\">"
+		"<img id=\"receipt-preview\" class=\"capture-receipt-image capture-receipt-preview\" alt=\"Receipt preview\">"
 		"<label>What it was <input name=\"title\" type=\"text\"></label>"
 		"<label>Who you paid <input name=\"vendor\" type=\"text\"></label>"
 		"<label>Amount <input name=\"amount\" type=\"text\" inputmode=\"decimal\"></label>"
@@ -588,7 +588,7 @@ capture_item_get(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_string_append(content, "</h1></div><div class=\"card\">");
 	if (mime != NULL && g_str_has_prefix(mime, "image/"))
 		g_string_append_printf(content,
-			"<img alt=\"Receipt photo\" src=\"/capture/items/%" G_GINT64_FORMAT "/photo\">", id);
+			"<img class=\"capture-receipt-image\" alt=\"Receipt photo\" src=\"/capture/items/%" G_GINT64_FORMAT "/photo\">", id);
 	else if (document_id > 0)
 		g_string_append_printf(content,
 			"<p><a href=\"/capture/items/%" G_GINT64_FORMAT "/photo\">Open the receipt</a></p>", id);
