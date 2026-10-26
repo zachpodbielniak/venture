@@ -184,6 +184,39 @@ static void test_browser_edit_pages(Fixture *f, gconstpointer data)
 		g_assert_null(strstr(body, "Use Venture"));
 	}
 }
+/* The owner's calendar is the business they were given, with no sidebar
+ * cookie and no organization id. Another business stays unread. Calendar
+ * is in the menu on the first page. */
+static void test_browser_calendar(Fixture *f, gconstpointer data)
+{
+	gint64 business, other;
+	g_autofree gchar *token = NULL, *payload = NULL, *body = NULL, *cookie = NULL;
+	g_autofree gchar *other_query = NULL;
+	(void)data;
+	business = sign_up(f, "calendar-signup", "calendar-owner@example.test", "browser-owner", "Example Co", NULL);
+	other = sign_up(f, "calendar-other", "calendar-other@example.test", "other-owner", "Other Example Co", NULL);
+	token = token_for(f, "browser-owner");
+	payload = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"name\":\"Roof visit\","
+		"\"starts_at\":\"2026-12-11T15:00:00Z\",\"ends_at\":\"2026-12-11T16:00:00Z\"}", business);
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/event", NULL, token, "application/json", payload, &body, NULL), ==, 201);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(exchange(f, "GET", "/api/v1/calendar?from=2026-12-01&to=2026-12-31", NULL, token,
+		NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "Roof visit"));
+	g_assert_null(strstr(body, "Other Example Co"));
+	g_clear_pointer(&body, g_free);
+	other_query = g_strdup_printf("/api/v1/calendar?from=2026-12-01&to=2026-12-31&organization_id=%" G_GINT64_FORMAT, other);
+	g_assert_cmpuint(exchange(f, "GET", other_query, NULL, token, NULL, NULL, NULL, NULL), ==, 404);
+	cookie = browser_login(f, "/");
+	g_assert_cmpuint(exchange(f, "GET", "/", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "href=\"/calendar\""));
+	g_assert_nonnull(strstr(body, "Calendar"));
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(exchange(f, "GET", "/calendar?view=month&date=2026-12-11", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "planner-calendar"));
+	g_assert_nonnull(strstr(body, "Roof visit"));
+	g_assert_null(strstr(body, "Venture id"));
+}
 static void test_browser_token_refusals(Fixture *f, gconstpointer data)
 {
 	guint defect;

@@ -90,6 +90,62 @@ planner_calendar_kinds(HtmxRequest *request)
 	return kinds;
 }
 
+/* An API organization_id, or any sidebar pick including "all". An unnamed
+ * request is a hosted owner with a bearer token and no cookie. */
+static gboolean
+planner_calendar_named_organization(HtmxRequest *request)
+{
+	const gchar *path;
+
+	path = htmx_request_get_path(request);
+
+	if ((NULL != path) && g_str_has_prefix(path, "/api/") &&
+	    !venture_string_is_empty(htmx_request_get_query_param(request, "organization_id")))
+		return TRUE;
+
+	return venture_web_entity_picked(request);
+}
+
+/* The one business a hosted owner belongs to. Zero when this is not a
+ * hosted sign-in, or they belong to none or to more than one: a portfolio
+ * stays on the sidebar's pick, and the install default is not guessed. */
+static gint64
+planner_calendar_only_business(VentureWebServer *self)
+{
+	VentureDatabase *database;
+	g_autoptr(JsonNode) authority = NULL;
+	JsonObject *object;
+	JsonArray *organizations;
+	JsonObject *entry;
+
+	database = venture_context_get_database(self->context);
+
+	if (!venture_oidc_service_hosted_enabled(venture_oidc_service_get(database)))
+		return 0;
+
+	authority = venture_tenant_service_account_authority(venture_tenant_service_get(database), NULL);
+
+	if ((NULL == authority) || !JSON_NODE_HOLDS_OBJECT(authority))
+		return 0;
+
+	object = json_node_get_object(authority);
+
+	if (!json_object_has_member(object, "organizations"))
+		return 0;
+
+	organizations = json_object_get_array_member(object, "organizations");
+
+	if ((NULL == organizations) || (1 != json_array_get_length(organizations)))
+		return 0;
+
+	entry = json_array_get_object_element(organizations, 0);
+
+	if ((NULL == entry) || !json_object_has_member(entry, "organization_id"))
+		return 0;
+
+	return json_object_get_int_member(entry, "organization_id");
+}
+
 /* Reads the request into a calendar query. Returns an error response, or
  * NULL when @ask is filled. */
 static HtmxResponse *
@@ -111,7 +167,27 @@ planner_calendar_read(
 	if (venture_string_is_empty(ask->view))
 		ask->view = "month";
 
-	if (!venture_web_request_organization(self, request, NULL, &ask->organization_id, &error))
+	/* A hosted owner with one business did not choose the install's
+	 * default, and cannot read it. Their calendar is that business.
+	 * A named organization, including somebody else's, keeps the
+	 * ordinary answer. */
+	if (!planner_calendar_named_organization(request))
+	{
+		gint64 only = planner_calendar_only_business(self);
+		g_autoptr(VentureEntity) organization = NULL;
+
+		if (only > 0)
+			organization = venture_database_get(venture_context_get_database(self->context),
+			                                    VENTURE_TYPE_ORGANIZATION, only, &error);
+
+		if ((NULL != organization) && !venture_entity_is_deleted(organization))
+			ask->organization_id = only;
+		else
+			g_clear_error(&error);
+	}
+
+	if ((0 == ask->organization_id) &&
+	    !venture_web_request_organization(self, request, NULL, &ask->organization_id, &error))
 		return venture_web_error_response(error);
 
 	if (!venture_calendar_view_range(self->context, ask->view,
@@ -195,6 +271,34 @@ planner_calendar_read(
 	ask->query.n_organizations = 1;
 
 	return NULL;
+}
+
+/* The number box is an operator control. A hosted owner, who is not a
+ * platform administrator and not a workspace administrator, does not see it. */
+static gboolean
+planner_calendar_show_venture_id(VentureWebServer *self)
+{
+	VentureDatabase *database;
+	VentureTenantService *service;
+	const VentureAuthPrincipal *actor;
+
+	database = venture_context_get_database(self->context);
+
+	if (!venture_oidc_service_hosted_enabled(venture_oidc_service_get(database)))
+		return TRUE;
+
+	actor = venture_access_policy_get_actor(venture_database_get_access_policy(database));
+
+	if ((NULL != actor) && venture_access_policy_is_administrator(actor))
+		return TRUE;
+
+	service = venture_tenant_service_get(database);
+
+	if ((NULL != actor) && (NULL != service) && (actor->user_id > 0) &&
+	    venture_tenant_service_is_member(service, actor->user_id, TRUE))
+		return TRUE;
+
+	return FALSE;
 }
 
 /* --- Drawing it ---------------------------------------------------------------- */
@@ -488,12 +592,19 @@ planner_calendar_append_filters(
 		g_string_append(html, "</label> ");
 	}
 
-	g_string_append(html, "</fieldset> <label>Venture id <input name=\"venture_id\" type=\"number\" min=\"0\" value=\"");
+	g_string_append(html, "</fieldset> ");
 
-	if (0 != ask->query.venture_id)
-		g_string_append_printf(html, "%" G_GINT64_FORMAT, ask->query.venture_id);
+	if (planner_calendar_show_venture_id(self))
+	{
+		g_string_append(html, "<label>Venture id <input name=\"venture_id\" type=\"number\" min=\"0\" value=\"");
 
-	g_string_append_printf(html, "\"></label> <label><input type=\"checkbox\" name=\"assignee\" value=\"me\"%s> Only mine</label>"
+		if (0 != ask->query.venture_id)
+			g_string_append_printf(html, "%" G_GINT64_FORMAT, ask->query.venture_id);
+
+		g_string_append(html, "\"></label> ");
+	}
+
+	g_string_append_printf(html, "<label><input type=\"checkbox\" name=\"assignee\" value=\"me\"%s> Only mine</label>"
 	                             " <label><input type=\"checkbox\" name=\"done\" value=\"1\"%s> Include finished</label>"
 	                             " <button class=\"btn btn-primary\">Show</button></form>",
 	                       ask->mine ? " checked" : "", ask->query.include_done ? " checked" : "");

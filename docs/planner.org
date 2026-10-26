@@ -225,3 +225,5 @@ A shared calendar account (=calendar_account=, the =calendar= module) pushes its
 - =migrations/*/000914_planner_events.sql=, =000915_ticket_event.sql=, =000916_event_reminders_budget.sql=, =000917_expense_event.sql=, =000918_calendar_event_planner.sql= -- additive schema checks; nothing is backfilled.
 - =tests/test-planner.c= -- the rules, the run-sheet, every source in and out of the span, the filters, the bound, recurrence, the feeds, the four doors, reminders, the budget, the roadmap and the widget.
 - =tests/test-calendar.c= =/calendar/push-planner-events= -- the push.
+
+A hosted owner who names no organization, and has not picked one in the sidebar, is answered for the one business they belong to. The install's default organization is not theirs. Naming another organization's id still answers as if that organization were not there. Someone who belongs to more than one business stays on the sidebar's pick. The page's "Venture id" box is an operator control; a hosted owner who is not a workspace administrator does not see it. =tests/test-hosted-identity.c= =/hosted-identity/browser-calendar= covers that door.
