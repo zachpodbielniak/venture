@@ -147,6 +147,36 @@ test_reply_threads(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(body, ==, "Yes, the first week of March.");
 }
 
+/* A Lightsite alias remains the customer's Reply-To after an office answer,
+ * so their next message returns to the same business and Venture thread. */
+static void
+test_reply_keeps_booking_alias(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GPtrArray) before = contact_mail(f);
+	g_autoptr(VentureEntity) source = NULL, account = NULL;
+	g_autoptr(VentureMailMessage) reply = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *reply_to = NULL;
+	gint64 account_id = 0;
+	VentureActor actor = person();
+	(void)data;
+	source = venture_mail_reply_source(f->db, g_ptr_array_index(before, 0));
+	g_assert_nonnull(source);
+	g_object_get(source, "account-id", &account_id, NULL);
+	account = venture_database_get(f->db, VENTURE_TYPE_MAIL_ACCOUNT, account_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(account);
+	g_object_set(account, "reply-alias-prefix", "r-0123456789abcdef01234567+", NULL);
+	save(f, account);
+	g_object_set(source, "recipient-address", "r-0123456789abcdef01234567+42@lightsite.app", NULL);
+	save(f, source);
+	reply = venture_mail_reply_enqueue(f->context, g_ptr_array_index(before, 0), "See you then.", &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(reply);
+	g_object_get(reply, "reply-to", &reply_to, NULL);
+	g_assert_cmpstr(reply_to, ==, "r-0123456789abcdef01234567+42@lightsite.app");
+}
+
 /* Delivery is the ordinary sweep: once the relay has the reply it is on
  * the contact's timeline as outbound, and a second sweep adds nothing. */
 static void
@@ -366,6 +396,7 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/mail-reply/threads", Fixture, NULL, setup, test_reply_threads, teardown);
+	g_test_add("/mail-reply/booking-alias", Fixture, NULL, setup, test_reply_keeps_booking_alias, teardown);
 	g_test_add("/mail-reply/on-timeline", Fixture, NULL, setup, test_reply_on_timeline, teardown);
 	g_test_add("/mail-reply/refusals", Fixture, NULL, setup, test_reply_refusals, teardown);
 	g_test_add("/mail-reply/wire-headers", Fixture, NULL, setup, test_reply_wire_headers, teardown);

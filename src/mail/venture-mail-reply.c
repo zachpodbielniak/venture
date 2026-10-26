@@ -82,10 +82,13 @@ venture_mail_reply_enqueue(VentureContext *context, VentureEntity *interaction,
 	VentureDatabase *database;
 	VentureMailOutbox *outbox;
 	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureEntity) account = NULL;
 	g_autoptr(VentureMailMessage) message = NULL;
 	g_autofree gchar *trimmed = NULL, *subject = NULL, *clean_subject = NULL, *reply_subject = NULL;
 	g_autofree gchar *message_id = NULL, *thread_id = NULL, *from = NULL, *in_reply_to = NULL, *root = NULL;
 	g_autofree gchar *references = NULL, *key = NULL, *uuid = NULL;
+	g_autofree gchar *recipient = NULL, *prefix = NULL;
+	gint64 account_id = 0;
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(interaction), NULL);
 	database = venture_context_get_database(context);
@@ -106,7 +109,8 @@ venture_mail_reply_enqueue(VentureContext *context, VentureEntity *interaction,
 		reply_refuse(error, "Only a message that arrived by mail can be answered from the timeline");
 		return NULL;
 	}
-	g_object_get(source, "message-id", &message_id, "thread-id", &thread_id, "from-address", &from, "subject", &subject, NULL);
+	g_object_get(source, "message-id", &message_id, "thread-id", &thread_id, "from-address", &from,
+		"subject", &subject, "account-id", &account_id, "recipient-address", &recipient, NULL);
 	in_reply_to = reply_angle(message_id);
 	if (in_reply_to == NULL || venture_string_is_empty(from) || strpbrk(from, "\r\n,;<> ") != NULL || strchr(from, '@') == NULL)
 	{
@@ -123,6 +127,13 @@ venture_mail_reply_enqueue(VentureContext *context, VentureEntity *interaction,
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG, "Mail is off, so nothing can be sent");
 		return NULL;
 	}
+	if (recipient) {
+		if (account_id > 0) account = venture_database_get(database, VENTURE_TYPE_MAIL_ACCOUNT, account_id, NULL);
+		if (account && venture_entity_get_organization_id(account) == venture_entity_get_organization_id(source))
+			g_object_get(account, "reply-alias-prefix", &prefix, NULL);
+		if (!prefix || !g_str_has_prefix(recipient, prefix) || !g_str_has_suffix(recipient, "@lightsite.app") ||
+			strpbrk(recipient, "\r\n\t ,;<>")) g_clear_pointer(&recipient, g_free);
+	}
 	/* Each reply is its own message; the key only stops a resubmitted
 	 * request from queueing the same reply twice within one call. */
 	uuid = g_uuid_string_random();
@@ -130,6 +141,7 @@ venture_mail_reply_enqueue(VentureContext *context, VentureEntity *interaction,
 	message = venture_mail_message_new();
 	g_object_set(message, "organization-id", venture_entity_get_organization_id(interaction), "to", from,
 		"subject", reply_subject, "text-body", trimmed, "in-reply-to", in_reply_to, "reply-references", references,
+		"reply-to", recipient,
 		"related-type", "interaction", "related-id", venture_entity_get_id(interaction), "idempotency-key", key, NULL);
 	return venture_mail_outbox_enqueue(outbox, message, actor, error);
 }

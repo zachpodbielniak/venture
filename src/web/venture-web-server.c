@@ -35188,6 +35188,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_unmatched_senders/:id/create_contact", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_contact, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_accounts/:id/connector", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_connector, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/create_contact", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_contact_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync_ui, self);
@@ -35231,6 +35232,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact, self);
 	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss, self);
 	htmx_router_post(router, "/api/v1/mail_accounts/:id/sync", venture_web_mail_account_sync, self);
+	htmx_router_post(router, "/api/v1/mail_accounts/:id/connector", venture_web_mail_account_connector, self);
 	htmx_router_post(router, "/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact_ui, self);
 	htmx_router_post(router, "/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss_ui, self);
 	htmx_router_post(router, "/mail_accounts/:id/sync", venture_web_mail_account_sync_ui, self);

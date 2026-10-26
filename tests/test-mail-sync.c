@@ -1958,6 +1958,42 @@ static void test_sync_since(Fixture *f, gconstpointer data)
 	g_assert_cmpint(cursor_member(a, "INBOX", "uid"), ==, 2);
 }
 
+/* One hosted mailbox can carry aliases for several businesses. A business
+ * must never import another business's reply, even with a matching contact. */
+static void test_reply_alias_scope(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = account(f, "VENTURE_IMAP_SECRET");
+	g_autoptr(VentureQuery) scheduled = venture_query_new(VENTURE_TYPE_MAIL_ACCOUNT);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) inbound = NULL, due = NULL;
+	g_autofree gchar *recipient = NULL;
+	g_autofree gchar *mine = mail("Ada <ada@example.test>", "r-first+1@lightsite.app, helper@example.test", "Re: Booking", "mine@example.test",
+		"X-Original-To: r-first+1@lightsite.app\r\n", "Please bring a leash.");
+	g_autofree gchar *other = mail("Ada <ada@example.test>", "r-other+2@lightsite.app", "Re: Booking", "other@example.test",
+		"X-Original-To: r-other+2@lightsite.app\r\n", "Other business's private details.");
+	g_autofree gchar *forged = mail("Ada <ada@example.test>", "r-first+3@lightsite.app", "Re: Booking", "forged@example.test",
+		"X-Original-To: replies@lightsite.app\r\nX-Original-To: r-first+3@lightsite.app\r\n", "Forged delivery header.");
+	(void)data;
+	g_object_set(a, "reply-alias-prefix", "r-first+", NULL);
+	save(f, a);
+	venture_query_add_filter_string(scheduled, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
+	venture_query_add_filter_string(scheduled, "reply-alias-prefix", VENTURE_FILTER_OP_NE, "", NULL);
+	due = venture_database_find(f->db, scheduled, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(due->len, ==, 1);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 1, other);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 2, mine);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 3, forged);
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	g_assert_cmpint(cursor_member(a, "INBOX", "uid"), ==, 3);
+	g_assert_cmpint(count_type(f, "mail_inbound"), ==, 1);
+	g_assert_cmpint(count_type(f, "interaction"), ==, 1);
+	inbound = rows(f, VENTURE_TYPE_MAIL_INBOUND);
+	g_object_get(g_ptr_array_index(inbound, 0), "recipient-address", &recipient, NULL);
+	g_assert_cmpstr(recipient, ==, "r-first+1@lightsite.app");
+}
+
 /* A lead's mail went to the unmatched list, deals were never linked, and
  * a sender turned into a contact kept none of its earlier mail. */
 static void test_leads_and_deals(Fixture *f, gconstpointer data)
@@ -2168,6 +2204,7 @@ int main(int argc, char **argv)
 	g_test_add("/mail-sync/ignore-rules", Fixture, NULL, setup, test_ignore_rules, teardown);
 	g_test_add("/mail-sync/hostile-message-bounds", Fixture, NULL, setup, test_hostile_message_bounds, teardown);
 	g_test_add("/mail-sync/sync-since", Fixture, NULL, setup, test_sync_since, teardown);
+	g_test_add("/mail-sync/reply-alias-scope", Fixture, NULL, setup, test_reply_alias_scope, teardown);
 	g_test_add("/mail-sync/leads-and-deals", Fixture, NULL, setup, test_leads_and_deals, teardown);
 	g_test_add("/mail-sync/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add("/mail-sync/socket-xoauth2", Fixture, NULL, setup, test_socket_xoauth2, teardown);
