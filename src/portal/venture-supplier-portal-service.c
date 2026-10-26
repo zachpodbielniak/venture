@@ -73,7 +73,6 @@ venture_portal_service_invite_supplier(VenturePortalService *self, gint64 organi
 	g_autoptr(VentureSupplierPortalAccess) access = NULL;
 	g_autoptr(VentureEntity) company = NULL;
 	g_autofree gchar *token = NULL;
-	gint kind;
 	g_return_val_if_fail(VENTURE_IS_PORTAL_SERVICE(self), NULL);
 	database = service_database(self);
 	if (database == NULL)
@@ -86,8 +85,7 @@ venture_portal_service_invite_supplier(VenturePortalService *self, gint64 organi
 		refuse(error, "supplier is not in this organization");
 		return NULL;
 	}
-	g_object_get(company, "kind", &kind, NULL);
-	if (kind != VENTURE_COMPANY_KIND_SUPPLIER)
+	if (!venture_company_is_supplier(company))
 	{
 		refuse(error, "portal invitations are limited to supplier companies");
 		return NULL;

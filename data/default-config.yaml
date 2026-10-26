@@ -104,6 +104,12 @@ security:
   # Reject more than this many failed logins from one address per minute.
   login_rate_limit: 10
 
+  # Socket addresses of booking relays. Empty trusts none. A listed peer
+  # may name the visitor with the last X-Forwarded-For hop; that hop is
+  # the rate-limit key and the audit address for /book. Anyone else is
+  # limited as the socket peer, even if they send the header.
+  booking_trusted_relays: []
+
   # Environment variable holding the key that encrypts stored second-factor
   # secrets; falls back to session_secret_env when unset.
   mfa_key_env: "VENTURE_MFA_KEY"

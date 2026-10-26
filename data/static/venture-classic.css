@@ -6060,3 +6060,40 @@ tr.roadmap-depth-3 td.row-head { padding-left: calc(var(--space-2) + 3.75em); }
 }
 details.late-fee-waive > summary { cursor: pointer; }
 details.late-fee-waive[open] > summary { margin-bottom: 8px; }
+
+/* The customer account card: the figures an owner asks first, then the
+ * open invoices, recent payments and the last and next activity. */
+.customer-account .account-figures,
+.customer-account .account-activity {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	gap: var(--space-1) var(--space-4);
+	margin: 0 0 var(--space-4);
+}
+.customer-account .account-figures dd,
+.customer-account .account-activity dd { margin: 0; }
+.customer-account .account-figures dd { font-weight: 600; }
+.customer-account .account-figures dd.negative,
+.customer-account td.negative { color: var(--accent); }
+.customer-account h3 { margin: var(--space-4) 0 var(--space-2); }
+
+/* The people at a company, one line each: name, role, email, phone. */
+.company-people .people { list-style: none; margin: 0; padding: 0; }
+.company-people .people li { padding: var(--space-1) 0; border-bottom: 1px solid var(--border); }
+.company-people .people li:last-child { border-bottom: 0; }
+.company-people .people .person { font-weight: 600; }
+
+/* Shared list controls stay usable on a narrow screen. */
+#list-filters { margin-bottom: var(--space-5); }
+#list-filters > label { display: block; max-width: 32rem; }
+#list-filters details { margin: var(--space-3) 0; }
+#list-filters .form-grid { padding: var(--space-3) 0; }
+
+/* Keep the frequent jobs visible before the detailed business overview. */
+.owner-jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem; margin: 1rem 0 1.5rem; }
+.owner-jobs .btn { min-height: 4rem; justify-content: center; text-align: center; white-space: normal; }
+.owner-overview > summary { cursor: pointer; padding: .75rem 0; font-weight: 600; }
+a.navigation-pending { opacity: .65; transform: translateY(1px); }
+body.navigation-pending, body.navigation-pending a { cursor: progress; }
+#list-filters .form-grid > label { display: flex; flex-direction: column; gap: .35rem; }
+#list-filters .form-grid select { width: 100%; }

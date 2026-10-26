@@ -1,0 +1,2 @@
+id,invoice_id,date,amount,currency,method,external_id
+payment-1,invoice-1,2025-04-05T00:00:00Z,125.50,USD,bank_transfer,synthetic-receipt-210

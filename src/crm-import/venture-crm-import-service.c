@@ -6,7 +6,8 @@
  * mapped manifest, a preview that refuses before writing, an import that
  * is one transaction and records every source id, and a rollback that
  * removes exactly what it created. The accounting cutover is the pattern;
- * this service touches no accounting record. */
+ * financial history uses dated settlement operations and preserves its
+ * immutable evidence when rollback posts compensating events. */
 
 struct _VentureCrmImportService
 {
@@ -16,14 +17,51 @@ struct _VentureCrmImportService
 };
 G_DEFINE_FINAL_TYPE(VentureCrmImportService, venture_crm_import_service, G_TYPE_OBJECT)
 
+/* Keep the audit evidence, but do not treat historical source rows as
+ * new business events that automation may send to a customer. */
+typedef struct
+{
+	VentureDatabase *database;
+	gpointer previous;
+} CrmImportQuiet;
+
+static void
+crm_import_quiet_free(CrmImportQuiet *quiet)
+{
+	g_object_set_data(G_OBJECT(quiet->database), "venture-crm-import-quiet", quiet->previous);
+	g_free(quiet);
+}
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(CrmImportQuiet, crm_import_quiet_free)
+
+static CrmImportQuiet *
+crm_import_quiet_begin(VentureDatabase *database)
+{
+	CrmImportQuiet *quiet;
+	if (database == NULL) return NULL;
+	quiet = g_new0(CrmImportQuiet, 1);
+	quiet->database = database;
+	quiet->previous = g_object_get_data(G_OBJECT(database), "venture-crm-import-quiet");
+	g_object_set_data(G_OBJECT(database), "venture-crm-import-quiet", GINT_TO_POINTER(1));
+	return quiet;
+}
+
 static const gchar *const sources[] = { "hubspot", "zoho_crm", "salesforce", NULL };
 
 /* The file keys a manifest may name, and the row object each becomes. */
 static const gchar *const objects[][2] = {
-	{ "companies", "company" }, { "contacts", "contact" }, { "deals", "deal" },
+	{ "users", "user" }, { "companies", "company" }, { "vendors", "vendor" },
+	{ "contacts", "contact" }, { "campaigns", "campaign" }, { "leads", "lead" },
+	{ "products", "product" }, { "price_books", "price_book" }, { "price_book_entries", "price_book_entry" },
+	{ "deals", "deal" }, { "stage_history", "stage_history" },
+	{ "quotes", "quote" }, { "quote_lines", "quote_line" },
+	{ "sales_orders", "sales_order" }, { "sales_order_lines", "sales_order_line" },
+	{ "invoices", "invoice" }, { "invoice_lines", "invoice_line" }, { "payments", "payment" }, { "cases", "case" },
 	{ "notes", "note" }, { "emails", "note" }, { "calls", "note" }, { "meetings", "note" },
-	{ "tasks", "task" }, { NULL, NULL }
+	{ "tasks", "task" }, { "attachments", "attachment" }, { NULL, NULL }
 };
+
+#include "venture-crm-import-modules.inc"
+
 
 /* Built-in column maps: canonical field, then the vendor's default export
  * header. emails, calls and meetings share the notes map. */
@@ -268,7 +306,7 @@ venture_crm_import_default_columns(const gchar *source, const gchar *object)
 			json_object_set_string_member(map, column_defaults[i].pairs[k], column_defaults[i].pairs[k + 1]);
 		return map;
 	}
-	return NULL;
+	return module_default_columns(source, object);
 }
 
 /* One parsed file: its rows and a canonical-field -> column index map. */
@@ -276,6 +314,8 @@ typedef struct
 {
 	const gchar *file;
 	const gchar *object;
+	const ImportModule *module;
+	gchar *custom_object;
 	GPtrArray *rows;
 	GHashTable *columns;
 } Table;
@@ -285,6 +325,7 @@ table_free(Table *table)
 {
 	g_clear_pointer(&table->rows, g_ptr_array_unref);
 	g_clear_pointer(&table->columns, g_hash_table_unref);
+	g_free(table->custom_object);
 	g_free(table);
 }
 
@@ -316,7 +357,7 @@ first_id(const gchar *text)
 static gboolean
 build_columns(Table *table, const gchar *source, JsonObject *overrides, gchar **headers, GError **error)
 {
-	g_autoptr(JsonObject) map = venture_crm_import_default_columns(source, table->file);
+	g_autoptr(JsonObject) map = venture_crm_import_default_columns(source, table->module != NULL ? table->module->file : table->file);
 	g_autoptr(GList) fields = NULL;
 	GList *l;
 	guint r;
@@ -369,11 +410,12 @@ build_columns(Table *table, const gchar *source, JsonObject *overrides, gchar **
 				return refuse(error, "%s: column \"%s\" (%s) is missing from the header",
 					table->file, obj_str(map, required_columns[r][k]), required_columns[r][k]);
 	}
+	if (table->module != NULL && !g_hash_table_contains(table->columns, "id"))
+		return refuse(error, "%s: source id column is missing", table->file);
 	return TRUE;
 }
 
-/* Parses every named CSV and resolves its columns. Returned in manifest
- * order so companies precede the contacts that link to them. */
+/* Parses every named CSV and resolves its columns in dependency order. */
 static GPtrArray *
 load_tables(JsonObject *manifest, GError **error)
 {
@@ -395,10 +437,14 @@ load_tables(JsonObject *manifest, GError **error)
 			for (o = 0; objects[o][0] != NULL; o++)
 				if (g_strcmp0(objects[o][0], l->data) == 0)
 					known = TRUE;
-			if (g_strcmp0(l->data, "attachments") == 0)
+			if (!known)
 			{
-				refuse(error, "attachments are unsupported: remove csv.attachments and list it under unsupported");
-				return NULL;
+				JsonObject *custom = obj_obj(manifest, "custom_objects");
+				JsonObject *mapping = custom != NULL ? obj_obj(custom, l->data) : NULL;
+				const gchar *target = mapping != NULL ? obj_str(mapping, "target") : NULL;
+				const ImportModule *module = target != NULL ? import_module(target) : NULL;
+				known = module != NULL && !g_str_equal(module->object, "user") &&
+					!g_str_equal(module->object, "attachment") && !g_str_equal(module->object, "stage_history");
 			}
 			if (!known)
 			{
@@ -437,10 +483,82 @@ load_tables(JsonObject *manifest, GError **error)
 		table = g_new0(Table, 1);
 		table->file = objects[o][0];
 		table->object = objects[o][1];
+		table->module = import_module(table->file);
 		table->rows = g_steal_pointer(&rows);
 		g_ptr_array_add(tables, table);
 		if (!build_columns(table, source, obj_obj(manifest, "columns"), g_ptr_array_index(table->rows, 0), error))
 			return NULL;
+	}
+	{
+		JsonObject *custom = obj_obj(manifest, "custom_objects");
+		g_autoptr(GList) members = custom != NULL ? json_object_get_members(custom) : NULL;
+		GList *l;
+		for (l = members; l != NULL; l = l->next)
+		{
+			JsonObject *mapping = obj_obj(custom, l->data);
+			const gchar *target = mapping != NULL ? obj_str(mapping, "target") : NULL;
+			const gchar *text = obj_str(csv, l->data);
+			const ImportModule *module = target != NULL ? import_module(target) : NULL;
+			Table *table;
+			if (text == NULL || module == NULL || g_str_equal(module->object, "user") ||
+				g_str_equal(module->object, "attachment") || g_str_equal(module->object, "stage_history"))
+			{
+				refuse(error, "custom object %s needs CSV text and a supported target", (const gchar *)l->data);
+				return NULL;
+			}
+			for (o = 0; objects[o][0] != NULL; o++)
+				if (g_strcmp0(objects[o][0], l->data) == 0)
+				{
+					refuse(error, "custom object names cannot replace built-in modules");
+					return NULL;
+				}
+			table = g_new0(Table, 1);
+			table->file = l->data;
+			table->module = module;
+			table->custom_object = g_strdup_printf("custom:%s", (const gchar *)l->data);
+			table->object = table->custom_object;
+			table->rows = venture_csv_parse(text, error);
+			g_ptr_array_add(tables, table);
+			if (table->rows == NULL || table->rows->len == 0)
+			{
+				if (table->rows != NULL) refuse(error, "custom object %s needs a header", table->file);
+				return NULL;
+			}
+			if (!build_columns(table, source, obj_obj(manifest, "columns"), g_ptr_array_index(table->rows, 0), error))
+				return NULL;
+		}
+		/* Attachments may refer to any mapped custom object. */
+		for (o = 0; o < tables->len; o++)
+		{
+			Table *table = g_ptr_array_index(tables, o);
+			if (g_str_equal(table->object, "attachment"))
+			{
+				g_ptr_array_steal_index(tables, o);
+				g_ptr_array_add(tables, table);
+				break;
+			}
+		}
+	}
+	{
+		g_autoptr(GHashTable) ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		guint t, r;
+		for (t = 0; t < tables->len; t++)
+		{
+			Table *table = g_ptr_array_index(tables, t);
+			for (r = 1; r < table->rows->len; r++)
+			{
+				const gchar *id = cell(table, g_ptr_array_index(table->rows, r), "id");
+				g_autofree gchar *key = NULL;
+				if (blank(id)) continue;
+				key = g_strdup_printf("%s\x1f%s", table->object, id);
+				if (g_hash_table_contains(ids, key))
+				{
+					refuse(error, "%s: duplicate source id %s", table->file, id);
+					return NULL;
+				}
+				g_hash_table_add(ids, g_steal_pointer(&key));
+			}
+		}
 	}
 	return g_steal_pointer(&tables);
 }
@@ -505,6 +623,9 @@ deal_amount(JsonObject *manifest, Table *table, gchar **row, const gchar *id, GE
 }
 
 static gboolean
+parse_time(const gchar *text, GDateTime **out, const gchar *object, const gchar *id, const gchar *field, GError **error);
+
+static gboolean
 validate_deals(VentureCrmImportService *self, gint64 org, JsonObject *manifest, GPtrArray *tables, GError **error)
 {
 	guint t, r;
@@ -537,6 +658,22 @@ validate_deals(VentureCrmImportService *self, gint64 org, JsonObject *manifest, 
 				if (reason == NULL || !active || venture_entity_get_organization_id(reason) != org)
 					return refuse(error, "stage \"%s\" is a lost stage: the manifest needs loss_reason_id naming an active loss reason", stage);
 			}
+			/* A closed stage books closed-at and the sales credit on the
+			 * source close date. move_stage_at() substitutes now when that
+			 * timestamp is missing, which would date the win or loss on
+			 * the day of the import. Refuse that, and a date still ahead. */
+			if (target.kind != 0)
+			{
+				g_autoptr(GDateTime) close = NULL;
+				g_autoptr(GDateTime) now = NULL;
+				if (!parse_time(cell(table, row, "close_date"), &close, "deal", id, "close date", error))
+					return FALSE;
+				if (close == NULL)
+					return refuse(error, "deal %s is in a closed stage and needs a close date; a blank date would book the win or loss today", id);
+				now = g_date_time_new_now_utc();
+				if (g_date_time_compare(close, now) > 0)
+					return refuse(error, "deal %s: close date is in the future", id);
+			}
 			money = deal_amount(manifest, table, row, id, error);
 			if (money == NULL)
 				return FALSE;
@@ -548,6 +685,10 @@ validate_deals(VentureCrmImportService *self, gint64 org, JsonObject *manifest, 
 /* ------------------------------------------------------------------------
  * Preview
  * ---------------------------------------------------------------------- */
+
+static gboolean validate_custom_tables(VentureCrmImportService *self, gint64 org,
+	JsonObject *manifest, GPtrArray *tables, GError **error);
+
 
 static gboolean
 add_row(VentureCrmImportService *self, gint64 import_id, gint64 org, const gchar *source, const gchar *object,
@@ -564,6 +705,7 @@ VentureEntity *
 venture_crm_import_service_preview(VentureCrmImportService *self, gint64 organization_id,
 	JsonObject *manifest, const VentureActor *actor, GError **error)
 {
+	g_autoptr(CrmImportQuiet) quiet = NULL;
 	g_autoptr(VentureCrmImport) batch = NULL;
 	g_autoptr(GPtrArray) tables = NULL;
 	g_autoptr(GString) report = NULL;
@@ -571,8 +713,10 @@ venture_crm_import_service_preview(VentureCrmImportService *self, gint64 organiz
 	g_autofree gchar *manifest_text = NULL;
 	const gchar *source;
 	JsonArray *unsupported;
+	JsonNode *unsupported_node;
 	guint t, r, i;
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT_SERVICE(self), NULL);
+	quiet = crm_import_quiet_begin(self->database);
 	if (organization_id <= 0)
 	{
 		refuse(error, "a migration needs one legal entity; choose an organization first");
@@ -594,6 +738,8 @@ venture_crm_import_service_preview(VentureCrmImportService *self, gint64 organiz
 		return NULL;
 	if (!validate_deals(self, organization_id, manifest, tables, error))
 		return NULL;
+	if (!validate_custom_tables(self, organization_id, manifest, tables, error))
+		return NULL;
 	report = g_string_new(NULL);
 	g_string_append_printf(report, "CRM import preview (%s)\n", source);
 	for (t = 0; t < tables->len; t++)
@@ -601,10 +747,41 @@ venture_crm_import_service_preview(VentureCrmImportService *self, gint64 organiz
 		Table *table = g_ptr_array_index(tables, t);
 		g_string_append_printf(report, "- %s: %u rows\n", table->file, table->rows->len - 1);
 	}
-	g_string_append(report, "Unsupported: attachments");
-	unsupported = json_object_has_member(manifest, "unsupported") ? json_object_get_array_member(manifest, "unsupported") : NULL;
+	g_string_append(report, "Unsupported:");
+	unsupported_node = json_object_get_member(manifest, "unsupported");
+	if (unsupported_node != NULL && !JSON_NODE_HOLDS_ARRAY(unsupported_node))
+	{
+		refuse(error, "unsupported must be an array of explanations");
+		return NULL;
+	}
+	unsupported = unsupported_node != NULL ? json_node_get_array(unsupported_node) : NULL;
 	for (i = 0; unsupported != NULL && i < json_array_get_length(unsupported); i++)
-		g_string_append_printf(report, ", %s", json_array_get_string_element(unsupported, i));
+	{
+		JsonNode *item = json_array_get_element(unsupported, i);
+		const gchar *explanation = NULL;
+		g_autofree gchar *detail = NULL;
+		if (JSON_NODE_HOLDS_VALUE(item) && json_node_get_value_type(item) == G_TYPE_STRING)
+			explanation = json_node_get_string(item);
+		else if (JSON_NODE_HOLDS_OBJECT(item))
+		{
+			JsonObject *object = json_node_get_object(item);
+			const gchar *name = obj_str(object, "object");
+			const gchar *reason = obj_str(object, "reason");
+			if (!blank(name) && !blank(reason))
+			{
+				detail = g_strdup_printf("%s: %s", name, reason);
+				explanation = detail;
+			}
+		}
+		if (blank(explanation))
+		{
+			refuse(error, "every unsupported entry needs an object and reason, or a nonempty explanation");
+			return NULL;
+		}
+		g_string_append_printf(report, "%s%s", i == 0 ? " " : "; ", explanation);
+	}
+	if (unsupported == NULL || json_array_get_length(unsupported) == 0)
+		g_string_append(report, " none");
 	g_string_append_c(report, '\n');
 	json_node_set_object(node, json_object_ref(manifest));
 	manifest_text = venture_json_to_string(node, FALSE);
@@ -696,6 +873,27 @@ run_row(Run *run, const gchar *object, const gchar *source_id)
 {
 	g_autofree gchar *key = row_key(object, source_id);
 	return g_hash_table_lookup(run->rows, key);
+}
+
+static gchar *string_of(VentureEntity *record, const gchar *property);
+
+static void
+append_result_report(VentureEntity *batch, GPtrArray *rows, const gchar *heading)
+{
+	g_autofree gchar *previous = string_of(batch, "report");
+	g_autoptr(GString) report = g_string_new(previous);
+	guint i;
+	g_string_append_printf(report, "\n%s\n", heading);
+	for (i = 0; i < rows->len; i++) {
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autofree gchar *object = string_of(row, "source-object"), *source_id = string_of(row, "source-id");
+		g_autofree gchar *status = string_of(row, "status"), *type = string_of(row, "record-type"), *detail = string_of(row, "exception");
+		gint64 id;
+		g_object_get(row, "record-id", &id, NULL);
+		g_string_append_printf(report, "- %s %s: %s -> %s %" G_GINT64_FORMAT "%s%s\n", object, source_id,
+			status, type != NULL ? type : "none", id, blank(detail) ? "" : "; ", blank(detail) ? "" : detail);
+	}
+	g_object_set(batch, "report", report->str, NULL);
 }
 
 static gboolean
@@ -940,6 +1138,57 @@ row_pending(VentureEntity *row)
 	return g_strcmp0(status, "preview") == 0 && record_id == 0;
 }
 
+#include "venture-crm-import-fields.inc"
+
+/* Accounting cutovers retain their party identities even when a CRM export
+ * has no website or email. Only that evidence permits a unique name fallback. */
+static VentureEntity *
+match_accounting_company(Run *run, Table *table, gchar **row, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) mappings = NULL;
+	g_autoptr(VentureEntity) by_name = NULL, by_source = NULL;
+	const gchar *source_id = cell(table, row, "accounting_source_id");
+	const gchar *name = cell(table, row, "name");
+	guint i;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "accounting_cutover_row") == G_TYPE_INVALID) return NULL;
+	if (blank(source_id)) source_id = cell(table, row, "id");
+	query = venture_query_new(VENTURE_TYPE_ACCOUNTING_CUTOVER_ROW);
+	venture_query_set_organization(query, run->org); venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_string(query, "record-type", VENTURE_FILTER_OP_EQ, "company", error) ||
+		!venture_query_add_filter_string(query, "source-type", VENTURE_FILTER_OP_EQ, "customer", error)) return NULL;
+	mappings = venture_database_find(run->self->database, query, error);
+	if (mappings == NULL) return NULL;
+	for (i = 0; i < mappings->len; i++) {
+		VentureEntity *mapping = g_ptr_array_index(mappings, i);
+		g_autoptr(VentureEntity) company = NULL, cutover = NULL;
+		g_autofree gchar *source = NULL, *status = NULL, *state = NULL, *existing_name = NULL;
+		gint64 id, cutover_id;
+		g_object_get(mapping, "record-id", &id, "cutover-id", &cutover_id, "source-id", &source, "status", &status, NULL);
+		if (id <= 0 || (g_strcmp0(status, "imported") && g_strcmp0(status, "matched"))) continue;
+		cutover = venture_database_get(run->self->database, VENTURE_TYPE_ACCOUNTING_CUTOVER, cutover_id, error);
+		if (cutover == NULL) return NULL;
+		g_object_get(cutover, "state", &state, NULL);
+		if (!g_strcmp0(state, "rolled_back")) continue;
+		company = venture_database_get(run->self->database, VENTURE_TYPE_COMPANY, id, error);
+		if (company == NULL) return NULL;
+		if (venture_entity_is_deleted(company) || venture_entity_get_organization_id(company) != run->org) continue;
+		existing_name = string_of(company, "name");
+		if (!g_strcmp0(source, source_id)) {
+			if (by_source != NULL && venture_entity_get_id(by_source) != id) {
+				refuse(error, "company %s has ambiguous accounting source ids", source_id); return NULL;
+			}
+			g_set_object(&by_source, company);
+		} else if (!blank(name) && same_text(name, existing_name)) {
+			if (by_name != NULL && venture_entity_get_id(by_name) != id) {
+				refuse(error, "company %s matches multiple accounting customers; provide accounting_source_id", name); return NULL;
+			}
+			g_set_object(&by_name, company);
+		}
+	}
+	return by_source != NULL ? g_steal_pointer(&by_source) : g_steal_pointer(&by_name);
+}
+
 static gboolean
 import_companies(Run *run, Table *table, GError **error)
 {
@@ -965,6 +1214,8 @@ import_companies(Run *run, Table *table, GError **error)
 			continue;
 		}
 		existing = match_company(run, cell(table, row, "domain"), cell(table, row, "website"), cell(table, row, "email"), error);
+		if (existing == NULL && (error == NULL || *error == NULL))
+			existing = match_accounting_company(run, table, row, error);
 		if (existing == NULL && error != NULL && *error != NULL)
 			return FALSE;
 		if (existing != NULL)
@@ -990,7 +1241,8 @@ import_companies(Run *run, Table *table, GError **error)
 		if (blank(cell(table, row, "website")) && !blank(cell(table, row, "domain")))
 			g_object_set(company, "website", cell(table, row, "domain"), NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(company), run->org);
-		if (!venture_database_save(run->self->database, VENTURE_ENTITY(company), run->actor, error))
+		if (!apply_custom_fields(run, table, row, VENTURE_ENTITY(company), error) ||
+			!venture_database_save(run->self->database, VENTURE_ENTITY(company), run->actor, error))
 			return FALSE;
 		if (!finish_row(run, tracking, "imported", NULL, "company", venture_entity_get_id(VENTURE_ENTITY(company)), TRUE, error))
 			return FALSE;
@@ -1066,7 +1318,8 @@ import_contacts(Run *run, Table *table, GError **error)
 		g_object_set(contact, "name", name, "email", cell(table, row, "email"), "phone", cell(table, row, "phone"),
 			"role", cell(table, row, "title"), "source", run->source, "company-id", company_id, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(contact), run->org);
-		if (!venture_database_save(run->self->database, VENTURE_ENTITY(contact), run->actor, error))
+		if (!apply_custom_fields(run, table, row, VENTURE_ENTITY(contact), error) ||
+			!venture_database_save(run->self->database, VENTURE_ENTITY(contact), run->actor, error))
 			return FALSE;
 		if (company_id == 0 && !blank(company_source))
 		{
@@ -1095,7 +1348,7 @@ import_deals(Run *run, Table *table, GError **error)
 		g_autoptr(VentureDeal) deal = NULL;
 		g_autoptr(VentureDeal) moved = NULL;
 		g_autoptr(VentureMoney) value = NULL;
-		g_autoptr(GDateTime) close = NULL;
+		g_autoptr(GDateTime) close = NULL, created_at = NULL;
 		g_autoptr(GString) missing = NULL;
 		g_autofree gchar *note = NULL;
 		StageTarget target;
@@ -1116,7 +1369,8 @@ import_deals(Run *run, Table *table, GError **error)
 		value = deal_amount(run->manifest, table, row, id, error);
 		if (value == NULL)
 			return FALSE;
-		if (!parse_time(cell(table, row, "close_date"), &close, "deal", id, "close date", error))
+		if (!parse_time(cell(table, row, "created_at"), &created_at, "deal", id, "created date", error) ||
+			!parse_time(cell(table, row, "close_date"), &close, "deal", id, "close date", error))
 			return FALSE;
 		company_id = resolve_ref(run, "company", cell(table, row, "company_id"), error);
 		if (company_id < 0)
@@ -1136,10 +1390,15 @@ import_deals(Run *run, Table *table, GError **error)
 		if (target.kind == 2)
 			g_object_set(deal, "loss-reason-id", venture_json_object_get_int(run->manifest, "loss_reason_id", 0), NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(deal), run->org);
-		if (!venture_database_save(run->self->database, VENTURE_ENTITY(deal), run->actor, error))
+		if (!apply_custom_fields(run, table, row, VENTURE_ENTITY(deal), error) ||
+			!venture_deal_service_create_at(deals, deal, created_at, run->actor, error))
 			return FALSE;
 		note = g_strdup_printf("Imported from %s stage \"%s\"", run->source, cell(table, row, "stage"));
-		moved = venture_deal_service_move_stage(deals, deal, target.stage_id, note, run->actor, error);
+		/* Pass the source close date through. NULL would make move_stage_at()
+		 * stamp now, which preview already refuses for a closed stage. */
+		if (target.kind != 0 && close == NULL)
+			return refuse(error, "deal %s is in a closed stage and needs a close date; a blank date would book the win or loss today", id);
+		moved = venture_deal_service_move_stage_at(deals, deal, target.stage_id, target.kind == 0 ? created_at : close, note, run->actor, error);
 		if (moved == NULL)
 			return FALSE;
 		if (!finish_row(run, tracking, missing->len > 0 ? "exception" : "imported", missing->len > 0 ? missing->str : NULL,
@@ -1196,7 +1455,7 @@ attributed_body(Run *run, const gchar *body, const gchar *author)
 {
 	if (blank(author))
 		return g_strdup(body != NULL ? body : "");
-	return g_strdup_printf("%s%s\xe2\x80\x94 %s (%s)", body != NULL ? body : "", blank(body) ? "" : "\n\n", author, run->source);
+	return g_strdup_printf("%s%s\xe2\x80\x94 %s (%s: %s)", body != NULL ? body : "", blank(body) ? "" : "\n\n", owner_of(run, author), run->source, author);
 }
 
 static gboolean
@@ -1220,7 +1479,7 @@ resolve_history_refs(Run *run, Table *table, gchar **row, gint64 *contact, gint6
 }
 
 static gboolean
-write_interaction(Run *run, VentureEntity *tracking, gint kind, const gchar *subject, const gchar *body,
+write_interaction(Run *run, Table *table, gchar **row, VentureEntity *tracking, gint kind, const gchar *subject, const gchar *body,
 	const gchar *author, GDateTime *when, gint64 contact, gint64 company, gint64 deal, GError **error)
 {
 	g_autoptr(VentureInteraction) interaction = venture_interaction_new();
@@ -1228,7 +1487,8 @@ write_interaction(Run *run, VentureEntity *tracking, gint kind, const gchar *sub
 	g_object_set(interaction, "kind", kind, "subject", !blank(subject) ? subject : kind_label(kind), "body", text,
 		"occurred-at", when, "contact-id", contact, "company-id", company, "deal-id", deal, NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(interaction), run->org);
-	if (!venture_database_save(run->self->database, VENTURE_ENTITY(interaction), run->actor, error))
+	if (!apply_custom_fields(run, table, row, VENTURE_ENTITY(interaction), error) ||
+		!venture_database_save(run->self->database, VENTURE_ENTITY(interaction), run->actor, error))
 		return FALSE;
 	return finish_row(run, tracking, "imported", NULL, "interaction", venture_entity_get_id(VENTURE_ENTITY(interaction)), TRUE, error);
 }
@@ -1266,7 +1526,7 @@ import_notes(Run *run, Table *table, GError **error)
 				return FALSE;
 			continue;
 		}
-		if (!write_interaction(run, tracking, history_kind(table->file, cell(table, row, "kind")), cell(table, row, "subject"),
+		if (!write_interaction(run, table, row, tracking, history_kind(table->file, cell(table, row, "kind")), cell(table, row, "subject"),
 			cell(table, row, "body"), cell(table, row, "author"), when, contact, company, deal, error))
 			return FALSE;
 	}
@@ -1323,7 +1583,7 @@ import_tasks(Run *run, Table *table, GError **error)
 					return FALSE;
 				continue;
 			}
-			if (!write_interaction(run, tracking, history_kind(table->file, cell(table, row, "kind")), cell(table, row, "subject"),
+			if (!write_interaction(run, table, row, tracking, history_kind(table->file, cell(table, row, "kind")), cell(table, row, "subject"),
 				cell(table, row, "body"), cell(table, row, "owner"), when, contact, company, deal, error))
 				return FALSE;
 			continue;
@@ -1334,13 +1594,18 @@ import_tasks(Run *run, Table *table, GError **error)
 			"due-at", due, "status", VENTURE_ACTIVITY_STATUS_PLANNED,
 			"contact-id", contact, "company-id", company, "deal-id", deal, NULL);
 		venture_entity_set_organization_id(VENTURE_ENTITY(activity), run->org);
-		if (!venture_database_save(run->self->database, VENTURE_ENTITY(activity), run->actor, error))
+		if (!apply_custom_fields(run, table, row, VENTURE_ENTITY(activity), error) ||
+			!venture_database_save(run->self->database, VENTURE_ENTITY(activity), run->actor, error))
 			return FALSE;
 		if (!finish_row(run, tracking, "imported", NULL, "activity", venture_entity_get_id(VENTURE_ENTITY(activity)), TRUE, error))
 			return FALSE;
 	}
 	return TRUE;
 }
+
+#include "venture-crm-import-content.inc"
+#include "venture-crm-import-native.inc"
+#include "venture-crm-import-commercial.inc"
 
 static gboolean
 import_impl(VentureCrmImportService *self, VentureCrmImport *batch, const VentureActor *actor, GError **error)
@@ -1353,6 +1618,10 @@ import_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Ventur
 	Run run;
 	guint i, t;
 	g_object_get(batch, "state", &state, NULL);
+	/* The batch commits atomically; replaying completed history would
+	 * repeat settlement and fulfillment transitions. */
+	if (g_strcmp0(state, "imported") == 0)
+		return TRUE;
 	if (g_strcmp0(state, "preview") != 0 && g_strcmp0(state, "imported") != 0)
 		return refuse(error, "import requires a previewed batch; this one is %s", state != NULL ? state : "unknown");
 	manifest = manifest_of(VENTURE_ENTITY(batch));
@@ -1383,6 +1652,8 @@ import_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Ventur
 	run.source = obj_str(manifest, "source");
 	run.rows = index;
 	run.actor = actor;
+	if (!prepare_custom_fields(&run, tables, error))
+		goto fail;
 	for (t = 0; t < tables->len; t++)
 	{
 		Table *table = g_ptr_array_index(tables, t);
@@ -1395,11 +1666,20 @@ import_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Ventur
 			ok = import_deals(&run, table, error);
 		else if (g_strcmp0(table->object, "note") == 0)
 			ok = import_notes(&run, table, error);
-		else
+		else if (g_strcmp0(table->object, "task") == 0)
 			ok = import_tasks(&run, table, error);
+		else if (g_strcmp0(table->object, "attachment") == 0)
+			ok = import_attachments(&run, table, error);
+		else if (table->module != NULL && g_strcmp0(table->module->object, "payment") == 0)
+			ok = TRUE;
+		else
+			ok = import_native_records(&run, table, error);
 		if (!ok)
 			goto fail;
 	}
+	if (!import_commercial_history(&run, tables, error))
+		goto fail;
+	append_result_report(VENTURE_ENTITY(batch), rows, "Import results (existing accounting matches are retained)");
 	g_object_set(batch, "state", "imported", NULL);
 	if (!save_owned(self, VENTURE_ENTITY(batch), actor, error) ||
 		!venture_database_commit(self->database, error))
@@ -1414,7 +1694,9 @@ gboolean
 venture_crm_import_service_import(VentureCrmImportService *self, VentureCrmImport *batch,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(CrmImportQuiet) quiet = NULL;
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT_SERVICE(self), FALSE);
+	quiet = crm_import_quiet_begin(self->database);
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT(batch), FALSE);
 	if (self->database == NULL)
 		return refuse(error, "database is unavailable");
@@ -1425,9 +1707,11 @@ gboolean
 venture_crm_import_service_activate(VentureCrmImportService *self, VentureCrmImport *batch,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(CrmImportQuiet) quiet = NULL;
 	g_autofree gchar *state = NULL;
 	g_autoptr(GDateTime) now = NULL;
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT_SERVICE(self), FALSE);
+	quiet = crm_import_quiet_begin(self->database);
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT(batch), FALSE);
 	g_object_get(batch, "state", &state, NULL);
 	if (g_strcmp0(state, "active") == 0)
@@ -1446,12 +1730,7 @@ venture_crm_import_service_activate(VentureCrmImportService *self, VentureCrmImp
 static GType
 record_gtype(const gchar *type)
 {
-	if (g_strcmp0(type, "company") == 0) return VENTURE_TYPE_COMPANY;
-	if (g_strcmp0(type, "contact") == 0) return VENTURE_TYPE_CONTACT;
-	if (g_strcmp0(type, "deal") == 0) return VENTURE_TYPE_DEAL;
-	if (g_strcmp0(type, "interaction") == 0) return VENTURE_TYPE_INTERACTION;
-	if (g_strcmp0(type, "activity") == 0) return VENTURE_TYPE_ACTIVITY;
-	return G_TYPE_INVALID;
+	return venture_entity_registry_lookup(venture_entity_registry_get_default(), type);
 }
 
 /* Removing an imported win must reverse its immutable sales credit through
@@ -1484,12 +1763,20 @@ rollback_reopen_deal(VentureCrmImportService *self, VentureEntity *record,
 		venture_entity_get_id(stage), "CRM import rollback", actor, error));
 }
 
+#include "venture-crm-import-rollback.inc"
+
 static gboolean
 rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const VentureActor *actor, GError **error)
 {
-	static const gchar *const order[] = { "activity", "interaction", "deal", "contact", "company" };
+	static const gchar *const order[] = {
+		"record_link", "document", "activity", "interaction", "ticket",
+		"invoice_line", "invoice", "sales_order_line", "sales_order", "quote_line", "quote",
+		"price_list_item", "price_list", "product", "lead", "campaign", "deal", "contact", "company",
+		"accounting_custom_field"
+	};
 	g_autofree gchar *state = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) retained = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	guint i, o;
 	g_object_get(batch, "state", &state, NULL);
 	if (g_strcmp0(state, "active") == 0)
@@ -1501,6 +1788,7 @@ rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Vent
 	rows = batch_rows(self, VENTURE_ENTITY(batch), error);
 	if (rows == NULL)
 		goto fail;
+	if (!rollback_commercial(self, rows, retained, actor, error)) goto fail;
 	/* History and next actions first, then the records they hang off. */
 	for (o = 0; o < G_N_ELEMENTS(order); o++)
 	{
@@ -1515,7 +1803,14 @@ rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Vent
 			if (!created || record_id <= 0 || g_strcmp0(type, order[o]) != 0)
 				continue;
 			record = venture_database_get(self->database, record_gtype(type), record_id, error);
-			if (record == NULL)
+			if (record != NULL) {
+				g_autofree gchar *key = retained_key(record);
+				if (g_hash_table_contains(retained, key) || (g_hash_table_size(retained) > 0 && VENTURE_IS_ACCOUNTING_CUSTOM_FIELD(record))) {
+					g_object_set(row, "exception", "Retained immutable commercial history and its references after rollback", NULL);
+					continue;
+				}
+			}
+			if (record == NULL || !remove_custom_values(self, record, actor, error))
 				goto fail;
 			if (VENTURE_IS_DEAL(record) && !venture_entity_is_deleted(record))
 			{
@@ -1524,8 +1819,16 @@ rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Vent
 					goto fail;
 				g_set_object(&record, reopened);
 			}
-			if (!venture_entity_is_deleted(record) && !venture_database_delete(self->database, record, actor, error))
-				goto fail;
+			if (!venture_entity_is_deleted(record))
+			{
+				gboolean removed;
+				if (VENTURE_IS_SALES_ORDER(record) || VENTURE_IS_SALES_ORDER_LINE(record))
+					removed = venture_sales_order_service_set_draft_deleted(
+						venture_sales_order_service_get(self->database), record, TRUE, actor, error);
+				else
+					removed = venture_database_delete(self->database, record, actor, error);
+				if (!removed) goto fail;
+			}
 		}
 	}
 	for (i = 0; i < rows->len; i++)
@@ -1535,6 +1838,7 @@ rollback_impl(VentureCrmImportService *self, VentureCrmImport *batch, const Vent
 		if (!save_owned(self, row, actor, error))
 			goto fail;
 	}
+	append_result_report(VENTURE_ENTITY(batch), rows, "Rollback results (financial evidence is retained)");
 	g_object_set(batch, "state", "rolled_back", NULL);
 	if (!save_owned(self, VENTURE_ENTITY(batch), actor, error) ||
 		!venture_database_commit(self->database, error))
@@ -1549,7 +1853,9 @@ gboolean
 venture_crm_import_service_rollback(VentureCrmImportService *self, VentureCrmImport *batch,
 	const VentureActor *actor, GError **error)
 {
+	g_autoptr(CrmImportQuiet) quiet = NULL;
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT_SERVICE(self), FALSE);
+	quiet = crm_import_quiet_begin(self->database);
 	g_return_val_if_fail(VENTURE_IS_CRM_IMPORT(batch), FALSE);
 	if (self->database == NULL)
 		return refuse(error, "database is unavailable");

@@ -1695,6 +1695,8 @@ test_auth_api_refuses_anonymous_requests(
 		for (i = 0; i < G_N_ELEMENTS(setup); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", setup[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/crm_imports/attachments/1",
+			NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 		for (i = 0; i < G_N_ELEMENTS(crm_import); i++)
 			g_assert_cmpuint(server_fixture_request(fixture, "POST", crm_import[i],
 				NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -4548,8 +4550,8 @@ test_auth_look_switch_is_a_cookie(
 	 * other one. */
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", cookie,
 		NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "instrument panel"));
-	g_assert_null(strstr(page, "warm monochrome"));
+	g_assert_nonnull(strstr(page, "/venture-industrial.css\""));
+	g_assert_null(strstr(page, "/venture-classic.css\""));
 	g_assert_nonnull(strstr(page, "name=\"look\" value=\"classic\""));
 	g_assert_nonnull(strstr(page, ">Classic look</button>"));
 
@@ -4565,8 +4567,8 @@ test_auth_look_switch_is_a_cookie(
 	page = NULL;
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", both,
 		NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "warm monochrome"));
-	g_assert_null(strstr(page, "instrument panel"));
+	g_assert_nonnull(strstr(page, "/venture-classic.css\""));
+	g_assert_null(strstr(page, "/venture-industrial.css\""));
 	g_assert_nonnull(strstr(page, ">Industrial look</button>"));
 
 	/* The sign-in page follows the cookie, session or no session. */
@@ -4574,7 +4576,7 @@ test_auth_look_switch_is_a_cookie(
 	page = NULL;
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/login",
 		"venture_look=classic", NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "warm monochrome"));
+	g_assert_nonnull(strstr(page, "/venture-classic.css\""));
 
 	/* A forged value is the configuration again. */
 	forged = g_strdup_printf("%s; venture_look=../etc/passwd", cookie);
@@ -4582,7 +4584,7 @@ test_auth_look_switch_is_a_cookie(
 	page = NULL;
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/", forged,
 		NULL, &page, NULL), ==, SOUP_STATUS_OK);
-	g_assert_nonnull(strstr(page, "instrument panel"));
+	g_assert_nonnull(strstr(page, "/venture-industrial.css\""));
 
 	/* An off-site "back" lands on the home page instead. */
 	g_free(set_cookie);
@@ -4694,7 +4696,21 @@ test_orgaccess_surface(ServerFixture *fixture, gconstpointer user_data)
 	g_assert_true(venture_database_save(fixture->database, company, NULL, NULL));
 	server_fixture_create_user(fixture, "outsider", "password", VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "outsider", "password");
-	if (0 == g_strcmp0(surface, "read"))
+	if (0 == g_strcmp0(surface, "crm-attachment"))
+	{
+		g_autoptr(VentureEntity) document = g_object_new(VENTURE_TYPE_DOCUMENT,
+			"title", "Synthetic private attachment", "kind", "crm-import",
+			"content-base64", "U3ludGhldGljCg==", "organization-id", org, NULL);
+		g_autofree gchar *member_cookie = NULL;
+		g_assert_true(venture_database_save(fixture->database, document, NULL, NULL));
+		path = g_strdup_printf("/api/v1/crm_imports/attachments/%" G_GINT64_FORMAT, venture_entity_get_id(document));
+		server_fixture_create_member(fixture, "attachment-reader", "reader-password", VENTURE_USER_ROLE_VIEWER, NULL);
+		member_cookie = server_fixture_login(fixture, "attachment-reader", "reader-password");
+		g_assert_cmpuint(server_fixture_request(fixture, "GET", path, member_cookie, NULL, &body, NULL), ==, 200);
+		g_assert_cmpstr(body, ==, "Synthetic\n");
+		g_clear_pointer(&body, g_free);
+	}
+	else if (0 == g_strcmp0(surface, "read"))
 		path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT, venture_entity_get_id(company));
 	else if (0 == g_strcmp0(surface, "list"))
 		path = g_strdup_printf("/api/v1/company?organization_id=%" G_GINT64_FORMAT, org);
@@ -4717,7 +4733,7 @@ test_orgaccess_surface(ServerFixture *fixture, gconstpointer user_data)
 	else
 		path = g_strdup("/account");
 	status = server_fixture_request(fixture, "GET", path, cookie, NULL, &body, NULL);
-	if (0 == g_strcmp0(surface, "read"))
+	if (0 == g_strcmp0(surface, "read") || 0 == g_strcmp0(surface, "crm-attachment"))
 		g_assert_cmpuint(status, ==, 404);
 	else
 	{
@@ -7489,6 +7505,7 @@ main(
 #undef ADD
 
 	g_test_add("/auth/federation-owner-boundary", ServerFixture, NULL, server_fixture_set_up, test_federation_owner_boundary, server_fixture_tear_down);
+	g_test_add("/orgaccess/surface/crm-attachment", ServerFixture, "crm-attachment", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/read", ServerFixture, "read", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/list", ServerFixture, "list", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);
 	g_test_add("/orgaccess/surface/search", ServerFixture, "search", server_fixture_set_up, test_orgaccess_surface, server_fixture_tear_down);

@@ -729,7 +729,12 @@ store_value(VentureCustomFieldsService *self, gint64 organization_id,
 	query = venture_query_new(VENTURE_TYPE_CUSTOM_FIELD_VALUE);
 	venture_query_set_organization(query, organization_id);
 	venture_query_add_filter_string(query, "value-key", VENTURE_FILTER_OP_EQ, key, NULL);
-	existing = venture_database_find_one(self->database, query, NULL);
+	venture_query_set_include_deleted(query, TRUE);
+	existing = venture_database_find_one(self->database, query, error);
+	if (error != NULL && *error != NULL) return FALSE;
+	if (existing != NULL && venture_entity_is_deleted(existing) &&
+		!venture_database_restore(self->database, existing, actor, error))
+		return FALSE;
 	row = existing ? VENTURE_CUSTOM_FIELD_VALUE(g_object_ref(existing)) : venture_custom_field_value_new();
 	venture_entity_set_organization_id(VENTURE_ENTITY(row), organization_id);
 	g_object_set(row, "record-type", record_type, "record-id", record_id, "name", name,

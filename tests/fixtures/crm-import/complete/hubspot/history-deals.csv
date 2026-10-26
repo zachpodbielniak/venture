@@ -1,0 +1,4 @@
+Record ID,Name,Amount,Currency,Deal Stage,Owner,Associated Company IDs,Associated Contact IDs,Legacy Label,Created At,Close Date
+deal-1,Synthetic renewal,125.50,USD,proposal,owner-1,company-1,contact-1,synthetic-deals,2025-04-01T00:00:00Z,2025-04-30T00:00:00Z
+deal-won,Synthetic won,125.50,USD,won,owner-1,company-1,contact-1,synthetic-deals,2025-04-01T00:00:00Z,2025-04-05T00:00:00Z
+deal-lost,Synthetic lost,125.50,USD,lost,owner-1,company-1,contact-1,synthetic-deals,2025-04-01T00:00:00Z,2025-04-06T00:00:00Z

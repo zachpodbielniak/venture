@@ -983,6 +983,7 @@ venture_settlement_service_refresh_invoice(VentureSettlementService *self,
 
 static gboolean
 invoice_parts(VentureSettlementService *self, VentureEntity *invoice, GDateTime *date,
+	const VentureMoney *adjustment,
 	VentureMoney **total, VentureMoney **net, VentureMoney **tax, VentureMoney **discount,
 	VentureMoney **shipping, const VentureActor *actor, GError **error)
 {
@@ -1101,6 +1102,8 @@ invoice_parts(VentureSettlementService *self, VentureEntity *invoice, GDateTime 
 		*discount = venture_money_new_zero(venture_money_get_currency(*total));
 	if (*shipping == NULL)
 		*shipping = ship != NULL ? venture_money_copy(ship) : venture_money_new_zero(venture_money_get_currency(*total));
+	if (adjustment != NULL && !accumulate(total, adjustment, FALSE, error))
+		return FALSE;
 	return check_amount(*total, error);
 }
 
@@ -1320,7 +1323,10 @@ perform_transition(VentureSettlementService *self, VentureEntity *invoice,
 		g_autoptr(VentureMoney) shipping = NULL;
 		if (first_issue)
 		{
-			if (!invoice_parts(self, invoice, date, &total, &net, &tax, &discount, &shipping, actor, error))
+			g_autoptr(VentureMoney) adjustment = NULL;
+			if (opening != NULL)
+				g_object_get(invoice, "opening-adjustment", &adjustment, NULL);
+			if (!invoice_parts(self, invoice, date, adjustment, &total, &net, &tax, &discount, &shipping, actor, error))
 				return FALSE;
 		}
 		else if (issued != NULL)
@@ -2162,7 +2168,7 @@ check_invoice_edit(VentureSettlementService *self, VentureEntity *record,
 	static const gchar *const financial[] = {
 		"company_id", "organization_id", "venture_id", "issued_at", "due_at", "number", NULL
 	};
-	static const gchar *const derived[] = { "paid_at", "workflow_state", "deleted_at", "opening_at", NULL };
+	static const gchar *const derived[] = { "paid_at", "workflow_state", "deleted_at", "opening_at", "opening_adjustment", NULL };
 	gint status;
 	gint old_status;
 
@@ -2175,12 +2181,13 @@ check_invoice_edit(VentureSettlementService *self, VentureEntity *record,
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Use VentureSettlementService to apply a payment; status=paid is derived from allocations");
 	if (previous == NULL)
 	{
+		g_autoptr(VentureMoney) adjustment = NULL;
 		g_autoptr(GDateTime) paid = NULL;
 		g_autofree gchar *workflow = NULL;
 
-		g_object_get(record, "paid-at", &paid, "workflow-state", &workflow, NULL);
+		g_object_get(record, "paid-at", &paid, "workflow-state", &workflow, "opening-adjustment", &adjustment, NULL);
 		if (status != VENTURE_INVOICE_STATUS_DRAFT || paid != NULL || (workflow != NULL && *workflow != '\0') ||
-			opening_invoice(record))
+			opening_invoice(record) || adjustment != NULL)
 			return refuse(error, VENTURE_ERROR_VALIDATION, "Create a draft, add its lines, then issue it through VentureSettlementService");
 	}
 	else
@@ -2771,7 +2778,7 @@ correct_tax_allocation_impl(VentureSettlementService *self,
 				continue;
 		}
 		/* Rates are re-derived as of the original issue, not the correction. */
-		if (!invoice_parts(self, invoice, issued_at != NULL ? issued_at : date,
+		if (!invoice_parts(self, invoice, issued_at != NULL ? issued_at : date, NULL,
 				&total, &net, &tax, &discount, &shipping, actor, error))
 			return finish_operation(self, FALSE, error);
 		if (tax == NULL || venture_money_is_zero(tax))

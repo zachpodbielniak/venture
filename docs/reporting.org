@@ -1232,3 +1232,28 @@ preflight. The outbox resolves and durably binds the current account at the
 first real delivery attempt, so queued reports still honor later rotation
 or disconnect. The pack's delivery stamp records acceptance into the outbox,
 not relay acceptance or arrival in a recipient's inbox.
+
+* Business selection in browser reports
+
+HTML reports, JSON results and CSV downloads resolve the same business.
+An explicit =organization_id= takes precedence over the sidebar selection;
+its organization must be readable under the caller's existing access policy.
+Malformed identifiers are refused, and stale or foreign selections never
+fall back to another business.
+
+Without a selection, the workspace default is used only when readable.
+A hosted owner with exactly one accessible business uses that business;
+several accessible businesses require a sidebar selection if the workspace
+default is unavailable. The resolved business is retained in period and CSV
+links. The existing explicit All entities choice retains each report's
+existing unscoped behavior.
+Accounts with no readable businesses retain each report's existing empty or
+unavailable result under the database access policy; they cannot read another
+business's rows. The existing organization-access report regression covers
+this no-membership case.
+
+The hosted-browser regressions first reproduced a $125 unpaid invoice
+reported as zero without an explicit business ID, and a selected balance
+sheet returning 404. They exercise a synthetic passwordless owner through
+HTTP, compare JSON and CSV with explicitly scoped results, check the HTML
+amount and export link, and refuse another business and malformed IDs.

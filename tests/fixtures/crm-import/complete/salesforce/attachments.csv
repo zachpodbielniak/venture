@@ -1,0 +1,4 @@
+Id,Name,MimeType,ParentObject,ParentId,ContentBase64,Legacy Label
+attachment-1,synthetic.txt,text/plain,contact,contact-1,U3ludGhldGljIGF0dGFjaG1lbnQgZm9yIGlzc3VlIDIxMC4K,synthetic-attachments
+attachment-note,synthetic.txt,text/plain,note,notes-1,U3ludGhldGljIGF0dGFjaG1lbnQgZm9yIGlzc3VlIDIxMC4K,synthetic-attachments
+attachment-email,synthetic.txt,text/plain,note,emails-1,U3ludGhldGljIGF0dGFjaG1lbnQgZm9yIGlzc3VlIDIxMC4K,synthetic-attachments

@@ -1879,8 +1879,8 @@ test_csv_payload(Fixture *f, gconstpointer data)
 {
 	static const gchar *const vendors[] = { "source_id,name,email", "vend-1,Supplier,ap@supplier.example", NULL };
 	static const gchar *const open_ap[] = {
-		"source_id,vendor_source_id,number,date,paid,line_description,line_amount,line_tax",
-		"bill-1,vend-1,B-1,2025-12-10,30,Hosting,100,5",
+		"source_id,vendor_source_id,number,date,paid,line_description,line_amount,line_tax,adjustment",
+		"bill-1,vend-1,B-1,2025-12-10,30,Hosting,100,5,-0.01",
 		"bill-1,vend-1,,,,Support,50,",
 		"bill-2,vend-1,B-2,2025-12-20,,Parts,200,", NULL
 	};
@@ -1917,8 +1917,8 @@ test_csv_payload(Fixture *f, gconstpointer data)
 	balance = venture_payables_service_bill_balance(venture_payables_service_get(f->db),
 		venture_entity_get_id(bill), NULL, &error);
 	g_assert_no_error(error);
-	/* 100 + 5 + 50 less 30 paid. */
-	g_assert_cmpint(venture_money_get_amount(balance), ==, 12500);
+	/* 100 + 5 + 50 - 0.01 adjustment less 30 paid. */
+	g_assert_cmpint(venture_money_get_amount(balance), ==, 12499);
 	g_assert_cmpint(cash_balance(f, "2026-01-01T00:00:00Z"), ==, 50000);
 	reconcile_ok(f, cutover);
 	g_clear_pointer(&tables, g_hash_table_unref);
@@ -2225,10 +2225,202 @@ test_party_name_required(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count_type(f, VENTURE_TYPE_COMPANY), ==, 0);
 }
 
+static gboolean
+bytes_contain(GBytes *bytes, const gchar *text)
+{
+	gsize size, i, length = strlen(text);
+	const gchar *buffer = g_bytes_get_data(bytes, &size);
+	for (i = 0; i + length <= size; i++)
+		if (memcmp(buffer + i, text, length) == 0)
+			return TRUE;
+	return FALSE;
+}
+
+/* Source tax stays frozen even when the document rounds its gross total. */
+static void
+test_opening_adjustment(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) batch = NULL;
+	g_autoptr(VentureEntity) bill = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureEntity) line = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	VentureActor actor;
+	(void)data;
+	actor_init(&actor);
+	batch = import_payload(f,
+		"{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"open_ar\":[{\"source_id\":\"adjust-ar\",\"customer_name\":\"Example Customer\","
+		"\"number\":\"ADJ-AR\",\"date\":\"2025-12-01\",\"net\":\"8.40\",\"tax\":\"0.57\","
+		"\"adjustment\":\"0.01\",\"amount\":\"8.98\",\"paid\":\"1\",\"balance\":\"7.98\"}],"
+		"\"open_ap\":[{\"source_id\":\"adjust-ap\",\"vendor_name\":\"Example Vendor\","
+		"\"number\":\"ADJ-AP\",\"date\":\"2025-12-01\",\"adjustment\":\"-0.01\","
+		"\"paid\":\"1\",\"balance\":\"7.96\",\"lines\":[{\"amount\":\"8.40\",\"tax\":\"0.57\"}]}]}", TRUE, &error);
+	g_assert_no_error(error);
+	bill = find_one(f, VENTURE_TYPE_VENDOR_BILL, "number", "ADJ-AP");
+	invoice = find_one(f, VENTURE_TYPE_INVOICE, "number", "ADJ-AR");
+	amount = venture_payables_service_bill_balance(venture_payables_service_get(f->db), venture_entity_get_id(bill), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(amount), ==, 796);
+	g_clear_pointer(&amount, venture_money_free);
+	amount = venture_settlement_service_invoice_balance(venture_settlement_service_get(f->db), venture_entity_get_id(invoice), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(amount), ==, 798);
+	line = find_one(f, VENTURE_TYPE_VENDOR_BILL_LINE, "description", "Opening balance");
+	g_object_get(line, "tax-amount", &tax, NULL);
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 57);
+	g_clear_pointer(&tax, venture_money_free);
+	g_clear_object(&line);
+	line = find_one(f, VENTURE_TYPE_INVOICE_LINE, "description", "Opening balance");
+	g_object_get(line, "tax-amount", &tax, NULL);
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 57);
+	{
+		g_autoptr(GBytes) receipt = venture_financial_documents_thermal(f->context, invoice, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(receipt);
+		g_assert_true(bytes_contain(receipt, "Tax: $0.57"));
+		g_assert_true(bytes_contain(receipt, "Adjustment: $0.01"));
+		g_assert_true(bytes_contain(receipt, "Total: $8.98"));
+	}
+	g_assert_cmpint(account_balance(f, "1100", "2026-01-01T00:00:00Z"), ==, 798);
+	g_assert_cmpint(account_balance(f, "2000", "2026-01-01T00:00:00Z"), ==, -796);
+	/* Generic edits cannot rewrite the amount of an issued opening. */
+	g_object_set(invoice, "opening-adjustment", NULL, NULL);
+	g_assert_false(venture_database_save(f->db, invoice, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_object_set(bill, "opening-adjustment", NULL, NULL);
+	g_assert_false(venture_database_save(f->db, bill, &actor, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	reconcile_ok(f, batch);
+	g_assert_true(venture_cutover_service_rollback(venture_cutover_service_get(f->db), VENTURE_ACCOUNTING_CUTOVER(batch), &actor, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(account_balance(f, "3900", "2026-01-01T00:00:00Z"), ==, 0);
+}
+
+/* Adjustment validation happens during preview, before any documents exist. */
+static void
+test_adjustment_refusals(Fixture *f, gconstpointer data)
+{
+	const gchar *values[] = { "1 EUR", "bad", "-9 USD" };
+	guint i;
+	(void)data;
+	for (i = 0; i < G_N_ELEMENTS(values); i++)
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+			"\"open_ap\":[{\"source_id\":\"bad-ap\",\"vendor_name\":\"Example Vendor\","
+			"\"number\":\"BAD-AP\",\"date\":\"2025-12-01\",\"adjustment\":\"%s\","
+			"\"lines\":[{\"amount\":\"8.40\",\"tax\":\"0.57\"}]}],"
+			"\"open_ar\":[{\"source_id\":\"bad-ar\",\"customer_name\":\"Example Customer\","
+			"\"number\":\"BAD-AR\",\"date\":\"2025-12-01\",\"adjustment\":\"%s\","
+			"\"net\":\"8.40\",\"tax\":\"0.57\"}]}", values[i], values[i]);
+		g_autoptr(VentureEntity) batch = preview_payload(f, json);
+		g_autoptr(VentureEntity) ar = preview_row(f, batch, "open_ar", 0);
+		g_autoptr(VentureEntity) ap = preview_row(f, batch, "open_ap", 0);
+		g_autofree gchar *ar_state = NULL;
+		g_autofree gchar *ap_state = NULL;
+		g_object_get(ar, "status", &ar_state, NULL);
+		g_object_get(ap, "status", &ap_state, NULL);
+		g_assert_cmpstr(ar_state, ==, "exception");
+		g_assert_cmpstr(ap_state, ==, "exception");
+	}
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_VENDOR_BILL), ==, 0);
+	g_assert_cmpuint(count_type(f, VENTURE_TYPE_INVOICE), ==, 0);
+}
+
+/* An unresolved account must not make a balanced source file look wrong. */
+static void
+test_trial_balance_missing_account(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) batch = NULL;
+	g_autofree gchar *report = NULL;
+	(void)data;
+	batch = preview_payload(f, "{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"trial_balance\":[{\"account_code\":\"1000\",\"debit\":\"100\"},{\"account_code\":\"9999\",\"credit\":\"100\"}]}");
+	report = report_of(batch);
+	g_assert_nonnull(strstr(report, "9999 is missing"));
+	g_assert_null(strstr(report, "debits exceed credits"));
+	g_clear_object(&batch);
+	g_clear_pointer(&report, g_free);
+	batch = preview_payload(f, "{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"trial_balance\":[{\"account_code\":\"1000\",\"debit\":\"100\"},{\"account_code\":\"9999\",\"credit\":\"99\"}]}");
+	report = report_of(batch);
+	g_assert_nonnull(strstr(report, "debits exceed credits by 1.00 USD"));
+}
+
+/* A bad figure is its own error. It must not hide a real gap in the rows
+ * that parsed, and an overflow in one currency must not hide another. */
+static void
+test_trial_balance_partial_sum(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) batch = NULL;
+	g_autofree gchar *report = NULL;
+	(void)data;
+	batch = preview_payload(f, "{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"trial_balance\":[{\"account_code\":\"1000\",\"debit\":\"not-money\"},"
+		"{\"account_code\":\"1100\",\"debit\":\"100\"},{\"account_code\":\"3000\",\"credit\":\"99\"}]}");
+	report = report_of(batch);
+	g_assert_nonnull(strstr(report, "not-money"));
+	g_assert_nonnull(strstr(report, "debits exceed credits by 1.00 USD"));
+	g_clear_object(&batch);
+	g_clear_pointer(&report, g_free);
+	batch = preview_payload(f, "{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"trial_balance\":["
+		"{\"account_code\":\"1000\",\"debit\":\"92233720368547758.07\"},"
+		"{\"account_code\":\"1100\",\"debit\":\"0.01\"},"
+		"{\"account_code\":\"1000\",\"debit\":\"2 EUR\"},"
+		"{\"account_code\":\"3000\",\"credit\":\"1 EUR\"}]}");
+	report = report_of(batch);
+	g_assert_nonnull(strstr(report, "trial balance totals overflow in USD"));
+	g_assert_nonnull(strstr(report, "debits exceed credits by 1.00 EUR"));
+	/* The partial USD sum is the max debit. It must not be reported once
+	 * the following cent overflows that currency. */
+	g_assert_null(strstr(report, "92233720368547758.07"));
+}
+
+/* A subsidiary can use the documented bare codes with its scoped chart. */
+static void
+test_scoped_chart(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureOrganization) org = venture_organization_new();
+	g_autoptr(VentureEntity) batch = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *code = NULL;
+	(void)data;
+	g_object_set(org, "name", "Example Subsidiary", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(org), NULL, &error));
+	g_assert_no_error(error);
+	f->org = venture_entity_get_id(VENTURE_ENTITY(org));
+	code = g_strdup_printf("%" G_GINT64_FORMAT ":1100", f->org);
+	make_account(f, code, VENTURE_ACCOUNT_KIND_ASSET);
+	g_clear_pointer(&code, g_free);
+	code = g_strdup_printf("%" G_GINT64_FORMAT ":3000", f->org);
+	make_account(f, code, VENTURE_ACCOUNT_KIND_EQUITY);
+	batch = import_payload(f,
+		"{\"source\":\"generic\",\"cutoff\":\"2026-01-01\",\"currency\":\"USD\","
+		"\"open_ar\":[{\"source_id\":\"scoped-ar\",\"customer_name\":\"Example Customer\","
+		"\"number\":\"SC-AR\",\"date\":\"2025-12-01\",\"amount\":\"100\"}],"
+		"\"trial_balance\":[{\"account_code\":\"1100\",\"debit\":\"100\"},{\"account_code\":\"3000\",\"credit\":\"100\"}]}", TRUE, &error);
+	g_assert_no_error(error);
+	reconcile_ok(f, batch);
+	g_clear_pointer(&code, g_free);
+	code = g_strdup_printf("%" G_GINT64_FORMAT ":3900", f->org);
+	g_assert_cmpint(account_balance(f, code, "2026-01-01T00:00:00Z"), ==, 0);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
+	g_test_add("/cutover/adjustment-refusals", Fixture, NULL, setup, test_adjustment_refusals, teardown);
+	g_test_add("/cutover/opening-adjustment", Fixture, NULL, setup, test_opening_adjustment, teardown);
+	g_test_add("/cutover/missing-account-balance", Fixture, NULL, setup, test_trial_balance_missing_account, teardown);
+	g_test_add("/cutover/trial-balance-partial-sum", Fixture, NULL, setup, test_trial_balance_partial_sum, teardown);
+	g_test_add("/cutover/scoped-chart", Fixture, NULL, setup, test_scoped_chart, teardown);
 	venture_entity_registry_register_builtins(venture_entity_registry_get_default());
 	g_test_add("/cutover/preview-import-activate", Fixture, NULL, setup, test_preview_import_activate, teardown);
 	g_test_add("/cutover/idempotent-rollback", Fixture, NULL, setup, test_idempotent_rollback, teardown);

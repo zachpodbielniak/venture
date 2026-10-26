@@ -1306,3 +1306,39 @@ and technician assignments, upgrades it while jobs is disabled, restarts it,
 and enables jobs. Original values survive, newly added links stay blank, and
 no maintenance visits are invented. SQLite is exercised by the normal suite;
 this scenario does not claim a live PostgreSQL run.
+
+
+* Complete CRM export fixtures (#210)
+
+=test-crm-import-complete= uses only synthetic exports under
+=tests/fixtures/crm-import/complete/{hubspot,zoho_crm,salesforce}=.
+The initial red checks failed because the leads map was NULL and preview
+refused an unknown =leads= object. The regression exercises per-module
+counts, source references, exact line prices, custom attributes, attachment
+bytes and links, original stage timestamps and mapped owners, idempotent
+rerun and rollback. Invalid attachment bytes and missing exported-user
+mappings must fail atomically; a custom object cannot target user accounts;
+duplicate ids must fail before preview writes. An audit listener observes
+no historical business events and observes the next ordinary write.
+Each vendor also has a =history-manifest.json= with open, won and lost deals,
+accepted quotes, fulfilled sales orders and an invoice paid by an original
+dated receipt. Checks compare balances before and after that receipt, the
+original win date, no mail/SMS, cross-vendor accounting matches, and rollback
+with retained history and dated compensating events.
+
+The complete fixtures also cover matching an earlier batch, rolling back a
+matched batch without touching its source records, and importing afresh after
+rollback. Historical invoice/quote/order tests initially failed at the former
+non-draft exclusion. A direct Zoho Books cutover test matches an existing
+invoice by source id even when the CRM document number differs and verifies
+the match in the import report. The attachment surface checks local CLI payload
+loading, byte-for-byte download, deletion returning 404, and anonymous and
+nonmember denial; an organization viewer can retrieve the same document.
+=test-crm-import-storage= covers file-backed upgrade and restart with CRM
+import disabled, preserving existing document metadata and newly stored bytes.
+
+The complete historical fixtures also repeat the same imported batch. Before
+the completed-batch guard, this failed with "Refund allocations through
+VentureSettlementService to reopen a settled invoice": issuance was replayed
+against the paid invoice. Completed atomic batches now return without replaying
+commercial transitions; the existing counts and dated balances stay unchanged.

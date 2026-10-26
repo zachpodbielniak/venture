@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-09-17]
+#+updated: [2026-10-25]
 #+version: 0.7.0
 
 * Cutover
@@ -170,7 +170,16 @@ appearing twice, or the clearing code, is refused.
 
 Every account code elsewhere -- bank rows, bill lines, assets, trial balance
 rows -- is mapped, then must exist in the chart or in =chart=. A code mapped
-to the clearing account is refused.
+to the clearing account is refused. An exact code takes precedence; if no
+exact account exists, a bare code also resolves to =ORG:CODE= in this
+organization, including accounts declared under =chart=. An explicit
+=account_map= target is exact and is never rewritten.
+
+The seeded chart of a non-default organization uses =ORG:CODE=. The default
+clearing code follows that style when =ORG:1100= exists and bare =1100= does
+not; an existing bare =3900= is retained for earlier batches. An explicit
+=clearing_account_code= is used exactly. Control-account mappings take
+precedence over the bare/scoped fallbacks listed above.
 
 ** Parties
 
@@ -218,13 +227,14 @@ cutover imports balances, not a contact list.
 | =terms=, =memo= | stored on the invoice's terms and notes |
 | =amount= | the gross document total |
 | =net=, =tax= | income before tax and its frozen tax |
+| =adjustment= | optional signed document rounding amount, in the document currency |
 | =paid= | received before the cutoff |
 | =balance= | optional; must equal the total less =paid= |
 | =currency=, =tax_exempt=, =tax_exempt_reason= | |
 
 One total rule serves import and reconcile: with =net=, the total is
-=net + tax= and an =amount= given as well must equal it; with only
-=amount=, the total is =amount= and =net= is =amount - tax=. A zero total is
+=net + tax + adjustment= and an =amount= given as well must equal it; with only
+=amount=, the total is =amount= and =net= is =amount - tax - adjustment=. A zero total is
 refused. =paid= must be at least zero and below the total (rule
 =open-ar-balance=); the open balance is total less paid.
 
@@ -242,7 +252,16 @@ terms helper, so give =due_date=.
 | =due_date=, =memo=, =currency= | optional |
 | =lines= | at least one (rule =open-ap-lines=): =description=, =amount= (net, positive), =tax= (frozen, nonnegative), =account_code= or =category= |
 | =paid= | paid before the cutoff; nonnegative and below the lines' total (rule =open-ap-balance=) |
-| =balance= | optional; must equal lines less paid |
+| =adjustment= | optional signed document rounding amount, in the bill currency |
+| =balance= | optional; must equal lines plus adjustment less paid |
+
+The bill total is the sum of line amounts and frozen taxes plus =adjustment=
+(default zero). For example, net =8.40=, tax =0.57= and adjustment =-0.01=
+produce a total of =8.96= without changing the tax. Both bills and invoices
+retain the adjustment as the service-owned =opening-adjustment= field. It
+changes the opening journal and amount available for settlement, and rollback
+reverses that same adjusted amount. Adjusted positive documents must remain
+positive; negative receivables cannot also carry an adjustment.
 
 A negative line is refused with a pointer: record a supplier credit under
 =credits= with kind =vendor=. Two vendors' bill =1001= cannot both be stored
@@ -320,8 +339,12 @@ the trial balance's inventory row with the ledger.
 
 =account_code= (required, mapped), optional =name=, =currency=, and =debit=
 and/or =credit= (nonnegative, one currency). An account may appear once per
-currency. Debits must equal credits in every currency; the difference is
-reported. See [[The trial balance]].
+currency. Debits must equal credits in every currency. A row with no usable
+figure is an error of its own and is left out of the sum; a gap among the
+rows that do have figures is still reported. A currency whose running total
+overflows is an error, and that partial sum is not reported as a difference.
+Other currencies are still checked. Missing accounts do not remove otherwise
+valid amounts from the sum. See [[The trial balance]].
 
 ** Modules
 
@@ -344,8 +367,8 @@ importer.
 | =customers=, =vendors= | source_id, name, email, phone, website, address, external_id, terms, tax_exempt |
 | =chart=         | code, name, kind, active |
 | =account_map=   | source_code, venture_code |
-| =open_ar=       | source_id, customer_source_id, customer_name, number, date, due_date, terms, currency, amount, net, tax, paid, balance, tax_exempt, tax_exempt_reason, memo |
-| =open_ap=       | source_id, vendor_source_id, vendor_name, number, date, due_date, currency, paid, balance, memo, line_description, line_amount, line_tax, line_account_code, line_category |
+| =open_ar=       | source_id, customer_source_id, customer_name, number, date, due_date, terms, currency, amount, net, tax, adjustment, paid, balance, tax_exempt, tax_exempt_reason, memo |
+| =open_ap=       | source_id, vendor_source_id, vendor_name, number, date, due_date, currency, paid, balance, adjustment, memo, line_description, line_amount, line_tax, line_account_code, line_category |
 | =credits=       | source_id, kind, type, customer_source_id, customer_name, vendor_source_id, vendor_name, number, date, currency, amount |
 | =bank_balances= | source_id, name, account_code, currency, amount |
 | =assets=        | source_id, tag, name, category, currency, cost, salvage, accumulated_depreciation, in_service_at, acquired_at, method, useful_life_months, asset_account_code, accumulated_depreciation_account_code, depreciation_expense_account_code |
@@ -569,6 +592,12 @@ and =vendor_credits= comes from additive field metadata; the script verifies
 the column on each table that exists and accepts a table left absent by a
 disabled module. Existing documents keep =NULL= -- nothing issued before this
 release is reclassified as an opening balance.
+
+Migration =000957_cutover_adjustments.sql= verifies the three money columns
+of =opening-adjustment= on invoices and vendor bills on both backends.
+Absent module tables are accepted; existing documents keep NULL, and no
+historical total is changed. The upgrade test reopens a populated prior
+schema and checks preservation through a second startup.
 
 * Verification
 

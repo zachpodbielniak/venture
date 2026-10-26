@@ -20,6 +20,7 @@ test_config_defaults(void)
 	g_autoptr(VentureConfig) config = NULL;
 	g_autofree gchar *bind_address = NULL;
 	g_autofree gchar *currency = NULL;
+	g_auto(GStrv) relays = NULL;
 	gint64 port;
 	gboolean require_auth;
 
@@ -30,12 +31,15 @@ test_config_defaults(void)
 	             "server-port", &port,
 	             "security-require-auth", &require_auth,
 	             "locale-default-currency", &currency,
+	             "security-booking-trusted-relays", &relays,
 	             NULL);
 
 	g_assert_cmpstr(bind_address, ==, "127.0.0.1");
 	g_assert_cmpint(port, ==, 8747);
 	g_assert_true(require_auth);
 	g_assert_cmpstr(currency, ==, "USD");
+	/* Nobody is a booking relay until the operator names their address. */
+	g_assert_true((relays == NULL) || (relays[0] == NULL));
 }
 
 /*

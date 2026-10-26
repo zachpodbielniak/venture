@@ -70,5 +70,23 @@ void venture_quotes_register_reports(VentureReportRegistry *registry);
  */
 gboolean venture_quotes_remove_hook(VentureDatabase *database, VentureEntity *record,
 	guint operation, const VentureActor *actor, gboolean *handled, GError **error);
+/**
+ * venture_quote_service_import_history:
+ * @self: owning service
+ * @quote: persisted draft, including original related document ids
+ * @status: source lifecycle status
+ * @issued: original issue date
+ * @changed: original status event date
+ * @by: (nullable): source acceptance name
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal
+ *
+ * Freezes computed totals and dated source evidence without performing an
+ * acceptance handoff or sending notifications.
+ * Returns: TRUE on success
+ */
+gboolean venture_quote_service_import_history(VentureQuoteService *self, VentureQuote *quote,
+ gint status, GDateTime *issued, GDateTime *changed, const gchar *by,
+ const VentureActor *actor, GError **error);
 G_END_DECLS
 #endif

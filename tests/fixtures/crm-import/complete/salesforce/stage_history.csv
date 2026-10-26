@@ -1,0 +1,2 @@
+Id,OpportunityId,StageName,CreatedDate,OwnerId,Legacy Label
+stage-event-1,deal-1,proposal,2025-04-03T14:15:16Z,owner-1,synthetic-stage_history

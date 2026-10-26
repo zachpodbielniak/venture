@@ -1,0 +1,2 @@
+Id,PriceBookId,ProductId,UnitPrice,CurrencyIsoCode,Legacy Label
+price-1,book-1,product-1,125.50,USD,synthetic-price_book_entries

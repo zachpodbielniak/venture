@@ -107,6 +107,7 @@ typedef struct
 	VentureMoney *net;
 	VentureMoney *tax;
 	VentureMoney *paid;
+	VentureMoney *adjustment;
 	VentureMoney *open;
 	VentureMoney *salvage;
 	VentureMoney *accumulated;
@@ -138,6 +139,7 @@ row_free(gpointer data)
 	g_clear_pointer(&row->net, venture_money_free);
 	g_clear_pointer(&row->tax, venture_money_free);
 	g_clear_pointer(&row->paid, venture_money_free);
+	g_clear_pointer(&row->adjustment, venture_money_free);
 	g_clear_pointer(&row->open, venture_money_free);
 	g_clear_pointer(&row->salvage, venture_money_free);
 	g_clear_pointer(&row->accumulated, venture_money_free);
@@ -727,10 +729,32 @@ static gchar *
 plan_account(Plan *plan, Row *row, const gchar *prefix, const gchar *name, const gchar *code)
 {
 	const gchar *mapped = plan_map_code(plan, code);
+	g_autofree gchar *scoped = NULL;
 	g_autoptr(VentureEntity) account = NULL;
 	g_autoptr(GError) local = NULL;
 	if (mapped == NULL)
 		return NULL;
+	/* Explicit map targets and existing bare codes are exact. Only an
+	 * otherwise missing bare code can name this organization's seeded code. */
+	if (strchr(mapped, ':') == NULL &&
+		(plan->account_map == NULL || !json_object_has_member(plan->account_map, code)) &&
+		!g_hash_table_contains(plan->chart_codes, mapped))
+	{
+		account = account_with_code(plan->self, plan->org, mapped, &local);
+		if (account == NULL && local == NULL)
+		{
+			scoped = g_strdup_printf("%" G_GINT64_FORMAT ":%s", plan->org, mapped);
+			account = account_with_code(plan->self, plan->org, scoped, &local);
+			if (account != NULL || g_hash_table_contains(plan->chart_codes, scoped))
+				mapped = scoped;
+		}
+		g_clear_object(&account);
+		if (local != NULL)
+		{
+			row_error(plan, row, "%s%s could not be resolved: %s", prefix, name, local->message);
+			return NULL;
+		}
+	}
 	if (plan->clearing_code != NULL && g_strcmp0(mapped, plan->clearing_code) == 0)
 	{
 		row_error(plan, row, "%s%s %s is the opening balance clearing account; map the source account to a real one", prefix, name, mapped);
@@ -828,7 +852,7 @@ parse_party(Plan *plan, Row *row, JsonObject *object, gboolean vendor)
 }
 
 /* One total rule for import and reconcile. amount is the gross document
- * total; net is income before tax. With all three present they must agree,
+ * total; net is income before tax and the signed adjustment. They must agree,
  * because a disagreement means the mapping read the wrong column. */
 static void
 parse_open_ar(Plan *plan, JsonArray *array)
@@ -864,6 +888,7 @@ parse_open_ar(Plan *plan, JsonArray *array)
 		row->net = field_money(plan, row, object, "", "net", currency, FALSE);
 		row->tax = field_money(plan, row, object, "", "tax", currency, FALSE);
 		row->paid = field_money(plan, row, object, "", "paid", currency, FALSE);
+		row->adjustment = field_money(plan, row, object, "", "adjustment", currency, FALSE);
 		balance = field_money(plan, row, object, "", "balance", currency, FALSE);
 		if (!row->ok)
 			continue;
@@ -873,26 +898,39 @@ parse_open_ar(Plan *plan, JsonArray *array)
 			continue;
 		}
 		if (!same_currency(amount, row->net) || !same_currency(amount, row->tax) || !same_currency(row->net, row->tax) ||
-			!same_currency(amount != NULL ? amount : row->net, row->paid) || !same_currency(amount != NULL ? amount : row->net, balance))
+			!same_currency(amount != NULL ? amount : row->net, row->paid) || !same_currency(amount != NULL ? amount : row->net, balance) ||
+			!same_currency(amount != NULL ? amount : row->net, row->adjustment))
 		{
-			row_error(plan, row, "mixes currencies between amount, net, tax, paid and balance");
+			row_error(plan, row, "mixes currencies between amount, net, tax, adjustment, paid and balance");
 			continue;
 		}
 		if (row->net != NULL)
 		{
-			row->total = money_sum(row->net, row->tax);
+			g_autoptr(VentureMoney) base = money_sum(row->net, row->tax);
+			row->total = base != NULL ? money_sum(base, row->adjustment) : NULL;
+			if (row->total == NULL)
+			{
+				row_error(plan, row, "net plus tax plus adjustment overflows the document amount");
+				continue;
+			}
 			if (amount != NULL && !venture_money_equal(amount, row->total))
 			{
 				g_autofree gchar *a = venture_money_to_string(amount);
 				g_autofree gchar *t = venture_money_to_string(row->total);
-				row_error(plan, row, "amount %s is not net plus tax (%s); amount is the gross total", a, t);
+				row_error(plan, row, "amount %s is not net plus tax plus adjustment (%s); amount is the gross total", a, t);
 				continue;
 			}
 		}
 		else
 		{
+			g_autoptr(VentureMoney) before_adjustment = money_difference(amount, row->adjustment);
 			row->total = venture_money_copy(amount);
-			row->net = money_difference(amount, row->tax);
+			row->net = before_adjustment != NULL ? money_difference(before_adjustment, row->tax) : NULL;
+			if (row->net == NULL)
+			{
+				row_error(plan, row, "amount less tax and adjustment overflows");
+				continue;
+			}
 		}
 		if (row->tax == NULL)
 			row->tax = venture_money_new_zero(venture_money_get_currency(row->total));
@@ -905,9 +943,10 @@ parse_open_ar(Plan *plan, JsonArray *array)
 		{
 			/* A negative receivable is money owed back to the customer:
 			 * it imports as an unapplied opening credit note. */
-			if (row->paid != NULL || !venture_money_is_zero(row->tax))
+			if (row->paid != NULL || !venture_money_is_zero(row->tax) ||
+				(row->adjustment != NULL && !venture_money_is_zero(row->adjustment)))
 			{
-				row_error(plan, row, "is negative, so it imports as a customer credit; it cannot also carry paid or tax");
+				row_error(plan, row, "is negative, so it imports as a customer credit; it cannot also carry paid, tax or adjustment");
 				continue;
 			}
 			row->open = venture_money_copy(row->total);
@@ -955,6 +994,7 @@ parse_open_ap(Plan *plan, JsonArray *array)
 		row->memo = field_text(plan, row, object, "", "memo", FALSE);
 		require_before_cutoff(plan, row, "date", row->date);
 		row->paid = field_money(plan, row, object, "", "paid", currency, FALSE);
+		row->adjustment = field_money(plan, row, object, "", "adjustment", currency, FALSE);
 		balance = field_money(plan, row, object, "", "balance", currency, FALSE);
 		row->lines = g_ptr_array_new_with_free_func(bill_line_free);
 		lines_node = member(object, "lines");
@@ -1010,10 +1050,23 @@ parse_open_ap(Plan *plan, JsonArray *array)
 		}
 		if (!row->ok || row->total == NULL)
 			continue;
-		if (!same_currency(row->total, row->paid) || !same_currency(row->total, balance))
+		if (!same_currency(row->total, row->paid) || !same_currency(row->total, balance) ||
+			!same_currency(row->total, row->adjustment))
 		{
-			row_error(plan, row, "paid or balance is not in the bill's currency");
+			row_error(plan, row, "paid, balance or adjustment is not in the bill's currency");
 			continue;
+		}
+		if (row->adjustment != NULL)
+		{
+			VentureMoney *adjusted = money_sum(row->total, row->adjustment);
+			if (adjusted == NULL || venture_money_get_amount(adjusted) <= 0)
+			{
+				g_clear_pointer(&adjusted, venture_money_free);
+				row_error(plan, row, "adjustment must leave a positive bill total without overflow");
+				continue;
+			}
+			g_clear_pointer(&row->total, venture_money_free);
+			row->total = adjusted;
 		}
 		if (row->paid == NULL)
 			row->paid = venture_money_new_zero(venture_money_get_currency(row->total));
@@ -1024,7 +1077,7 @@ parse_open_ap(Plan *plan, JsonArray *array)
 			continue;
 		}
 		if (balance != NULL && !venture_money_equal(balance, row->open))
-			row_error(plan, row, "declares a balance that is not its lines less the paid amount (rule: open-ap-balance)");
+			row_error(plan, row, "declares a balance that is not its lines plus adjustment less the paid amount (rule: open-ap-balance)");
 	}
 }
 
@@ -1191,23 +1244,25 @@ parse_trial_balance(Plan *plan, JsonArray *array)
 		code = field_text(plan, row, object, "", "account_code", TRUE);
 		if (row->source_id == NULL && code != NULL)
 			row->source_id = g_strdup(code);
-		row->account_code = plan_account(plan, row, "", "account_code", code);
 		row->name = field_text(plan, row, object, "", "name", FALSE);
 		debit = field_money(plan, row, object, "", "debit", currency, FALSE);
 		credit = field_money(plan, row, object, "", "credit", currency, FALSE);
 		if (debit == NULL && credit == NULL && row->ok)
 		{
 			row_error(plan, row, "needs debit or credit");
+			row->account_code = plan_account(plan, row, "", "account_code", code);
 			continue;
 		}
 		if ((debit != NULL && venture_money_get_amount(debit) < 0) || (credit != NULL && venture_money_get_amount(credit) < 0) ||
 			!same_currency(debit, credit))
 		{
 			row_error(plan, row, "debit and credit must be nonnegative amounts in one currency; a credit balance goes under credit");
+			row->account_code = plan_account(plan, row, "", "account_code", code);
 			continue;
 		}
 		if (row->ok)
 			row->total = money_difference(debit, credit);
+		row->account_code = plan_account(plan, row, "", "account_code", code);
 	}
 }
 
@@ -1405,26 +1460,36 @@ check_trial_balance(Plan *plan)
 {
 	g_autoptr(GHashTable) debits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)venture_money_free);
 	g_autoptr(GHashTable) accounts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_autoptr(GHashTable) overflowed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	GHashTableIter iter;
 	gpointer key, value;
 	guint i;
+	/* A row with no figure is its own error and stays out of the sum. The
+	 * rows that do have figures still have to show a real gap. An overflow
+	 * drops that currency's partial sum and does not hide another currency. */
 	for (i = 0; i < plan->trial_balance->len; i++)
 	{
 		Row *row = g_ptr_array_index(plan->trial_balance, i);
 		g_autofree gchar *slot = NULL;
 		VentureMoney *sum;
 		const gchar *currency;
-		if (!row->ok || row->total == NULL)
+		if (row->total == NULL)
 			continue;
 		currency = venture_money_get_currency(row->total);
-		slot = g_strdup_printf("%s|%s", row->account_code, currency);
+		slot = g_strdup_printf("%s|%s", row->account_code != NULL ? row->account_code : row->source_id, currency);
 		if (g_hash_table_contains(accounts, slot))
-		{
 			row_error(plan, row, "account %s appears twice in trial_balance for %s", row->account_code, currency);
+		g_hash_table_insert(accounts, g_steal_pointer(&slot), GINT_TO_POINTER(1));
+		if (g_hash_table_contains(overflowed, currency))
+			continue;
+		sum = money_sum(g_hash_table_lookup(debits, currency), row->total);
+		if (sum == NULL)
+		{
+			row_error(plan, row, "trial balance totals overflow in %s", currency);
+			g_hash_table_insert(overflowed, g_strdup(currency), GINT_TO_POINTER(1));
+			g_hash_table_remove(debits, currency);
 			continue;
 		}
-		g_hash_table_insert(accounts, g_steal_pointer(&slot), GINT_TO_POINTER(1));
-		sum = money_sum(g_hash_table_lookup(debits, currency), row->total);
 		g_hash_table_insert(debits, g_strdup(currency), sum);
 	}
 	g_hash_table_iter_init(&iter, debits);
@@ -1567,6 +1632,18 @@ plan_build(VentureCutoverService *self, gint64 org, JsonObject *payload, GError 
 	node = member(payload, "clearing_account_code");
 	plan->clearing_code = g_strdup(node != NULL && JSON_NODE_HOLDS_VALUE(node) &&
 		json_node_get_value_type(node) == G_TYPE_STRING ? json_node_get_string(node) : CUTOVER_CLEARING_CODE);
+	if (node == NULL)
+	{
+		g_autoptr(VentureEntity) existing = account_with_code(self, org, CUTOVER_CLEARING_CODE, NULL);
+		g_autoptr(VentureEntity) bare = account_with_code(self, org, "1100", NULL);
+		g_autofree gchar *scoped = g_strdup_printf("%" G_GINT64_FORMAT ":1100", org);
+		g_autoptr(VentureEntity) scoped_ar = account_with_code(self, org, scoped, NULL);
+		if (existing == NULL && bare == NULL && scoped_ar != NULL)
+		{
+			g_free(plan->clearing_code);
+			plan->clearing_code = g_strdup_printf("%" G_GINT64_FORMAT ":%s", org, CUTOVER_CLEARING_CODE);
+		}
+	}
 	node = member(payload, "account_map");
 	if (node != NULL)
 	{

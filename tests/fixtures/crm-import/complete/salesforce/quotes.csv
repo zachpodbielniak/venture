@@ -1,0 +1,2 @@
+Id,Number,AccountId,ContactId,OpportunityId,CurrencyIsoCode,Status,Legacy Label,Issued At,Status At,Accepted By
+quote-1,SF-SYN-Q-210,company-1,contact-1,deal-1,USD,draft,synthetic-quotes,2025-04-01T00:00:00Z,2025-04-02T00:00:00Z,Casey Example

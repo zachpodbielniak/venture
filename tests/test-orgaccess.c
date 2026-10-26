@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include <libsoup/soup.h>
 #include <string.h>
+
+#include "venture-test-util.h"
 
 /* Access records must participate in the generated model, not a private
  * authorization table that the forms and CLI cannot manage. */
@@ -878,6 +881,106 @@ test_type_level_actions(void)
 	g_assert_cmpint(venture_entity_get_organization_id(result), ==, org_a);
 }
 
+typedef struct { GBytes *bytes; GError *error; gboolean done; } CostResult;
+
+static void
+cost_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	CostResult *r = data;
+	r->bytes = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &r->error);
+	r->done = TRUE;
+}
+
+/* The statements one signed-in GET of @path sends. */
+static guint64
+page_statements(VentureWebServer *server, VentureDatabase *db, const gchar *secret, const gchar *path)
+{
+	g_autoptr(SoupSession) session = soup_session_new_with_options("timeout", 30, NULL);
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	g_autofree gchar *bearer = g_strconcat("Bearer ", secret, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new("GET", url);
+	CostResult result = { NULL, NULL, FALSE };
+	guint64 before = venture_database_get_statement_count(db);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_headers_replace(soup_message_get_request_headers(message), "Authorization", bearer);
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, cost_done, &result);
+	while (!result.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_bytes_unref(result.bytes);
+	g_assert_cmpuint(soup_message_get_status(message), ==, 200);
+	return venture_database_get_statement_count(db) - before;
+}
+
+/* A business's pages cost what its own records cost. On a shared install
+ * every list read every organization and checked each row one at a time,
+ * so an owner with no customers waited on everybody else's (owner usability
+ * epic, speed lane). */
+static void
+test_list_cost_is_local(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(VentureEntity) own = NULL;
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-cost-XXXXXX", NULL);
+	const gchar *paths[] = { "/e/company", "/api/v1/companies" };
+	guint64 alone[G_N_ELEMENTS(paths)];
+	gint64 first;
+	guint i, j;
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	context = venture_context_new(config, db);
+	first = venture_context_get_default_organization_id(context);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "owner", "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "organization-id", first,
+		"user-id", venture_entity_get_id(user), "active", TRUE, "role", VENTURE_ORGANIZATION_ROLE_OWNER, NULL);
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	g_object_set(token, "name", "owner", "user-id", venture_entity_get_id(user), "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	secret = venture_api_token_generate(token);
+	g_assert_true(venture_database_save(db, VENTURE_ENTITY(token), NULL, NULL));
+	own = g_object_new(VENTURE_TYPE_COMPANY, "name", "Own customer", "organization-id", first, NULL);
+	g_assert_true(venture_database_save(db, own, NULL, NULL));
+	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0, NULL);
+	server = venture_web_server_new(context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	for (i = 0; i < G_N_ELEMENTS(paths); i++)
+	{
+		page_statements(server, db, secret, paths[i]);
+		alone[i] = page_statements(server, db, secret, paths[i]);
+	}
+	for (i = 0; i < 20; i++)
+	{
+		g_autofree gchar *name = g_strdup_printf("Other business %u", i);
+		g_autofree gchar *slug = g_strdup_printf("other-%u", i);
+		g_autoptr(VentureEntity) other = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", name, "slug", slug, NULL);
+		g_assert_true(venture_database_save(db, other, NULL, NULL));
+		for (j = 0; j < 10; j++)
+		{
+			g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Their customer",
+				"organization-id", venture_entity_get_id(other), NULL);
+			g_assert_true(venture_database_save(db, company, NULL, NULL));
+		}
+	}
+	for (i = 0; i < G_N_ELEMENTS(paths); i++)
+	{
+		guint64 shared = page_statements(server, db, secret, paths[i]);
+		g_test_message("%s: %" G_GUINT64_FORMAT " statements alone, %" G_GUINT64_FORMAT " beside 20 businesses",
+			paths[i], alone[i], shared);
+		g_assert_cmpuint(shared, ==, alone[i]);
+	}
+	venture_web_server_stop(server);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -900,5 +1003,6 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/assignment-ownership", test_assignment_ownership);
 	g_test_add_func("/orgaccess/crm-ai-scopes", test_crm_ai_scopes);
 	g_test_add_func("/orgaccess/type-level-actions", test_type_level_actions);
+	g_test_add_func("/orgaccess/list-cost-is-local", test_list_cost_is_local);
 	return g_test_run();
 }

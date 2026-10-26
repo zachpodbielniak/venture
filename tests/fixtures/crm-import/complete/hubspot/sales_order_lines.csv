@@ -1,0 +1,2 @@
+Record ID,SalesOrderId,ProductId,Description,Quantity,UnitPrice,Currency,Legacy Label
+order-line-1,order-1,product-1,Synthetic service,1,125.50,USD,synthetic-sales_order_lines

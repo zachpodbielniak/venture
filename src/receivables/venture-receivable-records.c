@@ -13,7 +13,8 @@ static const VentureFieldDecl payment_fields[] = {
 	VENTURE_FIELD("external-key", "External key", "Derived by VentureSettlementService", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE | VENTURE_COLUMN_FLAG_IMMUTABLE),
 	VENTURE_FIELD_REF("invoice-id", "Allocate to invoice", "Optional: applies up to the invoice balance; the rest remains a credit", "invoice", VENTURE_COLUMN_FLAG_NONE)
 };
-VENTURE_DEFINE_ENTITY(VenturePayment, venture_payment, payment_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VenturePayment, venture_payment, payment_fields,
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "customer-id", "Customers");)
 
 static const VentureFieldDecl allocation_fields[] = {
 	VENTURE_FIELD_REF("payment-id", "Payment", "Supply a payment or a credit, not both", "payment", VENTURE_COLUMN_FLAG_NONE),
@@ -39,7 +40,8 @@ static const VentureFieldDecl credit_fields[] = {
 	VENTURE_FIELD_REF("tax-jurisdiction-id", "Tax jurisdiction", "Jurisdiction the credited tax belongs to on the sales tax return",
 		"tax_jurisdiction", VENTURE_COLUMN_FLAG_INDEXED)
 };
-VENTURE_DEFINE_ENTITY(VentureCustomerCredit, venture_customer_credit, credit_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureCustomerCredit, venture_customer_credit, credit_fields,
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "customer-id", "Customers");)
 
 static const VentureFieldDecl refund_fields[] = {
 	VENTURE_FIELD_REF("customer-id", "Customer", NULL, "company", VENTURE_COLUMN_FLAG_NOT_NULL),
@@ -50,7 +52,8 @@ static const VentureFieldDecl refund_fields[] = {
 	VENTURE_FIELD("reference", "Reference", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_REF("sale-id", "Cash adjustment", "Derived cash report adjustment at the refund date", "sale", VENTURE_COLUMN_FLAG_NONE)
 };
-VENTURE_DEFINE_ENTITY(VentureRefund, venture_refund, refund_fields)
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureRefund, venture_refund, refund_fields,
+	venture_entity_class_set_reference_view(VENTURE_ENTITY_CLASS(klass), "customer-id", "Customers");)
 
 static const VentureFieldDecl event_fields[] = {
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL),

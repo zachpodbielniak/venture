@@ -1052,3 +1052,44 @@ venture_quote_service_execute(VentureQuoteService *self, VentureEntity *request,
 		return FALSE;
 	return result;
 }
+
+/* Migration records an event that already happened. In particular acceptance
+ * must not run handoff(), charge a customer, start work, or send mail. */
+gboolean
+venture_quote_service_import_history(VentureQuoteService *self, VentureQuote *quote,
+	gint status, GDateTime *issued, GDateTime *changed, const gchar *by,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(VentureEntity) request = VENTURE_ENTITY(venture_quote_action_new());
+	const gchar *kind;
+	gboolean ok = FALSE;
+	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	VentureEntity *q = VENTURE_ENTITY(quote);
+	if (issued == NULL || changed == NULL || g_date_time_compare(changed, issued) < 0 || g_date_time_compare(changed, now) > 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "historical quotes need ordered issue and state dates");
+	switch (status) {
+	case VENTURE_QUOTE_SENT: kind = "send"; break;
+	case VENTURE_QUOTE_ACCEPTED: kind = "accept"; break;
+	case VENTURE_QUOTE_DECLINED: kind = "decline"; break;
+	case VENTURE_QUOTE_EXPIRED: kind = "expire"; break;
+	case VENTURE_QUOTE_SUPERSEDED: kind = "revise"; break;
+	default: return refuse(error, VENTURE_ERROR_VALIDATION, "invalid historical quote state");
+	}
+	if (!venture_database_begin(self->database, error)) return FALSE;
+	stored = get(self, VENTURE_TYPE_QUOTE, venture_entity_get_organization_id(q), venture_entity_get_id(q), error);
+	if (stored == NULL) goto done;
+	if (state(stored) != VENTURE_QUOTE_DRAFT || venture_entity_get_version(stored) != venture_entity_get_version(q)) {
+		refuse(error, VENTURE_ERROR_CONFLICT, "history requires the unchanged imported draft"); goto done;
+	}
+	g_object_set(request, "accepted-by", by, "reason", "Imported source history", NULL);
+	if (!check_refs(self, q, error) || !compute(self, q, error) ||
+		!event(self, q, "send", request, "import", NULL, issued, actor, error)) goto done;
+	if (status != VENTURE_QUOTE_SENT && !event(self, q, kind, request, "import", NULL, changed, actor, error)) goto done;
+	g_object_set(q, "status", status, "issued-at", issued, "acceptance-token", NULL, NULL);
+	ok = write_record(self, q, actor, error);
+done:
+	if (ok) return venture_database_commit(self->database, error);
+	venture_database_rollback(self->database);
+	return FALSE;
+}

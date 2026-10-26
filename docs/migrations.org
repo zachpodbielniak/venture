@@ -166,3 +166,13 @@ Owner erasure and retention clear answer fingerprints and response links while
 retaining a consumed-identity tombstone, so a lost acknowledgement cannot later
 recreate erased personal data. No historical responses are assigned invented
 retry identities.
+
+* CRM attachment storage
+
+=000958_crm_attachment_content= verifies the additive nullable document
+=content_base64= field after reconciliation on both backends. Existing
+URL-only documents receive no invented payload. The CRM storage regression
+reopens a file database with a representative old document, preserves its
+metadata, adds the column, persists bytes, and reopens with CRM import
+disabled before enabling it again. No physical file cleanup is needed
+because payloads share the import transaction.

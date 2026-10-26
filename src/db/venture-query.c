@@ -1257,7 +1257,39 @@ venture_query_search_digits(const gchar *text)
  * listed every subscription and membership in the business. A phone-shaped
  * search also matches each column with its separators taken out, so a
  * number typed one way finds it stored another.
+ *
+ * A reference flagged searchable matches by the name of what it points at:
+ * a contact is found by its company's name, because "the people at Blue
+ * Pine" is how an owner looks for them.
  */
+static gchar *
+venture_query_search_reference_table(GType entity_type, const gchar *property)
+{
+	g_autoptr(VentureEntity) prototype = g_object_new(entity_type, NULL);
+	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(prototype);
+	guint i;
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		g_autoptr(VentureEntity) target = NULL;
+		GType type;
+
+		if ((0 != g_strcmp0(venture_field_spec_get_name(spec), property)) ||
+		    (VENTURE_FIELD_KIND_REFERENCE != venture_field_spec_get_kind(spec)))
+			continue;
+		type = venture_entity_registry_lookup_any(venture_entity_registry_get_default(),
+			venture_field_spec_get_reference_type(spec));
+		if (G_TYPE_INVALID == type)
+			return NULL;
+		target = g_object_new(type, NULL);
+		if (NULL == g_object_class_find_property(G_OBJECT_GET_CLASS(target), "name"))
+			return NULL;
+		return venture_schema_quote_identifier(venture_entity_get_table_name(target));
+	}
+	return NULL;
+}
+
 static void
 venture_query_append_search(
 	VentureQuery	 *self,
@@ -1296,6 +1328,26 @@ venture_query_append_search(
 
 		if (0 == (flags & VENTURE_COLUMN_FLAG_SEARCHABLE))
 			continue;
+
+		if (G_TYPE_INT64 == properties[i]->value_type)
+		{
+			g_autofree gchar *table = venture_query_search_reference_table(
+				self->entity_type, properties[i]->name);
+
+			if (NULL == table)
+				continue;
+			column = venture_entity_property_to_column(properties[i]->name);
+			quoted = venture_schema_quote_identifier(column);
+			g_string_append(sql, (0 == n_searchable) ? (*first ? " WHERE (" : " AND (") : " OR ");
+			*first = FALSE;
+			g_string_append_printf(sql, "%s IN (SELECT \"id\" FROM %s WHERE \"name\" %s ",
+				quoted, table, (ORM_DIALECT_POSTGRES == dialect) ? "ILIKE" : "LIKE");
+			venture_query_append_placeholder(sql, dialect, index);
+			g_string_append_c(sql, ')');
+			*params = g_list_append(*params, orm_value_new_string(pattern));
+			n_searchable++;
+			continue;
+		}
 
 		if (G_TYPE_STRING != properties[i]->value_type)
 			continue;

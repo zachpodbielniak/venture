@@ -245,6 +245,7 @@
 #include "marketing/venture-marketing-service.h"
 #include "attribution/venture-attribution-service.h"
 #include "referrals/venture-referral-service.h"
+#include "core/venture-company-roles.h"
 #include "jobs/venture-job-service.h"
 #include "periods/venture-period-report.h"
 

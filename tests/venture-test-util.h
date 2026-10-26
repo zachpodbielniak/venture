@@ -17,6 +17,7 @@
 #include <gio/gio.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 /*
  * Whether @path is @root, or something under it.
@@ -215,4 +216,57 @@ venture_test_free_port(void)
 	g_socket_close(socket, NULL);
 
 	return port;
+}
+
+/*
+ * @page with the interface files it links put back inline, read from
+ * data/static/ (tests run from the top of the tree).
+ *
+ * A page links its look's stylesheet and the scripts at
+ * /pub/ui/<version>/<name> rather than carrying them. A test asking
+ * whether a class is styled in the look a page was drawn in, or what the
+ * script does on it, reads the page through this: which file comes back
+ * still depends on what the page linked.
+ */
+static inline gchar *
+venture_test_page_with_ui(
+	const gchar	*page
+){
+	GString *out = g_string_new(NULL);
+	const gchar *at = page;
+	const gchar *hit;
+
+	while (NULL != (hit = strstr(at, "/pub/ui/")))
+	{
+		const gchar *end = strchr(hit, '"');
+		const gchar *slash;
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *path = NULL;
+		g_autofree gchar *contents = NULL;
+
+		if (NULL == end)
+			break;
+		slash = g_strrstr_len(hit, end - hit, "/");
+		name = g_strndup(slash + 1, end - slash - 1);
+		path = g_build_filename("data", "static", name, NULL);
+		g_string_append_len(out, at, end - at);
+		g_string_append_c(out, '"');
+		at = end + 1;
+		if (g_file_get_contents(path, &contents, NULL, NULL))
+		{
+			/* After the tag, as the browser would apply it. */
+			const gchar *close = strchr(at, '>');
+
+			if (NULL != close)
+			{
+				g_string_append_len(out, at, close + 1 - at);
+				at = close + 1;
+			}
+			g_string_append(out, g_str_has_suffix(name, ".css") ? "<style>" : "<script>");
+			g_string_append(out, contents);
+			g_string_append(out, g_str_has_suffix(name, ".css") ? "</style>" : "</script>");
+		}
+	}
+	g_string_append(out, at);
+	return g_string_free(out, FALSE);
 }

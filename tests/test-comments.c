@@ -1353,10 +1353,23 @@ test_both_looks(Fixture *f, gconstpointer data)
 	                       venture_entity_get_id(f->company));
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, NULL, FALSE, &industrial,
 	                         NULL, NULL), ==, 200);
+	/* Each look's stylesheet, as the browser applies it. */
+	{
+		gchar *styled = venture_test_page_with_ui(industrial);
+
+		g_free(industrial);
+		industrial = styled;
+	}
 	g_assert_nonnull(strstr(industrial, "instrument panel"));
 	g_object_set(f->config, "ui-look", "classic", NULL);
 	g_assert_cmpuint(request(f, "GET", path, NULL, NULL, NULL, FALSE, &classic,
 	                         NULL, NULL), ==, 200);
+	{
+		gchar *styled = venture_test_page_with_ui(classic);
+
+		g_free(classic);
+		classic = styled;
+	}
 	g_assert_nonnull(strstr(classic, "warm monochrome"));
 
 	for (i = 0; NULL != classes[i]; i++)
