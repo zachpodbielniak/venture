@@ -137,6 +137,17 @@ static gboolean endpoint_allowed(VentureOrganizationMailer *self, JsonObject *va
 		if (g_ascii_strcasecmp(g_strstrip(endpoints[i]), endpoint) == 0) return TRUE;
 	return refuse(error, "SMTP endpoint is not permitted by the operator");
 }
+/* The sender can change without changing the operator's SMTP account.
+ * Keep its stable binding ID only when the transport identity is unchanged. */
+static gboolean same_transport(JsonObject *old, JsonObject *next)
+{
+	return old != NULL &&
+		!g_strcmp0(venture_json_object_get_string(old, "host", ""), venture_json_object_get_string(next, "host", "")) &&
+		venture_json_object_get_int(old, "port", 0) == venture_json_object_get_int(next, "port", 0) &&
+		!g_strcmp0(venture_json_object_get_string(old, "tls", ""), venture_json_object_get_string(next, "tls", "")) &&
+		!g_strcmp0(venture_json_object_get_string(old, "auth", ""), venture_json_object_get_string(next, "auth", "")) &&
+		!g_strcmp0(venture_json_object_get_string(old, "username", ""), venture_json_object_get_string(next, "username", ""));
+}
 static VentureMailer *prepare(VentureMailer *mailer, VentureMailMessage *message, GError **error)
 {
 	VentureOrganizationMailer *self = VENTURE_ORGANIZATION_MAILER(mailer);
@@ -212,8 +223,9 @@ VentureIntegrationConnection *venture_organization_mailer_configure(VentureOrgan
 	g_autoptr(VentureSmtpMailer) checked = NULL;
 	g_autoptr(JsonNode) settings = NULL;
 	g_autoptr(VentureIntegrationConnection) active = NULL, result = NULL;
+	g_autoptr(JsonNode) previous = NULL;
 	g_autoptr(GError) lookup_error = NULL;
-	g_autofree gchar *host = NULL, *identity = NULL, *digest = NULL;
+	g_autofree gchar *host = NULL, *identity = NULL, *digest = NULL, *old_account = NULL;
 	VentureIntegrationService *service;
 	g_return_val_if_fail(VENTURE_IS_ORGANIZATION_MAILER(self), NULL);
 	g_return_val_if_fail(values != NULL, NULL);
@@ -242,6 +254,25 @@ VentureIntegrationConnection *venture_organization_mailer_configure(VentureOrgan
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "SMTP binding changed; reload organization settings");
 		goto fail;
+	}
+	if (active != NULL)
+	{
+		g_object_get(active, "account-id", &old_account, NULL);
+		if (g_strcmp0(old_account, digest))
+		{
+			previous = venture_integration_service_resolve_version(service, organization_id,
+				venture_entity_get_id(VENTURE_ENTITY(active)), expected_version, FALSE, error);
+			if (previous == NULL) goto fail;
+			if (!JSON_NODE_HOLDS_OBJECT(previous) ||
+				!same_transport(json_node_get_object(previous), values))
+			{
+				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+					"Disconnect the existing SMTP account before changing its transport");
+				goto fail;
+			}
+			g_free(digest);
+			digest = g_steal_pointer(&old_account);
+		}
 	}
 	result = venture_integration_service_configure(service,
 		organization_id, "smtp", digest, "live", settings, expected_version, actor, error);
