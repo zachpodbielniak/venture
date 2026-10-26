@@ -3887,7 +3887,11 @@ venture_web_api_write(
 	g_autoptr(JsonNode) body = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autofree gchar *before_reply_alias = NULL, *after_reply_alias = NULL;
 	VentureActor actor;
+
+	if (!created && VENTURE_IS_MAIL_ACCOUNT(record))
+		g_object_get(record, "reply-alias-prefix", &before_reply_alias, NULL);
 
 	body = htmx_request_get_json(request, &error);
 
@@ -3902,6 +3906,16 @@ venture_web_api_write(
 	if (!venture_serializable_from_json(VENTURE_SERIALIZABLE(record), body,
 	                                    &error))
 		return venture_web_error_response(error);
+	/* The encrypted shared mailbox credential is scoped to the alias it was
+	 * created for. Changing that alias would expose another business's mail. */
+	if (!created && VENTURE_IS_MAIL_ACCOUNT(record)) {
+		g_object_get(record, "reply-alias-prefix", &after_reply_alias, NULL);
+		if (g_strcmp0(before_reply_alias, after_reply_alias)) {
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"A mailbox reply alias cannot be changed after account creation");
+			return venture_web_error_response(error);
+		}
+	}
 
 	/*
 	 * A password is not a field. It is marked sensitive so that it never

@@ -146,6 +146,16 @@ static gchar *account_identity(VentureEntity *account)
 		text = g_strdup_value_contents(&value);
 		hash_value(hash, text);
 	}
+	/* Existing ordinary mail bindings retain their identity. A shared
+	 * booking inbox also binds its secret to the business's original alias. */
+	if (VENTURE_IS_MAIL_ACCOUNT(account)) {
+		g_autofree gchar *prefix = NULL;
+		g_object_get(account, "reply-alias-prefix", &prefix, NULL);
+		if (prefix && *prefix) {
+			hash_value(hash, "reply-alias-prefix");
+			hash_value(hash, prefix);
+		}
+	}
 	return g_strdup(g_checksum_get_string(hash));
 }
 /* Selection changes stop an in-flight import, but do not require rotating

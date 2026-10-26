@@ -7259,8 +7259,12 @@ static void test_auth_booking_reply_connector(ServerFixture *fixture, gconstpoin
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
 	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(VentureEntity) created_account = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
 	g_autoptr(VentureConnectorSession) binding = NULL;
-	g_autofree gchar *owner = NULL, *editor = NULL, *path = NULL, *answer = NULL;
+	g_autoptr(JsonNode) created_node = NULL;
+	g_autofree gchar *owner = NULL, *editor = NULL, *path = NULL, *record_path = NULL, *answer = NULL, *observed_prefix = NULL;
+	gint64 created_id;
 	(void)unused;
 	g_object_set(fixture->config, "imap-allowed-endpoints", "imap.reply.test:993", NULL);
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->database), key, &error));
@@ -7272,6 +7276,17 @@ static void test_auth_booking_reply_connector(ServerFixture *fixture, gconstpoin
 	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/mail_account", owner,
 		"{\"organization_id\":1,\"private_owner_id\":0,\"address\":\"replies@lightsite.app\",\"imap_host\":\"imap.reply.test\",\"imap_port\":993,\"imap_tls\":\"tls\",\"username\":\"replies@lightsite.app\",\"folders\":\"INBOX\",\"reply_alias_prefix\":\"r-fedcba9876543210fedcba98+\",\"internal_domains\":\"lightsite.app\",\"active\":false}", &answer), ==, SOUP_STATUS_CREATED);
 	g_assert_nonnull(strstr(answer, "r-fedcba9876543210fedcba98+"));
+	created_node = venture_json_parse(answer, NULL);
+	created_id = json_object_get_int_member(json_node_get_object(created_node), "id");
+	record_path = g_strdup_printf("/api/v1/mail_account/%" G_GINT64_FORMAT, created_id);
+	/* The shared password stays bound to this alias; an owner must not
+	 * retarget it to another business's alias after provisioning. */
+	g_assert_cmpuint(server_fixture_json(fixture, "PATCH", record_path, owner,
+		"{\"reply_alias_prefix\":\"r-another-business+\"}", NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	created_account = venture_database_get(fixture->database, VENTURE_TYPE_MAIL_ACCOUNT, created_id, &error);
+	g_assert_no_error(error);
+	g_object_get(created_account, "reply-alias-prefix", &observed_prefix, NULL);
+	g_assert_cmpstr(observed_prefix, ==, "r-fedcba9876543210fedcba98+");
 	g_clear_pointer(&answer, g_free);
 	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", (gint64)1,
 		"private-owner-id", (gint64)0, "address", "replies@lightsite.app", "imap-host", "imap.reply.test",
@@ -7296,6 +7311,20 @@ static void test_auth_booking_reply_connector(ServerFixture *fixture, gconstpoin
 	binding = venture_connector_open(fixture->database, fixture->config, account, &error);
 	g_assert_no_error(error);
 	g_assert_cmpstr(venture_connector_session_get_password(binding), ==, "rotated-synthetic-password");
+	/* A privileged internal edit must not retarget an existing credential. */
+	g_clear_object(&binding);
+	g_object_set(account, "reply-alias-prefix", "r-another-business+", NULL);
+	g_assert_false(venture_database_save(fixture->database, account, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	stored = venture_database_get(fixture->database, VENTURE_TYPE_MAIL_ACCOUNT, venture_entity_get_id(account), &error);
+	g_assert_no_error(error);
+	g_clear_pointer(&observed_prefix, g_free);
+	g_object_get(stored, "reply-alias-prefix", &observed_prefix, NULL);
+	g_assert_cmpstr(observed_prefix, ==, "r-0123456789abcdef01234567+");
+	binding = venture_connector_open(fixture->database, fixture->config, stored, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(binding);
 }
 
 

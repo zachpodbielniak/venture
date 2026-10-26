@@ -21,7 +21,7 @@ static const VentureFieldDecl account_fields[] = {
 	STR("folders", "Folders", "Comma-separated folders to watch; INBOX when empty. The capture folder is always included"),
 	STR("capture-address", "Capture address", "Mail to exactly this address, or to it with a +tag, becomes a capture inbox item; must differ from the account address"),
 	STR("capture-folder", "Capture folder", "Every message in this folder becomes a capture inbox item"),
-	VENTURE_FIELD("reply-alias-prefix", "Reply alias prefix", "Only mail with this delivery address prefix enters this business from a shared hosted mailbox", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
+	VENTURE_FIELD("reply-alias-prefix", "Reply alias prefix", "Only mail with this delivery address prefix enters this business from a shared hosted mailbox; fixed after account creation", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_IMMUTABLE),
 	VENTURE_FIELD_TEXT("ignore-patterns", "Ignore patterns", "Comma- or newline-separated address globs such as noreply@* or *@notifications.example; matching addresses touch no CRM record"),
 	STR("internal-domains", "Internal domains", "Comma-separated domains whose addresses never become unmatched senders"),
 	VENTURE_FIELD("sync-since", "Sync since", "A folder's first sync starts at mail received on or after this date; empty means everything", VENTURE_FIELD_KIND_DATE, VENTURE_COLUMN_FLAG_NONE),
