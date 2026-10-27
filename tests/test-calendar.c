@@ -601,6 +601,75 @@ static void test_booking_bound_ignores_tasks(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
 }
 
+/* A previously offered time must fail the locked recheck after an unassigned
+ * invoiced job is scheduled. Direct submissions must meet the same rule. */
+static void test_booking_invoiced_job_overlap(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), job = NULL, booked = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GDateTime) start = venture_time_from_string("2026-09-21T14:00:00Z", NULL);
+	g_autoptr(GDateTime) end = venture_time_from_string("2026-09-21T15:00:00Z", NULL);
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+	g_object_set(company, "name", "Example Daycare", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);
+	save(f, VENTURE_ENTITY(company));
+	venture_entity_set_organization_id(VENTURE_ENTITY(invoice), f->org);
+	g_object_set(invoice, "number", "INV-MISO", "company-id",
+		venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	save(f, VENTURE_ENTITY(invoice));
+	job = g_object_new(VENTURE_TYPE_JOB, "organization-id", f->org,
+		"title", "Miso daycare", "company-id", venture_entity_get_id(VENTURE_ENTITY(company)),
+		"window-start", start, "window-end", end, "status", VENTURE_JOB_BOOKED,
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 1);
+	g_assert_cmpstr(venture_json_object_get_string(json_array_get_object_element(json_node_get_array(slots), 0), "start", ""), ==, "2026-09-22T14:00:00Z");
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z",
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(booked);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:30:00Z",
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(booked);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_cmpint(count_type(f, "contact"), ==, 1);
+	g_assert_cmpint(count_type(f, "activity"), ==, 0);
+	g_clear_error(&error);
+	/* Invoicing the same scheduled work must not reopen its sold hours. */
+	g_object_set(job, "status", VENTURE_JOB_INVOICED, NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 1);
+	/* Cancelling releases the window. An open-ended scheduled job blocks the
+	 * first slot for one booking duration, without any technician row. */
+	g_object_set(job, "status", VENTURE_JOB_CANCELLED, NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+	g_object_set(job, "status", VENTURE_JOB_BOOKED, "window-end", NULL, NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 2);
+	g_assert_cmpstr(venture_json_object_get_string(json_array_get_object_element(json_node_get_array(slots), 0), "start", ""), ==, "2026-09-21T14:30:00Z");
+}
+
 static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) p = page(f);
@@ -1063,5 +1132,6 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add_func("/calendar/migrate-disabled", test_migrate_disabled);
 	g_test_add("/calendar/booking-bound-ignores-tasks", Fixture, NULL, setup, test_booking_bound_ignores_tasks, teardown);
+	g_test_add("/calendar/booking-invoiced-job-overlap", Fixture, NULL, setup, test_booking_invoiced_job_overlap, teardown);
 	return g_test_run();
 }

@@ -136,7 +136,11 @@ per install.
 duration-long slots from now to the horizon, and a slot is dropped when,
 widened by the buffer, it overlaps any of the owner's planned calls and
 meetings — which is where synced calendar events live, so a dentist
-appointment on the phone blocks the same half hour here. Times are shown in
+appointment on the phone blocks the same half hour here. A scheduled job's
+arrival window also blocks public booking for its business, even when no
+technician is assigned or the job is completed or invoiced. Cancelled jobs
+do not block; a job with only an arrival start blocks one booking duration.
+Times are shown in
 the owner's zone and submitted as UTC. =?format=json= returns the slots as
 ={"start", "end", "label", "day"}=.
 
@@ -146,8 +150,8 @@ lead deduplication and inbound mail match (lower case, trimmed, +tag
 retained) or created with =source=booking=; a planned meeting owned by the
 page owner, related to that contact, is written in the same transaction,
 with the customer's notes and address in its body. The slot is recomputed
-under the save lock, so a booking beyond the target's capacity — or a time that was never
-offered — is refused with 409 and nothing is written. The meeting appears
+under the save lock. A full slot, a time since occupied by a job, or one
+never offered is refused with 409; nothing is written. The meeting appears
 on the owner's worklist and, on the next sweep, their calendar. With mail
 and a public origin configured, the service queues a private confirmation.
 
