@@ -229,7 +229,30 @@ relay's per-visitor limit and an untrusted peer's ignored =X-Forwarded-For=.
 * Seat capacity and private management links
 
 =booking_page.capacity= declares seats per exact slot (zero means one, maximum
-10000). A different booking target or unrelated meeting still blocks overlap.
+10000) when no resources are named. =resources= is an optional JSON array of
+named units, for example
+
+#+begin_src json
+[{"name":"Lane 1","min_group_size":1,"max_group_size":6},{"name":"Lane 2","min_group_size":1,"max_group_size":6}]
+#+end_src
+
+With named resources, each resource is available for one overlapping booking
+at a time. =resource_selection= is =auto= (default, first free resource) or
+=pick= (the visitor must name an available resource). =group_overflow= is
+=call= (default; the configured =group_call_message= is returned when a
+group does not fit one resource) or =multiple= (allocate enough free
+resources for the group). Group size is a positive whole number up to 10000;
+each resource declares its minimum and maximum. Names are unique within a
+page and should remain stable while bookings exist. A confirmed booking stores
+the assigned names and group size on its private reservation and its meeting,
+so the owner can see them on the calendar and record. A job's optional
+=booking_resource= names the resource it occupies; a job without one still
+blocks the whole booking window. A planned meeting without a named resource
+also blocks the whole window. Cancellation releases the names; rescheduling
+checks availability again and preserves the group size. The booking service
+applies the same rules to standalone links and form booking questions.
+
+A different booking target or unrelated meeting still blocks overlap.
 Availability is shared with [[file:forms.org][booking questions on forms]]. A private
 =booking_reservation= working copy reserves a seat under the save lock, without
 emitting an audit entry or business event. Confirmation creates the ordinary

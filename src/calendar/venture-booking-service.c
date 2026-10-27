@@ -69,6 +69,8 @@ typedef struct {
 	gchar *owner, *title;
 	GTimeZone *zone;
 	JsonObject *availability;
+	JsonArray *resources;
+	gchar *selection, *overflow, *call_message;
 	gint64 duration, buffer, horizon, capacity, id, ignore;
 } Page;
 static void page_clear(Page *p)
@@ -76,6 +78,8 @@ static void page_clear(Page *p)
 	g_free(p->owner); g_free(p->title);
 	g_clear_pointer(&p->zone, g_time_zone_unref);
 	g_clear_pointer(&p->availability, json_object_unref);
+	g_clear_pointer(&p->resources, json_array_unref);
+	g_free(p->selection); g_free(p->overflow); g_free(p->call_message);
 }
 static gboolean page_read(VentureEntity *page, Page *p, GError **error)
 {
@@ -84,6 +88,39 @@ static gboolean page_read(VentureEntity *page, Page *p, GError **error)
 	memset(p, 0, sizeof *p);
 	g_object_get(page, "owner", &p->owner, "title", &p->title, "timezone", &tz, "availability", &availability,
 		"duration-minutes", &p->duration, "buffer-minutes", &p->buffer, "horizon-days", &p->horizon, "capacity", &p->capacity, NULL);
+	{
+		g_autofree gchar *resources = NULL;
+		g_autoptr(JsonNode) parsed = NULL;
+		guint i, j;
+		g_object_get(page, "resources", &resources, "resource-selection", &p->selection,
+			"group-overflow", &p->overflow, "group-call-message", &p->call_message, NULL);
+		if (!venture_string_is_empty(resources)) parsed = venture_json_parse(resources, NULL);
+		if (!venture_string_is_empty(resources) && parsed == NULL)
+			return refuse(error, VENTURE_ERROR_CONFIG, "Named resources must be valid JSON");
+		if (parsed != NULL && !JSON_NODE_HOLDS_ARRAY(parsed))
+			return refuse(error, VENTURE_ERROR_CONFIG, "Named resources must be a JSON array");
+		if (parsed != NULL) p->resources = json_array_ref(json_node_get_array(parsed));
+		if (p->resources != NULL && json_array_get_length(p->resources) > 100)
+			return refuse(error, VENTURE_ERROR_CONFIG, "At most 100 resources are supported");
+		if (p->resources != NULL) for (i = 0; i < json_array_get_length(p->resources); i++) {
+			JsonObject *resource = json_array_get_object_element(p->resources, i);
+			const gchar *name = resource != NULL ? venture_json_object_get_string(resource, "name", NULL) : NULL;
+			gint64 min = resource != NULL ? json_object_get_int_member_with_default(resource, "min_group_size", 1) : 0;
+			gint64 max = resource != NULL ? json_object_get_int_member_with_default(resource, "max_group_size", 1) : 0;
+			if (venture_string_is_empty(name) || strlen(name) > 100 || !g_utf8_validate(name, -1, NULL) ||
+			    min < 1 || max < min || max > 10000)
+				return refuse(error, VENTURE_ERROR_CONFIG, "Each resource needs a unique name and group limits from 1 to 10000");
+			for (j = 0; j < i; j++) {
+				JsonObject *other = json_array_get_object_element(p->resources, j);
+				if (g_strcmp0(name, venture_json_object_get_string(other, "name", NULL)) == 0)
+					return refuse(error, VENTURE_ERROR_CONFIG, "Resource names must be unique");
+			}
+		}
+		if (!venture_string_is_empty(p->selection) && g_strcmp0(p->selection, "auto") && g_strcmp0(p->selection, "pick"))
+			return refuse(error, VENTURE_ERROR_CONFIG, "Resource choice must be auto or pick");
+		if (!venture_string_is_empty(p->overflow) && g_strcmp0(p->overflow, "call") && g_strcmp0(p->overflow, "multiple"))
+			return refuse(error, VENTURE_ERROR_CONFIG, "Large groups must call or use multiple resources");
+	}
 	p->id = venture_entity_get_id(page);
 	if (p->capacity < 0 || p->capacity > 10000) return refuse(error, VENTURE_ERROR_CONFIG, "Capacity must be between 0 and 10000");
 	if (p->capacity == 0) p->capacity = 1;
@@ -119,11 +156,33 @@ static const gchar *windows_for(Page *p, GDateTime *local_day)
 }
 
 /* --- Busy time: the owner's planned calls and meetings -------------------- */
-typedef struct { GDateTime *from, *to; gint64 page; } Busy;
+typedef struct { GDateTime *from, *to; gint64 page; gchar *resource; JsonArray *resources; } Busy;
+static gchar *booking_string(VentureEntity *entity, const gchar *name);
 static void busy_free(gpointer data)
 {
 	Busy *b = data;
-	g_clear_pointer(&b->from, g_date_time_unref); g_clear_pointer(&b->to, g_date_time_unref); g_free(b);
+	g_clear_pointer(&b->from, g_date_time_unref); g_clear_pointer(&b->to, g_date_time_unref);
+	g_clear_pointer(&b->resources, json_array_unref); g_free(b->resource); g_free(b);
+}
+static JsonArray *booking_names(VentureEntity *entity, const gchar *property)
+{
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_object_get(entity, property, &text, NULL);
+	if (venture_string_is_empty(text)) return NULL;
+	node = venture_json_parse(text, NULL);
+	return node != NULL && JSON_NODE_HOLDS_ARRAY(node) ? json_array_ref(json_node_get_array(node)) : NULL;
+}
+static gchar *booking_names_label(JsonArray *names)
+{
+	g_autoptr(GString) label = g_string_new(NULL);
+	guint i;
+	if (names == NULL) return g_strdup("");
+	for (i = 0; i < json_array_get_length(names); i++) {
+		if (i > 0) g_string_append(label, ", ");
+		g_string_append(label, json_array_get_string_element(names, i));
+	}
+	return g_string_free(g_steal_pointer(&label), FALSE);
 }
 static gint64 booking_int(VentureEntity *entity, const gchar *name)
 {
@@ -181,6 +240,7 @@ static gboolean append_job_busy(VentureBookingService *self, gint64 org, Page *p
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		Busy *b = g_new0(Busy, 1);
 		g_object_get(row, "window-start", &b->from, "window-end", &b->to, NULL);
+		b->resource = booking_string(row, "booking-resource");
 		if (b->from == NULL) { busy_free(b); continue; }
 		if (b->to == NULL) b->to = g_date_time_add_minutes(b->from, (gint)p->duration);
 		g_ptr_array_add(busy, b);
@@ -222,6 +282,7 @@ static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GD
 			b = g_new0(Busy, 1);
 			g_object_get(row, "starts-at", &b->from, "ends-at", &b->to, NULL);
 			b->page = booking_int(row, "page-id");
+			b->resources = booking_names(row, "resource-names");
 			if (b->from == NULL || b->to == NULL) { busy_free(b); continue; }
 			g_ptr_array_add(busy, b);
 		}
@@ -253,17 +314,71 @@ static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GD
 		b->from = g_date_time_ref(starts ? starts : due);
 		b->to = ends && starts ? g_date_time_ref(ends) : g_date_time_add_minutes(b->from, (gint)p->duration);
 		b->page = reservation != NULL ? booking_int(reservation, "page-id") : 0;
+		b->resources = reservation != NULL ? booking_names(reservation, "resource-names") : booking_names(row, "booking-resources");
 		g_ptr_array_add(busy, b);
+	}
+	if (p->resources != NULL && json_array_get_length(p->resources) > 0) {
+		g_autoptr(VentureQuery) named = venture_query_new(VENTURE_TYPE_ACTIVITY);
+		g_autoptr(GPtrArray) named_rows = NULL;
+		venture_query_set_organization(named, org);
+		venture_query_add_filter_int(named, "status", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_STATUS_PLANNED, NULL);
+		if (!venture_query_add_filter(named, "booking-resources", VENTURE_FILTER_OP_NOT_NULL, NULL, error)) return NULL;
+		venture_query_set_limit(named, 10001);
+		named_rows = venture_database_find(self->database, named, error);
+		if (named_rows == NULL) return NULL;
+		if (named_rows->len > 10000) return refuse(error, VENTURE_ERROR_CONFLICT, "Too many named meetings to calculate availability"), NULL;
+		for (i = 0; i < named_rows->len; i++) {
+			VentureEntity *row = g_ptr_array_index(named_rows, i);
+			g_autofree gchar *owner = booking_string(row, "owner");
+			g_autoptr(GDateTime) starts = NULL, ends = NULL;
+			Busy *b;
+			if (g_strcmp0(owner, p->owner) == 0) continue;
+			b = g_new0(Busy, 1);
+			g_object_get(row, "starts-at", &starts, "ends-at", &ends, NULL);
+			if (starts == NULL) { busy_free(b); continue; }
+			b->from = g_date_time_ref(starts);
+			b->to = ends != NULL ? g_date_time_ref(ends) : g_date_time_add_minutes(starts, (gint)p->duration);
+			b->resources = booking_names(row, "booking-resources");
+			g_ptr_array_add(busy, b);
+		}
 	}
 	if (venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "job") &&
 	    (!append_job_busy(self, org, p, now, FALSE, busy, error) ||
 	     !append_job_busy(self, org, p, now, TRUE, busy, error))) return NULL;
 	return g_steal_pointer(&busy);
 }
+static gboolean booking_resource_free(GPtrArray *busy, GDateTime *start, GDateTime *end,
+	Page *page, const gchar *name)
+{
+	guint i, j;
+	for (i = 0; i < busy->len; i++) {
+		Busy *b = g_ptr_array_index(busy, i);
+		g_autoptr(GDateTime) from = g_date_time_add_minutes(b->from, -(gint)page->buffer);
+		g_autoptr(GDateTime) to = g_date_time_add_minutes(b->to, (gint)page->buffer);
+		gboolean applies = TRUE;
+		if (g_date_time_compare(from, end) >= 0 || g_date_time_compare(to, start) <= 0) continue;
+		if (b->resource != NULL) applies = g_strcmp0(b->resource, name) == 0;
+		if (b->resources != NULL) {
+			applies = FALSE;
+			for (j = 0; j < json_array_get_length(b->resources); j++)
+				if (g_strcmp0(json_array_get_string_element(b->resources, j), name) == 0) { applies = TRUE; break; }
+		}
+		if (applies) return FALSE;
+	}
+	return TRUE;
+}
+
 static gboolean is_free(GPtrArray *busy, GDateTime *start, GDateTime *end, Page *page)
 {
 	guint i;
 	gint64 seats = 0;
+	if (page->resources != NULL && json_array_get_length(page->resources) > 0) {
+		for (i = 0; i < json_array_get_length(page->resources); i++) {
+			JsonObject *resource = json_array_get_object_element(page->resources, i);
+			if (booking_resource_free(busy, start, end, page, venture_json_object_get_string(resource, "name", ""))) return TRUE;
+		}
+		return FALSE;
+	}
 	for (i = 0; i < busy->len; i++)
 	{
 		Busy *b = g_ptr_array_index(busy, i);
@@ -273,6 +388,83 @@ static gboolean is_free(GPtrArray *busy, GDateTime *start, GDateTime *end, Page 
 		else if (g_date_time_compare(from, end) < 0 && g_date_time_compare(to, start) > 0) return FALSE;
 	}
 	return seats < page->capacity;
+}
+
+static gchar *booking_allocate(GPtrArray *busy, GDateTime *start, GDateTime *end,
+	Page *page, const gchar *requested, gint64 group_size, GError **error)
+{
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) result = NULL;
+	gint64 remaining = group_size;
+	gint64 min_total = 0, max_total = 0;
+	guint i, pass;
+	if (group_size < 1 || group_size > 10000) return refuse(error, VENTURE_ERROR_VALIDATION, "Group size must be from 1 to 10000"), NULL;
+	if (page->resources == NULL || json_array_get_length(page->resources) == 0) {
+		if (requested != NULL && *requested) return refuse(error, VENTURE_ERROR_VALIDATION, "This page has no named resources"), NULL;
+		return g_strdup("[]");
+	}
+	if (g_strcmp0(page->selection, "pick") == 0 && venture_string_is_empty(requested))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Choose a resource"), NULL;
+	json_builder_begin_array(builder);
+	for (pass = 0; pass < 2 && remaining > 0; pass++) {
+		for (i = 0; i < json_array_get_length(page->resources) && remaining > 0; i++) {
+			JsonObject *resource = json_array_get_object_element(page->resources, i);
+			const gchar *name = venture_json_object_get_string(resource, "name", "");
+			gint64 min = json_object_get_int_member_with_default(resource, "min_group_size", 1);
+			gint64 max = json_object_get_int_member_with_default(resource, "max_group_size", 1);
+			if (requested != NULL && *requested && ((pass == 0 && g_strcmp0(requested, name)) || (pass == 1 && !g_strcmp0(requested, name)))) continue;
+		if ((requested == NULL || !*requested) && pass == 0) continue;
+			if (!booking_resource_free(busy, start, end, page, name) || group_size < min_total + min) continue;
+			if (remaining > max && g_strcmp0(page->overflow, "multiple") != 0) {
+				if (requested != NULL && *requested && pass == 0 && booking_resource_free(busy, start, end, page, name))
+					return refuse(error, VENTURE_ERROR_CONFLICT,
+						venture_string_is_empty(page->call_message) ? "This group does not fit; please call us" : page->call_message), NULL;
+				continue;
+			}
+		json_builder_add_string_value(builder, name);
+			min_total += min; max_total += max;
+			remaining = MAX(group_size - max_total, 0);
+		if (g_strcmp0(page->overflow, "multiple") != 0) break;
+		}
+		if (requested != NULL && *requested && pass == 0 && remaining == group_size) {
+			return refuse(error, VENTURE_ERROR_CONFLICT, "The chosen resource is not available for this group"), NULL;
+		}
+	}
+	json_builder_end_array(builder);
+	if (remaining > 0) {
+		const gchar *message = venture_string_is_empty(page->call_message) ? "This group does not fit; please call us" : page->call_message;
+		return refuse(error, VENTURE_ERROR_CONFLICT, message), NULL;
+	}
+	result = json_builder_get_root(builder);
+	return json_to_string(result, FALSE);
+}
+
+static gboolean booking_assignment_free(GPtrArray *busy, GDateTime *start, GDateTime *end,
+	Page *page, JsonArray *names, gint64 group_size)
+{
+	guint i, j;
+	gint64 min_total = 0, max_total = 0;
+	if (page->resources == NULL || json_array_get_length(page->resources) == 0)
+		return names == NULL || json_array_get_length(names) == 0;
+	if (names == NULL || json_array_get_length(names) == 0) return FALSE;
+	for (i = 0; i < json_array_get_length(names); i++) {
+		const gchar *name = json_array_get_string_element(names, i);
+		gboolean known = FALSE;
+		if (name == NULL) return FALSE;
+		for (j = 0; j < i; j++) if (g_strcmp0(name, json_array_get_string_element(names, j)) == 0) return FALSE;
+		for (j = 0; j < json_array_get_length(page->resources); j++) {
+			JsonObject *resource = json_array_get_object_element(page->resources, j);
+			if (g_strcmp0(name, venture_json_object_get_string(resource, "name", NULL)) == 0) {
+				known = TRUE;
+				min_total += json_object_get_int_member_with_default(resource, "min_group_size", 1);
+				max_total += json_object_get_int_member_with_default(resource, "max_group_size", 1);
+				break;
+			}
+		}
+		if (!known || !booking_resource_free(busy, start, end, page, name)) return FALSE;
+	}
+	return group_size >= min_total && group_size <= max_total &&
+		(json_array_get_length(names) == 1 || g_strcmp0(page->overflow, "multiple") == 0);
 }
 
 /* Every free slot from now to the horizon, ascending. */
@@ -316,6 +508,7 @@ JsonNode *venture_booking_service_slots(VentureBookingService *self, VentureEnti
 {
 	g_autoptr(GDateTime) reference = NULL;
 	g_autoptr(GPtrArray) slots = NULL;
+	g_autoptr(GPtrArray) busy = NULL;
 	g_autoptr(JsonBuilder) builder = json_builder_new();
 	Page p;
 	guint i;
@@ -326,6 +519,10 @@ JsonNode *venture_booking_service_slots(VentureBookingService *self, VentureEnti
 	reference = now ? g_date_time_ref(now) : venture_time_now();
 	slots = compute_slots(self, page, &p, reference, error);
 	if (!slots) { page_clear(&p); return NULL; }
+	if (p.resources != NULL && json_array_get_length(p.resources) > 0) {
+		busy = load_busy(self, venture_entity_get_organization_id(page), &p, reference, error);
+		if (busy == NULL) { page_clear(&p); return NULL; }
+	}
 	json_builder_begin_array(builder);
 	for (i = 0; i < slots->len; i++) {
 		GDateTime *start = g_ptr_array_index(slots, i);
@@ -339,6 +536,16 @@ JsonNode *venture_booking_service_slots(VentureBookingService *self, VentureEnti
 		json_builder_set_member_name(builder, "end"); json_builder_add_string_value(builder, end_text);
 		json_builder_set_member_name(builder, "label"); json_builder_add_string_value(builder, label);
 		json_builder_set_member_name(builder, "day"); json_builder_add_string_value(builder, day);
+		if (busy != NULL) {
+			guint j;
+			json_builder_set_member_name(builder, "resources"); json_builder_begin_array(builder);
+			for (j = 0; j < json_array_get_length(p.resources); j++) {
+				JsonObject *resource = json_array_get_object_element(p.resources, j);
+				const gchar *name = venture_json_object_get_string(resource, "name", "");
+				if (booking_resource_free(busy, start, end, &p, name)) json_builder_add_string_value(builder, name);
+			}
+			json_builder_end_array(builder);
+		}
 		json_builder_end_object(builder);
 	}
 	json_builder_end_array(builder);

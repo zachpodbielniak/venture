@@ -246,6 +246,8 @@ static const VentureFieldDecl venture_form_field_fields[] = {
 	VENTURE_FIELD_REF("booking-page-id", "Booking target", "Existing calendar booking page for a booking question", "booking_page", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("booking-name-field", "Name question", "Stable question key; empty uses name", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("booking-email-field", "Email question", "Stable question key; empty uses email", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-resource-field", "Resource question", "Required single-choice question containing resource names on pick pages", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-group-field", "Group size question", "Number question used for resource capacity; empty books one person", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("scoring", "Scoring", "JSON choice points, numeric ranges and optional correct choice ids", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("default-value", "Default", "Optional: the value it starts with",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),

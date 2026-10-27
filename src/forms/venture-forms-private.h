@@ -80,6 +80,8 @@ typedef struct
 	gint64			 booking_page_id;
 	gchar			*booking_name_field;
 	gchar			*booking_email_field;
+	gchar			*booking_resource_field;
+	gchar			*booking_group_field;
 	JsonNode		*booking_slots;
 	gchar			*scoring;
 	JsonObject		*quiz;

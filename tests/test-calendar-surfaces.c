@@ -253,6 +253,44 @@ static void test_booking_page(Fixture *f, gconstpointer unused)
 	}
 }
 
+static void test_booking_named_resource_page(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureEntity) page = NULL;
+	g_autoptr(JsonNode) slots = NULL;
+	g_autofree gchar *html = NULL, *json = NULL, *start = NULL, *body = NULL;
+	JsonArray *array;
+	(void)unused;
+	page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org,
+		"title", "Example Lanes", "slug", "example-lanes", "owner", "ben",
+		"duration-minutes", (gint64)30, "timezone", "UTC", "horizon-days", (gint64)2,
+		"availability", "{\"mon\":\"00:00-24:00\",\"tue\":\"00:00-24:00\",\"wed\":\"00:00-24:00\",\"thu\":\"00:00-24:00\",\"fri\":\"00:00-24:00\",\"sat\":\"00:00-24:00\",\"sun\":\"00:00-24:00\"}",
+		"resources", "[{\"name\":\"Lane 1\",\"max_group_size\":4},{\"name\":\"Lane 2\",\"max_group_size\":4}]",
+		"resource-selection", "pick", "active", TRUE, NULL);
+	save(f, page);
+	g_assert_cmpuint(request(f, "GET", "/book/example-lanes", NULL, &html), ==, 200);
+	g_assert_nonnull(strstr(html, "Group size"));
+	g_assert_nonnull(strstr(html, "Lane 1"));
+	g_assert_cmpuint(request(f, "GET", "/book/example-lanes?format=json", NULL, &json), ==, 200);
+	slots = json_from_string(json, NULL); array = json_node_get_array(slots);
+	g_assert_cmpuint(json_array_get_length(array), >, 0);
+	start = g_strdup(json_object_get_string_member(json_array_get_object_element(array, 0), "start"));
+	body = g_strdup_printf("{\"start\":\"%s\",\"resource\":\"Lane 1\",\"group_size\":3,\"name\":\"Visitor\",\"email\":\"visitor@example.test\"}", start);
+	g_assert_cmpuint(request(f, "POST", "/book/example-lanes", body, NULL), ==, 201);
+	g_assert_cmpuint(request(f, "POST", "/book/example-lanes", body, NULL), ==, 409);
+	g_clear_pointer(&body, g_free);
+	{
+		g_autofree gchar *choice = g_strdup_printf("%s|Lane 2", start);
+		g_autofree gchar *encoded = g_uri_escape_string(choice, NULL, TRUE);
+		body = g_strdup_printf("start=%s&group_size=5&name=Large+group&email=large%%40example.test", encoded);
+	}
+	g_clear_pointer(&html, g_free);
+	g_assert_cmpuint(request_as(f, "POST", "/book/example-lanes", "application/x-www-form-urlencoded", body, &html), ==, 409);
+	g_assert_nonnull(strstr(html, "call us"));
+	g_clear_pointer(&body, g_free);
+	body = g_strdup_printf("{\"start\":\"%s\",\"resource\":\"Lane 2\",\"group_size\":3,\"name\":\"Visitor 2\",\"email\":\"visitor2@example.test\"}", start);
+	g_assert_cmpuint(request(f, "POST", "/book/example-lanes", body, NULL), ==, 201);
+}
+
 /* The public route must recheck an offered time after a work order is saved. */
 static void test_booking_job_window(Fixture *f, gconstpointer unused)
 {
@@ -374,6 +412,7 @@ int main(int argc, char **argv)
 	g_test_add("/calendar-surfaces/cli-sync", Fixture, NULL, setup, test_cli_sync, teardown);
 	g_test_add("/calendar-surfaces/api-guards", Fixture, NULL, setup, test_api_guards, teardown);
 	g_test_add("/calendar-surfaces/booking-page", Fixture, NULL, setup, test_booking_page, teardown);
+	g_test_add("/calendar-surfaces/booking-named-resource-page", Fixture, NULL, setup, test_booking_named_resource_page, teardown);
 	g_test_add("/calendar-surfaces/booking-job-window", Fixture, NULL, setup, test_booking_job_window, teardown);
 	g_test_add("/calendar-surfaces/booking-untrusted-forwarded", Fixture, NULL, setup, test_booking_untrusted_ignores_forwarded, teardown);
 	g_test_add("/calendar-surfaces/booking-relay", Fixture, NULL, setup, test_booking_relay_limits_by_visitor, teardown);

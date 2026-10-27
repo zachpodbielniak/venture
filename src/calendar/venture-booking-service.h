@@ -57,6 +57,17 @@ JsonNode *venture_booking_service_slots(VentureBookingService *self, VentureEnti
  */
 VentureEntity *venture_booking_service_book(VentureBookingService *self, VentureEntity *page, const gchar *start, const gchar *name, const gchar *email, const gchar *notes, GDateTime *now, const VentureActor *actor, GError **error);
 /**
+ * venture_booking_service_book_selected:
+ * @resource: (nullable): requested named resource; required for pick pages
+ * @group_size: number of people, from 1 to 10000
+ *
+ * Books with resource allocation under the save lock.
+ * Returns: (transfer full) (nullable): the booked activity
+ */
+VentureEntity *venture_booking_service_book_selected(VentureBookingService *self, VentureEntity *page,
+	const gchar *start, const gchar *resource, gint64 group_size, const gchar *name, const gchar *email,
+	const gchar *notes, GDateTime *now, const VentureActor *actor, GError **error);
+/**
  * venture_booking_service_reserve:
  * @self: the service
  * @page: saved booking target; re-read under the save lock
@@ -71,6 +82,16 @@ VentureEntity *venture_booking_service_book(VentureBookingService *self, Venture
  */
 VentureEntity *venture_booking_service_reserve(VentureBookingService *self, VentureEntity *page,
 	const gchar *start, guint seconds, GDateTime *now, GError **error);
+/**
+ * venture_booking_service_reserve_selected:
+ * @resource: (nullable): requested named resource
+ * @group_size: number of people, from 1 to 10000
+ *
+ * Reserves named resources under the save lock.
+ * Returns: (transfer full) (nullable): the private hold
+ */
+VentureEntity *venture_booking_service_reserve_selected(VentureBookingService *self, VentureEntity *page,
+	const gchar *start, const gchar *resource, gint64 group_size, guint seconds, GDateTime *now, GError **error);
 /**
  * venture_booking_service_confirm:
  * @self: the service
@@ -131,6 +152,16 @@ VentureEntity *venture_booking_service_lookup_capability(VentureBookingService *
  */
 VentureEntity *venture_booking_service_manage(VentureBookingService *self, VentureEntity *page,
 	const gchar *capability, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_booking_service_manage_selected:
+ * @resource: (nullable): replacement resource; null keeps the first current one
+ *
+ * Reschedules or cancels a resource booking under the save lock.
+ * Returns: (transfer full) (nullable): the updated meeting
+ */
+VentureEntity *venture_booking_service_manage_selected(VentureBookingService *self, VentureEntity *page,
+	const gchar *capability, const gchar *start, const gchar *resource,
+	GDateTime *now, const VentureActor *actor, GError **error);
 /**
  * venture_booking_service_release:
  * @self: the service
