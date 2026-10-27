@@ -357,6 +357,8 @@ static gboolean booking_resource_free(GPtrArray *busy, GDateTime *start, GDateTi
 		g_autoptr(GDateTime) to = g_date_time_add_minutes(b->to, (gint)page->buffer);
 		gboolean applies = TRUE;
 		if (g_date_time_compare(from, end) >= 0 || g_date_time_compare(to, start) <= 0) continue;
+		/* A different booking page blocks the entire slot. */
+		if (b->page > 0 && b->page != page->id) return FALSE;
 		if (b->resource != NULL) applies = g_strcmp0(b->resource, name) == 0;
 		if (b->resources != NULL) {
 			applies = FALSE;
@@ -413,7 +415,7 @@ static gchar *booking_allocate(GPtrArray *busy, GDateTime *start, GDateTime *end
 			gint64 min = json_object_get_int_member_with_default(resource, "min_group_size", 1);
 			gint64 max = json_object_get_int_member_with_default(resource, "max_group_size", 1);
 			if (requested != NULL && *requested && ((pass == 0 && g_strcmp0(requested, name)) || (pass == 1 && !g_strcmp0(requested, name)))) continue;
-		if ((requested == NULL || !*requested) && pass == 0) continue;
+			if ((requested == NULL || !*requested) && pass == 0) continue;
 			if (!booking_resource_free(busy, start, end, page, name) || group_size < min_total + min) continue;
 			if (remaining > max && g_strcmp0(page->overflow, "multiple") != 0) {
 				if (requested != NULL && *requested && pass == 0 && booking_resource_free(busy, start, end, page, name))
@@ -421,10 +423,10 @@ static gchar *booking_allocate(GPtrArray *busy, GDateTime *start, GDateTime *end
 						venture_string_is_empty(page->call_message) ? "This group does not fit; please call us" : page->call_message), NULL;
 				continue;
 			}
-		json_builder_add_string_value(builder, name);
+			json_builder_add_string_value(builder, name);
 			min_total += min; max_total += max;
 			remaining = MAX(group_size - max_total, 0);
-		if (g_strcmp0(page->overflow, "multiple") != 0) break;
+			if (g_strcmp0(page->overflow, "multiple") != 0) break;
 		}
 		if (requested != NULL && *requested && pass == 0 && remaining == group_size) {
 			return refuse(error, VENTURE_ERROR_CONFLICT, "The chosen resource is not available for this group"), NULL;

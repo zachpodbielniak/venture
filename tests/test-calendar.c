@@ -884,6 +884,55 @@ static void test_booking_job_named_resource(Fixture *f, gconstpointer data)
 	g_assert_no_error(error); g_assert_nonnull(booked);
 }
 
+static void test_booking_auto_reschedule_reassigns(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), first = NULL, second = NULL, moved = NULL, reservation = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL, *names = NULL;
+	(void)data;
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", NULL); save(f, p);
+	first = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", NULL, 1,
+		"First", "first@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(first);
+	second = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:30:00Z", NULL, 1,
+		"Second", "second@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(second);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(first), NULL);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	url = venture_booking_service_manage_url(f->booking, reservation, "https://book.example.test", &error);
+	g_assert_no_error(error);
+	moved = venture_booking_service_manage_selected(f->booking, p, strrchr(url, '/') + 1,
+		"2026-09-21T14:30:00Z", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(moved);
+	g_object_get(moved, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 2\"]");
+}
+
+static void test_booking_other_page_blocks_resources(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), other_page = NULL, booked = NULL, refused = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", NULL); save(f, p);
+	other_page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org, "title", "Another service",
+		"slug", "other-page", "owner", "ben", "duration-minutes", (gint64)30,
+		"timezone", "America/Chicago", "horizon-days", (gint64)2, "active", TRUE,
+		"availability", "{\"mon\":\"09:00-10:00\",\"tue\":\"09:00-09:30\"}",
+		"resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", NULL);
+	save(f, other_page);
+	booked = venture_booking_service_book_selected(f->booking, other_page, "2026-09-21T14:00:00Z", NULL, 1,
+		"Other", "other@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 2", 1,
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+}
+
 /* The owner action uses ordinary organization access, without a capability. */
 static void test_booking_owner_cancel(Fixture *f, gconstpointer data)
 {
@@ -1236,6 +1285,8 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/booking-named-resources", Fixture, NULL, setup, test_booking_named_resources, teardown);
 	g_test_add("/calendar/booking-group-reschedule", Fixture, NULL, setup, test_booking_group_and_reschedule, teardown);
 	g_test_add("/calendar/booking-job-named-resource", Fixture, NULL, setup, test_booking_job_named_resource, teardown);
+	g_test_add("/calendar/booking-auto-reschedule-reassigns", Fixture, NULL, setup, test_booking_auto_reschedule_reassigns, teardown);
+	g_test_add("/calendar/booking-other-page-blocks-resources", Fixture, NULL, setup, test_booking_other_page_blocks_resources, teardown);
 	g_test_add("/calendar/booking-slots", Fixture, NULL, setup, test_booking_slots, teardown);
 	g_test_add("/calendar/booking-books-and-refuses-double", Fixture, NULL, setup, test_booking_books_and_refuses_double, teardown);
 	g_test_add("/calendar/sweep", Fixture, NULL, setup, test_sweep, teardown);

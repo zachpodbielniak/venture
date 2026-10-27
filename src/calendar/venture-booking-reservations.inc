@@ -308,7 +308,8 @@ VentureEntity *venture_booking_service_manage_selected(VentureBookingService *se
 		if (!booking_offered(self, fresh, &shape, when, reference, error)) { page_clear(&shape); goto fail; }
 		ends = g_date_time_add_minutes(when, (gint)shape.duration);
 		old_names = booking_names(reservation, "resource-names");
-		if (venture_string_is_empty(resource) && old_names != NULL && json_array_get_length(old_names) > 0)
+		if (g_strcmp0(shape.selection, "pick") == 0 && venture_string_is_empty(resource) &&
+		    old_names != NULL && json_array_get_length(old_names) > 0)
 			resource = json_array_get_string_element(old_names, 0);
 		busy = load_busy(self, venture_entity_get_organization_id(fresh), &shape, reference, error);
 		if (busy == NULL) { page_clear(&shape); goto fail; }

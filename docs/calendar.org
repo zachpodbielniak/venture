@@ -249,7 +249,9 @@ so the owner can see them on the calendar and record. A job's optional
 =booking_resource= names the resource it occupies; a job without one still
 blocks the whole booking window. A planned meeting without a named resource
 also blocks the whole window. Cancellation releases the names; rescheduling
-checks availability again and preserves the group size. The booking service
+checks availability again and preserves the group size. Automatic selection
+assigns the first free resource at the new time; pick selection keeps the
+chosen resource unless the visitor selects another. The booking service
 applies the same rules to standalone links and form booking questions.
 
 A different booking target or unrelated meeting still blocks overlap.
