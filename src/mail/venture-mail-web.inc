@@ -127,7 +127,8 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 		g_autoptr(VentureOrganizationMailer) selector = NULL;
 		g_autoptr(VentureIntegrationConnection) connection = NULL;
 		g_autoptr(JsonObject) values = NULL;
-		g_autofree gchar *host = NULL;
+		g_autoptr(VentureEntity) business = NULL;
+		g_autofree gchar *host = NULL, *name = NULL;
 		const gchar *from;
 		gint64 relay_port = 0;
 		if (!mail_connect_exact(object)) {
@@ -155,6 +156,11 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 		json_object_set_string_member(values, "username", "");
 		json_object_set_string_member(values, "password", "");
 		json_object_set_string_member(values, "from", from);
+		/* Customers see the business, never the tool's own "Venture" default. */
+		business = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_ORGANIZATION, org, &error);
+		if (!business) return venture_web_error_response(error);
+		g_object_get(business, "name", &name, NULL);
+		json_object_set_string_member(values, "from-name", name != NULL ? g_strstrip(name) : "");
 		selector = venture_organization_mailer_new(venture_context_get_database(self->context),
 			venture_context_get_config(self->context));
 		connection = venture_organization_mailer_configure(selector, org, values, 0, 0, &actor, &error);

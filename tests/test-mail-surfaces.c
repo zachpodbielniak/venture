@@ -329,6 +329,36 @@ test_connect_one_relay(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	g_assert_nonnull(connection);
 }
+/* Customers see the business as the sender, never the name of the tool. */
+static void
+test_connect_sends_as_business(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureEntity) business = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(JsonNode) settings = NULL;
+	g_autofree gchar *json = NULL;
+	VentureIntegrationService *service = venture_integration_service_get(f->db);
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	(void)unused;
+	g_assert_true(venture_integration_service_set_key(service, key, &error));
+	g_assert_no_error(error);
+	g_object_set(f->config, "mail-allowed-endpoints", "127.0.0.1:1025", "mail-plaintext-endpoints", "127.0.0.1:1025", NULL);
+	business = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, org, &error);
+	g_assert_no_error(error);
+	g_object_set(business, "name", "Maple Street Bakery", NULL);
+	g_assert_true(venture_database_save(f->db, business, NULL, &error));
+	g_assert_no_error(error);
+	json = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"owner@example.test\"}", org);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, NULL), ==, 200);
+	connection = venture_integration_service_find(service, org, "smtp", &error);
+	g_assert_no_error(error);
+	settings = venture_integration_service_resolve_version(service, org, venture_entity_get_id(VENTURE_ENTITY(connection)),
+		venture_entity_get_version(VENTURE_ENTITY(connection)), FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(venture_json_object_get_string(json_node_get_object(settings), "from-name", NULL), ==, "Maple Street Bakery");
+}
 
 int
 main(int argc, char **argv)
@@ -341,6 +371,7 @@ main(int argc, char **argv)
 	g_test_add("/mail-surfaces/inbound-actions", Fixture, NULL, setup, test_inbound_actions, teardown);
 	g_test_add("/mail-surfaces/organization-settings", Fixture, NULL, setup, test_organization_settings, teardown);
 	g_test_add("/mail-surfaces/connect-one-relay", Fixture, NULL, setup, test_connect_one_relay, teardown);
+	g_test_add("/mail-surfaces/connect-sends-as-business", Fixture, NULL, setup, test_connect_sends_as_business, teardown);
 	g_test_add("/mail-surfaces/cli-preview", Fixture, NULL, setup, test_cli_preview, teardown);
 	return g_test_run();
 }
