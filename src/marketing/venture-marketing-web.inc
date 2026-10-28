@@ -6,7 +6,8 @@ static HtmxResponse *marketing_response(gint status, const gchar *content)
 	HtmxResponse *response = htmx_response_new_with_content(content);
 	htmx_response_set_status(response, status);
 	htmx_response_add_header(response, "Cache-Control", "no-store, private");
-	htmx_response_add_header(response, "Referrer-Policy", "no-referrer");
+	/* Keep same-origin form POSTs from becoming opaque Origin: null requests. */
+	htmx_response_add_header(response, "Referrer-Policy", "same-origin");
 	htmx_response_add_header(response, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
 	return response;
 }

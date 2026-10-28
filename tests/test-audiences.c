@@ -1061,8 +1061,8 @@ static void http_done(GObject *source, GAsyncResult *result, gpointer data)
 	reply->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &reply->error);
 	reply->done = TRUE;
 }
-static guint http(SoupSession *session, const gchar *base, const gchar *method, const gchar *path,
-	const gchar *form, gchar **text)
+static guint http_with_policy(SoupSession *session, const gchar *base, const gchar *method, const gchar *path,
+	const gchar *form, gchar **text, gchar **policy)
 {
 	g_autofree gchar *url = g_strconcat(base, path, NULL);
 	g_autoptr(SoupMessage) message = soup_message_new(method, url);
@@ -1078,8 +1078,14 @@ static guint http(SoupSession *session, const gchar *base, const gchar *method, 
 	g_assert_no_error(reply.error);
 	status = soup_message_get_status(message);
 	if (text) *text = g_strndup(g_bytes_get_data(reply.body, NULL), g_bytes_get_size(reply.body));
+	if (policy) *policy = g_strdup(soup_message_headers_get_one(soup_message_get_response_headers(message), "Referrer-Policy"));
 	g_bytes_unref(reply.body);
 	return status;
+}
+static guint http(SoupSession *session, const gchar *base, const gchar *method, const gchar *path,
+	const gchar *form, gchar **text)
+{
+	return http_with_policy(session, base, method, path, form, text, NULL);
 }
 static void test_preference_page(Fixture *f, gconstpointer data)
 {
@@ -1092,7 +1098,7 @@ static void test_preference_page(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) ada = NULL, bob = NULL, stored = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *directory = g_dir_make_tmp("venture-audiences-web-XXXXXX", NULL), *base = NULL;
-	g_autofree gchar *path = NULL, *bob_path = NULL, *text = NULL, *form = NULL, *topics_off = NULL, *expected = NULL;
+	g_autofree gchar *path = NULL, *bob_path = NULL, *text = NULL, *form = NULL, *topics_off = NULL, *expected = NULL, *policy = NULL;
 	gint frequency = -1;
 	(void)data;
 	g_object_set(config, "state-dir", directory, "server-bind-address", "127.0.0.1", "server-port", (gint64)0,
@@ -1112,7 +1118,8 @@ static void test_preference_page(Fixture *f, gconstpointer data)
 		path = g_strdup_printf("/marketing/u/%s", token);
 		bob_path = g_strdup_printf("/marketing/u/%s", other);
 	}
-	g_assert_cmpuint(http(session, base, "GET", path, NULL, &text), ==, 200);
+	g_assert_cmpuint(http_with_policy(session, base, "GET", path, NULL, &text, &policy), ==, 200);
+	g_assert_cmpstr(policy, ==, "same-origin");
 	g_assert_nonnull(strstr(text, "Product news"));
 	g_assert_nonnull(strstr(text, "Offers"));
 	g_assert_nonnull(strstr(text, "name=\"frequency\""));
