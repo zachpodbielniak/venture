@@ -43,6 +43,7 @@ setup(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	(void)unused;
 	f->config = venture_config_new();
+	g_object_set(f->config, "server-base-url", "https://venture.example.test", NULL);
 	if (unused != NULL)
 	{
 		f->directory = g_dir_make_tmp("venture-sequence-restart-XXXXXX", NULL);

@@ -26,6 +26,7 @@ gboolean venture_sequence_mail_enqueue(VentureDatabase *database, VentureEntity 
 	const VentureActor *actor, GError **error);
 gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organization, GDateTime *now,
 	const VentureActor *actor, GError **error);
+gboolean venture_sequence_mail_unsubscribe(VentureDatabase *database, const gchar *token, GError **error);
 gboolean venture_sequence_delivery_eligible(VentureDatabase *database, VentureEntity *delivery,
 	GDateTime *now, gboolean *defer, GError **error);
 

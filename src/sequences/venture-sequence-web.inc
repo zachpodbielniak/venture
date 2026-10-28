@@ -1,6 +1,31 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Surface adapters share the enclosing web server's authentication helpers. */
 #include "sequences/venture-sequence-tracking-private.h"
+#include "sequences/venture-sequence-service-private.h"
+static HtmxResponse *venture_web_sequence_unsubscribe_response(gint status, const gchar *body)
+{
+	HtmxResponse *response = htmx_response_new_with_content(body);
+	htmx_response_set_status(response, status);
+	htmx_response_add_header(response, "Cache-Control", "no-store, private");
+	return response;
+}
+static HtmxResponse *
+venture_web_sequence_unsubscribe(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	const gchar *token = g_hash_table_lookup(params, "token");
+	g_autoptr(GError) error = NULL;
+	if (htmx_request_get_method(request) == HTMX_METHOD_POST) {
+		GBytes *body = htmx_request_get_body_bytes(request);
+		if (body == NULL || g_bytes_get_size(body) > 1024 ||
+			g_strcmp0(htmx_request_get_form_value(request, "List-Unsubscribe"), "One-Click"))
+			return venture_web_sequence_unsubscribe_response(400, "Expected List-Unsubscribe=One-Click");
+		if (!venture_sequence_mail_unsubscribe(venture_context_get_database(self->context), token, &error))
+			return venture_web_sequence_unsubscribe_response(404, "Not found");
+		return venture_web_sequence_unsubscribe_response(200, "<!doctype html><title>Emails stopped</title><p>These emails are stopped.</p>");
+	}
+	return venture_web_sequence_unsubscribe_response(200, "<!doctype html><title>Stop emails</title><form method=\"post\"><input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\"><button type=\"submit\">Stop these emails</button></form>");
+}
 static void
 venture_web_sequence_prefill(VentureEntity *record, HtmxRequest *request)
 {

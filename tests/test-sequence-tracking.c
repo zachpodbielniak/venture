@@ -29,6 +29,7 @@ setup(Fixture *f, gconstpointer unused)
 	g_autoptr(GError) error = NULL;
 	(void)unused;
 	f->config = venture_config_new();
+	g_object_set(f->config, "server-base-url", "https://venture.example.test", NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	f->context = venture_context_new(f->config, f->db);
@@ -177,9 +178,9 @@ test_wrapped(Fixture *f, gconstpointer unused)
 	g_assert_nonnull(token);
 	g_assert_cmpuint(strlen(token), ==, 64);
 	g_object_get(delivery, "body", &body, NULL);
-	first = g_strdup_printf("/t/c/%s/1", token);
-	second = g_strdup_printf("/t/c/%s/2", token);
-	pixel = g_strdup_printf("<img src=\"/t/o/%s.gif\"", token);
+	first = g_strdup_printf("https://venture.example.test/t/c/%s/1", token);
+	second = g_strdup_printf("https://venture.example.test/t/c/%s/2", token);
+	pixel = g_strdup_printf("<img src=\"https://venture.example.test/t/o/%s.gif\"", token);
 	g_assert_nonnull(strstr(body, first));
 	g_assert_nonnull(strstr(body, second));
 	g_assert_nonnull(strstr(body, pixel));

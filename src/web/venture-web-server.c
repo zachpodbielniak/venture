@@ -35261,6 +35261,8 @@ venture_web_server_new(
 	htmx_router_post(router, "/deals/:id/quote", venture_web_deal_quote, self);
 	htmx_router_get(router, "/t/o/:token", venture_web_sequence_open, self);
 	htmx_router_get(router, "/t/c/:token/:n", venture_web_sequence_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/sequences/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_unsubscribe, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/sequences/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_sequence_unsubscribe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_unsubscribe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/marketing/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_unsubscribe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_open, self);
