@@ -1,0 +1,42 @@
+#+title: Lightsite schedule tokens
+
+* Purpose
+
+Venture gives Lightsite one schedule token for each new business.
+The token belongs to the business owner.
+Its membership snapshot contains only that business.
+The token permits these two POST routes:
+
+- =/api/v1/dunning_policy/0/actions/sweep=
+- =/api/v1/mail/deliver=
+
+Venture refuses all other routes for this token.
+Each route applies the business membership check to the supplied =organization_id=.
+
+* Sign-up response
+
+=POST /api/v1/lightsite/signups= includes =schedule_token= on the first successful response.
+The token starts with =vk_=.
+Venture stores only its hash.
+An identical request returns the same account reference without =schedule_token=.
+Both responses use =Cache-Control: no-store=.
+
+Store =schedule_token= before you save the sign-up result.
+Do not put the token in a log or an account record.
+
+* Rotation and revocation
+
+Use the same workspace administrator bearer token that authorizes sign-up.
+The token must have current administrator authority and an administrator snapshot.
+
+To replace a business token, send =POST /api/v1/lightsite/schedule-tokens/<organization_id>/rotate=.
+Venture revokes the old schedule tokens and returns one new =schedule_token=.
+Venture returns the new secret once.
+Store the new secret before the next schedule cycle.
+
+To stop schedule access, send =POST /api/v1/lightsite/schedule-tokens/<organization_id>/revoke=.
+Venture revokes the schedule tokens and returns ={"organization_id":N,"revoked":true}=.
+The administrator can also revoke a token at =/account/tokens=.
+
+Both API actions require a business that a Lightsite sign-up created.
+Both responses use =Cache-Control: no-store=.

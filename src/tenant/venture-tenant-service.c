@@ -1686,7 +1686,7 @@ venture_tenant_service_check_trusted_service(VentureTenantService *self, gint64 
 }
 
 static JsonNode *
-signup_result(VentureTenantService *self, gint64 organization_id, gint64 user_id, gboolean linked)
+signup_result(VentureTenantService *self, gint64 organization_id, gint64 user_id, gboolean linked, const gchar *schedule_token)
 {
 	JsonObject *object = json_object_new();
 	JsonNode *node = json_node_new(JSON_NODE_OBJECT);
@@ -1696,8 +1696,31 @@ signup_result(VentureTenantService *self, gint64 organization_id, gint64 user_id
 	json_object_set_int_member(object, "user_id", user_id);
 	json_object_set_boolean_member(object, "linked", linked);
 	json_object_set_string_member(object, "state", "active");
+	if (schedule_token) json_object_set_string_member(object, "schedule_token", schedule_token);
 	json_node_take_object(node, object);
 	return node;
+}
+
+static gchar *
+signup_schedule_token(VentureTenantService *self, gint64 organization_id, gint64 user_id,
+	const VentureActor *audit, GError **error)
+{
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autofree gchar *name = g_strdup_printf("Lightsite schedule for organization %" G_GINT64_FORMAT, organization_id);
+	gchar *secret;
+	g_object_set(token, "name", name, "user-id", user_id, "role", VENTURE_USER_ROLE_EDITOR,
+		"scopes", "lightsite:schedule", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(token), organization_id);
+	secret = venture_api_token_generate(token);
+	if (!secret) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED, "Schedule token creation failed");
+		return NULL;
+	}
+	if (!venture_database_save(self->database, VENTURE_ENTITY(token), audit, error)) {
+		g_free(secret);
+		return NULL;
+	}
+	return secret;
 }
 
 JsonNode *
@@ -1714,7 +1737,7 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(VentureEntity) receipt = NULL, user = NULL, member = NULL, organization = NULL;
-	g_autofree gchar *hash = NULL, *username = NULL, *display = NULL;
+	g_autofree gchar *hash = NULL, *username = NULL, *display = NULL, *schedule_token = NULL;
 	/* Trim before validation and the receipt hash. Surrounding spaces then
 	 * replay the stored sign-up instead of looking like a different request. */
 	g_autofree gchar *first = first_name ? g_strstrip(g_strdup(first_name)) : NULL;
@@ -1804,7 +1827,9 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 		"user-id", user_id, "business-id", organization_id, "linked", linked, "issuer", issuer, "subject", subject,
 		"actor-user-id", actor_id, NULL);
 	if (!grant_membership(self, user_id, username, member, VENTURE_TENANT_ROLE_MEMBER, organization_id,
-	        VENTURE_ORGANIZATION_ROLE_OWNER, &audit, error) ||
+	        VENTURE_ORGANIZATION_ROLE_OWNER, &audit, error)) goto rollback;
+	schedule_token = signup_schedule_token(self, organization_id, user_id, &audit, error);
+	if (!schedule_token ||
 	    !venture_database_save(self->database, receipt, &audit, error) ||
 	    /* The person Lightsite signed in through the trusted provider is this user. */
 	    (venture_tenant_service_trusts_identity(self, issuer) && !identity_link_locked(self, user_id, subject, &audit, error)) ||
@@ -1817,10 +1842,83 @@ rollback:
 	venture_database_rollback(self->database);
 done:
 	self->maintenance_depth--;
-	if (replay) return signup_result(self, organization_id, user_id, linked);
+	if (replay) return signup_result(self, organization_id, user_id, linked, NULL);
 	if (!committed) return NULL;
 	if (created) *created = TRUE;
-	return signup_result(self, organization_id, user_id, linked);
+	return signup_result(self, organization_id, user_id, linked, schedule_token);
+}
+
+JsonNode *
+venture_tenant_service_lightsite_schedule_token(VentureTenantService *self,
+	gint64 organization_id, gboolean revoke, GError **error)
+{
+	const VentureAuthPrincipal *principal;
+	VentureAccessPolicy *policy;
+	VentureActor audit;
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	JsonObject *object;
+	gint64 actor_id, user_id = 0;
+	guint i;
+	gboolean committed = FALSE;
+	if (organization_id <= 0 || !venture_tenant_service_check_trusted_service(self, &actor_id, error)) return NULL;
+	policy = venture_database_get_access_policy(self->database);
+	principal = venture_access_policy_get_actor(policy);
+	audit.kind = VENTURE_ACTOR_KIND_IMPORT;
+	audit.name = principal->name;
+	audit.prompt = NULL;
+	audit.request_id = NULL;
+	audit.approved_by = NULL;
+	internal = venture_access_policy_enter(policy, NULL);
+	self->maintenance_depth++;
+	if (!venture_database_begin(self->database, error)) goto done;
+	if (!lock_administration(self, error)) goto rollback;
+	query = venture_query_new(VENTURE_TYPE_TENANT_SIGNUP);
+	venture_query_add_filter_int(query, "business-id", VENTURE_FILTER_OP_EQ, organization_id, NULL);
+	venture_query_set_limit(query, 2);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) goto rollback;
+	if (rows->len != 1) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Lightsite business not found");
+		goto rollback;
+	}
+	g_object_get(g_ptr_array_index(rows, 0), "user-id", &user_id, NULL);
+	g_clear_pointer(&rows, g_ptr_array_unref);
+	g_clear_object(&query);
+	query = venture_query_new(VENTURE_TYPE_API_TOKEN);
+	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, organization_id, NULL);
+	venture_query_add_filter_string(query, "scopes", VENTURE_FILTER_OP_EQ, "lightsite:schedule", NULL);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) goto rollback;
+	for (i = 0; i < rows->len; i++) {
+		VentureEntity *token = g_ptr_array_index(rows, i);
+		g_object_set(token, "active", FALSE, NULL);
+		if (!venture_database_save(self->database, token, &audit, error)) goto rollback;
+	}
+	if (!revoke) {
+		secret = signup_schedule_token(self, organization_id, user_id, &audit, error);
+		if (!secret) goto rollback;
+	}
+	if (!record_event(self, revoke ? "tenant.lightsite_schedule_revoke" : "tenant.lightsite_schedule_rotate",
+		actor_id, 0, "organization", "Lightsite schedule token changed", error)) goto rollback;
+	committed = venture_database_commit(self->database, error);
+	goto done;
+rollback:
+	venture_database_rollback(self->database);
+done:
+	self->maintenance_depth--;
+	if (!committed) return NULL;
+	object = json_object_new();
+	json_object_set_int_member(object, "organization_id", organization_id);
+	if (revoke) json_object_set_boolean_member(object, "revoked", TRUE);
+	else json_object_set_string_member(object, "schedule_token", secret);
+	answer = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(answer, object);
+	return g_steal_pointer(&answer);
 }
 
 /* --- The trusted identity provider ------------------------------------- */

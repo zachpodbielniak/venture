@@ -107,6 +107,33 @@ malformed:
 }
 
 static HtmxResponse *
+venture_web_lightsite_schedule_token(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	const gchar *id = g_hash_table_lookup(params, "id");
+	const gchar *path = htmx_request_get_path(request);
+	gchar *end = NULL;
+	gint64 organization_id = id ? g_ascii_strtoll(id, &end, 10) : 0;
+	gboolean revoke = g_str_has_suffix(path, "/revoke");
+	HtmxResponse *gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	if (gate) return signup_finish(gate);
+	if (!id || !*id || !end || *end || organization_id <= 0) {
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A positive organization ID is required");
+		return signup_finish(venture_web_error_response(error));
+	}
+	principal = venture_auth_authenticate(self->auth, request);
+	scope = venture_access_policy_enter(venture_database_get_access_policy(database), principal);
+	result = venture_tenant_service_lightsite_schedule_token(venture_tenant_service_get(database),
+		organization_id, revoke, &error);
+	return signup_finish(result ? venture_web_json_response(result, 200) : venture_web_error_response(error));
+}
+
+static HtmxResponse *
 identity_link_finish(HtmxResponse *response)
 {
 	return account_request_finish(response, "Identity link");
