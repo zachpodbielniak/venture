@@ -122,8 +122,10 @@ is immutable. Generic writes to `calendar_event` are refused.
 
 `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
 IANA `timezone`, `availability` JSON of weekday to `HH:MM-HH:MM` windows,
-`horizon_days`) is ordinary editor data and serves the public
-`/book/<slug>` page, which books a contact and a meeting. Public booking
+`horizon_days`, `price` and `price_unit`) is ordinary editor data and serves the public
+`/book/<slug>` page, which books a contact and a meeting. `?format=service`
+reads the price; a nightly price needs `arrival_date` and `departure_date`
+and the reply carries the stay `estimate`. Public booking
 and its management link are rate-limited per socket address. List a
 relay's address in `security.booking_trusted_relays` when that relay
 sends the visitor as the last `X-Forwarded-For` hop; an unlisted peer

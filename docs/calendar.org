@@ -163,6 +163,37 @@ not an address, leaves the peer key in place, so a visitor cannot mint
 buckets by sending the header. A successful book or change stores that
 same address on the meeting's audit entry.
 
+* Published price
+
+A booking page is one bookable service. =price= is what one unit costs, as a
+money field; =price_unit= is =visit=, =night=, =hour= or =day=, and empty
+means =visit=. A page with no price publishes none. Saving refuses any other
+unit, a negative price or a currency that is not ISO.
+
+=GET /book/<slug>?format=service= answers the service as Venture holds it:
+
+#+begin_src json
+{"slug": "boarding", "name": "Boarding", "unit": "night",
+ "price": {"amount": 4500, "currency": "USD", "exponent": 2, "formatted": "45.00 USD"}}
+#+end_src
+
+=price= is absent when the page has none. A client reads the price here,
+never from the page title or its HTML. The HTML page shows the same price
+with its unit.
+
+When the unit is =night= and a price is set, =POST /book/<slug>= requires
+=arrival_date= and =departure_date= as =YYYY-MM-DD=, 1 to 366 nights apart;
+the page form asks for them. Venture works out the stay, puts one line about
+it at the top of the meeting's notes, and adds it to the JSON reply as
+=estimate=: ={"nights", "nightly", "estimate"}=, the last two money objects
+in the page's currency. Missing, malformed or reversed dates are refused with
+422 and nothing is written. Any other page refuses stay dates with 422.
+
+The two fields are additive: schema reconciliation adds the columns, and an
+existing page keeps no price and the =visit= unit until an owner sets them.
+=test-calendar-surfaces= (=/calendar-surfaces/booking-price=) covers the
+read, the refusals, the estimate and the page.
+
 * Running it
 
 #+begin_src sh

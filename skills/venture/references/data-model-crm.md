@@ -165,7 +165,8 @@ lookback/retention days; owner/admin only), `attribution_visitor`
 - calendar (requires activities, crm, leads): `calendar_account` (CalDAV;
   `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
   `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
-  `timezone`, `availability` JSON, `horizon_days`; serves `/book/<slug>`).
+  `timezone`, `availability` JSON, `horizon_days`, `price` money and `price_unit`
+  visit/night/hour/day; serves `/book/<slug>`, `?format=service` for the price).
 
 ## Phone and text (`telephony` module; docs/telephony.org)
 
