@@ -85,6 +85,18 @@ without automatic resubscription; topics and frequency are the preference
 centre's (below). A necessary invoice, receipt, password notice or other
 transactional message is outside this marketing policy.
 
+* Current marketing permission
+
+Use =GET /api/v1/marketing_consent/current= with =organization_id=, =email=, and =purpose=marketing=.
+Send a bearer token with read access to the organization.
+The response gives =state= as =given=, =withdrawn=, or =none=.
+The =recorded_at= field gives the grant time when a grant exists.
+
+The =withdrawn_at= field gives the withdrawal time when the latest evidence withdraws a grant.
+Venture omits a time if the evidence has no such time.
+Venture normalizes the email address before it reads the evidence.
+Check suppression separately before a marketing send.
+
 * Execute, pause and recover
 
 *Execute bounded delivery* examines at most 100 eligible recipients, queues

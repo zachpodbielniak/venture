@@ -51,6 +51,24 @@ VentureMarketingConsent *venture_marketing_service_consent(VentureMarketingServi
 	gint64 organization_id, VentureEntity *subject, const gchar *source, const gchar *evidence,
 	const gchar *evidence_key, GDateTime *occurred_at, const VentureActor *actor, GError **error);
 /**
+ * venture_marketing_service_current_permission:
+ * @self: service
+ * @organization_id: exact organization
+ * @email: recipient address
+ * @purpose: must be marketing
+ * @state: (out): given, withdrawn or none
+ * @recorded_at: (out) (nullable): time of the grant
+ * @withdrawn_at: (out) (nullable): time of the withdrawal
+ * @error: (out) (optional): scope or query failure
+ *
+ * Return the newest permission evidence for one address.
+ * Keep suppression separate from this evidence state.
+ * Returns: whether the read succeeded
+ */
+gboolean venture_marketing_service_current_permission(VentureMarketingService *self,
+	gint64 organization_id, const gchar *email, const gchar *purpose,
+	const gchar **state, GDateTime **recorded_at, GDateTime **withdrawn_at, GError **error);
+/**
  * venture_marketing_service_preview:
  * @self: service
  * @organization_id: exact organization
