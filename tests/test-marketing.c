@@ -593,7 +593,8 @@ static void marketing_reply(GObject *source, GAsyncResult *result, gpointer data
 	MarketingReply *reply = data;
 	reply->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &reply->error); reply->done = TRUE;
 }
-static guint marketing_http(SoupSession *session, const gchar *base, const gchar *method, const gchar *path, const gchar *payload, gchar **text)
+static guint marketing_http_with_token(SoupSession *session, const gchar *base, const gchar *method, const gchar *path,
+	const gchar *payload, const gchar *secret, gchar **text)
 {
 	g_autofree gchar *url = g_strconcat(base, path, NULL);
 	g_autoptr(SoupMessage) message = soup_message_new(method, url);
@@ -603,6 +604,7 @@ static guint marketing_http(SoupSession *session, const gchar *base, const gchar
 		g_autoptr(GBytes) bytes = g_bytes_new(payload, strlen(payload));
 		soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
 	}
+	if (secret) soup_message_headers_append(soup_message_get_request_headers(message), "Authorization", secret);
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, marketing_reply, &reply);
 	while (!reply.done) g_main_context_iteration(NULL, TRUE);
@@ -610,6 +612,10 @@ static guint marketing_http(SoupSession *session, const gchar *base, const gchar
 	*text = g_strndup(g_bytes_get_data(reply.body, NULL), g_bytes_get_size(reply.body)); g_bytes_unref(reply.body);
 	g_test_message("HTTP %s %s => %u", method, g_str_has_prefix(path, "/marketing/") ? "[private marketing capability]" : path, status);
 	return status;
+}
+static guint marketing_http(SoupSession *session, const gchar *base, const gchar *method, const gchar *path, const gchar *payload, gchar **text)
+{
+	return marketing_http_with_token(session, base, method, path, payload, NULL, text);
 }
 typedef struct { gboolean done; gchar *out; gchar *err; GError *error; } MarketingCli;
 static void marketing_cli_done(GObject *source, GAsyncResult *result, gpointer data)
@@ -667,6 +673,37 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_object_set(token, "name", "Marketing demonstration", "user-id", venture_entity_get_id(user), "role", VENTURE_USER_ROLE_OWNER, NULL);
 	secret = venture_api_token_generate(token); persist(f, VENTURE_ENTITY(token));
 	{
+		g_autofree gchar *raw = NULL, *address = NULL, *missing = NULL, *query = NULL, *bearer = g_strdup_printf("Bearer %s", secret);
+		g_autoptr(JsonParser) parser = json_parser_new();
+		JsonObject *result;
+		g_object_get(f->contact, "email", &raw, NULL);
+		address = g_uri_escape_string(g_strstrip(raw), NULL, TRUE);
+		query = g_strdup_printf("/api/v1/marketing_consent/current?organization_id=1&email=%s&purpose=marketing", address);
+		g_assert_cmpuint(marketing_http(session, base, "GET", query, NULL, &text), ==, 401);
+		g_clear_pointer(&text, g_free);
+		g_assert_cmpuint(marketing_http_with_token(session, base, "GET", query, NULL, bearer, &text), ==, 200);
+		g_assert_true(json_parser_load_from_data(parser, text, -1, &error)); g_assert_no_error(error);
+		result = json_node_get_object(json_parser_get_root(parser));
+		g_assert_cmpstr(json_object_get_string_member(result, "state"), ==, "given");
+		g_assert_true(json_object_has_member(result, "recorded_at"));
+		g_assert_false(json_object_has_member(result, "withdrawn_at"));
+		g_clear_pointer(&text, g_free);
+		missing = g_strdup(query); missing[strstr(missing, "email=") - missing + 6] = 'x';
+		g_assert_cmpuint(marketing_http_with_token(session, base, "GET", missing, NULL, bearer, &text), ==, 200);
+		g_assert_true(json_parser_load_from_data(parser, text, -1, &error)); g_assert_no_error(error);
+		result = json_node_get_object(json_parser_get_root(parser));
+		g_assert_cmpstr(json_object_get_string_member(result, "state"), ==, "none");
+		g_assert_false(json_object_has_member(result, "recorded_at"));
+		g_clear_pointer(&text, g_free);
+		{
+			g_autofree gchar *invalid = g_strdup_printf("/api/v1/marketing_consent/current?organization_id=1&email=%s&purpose=transactional", address);
+			g_assert_cmpuint(marketing_http_with_token(session, base, "GET", invalid, NULL, bearer, &text), ==, 422);
+			g_clear_pointer(&text, g_free);
+			g_assert_cmpuint(marketing_http_with_token(session, base, "GET", "/api/v1/marketing_consent/current?organization_id=0&email=x&purpose=marketing", NULL, bearer, &text), ==, 400);
+			g_clear_pointer(&text, g_free);
+		}
+	}
+	{
 		g_autofree gchar *id = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(f->send));
 		text = marketing_cli(base, secret, "describe", "marketing_send", NULL, NULL);
 		g_assert_nonnull(strstr(text, "interval_seconds")); g_clear_pointer(&text, g_free);
@@ -691,6 +728,21 @@ static void test_http(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(text, "Stop marketing email")); g_assert_null(strstr(text, "alice@example.test")); g_clear_pointer(&text, g_free);
 	suppressions = all_rows(f, VENTURE_TYPE_SUPPRESSION); g_assert_cmpuint(suppressions->len, ==, 0); g_clear_pointer(&suppressions, g_ptr_array_unref);
 	g_assert_cmpuint(marketing_http(session, base, "POST", path, "List-Unsubscribe=One-Click", &text), ==, 200); g_clear_pointer(&text, g_free);
+	{
+		g_autofree gchar *raw = NULL, *address = NULL, *query = NULL, *bearer = g_strdup_printf("Bearer %s", secret);
+		g_autoptr(JsonParser) parser = json_parser_new();
+		JsonObject *result;
+		g_object_get(f->contact, "email", &raw, NULL);
+		address = g_uri_escape_string(g_strstrip(raw), NULL, TRUE);
+		query = g_strdup_printf("/api/v1/marketing_consent/current?organization_id=1&email=%s&purpose=marketing", address);
+		g_assert_cmpuint(marketing_http_with_token(session, base, "GET", query, NULL, bearer, &text), ==, 200);
+		g_assert_true(json_parser_load_from_data(parser, text, -1, &error)); g_assert_no_error(error);
+		result = json_node_get_object(json_parser_get_root(parser));
+		g_assert_cmpstr(json_object_get_string_member(result, "state"), ==, "withdrawn");
+		g_assert_true(json_object_has_member(result, "recorded_at"));
+		g_assert_true(json_object_has_member(result, "withdrawn_at"));
+		g_clear_pointer(&text, g_free);
+	}
 	g_assert_cmpuint(marketing_http(session, base, "POST", path, "List-Unsubscribe=One-Click", &text), ==, 200); g_clear_pointer(&text, g_free);
 	suppressions = all_rows(f, VENTURE_TYPE_SUPPRESSION); g_assert_cmpuint(suppressions->len, ==, 1);
 	g_assert_cmpuint(marketing_http(session, base, "POST", "/marketing/u/0000000000000000000000000000000000000000000000000000000000000000", "List-Unsubscribe=One-Click", &text), ==, 404); g_clear_pointer(&text, g_free);

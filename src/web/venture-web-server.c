@@ -35265,6 +35265,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/marketing/u/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_unsubscribe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/o/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_open, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/marketing/t/c/:token/:n", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_click, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/marketing_consent/current", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_marketing_current, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/attribution.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_attribution_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/attribution/:site/:operation", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_CAPABILITY_ORIGIN, venture_web_attribution_ingest, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/hooks/lightsite/:site/:connection/forms", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_form_receive, self);
