@@ -30,6 +30,7 @@ about it.
 | =monthly=    | revenue, expenses, arbitrage and profit month by month and currency |
 | =ideas=      | ideas ranked by opportunity and confidence against effort    |
 | =receivables= | outstanding invoices bucketed by how far past due           |
+| =open_invoices= | every sent or partially paid invoice with a positive balance, including those not yet due |
 | =releases=   | releases out in the period, with tickets, builds, deployments |
 | =lead_time=  | days from a ticket being raised to its release going out     |
 | =incidents=  | incidents in the period, hours to resolve, the mean          |

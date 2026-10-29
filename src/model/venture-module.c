@@ -532,7 +532,7 @@ static const gchar *const venture_module_reports_finance[] = {
 };
 static const gchar *const venture_module_reports_crm[] = { "pipeline", "deals_without_decision_maker", "competitor_win_loss", NULL };
 static const gchar *const venture_module_reports_receivables[] = {
-	"receivables", "customer_statement", "cash_vs_booked", NULL
+	"receivables", "open_invoices", "customer_statement", "cash_vs_booked", NULL
 };
 static const gchar *const venture_module_requires_receivables[] = {
 	"finance", "invoicing", NULL
