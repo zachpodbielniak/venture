@@ -151,6 +151,8 @@ venture_calendar_item_covers_day(
  *   read, primary first
  * @n_organizations: how many; must be at least one
  * @now: (nullable): the instant overdue is judged against; %NULL is now
+ * @local_day: (nullable): one local date requested by the API
+ * @timezone: (nullable): the zone for @local_day
  *
  * What a calendar is asked for. Filled field by field after
  * venture_calendar_query_init(), which zeroes it.
@@ -167,6 +169,8 @@ typedef struct
 	const gint64	*organization_ids;
 	gsize		 n_organizations;
 	GDateTime	*now;
+	const gchar	*local_day;
+	GTimeZone	*timezone;
 } VentureCalendarQuery;
 
 /**

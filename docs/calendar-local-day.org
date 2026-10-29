@@ -1,0 +1,26 @@
+#+title: One local calendar day
+#+description: Read one local day from the calendar API
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-10-28]
+#+updated: [2026-10-28]
+#+version: 0.1.0
+
+* API
+
+Send =GET /api/v1/calendar= with =organization_id=, =on=, and =time_zone=.
+Use the =YYYY-MM-DD= format for =on=.
+Use an IANA time zone identifier for =time_zone=.
+
+#+begin_src text
+GET /api/v1/calendar?organization_id=1&on=2026-03-08&time_zone=America%2FNew_York&done=1
+#+end_src
+
+The API reads one local day from midnight to the next midnight in that time zone.
+Timed items overlap this half-open interval.
+All-day items use their stored calendar dates.
+The response gives the UTC bounds in =from= and =to=.
+
+Use =done=1= to include finished items.
+Do not combine =on= with =date=, =from=, or =to=.
+The API refuses a request with an invalid date or time zone.

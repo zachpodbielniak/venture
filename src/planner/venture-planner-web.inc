@@ -27,6 +27,7 @@ typedef struct
 	GDateTime		*from;
 	GDateTime		*to;
 	GDateTime		*now;
+	GTimeZone		*timezone;
 	gchar			*username;
 	const gchar		*view;
 	gboolean		 mine;
@@ -39,6 +40,7 @@ planner_calendar_ask_clear(PlannerCalendarAsk *ask)
 	g_clear_pointer(&ask->from, g_date_time_unref);
 	g_clear_pointer(&ask->to, g_date_time_unref);
 	g_clear_pointer(&ask->now, g_date_time_unref);
+	g_clear_pointer(&ask->timezone, g_time_zone_unref);
 	g_clear_pointer(&ask->username, g_free);
 }
 
@@ -158,6 +160,8 @@ planner_calendar_read(
 	const gchar *venture;
 	const gchar *assignee;
 	const gchar *done;
+	const gchar *on;
+	const gchar *zone_name;
 
 	memset(ask, 0, sizeof(*ask));
 	venture_calendar_query_init(&ask->query);
@@ -190,12 +194,62 @@ planner_calendar_read(
 	    !venture_web_request_organization(self, request, NULL, &ask->organization_id, &error))
 		return venture_web_error_response(error);
 
-	if (!venture_calendar_view_range(self->context, ask->view,
-	                                 htmx_request_get_query_param(request, "date"),
-	                                 htmx_request_get_query_param(request, "from"),
-	                                 htmx_request_get_query_param(request, "to"),
-	                                 &ask->from, &ask->to, &error))
-		return venture_web_error_response(error);
+	on = htmx_request_get_query_param(request, "on");
+	zone_name = htmx_request_get_query_param(request, "time_zone");
+
+	if (!venture_string_is_empty(on))
+	{
+		g_autoptr(GDateTime) local = NULL;
+		g_autoptr(GDateTime) next = NULL;
+		gint year, month, day;
+
+		if (!g_str_has_prefix(htmx_request_get_path(request), "/api/") ||
+		    !venture_string_is_empty(htmx_request_get_query_param(request, "from")) ||
+		    !venture_string_is_empty(htmx_request_get_query_param(request, "to")) ||
+		    !venture_string_is_empty(htmx_request_get_query_param(request, "date")) ||
+		    venture_string_is_empty(zone_name) ||
+		    !g_regex_match_simple("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", on, 0, 0) ||
+		    (3 != sscanf(on, "%4d-%2d-%2d", &year, &month, &day)))
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "on needs YYYY-MM-DD and time_zone on the calendar API");
+			return venture_web_error_response(error);
+		}
+
+		ask->timezone = g_time_zone_new_identifier(zone_name);
+		local = (NULL != ask->timezone) ?
+			g_date_time_new(ask->timezone, year, month, day, 0, 0, 0) : NULL;
+
+		if (NULL == local)
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "on or time_zone is not valid");
+			return venture_web_error_response(error);
+		}
+
+		next = g_date_time_add_days(local, 1);
+		ask->from = g_date_time_to_utc(local);
+		ask->to = g_date_time_to_utc(next);
+		ask->view = "day";
+		ask->query.local_day = on;
+		ask->query.timezone = ask->timezone;
+	}
+	else
+	{
+		if (!venture_string_is_empty(zone_name))
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			                    "time_zone needs on");
+			return venture_web_error_response(error);
+		}
+
+		if (!venture_calendar_view_range(self->context, ask->view,
+			                                 htmx_request_get_query_param(request, "date"),
+			                                 htmx_request_get_query_param(request, "from"),
+			                                 htmx_request_get_query_param(request, "to"),
+			                                 &ask->from, &ask->to, &error))
+			return venture_web_error_response(error);
+	}
 
 	venture = htmx_request_get_query_param(request, "venture_id");
 
