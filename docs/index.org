@@ -117,6 +117,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:custom-fields.org][Custom fields]] — layouts and required values without writing C
 - [[file:backup.org][Accounting backup]] — export and restore an organization pack; scheduled, retained, verified backups and the restore drill
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
+- [[file:quotes-sent-win-rate.org][Quote sent win rate]] — The report gives a ratio for accepted and sent quotes.
 - [[file:docs-site.org][The documentation site]] — docs/*.org rendered to HTML, served at =/docs=, with link and index checks
 - [[file:marketing-sales-parity.org][Marketing, sales, phone and text parity]] — the gap audit: what Venture has, what is partial and what each later lane builds
 
