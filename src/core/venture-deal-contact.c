@@ -13,6 +13,7 @@
  */
 
 #include "venture.h"
+#include "venture-people-report.inc"
 
 #define VENTURE_DEAL_CONTACT_STATE_KEY "venture-deal-contact-installed"
 
@@ -449,4 +450,6 @@ venture_deal_contact_register_reports(VentureReportRegistry *registry)
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"deals_without_decision_maker", "Open deals with no decision maker",
 		"Open deals nobody is recorded on as the decision maker", deals_without_decision_maker)));
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
+		"people", "People", "Every contact and each customer company without a linked contact or shared email", people_report)));
 }
