@@ -1654,7 +1654,15 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	 * goals module may be off.
 	 */
 	VENTURE_FIELD_REF("goal-id", "Goal", "The goal this work moves",
-	                  "goal", VENTURE_COLUMN_FLAG_INDEXED)
+	                  "goal", VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * When the work ends, for a task booked as a stretch of time: due-at
+	 * is when it starts or is due, this is when it is over. Its own field
+	 * so a screen can show the window without reading it out of the
+	 * description. Appended for the same reason as issue-type.
+	 */
+	VENTURE_FIELD("until-at", "Until", "When the work ends; not before Due",
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,

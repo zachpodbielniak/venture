@@ -270,6 +270,46 @@ venture_ticket_tree_validate(
 	return TRUE;
 }
 
+/*
+ * A ticket's end time is never before its due time. Judged only when
+ * either is written, the reference rule, so a row stored backwards stays
+ * editable for everything else. Only the order is judged: an end time
+ * with no due time is kept.
+ */
+static gboolean
+venture_ticket_until_validate(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(GDateTime) due = NULL;
+	g_autoptr(GDateTime) until = NULL;
+	g_autoptr(GDateTime) was_due = NULL;
+	g_autoptr(GDateTime) was_until = NULL;
+
+	(void)database;
+	(void)user_data;
+
+	g_object_get(entity, "due-at", &due, "until-at", &until, NULL);
+
+	if ((NULL == due) || (NULL == until) || (g_date_time_compare(until, due) >= 0))
+		return TRUE;
+
+	if (NULL != previous)
+	{
+		g_object_get(previous, "due-at", &was_due, "until-at", &was_until, NULL);
+
+		if ((NULL != was_due) && (NULL != was_until) &&
+		    g_date_time_equal(was_due, due) && g_date_time_equal(was_until, until))
+			return TRUE;
+	}
+
+	venture_set_error_validation(error, "Until", "is before Due; work ends after it starts");
+	return FALSE;
+}
+
 void
 venture_ticket_tree_install(VentureContext *context)
 {
@@ -290,6 +330,9 @@ venture_ticket_tree_install(VentureContext *context)
 
 	venture_database_add_save_validator(database, VENTURE_TYPE_TICKET,
 	                                    venture_ticket_tree_validate, NULL,
+	                                    NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_TICKET,
+	                                    venture_ticket_until_validate, NULL,
 	                                    NULL);
 }
 
