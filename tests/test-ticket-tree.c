@@ -931,6 +931,24 @@ test_http(
 	                 ==, 422);
 	g_assert_nonnull(strstr(body, "takes no parent"));
 
+	/* The record API takes an end time beside the due time. */
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_request(fixture, "POST", "/api/v1/ticket",
+		"application/json", "{\"title\":\"Paint the porch\","
+		"\"due_at\":\"2026-11-02T14:00:00Z\","
+		"\"until_at\":\"2026-11-02T16:30:00Z\"}", &body, NULL),
+		==, SOUP_STATUS_CREATED);
+	g_assert_nonnull(strstr(body, "\"until_at\""));
+	g_assert_nonnull(strstr(body, "2026-11-02T16:30:00"));
+
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_request(fixture, "POST", "/api/v1/ticket",
+		"application/json", "{\"title\":\"Backwards\","
+		"\"due_at\":\"2026-11-02T14:00:00Z\","
+		"\"until_at\":\"2026-11-02T13:00:00Z\"}", &body, NULL),
+		==, 422);
+	g_assert_nonnull(strstr(body, "before"));
+
 	/* Factory and forge off: the milestone's page and forecast answer. */
 	venture_config_set_module_enabled(fixture->config, "factory", FALSE);
 	venture_config_set_module_enabled(fixture->config, "forge", FALSE);
@@ -952,6 +970,68 @@ test_http(
 	g_assert_nonnull(strstr(body, "milestone_id"));
 }
 
+/* --- The end time ------------------------------------------------------ */
+
+/*
+ * A task's end time is its own field beside its due time, read back as
+ * written, and never before the due time. Judged only when written, so a
+ * row stored backwards stays editable. What breaks: an end time kept as
+ * a sentence in the description, or a task that ends before it starts.
+ */
+static void
+test_until_at(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) task = NULL;
+	g_autoptr(VentureEntity) backwards = NULL;
+	g_autoptr(VentureEntity) again = NULL;
+	g_autoptr(GDateTime) due = NULL;
+	g_autoptr(GDateTime) until = NULL;
+	g_autoptr(GDateTime) early = NULL;
+	g_autoptr(GDateTime) read = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = NULL;
+	gint64 old_id;
+
+	(void)user_data;
+
+	due = g_date_time_new_utc(2026, 11, 2, 14, 0, 0);
+	until = g_date_time_new_utc(2026, 11, 2, 16, 30, 0);
+	early = g_date_time_new_utc(2026, 11, 2, 13, 0, 0);
+
+	task = ticket_new(fixture, "Paint the porch", VENTURE_ISSUE_TYPE_TASK, 0);
+	g_object_set(task, "due-at", due, "until-at", until, NULL);
+	save(fixture, task);
+
+	again = reread(fixture, VENTURE_TYPE_TICKET, ID(task));
+	g_object_get(again, "until-at", &read, NULL);
+	g_assert_nonnull(read);
+	g_assert_true(g_date_time_equal(read, until));
+
+	/* An end before the due time is refused, naming the field. */
+	g_object_set(again, "until-at", early, NULL);
+	save_refused(fixture, again, "before");
+
+	/* An end time alone is kept. */
+	g_object_set(again, "due-at", NULL, NULL);
+	save(fixture, again);
+
+	/* A row stored backwards (by SQL) stays editable for its title. */
+	backwards = ticket_new(fixture, "Old row", VENTURE_ISSUE_TYPE_TASK, 0);
+	g_object_set(backwards, "due-at", due, NULL);
+	save(fixture, backwards);
+	sql = g_strdup_printf("UPDATE tickets SET until_at = '2026-11-02T13:00:00Z' "
+	                      "WHERE id = %" G_GINT64_FORMAT, ID(backwards));
+	g_assert_true(venture_database_execute(fixture->database, sql, NULL, &error));
+	g_assert_no_error(error);
+	old_id = ID(backwards);
+	g_clear_object(&backwards);
+	backwards = reread(fixture, VENTURE_TYPE_TICKET, old_id);
+	g_object_set(backwards, "title", "Old row, renamed", NULL);
+	save(fixture, backwards);
+}
+
 int
 main(
 	int	 argc,
@@ -969,6 +1049,7 @@ main(
 	ADD("/ticket-tree/rollup-excludes-cancelled", test_rollup_excludes_cancelled);
 	ADD("/ticket-tree/goal-work-counts-once", test_goal_work_counts_once);
 	ADD("/ticket-tree/milestone-without-factory", test_milestone_without_factory);
+	ADD("/ticket-tree/until-at", test_until_at);
 	g_test_add("/ticket-tree/http", ServerFixture, NULL, server_fixture_set_up,
 	           test_http, server_fixture_tear_down);
 
