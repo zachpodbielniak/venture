@@ -1025,6 +1025,8 @@ test_report(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) q = quote(f, "Report");
 	g_autoptr(VentureEntity) l = line(f, q);
+	g_autoptr(VentureEntity) still_sent = quote(f, "Still sent");
+	g_autoptr(VentureEntity) still_sent_line = line(f, still_sent);
 	g_autoptr(VentureReportResult) result = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -1034,16 +1036,20 @@ test_report(Fixture *f, gconstpointer data)
 	g_assert_nonnull(report);
 	action(f, q, "send");
 	action(f, q, "accept");
+	action(f, still_sent, "send");
 	result = venture_report_generate(report, f->context, period, NULL, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(result);
 	node = venture_report_result_to_json(result);
 	json = venture_json_to_string(node, FALSE);
 	g_assert_nonnull(strstr(json, "acceptance_rate"));
+	g_assert_nonnull(strstr(json, "sent_win_rate"));
 	{
 		GPtrArray *metrics = venture_report_result_get_metrics(result);
 		guint i;
 		gboolean found = FALSE;
+		gboolean found_win_rate = FALSE;
+		gboolean found_acceptance_rate = FALSE;
 		for (i = 0; i < metrics->len; i++)
 		{
 			VentureMetric *metric = g_ptr_array_index(metrics, i);
@@ -1052,8 +1058,20 @@ test_report(Fixture *f, gconstpointer data)
 				g_assert_cmpfloat(metric->number, ==, 1.0);
 				found = TRUE;
 			}
+			if (g_strcmp0(venture_metric_get_key(metric), "sent_win_rate") == 0)
+			{
+				g_assert_cmpfloat(metric->number, ==, 1.0);
+				found_win_rate = TRUE;
+			}
+			if (g_strcmp0(venture_metric_get_key(metric), "acceptance_rate") == 0)
+			{
+				g_assert_cmpfloat(metric->number, ==, 0.5);
+				found_acceptance_rate = TRUE;
+			}
 		}
 		g_assert_true(found);
+		g_assert_true(found_win_rate);
+		g_assert_true(found_acceptance_rate);
 	}
 }
 

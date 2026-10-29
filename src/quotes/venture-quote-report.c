@@ -92,6 +92,8 @@ quote_report(VentureContext *context, VentureDateRange *period, JsonObject *opti
 	}
 	venture_report_result_add_metric(result, venture_metric_new_ratio("acceptance_rate", "Acceptance rate",
 		denominator > 0 ? (gdouble)counts[1] / denominator : 0));
+	venture_report_result_add_metric(result, venture_metric_new_ratio("sent_win_rate", "Sent win rate",
+		counts[0] > 0 ? (gdouble)MIN(counts[1], counts[0]) / counts[0] : 0));
 	venture_report_result_add_metric(result, venture_metric_new_number("average_days_to_accept", "Average days to accept",
 		accepted > 0 ? (gdouble)duration / accepted / 86400 : 0));
 	venture_report_result_set_note(result, "Current outcomes for quotes issued in the selected period and currency; drafts, superseded revisions and other currencies are excluded.");

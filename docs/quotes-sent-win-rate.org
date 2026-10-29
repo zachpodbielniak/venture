@@ -1,0 +1,16 @@
+#+title: Quote sent win rate
+
+* Quote sent win rate
+
+=GET /api/v1/reports/quotes= returns =sent_win_rate= in its metrics array.
+The report selects quotes by issue date, organization, and currency.
+It counts current sent and accepted quotes in that cohort.
+It excludes drafts, superseded revisions, and other currencies.
+
+The metric divides the smaller of =accepted_count= and =sent_count= by =sent_count=.
+This limit keeps the ratio at or below one.
+The metric returns zero when =sent_count= is zero.
+
+The report also returns =acceptance_rate=.
+That metric divides accepted quotes by sent, accepted, declined, and expired quotes.
+Do not use =acceptance_rate= as the sent win rate.
