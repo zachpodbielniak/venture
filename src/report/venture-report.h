@@ -190,6 +190,17 @@ venture_report_result_set_number(
 );
 
 /**
+ * venture_report_result_set_integer:
+ * @self: a #VentureReportResult
+ * @key: the column key
+ * @value: an exact integer, such as a record ID
+ *
+ * Stores an integer without converting it to floating point in JSON.
+ */
+void venture_report_result_set_integer(VentureReportResult *self,
+	const gchar *key, gint64 value);
+
+/**
  * venture_report_result_get_metrics:
  * @self: a #VentureReportResult
  *

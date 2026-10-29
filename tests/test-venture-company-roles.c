@@ -300,6 +300,62 @@ test_list_views(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(directory);
 }
 
+static void
+test_people_report(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) linked = company(f, "Linked Customer", "customer", FALSE);
+	g_autoptr(VentureEntity) shared = company(f, "Shared Customer", "customer", FALSE);
+	g_autoptr(VentureEntity) bare = company(f, "Bare Customer", "customer", FALSE);
+	g_autoptr(VentureEntity) supplier = company(f, "Supplier", "supplier", FALSE);
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-people-report-XXXXXX", NULL);
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonNode) json = NULL;
+	JsonArray *rows;
+	JsonObject *row;
+
+	(void)data;
+	g_object_set(shared, "email", "shared", NULL);
+	g_assert_true(venture_database_save(f->db, shared, NULL, &error)); g_assert_no_error(error);
+	g_object_set(bare, "phone", "555-0100", NULL);
+	g_assert_true(venture_database_save(f->db, bare, NULL, &error)); g_assert_no_error(error);
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org,
+		"name", "Linked Person", "company-id", venture_entity_get_id(linked),
+		"email", "linked", NULL);
+	g_assert_true(venture_database_save(f->db, contact, NULL, &error)); g_assert_no_error(error);
+	g_clear_object(&contact);
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org,
+		"name", "Shared Person", "email", "SHARED", NULL);
+	g_assert_true(venture_database_save(f->db, contact, NULL, &error)); g_assert_no_error(error);
+	g_object_set(f->config, "state-dir", directory, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)0, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	path = g_strdup_printf("/api/v1/reports/people?organization_id=%" G_GINT64_FORMAT, f->org);
+	body = page(server, path);
+	json = venture_json_parse(body, &error); g_assert_no_error(error);
+	rows = json_object_get_array_member(json_node_get_object(json), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 3);
+	row = json_array_get_object_element(rows, 0);
+	g_assert_cmpstr(json_object_get_string_member(row, "type"), ==, "contact");
+	g_assert_cmpstr(json_object_get_string_member(row, "name"), ==, "Linked Person");
+	g_assert_cmpstr(json_object_get_string_member(row, "email"), ==, "linked");
+	g_assert_cmpstr(json_object_get_string_member(row, "phone"), ==, "");
+	g_assert_cmpstr(json_object_get_string_member(row, "source"), ==, "contact");
+	row = json_array_get_object_element(rows, 1);
+	g_assert_cmpstr(json_object_get_string_member(row, "name"), ==, "Shared Person");
+	row = json_array_get_object_element(rows, 2);
+	g_assert_cmpstr(json_object_get_string_member(row, "type"), ==, "company");
+	g_assert_cmpstr(json_object_get_string_member(row, "name"), ==, "Bare Customer");
+	g_assert_cmpstr(json_object_get_string_member(row, "phone"), ==, "555-0100");
+	g_assert_cmpstr(json_object_get_string_member(row, "source"), ==, "customer");
+	venture_web_server_stop(server);
+	venture_test_remove_tree(directory);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -309,6 +365,7 @@ main(int argc, char **argv)
 	g_test_add("/company-roles/legacy-relationship", Fixture, NULL, setup, test_legacy_relationship, teardown);
 	g_test_add("/company-roles/bill-from-customer-who-supplies", Fixture, NULL, setup, test_bill_from_customer_who_supplies, teardown);
 	g_test_add("/company-roles/list-views", Fixture, NULL, setup, test_list_views, teardown);
+	g_test_add("/company-roles/people-report", Fixture, NULL, setup, test_people_report, teardown);
 	g_test_add_func("/company-roles/upgrade-backfill", test_upgrade_backfill);
 	return g_test_run();
 }

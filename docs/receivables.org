@@ -11,7 +11,7 @@
 The =receivables= module requires =finance= and =invoicing=. Its records are
 field tables: the same declarations produce the database tables, forms,
 REST resources, CLI commands, AI schemas and audit entries. Switching the
-module off hides payments, credits, refunds and both reports together. Invoice events belong to invoicing, whose ledger dependency preserves issuance and voiding when receivables is disabled. Payment operations remain unavailable while receivables is off.
+module off hides payments, credits, refunds and its reports together. Invoice events belong to invoicing, whose ledger dependency preserves issuance and voiding when receivables is disabled. Payment operations remain unavailable while receivables is off.
 
 | Record | Meaning |
 |--------+---------|
@@ -27,6 +27,20 @@ that field has a database UNIQUE constraint. Callers supply =external_id=,
 not the derived key. An empty external ID is optional and may recur.
 
 Posting uses mapped cash, receivables, income and tax control accounts; see [[file:setup.org][Accounting setup]].
+
+* Open invoices read
+
+=GET /api/v1/reports/open_invoices?organization_id=ID= returns the current
+open invoices in that organization. Each row has =id= (integer), =number=,
+=customer_name=, =status= (=sent= or =partially_paid=), =due_at= (date or
+null), and =open_balance= with =amount= in minor units, =currency=,
+=exponent=, and =formatted=. It includes invoices that are not yet due and
+excludes settled, void, draft, and zero-balance invoices. The balance comes
+from =venture_settlement_service_invoice_balance()=, including allocations,
+credits, refunds, and late fees; rows are never summed across currencies.
+This is a current-state read, independent of the report period. The
+=dunning_worklist= is a separate reminder worklist restricted to overdue
+invoices or invoices already reminded.
 
 * The customer's page
 

@@ -30,6 +30,8 @@ about it.
 | =monthly=    | revenue, expenses, arbitrage and profit month by month and currency |
 | =ideas=      | ideas ranked by opportunity and confidence against effort    |
 | =receivables= | outstanding invoices bucketed by how far past due           |
+| =open_invoices= | every sent or partially paid invoice with a positive balance, including those not yet due |
+| =people=     | every contact, then customer companies with no linked contact or shared email |
 | =releases=   | releases out in the period, with tickets, builds, deployments |
 | =lead_time=  | days from a ticket being raised to its release going out     |
 | =incidents=  | incidents in the period, hours to resolve, the mean          |
@@ -76,6 +78,20 @@ curl '.../api/v1/reports/tax?period=2026&format=csv'
 
 =categories= takes =group_by=, so the same report answers "how did each genre
 do", "how did each format do" and "how did each product do".
+
+** People for one organization
+
+=GET /api/v1/reports/people?organization_id=N= returns the current CRM
+people list. Rows have =id= (integer), =type= (=contact= or =company=),
+=name=, =email=, =phone= (empty strings when absent), and =source=
+(=contact= or =customer=). Contacts come first in id order. Customer
+companies with no contact pointing to them and no email shared with any
+contact follow in id order. Email matching ignores case and surrounding
+spaces; an empty email does not match. A company with =kind=customer= is
+eligible, including one that also supplies the organization. Other kinds
+are excluded. The report reads the records as they stand, so =period= does
+not narrow them. The normal report access policy checks the requested
+organization, and the CRM module controls availability.
 
 ** Market data and arbitrage
 

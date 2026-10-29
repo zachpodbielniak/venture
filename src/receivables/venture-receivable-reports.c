@@ -79,6 +79,81 @@ add(VentureMoney **total, const VentureMoney *amount, GError **error)
 }
 
 static VentureReportResult *
+open_invoice_report(VentureContext *context, VentureDateRange *period,
+	JsonObject *options, GError **error)
+{
+	VentureDatabase *database;
+	VentureSettlementService *service;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(VentureReportResult) result = NULL;
+	guint i;
+
+	(void)period;
+	database = venture_context_get_database(context);
+	service = venture_settlement_service_get(database);
+	query = venture_query_new(VENTURE_TYPE_INVOICE);
+	venture_query_set_organization(query, organization(context, options));
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+		return NULL;
+	invoices = venture_database_find(database, query, error);
+	if (invoices == NULL)
+		return NULL;
+	result = venture_report_result_new("Open invoices", NULL);
+	venture_report_result_add_column(result, "id", "ID", VENTURE_REPORT_COLUMN_NUMBER);
+	venture_report_result_add_column(result, "number", "Invoice", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "customer_name", "Customer", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "status", "Status", VENTURE_REPORT_COLUMN_TEXT);
+	venture_report_result_add_column(result, "due_at", "Due", VENTURE_REPORT_COLUMN_DATE);
+	venture_report_result_add_column(result, "open_balance", "Open balance", VENTURE_REPORT_COLUMN_MONEY);
+	for (i = 0; i < invoices->len; i++)
+	{
+		VentureEntity *invoice;
+		g_autoptr(VentureEntity) customer = NULL;
+		g_autoptr(VentureMoney) balance = NULL;
+		g_autoptr(GDateTime) due = NULL;
+		g_autofree gchar *number = NULL;
+		g_autofree gchar *customer_name = NULL;
+		g_autofree gchar *due_text = NULL;
+		gint status;
+		gint64 customer_id;
+
+		invoice = g_ptr_array_index(invoices, i);
+		g_object_get(invoice, "status", &status, "number", &number,
+			"company-id", &customer_id, "due-at", &due, NULL);
+		if (status != VENTURE_INVOICE_STATUS_SENT &&
+			status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+			continue;
+		balance = venture_settlement_service_invoice_balance(service,
+			venture_entity_get_id(invoice), NULL, error);
+		if (balance == NULL)
+			return NULL;
+		if (venture_money_get_amount(balance) <= 0)
+			continue;
+		if (customer_id > 0)
+		{
+			customer = venture_database_get(database, VENTURE_TYPE_COMPANY,
+				customer_id, error);
+			if (error != NULL && *error != NULL)
+				return NULL;
+		}
+		if (customer != NULL)
+			g_object_get(customer, "name", &customer_name, NULL);
+		if (due != NULL)
+			due_text = venture_time_to_date_string(due, NULL);
+		venture_report_result_begin_row(result);
+		venture_report_result_set_integer(result, "id", venture_entity_get_id(invoice));
+		venture_report_result_set_text(result, "number", number);
+		venture_report_result_set_text(result, "customer_name", customer_name != NULL ? customer_name : "");
+		venture_report_result_set_text(result, "status", venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, status));
+		venture_report_result_set_text(result, "due_at", due_text);
+		venture_report_result_set_money(result, "open_balance", balance);
+	}
+	return g_steal_pointer(&result);
+}
+
+static VentureReportResult *
 receivables_aging(VentureContext *context, VentureDateRange *period, JsonObject *options, GError **error)
 {
 	static const gchar *const labels[] = {
@@ -587,6 +662,8 @@ tax_liability(VentureContext *context, VentureDateRange *period, JsonObject *opt
 void
 venture_receivables_register_reports(VentureReportRegistry *registry)
 {
+	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
+		"open_invoices", "Open invoices", "Every sent or partially paid invoice with a positive open balance, including invoices not yet due.", open_invoice_report)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
 		"receivables", "Receivables aging", "Outstanding issued amounts less dated allocations, as of the period end.", receivables_aging)));
 	venture_report_registry_add(registry, VENTURE_REPORT(venture_func_report_new_classified(VENTURE_DATA_CLASS_TENANT,
