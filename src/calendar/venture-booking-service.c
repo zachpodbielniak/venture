@@ -143,6 +143,50 @@ static gboolean reservation_write(VentureBookingService *self, VentureEntity *ro
 	g_object_set_data(G_OBJECT(row), "venture-booking-write", GINT_TO_POINTER(1));
 	return venture_database_save(self->database, row, NULL, error);
 }
+
+/* Work can already be promised without a technician assignment. Query both
+ * ended and open-ended windows so a job starting before now still blocks a
+ * future slot, while old jobs do not consume the availability bound. */
+static gboolean append_job_busy(VentureBookingService *self, gint64 org, Page *p,
+	GDateTime *now, gboolean open_end, GPtrArray *busy, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOB);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) cancelled = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GDateTime) cutoff = NULL;
+	g_autoptr(GDateTime) horizon = g_date_time_add_days(now, (gint)p->horizon + 1);
+	g_autofree gchar *cutoff_text = NULL;
+	g_autofree gchar *horizon_text = venture_time_to_string(horizon);
+	gint64 lookback = MIN(p->buffer, (gint64)G_MAXINT - p->duration) + (open_end ? p->duration : 0);
+	guint i;
+	cutoff = g_date_time_add_minutes(now, -(gint)lookback);
+	if (cutoff == NULL) return refuse(error, VENTURE_ERROR_CONFIG, "The booking buffer is too long");
+	cutoff_text = venture_time_to_string(cutoff);
+	venture_query_set_organization(query, org);
+	g_ptr_array_add(cancelled, g_strdup("cancelled"));
+	if (!venture_query_add_filter(query, "status", VENTURE_FILTER_OP_NOT_IN, cancelled, error) ||
+	    !venture_query_add_filter_string(query, "window-start", VENTURE_FILTER_OP_LT, horizon_text, error)) return FALSE;
+	if (open_end)
+	{
+		if (!venture_query_add_filter(query, "window-end", VENTURE_FILTER_OP_IS_NULL, NULL, error) ||
+		    !venture_query_add_filter_string(query, "window-start", VENTURE_FILTER_OP_GT, cutoff_text, error)) return FALSE;
+	}
+	else if (!venture_query_add_filter_string(query, "window-end", VENTURE_FILTER_OP_GT, cutoff_text, error)) return FALSE;
+	venture_query_set_limit(query, 10001);
+	rows = venture_database_find(self->database, query, error);
+	if (rows == NULL) return FALSE;
+	if (rows->len > 10000) return refuse(error, VENTURE_ERROR_CONFLICT, "Too many scheduled jobs to calculate availability");
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		Busy *b = g_new0(Busy, 1);
+		g_object_get(row, "window-start", &b->from, "window-end", &b->to, NULL);
+		if (b->from == NULL) { busy_free(b); continue; }
+		if (b->to == NULL) b->to = g_date_time_add_minutes(b->from, (gint)p->duration);
+		g_ptr_array_add(busy, b);
+	}
+	return TRUE;
+}
 static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GDateTime *now, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ACTIVITY);
@@ -211,6 +255,9 @@ static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GD
 		b->page = reservation != NULL ? booking_int(reservation, "page-id") : 0;
 		g_ptr_array_add(busy, b);
 	}
+	if (venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "job") &&
+	    (!append_job_busy(self, org, p, now, FALSE, busy, error) ||
+	     !append_job_busy(self, org, p, now, TRUE, busy, error))) return NULL;
 	return g_steal_pointer(&busy);
 }
 static gboolean is_free(GPtrArray *busy, GDateTime *start, GDateTime *end, Page *page)

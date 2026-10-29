@@ -140,6 +140,11 @@ appointment on the phone blocks the same half hour here. Times are shown in
 the owner's zone and submitted as UTC. =?format=json= returns the slots as
 ={"start", "end", "label", "day"}=.
 
+The service removes slots that overlap a scheduled job of the organization.
+The job blocks the slot even if it has no reservation or technician.
+The service gives the slot back after job cancellation.
+The service checks these jobs again before it accepts a public request.
+
 =POST /book/<slug>= with =start=, =name=, =email= and optional =notes=, as a
 form or JSON, books one. The contact is found by normalised email the way
 lead deduplication and inbound mail match (lower case, trimmed, +tag
