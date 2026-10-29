@@ -531,7 +531,8 @@ conflict resolution with the loser noted on the timeline, the iCalendar
 reader and writer, booking slots in the owner's zone with busy times and
 buffers, contact deduplication, double-booking refusal and the organization
 sweep. The surfaces binary drives =venturectl calendar sync= and the public
-=/book/<slug>= page over HTTP against a private server.
+=/book/<slug>= page over HTTP against a private server, including the
+published price, the refused unit and price, and a nightly stay's estimate.
 ** =test-crm-import=
 
 A HubSpot manifest previews, imports and activates with one =crm_import_row=

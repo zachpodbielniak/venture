@@ -167,8 +167,9 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 	if (!page) return venture_web_booking_plain(404, "Not found");
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST) {
 		g_autoptr(VentureEntity) activity = NULL;
-		g_autoptr(JsonNode) body = NULL;
-		const gchar *start = NULL, *name = NULL, *email = NULL, *notes = NULL;
+		g_autoptr(JsonNode) body = NULL, estimate = NULL;
+		g_autofree gchar *stay = NULL, *meeting_notes = NULL;
+		const gchar *start = NULL, *name = NULL, *email = NULL, *notes = NULL, *arrival = NULL, *departure = NULL;
 		VentureActor actor;
 		if (venture_web_booking_wants_json(request)) {
 			JsonObject *object;
@@ -179,16 +180,26 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 			name = venture_json_object_get_string(object, "name", NULL);
 			email = venture_json_object_get_string(object, "email", NULL);
 			notes = venture_json_object_get_string(object, "notes", NULL);
+			arrival = venture_json_object_get_string(object, "arrival_date", NULL);
+			departure = venture_json_object_get_string(object, "departure_date", NULL);
 		} else {
 			start = htmx_request_get_form_value(request, "start");
 			name = htmx_request_get_form_value(request, "name");
 			email = htmx_request_get_form_value(request, "email");
 			notes = htmx_request_get_form_value(request, "notes");
+			arrival = htmx_request_get_form_value(request, "arrival_date");
+			departure = htmx_request_get_form_value(request, "departure_date");
 		}
 		actor.kind = VENTURE_ACTOR_KIND_USER;
 		actor.name = "public booking";
 		actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
-		activity = venture_booking_service_book(service, page, start, name, email, notes, NULL, &actor, &error);
+		/* Venture works out a nightly stay; the meeting carries it for the owner. */
+		if (!venture_booking_service_estimate(service, page, arrival, departure, &estimate, &stay, &error)) {
+			if (venture_web_booking_wants_json(request)) return venture_web_error_response(error);
+			return venture_web_booking_plain(422, "<p>Please check the arrival and departure dates.</p>");
+		}
+		meeting_notes = stay == NULL ? g_strdup(notes) : venture_string_is_empty(notes) ? g_strdup(stay) : g_strconcat(stay, "\n\n", notes, NULL);
+		activity = venture_booking_service_book(service, page, start, name, email, meeting_notes, NULL, &actor, &error);
 		if (!activity) {
 			guint status = g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT) ? 409 : 422;
 			if (venture_web_booking_wants_json(request)) return venture_web_error_response(error);
@@ -197,9 +208,15 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 		venture_web_booking_note_address(venture_context_get_database(self->context), activity, address);
 		if (venture_web_booking_wants_json(request)) {
 			g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(activity), FALSE);
+			if (estimate != NULL && JSON_NODE_HOLDS_OBJECT(node))
+				json_object_set_member(json_node_get_object(node), "estimate", g_steal_pointer(&estimate));
 			return venture_web_json_response(node, 201);
 		}
 		return venture_web_booking_plain(201, "<p>Booked. Thank you — you will hear from us.</p>");
+	}
+	if (!g_strcmp0(htmx_request_get_query_param(request, "format"), "service")) {
+		g_autoptr(JsonNode) described = venture_booking_service_describe(service, page);
+		return venture_web_json_response(described, 200);
 	}
 	slots = venture_booking_service_slots(service, page, NULL, &error);
 	if (!slots) return venture_web_error_response(error);
@@ -208,11 +225,26 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 		g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\"><title>Book a time</title><style>body{font-family:sans-serif;max-width:40em;margin:2em auto}label{display:block;margin:.6em 0}</style></head><body><h1>");
 		g_autofree gchar *title = NULL, *description = NULL, *action = NULL;
 		JsonArray *array = json_node_get_array(slots);
+		gboolean nightly = FALSE;
 		guint i;
 		g_object_get(page, "title", &title, "description", &description, NULL);
 		venture_html_escape_append(html, venture_string_is_empty(title) ? "Book a time" : title);
 		g_string_append(html, "</h1>");
 		if (!venture_string_is_empty(description)) { g_string_append(html, "<p>"); venture_html_escape_append(html, description); g_string_append(html, "</p>"); }
+		{
+			g_autoptr(VentureMoney) price = NULL;
+			g_autofree gchar *unit = NULL, *shown = NULL;
+			g_object_get(page, "price", &price, "price-unit", &unit, NULL);
+			if (price != NULL) {
+				shown = venture_money_to_display_string(price, TRUE);
+				g_string_append(html, "<p>Price: ");
+				venture_html_escape_append(html, shown);
+				g_string_append(html, " per ");
+				venture_html_escape_append(html, venture_string_is_empty(unit) ? "visit" : unit);
+				g_string_append(html, "</p>");
+				nightly = g_strcmp0(unit, "night") == 0;
+			}
+		}
 		if (json_array_get_length(array) == 0) g_string_append(html, "<p>No times are open right now. Please check back later.</p>");
 		else {
 			action = g_strconcat("/book/", slug, NULL);
@@ -228,7 +260,10 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 				g_string_append(html, "</option>");
 			}
 			g_string_append(html, "</select></label><label>Name <input name=\"name\" required></label><label>Email <input name=\"email\" type=\"email\" required></label>"
-				"<label>Notes <textarea name=\"notes\"></textarea></label><button type=\"submit\">Book</button></form>");
+				"<label>Notes <textarea name=\"notes\"></textarea></label>");
+			if (nightly) g_string_append(html, "<label>Arrival <input name=\"arrival_date\" type=\"date\" required></label>"
+				"<label>Departure <input name=\"departure_date\" type=\"date\" required></label>");
+			g_string_append(html, "<button type=\"submit\">Book</button></form>");
 		}
 		g_string_append(html, "</body></html>");
 		return venture_web_booking_plain(200, html->str);

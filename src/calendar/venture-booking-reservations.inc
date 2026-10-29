@@ -318,6 +318,8 @@ static gboolean booking_validate_page(VentureDatabase *database, VentureEntity *
 	if (booking_int(entity, "capacity") < 0 || booking_int(entity, "capacity") > 10000 ||
 	    (!venture_string_is_empty(origin) && !booking_origin_valid(origin)))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Use capacity 0 to 10000 and an HTTPS public origin");
+	if (!venture_booking_service_price_valid(entity))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Use a price of zero or more in an ISO currency, per visit, night, hour or day");
 	g_object_get(entity, "active", &active, NULL);
 	if (!active) return TRUE;
 	valid = page_read(entity, &shape, error); page_clear(&shape);

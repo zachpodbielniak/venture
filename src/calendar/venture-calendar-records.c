@@ -56,6 +56,8 @@ static const VentureFieldDecl booking_fields[] = {
 	VENTURE_FIELD("availability", "Availability", "{\"mon\":\"09:00-12:00,13:00-17:00\",...}", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	INT("horizon-days", "Horizon", "How many days ahead may be booked; 14 when empty"),
 	INT("capacity", "Seats per slot", "Zero uses one seat; at most 10000"),
+	VENTURE_FIELD_MONEY("price", "Price", "What one unit costs; empty publishes no price"),
+	STR("price-unit", "Price unit", "visit, night, hour or day; empty means visit"),
 	STR("public-origin", "Public origin", "HTTPS origin for private booking management links"),
 	VENTURE_FIELD_TEXT("description", "Description", "Shown above the slots"),
 	VENTURE_FIELD("active", "Active", "Whether the public page answers", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)

@@ -321,4 +321,99 @@ static VentureEntity *find_contact(VentureBookingService *self, gint64 org, cons
 	return NULL;
 }
 
+/* --- Published price ------------------------------------------------------ */
+#define BOOKING_MAX_NIGHTS 366
+static const gchar *const booking_price_units[] = { "visit", "night", "hour", "day", NULL };
+
+/* An empty unit is a visit; anything else must be one of the four words. */
+static gchar *booking_price_unit(VentureEntity *page)
+{
+	g_autofree gchar *unit = NULL;
+	g_object_get(page, "price-unit", &unit, NULL);
+	return venture_string_is_empty(unit) ? g_strdup("visit") : g_steal_pointer(&unit);
+}
+
+gboolean venture_booking_service_price_valid(VentureEntity *page)
+{
+	g_autofree gchar *unit = booking_price_unit(page);
+	g_autoptr(VentureMoney) price = NULL;
+	g_return_val_if_fail(VENTURE_IS_BOOKING_PAGE(page), FALSE);
+	g_object_get(page, "price", &price, NULL);
+	if (!g_strv_contains(booking_price_units, unit)) return FALSE;
+	return price == NULL || (venture_money_get_amount(price) >= 0 && venture_currency_is_iso(venture_money_get_currency(price)));
+}
+
+JsonNode *venture_booking_service_describe(VentureBookingService *self, VentureEntity *page)
+{
+	g_autofree gchar *slug = NULL, *title = NULL, *unit = NULL;
+	g_autoptr(VentureMoney) price = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_BOOKING_PAGE(page), NULL);
+	g_object_get(page, "slug", &slug, "title", &title, "price", &price, NULL);
+	unit = booking_price_unit(page);
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "slug"); json_builder_add_string_value(builder, slug != NULL ? slug : "");
+	json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, title != NULL ? title : "");
+	json_builder_set_member_name(builder, "unit"); json_builder_add_string_value(builder, unit);
+	if (price != NULL) { json_builder_set_member_name(builder, "price"); json_builder_add_value(builder, venture_money_to_json(price)); }
+	json_builder_end_object(builder);
+	return json_builder_get_root(builder);
+}
+
+/* A strict YYYY-MM-DD calendar date; nothing a locale parser would guess. */
+static gboolean booking_stay_date(const gchar *text, GDate *date)
+{
+	guint year = 0, month = 0, day = 0, i;
+	if (text == NULL || strlen(text) != 10 || text[4] != '-' || text[7] != '-') return FALSE;
+	for (i = 0; i < 10; i++) {
+		if (i == 4 || i == 7) continue;
+		if (!g_ascii_isdigit(text[i])) return FALSE;
+		if (i < 4) year = year * 10 + (guint)g_ascii_digit_value(text[i]);
+		else if (i < 7) month = month * 10 + (guint)g_ascii_digit_value(text[i]);
+		else day = day * 10 + (guint)g_ascii_digit_value(text[i]);
+	}
+	if (!g_date_valid_dmy((GDateDay)day, (GDateMonth)month, (GDateYear)year)) return FALSE;
+	g_date_clear(date, 1);
+	g_date_set_dmy(date, (GDateDay)day, (GDateMonth)month, (GDateYear)year);
+	return TRUE;
+}
+
+gboolean venture_booking_service_estimate(VentureBookingService *self, VentureEntity *page, const gchar *arrival,
+	const gchar *departure, JsonNode **estimate, gchar **summary, GError **error)
+{
+	g_autofree gchar *unit = NULL, *one = NULL, *all = NULL;
+	g_autoptr(VentureMoney) price = NULL, total = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	gboolean dated = !venture_string_is_empty(arrival) || !venture_string_is_empty(departure);
+	GDate from, to;
+	gint nights;
+	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_BOOKING_PAGE(page), FALSE);
+	g_return_val_if_fail(estimate != NULL && summary != NULL, FALSE);
+	*estimate = NULL; *summary = NULL;
+	g_object_get(page, "price", &price, NULL);
+	unit = booking_price_unit(page);
+	if (price == NULL || g_strcmp0(unit, "night") != 0)
+		return dated ? refuse(error, VENTURE_ERROR_VALIDATION, "Stay dates belong to a nightly price only") : TRUE;
+	if (!booking_stay_date(arrival, &from) || !booking_stay_date(departure, &to))
+		return refuse(error, VENTURE_ERROR_VALIDATION, "A nightly booking needs arrival_date and departure_date as YYYY-MM-DD");
+	nights = g_date_days_between(&from, &to);
+	if (nights < 1 || nights > BOOKING_MAX_NIGHTS)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "Departure must be 1 to 366 nights after arrival");
+	total = venture_money_multiply_int(price, nights, error);
+	if (total == NULL) return FALSE;
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "nights"); json_builder_add_int_value(builder, nights);
+	json_builder_set_member_name(builder, "nightly"); json_builder_add_value(builder, venture_money_to_json(price));
+	json_builder_set_member_name(builder, "estimate"); json_builder_add_value(builder, venture_money_to_json(total));
+	json_builder_end_object(builder);
+	one = venture_money_to_display_string(price, TRUE);
+	all = venture_money_to_display_string(total, TRUE);
+	*estimate = json_builder_get_root(builder);
+	*summary = g_strdup_printf("Stay: %s to %s, %d %s x %s = %s, estimate.", arrival, departure, nights, nights == 1 ? "night" : "nights", one, all);
+	return TRUE;
+}
+
 #include "venture-booking-reservations.inc"
