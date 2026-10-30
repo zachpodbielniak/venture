@@ -589,6 +589,7 @@ static void test_prepaid_terms(Fixture *f, gconstpointer annual)
 #include "test-hosted-cancel.inc"
 #include "test-hosted-notifications.inc"
 #include "test-hosted-publication.inc"
+#include "test-hosted-switch.inc"
 
 int main(int argc, char **argv)
 {
@@ -625,5 +626,8 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-billing/made-back-unsigned", Fixture, "unsigned", setup, test_made_back, teardown);
 	g_test_add("/hosted-billing/made-back-mixed", Fixture, "mixed", setup, test_made_back, teardown);
 	g_test_add("/hosted-billing/authority", Fixture, NULL, setup, test_boundary, teardown);
+	g_test_add("/hosted-billing/switch-unpublished", Fixture, NULL, setup, test_switch_unpublished, teardown);
+	g_test_add("/hosted-billing/switch-published", Fixture, NULL, setup, test_switch_published, teardown);
+	g_test_add("/hosted-billing/switch-refusals", Fixture, NULL, setup, test_switch_refusals, teardown);
 	return g_test_run();
 }
