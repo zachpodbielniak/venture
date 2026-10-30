@@ -209,7 +209,8 @@ VentureMailMessage *venture_sequence_mail_build(VentureDatabase *database, Ventu
 	gint64 org = venture_entity_get_organization_id(delivery);
 	g_autoptr(VentureEntity) enrollment = NULL, contact = NULL;
 	g_autofree gchar *key = NULL, *recipient = NULL, *subject = NULL, *body = NULL, *private_body = NULL;
-	g_autofree gchar *text = NULL, *private_text = NULL;
+	g_autofree gchar *text = NULL, *private_text = NULL, *token = NULL, *base = NULL, *url = NULL, *html = NULL;
+	g_autofree gchar *private_html = NULL, *escaped_url = NULL, *footer_text = NULL;
 	gboolean markup;
 	enrollment = reference(database, VENTURE_TYPE_SEQUENCE_ENROLLMENT, number(delivery, "enrollment-id"), org, error);
 	if (enrollment == NULL) return NULL;
@@ -220,15 +221,44 @@ VentureMailMessage *venture_sequence_mail_build(VentureDatabase *database, Ventu
 	subject = string(delivery, "subject");
 	body = string(delivery, "body");
 	private_body = string(delivery, "private-body");
+	token = string(delivery, "unsubscribe-token");
+	g_object_get(venture_sequence_service_get(database), "base-url", &base, NULL);
+	if (token == NULL || *token == '\0' || base == NULL || *base == '\0') {
+		refuse(error, "Sequence email requires an unsubscribe token and a public base URL");
+		return NULL;
+	}
+	{
+		g_autoptr(GUri) uri = g_uri_parse(base, G_URI_FLAGS_NONE, NULL);
+		const gchar *host = uri != NULL ? g_uri_get_host(uri) : NULL;
+		const gchar *scheme = uri != NULL ? g_uri_get_scheme(uri) : NULL;
+		if (host == NULL || *host == '\0' || g_uri_get_userinfo(uri) != NULL ||
+			g_uri_get_query(uri) != NULL || g_uri_get_fragment(uri) != NULL ||
+			strpbrk(base, "\r\n\t \"'<>" ) != NULL ||
+			(g_strcmp0(scheme, "https") != 0 &&
+				(g_strcmp0(scheme, "http") != 0 ||
+					(g_strcmp0(host, "localhost") != 0 && g_strcmp0(host, "127.0.0.1") != 0 && g_strcmp0(host, "::1") != 0)))) {
+			refuse(error, "Sequence email requires a public HTTPS base URL");
+			return NULL;
+		}
+	}
 	/* A step written with markup is the HTML part and its text the plain
 	 * part; plain words are only a text part, never HTML. */
 	markup = body != NULL && strchr(body, '<') != NULL;
 	text = markup ? venture_document_html_to_text(body, -1) : g_strdup(body);
 	if (!venture_string_is_empty(private_body))
 		private_text = venture_document_html_to_text(private_body, -1);
+	{
+		url = g_strdup_printf("%s/sequences/u/%s", base, token);
+		footer_text = g_strdup_printf("%s\n\nStop these emails: %s", private_text != NULL ? private_text : text != NULL ? text : "", url);
+		escaped_url = g_markup_escape_text(url, -1);
+		html = private_body != NULL ? g_strdup(private_body) : markup ? g_strdup(body) : g_markup_escape_text(text != NULL ? text : "", -1);
+		private_html = g_strdup_printf("%s<p><a href=\"%s\">Stop these emails</a></p>", html, escaped_url);
+	}
 	return g_object_new(VENTURE_TYPE_MAIL_MESSAGE, "organization-id", org,
 		"to", recipient, "subject", subject, "text-body", text, "html-body", markup ? body : NULL,
-		"private-text-body", private_text, "private-html-body", private_text != NULL ? private_body : NULL,
+		"private-text-body", footer_text != NULL ? footer_text : private_text,
+		"private-html-body", private_html != NULL ? private_html : private_text != NULL ? private_body : NULL,
+		"private-unsubscribe-url", url,
 		"related-type", "sequence_delivery", "related-id", venture_entity_get_id(delivery),
 		"idempotency-key", key, NULL);
 }
@@ -285,4 +315,43 @@ gboolean venture_sequence_mail_recover(VentureDatabase *database, gint64 organiz
 		}
 	}
 	return TRUE;
+}
+
+gboolean venture_sequence_mail_unsubscribe(VentureDatabase *database, const gchar *token, GError **error)
+{
+	g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SEQUENCE_DELIVERY);
+	g_autoptr(VentureEntity) delivery = NULL, suppression = NULL;
+	g_autoptr(VentureQuery) suppressed_query = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autofree gchar *email = NULL;
+	gsize i;
+	if (token == NULL || strlen(token) != 64) goto missing;
+	for (i = 0; i < 64; i++) if (!g_ascii_isxdigit(token[i])) goto missing;
+	venture_query_add_filter_string(query, "unsubscribe-token", VENTURE_FILTER_OP_EQ, token, NULL);
+	delivery = venture_database_find_one(database, query, error);
+	if (delivery == NULL) {
+		if (error != NULL && *error != NULL) return FALSE;
+		goto missing;
+	}
+	if (!venture_database_begin(database, error)) return FALSE;
+	email = string(delivery, "unsubscribe-email");
+	if (email == NULL || *email == '\0') goto fail;
+	suppressed_query = venture_query_new(VENTURE_TYPE_SUPPRESSION);
+	venture_query_set_organization(suppressed_query, venture_entity_get_organization_id(delivery));
+	venture_query_add_filter_string(suppressed_query, "email", VENTURE_FILTER_OP_EQ, email, NULL);
+	suppression = venture_database_find_one(database, suppressed_query, error);
+	if (error != NULL && *error != NULL) goto fail;
+	if (suppression == NULL) {
+		suppression = g_object_new(VENTURE_TYPE_SUPPRESSION, "organization-id", venture_entity_get_organization_id(delivery),
+			"email", email, "reason", 0, "at", now, NULL);
+		if (!venture_database_save(database, suppression, NULL, error)) goto fail;
+	}
+	return venture_database_commit(database, error);
+fail:
+	venture_database_rollback(database);
+	return FALSE;
+missing:
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Unknown sequence unsubscribe capability");
+	return FALSE;
 }

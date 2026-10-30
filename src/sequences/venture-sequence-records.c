@@ -205,6 +205,8 @@ static const VentureFieldDecl sequence_delivery_fields[] = {
 	VENTURE_FIELD("external-message-id", "External message id", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("delivery-key", "Delivery key", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD("tracking-token", "Tracking token", "Per-delivery secret behind the open pixel and wrapped links", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("unsubscribe-token", "Unsubscribe token", "Per-delivery secret for the unsubscribe link", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SENSITIVE),
+	VENTURE_FIELD("unsubscribe-email", "Unsubscribe email", "Address that received the unsubscribe link", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("branch-result", "Branch taken", "For a branch step: yes or no", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureSequenceDelivery, venture_sequence_delivery, sequence_delivery_fields)

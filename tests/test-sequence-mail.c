@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include "venture-test-util.h"
+#include <libsoup/soup.h>
 
 typedef struct {
 	VentureConfig *config;
@@ -25,6 +26,7 @@ static void setup(Fixture *f, gconstpointer unused)
 	guint i;
 	(void)unused;
 	f->config = venture_config_new();
+	g_object_set(f->config, "server-base-url", "https://example.test", NULL);
 	if (unused == GINT_TO_POINTER(2)) {
 		f->directory = g_dir_make_tmp("venture-sequence-mail-XXXXXX", &error);
 		g_assert_no_error(error);
@@ -33,6 +35,7 @@ static void setup(Fixture *f, gconstpointer unused)
 	f->db = venture_database_new(f->uri != NULL ? f->uri : "sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	f->context = venture_context_new(f->config, f->db);
+	g_object_set(venture_sequence_service_get(f->db), "base-url", "https://example.test", NULL);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	f->mailer = venture_log_mailer_new();
@@ -87,11 +90,37 @@ static GPtrArray *messages(Fixture *f)
 	return found;
 }
 
+typedef struct { gboolean done; GBytes *body; GError *error; } WebReply;
+static void web_reply(GObject *source, GAsyncResult *result, gpointer data)
+{
+	WebReply *reply = data;
+	reply->body = soup_session_send_and_read_finish(SOUP_SESSION(source), result, &reply->error);
+	reply->done = TRUE;
+}
+static guint web_request(SoupSession *session, const gchar *base, const gchar *method, const gchar *path,
+	const gchar *payload)
+{
+	g_autofree gchar *url = g_strconcat(base, path, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new(method, url);
+	WebReply reply = { FALSE, NULL, NULL };
+	guint status;
+	if (payload != NULL) {
+		g_autoptr(GBytes) bytes = g_bytes_new(payload, strlen(payload));
+		soup_message_set_request_body_from_bytes(message, "application/x-www-form-urlencoded", bytes);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, web_reply, &reply);
+	while (!reply.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(reply.error);
+	status = soup_message_get_status(message);
+	g_bytes_unref(reply.body);
+	return status;
+}
+
 static void test_outbox(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GPtrArray) queued = NULL, repeated = NULL;
-	g_autofree gchar *to = NULL, *related = NULL, *state = NULL;
+	g_autofree gchar *to = NULL, *related = NULL, *state = NULL, *private_text = NULL, *private_html = NULL, *unsubscribe = NULL;
 	gint64 delivery_id = 0;
 	g_autoptr(VentureEntity) delivery = NULL;
 	VentureSequenceService *service = venture_sequence_service_get(f->db);
@@ -100,8 +129,14 @@ static void test_outbox(Fixture *f, gconstpointer unused)
 	g_assert_no_error(error);
 	queued = messages(f);
 	g_assert_cmpuint(queued->len, ==, 1);
-	g_object_get(g_ptr_array_index(queued, 0), "to", &to, "related-type", &related, "related-id", &delivery_id, NULL);
+	g_object_get(g_ptr_array_index(queued, 0), "to", &to, "related-type", &related, "related-id", &delivery_id,
+		"private-text-body", &private_text, "private-html-body", &private_html,
+		"private-unsubscribe-url", &unsubscribe, NULL);
 	g_assert_cmpstr(to, ==, "reader+sequence@example.test");
+	g_assert_nonnull(unsubscribe);
+	g_assert_true(g_str_has_prefix(unsubscribe, "https://example.test/sequences/u/"));
+	g_assert_nonnull(strstr(private_text, unsubscribe));
+	g_assert_nonnull(strstr(private_html, unsubscribe));
 	g_assert_cmpstr(related, ==, "sequence_delivery");
 	g_assert_cmpint(delivery_id, >, 0);
 	g_assert_cmpint(venture_sequence_service_run_due(service, 1, f->now, NULL, &error), ==, 0);
@@ -122,6 +157,50 @@ static void test_outbox(Fixture *f, gconstpointer unused)
 		g_assert_nonnull(state);
 		g_assert_cmpstr(state, !=, "");
 	}
+	{
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autoptr(SoupSession) session = soup_session_new();
+		g_autofree gchar *path = g_strdup_printf("/sequences/u/%s", strrchr(unsubscribe, '/') + 1);
+		const gchar *base;
+		f->directory = g_dir_make_tmp("venture-sequence-optout-XXXXXX", &error);
+		g_assert_no_error(error);
+		g_object_set(f->config, "state-dir", f->directory, "server-bind-address", "127.0.0.1",
+			"server-port", (gint64)0, NULL);
+		server = venture_web_server_new(f->context, &error);
+		g_assert_no_error(error);
+		g_assert_true(venture_web_server_start(server, &error));
+		g_assert_no_error(error);
+		base = venture_web_server_get_base_url(server);
+		g_assert_cmpuint(web_request(session, base, "GET", path, NULL), ==, 200);
+		g_assert_cmpuint(web_request(session, base, "POST", path, "List-Unsubscribe=One-Click"), ==, 200);
+		g_assert_cmpuint(web_request(session, base, "POST", path, "List-Unsubscribe=One-Click"), ==, 200);
+		g_assert_cmpuint(web_request(session, base, "POST", "/sequences/u/0000000000000000000000000000000000000000000000000000000000000000",
+			"List-Unsubscribe=One-Click"), ==, 404);
+		venture_web_server_stop(server);
+	}
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_SUPPRESSION);
+		g_autoptr(VentureEntity) suppression = NULL;
+		venture_query_set_organization(query, 1);
+		venture_query_add_filter_string(query, "email", VENTURE_FILTER_OP_EQ,
+			"reader+sequence@example.test", NULL);
+		suppression = venture_database_find_one(f->db, query, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(suppression);
+	}
+}
+
+static void test_missing_public_url(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) queued = NULL;
+	(void)unused;
+	g_object_set(venture_sequence_service_get(f->db), "base-url", "", NULL);
+	g_assert_cmpint(venture_sequence_service_run_due(venture_sequence_service_get(f->db), 1,
+		f->now, NULL, &error), ==, -1);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	queued = messages(f);
+	g_assert_cmpuint(queued->len, ==, 0);
 }
 
 static void reply(Fixture *f)
@@ -411,6 +490,7 @@ int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/sequence-mail/outbox", Fixture, NULL, setup, test_outbox, teardown);
+	g_test_add("/sequence-mail/missing-public-url", Fixture, NULL, setup, test_missing_public_url, teardown);
 	g_test_add("/sequence-mail/inbound-reply", Fixture, NULL, setup, test_reply, teardown);
 	g_test_add("/sequence-mail/reply-before-final-send", Fixture, GINT_TO_POINTER(1), setup, test_reply, teardown);
 	g_test_add("/sequence-mail/restart", Fixture, GINT_TO_POINTER(2), setup, test_restart, teardown);

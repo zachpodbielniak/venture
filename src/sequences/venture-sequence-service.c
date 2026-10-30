@@ -1120,6 +1120,11 @@ execute_step(VentureSequenceService *self, VentureEntity *row, VentureEntity *se
 		if (channel == 0)
 		{
 			gboolean allowed;
+			g_autofree gchar *unsubscribe_token = venture_sequence_tracking_token(error);
+			g_autofree gchar *unsubscribe_email = normalized_email(contact);
+			if (unsubscribe_token == NULL) return FALSE;
+			g_object_set(delivery, "unsubscribe-token", unsubscribe_token,
+				"unsubscribe-email", unsubscribe_email, NULL);
 			g_object_set(delivery, "executed-at", NULL, NULL);
 			if (!tracking_allowed(self, sequence, &allowed, error))
 				return FALSE;
