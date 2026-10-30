@@ -175,3 +175,45 @@ static HtmxResponse *venture_web_marketing_click(HtmxRequest *request, GHashTabl
 	if (!url || !venture_web_url_is_web(url)) return marketing_response(404, "Not found");
 	response = marketing_response(302, ""); htmx_response_add_header(response, "Location", url); return response;
 }
+static HtmxResponse *venture_web_marketing_current(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	const gchar *requested = htmx_request_get_query_param(request, "organization_id");
+	const gchar *email = htmx_request_get_query_param(request, "email");
+	const gchar *purpose = htmx_request_get_query_param(request, "purpose");
+	const gchar *state;
+	g_autoptr(GDateTime) recorded_at = NULL, withdrawn_at = NULL;
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *stamp = NULL;
+	HtmxResponse *denied, *response;
+	gint64 org;
+	(void)params;
+	denied = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	if (denied) return denied;
+	if (!requested || !g_ascii_string_to_signed(requested, 10, 1, G_MAXINT64, &org, NULL)) {
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Choose a valid organization_id");
+		return venture_web_error_response(error);
+	}
+	if (!venture_marketing_service_current_permission(
+		venture_marketing_service_get(venture_context_get_database(self->context)), org, email, purpose,
+		&state, &recorded_at, &withdrawn_at, &error))
+		return venture_web_error_response(error);
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "state"); json_builder_add_string_value(builder, state);
+	if (recorded_at) {
+		stamp = g_date_time_format_iso8601(recorded_at);
+		json_builder_set_member_name(builder, "recorded_at"); json_builder_add_string_value(builder, stamp);
+		g_clear_pointer(&stamp, g_free);
+	}
+	if (withdrawn_at) {
+		stamp = g_date_time_format_iso8601(withdrawn_at);
+		json_builder_set_member_name(builder, "withdrawn_at"); json_builder_add_string_value(builder, stamp);
+	}
+	json_builder_end_object(builder);
+	node = json_builder_get_root(builder);
+	response = venture_web_json_response(node, 200);
+	htmx_response_add_header(response, "Cache-Control", "no-store, private");
+	return response;
+}

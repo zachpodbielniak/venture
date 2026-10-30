@@ -22,6 +22,59 @@ static VentureEntity *permission(VentureMarketingService *self, VentureEntity *s
 	if (withdrawn) g_clear_object(&result);
 	return g_steal_pointer(&result);
 }
+gboolean venture_marketing_service_current_permission(VentureMarketingService *self,
+	gint64 org, const gchar *raw_email, const gchar *purpose,
+	const gchar **state, GDateTime **recorded_at, GDateTime **withdrawn_at, GError **error)
+{
+	static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN,
+		VENTURE_ORGANIZATION_ROLE_EDITOR, VENTURE_ORGANIZATION_ROLE_VIEWER };
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MARKETING_CONSENT);
+	g_autoptr(VentureEntity) current = NULL, original = NULL;
+	g_autofree gchar *email = normalize(raw_email), *original_uuid = NULL, *original_email = NULL;
+	g_autoptr(GDateTime) current_at = NULL, withdrawal_at = NULL, grant_at = NULL;
+	VentureAccessPolicy *policy;
+	const VentureAuthPrincipal *principal;
+
+	g_return_val_if_fail(VENTURE_IS_MARKETING_SERVICE(self), FALSE);
+	g_return_val_if_fail(state && recorded_at && withdrawn_at, FALSE);
+	*state = "none"; *recorded_at = NULL; *withdrawn_at = NULL;
+	if (!self->database) return refuse(error, "Marketing database is unavailable");
+	if (org <= 0 || g_strcmp0(purpose, "marketing") || !valid_address(email))
+		return refuse(error, "Choose one organization, valid email and marketing purpose");
+	policy = venture_database_get_access_policy(self->database);
+	principal = venture_access_policy_get_actor(policy);
+	if (principal && !venture_access_policy_has_organization_role(policy, principal, org, roles, G_N_ELEMENTS(roles))) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED, "Organization read authorization is required for marketing");
+		return FALSE;
+	}
+	venture_query_set_organization(query, org);
+	venture_query_add_filter_string(query, "email", VENTURE_FILTER_OP_EQ, email, NULL);
+	venture_query_add_filter_string(query, "purpose", VENTURE_FILTER_OP_EQ, purpose, NULL);
+	venture_query_add_order(query, "recorded-at", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	current = venture_database_find_one(self->database, query, error);
+	if (error && *error) return FALSE;
+	if (!current) return TRUE;
+	g_object_get(current, "recorded-at", &current_at, "withdrawn-at", &withdrawal_at,
+		"withdraws-uuid", &original_uuid, NULL);
+	if (!withdrawal_at && !original_uuid) {
+		*state = "given";
+		*recorded_at = g_steal_pointer(&current_at);
+		return TRUE;
+	}
+	*state = "withdrawn";
+	if (withdrawal_at) *withdrawn_at = g_steal_pointer(&withdrawal_at);
+	else *withdrawn_at = g_steal_pointer(&current_at);
+	if (!original_uuid) return TRUE;
+	original = find_string(self, VENTURE_TYPE_MARKETING_CONSENT, org, "uuid", original_uuid, error);
+	if (error && *error) return FALSE;
+	if (!original || venture_entity_get_organization_id(original) != org) return TRUE;
+	original_email = string(original, "email");
+	if (g_strcmp0(original_email, email)) return TRUE;
+	g_object_get(original, "recorded-at", &grant_at, NULL);
+	*recorded_at = g_steal_pointer(&grant_at);
+	return TRUE;
+}
 VentureMarketingConsent *venture_marketing_service_consent(VentureMarketingService *self,
 	gint64 org, VentureEntity *input, const gchar *source, const gchar *evidence,
 	const gchar *evidence_key, GDateTime *occurred_at, const VentureActor *actor, GError **error)

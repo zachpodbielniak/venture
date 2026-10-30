@@ -121,7 +121,8 @@ amount_field(VentureEntity *record, const gchar *field)
 }
 
 static VentureEntity *
-invoice_new(Fixture *f, const gchar *number, const gchar *issued, const gchar *amount)
+invoice_new_due(Fixture *f, const gchar *number, const gchar *issued,
+	const gchar *due, const gchar *amount)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
 	g_autoptr(VentureEntity) line = NULL;
@@ -129,7 +130,7 @@ invoice_new(Fixture *f, const gchar *number, const gchar *issued, const gchar *a
 	invoice = record_new(f, "invoice");
 	g_object_set(invoice, "number", number, "company-id", f->customer_id, NULL);
 	money_field(invoice, "issued-at", issued);
-	money_field(invoice, "due-at", issued);
+	money_field(invoice, "due-at", due);
 	save(f, invoice);
 	line = record_new(f, "invoice_line");
 	g_object_set(line, "invoice-id", venture_entity_get_id(invoice),
@@ -139,6 +140,12 @@ invoice_new(Fixture *f, const gchar *number, const gchar *issued, const gchar *a
 	g_object_set(invoice, "status", VENTURE_INVOICE_STATUS_SENT, NULL);
 	save(f, invoice);
 	return g_steal_pointer(&invoice);
+}
+
+static VentureEntity *
+invoice_new(Fixture *f, const gchar *number, const gchar *issued, const gchar *amount)
+{
+	return invoice_new_due(f, number, issued, issued, amount);
 }
 
 static VentureEntity *
@@ -1477,6 +1484,59 @@ test_statement_options(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(state_dir);
 }
 
+static void
+test_open_invoices_report(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) future = NULL;
+	g_autoptr(VentureEntity) partial = NULL;
+	g_autoptr(VentureEntity) paid = NULL;
+	g_autoptr(VentureEntity) payment = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_dir = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) json = NULL;
+	JsonArray *rows;
+	JsonObject *row;
+	JsonObject *balance;
+
+	(void)data;
+	future = invoice_new_due(f, "FUTURE", "2026-07-01", "2027-01-01", "100 USD");
+	partial = invoice_new(f, "PARTIAL", "2026-07-01", "100 USD");
+	paid = invoice_new(f, "PAID", "2026-07-01", "100 USD");
+	payment = payment_new(f, venture_entity_get_id(partial), "40 USD", "2026-08-01");
+	save(f, payment);
+	g_clear_object(&payment);
+	payment = payment_new(f, venture_entity_get_id(paid), "100 USD", "2026-08-01");
+	save(f, payment);
+	server = start_server(f, &state_dir);
+	path = g_strdup_printf("/api/v1/reports/open_invoices?organization_id=%" G_GINT64_FORMAT,
+		f->organization_id);
+	g_assert_cmpuint(http_request(server, "GET", path, NULL, NULL, &body), ==, 200);
+	json = venture_json_parse(body, NULL);
+	g_assert_nonnull(json);
+	rows = json_object_get_array_member(json_node_get_object(json), "rows");
+	g_assert_cmpuint(json_array_get_length(rows), ==, 2);
+	row = json_array_get_object_element(rows, 0);
+	g_assert_cmpstr(json_object_get_string_member(row, "number"), ==, "FUTURE");
+	g_assert_cmpstr(json_object_get_string_member(row, "status"), ==, "sent");
+	g_assert_cmpstr(json_object_get_string_member(row, "due_at"), ==, "2027-01-01");
+	g_assert_true(json_node_get_value_type(json_object_get_member(row, "id")) == G_TYPE_INT64);
+	g_assert_cmpint(json_object_get_int_member(row, "id"), ==, venture_entity_get_id(future));
+	balance = json_object_get_object_member(row, "open_balance");
+	g_assert_cmpint(json_object_get_int_member(balance, "amount"), ==, 10000);
+	g_assert_cmpstr(json_object_get_string_member(balance, "currency"), ==, "USD");
+	g_assert_cmpint(json_object_get_int_member(balance, "exponent"), ==, 2);
+	g_assert_nonnull(json_object_get_string_member(balance, "formatted"));
+	row = json_array_get_object_element(rows, 1);
+	g_assert_cmpstr(json_object_get_string_member(row, "number"), ==, "PARTIAL");
+	g_assert_cmpstr(json_object_get_string_member(row, "status"), ==, "partially_paid");
+	balance = json_object_get_object_member(row, "open_balance");
+	g_assert_cmpint(json_object_get_int_member(balance, "amount"), ==, 6000);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
+}
+
 static gint64
 account_id_for_code(Fixture *f, const gchar *code)
 {
@@ -2307,6 +2367,7 @@ main(int argc, char **argv)
 	ADD("accounting-cycle", test_accounting_cycle);
 	ADD("module-off-invoice", test_module_off_invoice);
 	ADD("statement-options", test_statement_options);
+	ADD("open-invoices-report", test_open_invoices_report);
 	ADD("direct-paid-refused", test_direct_paid_refused);
 	ADD("partial-full", test_partial_full);
 	ADD("atomic-failure", test_atomic_failure);

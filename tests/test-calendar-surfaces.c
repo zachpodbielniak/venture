@@ -406,6 +406,83 @@ static void test_booking_relay_limits_by_visitor(Fixture *f, gconstpointer unuse
 	g_assert_cmpstr(address, ==, "203.0.113.50");
 }
 
+/* A priced service: the public read names its price and unit, and a nightly
+ * booking returns the stay estimate Venture worked out. */
+static gchar *booking_first_slot(Fixture *f, const gchar *slug)
+{
+	g_autofree gchar *path = g_strdup_printf("/book/%s?format=json", slug), *json = NULL;
+	g_autoptr(JsonNode) slots = NULL;
+	g_assert_cmpuint(request(f, "GET", path, NULL, &json), ==, 200);
+	slots = json_from_string(json, NULL);
+	return g_strdup(venture_json_object_get_string(json_array_get_object_element(json_node_get_array(slots), 0), "start", ""));
+}
+static VentureEntity *booking_priced_page(Fixture *f, const gchar *title, const gchar *slug, VentureMoney *price, const gchar *unit)
+{
+	VentureEntity *page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org, "title", title, "slug", slug, "owner", "ben",
+		"duration-minutes", (gint64)30, "buffer-minutes", (gint64)0, "timezone", "UTC",
+		"availability", "{\"mon\":\"00:00-24:00\",\"tue\":\"00:00-24:00\",\"wed\":\"00:00-24:00\",\"thu\":\"00:00-24:00\",\"fri\":\"00:00-24:00\",\"sat\":\"00:00-24:00\",\"sun\":\"00:00-24:00\"}",
+		"horizon-days", (gint64)3, "price", price, "price-unit", unit, "active", TRUE, NULL);
+	return page;
+}
+static void test_booking_price(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(VentureMoney) nightly = venture_money_new(4500, "USD", 2);
+	g_autoptr(VentureMoney) negative = venture_money_new(-100, "USD", 2);
+	g_autoptr(VentureEntity) stay = booking_priced_page(f, "Boarding", "boarding", nightly, "night");
+	g_autoptr(VentureEntity) visit = booking_priced_page(f, "Walk", "walk", NULL, NULL);
+	g_autoptr(VentureEntity) bad_unit = booking_priced_page(f, "Week", "week", nightly, "week");
+	g_autoptr(VentureEntity) bad_price = booking_priced_page(f, "Free", "free", negative, "visit");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) read = NULL, other = NULL, made = NULL;
+	g_autofree gchar *json = NULL, *walk = NULL, *html = NULL, *created = NULL, *start = NULL, *body = NULL;
+	g_autofree gchar *undated = NULL, *backwards = NULL, *dated_walk = NULL, *walk_start = NULL;
+	JsonObject *service, *price, *estimate;
+	(void)unused;
+	save(f, stay); save(f, visit);
+	g_assert_false(venture_database_save(f->db, bad_unit, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	g_assert_false(venture_database_save(f->db, bad_price, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION); g_clear_error(&error);
+	/* The service read: a price object, never a figure inside the name. */
+	g_assert_cmpuint(request(f, "GET", "/book/boarding?format=service", NULL, &json), ==, 200);
+	read = json_from_string(json, NULL);
+	service = json_node_get_object(read);
+	g_assert_cmpstr(venture_json_object_get_string(service, "slug", ""), ==, "boarding");
+	g_assert_cmpstr(venture_json_object_get_string(service, "name", ""), ==, "Boarding");
+	g_assert_cmpstr(venture_json_object_get_string(service, "unit", ""), ==, "night");
+	price = json_object_get_object_member(service, "price");
+	g_assert_cmpint(json_object_get_int_member(price, "amount"), ==, 4500);
+	g_assert_cmpstr(json_object_get_string_member(price, "currency"), ==, "USD");
+	g_assert_cmpint(json_object_get_int_member(price, "exponent"), ==, 2);
+	g_assert_cmpuint(request(f, "GET", "/book/walk?format=service", NULL, &walk), ==, 200);
+	other = json_from_string(walk, NULL);
+	g_assert_cmpstr(venture_json_object_get_string(json_node_get_object(other), "unit", ""), ==, "visit");
+	g_assert_false(json_object_has_member(json_node_get_object(other), "price"));
+	g_assert_cmpuint(request(f, "GET", "/book/boarding", NULL, &html), ==, 200);
+	g_assert_nonnull(strstr(html, "45.00"));
+	g_assert_nonnull(strstr(html, "per night"));
+	/* A nightly booking needs its dates, in order, and returns the estimate. */
+	start = booking_first_slot(f, "boarding");
+	undated = g_strdup_printf("{\"start\":\"%s\",\"name\":\"Pat\",\"email\":\"pat@example.test\"}", start);
+	g_assert_cmpuint(request(f, "POST", "/book/boarding", undated, NULL), ==, 422);
+	backwards = g_strdup_printf("{\"start\":\"%s\",\"name\":\"Pat\",\"email\":\"pat@example.test\",\"arrival_date\":\"2026-11-05\",\"departure_date\":\"2026-11-02\"}", start);
+	g_assert_cmpuint(request(f, "POST", "/book/boarding", backwards, NULL), ==, 422);
+	body = g_strdup_printf("{\"start\":\"%s\",\"name\":\"Pat\",\"email\":\"pat@example.test\",\"arrival_date\":\"2026-11-02\",\"departure_date\":\"2026-11-05\"}", start);
+	g_assert_cmpuint(request(f, "POST", "/book/boarding", body, &created), ==, 201);
+	made = json_from_string(created, NULL);
+	estimate = json_object_get_object_member(json_node_get_object(made), "estimate");
+	g_assert_nonnull(estimate);
+	g_assert_cmpint(json_object_get_int_member(estimate, "nights"), ==, 3);
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(estimate, "nightly"), "amount"), ==, 4500);
+	g_assert_cmpint(json_object_get_int_member(json_object_get_object_member(estimate, "estimate"), "amount"), ==, 13500);
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(estimate, "estimate"), "currency"), ==, "USD");
+	g_assert_nonnull(strstr(venture_json_object_get_string(json_node_get_object(made), "body", ""), "3 nights"));
+	/* Stay dates belong to a nightly price only. */
+	walk_start = booking_first_slot(f, "walk");
+	dated_walk = g_strdup_printf("{\"start\":\"%s\",\"name\":\"Pat\",\"email\":\"pat@example.test\",\"arrival_date\":\"2026-11-02\",\"departure_date\":\"2026-11-05\"}", walk_start);
+	g_assert_cmpuint(request(f, "POST", "/book/walk", dated_walk, NULL), ==, 422);
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -416,5 +493,6 @@ int main(int argc, char **argv)
 	g_test_add("/calendar-surfaces/booking-job-window", Fixture, NULL, setup, test_booking_job_window, teardown);
 	g_test_add("/calendar-surfaces/booking-untrusted-forwarded", Fixture, NULL, setup, test_booking_untrusted_ignores_forwarded, teardown);
 	g_test_add("/calendar-surfaces/booking-relay", Fixture, NULL, setup, test_booking_relay_limits_by_visitor, teardown);
+	g_test_add("/calendar-surfaces/booking-price", Fixture, NULL, setup, test_booking_price, teardown);
 	return g_test_run();
 }

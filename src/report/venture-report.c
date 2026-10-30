@@ -284,6 +284,20 @@ venture_report_result_set_number(
 	venture_report_result_set_value(self, key, stored);
 }
 
+void
+venture_report_result_set_integer(VentureReportResult *self, const gchar *key,
+	gint64 value)
+{
+	GValue *stored;
+
+	g_return_if_fail(VENTURE_IS_REPORT_RESULT(self));
+	g_return_if_fail(key != NULL);
+	stored = g_new0(GValue, 1);
+	g_value_init(stored, G_TYPE_INT64);
+	g_value_set_int64(stored, value);
+	venture_report_result_set_value(self, key, stored);
+}
+
 GPtrArray *
 venture_report_result_get_metrics(VentureReportResult *self)
 {
@@ -386,6 +400,9 @@ venture_report_format_cell(
 
 		return g_strdup_printf("%.2f", number);
 	}
+
+	if (G_VALUE_HOLDS_INT64(value))
+		return g_strdup_printf("%" G_GINT64_FORMAT, g_value_get_int64(value));
 
 	return g_strdup((NULL != g_value_get_string(value))
 		? g_value_get_string(value) : "");

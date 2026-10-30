@@ -609,6 +609,9 @@ venture_calendar_view_fetch(
 ){
 	g_autoptr(VentureCalendarResult) result = NULL;
 	g_autoptr(GPtrArray) kept = NULL;
+	g_autoptr(GDateTime) fetch_from = NULL;
+	g_autoptr(GDateTime) fetch_to = NULL;
+	VentureCalendarQuery fetch_query;
 	GPtrArray *sources;
 	GTimeZone *timezone;
 	guint i;
@@ -668,6 +671,17 @@ venture_calendar_view_fetch(
 
 	result = venture_calendar_result_new();
 	sources = calendar_sources(context);
+	fetch_query = *query;
+
+	/* Calendar dates stay at midnight UTC. Read the adjacent UTC days so
+	 * a local day also finds date-only records outside its timed bounds. */
+	if (NULL != query->local_day)
+	{
+		fetch_from = g_date_time_add_days(query->from, -1);
+		fetch_to = g_date_time_add_days(query->to, 1);
+		fetch_query.from = fetch_from;
+		fetch_query.to = fetch_to;
+	}
 
 	for (i = 0; i < sources->len; i++)
 	{
@@ -706,7 +720,7 @@ venture_calendar_view_fetch(
 			continue;
 		}
 
-		if (!source->fetch(context, query, result, source->user_data, error))
+		if (!source->fetch(context, &fetch_query, result, source->user_data, error))
 			return NULL;
 
 		g_ptr_array_add(result->kinds, g_strdup(source->name));
@@ -714,18 +728,24 @@ venture_calendar_view_fetch(
 
 	/* --- Kept to the span, dated in the zone, in order --- */
 
-	timezone = venture_context_get_timezone(context);
+	timezone = (NULL != query->timezone) ? query->timezone : venture_context_get_timezone(context);
 	kept = g_ptr_array_new_with_free_func((GDestroyNotify)venture_calendar_item_free);
 
 	for (i = 0; i < result->items->len; i++)
 	{
 		VentureCalendarItem *item = g_ptr_array_index(result->items, i);
 
-		if (!calendar_item_overlaps(item, query->from, query->to))
+		if ((NULL != query->local_day) && item->all_day)
+		{
+			if (!venture_calendar_item_covers_day(item, query->local_day, NULL))
+				continue;
+		}
+		else if (!calendar_item_overlaps(item, query->from, query->to))
 			continue;
 
 		g_free(item->day);
-		item->day = calendar_day_of(item->start, timezone);
+		item->day = calendar_day_of(item->start,
+			(NULL != query->local_day && item->all_day) ? NULL : timezone);
 		g_ptr_array_add(kept, g_steal_pointer(&g_ptr_array_index(result->items, i)));
 	}
 

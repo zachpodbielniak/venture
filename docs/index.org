@@ -59,6 +59,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:sessions.org][Sessions]] — time-boxed runs of effort (a farming route, a market day, a shift), their goods and money yields, posting goods into stock once at no cost and money into the location's holding, and what an hour of each kind is worth
 - [[file:goals.org][Goals]] — measurable targets (a skill to level, a sum to save, a weight to lose) with ordered steps, progress measured from the start, a straight-line forecast, and the shopping list for recipe steps still ahead
 - [[file:planner.org][The planner]] — events with run-sheets, attendees and preparation tickets, and one calendar over every dated record (events, tickets, activities, milestones, goals, sprints, deals, money due, synced calendars) as a month, week or agenda, JSON and a subscribable feed
+- [[file:calendar-local-day.org][One local calendar day]] — Read one local day with the calendar API.
 - [[file:market.org][Market]] — prices seen from named sources over time, listings that end sold, partly sold, expired or cancelled; sale rate, days to sell and price history
 - [[file:taxonomy.org][Taxonomy]] — category trees, location trees, tags, and custom fields that reference any record
 - [[file:examples/game-economy.org][Worked example: a game economy]] — every generic feature above, end to end, in a game's gold
@@ -118,6 +119,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:custom-fields.org][Custom fields]] — layouts and required values without writing C
 - [[file:backup.org][Accounting backup]] — export and restore an organization pack; scheduled, retained, verified backups and the restore drill
 - [[file:quotes.org][Commercial quotes]] — price lists, revisions, public acceptance and invoice handoff
+- [[file:quotes-sent-win-rate.org][Quote sent win rate]] — The report gives a ratio for accepted and sent quotes.
 - [[file:docs-site.org][The documentation site]] — docs/*.org rendered to HTML, served at =/docs=, with link and index checks
 - [[file:marketing-sales-parity.org][Marketing, sales, phone and text parity]] — the gap audit: what Venture has, what is partial and what each later lane builds
 

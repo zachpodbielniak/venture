@@ -179,5 +179,47 @@ gboolean venture_booking_service_release(VentureBookingService *self, VentureEnt
  * Installs target and reservation save validators once per database.
  */
 void venture_booking_service_install(VentureDatabase *database);
+/**
+ * venture_booking_service_price_valid:
+ * @page: a booking page
+ *
+ * Checks the published price: the unit is empty, visit, night, hour or day,
+ * and a price, when set, is zero or more in an ISO currency.
+ *
+ * Returns: %TRUE when the page's price can be published
+ */
+gboolean venture_booking_service_price_valid(VentureEntity *page);
+
+/**
+ * venture_booking_service_describe:
+ * @self: the service
+ * @page: a booking page
+ *
+ * The page as one bookable service: {"slug", "name", "unit", "price"}. The
+ * unit is "visit" when the page names none; "price" is the money object, or
+ * absent when the page publishes no price.
+ *
+ * Returns: (transfer full): a JSON object
+ */
+JsonNode *venture_booking_service_describe(VentureBookingService *self, VentureEntity *page);
+
+/**
+ * venture_booking_service_estimate:
+ * @self: the service
+ * @page: a booking page
+ * @arrival: (nullable): first night, YYYY-MM-DD
+ * @departure: (nullable): the day the stay ends, YYYY-MM-DD
+ * @estimate: (out) (transfer full) (nullable): {"nights", "nightly", "estimate"}, or %NULL when the page has no nightly price
+ * @summary: (out) (transfer full) (nullable): one sentence for the meeting notes, or %NULL
+ * @error: (out) (optional): %VENTURE_ERROR_VALIDATION for missing, malformed or reversed dates, or dates on a page without a nightly price
+ *
+ * Works out a nightly stay: the nights between the two dates, 1 to 366, times
+ * the page's price. A page without a nightly price takes no dates.
+ *
+ * Returns: %TRUE unless the dates were refused
+ */
+gboolean venture_booking_service_estimate(VentureBookingService *self, VentureEntity *page, const gchar *arrival,
+	const gchar *departure, JsonNode **estimate, gchar **summary, GError **error);
+
 G_END_DECLS
 #endif

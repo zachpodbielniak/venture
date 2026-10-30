@@ -28,7 +28,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =sales=      | core            | product, inventory_item, inventory_txn, sale, location; =categories=, =inventory= |               |
 | =finance=    | sales           | expense, account, ledger_entry, tax_category, tax_code; =pnl=, =ventures=, =monthly=, =tax=, =tax_liability= |     |
 | =periods=    | finance         | fiscal_year, fiscal_period, report_snapshot; =snapshot_vs_live= | |
-| =crm=        | core            | company, contact, interaction, deal, deal_contact, competitor, deal_competitor; =pipeline=, =deals_without_decision_maker=, =competitor_win_loss= |                       |
+| =crm=        | core            | company, contact, interaction, deal, deal_contact, competitor, deal_competitor; =pipeline=, =deals_without_decision_maker=, =competitor_win_loss=, =people= |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
 | =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |

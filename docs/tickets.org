@@ -1,10 +1,10 @@
 #+title: Tickets: epics, stories, milestones and goals
-#+description: The ticket hierarchy and the save rule that holds it, an epic's rollup and the epic_progress report, milestones in the tickets module, and the work linked to a goal
+#+description: The ticket hierarchy and the save rule that holds it, an epic's rollup and the epic_progress report, milestones in the tickets module, the work linked to a goal, and a task's end time
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-16]
-#+updated: [2026-10-16]
-#+version: 0.6.0
+#+updated: [2026-10-28]
+#+version: 0.7.0
 
 * What this is
 
@@ -98,9 +98,30 @@ A milestone's progress (=venture_factory_milestone_progress()=) leaves cancelled
 
 A milestone and a ticket each have =goal_id=: the goal the work moves. =venture_goals_work_progress()= (=src/goals/venture-goals.c=) counts every ticket naming the goal, everything beneath those, and every ticket planned into a milestone naming the goal -- each once, cancelled tickets and epics left out -- and never writes the goal: its =current_value= is still its owner's reading, and a goal whose tickets are all done is not marked achieved. The goal's page shows a *Work* card with the milestones and epics naming it, and =goal_progress= gained =tickets_done= and =tickets_total= (blank with the tickets module off). See [[file:goals.org::*The work planned toward a goal][Goals: the work planned toward a goal]].
 
+* The end time
+
+A task booked as a stretch of time -- paint the porch from two until half past four -- has =due_at= for when it starts or is due and =until_at= for when it is over. Both are ISO times, and both are ordinary fields: the form, the record API, an approved staged change, the assistant and the CLI all write them.
+
+#+begin_src sh
+curl -s -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
+	-H "Content-Type: application/json" \
+	-d '{"title":"Paint the porch","due_at":"2026-11-02T14:00:00Z","until_at":"2026-11-02T16:30:00Z"}' \
+	"$VENTURE_SERVER/api/v1/ticket"
+venturectl create ticket title="Paint the porch" due_at=2026-11-02T14:00:00Z until_at=2026-11-02T16:30:00Z
+#+end_src
+
+- *Not before Due.* An =until_at= earlier than =due_at= is refused: "Until: is before Due; work ends after it starts". Equal is allowed. The rule is a save validator installed beside the hierarchy's, so every writer meets it.
+- *Judged only when written*, like the hierarchy: a row stored backwards stays editable for its title or status, and is held to the rule the moment either time is written.
+- *An end with no due time is kept.* Only the order of the two is judged.
+- *Never a sentence in the description.* A caller that has an end time sends =until_at=; a screen reads the window from the two fields.
+
+The calendar still places a ticket at =due_at= ([[file:planner.org][The planner]]).
+
 * Storage
 
 =goal_id= on =tickets= and =milestones= is an indexed integer column the field table declares; reconciliation adds it. Migration =000913_planning_goal_links= (SQLite and PostgreSQL) verifies the tickets column and backfills nothing: which goal a past ticket served is not knowable from the rows. It declares =-- requires-table: tickets=, so an install that never had tickets on records it and moves on.
+
+=until_at= on =tickets= is a datetime column the field table declares, not indexed. Migration =000998_ticket_until_at= (SQLite and PostgreSQL) verifies it and backfills nothing: an end time written into a description is a sentence, and reading a time out of it would be a guess.
 
 * Traps
 
@@ -109,4 +130,5 @@ A milestone and a ticket each have =goal_id=: the goal the work moves. =venture_
 - *A loop is =venture_category_check_tree_node()='s to find.* Do not write a second walk for tickets.
 - *Cancelled is neither half.* Every count here -- the rollup, a milestone's progress, a goal's work -- leaves it out of both done and total.
 - *An epic is never counted itself.* It is the plan; its pieces are the work.
+- *An end time is a field.* Do not parse it out of the description, and do not write it there.
 - *A milestone is the tickets module's.* A page, route or widget about milestones only gates on =tickets=, never =factory=.

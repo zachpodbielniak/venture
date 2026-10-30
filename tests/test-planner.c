@@ -2230,6 +2230,70 @@ test_agenda_widget(
 	g_assert_cmpint(json_object_get_int_member(json_node_get_object(tickets_only->data), "total"), ==, 0);
 }
 
+static void
+test_http_local_day(ServerFixture *fixture, gconstpointer user_data)
+{
+	static const struct { const gchar *name; const gchar *start; const gchar *end; } cases[] = {
+		{ "Before day", "2026-03-08T04:00:00Z", "2026-03-08T05:00:00Z" },
+		{ "At start", "2026-03-08T05:00:00Z", "2026-03-08T06:00:00Z" },
+		{ "At end", "2026-03-09T04:00:00Z", "2026-03-09T05:00:00Z" },
+		{ "Late day", "2026-03-09T03:00:00Z", "2026-03-09T04:00:00Z" }
+	};
+	g_autofree gchar *body = NULL;
+	g_autoptr(GPtrArray) titles = NULL;
+	guint i;
+
+	(void)user_data;
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(VentureEntity) event = VENTURE_ENTITY(venture_event_new());
+
+		g_object_set(event, "name", cases[i].name, NULL);
+		field(event, "starts-at", cases[i].start);
+		field(event, "ends-at", cases[i].end);
+		server_save(fixture, event);
+	}
+
+	{
+		g_autoptr(VentureEntity) day = VENTURE_ENTITY(venture_event_new());
+
+		g_object_set(day, "name", "Whole day", "all-day", TRUE, NULL);
+		field(day, "starts-at", "2026-03-08");
+		server_save(fixture, day);
+	}
+	{
+		g_autoptr(VentureEntity) ticket = VENTURE_ENTITY(venture_ticket_new());
+
+		g_object_set(ticket, "title", "Finished task", NULL);
+		field(ticket, "due-at", "2026-03-08");
+		field(ticket, "status", "done");
+		server_save(fixture, ticket);
+	}
+
+	g_assert_cmpuint(server_request(fixture, "GET",
+		"/api/v1/calendar?on=2026-03-08&time_zone=America%2FNew_York&done=1&kind=event",
+		NULL, NULL, &body), ==, SOUP_STATUS_OK);
+	titles = json_titles(body);
+	g_assert_cmpuint(titles->len, ==, 3);
+	g_assert_true(g_ptr_array_find_with_equal_func(titles, "At start", g_str_equal, NULL));
+	g_assert_true(g_ptr_array_find_with_equal_func(titles, "Late day", g_str_equal, NULL));
+	g_assert_true(g_ptr_array_find_with_equal_func(titles, "Whole day", g_str_equal, NULL));
+	ASSERT_CONTAINS(body, "2026-03-08T05:00:00Z");
+	ASSERT_CONTAINS(body, "2026-03-09T04:00:00Z");
+
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_request(fixture, "GET",
+		"/api/v1/calendar?on=2026-03-08&time_zone=America%2FNew_York&done=1&kind=ticket",
+		NULL, NULL, &body), ==, SOUP_STATUS_OK);
+	ASSERT_CONTAINS(body, "Finished task");
+
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_request(fixture, "GET",
+		"/api/v1/calendar?on=2026-03-08&time_zone=Invalid%2FZone",
+		NULL, NULL, &body), ==, 422);
+}
+
 int
 main(
 	int	 argc,
@@ -2264,6 +2328,8 @@ main(
 	           test_cli, cli_fixture_tear_down);
 	g_test_add("/planner/http", ServerFixture, NULL, server_fixture_set_up,
 	           test_http, server_fixture_tear_down);
+	g_test_add("/planner/http-local-day", ServerFixture, NULL, server_fixture_set_up,
+	           test_http_local_day, server_fixture_tear_down);
 
 #undef ADD
 

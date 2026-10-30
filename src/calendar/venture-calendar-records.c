@@ -60,6 +60,8 @@ static const VentureFieldDecl booking_fields[] = {
 	STR("resource-selection", "Resource choice", "auto or pick; auto assigns the first available resource"),
 	STR("group-overflow", "Large groups", "call or multiple; call refuses a group larger than one resource"),
 	STR("group-call-message", "Large group message", "Shown when the group does not fit"),
+	VENTURE_FIELD_MONEY("price", "Price", "What one unit costs; empty publishes no price"),
+	STR("price-unit", "Price unit", "visit, night, hour or day; empty means visit"),
 	STR("public-origin", "Public origin", "HTTPS origin for private booking management links"),
 	VENTURE_FIELD_TEXT("description", "Description", "Shown above the slots"),
 	VENTURE_FIELD("active", "Active", "Whether the public page answers", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
