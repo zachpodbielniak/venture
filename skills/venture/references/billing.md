@@ -251,6 +251,23 @@ service-owned, and checkout is refused while a non-failed prepayment owns
 the invoice. No route returns a card or a provider customer id. The
 contract, bodies and fixtures are `docs/hosted-billing.org`.
 
+**The owner's plan switch** is `POST /api/v1/lightsite/billing/switch-preview`
+(`organization_id`, `plan_price_id`) then `.../switch` (the same plus
+`accepted: true`). Unlike the routes above, the business's own owner may call
+it with their own credential (session, own token or linked provider token;
+owner now and in the token's snapshot); the trusted service token works too.
+Workspace administration is not ownership. The price must be an active
+positive monthly or annual price of the billing organization in the
+currency the business is already billed in (else 422). It is the billing
+service's `change` at period end: nothing is charged, credited or prorated
+today, and the renewal bills the whole new price. Before go-live it waits
+for publication, which issues the first invoice at the chosen price
+(`next_bill_at` null, `starts_at_go_live` true). A preview writes nothing;
+confirming the price already scheduled answers the first confirmation (200).
+Paused is 422; ending, prepaid or cancelled is 409. Never switch a hosted
+business by editing `plan_price_id` or `pending_plan_price_id` on the
+subscription.
+
 ## Late fees (module `late_fees`)
 
 Off by default. A `late_fee_schedule` is an ordered list of tiers (day N,

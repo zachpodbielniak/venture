@@ -127,10 +127,14 @@ the one inbox, AI on messages, workflow settings) are in it too, against
 Competitor records and win/loss reporting were added on the remaining-gaps
 epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-29 against e1eacc46 -->
+The owner's plan switch (billing.md) and owner invitations sent in the
+business's own mail (operations.md, data-model.md, api-routes.md) were added
+after `7fc9fd69` (2026-10-30).
+
+<!-- skill-baseline:start -- incrementally updated 2026-10-30 against 55cdcd7f -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=e1eacc46
+base=55cdcd7f
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -362,6 +366,8 @@ ids, notes) in words.
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |
 | "Enroll a hosted business or credit the guarantee" | trusted `/api/v1/lightsite/billing/enroll` (thirty-day setup window, no charge before go-live), `prepay`, `setup`, `publish` (`published_at` optional; publication is what first invoices), `first-charge`, `cancel` (unpublished and uninvoiced is free), `money-back` (thirty days from go-live), `guarantee`; `made-back` and `notifications` are reads | [billing.md](references/billing.md) |
+| "Let an owner switch their Lightsite plan" | `POST /api/v1/lightsite/billing/switch-preview` then `switch` with `accepted: true`; owner's own credential; from the next bill, no charge or proration today | [billing.md](references/billing.md) |
+| "Let an owner invite their staff" | `POST /api/v1/organizations/ID/invitations` (`email`, `role`, `idempotency_key`, `confirmed: true`); sent in the business's own mail; `resend`, `revoke`, `GET` list | [operations.md](references/operations.md) |
 | "Is the server up / what version / which modules?" | `health`, `modules` | [system.md](references/system.md) |
 | "What fields does X have?" | `describe X`; actions from `/api/v1/schema/X` | [records.md](references/records.md) |
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |

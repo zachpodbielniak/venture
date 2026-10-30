@@ -65,6 +65,10 @@ and in [[file:hosted-billing.org][Hosted enrollment and guarantee]], reads inclu
 - The hosted Host/Origin boundary and lifecycle gate apply: wrong Host, a
   read-only, suspended or changed workspace: 403.
 
+The one exception is the owner's plan switch (=switch-preview= and
+=switch= in [[file:hosted-billing.org][Hosted enrollment and guarantee]]), which the
+business's own owner may also call with their own credential.
+
 Authentication is judged before the setting, so an unauthenticated caller
 learns nothing about whether billing is configured. Every answer, refusals
 included, carries =Cache-Control: no-store=.

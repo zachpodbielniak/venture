@@ -99,6 +99,22 @@ ordinary member: it preserves the user id and member role, and does not
 activate a suspended workspace or grant platform authority. In hosted mode
 record types classified as platform are refused to tenants.
 
+**Owner invitations** need no administrator: the business's owner calls
+`POST /api/v1/organizations/ID/invitations` with `email`, `role`
+(`admin`, `editor`, `accountant` or `viewer`; never `owner`),
+`idempotency_key`, `confirmed: true` and an optional `name`; `GET` lists them
+with `state` and `delivery`; `.../invitations/INV/resend` takes exactly
+`idempotency_key` and `.../revoke` takes `{}`. Owner means an active owner
+membership now and in the credential's snapshot -- an administrator's service
+token, another business's owner and the business's own editors get 403. The
+link goes in the business's own outbox and mail, as
+`/account/invitation#code=...` in the private body; acceptance is the
+ordinary `/account/invitation` exchange and re-checks that the issuer is
+still the owner at the version pinned. A retry with the same key sends
+nothing; a second pending invitation for one address is 409; resend kills the
+old link. `delivery.mail_ready` false means the business has no mail account,
+so the message waits in its outbox. `docs/hosted-workspaces.org`.
+
 **Operator maintenance is the server binary, not `venturectl`**:
 `venture --tenant-admin USER --tenant-password-file FILE|-` requires
 `--tenant-reason`, and an existing identity additionally `--tenant-recover`.
