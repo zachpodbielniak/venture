@@ -68,6 +68,18 @@ static const VentureFieldDecl invitation_fields[] = {
 	VENTURE_FIELD("consumed-at", "Consumed", "Successful identity acceptance time", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("consumed-user-id", "Accepted user", "Explicit identity; never inferred from email", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("initial-organization-id", "Initial organization", "Legal organization granted on acceptance", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	/* Owner invitations: issued under a business owner's authority, not a
+	 * workspace administrator's, and sent in the business's own mail. */
+	VENTURE_FIELD("issuer-organization-id", "Inviting business", "Owner invitation: the business whose owner issued it; zero for a workspace administrator", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("issuer-owner-version", "Owner authority version", "Owner membership changes revoke pending owner invitations", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("email", "Invitee email", "Where the invitation was sent; never matched to an identity", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("invitee-name", "Invitee name", "The name the owner gave", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("revoked-at", "Revoked", "A revoked capability is never accepted", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("idempotency-key", "Request key", "The owner's key; a retry answers the first invitation", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("request-hash", "Request hash", "Canonical form of the owner's request", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("send-key", "Last send key", "Key of the latest send or resend; repeating it sends nothing", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("mail-message-id", "Invitation mail", "The latest queued invitation message", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("sent-count", "Sends", "How many invitation messages were queued", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureTenantInvitation, venture_tenant_invitation, invitation_fields)
 

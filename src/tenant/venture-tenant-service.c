@@ -56,6 +56,9 @@ tenant_fail(GError **error, const gchar *message)
 	return FALSE;
 }
 
+/* venture-tenant-owner-invitations.inc, included at the end. */
+static gint64 owner_membership_version(VentureTenantService *self, gint64 user_id, gint64 organization_id, GError **error);
+
 static void
 tenant_finalize(GObject *object)
 {
@@ -1113,7 +1116,8 @@ venture_tenant_service_accept_invitation(VentureTenantService *self, VentureConf
 	g_autoptr(GDateTime) issuer_generation = NULL, current_generation = NULL;
 	g_autofree gchar *role = NULL, *accepted_username = NULL;
 	gint64 issuer_id = 0, authority_version = 0, org_id = 0, user_id = 0, minimum = 0, iterations = 0;
-	gint64 recovery_user_id = 0, recovery_version = 0;
+	gint64 recovery_user_id = 0, recovery_version = 0, issuer_org = 0, owner_version = 0;
+	g_autoptr(GDateTime) revoked = NULL;
 	gint org_role = 0, user_role = VENTURE_USER_ROLE_EDITOR;
 	gboolean existing = actor && actor->authenticated, committed = FALSE, user_active = FALSE;
 	if (!self->enabled || !self->initialized) { tenant_fail(error, "verified hosted workspace is required"); return NULL; }
@@ -1138,8 +1142,16 @@ venture_tenant_service_accept_invitation(VentureTenantService *self, VentureConf
 		"issuer-user-id", &issuer_id, "issuer-session-generation", &issuer_generation,
 		"issuer-membership-version", &authority_version, "initial-organization-id", &org_id,
 		"organization-role", &org_role, "recovery-user-id", &recovery_user_id,
-		"recovery-membership-version", &recovery_version, NULL);
-	if ((g_strcmp0(role, "admin") && g_strcmp0(role, "member")) || !expires || consumed || g_date_time_compare(expires, now) <= 0 || !venture_tenant_service_is_member(self, issuer_id, TRUE)) goto unavailable;
+		"recovery-membership-version", &recovery_version, "issuer-organization-id", &issuer_org,
+		"issuer-owner-version", &owner_version, "revoked-at", &revoked, NULL);
+	/* An owner's invitation needs its issuer to be a workspace member, not
+	 * an administrator, and still that business's owner as it was when the
+	 * invitation was made; it never grants more than an ordinary member. */
+	if ((g_strcmp0(role, "admin") && g_strcmp0(role, "member")) || !expires || consumed || revoked || g_date_time_compare(expires, now) <= 0 ||
+	    !venture_tenant_service_is_member(self, issuer_id, issuer_org == 0)) goto unavailable;
+	if (issuer_org > 0 && (g_strcmp0(role, "member") || recovery_user_id != 0 || org_id != issuer_org ||
+	    org_role == VENTURE_ORGANIZATION_ROLE_OWNER || owner_membership_version(self, issuer_id, issuer_org, error) != owner_version))
+		goto unavailable;
 	issuer = venture_database_get(self->database, VENTURE_TYPE_USER, issuer_id, error);
 	issuer_member = find_number(self, VENTURE_TYPE_TENANT_MEMBERSHIP, "user-id", issuer_id, error);
 	if (!issuer || !issuer_member || venture_entity_get_version(issuer_member) != authority_version) goto unavailable;
@@ -2164,3 +2176,5 @@ venture_tenant_service_link_identity(VentureTenantService *self, const gchar *to
 	json_node_take_object(result, object);
 	return result;
 }
+
+#include "venture-tenant-owner-invitations.inc"

@@ -523,5 +523,73 @@ gboolean venture_tenant_service_is_maintenance(VentureTenantService *self);
  */
 gboolean venture_tenant_service_revoke_credentials(VentureTenantService *self,
 	const gchar *reason, GError **error);
+/**
+ * venture_tenant_service_owner_invite:
+ * @self: the hosted tenant service
+ * @organization_id: the owner's business
+ * @email: where the invitation is sent; never matched to an identity
+ * @name: (nullable): the invitee's name, for the greeting
+ * @role: the business role on acceptance: admin, editor, accountant or viewer
+ * @idempotency_key: the owner's key, 1-128 of `[A-Za-z0-9._:-]`
+ * @created: (out) (optional): %TRUE when this call made and sent the invitation
+ * @error: return location for a #GError
+ *
+ * The business's owner (venture_tenant_service_check_organization_owner())
+ * invites someone to it. The invitation is an ordinary workspace invitation
+ * for an ordinary member, pinned to the owner's authority, and its link is
+ * queued in the business's own outbox, so it goes out in the business's own
+ * mail. The same key and request again answers the first invitation and
+ * sends nothing; the same key for another request is a conflict, and so is
+ * a second pending invitation for the same address.
+ *
+ * Returns: (transfer full) (nullable): the invitation and its delivery state, never its capability
+ */
+JsonNode *venture_tenant_service_owner_invite(VentureTenantService *self, gint64 organization_id, const gchar *email,
+	const gchar *name, const gchar *role, const gchar *idempotency_key, gboolean *created, GError **error);
+/**
+ * venture_tenant_service_owner_invitations:
+ * @self: the hosted tenant service
+ * @organization_id: the owner's business
+ * @error: return location for a #GError
+ *
+ * Every invitation the business's owners issued, newest first, with its
+ * state (pending, accepted, revoked or expired) and the outbox's delivery
+ * state. Refused past 200 rather than cut short.
+ *
+ * Returns: (transfer full) (nullable): {organization_id, invitations}
+ */
+JsonNode *venture_tenant_service_owner_invitations(VentureTenantService *self, gint64 organization_id, GError **error);
+/**
+ * venture_tenant_service_owner_resend:
+ * @self: the hosted tenant service
+ * @organization_id: the owner's business
+ * @invitation_id: one of its owner invitations
+ * @idempotency_key: the owner's key for this resend
+ * @sent: (out) (optional): %TRUE when this call sent the invitation again
+ * @error: return location for a #GError
+ *
+ * Sends a pending or expired invitation again with a new link and a new
+ * expiry; the old link stops working. Repeating the key of the latest send
+ * sends nothing. An accepted or revoked invitation is a conflict.
+ *
+ * Returns: (transfer full) (nullable): the invitation and its delivery state
+ */
+JsonNode *venture_tenant_service_owner_resend(VentureTenantService *self, gint64 organization_id, gint64 invitation_id,
+	const gchar *idempotency_key, gboolean *sent, GError **error);
+/**
+ * venture_tenant_service_owner_revoke:
+ * @self: the hosted tenant service
+ * @organization_id: the owner's business
+ * @invitation_id: one of its owner invitations
+ * @error: return location for a #GError
+ *
+ * Revokes an invitation: its link is never accepted afterwards, and a
+ * message the relay does not have yet is cancelled. Revoking twice is the
+ * same answer; an accepted invitation is a conflict.
+ *
+ * Returns: (transfer full) (nullable): the invitation and its delivery state
+ */
+JsonNode *venture_tenant_service_owner_revoke(VentureTenantService *self, gint64 organization_id, gint64 invitation_id,
+	GError **error);
 G_END_DECLS
 #endif
