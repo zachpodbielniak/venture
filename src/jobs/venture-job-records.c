@@ -33,6 +33,7 @@ static const VentureFieldDecl job_fields[] = {
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("window-end", "Arrive by", "The end of the arrival window",
 		VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-resource", "Booking resource", "Named lane, chair or room occupied by this job", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("number", "Number", "Left blank, the next J- number", VENTURE_FIELD_KIND_STRING,
 		VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD_REF("contact-id", "Contact on site", "Who lets the technician in", "contact", VENTURE_COLUMN_FLAG_INDEXED),

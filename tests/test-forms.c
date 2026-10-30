@@ -4853,6 +4853,50 @@ static void test_booking_form(Fixture *f, gconstpointer data)
 
 }
 
+static void test_booking_form_resource_group(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "resource-booking-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) page = NULL, choice = NULL, group = NULL, field = NULL, response = NULL, meeting = NULL;
+	g_autoptr(VentureBookingService) service = venture_booking_service_new(f->db);
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *start = NULL, *ticket = NULL, *body = NULL, *names = NULL;
+	Reply reply = { 0, NULL, NULL, NULL, NULL };
+	(void)data;
+	g_object_set(form, "public-origin", "https://forms.example.test", NULL); save(f, form);
+	add_field(f, form, "name", "Name", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 10);
+	add_field(f, form, "email", "Email", VENTURE_FORM_FIELD_EMAIL, TRUE, 20);
+	choice = make_field(f, form, "lane", "Lane", VENTURE_FORM_FIELD_SINGLE_CHOICE, TRUE, 30);
+	g_object_set(choice, "choices", "lane_1 | Lane 1\nlane_2 | Lane 2", NULL); save(f, choice);
+	group = make_field(f, form, "people", "People", VENTURE_FORM_FIELD_NUMBER, TRUE, 40); save(f, group);
+	page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org, "title", "Example Lanes",
+		"slug", "resource-form", "owner", "owner", "duration-minutes", (gint64)30,
+		"timezone", "UTC", "horizon-days", (gint64)2, "active", TRUE,
+		"availability", "{\"mon\":\"00:00-24:00\",\"tue\":\"00:00-24:00\",\"wed\":\"00:00-24:00\",\"thu\":\"00:00-24:00\",\"fri\":\"00:00-24:00\",\"sat\":\"00:00-24:00\",\"sun\":\"00:00-24:00\"}",
+		"resources", "[{\"name\":\"Lane 1\",\"max_group_size\":4},{\"name\":\"Lane 2\",\"max_group_size\":4}]",
+		"resource-selection", "pick", NULL);
+	save(f, page);
+	field = make_field(f, form, "time", "Time", VENTURE_FORM_FIELD_BOOKING, TRUE, 50);
+	g_object_set(field, "booking-page-id", venture_entity_get_id(page),
+		"booking-resource-field", "lane", "booking-group-field", "people", NULL);
+	save(f, field); g_object_unref(publish(f, form));
+	slots = venture_booking_service_slots(service, page, now, &error); g_assert_no_error(error);
+	start = g_strdup(json_object_get_string_member(json_array_get_object_element(json_node_get_array(slots), 0), "start"));
+	ticket = old_ticket(form);
+	{
+		g_autofree gchar *encoded = g_uri_escape_string(start, NULL, TRUE);
+		body = g_strdup_printf("%s&name=Visitor&email=visitor%%40example.test&lane=lane_1&people=3&time=%s", ticket, encoded);
+	}
+	start_http(f); request(f, "/pub/form/resource-booking-form", "application/x-www-form-urlencoded", body, NULL, "text/html", &reply);
+	g_assert_cmpuint(reply.status, ==, 200); g_assert_nonnull(strstr(reply.body, "vf-success")); reply_clear(&reply);
+	response = last_form_response(f);
+	meeting = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, venture_forms_get_int(response, "booking-id"), &error);
+	g_assert_no_error(error); g_assert_nonnull(meeting);
+	g_object_get(meeting, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 1\"]");
+}
+
 /* Every shipped template goes through the public validator, not just the
  * JSON parser. Newsletter intake must remain pending until inbox ownership. */
 static void
@@ -5537,6 +5581,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/quiz-hidden-repeated", Fixture, NULL, setup, test_quiz_hidden_and_repeated, teardown);
 	g_test_add("/forms/payment-pricing", Fixture, NULL, setup, test_payment_pricing, teardown);
 	g_test_add("/forms/booking", Fixture, NULL, setup, test_booking_form, teardown);
+	g_test_add("/forms/booking-resource-group", Fixture, NULL, setup, test_booking_form_resource_group, teardown);
 	g_test_add("/forms/quiz-redirect", Fixture, NULL, setup, test_quiz_redirect, teardown);
 	g_test_add("/forms/quiz-version-privacy", Fixture, NULL, setup, test_quiz_version_privacy, teardown);
 	g_test_add("/forms/quiz-lead-input", Fixture, NULL, setup, test_quiz_lead_input, teardown);

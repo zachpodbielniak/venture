@@ -330,6 +330,7 @@ that ownership. Private ownership cannot later be changed or removed.
 | Field                  | Meaning                                                                                      |
 |------------------------+----------------------------------------------------------------------------------------------|
 | =address=              | The mailbox the account receives as; never a contact match nor an unmatched sender            |
+| =reply_alias_prefix=   | Optional delivery-address prefix for a hosted shared inbox; only matching =X-Original-To= messages enter this organization's mail and timeline |
 | =folders=              | Comma-separated folders; =INBOX= when empty. The capture folder is always added              |
 | =capture_address=      | Exact capture address (see Capture); refused at save when the account's own mail would match |
 | =capture_folder=       | Every message in it is a capture item                                                        |
@@ -346,6 +347,24 @@ that ownership. Private ownership cannot later be changed or removed.
 
 The generated list shows the health columns first, so a failing mailbox is
 visible at =/e/mail_account= without opening it.
+
+For Lightsite booking replies, each business has a distinct =r-...+= alias.
+Mailcow forwards each alias to the owner and to a dedicated shared mailbox.
+Each Venture organization has its own =mail_account= for that mailbox, with
+its own =reply_alias_prefix=. The sync advances past messages for other aliases
+without storing their content in that organization. The original recipient is
+recorded on =mail_inbound.recipient_address= so Lightsite can associate the
+meeting tag with its booking. Answers from the contact timeline retain that
+address as Reply-To, keeping later replies on the same route.
+Hosted Venture checks one due booking reply account every five seconds and
+checks each account no more than once a minute. It uses the ordinary bounded
+sync service, including its lease and login backoff. Other mail accounts keep
+their existing automation schedule.
+An organization owner or admin can configure the encrypted account binding
+with =POST /api/v1/mail_accounts/:id/connector= and a JSON body containing
+only =password=. The route uses the same connector endpoint allowlist and
+organization authority as the browser settings page. Repeating the same
+password is harmless; changing it rotates the binding without exposing it.
 
 ** Syncing
 

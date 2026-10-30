@@ -168,7 +168,9 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST) {
 		g_autoptr(VentureEntity) activity = NULL;
 		g_autoptr(JsonNode) body = NULL;
-		const gchar *start = NULL, *name = NULL, *email = NULL, *notes = NULL;
+		const gchar *start = NULL, *name = NULL, *email = NULL, *notes = NULL, *resource = NULL;
+		g_autofree gchar *selected_start = NULL, *selected_resource = NULL;
+		gint64 group_size = 1;
 		VentureActor actor;
 		if (venture_web_booking_wants_json(request)) {
 			JsonObject *object;
@@ -179,20 +181,41 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 			name = venture_json_object_get_string(object, "name", NULL);
 			email = venture_json_object_get_string(object, "email", NULL);
 			notes = venture_json_object_get_string(object, "notes", NULL);
+			resource = venture_json_object_get_string(object, "resource", NULL);
+			group_size = json_object_get_int_member_with_default(object, "group_size", 1);
 		} else {
 			start = htmx_request_get_form_value(request, "start");
 			name = htmx_request_get_form_value(request, "name");
 			email = htmx_request_get_form_value(request, "email");
 			notes = htmx_request_get_form_value(request, "notes");
+			resource = htmx_request_get_form_value(request, "resource");
+			{
+				const gchar *size = htmx_request_get_form_value(request, "group_size");
+				if (size != NULL && !g_ascii_string_to_signed(size, 10, 1, 10000, &group_size, NULL))
+					return venture_web_booking_plain(422, "Choose a valid group size");
+			}
+			if (start != NULL && strchr(start, '|') != NULL) {
+				const gchar *separator = strchr(start, '|');
+				selected_start = g_strndup(start, separator - start);
+				selected_resource = g_strdup(separator + 1);
+				start = selected_start; resource = selected_resource;
+			}
 		}
 		actor.kind = VENTURE_ACTOR_KIND_USER;
 		actor.name = "public booking";
 		actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
-		activity = venture_booking_service_book(service, page, start, name, email, notes, NULL, &actor, &error);
+		activity = venture_booking_service_book_selected(service, page, start, resource, group_size,
+			name, email, notes, NULL, &actor, &error);
 		if (!activity) {
 			guint status = g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT) ? 409 : 422;
 			if (venture_web_booking_wants_json(request)) return venture_web_error_response(error);
-			return venture_web_booking_plain(status, status == 409 ? "<p>That time was just taken. Please choose another.</p>" : "<p>Please check the name, email and time.</p>");
+			if (status == 409) {
+				g_autoptr(GString) message = g_string_new("<p>");
+				venture_html_escape_append(message, error != NULL ? error->message : "That time is unavailable");
+				g_string_append(message, "</p>");
+				return venture_web_booking_plain(status, message->str);
+			}
+			return venture_web_booking_plain(status, "<p>Please check the name, email and time.</p>");
 		}
 		venture_web_booking_note_address(venture_context_get_database(self->context), activity, address);
 		if (venture_web_booking_wants_json(request)) {
@@ -206,10 +229,11 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 	if (venture_web_booking_wants_json(request)) return venture_web_json_response(slots, 200);
 	{
 		g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\"><title>Book a time</title><style>body{font-family:sans-serif;max-width:40em;margin:2em auto}label{display:block;margin:.6em 0}</style></head><body><h1>");
-		g_autofree gchar *title = NULL, *description = NULL, *action = NULL;
+		g_autofree gchar *title = NULL, *description = NULL, *action = NULL, *selection = NULL, *resources = NULL;
 		JsonArray *array = json_node_get_array(slots);
 		guint i;
-		g_object_get(page, "title", &title, "description", &description, NULL);
+		g_object_get(page, "title", &title, "description", &description,
+			"resource-selection", &selection, "resources", &resources, NULL);
 		venture_html_escape_append(html, venture_string_is_empty(title) ? "Book a time" : title);
 		g_string_append(html, "</h1>");
 		if (!venture_string_is_empty(description)) { g_string_append(html, "<p>"); venture_html_escape_append(html, description); g_string_append(html, "</p>"); }
@@ -221,13 +245,22 @@ static HtmxResponse *venture_web_booking_page(HtmxRequest *request, GHashTable *
 			g_string_append(html, "\"><label>Time <select name=\"start\">");
 			for (i = 0; i < json_array_get_length(array); i++) {
 				JsonObject *slot = json_array_get_object_element(array, i);
+				JsonArray *available = json_object_has_member(slot, "resources") ? json_object_get_array_member(slot, "resources") : NULL;
+				guint j, choices = g_strcmp0(selection, "pick") == 0 && available != NULL ? json_array_get_length(available) : 1;
+				for (j = 0; j < choices; j++) {
+					const gchar *name = available != NULL && g_strcmp0(selection, "pick") == 0 ? json_array_get_string_element(available, j) : NULL;
 				g_string_append(html, "<option value=\"");
 				venture_html_escape_append(html, venture_json_object_get_string(slot, "start", ""));
+				if (name != NULL) { g_string_append(html, "|"); venture_html_escape_append(html, name); }
 				g_string_append(html, "\">");
 				venture_html_escape_append(html, venture_json_object_get_string(slot, "label", ""));
+				if (name != NULL) { g_string_append(html, " — "); venture_html_escape_append(html, name); }
 				g_string_append(html, "</option>");
+				}
 			}
-			g_string_append(html, "</select></label><label>Name <input name=\"name\" required></label><label>Email <input name=\"email\" type=\"email\" required></label>"
+			g_string_append(html, "</select></label>");
+			if (!venture_string_is_empty(resources)) g_string_append(html, "<label>Group size <input name=\"group_size\" type=\"number\" min=\"1\" max=\"10000\" value=\"1\" required></label>");
+			g_string_append(html, "<label>Name <input name=\"name\" required></label><label>Email <input name=\"email\" type=\"email\" required></label>"
 				"<label>Notes <textarea name=\"notes\"></textarea></label><button type=\"submit\">Book</button></form>");
 		}
 		g_string_append(html, "</body></html>");
@@ -266,15 +299,22 @@ static HtmxResponse *venture_web_booking_manage(HtmxRequest *request, GHashTable
 	{
 		const gchar *operation = htmx_request_get_form_value(request, "operation");
 		const gchar *start = htmx_request_get_form_value(request, "start");
+		const gchar *resource = NULL;
+		g_autofree gchar *selected_start = NULL;
 		VentureActor actor;
 		if (g_strcmp0(operation, "cancel") != 0 && g_strcmp0(operation, "reschedule") != 0)
 			return venture_web_booking_plain(422, "Choose cancellation or rescheduling.");
 		if (g_strcmp0(operation, "reschedule") == 0 && venture_string_is_empty(start))
 			return venture_web_booking_plain(422, "Choose an offered time.");
+		if (start != NULL && strchr(start, '|') != NULL) {
+			const gchar *separator = strchr(start, '|');
+			selected_start = g_strndup(start, separator - start);
+			resource = separator + 1; start = selected_start;
+		}
 		actor.kind = VENTURE_ACTOR_KIND_USER; actor.name = "public booking";
 		actor.prompt = NULL; actor.request_id = NULL; actor.approved_by = NULL;
-		activity = venture_booking_service_manage(service, page, capability,
-			g_strcmp0(operation, "cancel") == 0 ? NULL : start, NULL, &actor, &error);
+		activity = venture_booking_service_manage_selected(service, page, capability,
+			g_strcmp0(operation, "cancel") == 0 ? NULL : start, resource, NULL, &actor, &error);
 		if (activity == NULL) return venture_web_booking_plain(g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND) ? 404 : 409,
 			"The booking could not be changed. Reload and choose an available time.");
 		venture_web_booking_note_address(database, activity, address);
@@ -289,8 +329,16 @@ static HtmxResponse *venture_web_booking_manage(HtmxRequest *request, GHashTable
 		for (i = 0; i < json_array_get_length(json_node_get_array(slots)); i++)
 		{
 			JsonObject *slot = json_array_get_object_element(json_node_get_array(slots), i);
-			g_string_append(html, "<option value=\""); venture_html_escape_append(html, json_object_get_string_member(slot, "start"));
-			g_string_append(html, "\">"); venture_html_escape_append(html, json_object_get_string_member(slot, "label")); g_string_append(html, "</option>");
+			JsonArray *available = json_object_has_member(slot, "resources") ? json_object_get_array_member(slot, "resources") : NULL;
+			guint j, choices = available != NULL ? json_array_get_length(available) : 1;
+			for (j = 0; j < choices; j++) {
+				const gchar *name = available != NULL ? json_array_get_string_element(available, j) : NULL;
+				g_string_append(html, "<option value=\""); venture_html_escape_append(html, json_object_get_string_member(slot, "start"));
+				if (name != NULL) { g_string_append(html, "|"); venture_html_escape_append(html, name); }
+				g_string_append(html, "\">"); venture_html_escape_append(html, json_object_get_string_member(slot, "label"));
+				if (name != NULL) { g_string_append(html, " — "); venture_html_escape_append(html, name); }
+				g_string_append(html, "</option>");
+			}
 		}
 		g_string_append(html, "</select></label><button name=\"operation\" value=\"reschedule\">Reschedule booking</button></form>");
 	}

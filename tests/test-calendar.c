@@ -601,6 +601,75 @@ static void test_booking_bound_ignores_tasks(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
 }
 
+/* A previously offered time must fail the locked recheck after an unassigned
+ * invoiced job is scheduled. Direct submissions must meet the same rule. */
+static void test_booking_invoiced_job_overlap(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), job = NULL, booked = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(VentureInvoice) invoice = venture_invoice_new();
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GDateTime) start = venture_time_from_string("2026-09-21T14:00:00Z", NULL);
+	g_autoptr(GDateTime) end = venture_time_from_string("2026-09-21T15:00:00Z", NULL);
+	g_autoptr(JsonNode) slots = NULL;
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+	g_object_set(company, "name", "Example Daycare", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);
+	save(f, VENTURE_ENTITY(company));
+	venture_entity_set_organization_id(VENTURE_ENTITY(invoice), f->org);
+	g_object_set(invoice, "number", "INV-MISO", "company-id",
+		venture_entity_get_id(VENTURE_ENTITY(company)), NULL);
+	save(f, VENTURE_ENTITY(invoice));
+	job = g_object_new(VENTURE_TYPE_JOB, "organization-id", f->org,
+		"title", "Miso daycare", "company-id", venture_entity_get_id(VENTURE_ENTITY(company)),
+		"window-start", start, "window-end", end, "status", VENTURE_JOB_BOOKED,
+		"invoice-id", venture_entity_get_id(VENTURE_ENTITY(invoice)), NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 1);
+	g_assert_cmpstr(venture_json_object_get_string(json_array_get_object_element(json_node_get_array(slots), 0), "start", ""), ==, "2026-09-22T14:00:00Z");
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:00:00Z",
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(booked);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	booked = venture_booking_service_book(f->booking, p, "2026-09-21T14:30:00Z",
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(booked);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_cmpint(count_type(f, "contact"), ==, 1);
+	g_assert_cmpint(count_type(f, "activity"), ==, 0);
+	g_clear_error(&error);
+	/* Invoicing the same scheduled work must not reopen its sold hours. */
+	g_object_set(job, "status", VENTURE_JOB_INVOICED, NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 1);
+	/* Cancelling releases the window. An open-ended scheduled job blocks the
+	 * first slot for one booking duration, without any technician row. */
+	g_object_set(job, "status", VENTURE_JOB_CANCELLED, NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 3);
+	g_object_set(job, "status", VENTURE_JOB_BOOKED, "window-end", NULL, NULL);
+	save(f, job);
+	g_clear_pointer(&slots, json_node_unref);
+	slots = venture_booking_service_slots(f->booking, p, now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_node_get_array(slots)), ==, 2);
+	g_assert_cmpstr(venture_json_object_get_string(json_array_get_object_element(json_node_get_array(slots), 0), "start", ""), ==, "2026-09-21T14:30:00Z");
+}
+
 static void test_booking_books_and_refuses_double(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureEntity) p = page(f);
@@ -706,6 +775,162 @@ static void test_booking_capacity(Fixture *f, gconstpointer data)
 	g_object_set(changed, "active", FALSE, NULL); save(f, changed);
 	refused = venture_booking_service_book(f->booking, p, "2026-09-21T14:30:00Z", "Third", "third@example.test", NULL, now, NULL, &error);
 	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+}
+
+static void test_booking_named_resources(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f);
+	g_autoptr(VentureEntity) first = NULL, second = NULL, refused = NULL, chosen = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *names = NULL;
+	(void)data;
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(p), "resources"));
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(p), "resource-selection"));
+	g_assert_nonnull(g_object_class_find_property(G_OBJECT_GET_CLASS(p), "group-overflow"));
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\",\"max_group_size\":4},{\"name\":\"Lane 2\",\"max_group_size\":4}]", NULL);
+	save(f, p);
+	first = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", NULL, 2,
+		"First", "first@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(first);
+	g_object_get(first, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 1\"]"); g_clear_pointer(&names, g_free);
+	second = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", NULL, 2,
+		"Second", "second@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(second);
+	g_object_get(second, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 2\"]"); g_clear_pointer(&names, g_free);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", NULL, 2,
+		"Third", "third@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	g_object_set(p, "resource-selection", "pick", NULL); save(f, p);
+	chosen = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:30:00Z", "Lane 2", 3,
+		"Chosen", "chosen@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(chosen);
+	g_object_get(chosen, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 2\"]");
+}
+
+static void test_booking_group_and_reschedule(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), too_large = NULL, group = NULL, conflict = NULL, moved = NULL, reservation = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *names = NULL, *url = NULL;
+	(void)data;
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\",\"max_group_size\":4},{\"name\":\"Lane 2\",\"min_group_size\":2,\"max_group_size\":4}]",
+		"resource-selection", "pick", NULL); save(f, p);
+	too_large = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 1", 5,
+		"Large", "large@example.test", NULL, now, NULL, &error);
+	g_assert_null(too_large); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	g_object_set(p, "group-overflow", "multiple", NULL); save(f, p);
+	group = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 1", 5,
+		"Group", "group@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(group);
+	g_object_get(group, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 1\",\"Lane 2\"]");
+	conflict = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 2", 2,
+		"Conflict", "conflict@example.test", NULL, now, NULL, &error);
+	g_assert_null(conflict); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(group), NULL);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	url = venture_booking_service_manage_url(f->booking, reservation, "https://book.example.test", &error);
+	g_assert_no_error(error);
+	moved = venture_booking_service_manage_selected(f->booking, p, strrchr(url, '/') + 1,
+		"2026-09-21T14:30:00Z", "Lane 1", now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(moved);
+	g_clear_object(&conflict);
+	conflict = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 2", 2,
+		"Available", "available@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(conflict);
+}
+
+static void test_booking_job_named_resource(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), job = NULL, booked = NULL, refused = NULL, other = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GDateTime) start = venture_time_from_string("2026-09-21T14:00:00Z", NULL);
+	g_autoptr(GDateTime) end = venture_time_from_string("2026-09-21T14:30:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\",\"max_group_size\":4},{\"name\":\"Lane 2\",\"max_group_size\":4}]",
+		"resource-selection", "pick", NULL); save(f, p);
+	g_object_set(company, "name", "Example Lanes", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);
+	save(f, VENTURE_ENTITY(company));
+	job = g_object_new(VENTURE_TYPE_JOB, "organization-id", f->org, "title", "Lane maintenance",
+		"company-id", venture_entity_get_id(VENTURE_ENTITY(company)), "window-start", start,
+		"window-end", end, "status", VENTURE_JOB_BOOKED, "booking-resource", "Lane 1", NULL);
+	save(f, job);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 1", 2,
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	booked = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 2", 2,
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	other = meeting(f, "other-owner", "Lane setup", "2026-09-21T14:30:00Z", "2026-09-21T15:00:00Z");
+	g_object_set(other, "booking-resources", "[\"Lane 2\"]", NULL); save(f, other);
+	g_clear_object(&refused);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:30:00Z", "Lane 2", 2,
+		"Another", "another@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	g_clear_object(&booked);
+	booked = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:30:00Z", "Lane 1", 2,
+		"Another", "another@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+}
+
+static void test_booking_auto_reschedule_reassigns(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), first = NULL, second = NULL, moved = NULL, reservation = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *url = NULL, *names = NULL;
+	(void)data;
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", NULL); save(f, p);
+	first = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", NULL, 1,
+		"First", "first@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(first);
+	second = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:30:00Z", NULL, 1,
+		"Second", "second@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(second);
+	venture_query_set_organization(query, f->org);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(first), NULL);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	url = venture_booking_service_manage_url(f->booking, reservation, "https://book.example.test", &error);
+	g_assert_no_error(error);
+	moved = venture_booking_service_manage_selected(f->booking, p, strrchr(url, '/') + 1,
+		"2026-09-21T14:30:00Z", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(moved);
+	g_object_get(moved, "booking-resources", &names, NULL);
+	g_assert_cmpstr(names, ==, "[\"Lane 2\"]");
+}
+
+static void test_booking_other_page_blocks_resources(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), other_page = NULL, booked = NULL, refused = NULL;
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", NULL); save(f, p);
+	other_page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", f->org, "title", "Another service",
+		"slug", "other-page", "owner", "ben", "duration-minutes", (gint64)30,
+		"timezone", "America/Chicago", "horizon-days", (gint64)2, "active", TRUE,
+		"availability", "{\"mon\":\"09:00-10:00\",\"tue\":\"09:00-09:30\"}",
+		"resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", NULL);
+	save(f, other_page);
+	booked = venture_booking_service_book_selected(f->booking, other_page, "2026-09-21T14:00:00Z", NULL, 1,
+		"Other", "other@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 2", 1,
+		"Visitor", "visitor@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 }
 
 /* The owner action uses ordinary organization access, without a capability. */
@@ -1057,11 +1282,17 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/booking-owner-cancel", Fixture, NULL, setup, test_booking_owner_cancel, teardown);
 	g_test_add("/calendar/booking-cancel-rollback", Fixture, NULL, setup, test_booking_cancel_rollback, teardown);
 	g_test_add("/calendar/booking-capacity", Fixture, NULL, setup, test_booking_capacity, teardown);
+	g_test_add("/calendar/booking-named-resources", Fixture, NULL, setup, test_booking_named_resources, teardown);
+	g_test_add("/calendar/booking-group-reschedule", Fixture, NULL, setup, test_booking_group_and_reschedule, teardown);
+	g_test_add("/calendar/booking-job-named-resource", Fixture, NULL, setup, test_booking_job_named_resource, teardown);
+	g_test_add("/calendar/booking-auto-reschedule-reassigns", Fixture, NULL, setup, test_booking_auto_reschedule_reassigns, teardown);
+	g_test_add("/calendar/booking-other-page-blocks-resources", Fixture, NULL, setup, test_booking_other_page_blocks_resources, teardown);
 	g_test_add("/calendar/booking-slots", Fixture, NULL, setup, test_booking_slots, teardown);
 	g_test_add("/calendar/booking-books-and-refuses-double", Fixture, NULL, setup, test_booking_books_and_refuses_double, teardown);
 	g_test_add("/calendar/sweep", Fixture, NULL, setup, test_sweep, teardown);
 	g_test_add("/calendar/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add_func("/calendar/migrate-disabled", test_migrate_disabled);
 	g_test_add("/calendar/booking-bound-ignores-tasks", Fixture, NULL, setup, test_booking_bound_ignores_tasks, teardown);
+	g_test_add("/calendar/booking-invoiced-job-overlap", Fixture, NULL, setup, test_booking_invoiced_job_overlap, teardown);
 	return g_test_run();
 }

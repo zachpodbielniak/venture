@@ -3887,7 +3887,11 @@ venture_web_api_write(
 	g_autoptr(JsonNode) body = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autofree gchar *before_reply_alias = NULL, *after_reply_alias = NULL;
 	VentureActor actor;
+
+	if (!created && VENTURE_IS_MAIL_ACCOUNT(record))
+		g_object_get(record, "reply-alias-prefix", &before_reply_alias, NULL);
 
 	body = htmx_request_get_json(request, &error);
 
@@ -3902,6 +3906,16 @@ venture_web_api_write(
 	if (!venture_serializable_from_json(VENTURE_SERIALIZABLE(record), body,
 	                                    &error))
 		return venture_web_error_response(error);
+	/* The encrypted shared mailbox credential is scoped to the alias it was
+	 * created for. Changing that alias would expose another business's mail. */
+	if (!created && VENTURE_IS_MAIL_ACCOUNT(record)) {
+		g_object_get(record, "reply-alias-prefix", &after_reply_alias, NULL);
+		if (g_strcmp0(before_reply_alias, after_reply_alias)) {
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+				"A mailbox reply alias cannot be changed after account creation");
+			return venture_web_error_response(error);
+		}
+	}
 
 	/*
 	 * A password is not a field. It is marked sensitive so that it never
@@ -35190,6 +35204,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_unmatched_senders/:id/create_contact", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_contact, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_accounts/:id/connector", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_connector, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/create_contact", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_contact_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync_ui, self);
@@ -35233,6 +35248,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact, self);
 	htmx_router_post(router, "/api/v1/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss, self);
 	htmx_router_post(router, "/api/v1/mail_accounts/:id/sync", venture_web_mail_account_sync, self);
+	htmx_router_post(router, "/api/v1/mail_accounts/:id/connector", venture_web_mail_account_connector, self);
 	htmx_router_post(router, "/mail_unmatched_senders/:id/create_contact", venture_web_mail_unmatched_contact_ui, self);
 	htmx_router_post(router, "/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss_ui, self);
 	htmx_router_post(router, "/mail_accounts/:id/sync", venture_web_mail_account_sync_ui, self);

@@ -1062,14 +1062,25 @@ non-repeated short-text and email questions; empty uses =name= and =email=.
 These references are frozen when published. The booking target's current
 availability is always re-read, including at final submit.
 
+For a page with named resources, a booking question may set
+=booking_resource_field= to a required, non-sensitive single-choice question.
+Its choice labels must match the saved resource names (for example choice
+=lane_1 | Lane 1=). A page using =pick= requires this question. The booking
+question may set =booking_group_field= to a required, non-sensitive number
+question; its whole-number answer is passed to the shared capacity check.
+Without that field, one person is booked. The selected resource and group
+size are rechecked under the save lock; a stale selection is refused.
+
 Slots render as ordinary radios, with =vf-slot= labels inside =vf-slot-day=
 groups. They work without JavaScript and inherit host CSS. The public schema
 includes each available slot's start, end, label and local calendar day.
 An unavailable selection returns a field error and offers current slots.
 Neither viewing a form nor saving a draft reserves anything.
 
-A booking page's =capacity= is seats per exact slot: zero means one, at most
-10000. A meeting or hold from another target still blocks overlapping time;
+A booking page's =capacity= is seats per exact slot when it has no named
+resources: zero means one, at most 10000. Named resources and group size use
+the shared calendar booking service (see [[file:calendar.org][Scheduling links]]).
+A meeting or hold from another target still blocks overlapping time;
 capacity never makes unrelated meetings disappear. A short service-owned hold
 reserves the seat under the save lock during final intake, before follow-ups
 can run. Expired holds do not count even before cleanup. Confirmation creates

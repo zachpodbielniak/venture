@@ -136,7 +136,11 @@ per install.
 duration-long slots from now to the horizon, and a slot is dropped when,
 widened by the buffer, it overlaps any of the owner's planned calls and
 meetings — which is where synced calendar events live, so a dentist
-appointment on the phone blocks the same half hour here. Times are shown in
+appointment on the phone blocks the same half hour here. A scheduled job's
+arrival window also blocks public booking for its business, even when no
+technician is assigned or the job is completed or invoiced. Cancelled jobs
+do not block; a job with only an arrival start blocks one booking duration.
+Times are shown in
 the owner's zone and submitted as UTC. =?format=json= returns the slots as
 ={"start", "end", "label", "day"}=.
 
@@ -146,8 +150,8 @@ lead deduplication and inbound mail match (lower case, trimmed, +tag
 retained) or created with =source=booking=; a planned meeting owned by the
 page owner, related to that contact, is written in the same transaction,
 with the customer's notes and address in its body. The slot is recomputed
-under the save lock, so a booking beyond the target's capacity — or a time that was never
-offered — is refused with 409 and nothing is written. The meeting appears
+under the save lock. A full slot, a time since occupied by a job, or one
+never offered is refused with 409; nothing is written. The meeting appears
 on the owner's worklist and, on the next sweep, their calendar. With mail
 and a public origin configured, the service queues a private confirmation.
 
@@ -225,7 +229,32 @@ relay's per-visitor limit and an untrusted peer's ignored =X-Forwarded-For=.
 * Seat capacity and private management links
 
 =booking_page.capacity= declares seats per exact slot (zero means one, maximum
-10000). A different booking target or unrelated meeting still blocks overlap.
+10000) when no resources are named. =resources= is an optional JSON array of
+named units, for example
+
+#+begin_src json
+[{"name":"Lane 1","min_group_size":1,"max_group_size":6},{"name":"Lane 2","min_group_size":1,"max_group_size":6}]
+#+end_src
+
+With named resources, each resource is available for one overlapping booking
+at a time. =resource_selection= is =auto= (default, first free resource) or
+=pick= (the visitor must name an available resource). =group_overflow= is
+=call= (default; the configured =group_call_message= is returned when a
+group does not fit one resource) or =multiple= (allocate enough free
+resources for the group). Group size is a positive whole number up to 10000;
+each resource declares its minimum and maximum. Names are unique within a
+page and should remain stable while bookings exist. A confirmed booking stores
+the assigned names and group size on its private reservation and its meeting,
+so the owner can see them on the calendar and record. A job's optional
+=booking_resource= names the resource it occupies; a job without one still
+blocks the whole booking window. A planned meeting without a named resource
+also blocks the whole window. Cancellation releases the names; rescheduling
+checks availability again and preserves the group size. Automatic selection
+assigns the first free resource at the new time; pick selection keeps the
+chosen resource unless the visitor selects another. The booking service
+applies the same rules to standalone links and form booking questions.
+
+A different booking target or unrelated meeting still blocks overlap.
 Availability is shared with [[file:forms.org][booking questions on forms]]. A private
 =booking_reservation= working copy reserves a seat under the save lock, without
 emitting an audit entry or business event. Confirmation creates the ordinary

@@ -301,6 +301,8 @@ venture_forms_field_free(gpointer data)
 	g_free(field->file_types);
 	g_free(field->booking_name_field);
 	g_free(field->booking_email_field);
+	g_free(field->booking_resource_field);
+	g_free(field->booking_group_field);
 	g_clear_pointer(&field->booking_slots, json_node_unref);
 	g_free(field->scoring);
 	g_clear_pointer(&field->quiz, json_object_unref);
@@ -352,7 +354,8 @@ venture_forms_field_from_record(VentureEntity *row)
 	field->file_max_count = (guint)venture_forms_get_int(row, "file-max-count");
 	field->file_types = venture_forms_get_string(row, "file-types");
 	g_object_get(row, "booking-page-id", &field->booking_page_id, "booking-name-field", &field->booking_name_field,
-		"booking-email-field", &field->booking_email_field, "scoring", &field->scoring, "key", &field->key, "label", &field->label, "kind", &field->kind,
+		"booking-email-field", &field->booking_email_field, "booking-resource-field", &field->booking_resource_field,
+		"booking-group-field", &field->booking_group_field, "scoring", &field->scoring, "key", &field->key, "label", &field->label, "kind", &field->kind,
 	             "required", &field->required, "sensitive", &field->sensitive,
 	             "marketing-consent", &field->marketing_consent,
 	             "position", &field->position, "group-id", &field->group_id,
@@ -455,6 +458,8 @@ venture_forms_definition_to_json(GPtrArray *fields)
 			json_builder_set_member_name(builder, "booking_page_id"); json_builder_add_int_value(builder, field->booking_page_id);
 			json_builder_set_member_name(builder, "booking_name_field"); json_builder_add_string_value(builder, field->booking_name_field != NULL ? field->booking_name_field : "");
 			json_builder_set_member_name(builder, "booking_email_field"); json_builder_add_string_value(builder, field->booking_email_field != NULL ? field->booking_email_field : "");
+			json_builder_set_member_name(builder, "booking_resource_field"); json_builder_add_string_value(builder, field->booking_resource_field != NULL ? field->booking_resource_field : "");
+			json_builder_set_member_name(builder, "booking_group_field"); json_builder_add_string_value(builder, field->booking_group_field != NULL ? field->booking_group_field : "");
 		}
 		if (!venture_string_is_empty(field->scoring))
 		{
@@ -613,6 +618,8 @@ venture_forms_definition_from_json(const gchar *text, GError **error)
 		field->booking_page_id = json_object_get_int_member_with_default(object, "booking_page_id", 0);
 		field->booking_name_field = forms_member_string(object, "booking_name_field");
 		field->booking_email_field = forms_member_string(object, "booking_email_field");
+		field->booking_resource_field = forms_member_string(object, "booking_resource_field");
+		field->booking_group_field = forms_member_string(object, "booking_group_field");
 		if (json_object_has_member(object, "scoring")) field->scoring = json_to_string(json_object_get_member(object, "scoring"), FALSE);
 		field->required = json_object_get_boolean_member_with_default(object, "required", FALSE);
 		field->marketing_consent = json_object_get_boolean_member_with_default(object, "marketing_consent", FALSE);

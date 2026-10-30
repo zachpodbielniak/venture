@@ -34,6 +34,11 @@ static const gchar *msg_question =
 	"Date: Tue, 15 Sep 2026 09:00:00 +0000\r\nMessage-ID: <m1@example.net>\r\n"
 	"In-Reply-To: <root@example.net>\r\nReferences: <root@example.net>\r\n"
 	"Content-Type: text/plain\r\n\r\nCan you deliver in March?\r\n";
+static const gchar *msg_booking =
+	"From: Ada <Ada@Example.com>\r\nTo: r-0123456789abcdef01234567+42@lightsite.app\r\nSubject: Spring order\r\n"
+	"Date: Tue, 15 Sep 2026 09:00:00 +0000\r\nMessage-ID: <m1@example.net>\r\n"
+	"X-Original-To: r-0123456789abcdef01234567+42@lightsite.app\r\n"
+	"Content-Type: text/plain\r\n\r\nCan you deliver in March?\r\n";
 
 static void
 setup(Fixture *f, gconstpointer data)
@@ -43,7 +48,6 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) contact = NULL, account = NULL;
 	g_autoptr(JsonObject) values = json_object_new();
 	g_autoptr(VentureIntegrationConnection) binding = NULL;
-	(void)data;
 	f->root = g_dir_make_tmp("venture-mail-reply-XXXXXX", &error);
 	g_assert_no_error(error);
 	f->config = venture_config_new();
@@ -62,6 +66,7 @@ setup(Fixture *f, gconstpointer data)
 	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org,
 		"address", "ops@example.net", "imap-host", "imap.example.net", "imap-port", (gint64)993, "imap-tls", "tls",
 		"username", "ops@example.net", "folders", "INBOX", "active", TRUE, NULL);
+	if (data) g_object_set(account, "reply-alias-prefix", "r-0123456789abcdef01234567+", NULL);
 	save(f, account);
 	json_object_set_string_member(values, "password", "app-password");
 	binding = venture_connector_configure(f->db, f->config, account, values, 0, 0, NULL, &error);
@@ -69,7 +74,7 @@ setup(Fixture *f, gconstpointer data)
 	f->imap = venture_fake_imap_client_new();
 	f->service = venture_mail_sync_service_new(f->db, VENTURE_IMAP_CLIENT(f->imap));
 	g_object_set(f->service, "attachment-root", f->root, "config", f->config, NULL);
-	venture_fake_imap_client_add_message(f->imap, "INBOX", 1, msg_question);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 1, data ? msg_booking : msg_question);
 	g_assert_cmpint(venture_mail_sync_service_sync(f->service, account, NULL, &error), ==, 1);
 	g_assert_no_error(error);
 }
@@ -145,6 +150,27 @@ test_reply_threads(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(related, ==, "interaction");
 	g_assert_cmpint(related_id, ==, venture_entity_get_id(question));
 	g_assert_cmpstr(body, ==, "Yes, the first week of March.");
+}
+
+/* A Lightsite alias remains the customer's Reply-To after an office answer,
+ * so their next message returns to the same business and Venture thread. */
+static void
+test_reply_keeps_booking_alias(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GPtrArray) before = contact_mail(f);
+	g_autoptr(VentureEntity) source = NULL;
+	g_autoptr(VentureMailMessage) reply = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *reply_to = NULL;
+	VentureActor actor = person();
+	(void)data;
+	source = venture_mail_reply_source(f->db, g_ptr_array_index(before, 0));
+	g_assert_nonnull(source);
+	reply = venture_mail_reply_enqueue(f->context, g_ptr_array_index(before, 0), "See you then.", &actor, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(reply);
+	g_object_get(reply, "reply-to", &reply_to, NULL);
+	g_assert_cmpstr(reply_to, ==, "r-0123456789abcdef01234567+42@lightsite.app");
 }
 
 /* Delivery is the ordinary sweep: once the relay has the reply it is on
@@ -366,6 +392,7 @@ main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/mail-reply/threads", Fixture, NULL, setup, test_reply_threads, teardown);
+	g_test_add("/mail-reply/booking-alias", Fixture, GINT_TO_POINTER(1), setup, test_reply_keeps_booking_alias, teardown);
 	g_test_add("/mail-reply/on-timeline", Fixture, NULL, setup, test_reply_on_timeline, teardown);
 	g_test_add("/mail-reply/refusals", Fixture, NULL, setup, test_reply_refusals, teardown);
 	g_test_add("/mail-reply/wire-headers", Fixture, NULL, setup, test_reply_wire_headers, teardown);

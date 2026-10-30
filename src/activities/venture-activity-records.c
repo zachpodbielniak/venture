@@ -104,6 +104,8 @@ static const VentureFieldDecl activity_fields[] = {
 	VENTURE_FIELD("due-at", "Due", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("starts-at", "Starts", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("ends-at", "Ends", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-resources", "Booking resources", "Names assigned by a resource booking", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("booking-group-size", "Booking group size", "Number of people in this booking", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("priority", "Priority", NULL, venture_priority_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("status", "Status", "Complete through VentureActivityService", venture_activity_status_get_type, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("completed-at", "Completed", "Stamped by the service", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),

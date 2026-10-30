@@ -28,8 +28,8 @@ gboolean venture_forms_booking_definition(VentureDatabase *database, VentureEnti
 	{
 		VentureFormsField *field = g_ptr_array_index(fields, i);
 		g_autoptr(VentureEntity) page = NULL;
-		g_autofree gchar *origin = NULL;
-		const VentureFormsField *name, *email;
+		g_autofree gchar *origin = NULL, *selection = NULL;
+		const VentureFormsField *name, *email, *resource, *group;
 		if (field->kind != VENTURE_FORM_FIELD_BOOKING) continue;
 		bookings++;
 		if (bookings > 1 || field->sensitive || field->group_key != NULL || field->allow_prefill ||
@@ -39,12 +39,20 @@ gboolean venture_forms_booking_definition(VentureDatabase *database, VentureEnti
 		name = venture_forms_definition_find(fields, booking_name(field)); email = venture_forms_definition_find(fields, booking_email(field));
 		if (name == NULL || email == NULL || name->kind != VENTURE_FORM_FIELD_SHORT_TEXT || email->kind != VENTURE_FORM_FIELD_EMAIL ||
 		    name->sensitive || email->sensitive || name->group_key != NULL || email->group_key != NULL || !name->required || !email->required) goto invalid;
+		g_object_get(page, "resource-selection", &selection, NULL);
+		resource = venture_string_is_empty(field->booking_resource_field) ? NULL : venture_forms_definition_find(fields, field->booking_resource_field);
+		if ((g_strcmp0(selection, "pick") == 0 && resource == NULL) ||
+		    (!venture_string_is_empty(field->booking_resource_field) && resource == NULL) ||
+		    (resource != NULL && (resource->kind != VENTURE_FORM_FIELD_SINGLE_CHOICE || !resource->required || resource->sensitive || resource->group_key != NULL))) goto invalid;
+		group = venture_string_is_empty(field->booking_group_field) ? NULL : venture_forms_definition_find(fields, field->booking_group_field);
+		if ((!venture_string_is_empty(field->booking_group_field) && group == NULL) ||
+		    (group != NULL && (group->kind != VENTURE_FORM_FIELD_NUMBER || !group->required || group->sensitive || group->group_key != NULL))) goto invalid;
 		origin = venture_forms_get_string(form, "public-origin");
 		if (!venture_forms_public_origin_valid(origin, error)) return FALSE;
 	}
 	return TRUE;
 invalid:
-	venture_set_error_validation(error, "Booking question", "use one non-sensitive, non-repeated booking question with a target in this organization and required name/email questions; booking defaults, prefill and lead mapping are not supported");
+	venture_set_error_validation(error, "Booking question", "use one booking question with required name/email, a required resource choice for pick pages, and a required number question when group size is linked");
 	return FALSE;
 }
 
@@ -97,7 +105,10 @@ gboolean venture_forms_booking_prepare(VentureDatabase *database, VentureEntity 
 	GDateTime *now, VentureEntity **hold, JsonObject *errors, GError **error)
 {
 	const VentureFormsField *field = booking_field(fields);
-	const gchar *start, *name, *email;
+	const VentureFormsField *resource_field = NULL;
+	const gchar *start, *name, *email, *resource = NULL;
+	gint64 group_size = 1;
+	guint i;
 	g_autoptr(VentureEntity) page = NULL;
 	g_autoptr(VentureBookingService) service = NULL;
 	g_autoptr(GError) local = NULL;
@@ -107,6 +118,34 @@ gboolean venture_forms_booking_prepare(VentureDatabase *database, VentureEntity 
 	if (venture_string_is_empty(start)) return TRUE;
 	name = json_object_get_string_member_with_default(answers, booking_name(field), "");
 	email = json_object_get_string_member_with_default(answers, booking_email(field), "");
+	if (!venture_string_is_empty(field->booking_resource_field)) {
+		const gchar *choice = json_object_get_string_member_with_default(answers, field->booking_resource_field, NULL);
+		resource_field = venture_forms_definition_find(fields, field->booking_resource_field);
+		if (resource_field != NULL && resource_field->choices != NULL && choice != NULL)
+			for (i = 0; i < resource_field->choices->len; i++) {
+				VentureFormsChoice *option = g_ptr_array_index(resource_field->choices, i);
+				if (g_strcmp0(option->id, choice) == 0) { resource = option->label; break; }
+			}
+	}
+	if (!venture_string_is_empty(field->booking_group_field)) {
+		JsonNode *value = json_object_get_member(answers, field->booking_group_field);
+		gboolean valid = FALSE;
+		if (value != NULL && JSON_NODE_HOLDS_VALUE(value)) {
+			if (json_node_get_value_type(value) == G_TYPE_STRING) {
+				const gchar *size = json_node_get_string(value);
+				valid = size != NULL && g_ascii_string_to_signed(size, 10, 1, 10000, &group_size, NULL);
+			} else {
+				gdouble number = json_node_get_double(value);
+				if (number >= 1 && number <= 10000 && number == (gdouble)(gint64)number) {
+					group_size = (gint64)number; valid = TRUE;
+				}
+			}
+		}
+		if (!valid) {
+			json_object_set_string_member(errors, field->booking_group_field, "Enter a whole group size from 1 to 10000.");
+			return FALSE;
+		}
+	}
 	if (venture_string_is_empty(name) || strlen(name) > 200 || venture_string_is_empty(email) || strlen(email) > 254)
 	{
 		json_object_set_string_member(errors, field->key, "Give a name (at most 200 bytes) and email before booking.");
@@ -121,7 +160,7 @@ gboolean venture_forms_booking_prepare(VentureDatabase *database, VentureEntity 
 		g_autoptr(GDateTime) begins = g_date_time_new_from_iso8601(start, NULL);
 		if (begins == NULL || g_date_time_difference(begins, now) <= 45 * G_TIME_SPAN_MINUTE) goto unavailable;
 	}
-	*hold = venture_booking_service_reserve(service, page, start,
+	*hold = venture_booking_service_reserve_selected(service, page, start, resource, group_size,
 		g_object_get_data(G_OBJECT(form), VENTURE_FORMS_PAYMENT_WRITE) != NULL ? 2700 : 30, now, &local);
 	if (*hold != NULL) return TRUE;
 unavailable:

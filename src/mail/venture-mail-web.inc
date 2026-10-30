@@ -199,6 +199,77 @@ static HtmxResponse *venture_web_mail_account_sync(HtmxRequest *request, GHashTa
 	if (!report) return venture_web_error_response(error);
 	return venture_web_json_response(report, 200);
 }
+/* POST /api/v1/mail_accounts/:id/connector {"password": "..."}.
+ * Trusted mailbox provisioning has the same owner check, endpoint policy,
+ * encrypted binding and version rules as the browser settings page. */
+static HtmxResponse *venture_web_mail_account_connector(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) account = NULL;
+	g_autoptr(VentureIntegrationConnection) binding = NULL, updated = NULL;
+	g_autoptr(VentureConnectorSession) current = NULL;
+	g_autoptr(JsonNode) body = NULL, result = NULL;
+	g_autoptr(JsonObject) answer = json_object_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = NULL;
+	JsonObject *settings;
+	JsonNode *secret;
+	VentureActor actor;
+	HtmxResponse *gate;
+	gint64 id, binding_id = 0, version = 0;
+	const gchar *password;
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (gate) return gate;
+	gate = venture_web_require_module_api(self, "mail_sync");
+	if (gate) return gate;
+	gate = venture_web_require_module_api(self, "integrations");
+	if (gate) return gate;
+	if (htmx_request_get_body_bytes(request) && g_bytes_get_size(htmx_request_get_body_bytes(request)) > 32768) {
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Mailbox settings exceed 32 KiB");
+		return venture_web_error_response(error);
+	}
+	if (!g_ascii_string_to_signed(g_hash_table_lookup(params, "id"), 10, 1, G_MAXINT64, &id, &error))
+		return venture_web_error_response(error);
+	principal = venture_auth_authenticate(self->auth, request);
+	account = venture_database_get(database, VENTURE_TYPE_MAIL_ACCOUNT, id, &error);
+	if (!account || venture_entity_is_deleted(account)) {
+		if (!error) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Mailbox not found");
+		return venture_web_error_response(error);
+	}
+	if (!venture_connector_can_manage(database, account, &error)) return venture_web_error_response(error);
+	body = htmx_request_get_json(request, NULL);
+	settings = body && JSON_NODE_HOLDS_OBJECT(body) ? json_node_get_object(body) : NULL;
+	secret = settings ? json_object_get_member(settings, "password") : NULL;
+	if (!settings || json_object_get_size(settings) != 1 || !secret || !JSON_NODE_HOLDS_VALUE(secret) ||
+		json_node_get_value_type(secret) != G_TYPE_STRING || !(password = json_node_get_string(secret)) ||
+		!*password || strlen(password) > 16384) {
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Expected one mailbox password");
+		return venture_web_error_response(error);
+	}
+	key = venture_connector_binding_key(account);
+	binding = venture_integration_service_find(venture_integration_service_get(database),
+		venture_entity_get_organization_id(account), key, &error);
+	if (error && !g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG)) return venture_web_error_response(error);
+	g_clear_error(&error);
+	if (binding) {
+		binding_id = venture_entity_get_id(VENTURE_ENTITY(binding));
+		version = venture_entity_get_version(VENTURE_ENTITY(binding));
+		current = venture_connector_open(database, venture_context_get_config(self->context), account, &error);
+		if (!current) return venture_web_error_response(error);
+	}
+	if (!current || g_strcmp0(venture_connector_session_get_password(current), password)) {
+		venture_auth_to_actor(principal, &actor);
+		updated = venture_connector_configure(database, venture_context_get_config(self->context), account,
+			settings, binding_id, version, &actor, &error);
+		if (!updated) return venture_web_error_response(error);
+	}
+	json_object_set_boolean_member(answer, "configured", TRUE);
+	result = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(result, answer);
+	return venture_web_json_response(result, 200);
+}
 static HtmxResponse *venture_web_mail_unmatched_contact(HtmxRequest *request, GHashTable *params, gpointer data)
 {
 	VentureWebServer *self = data;

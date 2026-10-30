@@ -178,7 +178,9 @@ static GPtrArray *split_list(const gchar *text, const gchar *separators)
 #define MAIL_SYNC_MAX_ATTACHMENTS (25)
 typedef struct { gchar *name; gchar *mime; GBytes *data; } Attachment;
 typedef struct {
-	gchar *from; gchar *from_name; GPtrArray *addresses; /* normalised From, To and Cc, once each */
+	gchar *from; gchar *from_name; gchar *recipient_address;
+	GPtrArray *addresses; /* normalised From, To and Cc, once each */
+	GPtrArray *visible_recipients; /* To and Cc, excluding the sender */
 	GHashTable *address_set; /* the same strings, borrowed, for the once-each check */
 	gchar *message_id; gchar *in_reply_to; GPtrArray *references;
 	gchar *subject;
@@ -195,8 +197,10 @@ static void attachment_free(gpointer data)
 }
 static void parsed_clear(Parsed *p)
 {
-	g_free(p->from); g_free(p->from_name); g_clear_pointer(&p->address_set, g_hash_table_unref);
+	g_free(p->from); g_free(p->from_name); g_free(p->recipient_address);
+	g_clear_pointer(&p->address_set, g_hash_table_unref);
 	g_clear_pointer(&p->addresses, g_ptr_array_unref);
+	g_clear_pointer(&p->visible_recipients, g_ptr_array_unref);
 	g_free(p->message_id); g_free(p->in_reply_to); g_clear_pointer(&p->references, g_ptr_array_unref);
 	g_free(p->subject); g_free(p->plain); g_free(p->html); g_free(p->forwarded_plain); g_free(p->forwarded_html);
 	g_free(p->text); g_clear_pointer(&p->date, g_date_time_unref);
@@ -222,6 +226,35 @@ static gchar *strip_brackets(const gchar *id)
 	if (*s && s[strlen(s) - 1] == '>') s[strlen(s) - 1] = '\0';
 	return valid_text(s);
 }
+/* Mailcow prepends X-Original-To with the SMTP recipient before alias
+ * expansion. Sender-supplied copies remain in the message, so accepting a
+ * duplicate would let a direct message to the shared mailbox impersonate a
+ * business alias. Read only the bounded header block and reject duplicates. */
+static gchar *delivery_recipient(GBytes *raw)
+{
+	gsize length = 0, offset = 0, cap;
+	const gchar *data = g_bytes_get_data(raw, &length);
+	gchar *found = NULL;
+	cap = MIN(length, (gsize)65536);
+	while (offset < cap) {
+		gsize start = offset, end;
+		gchar *line;
+		while (offset < cap && data[offset] != '\n') offset++;
+		if (offset >= cap) { g_free(found); return NULL; }
+		end = offset++;
+		if (end > start && data[end - 1] == '\r') end--;
+		if (end == start) return found;
+		if (end - start < 14 || g_ascii_strncasecmp(data + start, "X-Original-To:", 14)) continue;
+		if (found) { g_free(found); return NULL; }
+		line = g_strndup(data + start + 14, end - start - 14);
+		g_strstrip(line);
+		if (!*line || !strchr(line, '@') || strpbrk(line, " \t\r\n,;<>")) { g_free(line); return NULL; }
+		found = g_ascii_strdown(line, -1);
+		g_free(line);
+	}
+	g_free(found);
+	return NULL;
+}
 static void collect_address(Parsed *p, const gchar *addr, const gchar *capture)
 {
 	g_autofree gchar *normal = NULL;
@@ -244,6 +277,18 @@ static void collect_addresses(Parsed *p, InternetAddressList *list, const gchar 
 		InternetAddress *address = internet_address_list_get_address(list, i);
 		if (INTERNET_ADDRESS_IS_MAILBOX(address)) collect_address(p, internet_address_mailbox_get_addr(INTERNET_ADDRESS_MAILBOX(address)), capture);
 		else if (INTERNET_ADDRESS_IS_GROUP(address)) collect_addresses(p, internet_address_group_get_members(INTERNET_ADDRESS_GROUP(address)), capture);
+	}
+}
+static void collect_visible_recipients(Parsed *p, InternetAddressList *list)
+{
+	gint i;
+	for (i = 0; list && i < internet_address_list_length(list) && p->visible_recipients->len < MAIL_SYNC_MAX_ADDRESSES; i++) {
+		InternetAddress *address = internet_address_list_get_address(list, i);
+		if (INTERNET_ADDRESS_IS_MAILBOX(address)) {
+			gchar *normal = address_lower(internet_address_mailbox_get_addr(INTERNET_ADDRESS_MAILBOX(address)));
+			if (*normal) g_ptr_array_add(p->visible_recipients, normal);
+			else g_free(normal);
+		}
 	}
 }
 /* List-Id, Precedence and Auto-Submitted mark mail no person wrote to you:
@@ -349,6 +394,7 @@ static gboolean parse_message(GBytes *raw, const gchar *capture_address, Parsed 
 	gconstpointer data = g_bytes_get_data(raw, &length);
 	memset(p, 0, sizeof *p);
 	p->addresses = g_ptr_array_new_with_free_func(g_free);
+	p->visible_recipients = g_ptr_array_new_with_free_func(g_free);
 	p->address_set = g_hash_table_new(g_str_hash, g_str_equal);
 	p->references = g_ptr_array_new_with_free_func(g_free);
 	p->attachments = g_ptr_array_new_with_free_func(attachment_free);
@@ -371,6 +417,9 @@ static gboolean parse_message(GBytes *raw, const gchar *capture_address, Parsed 
 	collect_addresses(p, from, capture_address);
 	collect_addresses(p, g_mime_message_get_to(message), capture_address);
 	collect_addresses(p, g_mime_message_get_cc(message), capture_address);
+	collect_visible_recipients(p, g_mime_message_get_to(message));
+	collect_visible_recipients(p, g_mime_message_get_cc(message));
+	p->recipient_address = delivery_recipient(raw);
 	/* A capture address in Bcc shows only in the delivery headers. */
 	if (capture_address && *capture_address) {
 		const gchar *const delivery[] = { "Delivered-To", "X-Original-To" };
@@ -442,6 +491,7 @@ typedef struct {
 	gint64 private_owner;
 	gchar *host; gchar *security; gchar *username; const gchar *secret; gint64 port;
 	gchar *own_normal;
+	gchar *reply_prefix;
 	gchar *capture_address;
 	gchar *capture_folder;
 	GPtrArray *folders;
@@ -460,7 +510,7 @@ static void sync_run_clear(SyncRun *run)
 	g_clear_object(&run->connector);
 	g_clear_pointer(&run->cursors, json_object_unref);
 	g_free(run->host); g_free(run->security); g_free(run->username);
-	g_free(run->own_normal); g_free(run->capture_address); g_free(run->capture_folder);
+	g_free(run->own_normal); g_free(run->reply_prefix); g_free(run->capture_address); g_free(run->capture_folder);
 	g_clear_pointer(&run->folders, g_ptr_array_unref);
 	g_clear_pointer(&run->ignore, g_ptr_array_unref);
 	g_clear_pointer(&run->internal, g_ptr_array_unref);
@@ -1078,7 +1128,8 @@ static gboolean file_parsed(SyncRun *run, const gchar *folder, guint32 uidvalidi
 	else if (!(thread = resolve_thread(run->db, run->org, run->private_owner, p, error))) return FALSE;
 	inbound = g_object_new(VENTURE_TYPE_MAIL_INBOUND, "organization-id", run->org, "account-id", run->account_id, "folder", folder,
 		"uid", (gint64)uid, "uid-validity", (gint64)uidvalidity, "uid-key", key, "message-id", p->message_id, "thread-id", thread,
-		"from-address", p->from, "subject", p->subject && *p->subject ? p->subject : "(no subject)", "received-at", p->date,
+		"from-address", p->from, "recipient-address", p->recipient_address,
+		"subject", p->subject && *p->subject ? p->subject : "(no subject)", "received-at", p->date,
 		"outbound", outbound, "skip-reason", skip_reason, NULL);
 	raw_title = g_strdup_printf("%s.eml", p->subject && *p->subject ? p->subject : "message");
 	if (existing) {
@@ -1130,15 +1181,28 @@ static gboolean commit_or_roll_back(SyncRun *run, gboolean ok, GError **error)
 	refresh_account(run);
 	return FALSE;
 }
-static gboolean file_message(SyncRun *run, const gchar *folder, guint32 uidvalidity, FolderCursor *cursor, guint32 uid, GBytes *raw, const gchar *skip_reason, GError **error)
+static gboolean reply_alias_matches(SyncRun *run, Parsed *p)
+{
+	const gchar *tag, *at;
+	if (!run->reply_prefix || !*run->reply_prefix) return TRUE;
+	if (!p->recipient_address || !g_ptr_array_find_with_equal_func(p->visible_recipients, p->recipient_address, g_str_equal, NULL) ||
+		!g_str_has_prefix(p->recipient_address, run->reply_prefix) ||
+		!g_str_has_suffix(p->recipient_address, "@lightsite.app")) return FALSE;
+	tag = p->recipient_address + strlen(run->reply_prefix);
+	at = strchr(tag, '@');
+	return at && at > tag && at - tag <= 19 && strspn(tag, "0123456789") == (gsize)(at - tag) &&
+		!(at - tag == 1 && *tag == '0');
+}
+static gboolean file_message(SyncRun *run, const gchar *folder, guint32 uidvalidity, FolderCursor *cursor, guint32 uid, GBytes *raw, const gchar *skip_reason, gboolean *accepted, GError **error)
 {
 	FolderCursor before = *cursor;
 	Parsed p;
 	gboolean ok;
 	if (!parse_message(raw, run->capture_address, &p, error)) { parsed_clear(&p); return FALSE; }
+	*accepted = reply_alias_matches(run, &p);
 	if (!venture_database_begin(run->db, error)) { parsed_clear(&p); return FALSE; }
 	if (!venture_connector_session_validate(run->connector, error)) { venture_database_rollback(run->db); parsed_clear(&p); return FALSE; }
-	ok = file_parsed(run, folder, uidvalidity, uid, raw, skip_reason, &p, error);
+	ok = !*accepted || file_parsed(run, folder, uidvalidity, uid, raw, skip_reason, &p, error);
 	if (ok) {
 		cursor->uid = uid; cursor->failed_uid = 0; cursor->attempts = 0;
 		cursor_set(run->cursors, folder, cursor);
@@ -1167,7 +1231,8 @@ static gboolean file_stub(SyncRun *run, const gchar *folder, guint32 uidvalidity
 		"thread-id", parsed ? p.message_id : NULL, "from-address", parsed ? p.from : NULL, "received-at", parsed ? p.date : now, NULL);
 	parsed_clear(&p);
 	if (!venture_database_begin(run->db, error)) return FALSE;
-	ok = venture_connector_session_validate(run->connector, error) && venture_database_save(run->db, inbound, run->actor, error);
+	ok = venture_connector_session_validate(run->connector, error) &&
+		(run->reply_prefix || venture_database_save(run->db, inbound, run->actor, error));
 	if (ok) {
 		cursor->uid = uid; cursor->failed_uid = 0; cursor->attempts = 0;
 		cursor_set(run->cursors, folder, cursor);
@@ -1220,7 +1285,7 @@ static SyncOutcome message_failed(SyncRun *run, const gchar *folder, guint32 uid
 	if (cursor->attempts >= VENTURE_MAIL_SYNC_MAX_ATTEMPTS) {
 		g_autofree gchar *reason = g_strdup_printf("Skipped after %u attempts: %s", cursor->attempts, failure->message);
 		if (!file_stub(run, folder, uidvalidity, cursor, uid, raw, reason, error)) return OUTCOME_ACCOUNT_STOPPED;
-		run->filed++;
+		if (!run->reply_prefix) run->filed++;
 		return OUTCOME_CONTINUE;
 	}
 	cursor_set(run->cursors, folder, cursor);
@@ -1234,6 +1299,7 @@ static SyncOutcome sync_message(SyncRun *run, const gchar *folder, const Venture
 	g_autoptr(GBytes) raw = NULL;
 	g_autofree gchar *skip_reason = NULL;
 	gint filed;
+	gboolean accepted = FALSE;
 	if (!venture_connector_session_validate(run->connector, error)) return OUTCOME_ACCOUNT_STOPPED;
 	run->budget->messages_left--;
 	/* Checked before the fetch: a rerun over filed mail costs a query per
@@ -1265,8 +1331,8 @@ static SyncOutcome sync_message(SyncRun *run, const gchar *folder, const Venture
 		if (error_is_transient(local)) { g_propagate_error(error, g_steal_pointer(&local)); return OUTCOME_ACCOUNT_STOPPED; }
 		return message_failed(run, folder, info->uidvalidity, cursor, entry->uid, NULL, local, error);
 	}
-	if (file_message(run, folder, info->uidvalidity, cursor, entry->uid, raw, skip_reason, &local)) {
-		run->filed++;
+	if (file_message(run, folder, info->uidvalidity, cursor, entry->uid, raw, skip_reason, &accepted, &local)) {
+		if (accepted) run->filed++;
 		return OUTCOME_CONTINUE;
 	}
 	if (error_is_transient(local)) { g_propagate_error(error, g_steal_pointer(&local)); return OUTCOME_ACCOUNT_STOPPED; }
@@ -1366,7 +1432,8 @@ static gboolean prepare(SyncRun *run, GError **error)
 	run->private_owner = venture_access_policy_get_personal_owner(venture_database_get_access_policy(run->db), venture_connector_session_get_account(run->connector));
 	run->secret = venture_connector_session_get_password(run->connector);
 	g_object_get(run->account, "imap-host", &run->host, "imap-port", &run->port, "imap-tls", &run->security, "username", &run->username,
-		"folders", &folders, "address", &address, "capture-address", &run->capture_address,
+		"folders", &folders, "address", &address, "reply-alias-prefix", &run->reply_prefix,
+		"capture-address", &run->capture_address,
 		"capture-folder", &run->capture_folder, "ignore-patterns", &ignore, "internal-domains", &internal, "sync-since", &run->since, NULL);
 	run->folders = g_ptr_array_new_with_free_func(g_free);
 	run->ignore = g_ptr_array_new_with_free_func((GDestroyNotify)g_pattern_spec_free);
@@ -1374,6 +1441,15 @@ static gboolean prepare(SyncRun *run, GError **error)
 	patterns = split_list(ignore, ",\n");
 	for (i = 0; i < patterns->len; i++) g_ptr_array_add(run->ignore, g_pattern_spec_new(g_ptr_array_index(patterns, i)));
 	run->own_normal = venture_lead_normalize_email(address);
+	if (run->reply_prefix) {
+		g_autofree gchar *normal = address_lower(run->reply_prefix);
+		g_free(run->reply_prefix);
+		run->reply_prefix = g_steal_pointer(&normal);
+		if (run->private_owner > 0 || !g_str_has_prefix(run->reply_prefix, "r-") ||
+			!g_str_has_suffix(run->reply_prefix, "+") || strlen(run->reply_prefix) > 82 ||
+			strspn(run->reply_prefix, "abcdefghijklmnopqrstuvwxyz0123456789-+") != strlen(run->reply_prefix))
+			return refuse(error, VENTURE_ERROR_CONFIG, "Invalid shared booking reply alias prefix");
+	}
 	if (venture_string_is_empty(run->host)) return refuse(error, VENTURE_ERROR_CONFIG, "The account has no IMAP host");
 	if (run->port <= 0 || run->port > 65535) run->port = !g_strcmp0(run->security, "starttls") ? 143 : 993;
 	if (venture_string_is_empty(run->security)) { g_free(run->security); run->security = g_strdup("tls"); }
