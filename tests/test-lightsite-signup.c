@@ -320,7 +320,8 @@ test_creates_owner(Fixture *f, gconstpointer data)
 	(void)data;
 	result = signup(f, payload, 201);
 	object = json_node_get_object(result);
-	g_assert_cmpuint(json_object_get_size(object), ==, 6);
+	g_assert_cmpuint(json_object_get_size(object), ==, 7);
+	g_assert_true(g_str_has_prefix(json_object_get_string_member(object, "schedule_token"), "vk_"));
 	g_assert_cmpstr(json_object_get_string_member(object, "origin"), ==, ORIGIN);
 	g_assert_cmpstr(json_object_get_string_member(object, "workspace_id"), ==, WORKSPACE);
 	g_assert_false(json_object_get_boolean_member(object, "linked"));
@@ -439,8 +440,11 @@ test_replay(Fixture *f, gconstpointer data)
 	Counts created;
 	(void)data;
 	first = signup(f, payload, 201);
+	g_assert_true(g_str_has_prefix(json_object_get_string_member(json_node_get_object(first), "schedule_token"), "vk_"));
 	created = counts(f, TRUE);
 	second = signup(f, payload, 200);
+	g_assert_false(json_object_has_member(json_node_get_object(second), "schedule_token"));
+	json_object_remove_member(json_node_get_object(first), "schedule_token");
 	first_text = venture_json_to_string(first, FALSE);
 	second_text = venture_json_to_string(second, FALSE);
 	g_assert_cmpstr(first_text, ==, second_text);
@@ -455,6 +459,50 @@ test_replay(Fixture *f, gconstpointer data)
 	second_text = venture_json_to_string(second, FALSE);
 	g_assert_cmpstr(first_text, ==, second_text);
 	assert_counts(counts(f, TRUE), created);
+}
+
+static void
+test_schedule_token(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *payload = body_for("signup:schedule", "schedule@example.test", "kc-sub-schedule", "Schedule Co");
+	g_autofree gchar *second_payload = body_for("signup:schedule-other", "schedule@example.test", "kc-sub-schedule", "Other Co");
+	g_autoptr(JsonNode) result = signup(f, payload, 201);
+	g_autoptr(JsonNode) second = NULL;
+	g_autofree gchar *token = g_strdup(json_object_get_string_member(json_node_get_object(result), "schedule_token"));
+	g_autofree gchar *body = NULL, *path = NULL, *sweep = NULL, *other = NULL, *replacement = NULL, *second_token = NULL;
+	g_autoptr(JsonNode) rotated = NULL;
+	gint64 organization = json_object_get_int_member(json_node_get_object(result), "organization_id");
+	guint status;
+	(void)data;
+	path = g_strdup_printf("/api/v1/organization/%" G_GINT64_FORMAT, organization);
+	g_assert_cmpuint(exchange(f, "GET", path, NULL, NULL, token, NULL, NULL, NULL, &body, NULL), ==, 403);
+	sweep = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"limit\":25}", organization);
+	status = exchange(f, "POST", "/api/v1/dunning_policy/0/actions/sweep", NULL, NULL, token,
+		"application/json", sweep, NULL, NULL, NULL);
+	g_assert_cmpuint(status, ==, 200);
+	second = signup(f, second_payload, 201);
+	second_token = g_strdup(json_object_get_string_member(json_node_get_object(second), "schedule_token"));
+	other = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"limit\":25}",
+		json_object_get_int_member(json_node_get_object(second), "organization_id"));
+	status = exchange(f, "POST", "/api/v1/dunning_policy/0/actions/sweep", NULL, NULL, token,
+		"application/json", other, NULL, NULL, NULL);
+	g_assert_cmpuint(status, !=, 200);
+	status = exchange(f, "POST", "/api/v1/dunning_policy/0/actions/sweep", NULL, NULL, second_token,
+		"application/json", sweep, NULL, NULL, NULL);
+	g_assert_cmpuint(status, !=, 200);
+	g_free(path); path = g_strdup_printf("/api/v1/lightsite/schedule-tokens/%" G_GINT64_FORMAT "/rotate", organization);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(exchange(f, "POST", path, NULL, NULL, f->admin_secret, NULL, NULL, NULL, &body, NULL), ==, 200);
+	rotated = venture_json_parse(body, NULL);
+	g_assert_nonnull(rotated);
+	replacement = g_strdup(json_object_get_string_member(json_node_get_object(rotated), "schedule_token"));
+	g_assert_true(g_str_has_prefix(replacement, "vk_"));
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/dunning_policy/0/actions/sweep", NULL, NULL, token,
+		"application/json", sweep, NULL, NULL, NULL), ==, 401);
+	g_free(path); path = g_strdup_printf("/api/v1/lightsite/schedule-tokens/%" G_GINT64_FORMAT "/revoke", organization);
+	g_assert_cmpuint(exchange(f, "POST", path, NULL, NULL, f->admin_secret, NULL, NULL, NULL, NULL, NULL), ==, 200);
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/dunning_policy/0/actions/sweep", NULL, NULL, replacement,
+		"application/json", sweep, NULL, NULL, NULL), ==, 401);
 }
 
 /* An email is evidence of who someone is, never a way to revive them. */
@@ -708,6 +756,7 @@ test_person_names(Fixture *f, gconstpointer data)
 	json_object_set_string_member(object, "last_name", "  García López  ");
 	payload = venture_json_to_string(request, FALSE);
 	result = signup(f, payload, 201);
+	json_object_remove_member(json_node_get_object(result), "schedule_token");
 	original = venture_json_to_string(result, FALSE);
 	user = venture_database_get(f->db, VENTURE_TYPE_USER,
 		json_object_get_int_member(json_node_get_object(result), "user_id"), &error);
@@ -853,6 +902,7 @@ main(int argc, char **argv)
 	g_test_add("/lightsite-signup/business-takes-money", Fixture, NULL, setup, test_business_takes_money, teardown);
 	g_test_add("/lightsite-signup/links-existing", Fixture, NULL, setup, test_links_existing, teardown);
 	g_test_add("/lightsite-signup/replay", Fixture, NULL, setup, test_replay, teardown);
+	g_test_add("/lightsite-signup/schedule-token", Fixture, NULL, setup, test_schedule_token, teardown);
 	g_test_add("/lightsite-signup/refuses-unavailable-identity", Fixture, NULL, setup, test_refuses_unavailable_identity, teardown);
 	g_test_add("/lightsite-signup/authority", Fixture, NULL, setup, test_authority, teardown);
 	g_test_add("/lightsite-signup/body", Fixture, NULL, setup, test_body, teardown);

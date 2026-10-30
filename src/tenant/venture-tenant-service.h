@@ -109,6 +109,18 @@ JsonNode *venture_tenant_service_lightsite_signup(VentureTenantService *self, co
 	const gchar *first_name, const gchar *last_name,
 	gboolean *created, GError **error);
 /**
+ * venture_tenant_service_lightsite_schedule_token:
+ * @self: the tenant service
+ * @organization_id: the business from a Lightsite sign-up
+ * @revoke: %TRUE to revoke without a replacement
+ * @error: return location for an error
+ *
+ * Changes only the schedule token for the specified business.
+ * Returns: (transfer full) (nullable): a one-time token or revocation result
+ */
+JsonNode *venture_tenant_service_lightsite_schedule_token(VentureTenantService *self,
+	gint64 organization_id, gboolean revoke, GError **error);
+/**
  * venture_tenant_service_trusts_identity:
  * @issuer: (nullable): an issuer to compare, or %NULL for any
  *

@@ -1275,6 +1275,21 @@ public_capability_request(HtmxRequest *request)
 	return method == HTMX_METHOD_POST && !g_strcmp0(suffix, "/accept");
 }
 
+static gboolean
+schedule_token_route(VentureDatabase *database, const VentureAuthPrincipal *actor, HtmxRequest *request)
+{
+	g_autoptr(VentureEntity) token = NULL;
+	g_autofree gchar *scopes = NULL;
+	const gchar *path = htmx_request_get_path(request);
+	if (actor->token_id <= 0) return TRUE;
+	token = venture_database_get(database, VENTURE_TYPE_API_TOKEN, actor->token_id, NULL);
+	if (token) g_object_get(token, "scopes", &scopes, NULL);
+	if (g_strcmp0(scopes, "lightsite:schedule")) return TRUE;
+	return htmx_request_get_method(request) == HTMX_METHOD_POST &&
+		(!g_strcmp0(path, "/api/v1/dunning_policy/0/actions/sweep") ||
+		 !g_strcmp0(path, "/api/v1/mail/deliver"));
+}
+
 void
 venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 	HtmxContext *http, HtmxMiddlewareNext next, gpointer next_data)
@@ -1298,6 +1313,12 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 		actor = venture_auth_authenticate(auth, request);
 		if (actor->authenticated)
 		{
+			if (!schedule_token_route(venture_context_get_database(context), actor, request)) {
+				HtmxResponse *response = htmx_response_new();
+				htmx_response_set_status(response, 403);
+				htmx_context_set_response(http, response);
+				return;
+			}
 			scope = venture_access_policy_enter(policy, actor);
 			if (venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context))) > 0)
 				policy->organization_id = venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context)));
@@ -1414,8 +1435,9 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 		g_autoptr(GPtrArray) members = NULL;
 		g_autoptr(JsonBuilder) builder = json_builder_new();
 		g_autoptr(JsonNode) node = NULL;
-		g_autofree gchar *snapshot = NULL;
+		g_autofree gchar *snapshot = NULL, *scopes = NULL;
 		guint i;
+		g_object_get(entity, "scopes", &scopes, NULL);
 		venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, reference(entity, "user-id"), NULL);
 		venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
 		members = venture_database_find(database, query, error);
@@ -1427,6 +1449,8 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 			VentureEntity *member = g_ptr_array_index(members, i);
 			g_autofree gchar *key = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_organization_id(member));
 			gint role;
+			if (!g_strcmp0(scopes, "lightsite:schedule") &&
+			    venture_entity_get_organization_id(member) != venture_entity_get_organization_id(entity)) continue;
 			g_object_get(member, "role", &role, NULL);
 			json_builder_set_member_name(builder, key);
 			json_builder_add_int_value(builder, role);
@@ -1434,7 +1458,8 @@ venture_orgaccess_prepare(VentureDatabase *database, VentureEntity *entity, GErr
 		/* Workspace administration is captured too, so an operation that
 		 * needs it can require it both now and when the token was minted.
 		 * The key cannot collide with an organization ID. */
-		if (venture_tenant_service_is_enabled(venture_tenant_service_get(database)) &&
+		if (g_strcmp0(scopes, "lightsite:schedule") &&
+		    venture_tenant_service_is_enabled(venture_tenant_service_get(database)) &&
 			venture_tenant_service_is_member(venture_tenant_service_get(database), reference(entity, "user-id"), TRUE))
 		{
 			json_builder_set_member_name(builder, "workspace_role");
