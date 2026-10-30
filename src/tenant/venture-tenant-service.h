@@ -169,6 +169,25 @@ JsonNode *venture_tenant_service_link_identity(VentureTenantService *self, const
  */
 gboolean venture_tenant_service_check_trusted_service(VentureTenantService *self, gint64 *actor_user_id, GError **error);
 /**
+ * venture_tenant_service_check_organization_owner:
+ * @self: the hosted tenant service
+ * @organization_id: the business the operation acts on
+ * @membership_version: (out) (optional): version of the owner membership judged
+ * @error: return location for a #GError
+ *
+ * The authority of an owner's own operation on their business, such as a
+ * plan switch or an invitation: the current principal, read from the
+ * database access scope, must be an active hosted member holding an active
+ * explicit owner membership of @organization_id, with a write-capable
+ * credential whose minted snapshot also says owner. Workspace
+ * administration does not stand in for ownership, and a later promotion
+ * never enlarges an existing token.
+ *
+ * Returns: %TRUE when the operation may proceed
+ */
+gboolean venture_tenant_service_check_organization_owner(VentureTenantService *self, gint64 organization_id,
+	gint64 *membership_version, GError **error);
+/**
  * venture_tenant_service_check_operation:
  * @self: service
  * @write: whether an operation writes or starts an external side effect

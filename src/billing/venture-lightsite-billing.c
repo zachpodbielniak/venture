@@ -777,3 +777,4 @@ venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_or
 #include "venture-lightsite-money-back.inc"
 #include "venture-lightsite-made-back.inc"
 #include "venture-lightsite-notifications.inc"
+#include "venture-lightsite-switch.inc"

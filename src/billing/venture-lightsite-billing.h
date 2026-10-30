@@ -208,6 +208,28 @@ JsonNode *venture_lightsite_billing_guarantee(VentureDatabase *database, gint64 
 JsonNode *venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_organization_id,
 	gint64 organization_id, const gchar *plan_code, const gchar *idempotency_key, gboolean *created, GError **error);
 /**
+ * venture_lightsite_billing_switch:
+ * @database: the hosted workspace's database
+ * @billing_organization_id: the configured billing organization, 0 when unset
+ * @organization_id: the business switching plan
+ * @plan_price_id: an active monthly or annual price of the billing organization, in the business's currency
+ * @confirm: %FALSE to preview, writing nothing; %TRUE to schedule the switch
+ * @created: (out) (optional): %TRUE when this call scheduled the switch
+ * @error: return location for a #GError
+ *
+ * The owner's own plan switch. The new price starts on the next bill --
+ * the period end, or before go-live the first bill publication issues --
+ * through the billing service's change at the end of the period: nothing
+ * is charged today and nothing is prorated. Requires the business's owner
+ * (venture_tenant_service_check_organization_owner()) or the trusted
+ * service. Confirming the price already scheduled answers the first
+ * confirmation again and writes nothing.
+ *
+ * Returns: (transfer full) (nullable): the current and chosen plans, when the change applies and what the next bill is
+ */
+JsonNode *venture_lightsite_billing_switch(VentureDatabase *database, gint64 billing_organization_id,
+	gint64 organization_id, gint64 plan_price_id, gboolean confirm, gboolean *created, GError **error);
+/**
  * venture_lightsite_billing_view:
  * @database: the hosted workspace's database
  * @billing_organization_id: the configured billing organization, 0 when unset
