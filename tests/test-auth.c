@@ -1161,6 +1161,10 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/billing/subscriptions", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/lightsite/billing/1"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/lightsite/billing"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/schedule-tokens/1/rotate", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/schedule-tokens/1/revoke", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing_consent/current"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_accounts/1/connector", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),
 	                 ==, SOUP_STATUS_FOUND);
 
@@ -2228,6 +2232,11 @@ test_auth_api_refuses_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/u/unknown"), ==, SOUP_STATUS_NOT_FOUND);
+	/* Sequence one-click is public. GET only draws the Stop form, so a
+	 * scanner does not unsubscribe; POST without the one-click field is
+	 * refused before any token lookup. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/sequences/u/unknown"), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/sequences/u/unknown", NULL, "List-Unsubscribe=Nope", NULL, NULL), ==, SOUP_STATUS_BAD_REQUEST);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/o/unknown.gif"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/marketing/t/c/unknown/1"), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/marketing_send/1/actions/approve", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -5269,6 +5278,9 @@ test_orgaccess_public_capabilities(ServerFixture *fixture, gconstpointer unused)
 	gint state;
 	server_fixture_create_user(fixture, "outside-user", "password", VENTURE_USER_ROLE_EDITOR, NULL);
 	cookie = server_fixture_login(fixture, "outside-user", "password");
+	/* The stop link is the credential. No membership must not send it to /account. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/sequences/u/not-a-real-token", cookie, NULL, NULL, NULL), ==, 200);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/sequences/u/not-a-real-token", cookie, "List-Unsubscribe=One-Click", NULL, NULL), ==, 404);
 	g_assert_true(venture_database_save(fixture->database, form, NULL, &error));
 	g_assert_no_error(error);
 	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/f/access-capture", cookie, "{\"name\":\"Incoming lead\"}", NULL), ==, 200);

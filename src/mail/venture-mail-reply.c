@@ -87,7 +87,7 @@ venture_mail_reply_enqueue(VentureContext *context, VentureEntity *interaction,
 	g_autofree gchar *trimmed = NULL, *subject = NULL, *clean_subject = NULL, *reply_subject = NULL;
 	g_autofree gchar *message_id = NULL, *thread_id = NULL, *from = NULL, *in_reply_to = NULL, *root = NULL;
 	g_autofree gchar *references = NULL, *key = NULL, *uuid = NULL;
-	g_autofree gchar *recipient = NULL, *prefix = NULL;
+	g_autofree gchar *recipient = NULL, *prefix = NULL, *prefix_key = NULL;
 	gint64 account_id = 0;
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(interaction), NULL);
@@ -131,7 +131,10 @@ venture_mail_reply_enqueue(VentureContext *context, VentureEntity *interaction,
 		if (account_id > 0) account = venture_database_get(database, VENTURE_TYPE_MAIL_ACCOUNT, account_id, NULL);
 		if (account && venture_entity_get_organization_id(account) == venture_entity_get_organization_id(source))
 			g_object_get(account, "reply-alias-prefix", &prefix, NULL);
-		if (!prefix || !g_str_has_prefix(recipient, prefix) || !g_str_has_suffix(recipient, "@lightsite.app") ||
+		/* Sync stores the address in lower case. A prefix typed in mixed
+		 * case must still match, or the reply drops Reply-To. */
+		prefix_key = prefix != NULL ? g_ascii_strdown(prefix, -1) : NULL;
+		if (!prefix_key || !g_str_has_prefix(recipient, prefix_key) || !g_str_has_suffix(recipient, "@lightsite.app") ||
 			strpbrk(recipient, "\r\n\t ,;<>")) g_clear_pointer(&recipient, g_free);
 	}
 	/* Each reply is its own message; the key only stops a resubmitted

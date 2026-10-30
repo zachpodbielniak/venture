@@ -1,15 +1,24 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* These public routes authorize only the opaque capability, never a session
  * or caller-selected organization. GET never changes email preferences. */
-static HtmxResponse *marketing_response(gint status, const gchar *content)
+static HtmxResponse *marketing_response_full(gint status, const gchar *content, const gchar *referrer)
 {
 	HtmxResponse *response = htmx_response_new_with_content(content);
 	htmx_response_set_status(response, status);
 	htmx_response_add_header(response, "Cache-Control", "no-store, private");
-	/* Keep same-origin form POSTs from becoming opaque Origin: null requests. */
-	htmx_response_add_header(response, "Referrer-Policy", "same-origin");
+	htmx_response_add_header(response, "Referrer-Policy", referrer);
 	htmx_response_add_header(response, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
 	return response;
+}
+/* Pixels and click redirects must not hand the tracking URL to the target. */
+static HtmxResponse *marketing_response(gint status, const gchar *content)
+{
+	return marketing_response_full(status, content, "no-referrer");
+}
+/* The preference form posts to itself. no-referrer would make that Origin null. */
+static HtmxResponse *marketing_preference_response(gint status, const gchar *content)
+{
+	return marketing_response_full(status, content, "same-origin");
 }
 /* Read for the machine-open judgement and never stored or logged. */
 static const gchar *venture_web_marketing_user_agent(HtmxRequest *request)
@@ -75,7 +84,7 @@ static HtmxResponse *venture_web_marketing_preference_page(VentureMarketingServi
 		"<form method=\"post\" class=\"stop\"><input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\">"
 		"<p>Or stop all marketing email from this organization.</p><button type=\"submit\" class=\"quiet\">Stop marketing email: unsubscribe from everything</button></form>"
 		"</main></body></html>");
-	return marketing_response(200, html->str);
+	return marketing_preference_response(200, html->str);
 }
 /* Every topic value in a form body: the form sends one per ticked box. */
 static gchar *venture_web_marketing_ticked(GBytes *body, GPtrArray *offered)
@@ -127,7 +136,7 @@ static HtmxResponse *venture_web_marketing_unsubscribe(HtmxRequest *request, GHa
 			return marketing_response(400, "Expected List-Unsubscribe=One-Click");
 		if (!venture_marketing_service_unsubscribe(service, token, &error))
 			return marketing_response(404, "Not found");
-		return marketing_response(200, "<!doctype html><html><head><title>Preference saved</title></head><body><h1>Preference saved</h1><p>Marketing email to this address from this organization is stopped. Necessary transactional messages remain independent.</p></body></html>");
+		return marketing_preference_response(200, "<!doctype html><html><head><title>Preference saved</title></head><body><h1>Preference saved</h1><p>Marketing email to this address from this organization is stopped. Necessary transactional messages remain independent.</p></body></html>");
 	}
 	/* A syntax-valid unknown capability gets the same generic page as
 	 * before; it shows no topics and saving it answers 404. */
@@ -136,7 +145,7 @@ static HtmxResponse *venture_web_marketing_unsubscribe(HtmxRequest *request, GHa
 		if (htmx_response_get_status(page) == 200) return page;
 		g_object_unref(page);
 	}
-	return marketing_response(200, "<!doctype html><html><head><title>Email preference</title></head><body><h1>Email preference</h1><p>Stop marketing email to this address from this organization. Necessary invoices, receipts and other transactional messages remain independent.</p><form method=\"post\"><input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\"><button type=\"submit\">Stop marketing email</button></form></body></html>");
+	return marketing_preference_response(200, "<!doctype html><html><head><title>Email preference</title></head><body><h1>Email preference</h1><p>Stop marketing email to this address from this organization. Necessary invoices, receipts and other transactional messages remain independent.</p><form method=\"post\"><input type=\"hidden\" name=\"List-Unsubscribe\" value=\"One-Click\"><button type=\"submit\">Stop marketing email</button></form></body></html>");
 }
 static HtmxResponse *venture_web_marketing_open(HtmxRequest *request, GHashTable *params, gpointer data)
 {

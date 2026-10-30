@@ -79,6 +79,7 @@ venturectl calendar remind
 | `assignee` | only `me` (tickets/activities by your name, deals by owner, events you organize or attend); a token with no user is refused |
 | `done` | `1`: also finished items (done tickets, completed milestones, achieved goals, won deals, cancelled events) |
 | `organization_id` | the API's organization (pages use the sidebar pick) |
+| `on`, `time_zone` | API only, both required: one local calendar day. All-day items use that date; timed items use the UTC window of local midnight to the next midnight |
 
 JSON: `{from, to, view, venture_id, include_done, assignee, kinds, notes,
 count, items}`; an item has `kind`, `subkind`, `title`, `detail`, `start`,

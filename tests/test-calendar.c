@@ -945,6 +945,45 @@ static void test_booking_auto_reschedule_reassigns(Fixture *f, gconstpointer dat
 	g_assert_no_error(error); g_assert_nonnull(moved);
 	g_object_get(moved, "booking-resources", &names, NULL);
 	g_assert_cmpstr(names, ==, "[\"Lane 2\"]");
+	g_clear_pointer(&names, g_free);
+	g_object_get(moved, "body", &names, NULL);
+	g_assert_nonnull(strstr(names, "Resources: Lane 2"));
+	g_assert_null(strstr(names, "Resources: Lane 1"));
+}
+
+/* A meeting booked before the page had lanes stores "[]". Adding lanes
+ * must not offer that time again. A blank job resource is the same hole. */
+static void test_booking_unnamed_still_blocks(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) p = page(f), booked = NULL, refused = NULL, job = NULL;
+	g_autoptr(VentureCompany) company = venture_company_new();
+	g_autoptr(GDateTime) now = venture_time_from_string("2026-09-21T12:00:00Z", NULL);
+	g_autoptr(GDateTime) start = venture_time_from_string("2026-09-21T14:30:00Z", NULL);
+	g_autoptr(GDateTime) end = venture_time_from_string("2026-09-21T15:00:00Z", NULL);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *stored = NULL;
+	(void)data;
+	booked = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", NULL, 1,
+		"Early", "early@example.test", NULL, now, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(booked);
+	g_object_get(booked, "booking-resources", &stored, NULL);
+	g_assert_cmpstr(stored, ==, "[]");
+	g_object_set(p, "resources", "[{\"name\":\"Lane 1\"},{\"name\":\"Lane 2\"}]", "resource-selection", "pick", NULL);
+	save(f, p);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:00:00Z", "Lane 1", 1,
+		"Later", "later@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT); g_clear_error(&error);
+	g_object_set(company, "name", "Example Lanes", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);
+	save(f, VENTURE_ENTITY(company));
+	job = g_object_new(VENTURE_TYPE_JOB, "organization-id", f->org, "title", "Unassigned",
+		"company-id", venture_entity_get_id(VENTURE_ENTITY(company)), "window-start", start,
+		"window-end", end, "status", VENTURE_JOB_BOOKED, "booking-resource", "", NULL);
+	save(f, job);
+	g_clear_object(&refused);
+	refused = venture_booking_service_book_selected(f->booking, p, "2026-09-21T14:30:00Z", "Lane 2", 1,
+		"Lane", "lane@example.test", NULL, now, NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
 }
 
 static void test_booking_other_page_blocks_resources(Fixture *f, gconstpointer data)
@@ -1321,6 +1360,7 @@ int main(int argc, char **argv)
 	g_test_add("/calendar/booking-group-reschedule", Fixture, NULL, setup, test_booking_group_and_reschedule, teardown);
 	g_test_add("/calendar/booking-job-named-resource", Fixture, NULL, setup, test_booking_job_named_resource, teardown);
 	g_test_add("/calendar/booking-auto-reschedule-reassigns", Fixture, NULL, setup, test_booking_auto_reschedule_reassigns, teardown);
+	g_test_add("/calendar/booking-unnamed-still-blocks", Fixture, NULL, setup, test_booking_unnamed_still_blocks, teardown);
 	g_test_add("/calendar/booking-other-page-blocks-resources", Fixture, NULL, setup, test_booking_other_page_blocks_resources, teardown);
 	g_test_add("/calendar/booking-slots", Fixture, NULL, setup, test_booking_slots, teardown);
 	g_test_add("/calendar/booking-job-without-reservation", Fixture, NULL, setup, test_booking_job_without_reservation, teardown);

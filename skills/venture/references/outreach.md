@@ -35,7 +35,9 @@ venturectl sequence status 17
 - Tracking (opt-in per sequence and organization): `/t/o/:token.gif` opens
   (at most one per delivery per UTC day), `/t/c/:token/:n` clicks.
   Reports `sequence_performance`, `sequence_failures`,
-  `sequence_engagement`.
+  `sequence_engagement`. One-click stop is public `GET`/`POST
+  /sequences/u/:token`: GET only draws the form; POST requires
+  `List-Unsubscribe=One-Click` and writes an organization suppression.
 
 ## Marketing sends (module `marketing`)
 
@@ -66,7 +68,9 @@ consent and delivery evidence are service-owned.
    until deliberately resolved through the outbox retry workflow; retry may
    duplicate a delivery and is never automatic. None of these actions stage.
 
-- `act marketing_consent ID withdraw` suppresses the address and stops
+- Current marketing permission for one address is
+  `GET /api/v1/marketing_consent/current` (viewer; `purpose=marketing`;
+  `Cache-Control: no-store`). `act marketing_consent ID withdraw` suppresses the address and stops
   applicable queued campaigns and sequences; transactional mail is
   independent. Unsubscribe links are private capabilities sent only in
   mail: GET shows a confirmation, POST performs an idempotent

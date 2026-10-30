@@ -66,7 +66,8 @@ setup(Fixture *f, gconstpointer data)
 	account = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org,
 		"address", "ops@example.net", "imap-host", "imap.example.net", "imap-port", (gint64)993, "imap-tls", "tls",
 		"username", "ops@example.net", "folders", "INBOX", "active", TRUE, NULL);
-	if (data) g_object_set(account, "reply-alias-prefix", "r-0123456789abcdef01234567+", NULL);
+	/* Mixed case is what an editor can type. Sync folds it; the reply must too. */
+	if (data) g_object_set(account, "reply-alias-prefix", "R-0123456789abcdef01234567+", NULL);
 	save(f, account);
 	json_object_set_string_member(values, "password", "app-password");
 	binding = venture_connector_configure(f->db, f->config, account, values, 0, 0, NULL, &error);

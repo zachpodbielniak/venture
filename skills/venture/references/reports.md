@@ -78,11 +78,13 @@ way.
   `consolidated_trial_balance|income_statement|balance_sheet`. payroll:
   `payroll_reconciliation`. banking: `bank_reconciliation`
   (`statement_id`). sales_tax: `sales_tax_return`.
-- receivables: `receivables` (aging), `customer_statement`
+- receivables: `receivables` (aging), `open_invoices` (sent and partially
+  paid, positive balance, including not yet due; refuses past the row
+  bound), `customer_statement`
   (`customer_id` required, `currency`), `cash_vs_booked`. payables:
   `payables` (aging), `vendor_statement` (`vendor_id`). goods:
   `committed_spend`, `reorder_worklist`, `inventory_valuation`. quotes:
-  `quotes`. projects: `project_margin`. recurring: `collections_worklist`.
+  `quotes` (includes `sent_win_rate`). projects: `project_margin`. recurring: `collections_worklist`.
   dunning: `collections`, `dunning_worklist`. late_fees: `late_fees`
   (applied, waived, collected and awaiting, one figure per currency).
 - billing: `mrr` (`currency`; MRR, ARR, `arpa`, `quick_ratio`), `churn`
@@ -96,7 +98,9 @@ way.
   open these four with the card's period and scope. customer_health:
   `customer_health` (`band`, `owner`, `sort`). money_calendar:
   `money_calendar` (`from`, `to`, `kind`, `customer_id`/`vendor_id`).
-- crm: `pipeline`. pipelines: `stage_duration`, `funnel`, `forecast`,
+- crm: `pipeline`, `people` (every contact, then a customer company with
+  no linked contact and no shared email; refuses past the row bound).
+  pipelines: `stage_duration`, `funnel`, `forecast`,
   `loss_reasons`, `overdue_deals` (`pipeline_id`, `owner=USERNAME`).
   leads: `lead_sources`, `lead_response_time`, `leads_recycled_due`,
   `lead_routing`, `lead_scoring` (`band_size=25`). activities: `worklist`,

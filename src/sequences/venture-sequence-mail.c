@@ -248,6 +248,8 @@ VentureMailMessage *venture_sequence_mail_build(VentureDatabase *database, Ventu
 	if (!venture_string_is_empty(private_body))
 		private_text = venture_document_html_to_text(private_body, -1);
 	{
+		/* A trailing slash on the public origin would miss the route. */
+		if (g_str_has_suffix(base, "/")) base[strlen(base) - 1] = '\0';
 		url = g_strdup_printf("%s/sequences/u/%s", base, token);
 		footer_text = g_strdup_printf("%s\n\nStop these emails: %s", private_text != NULL ? private_text : text != NULL ? text : "", url);
 		escaped_url = g_markup_escape_text(url, -1);

@@ -1223,8 +1223,12 @@ static gboolean file_stub(SyncRun *run, const gchar *folder, guint32 uidvalidity
 	g_autoptr(VentureEntity) inbound = NULL;
 	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
 	Parsed p;
-	gboolean parsed = raw && parse_message(raw, NULL, &p, NULL), ok;
+	gboolean parsed, ours, ok;
 	if (!raw) memset(&p, 0, sizeof p);
+	parsed = raw && parse_message(raw, NULL, &p, NULL);
+	/* Another tenant's readable mail stays out of this mailbox's rows.
+	 * An unreadable message cannot be classified, so it is still filed. */
+	ours = !run->reply_prefix || !parsed || reply_alias_matches(run, &p);
 	inbound = g_object_new(VENTURE_TYPE_MAIL_INBOUND, "organization-id", run->org, "account-id", run->account_id, "folder", folder,
 		"uid", (gint64)uid, "uid-validity", (gint64)uidvalidity, "uid-key", key, "skip-reason", reason,
 		"subject", parsed && p.subject && *p.subject ? p.subject : "(unreadable message)", "message-id", parsed ? p.message_id : NULL,
@@ -1232,7 +1236,7 @@ static gboolean file_stub(SyncRun *run, const gchar *folder, guint32 uidvalidity
 	parsed_clear(&p);
 	if (!venture_database_begin(run->db, error)) return FALSE;
 	ok = venture_connector_session_validate(run->connector, error) &&
-		(run->reply_prefix || venture_database_save(run->db, inbound, run->actor, error));
+		(!ours || venture_database_save(run->db, inbound, run->actor, error));
 	if (ok) {
 		cursor->uid = uid; cursor->failed_uid = 0; cursor->attempts = 0;
 		cursor_set(run->cursors, folder, cursor);

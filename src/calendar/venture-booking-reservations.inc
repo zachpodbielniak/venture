@@ -277,6 +277,30 @@ static gboolean booking_cancel_records(VentureBookingService *self, VentureEntit
 	return reservation_write(self, reservation, error) && venture_database_save(self->database, activity, actor, error);
 }
 
+/* Confirmation writes "Resources: …" into the meeting. A move that only
+ * updates the JSON leaves the calendar naming the lane that was left. */
+static void booking_replace_resources(VentureEntity *activity, const gchar *names_json)
+{
+	g_autofree gchar *body = NULL, *label = NULL, *line = NULL, *next = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_auto(GStrv) lines = NULL;
+	guint i;
+	g_object_get(activity, "body", &body, NULL);
+	if (body == NULL) return;
+	node = venture_json_parse(names_json, NULL);
+	label = booking_names_label(node != NULL && JSON_NODE_HOLDS_ARRAY(node) ? json_node_get_array(node) : NULL);
+	line = g_strdup_printf("Resources: %s", label != NULL ? label : "");
+	lines = g_strsplit(body, "\n", -1);
+	for (i = 0; lines != NULL && lines[i] != NULL; i++)
+		if (g_str_has_prefix(lines[i], "Resources: ")) {
+			g_free(lines[i]);
+			lines[i] = g_strdup(line);
+			break;
+		}
+	next = g_strjoinv("\n", lines);
+	g_object_set(activity, "body", next, NULL);
+}
+
 VentureEntity *venture_booking_service_manage_selected(VentureBookingService *self, VentureEntity *page,
 	const gchar *capability, const gchar *start, const gchar *resource,
 	GDateTime *now, const VentureActor *actor, GError **error)
@@ -315,6 +339,7 @@ VentureEntity *venture_booking_service_manage_selected(VentureBookingService *se
 		if (busy == NULL) { page_clear(&shape); goto fail; }
 		names = booking_allocate(busy, when, ends, &shape, resource, MAX(booking_int(reservation, "group-size"), 1), error);
 		if (names == NULL) { page_clear(&shape); goto fail; }
+		booking_replace_resources(activity, names);
 		g_object_set(activity, "owner", shape.owner, "starts-at", when, "ends-at", ends, "due-at", when,
 			"booking-resources", names, NULL);
 		secret = venture_generate_token(32);

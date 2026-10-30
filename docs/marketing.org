@@ -151,8 +151,11 @@ receive that same page. =POST= to the same URL with form data
 =List-Unsubscribe=One-Click= performs idempotent withdrawal. The capability
 selects its retained organization/address; no login, cookie, caller-supplied
 organization or redirect is needed. A malformed/unknown capability changes
-nothing. POST bodies are bounded to 1 KiB. The confirmation and response have
-no-store and no-referrer headers.
+nothing. POST bodies are bounded to 1 KiB. Every public answer is
+=Cache-Control: no-store, private=. The preference page and its confirmation
+use =Referrer-Policy: same-origin=, so the form POST stays a same-origin
+request. The open pixel, the click redirect and every other answer use
+=no-referrer=, so the tracking URL is not sent to the destination.
 
 Withdrawal cancels pending marketing recipients and applicable sequence
 outreach, including previously queued mail. It does not claim to retract an

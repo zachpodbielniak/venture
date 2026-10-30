@@ -282,9 +282,11 @@ each resource declares its minimum and maximum. Names are unique within a
 page and should remain stable while bookings exist. A confirmed booking stores
 the assigned names and group size on its private reservation and its meeting,
 so the owner can see them on the calendar and record. A job's optional
-=booking_resource= names the resource it occupies; a job without one still
-blocks the whole booking window. A planned meeting without a named resource
-also blocks the whole window. Cancellation releases the names; rescheduling
+=booking_resource= names the resource it occupies; a job without one, including
+a blank string, still blocks the whole booking window. A planned meeting
+without a named resource also blocks the whole window, and so does a meeting
+whose stored list is empty (=[]=, what a page with no lanes records). Adding
+lanes later does not reopen that time. Cancellation releases the names; rescheduling
 checks availability again and preserves the group size. Automatic selection
 assigns the first free resource at the new time; pick selection keeps the
 chosen resource unless the visitor selects another. The booking service

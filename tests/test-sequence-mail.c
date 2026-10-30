@@ -116,6 +116,23 @@ static guint web_request(SoupSession *session, const gchar *base, const gchar *m
 	return status;
 }
 
+/* A public origin saved with a trailing slash must still hit /sequences/u/. */
+static void test_unsubscribe_trailing_slash(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) queued = NULL;
+	g_autofree gchar *unsubscribe = NULL;
+	(void)unused;
+	g_object_set(venture_sequence_service_get(f->db), "base-url", "https://example.test/", NULL);
+	g_assert_cmpint(venture_sequence_service_run_due(venture_sequence_service_get(f->db), 1, f->now, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	queued = messages(f);
+	g_assert_cmpuint(queued->len, ==, 1);
+	g_object_get(g_ptr_array_index(queued, 0), "private-unsubscribe-url", &unsubscribe, NULL);
+	g_assert_true(g_str_has_prefix(unsubscribe, "https://example.test/sequences/u/"));
+	g_assert_null(strstr(unsubscribe, "example.test//"));
+}
+
 static void test_outbox(Fixture *f, gconstpointer unused)
 {
 	g_autoptr(GError) error = NULL;
@@ -490,6 +507,7 @@ int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/sequence-mail/outbox", Fixture, NULL, setup, test_outbox, teardown);
+	g_test_add("/sequence-mail/unsubscribe-trailing-slash", Fixture, NULL, setup, test_unsubscribe_trailing_slash, teardown);
 	g_test_add("/sequence-mail/missing-public-url", Fixture, NULL, setup, test_missing_public_url, teardown);
 	g_test_add("/sequence-mail/inbound-reply", Fixture, NULL, setup, test_reply, teardown);
 	g_test_add("/sequence-mail/reply-before-final-send", Fixture, GINT_TO_POINTER(1), setup, test_reply, teardown);

@@ -20,7 +20,9 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   subtask under a task/story/bug/research, required -- judged only when
   written), `repo_id -> forge_repo`, `milestone_id`, `goal_id -> goal`,
   `release_id`, `sprint_id`, `event_id` (planner: the event it prepares),
-  `story_points`, `estimate_hours`, `due_at`,
+  `story_points`, `estimate_hours`, `due_at`, `until_at` (work ends;
+  refused when written earlier than `due_at`; an unchanged old row stays
+  editable),
   `resolution`, `tags`. Derived: `resolved_at`, SLA due times
   (`first_response_due_at`, `resolution_due_at`, `first_responded_at`,
   `sla_breached`), `logged_hours`. `satisfaction`

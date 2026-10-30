@@ -30,7 +30,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =periods=    | finance         | fiscal_year, fiscal_period, report_snapshot; =snapshot_vs_live= | |
 | =crm=        | core            | company, contact, interaction, deal, deal_contact, competitor, deal_competitor; =pipeline=, =deals_without_decision_maker=, =competitor_win_loss=, =people= |                       |
 | =invoicing=  | finance, crm    | invoice, invoice_line                                            |                       |
-| =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement= | |
+| =receivables= | finance, invoicing | payment, payment_allocation, customer_credit, refund, invoice_event; =receivables=, =customer_statement=, =open_invoices= | |
 | =orgaccess=  | core            | organization_membership, team, team_membership; record ownership | |
 | =integrations= | orgaccess | integration_connection; encrypted organization provider bindings, rotation and revocation; =/organizations/:id/settings/*= | |
 | =stripe= | receivables, integrations | stripe_price_link, stripe_customer_link, stripe_payment_link, stripe_checkout, stripe_event, stripe_authorization, processor_payout, processor_payout_item, processor_dispute, processor_exception | =stripe.enabled= (opt-in) |

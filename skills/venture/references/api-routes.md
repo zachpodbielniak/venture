@@ -120,7 +120,8 @@ in the repository lists today's.
 | `POST /mail/:action` (send, test, deliver), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss`, `GET /mail/preview/:kind/:id` (owner/admin: the email a sender would queue, with its checks; `kind=message` for a queued row) | `mail ...`, `mail preview KIND ID` |
 | `GET /email-design`, `GET /email-design/:id` (builder, owner/admin), `POST /email-design/new\|images\|logo-ask/dismiss`, `POST /email-design/:id/blocks\|brief\|edit\|undo`, public `GET /i/:org/:file` (hosted image, no cookie) | `act mail_template design_email\|edit_design\|undo_design\|rebuild_designs` |
 | `POST /calendar/sync` | `calendar sync` |
-| `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`); the same answer as the page `/calendar`, the feed `/calendar.ics` and the org-agenda file `/calendar.org`, all three at the site root, not under `/api/v1` | `calendar show [k=v ...]`, `calendar org [k=v ...]` |
+| `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`; API also `on=YYYY-MM-DD` with `time_zone`, together); the same answer as the page `/calendar`, the feed `/calendar.ics` and the org-agenda file `/calendar.org`, all three at the site root, not under `/api/v1` | `calendar show [k=v ...]`, `calendar org [k=v ...]` |
+| `POST /mail_accounts/:id/connector` | rotate a booking reply mailbox's sealed password |
 | `POST /calendar/reminders` (editor): the event reminder sweep, `{"reminded": N}` | `calendar remind` |
 | `GET /roadmap` (`goal_id`, `venture_id`, `from`, `to`, `done`, `organization_id`): goals, milestones and epics with progress; the page is `/roadmap` | `roadmap [k=v ...]` |
 
@@ -141,7 +142,8 @@ in the repository lists today's.
 `/login` (+ `/login/mfa`), `/f/:token` (lead capture), `/q/:token` and
 `/q/:token/accept` (quote acceptance), `/portal/:token` (customer portal,
 own subscriptions only), `/supplier/:token` (supplier portal),
-`/book/:slug` (booking page), `/t/o/:token.gif`, `/t/c/:token/:n` and
+`/book/:slug` (booking page), `/t/o/:token.gif`, `/t/c/:token/:n`,
+`/sequences/u/:token` (sequence one-click stop; GET is the form) and
 `/marketing/t|u/...` (tracking and unsubscribe), `/attribution.js` and
 `/attribution/:site/:operation`, `/hooks/lightsite/:site/:connection`,
 `/federation/v1/identity|request` (signed), `/docs`. The web UI's own pages
@@ -168,6 +170,9 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `GET /lightsite/billing/:organization_id/notifications` | owner notification facts, no payment credentials | -- |
 | `GET /lightsite/billing/:organization_id` | business plan, balance and own Stripe status | -- |
 | `GET /lightsite/billing` | staff billing overview | -- |
+| `POST /lightsite/schedule-tokens/:id/rotate` | replace that business's `lightsite:schedule` token; secret once | -- |
+| `POST /lightsite/schedule-tokens/:id/revoke` | deactivate that business's schedule tokens | -- |
+| `GET /marketing_consent/current` | current marketing permission for one address (viewer, no-store) | -- |
 
 Hosted browser authentication (not bearer API routes): `GET /auth/hosted/start`
 accepts a local `return_to` path; `GET /auth/hosted/callback` consumes the

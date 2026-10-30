@@ -1997,6 +1997,39 @@ static void test_reply_alias_scope(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(recipient, ==, "r-first+1@lightsite.app");
 }
 
+/* A prefixed mailbox used to advance past its own unreadable message
+ * without a stub, because every stub was skipped once a prefix was set. */
+static void test_reply_alias_stub(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) a = g_object_new(VENTURE_TYPE_MAIL_ACCOUNT, "organization-id", f->org,
+		"address", "ops@venture.test", "imap-host", "imap.venture.test", "imap-port", (gint64)993,
+		"imap-tls", "tls", "username", "ops@venture.test", "folders", "INBOX",
+		"reply-alias-prefix", "r-first+", "active", TRUE, NULL);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) inbound = NULL;
+	g_autofree gchar *mine = mail("Ada <ada@example.test>", "r-first+1@lightsite.app", "Poison", "mine@example.test",
+		"X-Original-To: r-first+1@lightsite.app\r\n", "Please bring a leash.");
+	g_autofree gchar *reason = NULL;
+	gint i;
+	(void)data;
+	save(f, a);
+	configure_account(f, a, "app-password");
+	venture_database_add_save_validator(f->db, VENTURE_TYPE_INTERACTION, refuse_poison, NULL, NULL);
+	venture_fake_imap_client_add_message(f->imap, "INBOX", 1, mine);
+	for (i = 1; i <= 2; i++) {
+		g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, -1);
+		g_clear_error(&error);
+		g_assert_cmpint(count_type(f, "mail_inbound"), ==, 0);
+	}
+	/* A reply-alias mailbox does not count a stub in the filed total. */
+	g_assert_cmpint(venture_mail_sync_service_sync(f->service, a, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpint(count_type(f, "mail_inbound"), ==, 1);
+	inbound = rows(f, VENTURE_TYPE_MAIL_INBOUND);
+	g_object_get(g_ptr_array_index(inbound, 0), "skip-reason", &reason, NULL);
+	g_assert_nonnull(strstr(reason, "Skipped after 3 attempts"));
+}
+
 /* A lead's mail went to the unmatched list, deals were never linked, and
  * a sender turned into a contact kept none of its earlier mail. */
 static void test_leads_and_deals(Fixture *f, gconstpointer data)
@@ -2208,6 +2241,7 @@ int main(int argc, char **argv)
 	g_test_add("/mail-sync/hostile-message-bounds", Fixture, NULL, setup, test_hostile_message_bounds, teardown);
 	g_test_add("/mail-sync/sync-since", Fixture, NULL, setup, test_sync_since, teardown);
 	g_test_add("/mail-sync/reply-alias-scope", Fixture, NULL, setup, test_reply_alias_scope, teardown);
+	g_test_add("/mail-sync/reply-alias-stub", Fixture, NULL, setup, test_reply_alias_stub, teardown);
 	g_test_add("/mail-sync/leads-and-deals", Fixture, NULL, setup, test_leads_and_deals, teardown);
 	g_test_add("/mail-sync/migration", Fixture, NULL, setup, test_migration, teardown);
 	g_test_add("/mail-sync/socket-xoauth2", Fixture, NULL, setup, test_socket_xoauth2, teardown);

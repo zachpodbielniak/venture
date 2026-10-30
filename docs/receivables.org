@@ -35,7 +35,8 @@ open invoices in that organization. Each row has =id= (integer), =number=,
 =customer_name=, =status= (=sent= or =partially_paid=), =due_at= (date or
 null), and =open_balance= with =amount= in minor units, =currency=,
 =exponent=, and =formatted=. It includes invoices that are not yet due and
-excludes settled, void, draft, and zero-balance invoices. The balance comes
+excludes settled, void, draft, and zero-balance invoices. More issued
+invoices than the aggregate row bound is a refusal, not a short list. The balance comes
 from =venture_settlement_service_invoice_balance()=, including allocations,
 credits, refunds, and late fees; rows are never summed across currencies.
 This is a current-state read, independent of the report period. The

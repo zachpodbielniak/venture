@@ -5,7 +5,7 @@ attribution, territories, mail and calendars. Conventions are in
 [data-model.md](data-model.md); usage is in [crm.md](crm.md),
 [outreach.md](outreach.md) and [mail.md](mail.md).
 
-## crm (requires core) -- report `pipeline`
+## crm (requires core) -- reports `pipeline`, `people`
 
 - `company` -- an outside business: customer, prospect, supplier,
   marketplace or partner (`kind` [customer|prospect|supplier|platform|partner|other]).
@@ -159,13 +159,15 @@ lookback/retention days; owner/admin only), `attribution_visitor`
   `email_design_version` (written only by the design service).
 - mail_sync (requires mail, crm, leads): `mail_account` (IMAP mailbox;
   `address`, `imap_host`, `folders`, `capture_address`,
-  `private_owner_id`; sync state fields are the sweep's), `mail_inbound`
+  `private_owner_id`, `reply_alias_prefix` set only at creation; sync
+  state fields are the sweep's), `mail_inbound`
   (filed message, read-only; `skip_reason` on a stub),
   `mail_unmatched_sender` (`dismissed`).
 - calendar (requires activities, crm, leads): `calendar_account` (CalDAV;
   `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
   `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
-  `timezone`, `availability` JSON, `horizon_days`, `price` money and `price_unit`
+  `timezone`, `availability` JSON, `horizon_days`, `capacity`, `resources`
+  JSON, `resource_selection`, `group_overflow`, `price` money and `price_unit`
   visit/night/hour/day; serves `/book/<slug>`, `?format=service` for the price).
 
 ## Phone and text (`telephony` module; docs/telephony.org)

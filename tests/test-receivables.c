@@ -1537,6 +1537,29 @@ test_open_invoices_report(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(state_dir);
 }
 
+/* Issued invoices past the aggregate bound must not come back short:
+ * a missing row would look like a settled customer. */
+static void
+test_open_invoices_bound(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+	VentureReportResult *result;
+
+	(void)data;
+	g_object_unref(invoice_new(f, "ONE", "2026-07-01", "10 USD"));
+	g_object_unref(invoice_new(f, "TWO", "2026-07-01", "10 USD"));
+	venture_aggregate_set_max_rows(1);
+	json_object_set_int_member(options, "organization_id", f->organization_id);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "open_invoices");
+	g_assert_nonnull(report);
+	result = venture_report_generate(report, f->context, NULL, options, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	venture_aggregate_set_max_rows(0);
+}
+
 static gint64
 account_id_for_code(Fixture *f, const gchar *code)
 {
@@ -2368,6 +2391,7 @@ main(int argc, char **argv)
 	ADD("module-off-invoice", test_module_off_invoice);
 	ADD("statement-options", test_statement_options);
 	ADD("open-invoices-report", test_open_invoices_report);
+	ADD("open-invoices-bound", test_open_invoices_bound);
 	ADD("direct-paid-refused", test_direct_paid_refused);
 	ADD("partial-full", test_partial_full);
 	ADD("atomic-failure", test_atomic_failure);

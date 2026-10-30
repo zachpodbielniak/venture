@@ -127,10 +127,10 @@ the one inbox, AI on messages, workflow settings) are in it too, against
 Competitor records and win/loss reporting were added on the remaining-gaps
 epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-26 against c8279bde -->
+<!-- skill-baseline:start -- incrementally updated 2026-10-29 against 63694750 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=c8279bde
+base=63694750
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -159,6 +159,12 @@ charges send it as a suffix, and an invoice uses it as the full descriptor
 only at 5 characters or more (`billing.md`).
 Public booking limits use a relay's last `X-Forwarded-For` hop only when
 that socket is listed in `security.booking_trusted_relays` (`mail.md`).
+Named booking resources, a published price, job windows that block public
+slots, sequence one-click stop (`/sequences/u/:token`), a per-business
+Lightsite schedule token, `until_at` on tickets, and the `people` and
+`open_invoices` reports (both refuse past the row bound) are in this
+baseline (`mail.md`, `outreach.md`, `operations.md`, `reports.md`,
+`planner.md`).
 A company can be a customer and a supplier (`crm.md`). Browser reports
 follow the sidebar business when that business is readable (`reports.md`).
 CRM import keeps attachment bytes and dated commercial history (`crm.md`).

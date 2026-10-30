@@ -356,6 +356,30 @@ test_people_report(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(directory);
 }
 
+/* A truncated people list would omit a customer who has no contact.
+ * The report refuses past the aggregate bound instead. */
+static void
+test_people_report_bound(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonObject) options = json_object_new();
+	g_autoptr(GError) error = NULL;
+	VentureReport *report;
+	VentureReportResult *result;
+
+	(void)data;
+	g_object_unref(company(f, "One", "customer", FALSE));
+	g_object_unref(company(f, "Two", "customer", FALSE));
+	venture_aggregate_set_max_rows(1);
+	json_object_set_int_member(options, "organization_id", f->org);
+	report = venture_report_registry_lookup(venture_context_get_report_registry(f->context), "people");
+	g_assert_nonnull(report);
+	result = venture_report_generate(report, f->context, NULL, options, &error);
+	g_assert_null(result);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT);
+	g_assert_nonnull(strstr(error->message, "cannot return a partial list"));
+	venture_aggregate_set_max_rows(0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -366,6 +390,7 @@ main(int argc, char **argv)
 	g_test_add("/company-roles/bill-from-customer-who-supplies", Fixture, NULL, setup, test_bill_from_customer_who_supplies, teardown);
 	g_test_add("/company-roles/list-views", Fixture, NULL, setup, test_list_views, teardown);
 	g_test_add("/company-roles/people-report", Fixture, NULL, setup, test_people_report, teardown);
+	g_test_add("/company-roles/people-report-bound", Fixture, NULL, setup, test_people_report_bound, teardown);
 	g_test_add_func("/company-roles/upgrade-backfill", test_upgrade_backfill);
 	return g_test_run();
 }

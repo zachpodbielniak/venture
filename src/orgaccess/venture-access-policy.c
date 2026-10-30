@@ -1263,6 +1263,10 @@ public_capability_request(HtmxRequest *request)
 		return method == HTMX_METHOD_GET && (!g_strcmp0(suffix, "/fragment") || !g_strcmp0(suffix, "/schema"));
 	}
 	if (!g_strcmp0(path, "/pub/forms.js")) return method == HTMX_METHOD_GET;
+	/* One-click sequence stop. The token is the credential; a signed-in
+	 * user with no membership must not be sent to /account instead. */
+	if (g_str_has_prefix(path, "/sequences/u/") && path[13] != '\0' && strchr(path + 13, '/') == NULL)
+		return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
 	/* The interface's stylesheets and scripts: /pub/ui/<version>/<name>. */
 	if (g_str_has_prefix(path, "/pub/ui/") && path[8] != '\0' && path[8] != '/')
 	{
@@ -1283,7 +1287,10 @@ schedule_token_route(VentureDatabase *database, const VentureAuthPrincipal *acto
 	const gchar *path = htmx_request_get_path(request);
 	if (actor->token_id <= 0) return TRUE;
 	token = venture_database_get(database, VENTURE_TYPE_API_TOKEN, actor->token_id, NULL);
-	if (token) g_object_get(token, "scopes", &scopes, NULL);
+	/* A missing row is not "some other token". Letting it through would
+	 * open every editor route of the business the principal still names. */
+	if (token == NULL) return FALSE;
+	g_object_get(token, "scopes", &scopes, NULL);
 	if (g_strcmp0(scopes, "lightsite:schedule")) return TRUE;
 	return htmx_request_get_method(request) == HTMX_METHOD_POST &&
 		(!g_strcmp0(path, "/api/v1/dunning_policy/0/actions/sweep") ||

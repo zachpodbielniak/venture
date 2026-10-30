@@ -1117,6 +1117,13 @@ static void test_preference_page(Fixture *f, gconstpointer data)
 		g_autofree gchar *other = unsubscribe_token(recipient_for(f, f->send, "bob@example.com"));
 		path = g_strdup_printf("/marketing/u/%s", token);
 		bob_path = g_strdup_printf("/marketing/u/%s", other);
+		{
+			g_autofree gchar *pixel_policy = NULL, *click_policy = NULL;
+			g_assert_cmpuint(http_with_policy(session, base, "GET", "/marketing/t/o/not-a-token.gif", NULL, NULL, &pixel_policy), ==, 404);
+			g_assert_cmpstr(pixel_policy, ==, "no-referrer");
+			g_assert_cmpuint(http_with_policy(session, base, "GET", "/marketing/t/c/not-a-token/1", NULL, NULL, &click_policy), ==, 404);
+			g_assert_cmpstr(click_policy, ==, "no-referrer");
+		}
 	}
 	g_assert_cmpuint(http_with_policy(session, base, "GET", path, NULL, &text, &policy), ==, 200);
 	g_assert_cmpstr(policy, ==, "same-origin");

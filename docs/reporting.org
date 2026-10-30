@@ -30,8 +30,8 @@ about it.
 | =monthly=    | revenue, expenses, arbitrage and profit month by month and currency |
 | =ideas=      | ideas ranked by opportunity and confidence against effort    |
 | =receivables= | outstanding invoices bucketed by how far past due           |
-| =open_invoices= | every sent or partially paid invoice with a positive balance, including those not yet due |
-| =people=     | every contact, then customer companies with no linked contact or shared email |
+| =open_invoices= | every sent or partially paid invoice with a positive balance, including those not yet due; refuses past the aggregate row bound |
+| =people=     | every contact, then customer companies with no linked contact or shared email; refuses past the aggregate row bound |
 | =releases=   | releases out in the period, with tickets, builds, deployments |
 | =lead_time=  | days from a ticket being raised to its release going out     |
 | =incidents=  | incidents in the period, hours to resolve, the mean          |
@@ -91,7 +91,9 @@ spaces; an empty email does not match. A company with =kind=customer= is
 eligible, including one that also supplies the organization. Other kinds
 are excluded. The report reads the records as they stand, so =period= does
 not narrow them. The normal report access policy checks the requested
-organization, and the CRM module controls availability.
+organization, and the CRM module controls availability. More contacts
+or customer companies than the aggregate row bound is a refusal, not a
+short list.
 
 ** Market data and arbitrage
 

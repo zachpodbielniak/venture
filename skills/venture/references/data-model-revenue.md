@@ -48,7 +48,8 @@ headline metrics, Stripe and commerce connectors. Conventions are in
   (`kind` e.g. `credit_note`, `remaining`), `refund` (names an
   `allocation_id` or unused `credit_id`), `customer_portal_access`
   (tokenised portal link; *action* `revoke`). Reports `receivables`,
-  `customer_statement`, `cash_vs_booked`.
+  `customer_statement`, `cash_vs_booked`, `open_invoices` (sent and
+  partially paid with a positive balance; refuses past the row bound).
 
 ## quotes (requires crm, invoicing) -- report `quotes`
 

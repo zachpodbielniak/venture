@@ -439,8 +439,10 @@ What went wrong decides what happens next:
   folder stops at that UID and its =attempts= count in the cursor. On the
   third failing sync the message is filed as a stub -- a =mail_inbound= row
   with =skip_reason=, no document and no CRM records -- and the folder moves
-  on. List them with =/e/mail_inbound?skip_reason=...= or =venturectl list
-  mail_inbound=.
+  on. A mailbox with a reply alias still files a stub for its own message
+  and for one that cannot be parsed. Another tenant's readable mail is
+  skipped and is not stored. List them with =/e/mail_inbound?skip_reason=...=
+  or =venturectl list mail_inbound=.
 - *Transient persistence* (a locked database, a record edited meanwhile,
   missing attachment storage): the sync stops and the same message is tried
   on the next call, spending no attempt.

@@ -183,4 +183,9 @@ not change their saved name, password or authority. The same key and trimmed
 request replays; a different name under that key is 409 and writes nothing.
 Preserve the idempotency key and the full seven-member body on retry. The
 new owner has no local password. See `docs/lightsite-accounts.org` for
-bounds and authority.
+bounds and authority. A per-business schedule token (`lightsite:schedule`,
+editor, `vk_`) is minted at Lightsite sign-up and may call only
+`POST /api/v1/dunning_policy/0/actions/sweep` and `POST /api/v1/mail/deliver`.
+`POST /api/v1/lightsite/schedule-tokens/:id/rotate|revoke` needs the trusted
+admin bearer, returns a new secret once on rotate, and deactivates the
+previous tokens of that scope. See `docs/lightsite-schedule-token.org`.

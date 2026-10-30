@@ -86,20 +86,36 @@ open_invoice_report(VentureContext *context, VentureDateRange *period,
 	VentureSettlementService *service;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) invoices = NULL;
+	g_autoptr(GPtrArray) statuses = NULL;
 	g_autoptr(VentureReportResult) result = NULL;
+	gint bound;
 	guint i;
 
 	(void)period;
+	/* Status is applied before the row bound. A zero balance is still
+	 * decided in C, so the bound counts every issued invoice, and a
+	 * list past it is a refusal rather than a short statement. */
+	bound = venture_aggregate_get_max_rows();
 	database = venture_context_get_database(context);
 	service = venture_settlement_service_get(database);
 	query = venture_query_new(VENTURE_TYPE_INVOICE);
 	venture_query_set_organization(query, organization(context, options));
-	venture_query_set_limit(query, 0);
-	if (!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
+	statuses = g_ptr_array_new_with_free_func(g_free);
+	g_ptr_array_add(statuses, g_strdup(venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, VENTURE_INVOICE_STATUS_SENT)));
+	g_ptr_array_add(statuses, g_strdup(venture_enum_to_nick(VENTURE_TYPE_INVOICE_STATUS, VENTURE_INVOICE_STATUS_PARTIALLY_PAID)));
+	venture_query_set_limit(query, (guint)bound + 1);
+	if (!venture_query_add_filter(query, "status", VENTURE_FILTER_OP_IN, statuses, error) ||
+		!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 	invoices = venture_database_find(database, query, error);
 	if (invoices == NULL)
 		return NULL;
+	if (invoices->len > (guint)bound)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"More than %d issued invoices; the open invoice report cannot return a partial list", bound);
+		return NULL;
+	}
 	result = venture_report_result_new("Open invoices", NULL);
 	venture_report_result_add_column(result, "id", "ID", VENTURE_REPORT_COLUMN_NUMBER);
 	venture_report_result_add_column(result, "number", "Invoice", VENTURE_REPORT_COLUMN_TEXT);

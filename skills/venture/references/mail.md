@@ -100,6 +100,11 @@ venturectl mail dismiss 5                            # keep the address as an ig
   `cursors` and `sync_lease_until` are the sweep's -- do not write them.
   Five failed syncs ending in a refused login set `active=false`: fix the
   credentials, then `update mail_account ID active=true`.
+- `reply_alias_prefix` is set only when the account is created
+  (`POST /api/v1/mail_accounts/:id/connector` rotates the sealed mailbox
+  password). A later change of the prefix is refused. Matching folds the
+  prefix, so mixed case still keeps `Reply-To`. A repeated failure of this
+  mailbox's own message is still a stub; another tenant's readable mail is not.
 - Generic writes to `mail_inbound` are refused; `mail_unmatched_sender` is
   ordinary CRM data. Read what the sweep filed with `list mail_inbound`
   and `list mail_unmatched_sender dismissed=false`. A `mail_inbound` row with `skip_reason` is a stub
@@ -122,10 +127,14 @@ is immutable. Generic writes to `calendar_event` are refused.
 
 `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
 IANA `timezone`, `availability` JSON of weekday to `HH:MM-HH:MM` windows,
-`horizon_days`, `price` and `price_unit`) is ordinary editor data and serves the public
-`/book/<slug>` page, which books a contact and a meeting. `?format=service`
+`horizon_days`, `capacity`, `resources`, `price` and `price_unit`) is ordinary editor data and serves the public
+`/book/<slug>` page, which books a contact and a meeting. A nonempty
+`resources` list takes `group_size` (1 to 10000). `?format=service`
 reads the price; a nightly price needs `arrival_date` and `departure_date`
-and the reply carries the stay `estimate`. Public booking
+and the reply carries the stay `estimate`. A booked or invoiced job on
+that owner blocks the overlapping slots. A meeting stored as `[]`, and a job
+whose `booking_resource` is blank, block the whole window. Rescheduling
+rewrites the meeting's `Resources:` line to the lanes it took. Public booking
 and its management link are rate-limited per socket address. List a
 relay's address in `security.booking_trusted_relays` when that relay
 sends the visitor as the last `X-Forwarded-For` hop; an unlisted peer

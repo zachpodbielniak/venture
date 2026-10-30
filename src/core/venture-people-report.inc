@@ -46,28 +46,48 @@ people_report(VentureContext *context, VentureDateRange *period,
 	g_autoptr(GHashTable) emails = NULL;
 	g_autoptr(VentureReportResult) result = NULL;
 	gint64 organization;
+	gint bound;
 	guint i;
 
 	(void)period;
+	/* A partial list would hide a customer who has no contact. Refuse
+	 * past the aggregate bound instead of truncating either side. */
+	bound = venture_aggregate_get_max_rows();
 	organization = options != NULL ? venture_json_object_get_int(options, "organization_id", 0) : 0;
 	if (organization == 0)
 		organization = venture_context_get_default_organization_id(context);
 	contacts_query = venture_query_new(VENTURE_TYPE_CONTACT);
 	venture_query_set_organization(contacts_query, organization);
-	venture_query_set_limit(contacts_query, 0);
+	venture_query_set_limit(contacts_query, (guint)bound + 1);
 	if (!venture_query_add_order(contacts_query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 	contacts = venture_database_find(database, contacts_query, error);
 	if (contacts == NULL)
 		return NULL;
+	if (contacts->len > (guint)bound)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"More than %d contacts; the people report cannot return a partial list", bound);
+		return NULL;
+	}
 	companies_query = venture_query_new(VENTURE_TYPE_COMPANY);
 	venture_query_set_organization(companies_query, organization);
-	venture_query_set_limit(companies_query, 0);
-	if (!venture_query_add_order(companies_query, "id", VENTURE_SORT_ASCENDING, error))
+	venture_query_set_limit(companies_query, (guint)bound + 1);
+	/* Kind is the eligibility rule. Suppliers must not consume the bound
+	 * and then be dropped, or a narrow customer list is refused. */
+	if (!venture_query_add_filter_string(companies_query, "kind", VENTURE_FILTER_OP_EQ,
+			"customer", error) ||
+		!venture_query_add_order(companies_query, "id", VENTURE_SORT_ASCENDING, error))
 		return NULL;
 	companies = venture_database_find(database, companies_query, error);
 	if (companies == NULL)
 		return NULL;
+	if (companies->len > (guint)bound)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"More than %d companies; the people report cannot return a partial list", bound);
+		return NULL;
+	}
 	linked = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
 	emails = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	result = venture_report_result_new("People", NULL);

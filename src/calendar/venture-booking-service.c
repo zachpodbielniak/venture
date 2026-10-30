@@ -241,8 +241,58 @@ static gboolean append_job_busy(VentureBookingService *self, gint64 org, Page *p
 		Busy *b = g_new0(Busy, 1);
 		g_object_get(row, "window-start", &b->from, "window-end", &b->to, NULL);
 		b->resource = booking_string(row, "booking-resource");
+		/* A blank optional string is what a form posts for "no resource".
+		 * It must block the whole window, the same as a NULL. */
+		if (b->resource != NULL && b->resource[0] == '\0') g_clear_pointer(&b->resource, g_free);
 		if (b->from == NULL) { busy_free(b); continue; }
 		if (b->to == NULL) b->to = g_date_time_add_minutes(b->from, (gint)p->duration);
+		g_ptr_array_add(busy, b);
+	}
+	return TRUE;
+}
+/* Another owner's named meeting occupies a shared lane. Same-owner rows are
+ * already loaded, and an empty list is not a lane: confirm stores "[]" when
+ * the page had no resources, and that meeting still blocks the whole window.
+ * The window matches the job queries so old rows do not fill the bound. */
+static gboolean append_other_owner_meetings(VentureBookingService *self, gint64 org, Page *p,
+	GDateTime *now, gboolean open_end, GPtrArray *busy, GError **error)
+{
+	g_autoptr(VentureQuery) named = venture_query_new(VENTURE_TYPE_ACTIVITY);
+	g_autoptr(GPtrArray) named_rows = NULL;
+	g_autoptr(GDateTime) cutoff = NULL;
+	g_autoptr(GDateTime) horizon = g_date_time_add_days(now, (gint)p->horizon + 1);
+	g_autofree gchar *cutoff_text = NULL;
+	g_autofree gchar *horizon_text = venture_time_to_string(horizon);
+	gint64 lookback = MIN(p->buffer, (gint64)G_MAXINT - p->duration) + (open_end ? p->duration : 0);
+	guint i;
+	cutoff = g_date_time_add_minutes(now, -(gint)lookback);
+	if (cutoff == NULL) return refuse(error, VENTURE_ERROR_CONFIG, "The booking buffer is too long");
+	cutoff_text = venture_time_to_string(cutoff);
+	venture_query_set_organization(named, org);
+	venture_query_add_filter_int(named, "status", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_STATUS_PLANNED, NULL);
+	if (!venture_query_add_filter(named, "booking-resources", VENTURE_FILTER_OP_NOT_NULL, NULL, error) ||
+	    !venture_query_add_filter_string(named, "owner", VENTURE_FILTER_OP_NE, p->owner, error) ||
+	    !venture_query_add_filter_string(named, "starts-at", VENTURE_FILTER_OP_LT, horizon_text, error)) return FALSE;
+	if (open_end) {
+		if (!venture_query_add_filter(named, "ends-at", VENTURE_FILTER_OP_IS_NULL, NULL, error) ||
+		    !venture_query_add_filter_string(named, "starts-at", VENTURE_FILTER_OP_GT, cutoff_text, error)) return FALSE;
+	} else if (!venture_query_add_filter_string(named, "ends-at", VENTURE_FILTER_OP_GT, cutoff_text, error)) return FALSE;
+	venture_query_set_limit(named, 10001);
+	named_rows = venture_database_find(self->database, named, error);
+	if (named_rows == NULL) return FALSE;
+	if (named_rows->len > 10000) return refuse(error, VENTURE_ERROR_CONFLICT, "Too many named meetings to calculate availability");
+	for (i = 0; i < named_rows->len; i++) {
+		VentureEntity *row = g_ptr_array_index(named_rows, i);
+		g_autoptr(JsonArray) names = booking_names(row, "booking-resources");
+		g_autoptr(GDateTime) starts = NULL, ends = NULL;
+		Busy *b;
+		if (names == NULL || json_array_get_length(names) == 0) continue;
+		g_object_get(row, "starts-at", &starts, "ends-at", &ends, NULL);
+		if (starts == NULL) continue;
+		b = g_new0(Busy, 1);
+		b->from = g_date_time_ref(starts);
+		b->to = ends != NULL ? g_date_time_ref(ends) : g_date_time_add_minutes(starts, (gint)p->duration);
+		b->resources = g_steal_pointer(&names);
 		g_ptr_array_add(busy, b);
 	}
 	return TRUE;
@@ -317,31 +367,9 @@ static GPtrArray *load_busy(VentureBookingService *self, gint64 org, Page *p, GD
 		b->resources = reservation != NULL ? booking_names(reservation, "resource-names") : booking_names(row, "booking-resources");
 		g_ptr_array_add(busy, b);
 	}
-	if (p->resources != NULL && json_array_get_length(p->resources) > 0) {
-		g_autoptr(VentureQuery) named = venture_query_new(VENTURE_TYPE_ACTIVITY);
-		g_autoptr(GPtrArray) named_rows = NULL;
-		venture_query_set_organization(named, org);
-		venture_query_add_filter_int(named, "status", VENTURE_FILTER_OP_EQ, VENTURE_ACTIVITY_STATUS_PLANNED, NULL);
-		if (!venture_query_add_filter(named, "booking-resources", VENTURE_FILTER_OP_NOT_NULL, NULL, error)) return NULL;
-		venture_query_set_limit(named, 10001);
-		named_rows = venture_database_find(self->database, named, error);
-		if (named_rows == NULL) return NULL;
-		if (named_rows->len > 10000) return refuse(error, VENTURE_ERROR_CONFLICT, "Too many named meetings to calculate availability"), NULL;
-		for (i = 0; i < named_rows->len; i++) {
-			VentureEntity *row = g_ptr_array_index(named_rows, i);
-			g_autofree gchar *owner = booking_string(row, "owner");
-			g_autoptr(GDateTime) starts = NULL, ends = NULL;
-			Busy *b;
-			if (g_strcmp0(owner, p->owner) == 0) continue;
-			b = g_new0(Busy, 1);
-			g_object_get(row, "starts-at", &starts, "ends-at", &ends, NULL);
-			if (starts == NULL) { busy_free(b); continue; }
-			b->from = g_date_time_ref(starts);
-			b->to = ends != NULL ? g_date_time_ref(ends) : g_date_time_add_minutes(starts, (gint)p->duration);
-			b->resources = booking_names(row, "booking-resources");
-			g_ptr_array_add(busy, b);
-		}
-	}
+	if (p->resources != NULL && json_array_get_length(p->resources) > 0 &&
+	    (!append_other_owner_meetings(self, org, p, now, FALSE, busy, error) ||
+	     !append_other_owner_meetings(self, org, p, now, TRUE, busy, error))) return NULL;
 	if (venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "job") &&
 	    (!append_job_busy(self, org, p, now, FALSE, busy, error) ||
 	     !append_job_busy(self, org, p, now, TRUE, busy, error))) return NULL;
@@ -359,8 +387,10 @@ static gboolean booking_resource_free(GPtrArray *busy, GDateTime *start, GDateTi
 		if (g_date_time_compare(from, end) >= 0 || g_date_time_compare(to, start) <= 0) continue;
 		/* A different booking page blocks the entire slot. */
 		if (b->page > 0 && b->page != page->id) return FALSE;
-		if (b->resource != NULL) applies = g_strcmp0(b->resource, name) == 0;
-		if (b->resources != NULL) {
+		/* A blank name or an empty list is "no lane", so the row still
+		 * occupies the whole window. Only a real name narrows it. */
+		if (b->resource != NULL && b->resource[0] != '\0') applies = g_strcmp0(b->resource, name) == 0;
+		if (b->resources != NULL && json_array_get_length(b->resources) > 0) {
 			applies = FALSE;
 			for (j = 0; j < json_array_get_length(b->resources); j++)
 				if (g_strcmp0(json_array_get_string_element(b->resources, j), name) == 0) { applies = TRUE; break; }
@@ -644,6 +674,9 @@ gboolean venture_booking_service_estimate(VentureBookingService *self, VentureEn
 	gboolean dated = !venture_string_is_empty(arrival) || !venture_string_is_empty(departure);
 	GDate from, to;
 	gint nights;
+
+	g_date_clear(&from, 1);
+	g_date_clear(&to, 1);
 	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), FALSE);
 	g_return_val_if_fail(VENTURE_IS_BOOKING_PAGE(page), FALSE);
 	g_return_val_if_fail(estimate != NULL && summary != NULL, FALSE);
