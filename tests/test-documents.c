@@ -592,6 +592,43 @@ test_http_compose_guards(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(dir);
 }
 
+/* An API token has no browser organization cookie. An explicit business id
+ * must own the invoice instead of the server's default organization. */
+static void
+test_http_compose_organization(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureOrganization) other = venture_organization_new();
+	g_autoptr(VentureCompany) customer = venture_company_new();
+	g_autofree gchar *dir = g_dir_make_tmp("venture-documents-XXXXXX", NULL);
+	g_autofree gchar *body = NULL, *reply = NULL;
+	gint64 organization;
+	guint16 port = 0;
+	(void)data;
+	g_object_set(other, "name", "Other business", "slug", "other-business", NULL);
+	save(f, VENTURE_ENTITY(other));
+	organization = venture_entity_get_id(VENTURE_ENTITY(other));
+	g_object_set(customer, "name", "Buyer", "email", "buyer@example.test", NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(customer), organization);
+	save(f, VENTURE_ENTITY(customer));
+	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", FALSE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_true(venture_web_server_start(server, &error));
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"company_id\":%" G_GINT64_FORMAT ",\"due_days\":14,\"send\":false,\"lines\":[{\"description\":\"Repair\",\"quantity\":1,\"unit_price\":\"125 USD\"}]}",
+		organization, venture_entity_get_id(VENTURE_ENTITY(customer)));
+	g_assert_cmpuint(http_request(server, "POST", "/api/v1/invoices/compose", body, &reply), ==, 200);
+	{
+		g_autoptr(JsonParser) parser = json_parser_new();
+		g_assert_true(json_parser_load_from_data(parser, reply, -1, &error));
+		g_assert_no_error(error);
+		g_assert_cmpint(json_object_get_int_member(json_node_get_object(json_parser_get_root(parser)), "organization_id"), ==, organization);
+	}
+	venture_web_server_stop(server);
+	venture_test_remove_tree(dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -605,5 +642,6 @@ main(int argc, char **argv)
 	g_test_add("/documents/http-compose-approval", Fixture, NULL, setup, test_http_compose_approval, teardown);
 	g_test_add("/documents/http-compose", Fixture, NULL, setup, test_http_compose, teardown);
 	g_test_add("/documents/http-compose-guards", Fixture, NULL, setup, test_http_compose_guards, teardown);
+	g_test_add("/documents/http-compose-organization", Fixture, NULL, setup, test_http_compose_organization, teardown);
 	return g_test_run();
 }
