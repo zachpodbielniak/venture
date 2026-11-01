@@ -71,6 +71,58 @@ consumed or revoked capabilities fail; changes to the issuing administrator's
 membership or credential generation invalidate pending invitations. Accepting
 as an existing identity requires a fresh login afterward.
 
+* Owner invitations
+
+The owner of a business invites their own staff without a workspace
+administrator. It is the same invitation -- one capability, only its hash
+stored, accepted at =/account/invitation= into the same accounts and
+memberships -- issued under the owner's authority:
+
+| Route | Body |
+|-------+------|
+| =POST /api/v1/organizations/:id/invitations= | =email=, =role=, =idempotency_key=, =confirmed: true=, optional =name= |
+| =GET /api/v1/organizations/:id/invitations= | -- |
+| =POST /api/v1/organizations/:id/invitations/:invitation/resend= | exactly =idempotency_key= |
+| =POST /api/v1/organizations/:id/invitations/:invitation/revoke= | ={}= |
+
+- *Authority.* An active explicit =owner= membership of that business, now
+  and in the credential's minted snapshot, with a write-capable credential
+  (session, own token or linked provider token). Workspace administration
+  is not ownership; another business's owner, a viewer credential and the
+  business's editors and administrators get 403. Another business's
+  invitation is 404.
+- *What it grants.* Tenant role =member= and the chosen business role:
+  =admin=, =editor=, =accountant= or =viewer=, never =owner= and never
+  workspace administration.
+- *Mail.* The link is queued in the business's own outbox, so it is sent
+  through the business's own mail account and never the installation's;
+  the subject and body name the business and the inviting owner. The link
+  is =<origin>/account/invitation#code=<capability>= in the private body
+  only: a fragment never reaches a server, and the page moves it into its
+  form and off the address bar. =delivery= reports the outbox state
+  (=queued=, =sent= means the relay took it), the number of sends and
+  =mail_ready=, whether the business has a mail account at all.
+- *Retries.* The same key and request answers the first invitation and
+  queues nothing; the same key for another request is 409, and so is a
+  second pending invitation for the same address. Resend gives a new link
+  and a new seven-day expiry and kills the old link; repeating its key sends
+  nothing. Revoke kills the link and cancels a message the relay has not
+  taken; revoking again is the same answer. An accepted invitation is
+  neither resent nor revoked (409).
+- *Acceptance* re-checks the issuer: still an active workspace member and
+  still that business's owner at the membership version the invitation
+  pinned. An owner who is demoted or removed takes their pending
+  invitations with them. A revoked capability never accepts.
+
+The invitation record gains =issuer_organization_id= (zero for an
+administrator's), =issuer_owner_version=, =email=, =invitee_name=,
+=revoked_at=, =idempotency_key=, =request_hash=, =send_key=,
+=mail_message_id= and =sent_count= (migration =000999_owner_invitations=,
+paired, no backfill). =tests/test-owner-invitations.c= drives the routes
+against a hosted server and accepts through the tenant service; it failed
+against a server without the routes, and its demotion case fails with the
+pinned-owner check removed.
+
 * Lifecycle
 
 =active= permits ordinary operations. =read_only= permits reads but refuses

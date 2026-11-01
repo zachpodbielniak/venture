@@ -29,7 +29,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:lightsite-accounts.org][Lightsite account validation]] — scoped provisioning identity and enrolled-owner browser handoff
 - [[file:lightsite-schedule-token.org][Lightsite schedule tokens]] — issue, use, replace, and revoke business tokens
 - [[file:lightsite-billing.org][Lightsite billing]] — binding a Lightsite business to a plan in the billing organization, and what it owes
-- [[file:hosted-billing.org][Hosted enrollment and guarantee]] — saved payment authority, deferred first charge, attributed value and one-time account credit
+- [[file:hosted-billing.org][Hosted enrollment and guarantee]] — saved payment authority, deferred first charge, the owner's plan switch from the next bill, attributed value and one-time account credit
 
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way
 - [[file:quickstart.org][Quickstart]] — build it, run it, record your first sale
@@ -214,7 +214,7 @@ screen's ordinary sync-and-import test.
 - [[file:tenant-operations.org][Hosted platform operations]] — isolated provisioning, maintenance, restore and retained offboarding.
 
 - [[file:hosted-controls.org][Hosted control inventory and evidence matrix]] — implemented boundaries, evidence limits and launch gates.
-- [[file:hosted-workspaces.org][Hosted workspace authority]] — immutable identity, scoped administration/support and restored-credential quarantine.
+- [[file:hosted-workspaces.org][Hosted workspace authority]] — immutable identity, scoped administration/support, owner invitations in the business's own mail and restored-credential quarantine.
 
 - [[file:sales-performance.org][Sales territories and quotas]] — assignment, scoped owner authority, targets and actual performance.
 

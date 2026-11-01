@@ -157,6 +157,60 @@ make DEBUG=1 test-one T=test-stripe
 make DEBUG=1 test
 #+end_src
 
+* Owner plan switch
+
+The published promise is "move up or down any time; the change applies
+from your next bill". An owner switches plan themselves with two calls:
+
+| Route | Body |
+|-------+------|
+| =POST /api/v1/lightsite/billing/switch-preview= | exactly =organization_id= and =plan_price_id= |
+| =POST /api/v1/lightsite/billing/switch= | the same and =accepted: true= |
+
+*Authority.* Either the business's own owner -- an active explicit =owner=
+membership of that organization, held now and in the credential's minted
+snapshot, with a write-capable credential (a session, their own token or
+their linked provider token) -- or the trusted service token, which checks
+its dashboard user owns the business before forwarding. Workspace
+administration is not ownership. Another business's owner, a viewer
+credential and an editor of the business get 403.
+
+*What may be chosen.* An active, positive monthly or annual price of the
+billing organization, in the currency the business is already billed in:
+the rule enrollment uses. Anything else, including a retired price, another
+organization's price or another currency, is 422; nothing is converted.
+A business with no live subscription is 422, a paused one 422, one ending at
+period end, on prepaid terms or cancelled is 409.
+
+*When it applies.* On the next bill, whole. It is the billing service's own
+change at the end of the period, so =current_period_end= is the date, no
+invoice or credit is made today and nothing is prorated; the renewal then
+bills the new price for its whole period. Before go-live the next bill is the
+first one: the switch waits and publication issues the first invoice at the
+chosen price (=next_bill_at= is =null= and =starts_at_go_live= =true=).
+The billing service queues its ordinary price-change notice.
+
+*The answer* is the same object for both calls: =current=, =pending= (a
+switch already scheduled, or =null=), =chosen= (each with =plan_price_id=,
+=code=, =name=, =amount=, =currency=, =interval=), =effective= =next_bill=,
+=next_bill_at=, =starts_at_go_live=, =next_amount=, =charged_today=
+=false=, =prorated= =false=, =state= (=preview=, =scheduled= or
+=unchanged=) and a one-sentence =summary= the owner agrees to. A preview
+writes nothing. A confirmation without =accepted: true= is 422.
+
+*Retries.* Confirming the price that is already scheduled answers the first
+confirmation again (200) and writes nothing; confirming today's price with
+nothing scheduled is =unchanged= (200). A first confirmation is 201 and keeps
+an immutable =switch= receipt. Changing one's mind back to today's price is a
+switch like any other. A concurrent change of the subscription is 409
+through its optimistic version.
+
+=test-hosted-billing= =/hosted-billing/switch-unpublished=,
+=/switch-published= and =/switch-refusals= cover the unpublished first bill
+at the new price, the renewal billing the whole new price with nothing in
+between, and every refusal above; each failed against a server without the
+routes before the feature was added.
+
 * Fixed prepaid terms
 
 =POST /api/v1/lightsite/billing/prepay= uses the same trusted-service gate as

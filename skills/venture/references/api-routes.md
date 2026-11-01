@@ -159,6 +159,12 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `GET /account-authority` | explicit active memberships and bounded site permissions | -- |
 | `POST /lightsite/billing/subscriptions` | trusted idempotent business-to-plan binding | -- |
 | `POST /lightsite/billing/enroll` | thirty-day setup window, no invoice and no charge before go-live | -- |
+| `POST /lightsite/billing/switch-preview` | owner (or trusted service) previews a plan switch from the next bill; writes nothing | -- |
+| `POST /lightsite/billing/switch` | owner confirms (`accepted: true`); change at period end, no charge, no proration | -- |
+| `GET /organizations/:id/invitations` | the owner's invitations with state and delivery | -- |
+| `POST /organizations/:id/invitations` | owner invites to their business; sent in the business's own mail | -- |
+| `POST /organizations/:id/invitations/:invitation/resend` | new link, old one dies; same key sends nothing | -- |
+| `POST /organizations/:id/invitations/:invitation/revoke` | link never accepts; unsent mail cancelled | -- |
 | `POST /lightsite/billing/prepay` | frozen 24-month prepaid terms, no invoice until publication | -- |
 | `POST /lightsite/billing/setup` | hosted saved-method setup, no charge | -- |
 | `POST /lightsite/billing/publish` | record first go-live (`published_at` optional, stored once as `go_live_at`); may start the first charge | -- |

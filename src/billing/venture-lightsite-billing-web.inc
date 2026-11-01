@@ -291,6 +291,58 @@ malformed:
 	return lightsite_billing_finish(venture_web_error_response(error));
 }
 
+/* POST /api/v1/lightsite/billing/switch-preview and /switch. The owner's
+ * own credential (a session, their token or their provider token) or the
+ * trusted service's token; the service judges which. A closed object of
+ * organization_id and plan_price_id, and for /switch accepted: true. */
+static HtmxResponse *
+venture_web_lightsite_billing_switch(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *db = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(JsonNode) result = NULL;
+	g_autoptr(GError) error = NULL;
+	GBytes *body = htmx_request_get_body_bytes(request);
+	gsize length = 0;
+	const gchar *bytes = body ? g_bytes_get_data(body, &length) : NULL;
+	gboolean confirm = g_str_has_suffix(htmx_request_get_path(request), "/switch");
+	gboolean created = FALSE;
+	JsonNode *root, *business, *price, *accepted;
+	JsonObject *object;
+	HtmxResponse *response = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	(void)params;
+	if (response) return lightsite_billing_finish(response);
+	principal = venture_auth_authenticate(self->auth, request);
+	if (!bytes || !length || length > 4096 || memchr(bytes, '\0', length) ||
+		g_strstr_len(bytes, length, "\\u0000") || !json_parser_load_from_data(parser, bytes, length, NULL)) goto malformed;
+	root = json_parser_get_root(parser);
+	if (!root || !JSON_NODE_HOLDS_OBJECT(root)) goto malformed;
+	object = json_node_get_object(root);
+	business = json_object_get_member(object, "organization_id");
+	price = json_object_get_member(object, "plan_price_id");
+	accepted = json_object_get_member(object, "accepted");
+	if (json_object_get_size(object) != (confirm ? 3u : 2u) || !business || !price ||
+		!JSON_NODE_HOLDS_VALUE(business) || json_node_get_value_type(business) != G_TYPE_INT64 ||
+		!JSON_NODE_HOLDS_VALUE(price) || json_node_get_value_type(price) != G_TYPE_INT64 ||
+		json_node_get_int(business) <= 0 || json_node_get_int(business) == G_MAXINT64 ||
+		json_node_get_int(price) <= 0 || json_node_get_int(price) == G_MAXINT64) goto malformed;
+	/* A switch is agreed to, never implied: accepted must be literally true. */
+	if (confirm && (!accepted || !JSON_NODE_HOLDS_VALUE(accepted) ||
+		json_node_get_value_type(accepted) != G_TYPE_BOOLEAN || !json_node_get_boolean(accepted))) goto malformed;
+	scope = venture_access_policy_enter(venture_database_get_access_policy(db), principal);
+	result = venture_lightsite_billing_switch(db, lightsite_billing_organization(self), json_node_get_int(business),
+		json_node_get_int(price), confirm, &created, &error);
+	return lightsite_billing_finish(result ? venture_web_json_response(result, created ? 201 : 200) : venture_web_error_response(error));
+malformed:
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, confirm ?
+		"Expected exactly organization_id and plan_price_id as positive integers and accepted: true" :
+		"Expected exactly organization_id and plan_price_id as positive integers");
+	return lightsite_billing_finish(venture_web_error_response(error));
+}
+
 static void
 venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *self)
 {
@@ -313,6 +365,10 @@ venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *sel
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/first-charge",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/switch-preview",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_switch, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/switch",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_switch, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/enroll",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/subscriptions",

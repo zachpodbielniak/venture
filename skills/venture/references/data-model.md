@@ -158,7 +158,10 @@ from the bundled example plugin and exists only where that plugin loads.
 - Hosted control rows (`tenant_workspace`, `tenant_membership`,
   `tenant_invitation`, `tenant_support_grant`, `tenant_event`) -- changed
   only through their actions (`set_state`, `set_membership`,
-  `invite_recovery`, `invite (0)`, `revoke`); see [operations.md](operations.md).
+  `invite_recovery`, `invite (0)`, `revoke`) or, for an owner's invitation
+  (`issuer_organization_id` non-zero, with `email`, `invitee_name`,
+  `revoked_at`, `sent_count`, `mail_message_id`), the owner invitation
+  routes; see [operations.md](operations.md).
 
 ## Access, identity and providers
 

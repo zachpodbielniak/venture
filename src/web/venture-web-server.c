@@ -35070,6 +35070,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/signups", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_signup, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/rotate", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/revoke", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/invitations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations/:invitation_id/resend", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations/:invitation_id/revoke", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/account/identity-link", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_identity_link, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/inbox/read", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_inbox_read, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/watch", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_watch, self);

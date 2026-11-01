@@ -218,6 +218,16 @@ order the data flows.
   `venture_lightsite_billing_subscribe()` (the billing save hook refuses
   every other writer and every removal): a forged one would answer a
   request that never ran, a deleted one would let a retry bill twice.
+- **An owner's own operation is judged on the owner membership row.**
+  The owner's plan switch and owner invitations call
+  `venture_tenant_service_check_organization_owner()`: an active explicit
+  `owner` membership of that business, owner in the token's snapshot too,
+  and a write-capable credential. Never use
+  `venture_access_policy_has_organization_role()` for this -- it lets a
+  workspace administrator through for every organization, and an
+  administrator is not the owner. An owner's invitation pins the owner
+  membership's version, and acceptance compares it, so a demoted owner's
+  pending links die with their authority.
 - **User and API-token records are owner-only everywhere**, via
   `venture_web_require_for_type()`. Creating a user is access management, not
   data entry.
