@@ -31,16 +31,29 @@ typedef struct
 } Fixture;
 
 static void
-setup(Fixture *f, gconstpointer unused)
+setup_in_zone(Fixture *f, const gchar *zone)
 {
 	g_autoptr(GError) error = NULL;
 	f->config = venture_config_new();
+	if (zone != NULL) g_object_set(f->config, "locale-timezone", zone, NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
 	f->context = venture_context_new(f->config, f->db);
 	f->org = venture_context_get_default_organization_id(f->context);
+}
+
+static void
+setup(Fixture *f, gconstpointer unused)
+{
+	setup_in_zone(f, NULL);
+}
+
+static void
+setup_utc(Fixture *f, gconstpointer unused)
+{
+	setup_in_zone(f, "UTC");
 }
 
 static void
@@ -2309,8 +2322,8 @@ main(int argc, char **argv)
 	g_test_add("/headline/cash/overpayment", Fixture, NULL, setup, test_cash_overpayment, teardown);
 	g_test_add("/headline/cash/retainer", Fixture, NULL, setup, test_cash_retainer, teardown);
 	g_test_add("/headline/cash/foreign", Fixture, NULL, setup, test_cash_foreign, teardown);
-	g_test_add("/headline/churn", Fixture, NULL, setup, test_churn, teardown);
-	g_test_add("/headline/churn/recurring-customers", Fixture, NULL, setup, test_churn_recurring_customers, teardown);
+	g_test_add("/headline/churn", Fixture, NULL, setup_utc, test_churn, teardown);
+	g_test_add("/headline/churn/recurring-customers", Fixture, NULL, setup_utc, test_churn_recurring_customers, teardown);
 	g_test_add("/headline/churn/monthly-worked-example", Fixture, NULL, setup, test_churn_monthly_worked_example, teardown);
 	g_test_add("/headline/ltv", Fixture, NULL, setup, test_ltv, teardown);
 	g_test_add("/headline/ltv/margin", Fixture, NULL, setup, test_ltv_margin, teardown);
