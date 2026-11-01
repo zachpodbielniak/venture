@@ -24,7 +24,10 @@ venturectl create payment customer_id=8 invoice_id=5 'amount=40 USD' date=2026-0
 
 - Or in one call: `venturectl compose invoice
   '{"company_id":8,"issued_at":"2026-09-21","lines":[{"description":"Setup","quantity":1,"unit_price":"120.00 USD","tax_code_id":3}],"send":false}'`
-  (also `compose quote`). `issued_at` defaults to today at midnight UTC;
+  (also `compose quote`). An API body or query `organization_id` files the
+  document in that organization after the caller's access to it is checked.
+  Without one, a token uses the default organization and a browser session
+  uses the sidebar pick. `issued_at` defaults to today at midnight UTC;
   `due_at` may name an explicit due date, otherwise `due_days` (default 30)
   counts from the invoice date (zero or negative: no due date). Sending a
   draft that has never been dated applies thirty days from the issue date;

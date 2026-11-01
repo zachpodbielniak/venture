@@ -129,12 +129,15 @@ epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
 
 The owner's plan switch (billing.md) and owner invitations sent in the
 business's own mail (operations.md, data-model.md, api-routes.md) were added
-after `7fc9fd69` (2026-10-30).
+after `7fc9fd69` (2026-10-30). API composition files an explicit
+`organization_id` (receivables.md). A hosted card-save webhook answers
+before the Setup read; the return page and the Stripe timer confirm the
+card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-10-30 against 55cdcd7f -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-01 against 768ec1c8 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=55cdcd7f
+base=768ec1c8
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -373,7 +376,7 @@ ids, notes) in words.
 | "List / find records" | `list TYPE field__op=value search=... order=-field limit=N` | [api.md](references/api.md) |
 | "Records of the other organization" | add `organization_id=N` | [system.md](references/system.md) |
 | "Record a sale / an expense" | `create sale ...` / `create expense ...` (posts a journal) | [records.md](references/records.md) |
-| "Invoice a customer" | draft + lines + `update invoice ID status=sent`, or `compose invoice JSON` | [receivables.md](references/receivables.md) |
+| "Invoice a customer" | draft + lines + `update invoice ID status=sent`, or `compose invoice JSON` with `organization_id` when it is not the token's default | [receivables.md](references/receivables.md) |
 | "Record a payment / credit / refund" | `create payment ...`; `customer_credit`; `refund` | [receivables.md](references/receivables.md) |
 | "What does this customer owe?" | `report receivables`, `report customer_statement ... customer_id=` | [receivables.md](references/receivables.md) |
 | "Send / accept / remind a quote" | `quote send\|accept\|decline\|revise\|remind ID` | [receivables.md](references/receivables.md) |

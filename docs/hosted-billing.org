@@ -5,6 +5,8 @@
 The hosted client calls these operations with the same trusted workspace
 administrator service token as hosted signup. Browser sessions, customer
 members, viewer tokens and unscoped credentials do not acquire this authority.
+The owner's plan switch, below, is the exception: the business's own owner
+may call it with their own credential.
 Every HTTP response is =Cache-Control: no-store=.
 
 A business has its own organization. The operator's configured billing
@@ -42,7 +44,12 @@ It returns =awaiting_card= and a transient hosted URL, or =card_ready= for
 already verified authority. Setup reuses the existing subscription authorization
 service. It saves reusable payment authority and creates no invoice or charge.
 The owner follows the hosted page; the client never handles card details.
-The existing provider verification/webhook path activates permission.
+A signed Setup webhook records the event and answers before it reads the
+provider, so a slow provider cannot hold the callback open. The Stripe timer
+then reads the Setup and activates permission, retrying for three days.
+=POST /setup= asks the provider itself when the owner comes back: a finished
+Setup is =card_ready= even if that callback has not been handled, and an
+unfinished one stays =awaiting_card=.
 
 * First charge
 

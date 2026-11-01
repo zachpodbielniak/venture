@@ -317,10 +317,15 @@ engine. No internal entitlement consumer or Lightsite provisioning is implemente
    and enter a maximum including currency, for example =100 USD=. Copy the
    returned hosted authorization link once and give it to the customer. Credential
    and payment-method fields are never form inputs. The Setup completion callback
-   activates permission; *Verify hosted authorization* also recovers a missed
-   callback by reading the retained provider session.
+   stores the signed event and answers before any provider read. The Stripe
+   timer, and *Verify hosted authorization*, then read the retained session and
+   activate permission. A timer retry waits at least a minute and gives up
+   after three days, leaving the event an exception. =POST
+   /api/v1/lightsite/billing/setup= does that read when the owner returns, so a
+   finished Setup is a saved card without waiting for the callback.
 3. The running server examines one due authorization every five seconds on its
-   main context. Each claimed permission gets a durable next-check time at least
+   main context. A Setup event still waiting on its provider read goes first,
+   one event a tick, and a collection check waits for the next tick. Each claimed permission gets a durable next-check time at least
    one minute later. A check advances at most one due period through the existing
    billing renewal service and requests at most one collection, choosing the oldest
    unsettled billing invoice first. Permissions are

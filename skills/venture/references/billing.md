@@ -175,8 +175,11 @@ many documents all-or-nothing. A non-admin must name the organization.
   (connection pinned to Stripe API `2024-06-20`). Signed invoice snapshots
   may use a newer version; settlement still requires the pinned authenticated
   invoice/payment read and all reservation checks. Customer
-  completion plus verified Setup/mandate evidence activates permission;
-  `act stripe_authorization ID verify` recovers a missed callback;
+  completion plus verified Setup/mandate evidence activates permission.
+  The webhook stores the signed Setup event and answers before that provider
+  read; the Stripe timer finishes it (at least a minute between tries, three
+  days, then an exception). `act stripe_authorization ID verify` recovers a
+  missed callback;
   `revoke_authorization` stops future charges without discarding settlement
   evidence. Changing terms needs fresh permission. The running server
   advances bounded due renewals/collections only for enabled, verified
@@ -227,7 +230,10 @@ immediately). The routes are `enroll`, `prepay`, `setup`, `publish`,
 issue no invoice. Enrollment opens a thirty-day setup window (`expires_at`
 on the receipt, no `charge_due_at`) and sets the subscription identity
 `hosted:<business>`, so the renewal sweep does not invoice that trial until
-publication activates it. Setup charges nothing. The first charge invoices
+publication activates it. Setup charges nothing. Coming back from the hosted
+page reads the Setup from the provider, so a finished card is `card_ready`
+without waiting for the webhook; an unfinished one stays `awaiting_card`.
+The first charge invoices
 only at publication, before or after the window; unpublished it stays
 `building` or `awaiting_card`, then `expired` with invoice id 0. It is
 `paid` only after signed settlement. An unpublished enrollment with no

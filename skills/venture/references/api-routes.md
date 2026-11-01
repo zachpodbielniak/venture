@@ -57,7 +57,7 @@ in the repository lists today's.
 
 | Route | venturectl |
 |---|---|
-| `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON` |
+| `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON`; API `organization_id` selects the business |
 | `POST /invoices/:id/send`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID` |
 | `POST /quotes/:id/:action` (send, accept, decline, revise, remind, start-subscription) | `quote ACTION ID` |
 | `POST /invoice/:id/actions/remind` (editor, stageable) | `act invoice ID remind` |
