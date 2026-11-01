@@ -11,6 +11,10 @@ quantities keep thousandths precision; quote quantities remain whole units
 until a later commercial change. =venturectl compose invoice|quote JSON=
 calls the same routes.
 
+API composition accepts =organization_id= in the JSON body or query string.
+It validates that organization and files the invoice or quote there. Without
+an explicit id, it uses the active browser organization or the server default.
+
 Every line must be an object with a positive numeric quantity and an exact money price. Fractional quote quantities are refused rather than truncated; invoice quantities retain their existing fractional support. Validation or send failures roll back the document and all its lines.
 
 On the browser sheet, "Save and send" on an invoice issues it and then queues its email to the customer, exactly as the invoice's Send button does. The invoice page it lands on says "Emailed to <address>", or says plainly "Nothing was emailed" and why: the customer has no email address (with a link to add one), email is switched off, or the message could not be queued. The invoice stays issued either way. The JSON composer's =send= still only issues.

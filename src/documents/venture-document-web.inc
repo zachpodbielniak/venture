@@ -869,6 +869,7 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 	gboolean transaction = FALSE;
 	gboolean quote = strstr(htmx_request_get_path(request), "quote") != NULL;
 	gboolean api = g_str_has_prefix(htmx_request_get_path(request), "/api/");
+	gint64 organization = 0;
 	(void)params;
 	if (htmx_request_get_method(request) == HTMX_METHOD_GET)
 	{
@@ -919,12 +920,14 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 	spec = document_spec_from_request(request, &error);
 	if (spec == NULL)
 		goto failed;
+	if (!venture_web_request_organization(self, request, spec, &organization, &error))
+		goto failed;
 	if (quote)
 		result = venture_document_service_compose_quote(venture_document_service_get(venture_context_get_database(self->context)),
-			venture_web_active_organization(self, request), spec, &actor, &error);
+			organization, spec, &actor, &error);
 	else
 		result = venture_document_service_compose_invoice(venture_document_service_get(venture_context_get_database(self->context)),
-			venture_web_active_organization(self, request), spec, &actor, &error);
+			organization, spec, &actor, &error);
 	if (result == NULL)
 		goto failed;
 	if (!api)
