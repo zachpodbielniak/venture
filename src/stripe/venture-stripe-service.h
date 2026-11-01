@@ -175,6 +175,29 @@ gboolean venture_stripe_service_handle_webhook(VentureStripeService *self, GByte
 gboolean venture_stripe_service_retry_event(VentureStripeService *self, gint64 event_id,
 	gboolean accept_balance_change, const VentureActor *actor, GError **error);
 /**
+ * venture_stripe_service_finish_event:
+ * @self: provider bound to the event's connection
+ * @event_id: a retained event whose result is "verifying"
+ * @actor: (nullable): attribution, normally the Stripe timer
+ * @error: (out) (optional): provider or local refusal
+ *
+ * Finishes an authorization event that the webhook accepted without asking
+ * Stripe anything: reads the provider's Setup and activates permission. A
+ * failure leaves the event "verifying" with its attempt time, so the timer
+ * retries it, until three days after it was received.
+ * Returns: TRUE if finished or no longer waiting
+ */
+gboolean venture_stripe_service_finish_event(VentureStripeService *self, gint64 event_id,
+	const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_service_deferred_event_due:
+ * @record: a retained "verifying" event
+ * @now: the current time
+ *
+ * Returns: TRUE when the timer should try @record now
+ */
+gboolean venture_stripe_service_deferred_event_due(VentureEntity *record, GDateTime *now);
+/**
  * venture_stripe_service_create_payment_link:
  * @self: active organization provider
  * @invoice_id: issued invoice

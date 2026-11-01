@@ -361,10 +361,13 @@ stripe_authorization_event_kind(JsonObject *event)
 }
 
 /* Called only after the signed input is durable and before any accounting
- * transaction. Provider reads therefore cannot hold a database write lock. */
+ * transaction. Provider reads therefore cannot hold a database write lock.
+ * Without @verify only local rows change: an event that needs the provider's
+ * Setup read sets @deferred and the Stripe timer verifies it after the
+ * webhook has been answered. */
 static gboolean
 stripe_authorization_event(VentureStripeService *self, JsonObject *event,
-	const VentureActor *actor, GError **error)
+	gboolean verify, gboolean *deferred, const VentureActor *actor, GError **error)
 {
 	const gchar *type = string_member(event, "type");
 	JsonObject *object = object_member(object_member(event, "data"), "object");
@@ -433,6 +436,7 @@ stripe_authorization_event(VentureStripeService *self, JsonObject *event,
 			if (!venture_stripe_save_owned(self->database, authorization, actor, error)) return FALSE;
 		}
 		if (!g_strcmp0(type, "setup_intent.setup_failed")) continue;
+		if (!verify) { *deferred = TRUE; continue; }
 		if (!venture_stripe_service_verify_authorization(self, venture_entity_get_id(authorization), actor, error)) return FALSE;
 	}
 	return TRUE;

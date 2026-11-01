@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture-stripe-disputes.inc"
+/* @defer: answer now and leave the provider read of an authorization event to
+ * the Stripe timer (venture_stripe_service_finish_event()). Webhook delivery
+ * defers; the timer and an operator retry do the whole job. */
 static gboolean
 stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *raw,
-	GPtrArray *observations, gboolean accept_balance_change,
+	GPtrArray *observations, gboolean accept_balance_change, gboolean defer,
 	const VentureActor *actor, GError **error)
 {
 	guint observation_index;
@@ -20,6 +23,7 @@ stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *r
 	VentureEntity *checkout;
 	gint64 invoice_id = 0, record_id = 0, checkout_id = 0;
 	gboolean mismatch = FALSE;
+	gboolean deferred = FALSE;
 	gboolean authorization_event = stripe_authorization_event_kind(event);
 	gboolean invoice_event = stripe_invoice_event_kind(event);
 	g_autoptr(GError) authorization_error = NULL;
@@ -50,6 +54,10 @@ stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *r
 		 * protects the books when an event arrives under a fresh event ID. */
 		if (!g_strcmp0(result, "exception") || !g_strcmp0(result, "pending") || !g_strcmp0(result, "unknown"))
 			goto resume;
+		/* Already accepted and waiting for the timer: a repeated delivery is
+		 * answered at once, and only the timer or an operator finishes it. */
+		if (!g_strcmp0(result, "verifying") && !defer)
+			goto resume;
 		venture_database_rollback(self->database);
 		return TRUE;
 	}
@@ -69,7 +77,7 @@ resume:
 	record_id = venture_entity_get_id(VENTURE_ENTITY(record));
 	if (authorization_event)
 	{
-		if (!stripe_authorization_event(self, event, actor, &authorization_error) && !authorization_error)
+		if (!stripe_authorization_event(self, event, !defer, &deferred, actor, &authorization_error) && !authorization_error)
 			refuse(&authorization_error, "Authorization event could not be applied");
 	}
 	if (invoice_event)
@@ -84,6 +92,11 @@ resume:
 	if (authorization_error)
 	{
 		g_propagate_error(error, g_steal_pointer(&authorization_error)); goto fail;
+	}
+	if (authorization_event && deferred)
+	{
+		g_object_set(record, "result", "verifying", NULL);
+		goto done;
 	}
 	if (authorization_event)
 	{
@@ -236,7 +249,9 @@ resume:
 	g_object_set(record, "result", "processed", NULL);
 	if (!stripe_event_exception(self, record, "recovered", "Verified settlement applied after retry", invoice_id, checkout_id, TRUE, error)) goto fail;
 done:
-	g_object_set(record, "processed-at", now, NULL);
+	/* A deferred event keeps the time of its last attempt, which paces the
+	 * timer's retries; the first attempt has none. */
+	if (!deferred) g_object_set(record, "processed-at", now, NULL);
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(record), NULL, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) goto fail;
 	return mismatch ? refuse(error, "Stripe amount or currency mismatch with expected payment") : TRUE;
@@ -327,7 +342,7 @@ venture_stripe_service_handle_webhook(VentureStripeService *self, GBytes *raw,
 			return refuse(error, "Stripe event account or environment does not match its binding");
 		}
 	}
-	if (!stripe_process_verified(self, event, raw, observations, FALSE, NULL, error)) return FALSE;
+	if (!stripe_process_verified(self, event, raw, observations, FALSE, TRUE, NULL, error)) return FALSE;
 	return stripe_complete_paid_form(self, event, error);
 }
 
@@ -361,7 +376,7 @@ venture_stripe_service_retry_event(VentureStripeService *self, gint64 event_id,
 	raw = g_bytes_new(payload, strlen(payload));
 	if (stripe_authorization_event_kind(json_node_get_object(json_parser_get_root(parser))))
 		return stripe_process_verified(self, json_node_get_object(json_parser_get_root(parser)),
-			raw, NULL, FALSE, actor, error);
+			raw, NULL, FALSE, FALSE, actor, error);
 	if (stripe_invoice_event_kind(json_node_get_object(json_parser_get_root(parser))) &&
 		!stripe_prepare_invoice_evidence(self, VENTURE_STRIPE_EVENT(record),
 			json_node_get_object(json_parser_get_root(parser)), error)) return FALSE;
@@ -369,7 +384,66 @@ venture_stripe_service_retry_event(VentureStripeService *self, gint64 event_id,
 		record, NULL, g_variant_new("(b)", accept_balance_change), self->organization_id, actor, error);
 	if (!operation) return FALSE;
 	if (!stripe_process_verified(self, json_node_get_object(json_parser_get_root(parser)),
-		raw, NULL, accept_balance_change, actor, error)) return FALSE;
+		raw, NULL, accept_balance_change, FALSE, actor, error)) return FALSE;
 	if (!venture_accounting_operation_finish(operation, error)) return FALSE;
 	return stripe_complete_paid_form(self, json_node_get_object(json_parser_get_root(parser)), error);
+}
+
+/* Stripe stops redelivering once it has had its 2xx, so the timer owns the
+ * retries of an accepted authorization event: each wait is as long as the
+ * event has already been failing (at least a minute), and after three days,
+ * Stripe's own retry window, it stays an exception for an operator. */
+#define STRIPE_DEFERRED_MIN_WAIT_SECONDS 60
+#define STRIPE_DEFERRED_GIVE_UP_SECONDS (3 * 24 * 60 * 60)
+
+gboolean
+venture_stripe_service_deferred_event_due(VentureEntity *record, GDateTime *now)
+{
+	g_autoptr(GDateTime) received = NULL, attempted = NULL;
+	GTimeSpan waited, failing;
+	g_return_val_if_fail(VENTURE_IS_ENTITY(record) && now, FALSE);
+	g_object_get(record, "received-at", &received, "processed-at", &attempted, NULL);
+	if (!attempted) return TRUE;
+	waited = g_date_time_difference(now, attempted) / G_TIME_SPAN_SECOND;
+	failing = received ? g_date_time_difference(attempted, received) / G_TIME_SPAN_SECOND : 0;
+	return waited >= MAX(STRIPE_DEFERRED_MIN_WAIT_SECONDS, failing);
+}
+
+gboolean
+venture_stripe_service_finish_event(VentureStripeService *self, gint64 event_id,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autoptr(GBytes) raw = NULL;
+	g_autoptr(GError) local = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) received = NULL;
+	g_autofree gchar *payload = NULL, *result = NULL;
+	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), FALSE);
+	if (!stripe_refresh(self, TRUE, error)) return FALSE;
+	record = owned_get(self, VENTURE_TYPE_STRIPE_EVENT, event_id, error);
+	if (!record) return FALSE;
+	g_object_get(record, "payload", &payload, "result", &result, NULL);
+	if (g_strcmp0(result, "verifying")) return TRUE;
+	if (!payload || !json_parser_load_from_data(parser, payload, -1, error)) return FALSE;
+	if (!JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser)) ||
+		!stripe_authorization_event_kind(json_node_get_object(json_parser_get_root(parser))))
+		return refuse(error, "Only a verified authorization event waits for the Stripe timer");
+	raw = g_bytes_new(payload, strlen(payload));
+	if (stripe_process_verified(self, json_node_get_object(json_parser_get_root(parser)),
+		raw, NULL, FALSE, FALSE, actor, &local)) return TRUE;
+	/* The failure is recorded as an exception; put it back in the queue
+	 * with its attempt time unless it has run out of retries. */
+	g_clear_object(&record);
+	record = venture_database_get(self->database, VENTURE_TYPE_STRIPE_EVENT, event_id, NULL);
+	if (record) g_object_get(record, "received-at", &received, NULL);
+	if (record && received &&
+		g_date_time_difference(now, received) / G_TIME_SPAN_SECOND < STRIPE_DEFERRED_GIVE_UP_SECONDS)
+	{
+		g_object_set(record, "result", "verifying", "processed-at", now, NULL);
+		venture_stripe_save_owned(self->database, record, NULL, NULL);
+	}
+	g_propagate_error(error, g_steal_pointer(&local));
+	return FALSE;
 }

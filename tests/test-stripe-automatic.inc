@@ -167,11 +167,14 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 		g_autofree gchar *sig = binding_signature(body, "whsec_original");
 		g_autoptr(GBytes) raw = g_bytes_new(body, strlen(body));
 		guint before = ((FakeTransport *)transport)->calls;
-		gint64 deadline;
+		gint64 deadline, started;
 		g_autofree gchar *pending = NULL;
 		g_autoptr(GPtrArray) events = NULL;
 		g_autoptr(VentureEntity) waiting = NULL;
+		((FakeTransport *)transport)->setup_delay_us = 300000;
+		started = g_get_monotonic_time();
 		g_assert_true(venture_stripe_service_handle_webhook(service, raw, sig, &error));
+		g_assert_cmpint(g_get_monotonic_time() - started, <, 100000);
 		g_assert_no_error(error);
 		/* Stripe is answered before anything is asked of Stripe: the
 		 * provider read that verifies the Setup happens after the 2xx,

@@ -316,7 +316,7 @@ test_missing_key(void)
 }
 
 typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; gchar *checkout_suffix; gchar *invoice_suffix; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
-	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live, setup_open; gchar *last_invoice_id; guint invoice_count, payment_calls;
+	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live, setup_open; guint setup_delay_us; gchar *last_invoice_id; guint invoice_count, payment_calls;
 	gint64 refund_amount; guint refund_creates; gboolean drop_refund; gchar *refund_key, *refund_intent; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
@@ -386,6 +386,7 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	if (strstr(request->url, "/checkout/sessions/cs_setup?"))
 	{
+		if (self->setup_delay_us) g_usleep(self->setup_delay_us);
 		g_autofree gchar *body = g_strdup_printf("{\"id\":\"cs_setup\",\"mode\":\"setup\",\"status\":\"%s\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\",%s},\"mandate\":%s}}", self->setup_open ? "open" : "complete", self->setup_customer ? self->setup_customer : "cus_offline", self->setup_reference, self->deadline, self->setup_consent, self->setup_live ? "true" : "false", self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? "\"us_bank_account\":{\"bank_name\":\"STRIPE TEST BANK\",\"last4\":\"6789\"}" : "\"card\":{\"brand\":\"visa\",\"last4\":\"4242\"}", self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
 		g_assert_cmpstr(request->method, ==, "GET");
 		g_assert_nonnull(strstr(request->url, "setup_intent.payment_method"));
