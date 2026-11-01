@@ -42,6 +42,47 @@ stripe_prepayment_tick(VentureContext *context, GDateTime *now)
 	return TRUE;
 }
 
+/* One authorization event the webhook answered without a provider read.
+ * Returns TRUE when it tried one, so the tick does nothing else this time. */
+static gboolean
+stripe_deferred_event_tick(VentureContext *context, GDateTime *now)
+{
+	VentureDatabase *database = venture_context_get_database(context);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_EVENT);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureStripeService) configured = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureStripeService *service = venture_context_get_stripe_service(context);
+	VentureActor actor = { VENTURE_ACTOR_KIND_SYSTEM, "Stripe setup verification", NULL, NULL, NULL };
+	VentureEntity *record = NULL;
+	gint64 binding = 0;
+	guint i;
+	venture_query_add_filter_string(query, "result", VENTURE_FILTER_OP_EQ, "verifying", NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, 0);
+	rows = venture_database_find(database, query, &error);
+	for (i = 0; rows && i < rows->len && !record; i++)
+		if (venture_stripe_service_deferred_event_due(g_ptr_array_index(rows, i), now))
+			record = g_ptr_array_index(rows, i);
+	if (!record) return FALSE;
+	g_object_get(record, "connection-id", &binding, NULL);
+	if (!service)
+	{
+		configured = venture_stripe_service_for_connection(database,
+			venture_entity_get_organization_id(record), binding, TRUE, NULL, &error);
+		service = configured;
+	}
+	if (!service)
+	{
+		/* No usable connection: wait like a failed attempt, never spin. */
+		g_object_set(record, "processed-at", now, NULL);
+		venture_stripe_save_owned(database, record, &actor, NULL);
+		return TRUE;
+	}
+	venture_stripe_service_finish_event(service, venture_entity_get_id(record), &actor, &error);
+	return TRUE;
+}
+
 /* Timers run only outside an authenticated request/transaction. They never
  * inherit another caller's authority while synchronous HTTP pumps the loop. */
 static gboolean
@@ -64,6 +105,7 @@ stripe_collection_tick(gpointer data)
 		return G_SOURCE_CONTINUE;
 	if (!venture_tenant_service_check_operation(venture_tenant_service_get(database), TRUE, &error))
 		return G_SOURCE_CONTINUE;
+	if (stripe_deferred_event_tick(context, now)) return G_SOURCE_CONTINUE;
 	if (stripe_prepayment_tick(context, now)) return G_SOURCE_CONTINUE;
 	venture_query_set_limit(query, 1);
 	venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, NULL);

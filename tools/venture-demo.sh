@@ -367,12 +367,12 @@ start_server () {
         export VENTURE_POD_MODULE_PATH="${outdir}/pod-modules:${root}/deps/podomation/build/${build_type}/modules"
         export VENTURE_UI_THEME="${VENTURE_UI_THEME:-mocha}"
         export VENTURE_SESSION_SECRET="venture-demo-secret"
-        # A public address. Sequence mail carries an unsubscribe link built
-        # from it and refuses to go without one, and quote mail refuses one
-        # that is not HTTPS, so the demo names an HTTPS origin for its links
-        # while it listens on plain loopback. No mail leaves the demo: it
-        # has no mail account, so the links are never followed.
-        export VENTURE_SERVER_BASE_URL="https://127.0.0.1:${port}"
+        # A public address for links in mail. Sequence mail refuses to
+        # build without one, and quote mail refuses one that is not HTTPS.
+        # It is a reserved name, not this process's listen address: the
+        # demo still answers API calls on plain loopback, and nothing
+        # follows the links (the demo has no mail account).
+        export VENTURE_SERVER_BASE_URL="https://demo.venture.example"
         export VENTURE_FORGE_RUNS_ENABLED="true"
         export VENTURE_FORGE_WORKSPACE_ROOTS="${VENTURE_FORGE_WORKSPACE_ROOTS:-${state}/workspace,${root}}"
         export VENTURE_DOCS_SITE_DIR="${VENTURE_DOCS_SITE_DIR:-${root}/build/docs-site}"

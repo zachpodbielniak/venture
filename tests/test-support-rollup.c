@@ -788,7 +788,8 @@ server_start(ServerFixture *f, gboolean require_auth)
 	f->config = venture_config_new();
 	g_object_set(f->config, "state-dir", f->state_dir, "server-bind-address", "127.0.0.1",
 		"server-port", (gint64)f->port, "security-session-secret-env", "VENTURE_TEST_SESSION_SECRET",
-		"security-password-iterations", (gint64)100000, "security-require-auth", require_auth, NULL);
+		"security-password-iterations", (gint64)100000, "security-require-auth", require_auth,
+		"locale-timezone", "UTC", NULL);
 	f->db = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	f->context = venture_context_new(f->config, f->db);

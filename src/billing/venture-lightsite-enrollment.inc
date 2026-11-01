@@ -368,11 +368,27 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 	if (error && *error) return NULL;
 	if (permission) g_object_get(permission, "status", &status, NULL);
 	object = json_object_new(); result = json_node_new(JSON_NODE_OBJECT); json_node_take_object(result, object);
+	/* The owner is back from the hosted page, maybe before Stripe's callback
+	 * has been handled. Ask the provider about the Setup itself rather than
+	 * waiting for the webhook: a finished Setup is a saved card now. A Setup
+	 * not finished (or a provider that cannot be reached) still waits. */
+	if (permission && !g_strcmp0(status, "pending")) {
+		g_autofree gchar *session = NULL;
+		g_object_get(permission, "session-id", &session, NULL);
+		if (session && *session) {
+			g_autoptr(GError) unverified = NULL;
+			provider = enrollment_provider(context, billing, error);
+			if (!provider) return NULL;
+			if (venture_stripe_service_verify_authorization(provider, venture_entity_get_id(permission), &actor, &unverified)) {
+				g_free(status); status = g_strdup("active");
+			}
+		}
+	}
 	if (!g_strcmp0(status, "active")) {
 		json_object_set_string_member(object, "state", "card_ready");
 		return g_steal_pointer(&result);
 	}
-	provider = enrollment_provider(context, billing, error);
+	if (!provider) provider = enrollment_provider(context, billing, error);
 	if (!provider) return NULL;
 	price = get_record(db, VENTURE_TYPE_PLAN_PRICE,
 		json_object_get_int_member(json_node_get_object(enrollment), "plan_price_id"), error);

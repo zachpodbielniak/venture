@@ -30,6 +30,7 @@ fixture_set_up(
 	g_autoptr(VentureVenture) venture = NULL;
 
 	fixture->config = venture_config_new();
+	g_object_set(fixture->config, "locale-timezone", "UTC", NULL);
 	fixture->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 
