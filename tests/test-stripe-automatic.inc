@@ -166,7 +166,52 @@ test_automatic_authorization(Fixture *f, gconstpointer data)
 		g_autofree gchar *body = g_strdup_printf("{\"id\":\"evt_setup\",\"type\":\"checkout.session.completed\",\"livemode\":false,\"data\":{\"object\":{\"id\":\"cs_setup\",\"mode\":\"setup\",\"client_reference_id\":\"%s\",\"setup_intent\":\"seti_offline\"}}}", venture_entity_get_uuid(VENTURE_ENTITY(authorization)));
 		g_autofree gchar *sig = binding_signature(body, "whsec_original");
 		g_autoptr(GBytes) raw = g_bytes_new(body, strlen(body));
+		guint before = ((FakeTransport *)transport)->calls;
+		gint64 deadline;
+		g_autofree gchar *pending = NULL;
+		g_autoptr(GPtrArray) events = NULL;
+		g_autoptr(VentureEntity) waiting = NULL;
 		g_assert_true(venture_stripe_service_handle_webhook(service, raw, sig, &error));
+		g_assert_no_error(error);
+		/* Stripe is answered before anything is asked of Stripe: the
+		 * provider read that verifies the Setup happens after the 2xx,
+		 * so a slow provider or a busy server cannot hold the callback
+		 * open past Stripe's timeout. */
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, before);
+		events = rows(f, "stripe_event"); g_assert_cmpuint(events->len, ==, 1);
+		g_object_get(g_ptr_array_index(events, 0), "result", &pending, NULL);
+		g_assert_cmpstr(pending, ==, "verifying");
+		waiting = venture_database_get(f->database, VENTURE_TYPE_STRIPE_AUTHORIZATION,
+			venture_entity_get_id(VENTURE_ENTITY(authorization)), &error);
+		g_assert_no_error(error);
+		g_clear_pointer(&pending, g_free);
+		g_object_get(waiting, "status", &pending, NULL);
+		g_assert_cmpstr(pending, ==, "pending");
+		/* A repeated delivery is answered the same way and asks nothing. */
+		g_assert_true(venture_stripe_service_handle_webhook(service, raw, sig, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, before);
+		/* The existing Stripe timer finishes the work on the main context. */
+		venture_context_set_stripe_service(f->context, service);
+		venture_stripe_collection_start(f->context);
+		deadline = g_get_monotonic_time() + 7 * G_TIME_SPAN_SECOND;
+		while (g_get_monotonic_time() < deadline)
+		{
+			g_autoptr(VentureEntity) now_stored = NULL;
+			g_autofree gchar *status = NULL;
+			while (g_main_context_iteration(NULL, FALSE)) { }
+			now_stored = venture_database_get(f->database, VENTURE_TYPE_STRIPE_AUTHORIZATION,
+				venture_entity_get_id(VENTURE_ENTITY(authorization)), NULL);
+			if (now_stored) g_object_get(now_stored, "status", &status, NULL);
+			if (!g_strcmp0(status, "active")) break;
+			g_usleep(10000);
+		}
+		venture_stripe_collection_stop(f->context);
+		g_clear_pointer(&events, g_ptr_array_unref);
+		g_clear_pointer(&pending, g_free);
+		events = rows(f, "stripe_event");
+		g_object_get(g_ptr_array_index(events, 0), "result", &pending, NULL);
+		g_assert_cmpstr(pending, ==, "processed");
 	}
 	else
 	{

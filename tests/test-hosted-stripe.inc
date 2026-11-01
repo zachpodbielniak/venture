@@ -134,8 +134,23 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
 		invoices = rows(f, "invoice"); authorizations = rows(f, "stripe_authorization");
 		g_assert_cmpuint(invoices->len, ==, 0); g_assert_cmpuint(authorizations->len, ==, 1);
-		g_assert_true(venture_stripe_service_verify_authorization(provider, venture_entity_get_id(g_ptr_array_index(authorizations, 0)), NULL, &error));
+		if (!data || g_strcmp0(data, "confirm-on-return")) {
+			g_assert_true(venture_stripe_service_verify_authorization(provider, venture_entity_get_id(g_ptr_array_index(authorizations, 0)), NULL, &error));
+			g_assert_no_error(error);
+		}
+	}
+	if (data && !g_strcmp0(data, "confirm-on-return")) {
+		/* The owner is back from the hosted page before Stripe's callback
+		 * has been handled. The answer comes from the provider's own
+		 * record of the Setup, not from whether the webhook got here
+		 * first: an unfinished Setup still waits for the card... */
+		((FakeTransport *)transport)->setup_open = TRUE;
+		g_clear_pointer(&setup, json_node_unref);
+		setup = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
 		g_assert_no_error(error);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(setup), "state"), ==, "awaiting_card");
+		((FakeTransport *)transport)->setup_open = FALSE;
+		/* ...and a finished one is a saved card, with no callback at all. */
 	}
 	g_clear_pointer(&setup, json_node_unref);
 	setup = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
