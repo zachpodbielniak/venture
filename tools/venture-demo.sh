@@ -367,6 +367,7 @@ start_server () {
         export VENTURE_POD_MODULE_PATH="${outdir}/pod-modules:${root}/deps/podomation/build/${build_type}/modules"
         export VENTURE_UI_THEME="${VENTURE_UI_THEME:-mocha}"
         export VENTURE_SESSION_SECRET="venture-demo-secret"
+        export VENTURE_SERVER_BASE_URL="https://demo.venture.example"
         export VENTURE_FORGE_RUNS_ENABLED="true"
         export VENTURE_FORGE_WORKSPACE_ROOTS="${VENTURE_FORGE_WORKSPACE_ROOTS:-${state}/workspace,${root}}"
         export VENTURE_DOCS_SITE_DIR="${VENTURE_DOCS_SITE_DIR:-${root}/build/docs-site}"
