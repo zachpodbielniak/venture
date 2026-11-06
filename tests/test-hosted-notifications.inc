@@ -129,13 +129,15 @@ static void test_notification_installment(Fixture *f, gconstpointer unused)
 	/* The installment worker retains a retry number after a definite failure.
 	 * That is a payment failure even though no checkout row exists. */
 	g_clear_pointer(&sql, g_free);
-	sql = g_strdup_printf("UPDATE stripe_prepayments SET legs=json_set(legs,'$.legs[1].attempt',1) WHERE uuid='%s'", uuid);
+	/* The whole value, not json_set(): that is SQLite's, and the suite also
+	 * runs on PostgreSQL (VENTURE_TEST_ACCOUNTING_POSTGRES_URI). */
+	sql = g_strdup_printf("UPDATE stripe_prepayments SET legs='{\"legs\":[{\"amount\":%d,\"paid\":true,\"method\":\"example-method\",\"setup\":\"example-setup\"},{\"amount\":%d,\"method\":\"example-method\",\"attempt\":1}]}' WHERE uuid='%s'", 100 * 100, 100 * 100, uuid);
 	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
 	g_clear_pointer(&answer, json_node_unref); answer = call(f, path, NULL, 200);
 	g_assert_nonnull(notification(answer, "payment_failed"));
 	g_assert_cmpstr(json_object_get_string_member(notification(answer, "payment_failed"), "amount"), ==, "100.00 USD");
 	g_clear_pointer(&sql, g_free);
-	sql = g_strdup_printf("UPDATE stripe_prepayments SET legs=json_set(legs,'$.legs[1].paid',json('true')) WHERE uuid='%s'", uuid);
+	sql = g_strdup_printf("UPDATE stripe_prepayments SET legs='{\"legs\":[{\"amount\":%d,\"paid\":true,\"method\":\"example-method\",\"setup\":\"example-setup\"},{\"amount\":%d,\"method\":\"example-method\",\"attempt\":1,\"paid\":true}]}' WHERE uuid='%s'", 100 * 100, 100 * 100, uuid);
 	g_assert_true(venture_database_execute(f->db, sql, NULL, &error)); g_assert_no_error(error);
 	g_clear_pointer(&answer, json_node_unref); answer = call(f, path, NULL, 200);
 	g_assert_null(notification(answer, "payment_failed"));
