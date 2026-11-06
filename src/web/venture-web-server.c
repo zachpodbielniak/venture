@@ -5739,6 +5739,7 @@ venture_web_ui_invoice_status(
  * PDF generator; it is already installed everywhere.
  */
 static void quote_buttons(VentureWebServer *self, GString *html, VentureEntity *record);
+static gchar *quote_public_link(VentureWebServer *self, VentureEntity *record);
 static void venture_jobs_web_append_block(VentureWebServer *self, GString *html, VentureEntity *record);
 static void venture_jobs_web_seed_new(VentureWebServer *self, HtmxRequest *request, VentureEntity *record);
 static void venture_jobs_web_append_today(VentureWebServer *self, GString *html, HtmxRequest *request,

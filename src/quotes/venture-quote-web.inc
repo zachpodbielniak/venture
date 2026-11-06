@@ -335,6 +335,27 @@ quote_subscription_block(VentureWebServer *self, GString *html, VentureEntity *r
 }
 
 /*
+ * The absolute customer link of a sent quote, or NULL. Built from the
+ * configured public address, never the address this server happens to
+ * listen on: a loopback link is no use on a customer's phone. The page
+ * shows it, and the compose API returns it so an integration that mails
+ * the customer itself can include it.
+ */
+static gchar *
+quote_public_link(VentureWebServer *self, VentureEntity *record)
+{
+	g_autofree gchar *token = NULL, *relative = NULL, *public_url = NULL;
+	gint state = 0;
+	if (!VENTURE_IS_QUOTE(record)) return NULL;
+	g_object_get(record, "status", &state, "acceptance-token", &token, NULL);
+	if (state != VENTURE_QUOTE_SENT || venture_string_is_empty(token)) return NULL;
+	g_object_get(venture_context_get_config(self->context), "server-base-url", &public_url, NULL);
+	if (venture_string_is_empty(public_url)) return NULL;
+	relative = g_strconcat("/q/", token, NULL);
+	return g_uri_resolve_relative(public_url, relative, G_URI_FLAGS_NONE, NULL);
+}
+
+/*
  * A sent quote's customer link, to copy into a text or an email of the
  * owner's own, and a plain word when the send emailed nobody: a server
  * with no public address keeps the delivery for later and mails nothing.
@@ -344,7 +365,7 @@ quote_link_block(VentureWebServer *self, GString *html, VentureEntity *record)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) deliveries = NULL;
-	g_autofree gchar *token = NULL, *relative = NULL, *url = NULL, *public_url = NULL;
+	g_autofree gchar *token = NULL, *relative = NULL, *url = NULL;
 	gboolean emailed = FALSE, unmailed = FALSE;
 	gint state = 0;
 	guint i;
@@ -365,12 +386,8 @@ quote_link_block(VentureWebServer *self, GString *html, VentureEntity *record)
 	if (unmailed && !emailed)
 		g_string_append(html, "<div class=\"banner banner-warn\" role=\"status\"><strong>Not emailed.</strong> "
 			"This server has no public web address set, so no email went out. Copy the link below and send it to the customer yourself.</div>");
-	/* The configured public address, never the address this server
-	 * happens to listen on: a loopback link is no use on a customer's phone. */
-	g_object_get(venture_context_get_config(self->context), "server-base-url", &public_url, NULL);
 	relative = g_strconcat("/q/", token, NULL);
-	url = !venture_string_is_empty(public_url)
-		? g_uri_resolve_relative(public_url, relative, G_URI_FLAGS_NONE, NULL) : NULL;
+	url = quote_public_link(self, record);
 	/* Shown as well as copied: the clipboard needs a secure context, and
 	 * this server is often reached over plain http on a LAN. */
 	g_string_append(html, "<div class=\"quote-link\"><label class=\"field-label\" for=\"quote-link\">Customer link</label>"
