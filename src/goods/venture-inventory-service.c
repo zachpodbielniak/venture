@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "goods/venture-stock-engine.h"
 #include <string.h>
 
 struct _VentureInventoryService {
@@ -255,57 +256,217 @@ movement_unit(GPtrArray *costs, gint64 quantity, VentureMoney **out_unit, gchar 
 	return TRUE;
 }
 
-gint64
-venture_inventory_service_on_hand(VentureInventoryService *self, gint64 inventory_item_id,
-	GDateTime *as_of, GError **error)
-{
-	g_autoptr(GPtrArray) rows = NULL;
-	gint64 total = 0;
-	guint i;
-	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), 0);
-	rows = find_rows(self, VENTURE_TYPE_INVENTORY_TXN, "inventory-item-id", inventory_item_id, error);
-	if (rows == NULL)
-		return 0;
-	for (i = 0; i < rows->len; i++)
-	{
-		g_autoptr(GDateTime) when = NULL;
-		g_object_get(g_ptr_array_index(rows, i), "occurred-at", &when, NULL);
-		if (as_of != NULL && when != NULL && g_date_time_compare(when, as_of) >= 0)
-			continue;
-		total += get_int(g_ptr_array_index(rows, i), "quantity");
-	}
-	return total;
-}
+/* --- The stock engine ---------------------------------------------------- */
+
+/*
+ * Quantities, lots, cost layers and what each movement cost are the
+ * stock engine's (src/goods/venture-stock-engine.c, deps/libreventory).
+ * Each operation below builds one engine movement, posts it in a savepoint
+ * of the database's transaction, and then writes what it did as rows:
+ * inventory_txn for the movement, inventory_cost_layer for the layers it
+ * made or used. Every reader of those rows -- the pages, the reports, the
+ * cutover, the arbitrage -- reads what the engine says, and the journal is
+ * posted from the costs the engine gave back, in the same transaction.
+ */
 
 static gboolean
-item_allows_negative(VentureInventoryService *self, gint64 item_id)
+item_allows_negative(VentureEntity *item)
 {
-	g_autoptr(VentureEntity) item = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, item_id, NULL);
 	gboolean allow = FALSE;
+
 	if (item == NULL || g_object_class_find_property(G_OBJECT_GET_CLASS(item), "allow-negative") == NULL)
 		return FALSE;
 	g_object_get(item, "allow-negative", &allow, NULL);
 	return allow;
 }
 
+/* Whether this install keeps cost layers: they belong to the goods
+ * module. Without it there are no layer rows, and a craft moves
+ * quantities only, as every other movement then does. */
 static gboolean
-guard_stock(VentureInventoryService *self, gint64 item_id, gint64 delta, GError **error)
+layers_kept(void)
 {
-	gint64 on_hand;
-	if (delta >= 0 || item_allows_negative(self, item_id))
+	return venture_entity_registry_lookup(venture_entity_registry_get_default(),
+		"inventory_cost_layer") != G_TYPE_INVALID;
+}
+
+static VentureEntity *
+get_item(VentureInventoryService *self, gint64 item_id, GError **error)
+{
+	VentureEntity *item = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, item_id, error);
+
+	/* A missing row is NULL with no error; say which. */
+	if (item == NULL && error != NULL && *error == NULL)
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			"VentureInventoryService: inventory item #%" G_GINT64_FORMAT " does not exist", item_id);
+	return item;
+}
+
+/* The engine's item for @item, bringing in what its rows hold the first
+ * time the engine meets it (an item from before the engine, or one a
+ * restore wrote back). */
+static gint64
+engine_item_for(VentureInventoryService *self, VentureEntity *item, GError **error)
+{
+	gint64 id = venture_stock_engine_find_item(self->database, venture_entity_get_id(item), error);
+
+	if (id != 0 || (error != NULL && *error != NULL))
+		return id;
+	if (!venture_inventory_service_import_item(self, item, error))
+		return 0;
+	return venture_stock_engine_find_item(self->database, venture_entity_get_id(item), error);
+}
+
+static LvStore *
+store_of(VentureInventoryService *self, GError **error)
+{
+	return venture_stock_engine_get_store(self->database, error);
+}
+
+/* Venture's rule, not the engine's: the stock on hand goes below zero only
+ * on an item that allows it. The engine allows every item, so a count can
+ * take its own place below zero while the item as a whole stays above. */
+static gboolean
+guard_stock(VentureInventoryService *self, VentureEntity *item, gint64 engine_item, gint64 delta, GError **error)
+{
+	g_autoptr(GError) cause = NULL;
+	gdouble on_hand;
+
+	if (delta >= 0 || item_allows_negative(item))
 		return TRUE;
-	on_hand = venture_inventory_service_on_hand(self, item_id, NULL, error);
-	if (error != NULL && *error != NULL)
+	on_hand = lv_ledger_on_hand(store_of(self, NULL), engine_item, NULL, &cause);
+	if (cause != NULL)
+	{
+		g_propagate_error(error, g_steal_pointer(&cause));
 		return FALSE;
-	if (on_hand + delta < 0)
+	}
+	if (on_hand + (gdouble)delta < 0)
 		return refuse(error, "negative stock is refused");
 	return TRUE;
 }
 
+/* The items whose takes need a cost: an issue never sold a unit that had
+ * no cost layer, unless the item allows negative stock. */
+static GHashTable *
+strict_for(VentureEntity *item, gint64 engine_item)
+{
+	GHashTable *strict = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+
+	if (!item_allows_negative(item))
+		g_hash_table_add(strict, g_memdup2(&engine_item, sizeof engine_item));
+	return strict;
+}
+
+static gboolean
+add_currencies(VentureInventoryService *self, GPtrArray *amounts, GError **error)
+{
+	guint i;
+
+	for (i = 0; amounts != NULL && i < amounts->len; i++)
+		if (!venture_stock_engine_add_currency(self->database,
+			venture_money_get_currency(g_ptr_array_index(amounts, i)), error))
+			return FALSE;
+	return TRUE;
+}
+
+static LvCosts *
+engine_costs(GPtrArray *amounts)
+{
+	LvCosts *costs = lv_costs_new();
+	guint i;
+
+	for (i = 0; amounts != NULL && i < amounts->len; i++)
+	{
+		const VentureMoney *amount = g_ptr_array_index(amounts, i);
+
+		lv_costs_add(costs, venture_money_get_currency(amount), venture_money_get_amount(amount));
+	}
+	return costs;
+}
+
+/* The engine's costs as Venture's totals, one per currency, in order. */
 static GPtrArray *
-layers_for(VentureInventoryService *self, gint64 item_id, GError **error)
+venture_costs(LvCosts *costs, GError **error)
+{
+	g_autoptr(GPtrArray) totals = venture_money_totals_new();
+	guint i;
+
+	for (i = 0; costs != NULL && i < lv_costs_get_n(costs); i++)
+	{
+		g_autoptr(VentureMoney) amount = venture_money_new_for_currency(lv_costs_get_amount(costs, i),
+			lv_costs_get_currency(costs, i));
+
+		if (!venture_money_totals_add(totals, amount, error))
+			return NULL;
+	}
+	return g_steal_pointer(&totals);
+}
+
+static GPtrArray *
+move_costs(LvMove *move, GError **error)
+{
+	g_autoptr(LvCosts) costs = lv_costs_new_from_json(move->costs);
+
+	return venture_costs(costs, error);
+}
+
+static GPtrArray *
+moves_of(VentureInventoryService *self, LvMovement *movement, GError **error)
+{
+	g_autoptr(GError) cause = NULL;
+	GPtrArray *moves = lv_ledger_list_moves(store_of(self, NULL), movement->id, 0, &cause);
+
+	if (moves == NULL)
+		g_propagate_error(error, g_steal_pointer(&cause));
+	return moves;
+}
+
+/* The lot the movement's line into @engine_item made. */
+static gint64
+lot_made(GPtrArray *moves, gint64 engine_item)
+{
+	guint i;
+
+	for (i = 0; i < moves->len; i++)
+	{
+		LvMove *move = g_ptr_array_index(moves, i);
+
+		if (move->item_id == engine_item && move->quantity > 0)
+			return move->lot_id;
+	}
+	return 0;
+}
+
+static GHashTable *
+lots_new(void)
+{
+	return g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+}
+
+static void
+lots_add(GHashTable *lots, gint64 lot, gint64 txn)
+{
+	if (lot != 0)
+		g_hash_table_insert(lots, g_memdup2(&lot, sizeof lot), g_memdup2(&txn, sizeof txn));
+}
+
+static GDateTime *
+lot_time(VentureInventoryService *self, gint64 lot_id)
+{
+	g_autoptr(LvLot) lot = lv_store_get(store_of(self, NULL), LV_TYPE_LOT, lot_id, NULL);
+	g_autofree gchar *text = NULL;
+
+	if (lot == NULL || lot->purchased == NULL)
+		return venture_time_now();
+	text = strlen(lot->purchased) == 10 ? g_strconcat(lot->purchased, "T00:00:00Z", NULL) : g_strdup(lot->purchased);
+	return g_date_time_new_from_iso8601(text, NULL);
+}
+
+static GPtrArray *
+layer_rows(VentureInventoryService *self, gint64 item_id, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVENTORY_COST_LAYER);
+
 	venture_query_set_limit(query, 0);
 	if (!venture_query_add_filter_int(query, "inventory-item-id", VENTURE_FILTER_OP_EQ, item_id, error))
 		return NULL;
@@ -314,172 +475,89 @@ layers_for(VentureInventoryService *self, gint64 item_id, GError **error)
 	return venture_database_find(self->database, query, error);
 }
 
-/* The lot a layer belongs to: its arrival movement, or itself (negated,
- * so it cannot meet a movement id) when it predates lots. */
-static gint64
-layer_lot(VentureEntity *layer)
-{
-	gint64 lot = get_id(layer, "lot-txn-id");
-	return lot > 0 ? lot : -venture_entity_get_id(layer);
-}
-
 /*
- * Takes up to @quantity units from @item_id's cost layers, first in first
- * out, adding what they cost into @costs (per currency; may be NULL) and
- * leaving the units no layer covered in *@out_short.
- *
- * FIFO walks lots, not layers. A lot's layers in one currency sum to the
- * lot's units; a lot bought in two currencies has layers in each, and
- * every unit taken out of it is taken out of every currency -- which is
- * what keeps a made unit's GOLD and TICKET cost leaving together and each
- * leaving exactly. A lot has as many units as its first currency's layers
- * hold; a sibling currency short of that (never written so by this
- * service) gives what it has. A single-currency lot is the old behaviour:
- * its layers are taken in order.
+ * Writes the engine's layers of @item as rows: a layer the movement just
+ * made becomes a row in the lot of the txn @lots names for its engine lot
+ * (with @receipt_line_id); a row whose layer the movement used gets the
+ * units the engine says are left. One row per engine layer, in the order
+ * the engine made them, so the rows read as they always did.
  */
 static gboolean
-consume_layers(VentureInventoryService *self, gint64 item_id, gint64 quantity, const VentureActor *actor,
-	GPtrArray *costs, gint64 *out_short, GError **error)
+sync_layers(VentureInventoryService *self, VentureEntity *item, gint64 engine_item, GHashTable *lots,
+	gint64 receipt_line_id, const VentureActor *actor, GError **error)
 {
 	g_autoptr(GPtrArray) layers = NULL;
-	g_autoptr(GHashTable) seen = NULL;
-	gint64 need = quantity;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GHashTable) linked = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autoptr(GError) cause = NULL;
 	guint i;
-	*out_short = quantity;
-	layers = layers_for(self, item_id, error);
+
+	if (!layers_kept())
+		return TRUE;
+	layers = lv_ledger_list_layers(store_of(self, NULL), engine_item, &cause);
 	if (layers == NULL)
-		return FALSE;
-	seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
-	for (i = 0; i < layers->len && need > 0; i++)
 	{
-		VentureEntity *first = g_ptr_array_index(layers, i);
-		g_autoptr(VentureMoney) lead_unit = NULL;
-		gint64 lot = layer_lot(first);
-		gint64 lot_remaining = 0;
-		gint64 take;
-		guint j;
-		if (g_hash_table_contains(seen, &lot))
-			continue;
-		g_hash_table_add(seen, g_memdup2(&lot, sizeof lot));
-		g_object_get(first, "unit-cost", &lead_unit, NULL);
-		if (lead_unit == NULL)
-			return refuse(error, "a cost layer has no unit cost");
-		/* The lot's units: its first currency's remaining. */
-		for (j = i; j < layers->len; j++)
+		g_propagate_error(error, g_steal_pointer(&cause));
+		return FALSE;
+	}
+	rows = layer_rows(self, venture_entity_get_id(item), error);
+	if (rows == NULL)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
+	{
+		gint64 layer = get_int(g_ptr_array_index(rows, i), "stock-layer-id");
+
+		if (layer != 0)
+			g_hash_table_insert(linked, g_memdup2(&layer, sizeof layer), g_ptr_array_index(rows, i));
+	}
+	for (i = 0; i < layers->len; i++)
+	{
+		LvLayer *layer = g_ptr_array_index(layers, i);
+		VentureEntity *row = g_hash_table_lookup(linked, &layer->id);
+		gint64 remaining = (gint64)layer->remaining;
+		gint64 *txn;
+
+		if (row != NULL)
 		{
-			VentureEntity *member = g_ptr_array_index(layers, j);
-			g_autoptr(VentureMoney) unit = NULL;
-			if (layer_lot(member) != lot)
+			if (get_int(row, "remaining-qty") == remaining)
 				continue;
-			g_object_get(member, "unit-cost", &unit, NULL);
-			if (unit != NULL && g_strcmp0(venture_money_get_currency(unit),
-				venture_money_get_currency(lead_unit)) == 0)
-				lot_remaining += get_int(member, "remaining-qty");
-		}
-		if (lot_remaining <= 0)
+			g_object_set(row, "remaining-qty", remaining, NULL);
+			if (!save_owned(self, row, actor, error))
+				return FALSE;
 			continue;
-		take = lot_remaining < need ? lot_remaining : need;
-		/* Every currency of the lot gives up @take units, each from its
-		 * own layers in order. @left is per currency, reset when a new
-		 * currency is met; members of one lot were written together, so
-		 * a currency's layers are met in the order they were made. */
+		}
+		txn = lots != NULL ? g_hash_table_lookup(lots, &layer->lot_id) : NULL;
+		if (txn == NULL)
+			continue;
 		{
-			g_autoptr(GHashTable) left = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-			for (j = i; j < layers->len; j++)
-			{
-				VentureEntity *member = g_ptr_array_index(layers, j);
-				g_autoptr(VentureMoney) unit = NULL;
-				gint64 *still;
-				gint64 remaining, part;
-				if (layer_lot(member) != lot)
-					continue;
-				g_object_get(member, "unit-cost", &unit, NULL);
-				if (unit == NULL)
-					return refuse(error, "a cost layer has no unit cost");
-				still = g_hash_table_lookup(left, venture_money_get_currency(unit));
-				if (still == NULL)
-				{
-					still = g_new(gint64, 1);
-					*still = take;
-					g_hash_table_insert(left, g_strdup(venture_money_get_currency(unit)), still);
-				}
-				remaining = get_int(member, "remaining-qty");
-				if (*still <= 0 || remaining <= 0)
-					continue;
-				part = remaining < *still ? remaining : *still;
-				if (costs != NULL)
-				{
-					g_autoptr(VentureMoney) slice = venture_money_multiply_int(unit, part, error);
-					if (slice == NULL || !venture_money_totals_add(costs, slice, error))
-						return FALSE;
-				}
-				g_object_set(member, "remaining-qty", remaining - part, NULL);
-				if (!save_owned(self, member, actor, error))
-					return FALSE;
-				*still -= part;
-			}
+			g_autoptr(VentureInventoryCostLayer) made = venture_inventory_cost_layer_new();
+			g_autoptr(VentureMoney) unit = NULL;
+			g_autoptr(GDateTime) when = lot_time(self, layer->lot_id);
+			gint64 units = (gint64)layer->quantity;
+
+			/* The engine splits a cost exactly, so every layer's units
+			 * share one whole unit cost. */
+			unit = venture_money_new_for_currency(units > 0 ? layer->cost / units : 0, layer->currency);
+			g_object_set(made, "inventory-item-id", venture_entity_get_id(item),
+				"goods-receipt-line-id", receipt_line_id, "received-at", when, "original-qty", units,
+				"remaining-qty", remaining, "unit-cost", unit, "lot-txn-id", *txn,
+				"stock-layer-id", layer->id, NULL);
+			venture_entity_set_organization_id(VENTURE_ENTITY(made), venture_entity_get_organization_id(item));
+			if (!save_owned(self, VENTURE_ENTITY(made), actor, error))
+				return FALSE;
 		}
-		need -= take;
 	}
-	*out_short = need;
-	return TRUE;
-}
-
-static gboolean
-consume_fifo(VentureInventoryService *self, gint64 item_id, gint64 quantity, const VentureActor *actor,
-	GPtrArray *costs, GError **error)
-{
-	gint64 short_by = 0;
-	if (!consume_layers(self, item_id, quantity, actor, costs, &short_by, error))
-		return FALSE;
-	if (short_by > 0 && !item_allows_negative(self, item_id))
-		return refuse(error, "negative stock is refused");
-	return TRUE;
-}
-
-static gboolean
-restore_fifo(VentureInventoryService *self, gint64 item_id, gint64 receipt_line_id, gint64 quantity,
-	const VentureMoney *unit_cost, GDateTime *date, const VentureActor *actor, GError **error)
-{
-	g_autoptr(GPtrArray) layers = NULL;
-	gint64 need = quantity;
-	guint i;
-	(void)unit_cost;
-	(void)date;
-	layers = layers_for(self, item_id, error);
-	if (layers == NULL)
-		return FALSE;
-	for (i = 0; i < layers->len && need > 0; i++)
-	{
-		VentureEntity *layer = g_ptr_array_index(layers, i);
-		gint64 remaining, take;
-		if (receipt_line_id != 0 && get_id(layer, "goods-receipt-line-id") != receipt_line_id)
-			continue;
-		remaining = get_int(layer, "remaining-qty");
-		if (remaining <= 0)
-			continue;
-		take = remaining < need ? remaining : need;
-		g_object_set(layer, "remaining-qty", remaining - take, NULL);
-		if (!save_owned(self, layer, actor, error))
-			return FALSE;
-		need -= take;
-	}
-	if (need > 0)
-		return refuse(error, "negative stock is refused");
 	return TRUE;
 }
 
 static VentureEntity *
-write_txn(VentureInventoryService *self, gint64 item_id, gint64 quantity, gint kind,
+write_txn(VentureInventoryService *self, VentureEntity *item, gint64 quantity, gint kind,
 	const VentureMoney *unit_cost, const gchar *notes, GDateTime *date, const gchar *reference,
 	gint64 sale_id, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureInventoryTxn) txn = venture_inventory_txn_new();
-	g_autoptr(VentureEntity) item = NULL;
-	item = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, item_id, error);
-	if (item == NULL)
-		return NULL;
-	g_object_set(txn, "inventory-item-id", item_id, "kind", kind, "quantity", quantity,
+
+	g_object_set(txn, "inventory-item-id", venture_entity_get_id(item), "kind", kind, "quantity", quantity,
 		"unit-cost", unit_cost, "occurred-at", date, "reference", reference, "sale-id", sale_id, NULL);
 	if (notes != NULL)
 		g_object_set(txn, "notes", notes, NULL);
@@ -489,125 +567,11 @@ write_txn(VentureInventoryService *self, gint64 item_id, gint64 quantity, gint k
 	return VENTURE_ENTITY(g_steal_pointer(&txn));
 }
 
-static gboolean
-venture_inventory_service_receive_impl(VentureInventoryService *self, gint64 inventory_item_id,
-	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
-	const gchar *reference, const VentureActor *actor, GError **error)
-{
-	g_autoptr(VentureEntity) txn = NULL;
-	g_autoptr(VentureInventoryCostLayer) layer = NULL;
-	g_autoptr(VentureMoney) total = NULL;
-	g_autoptr(GDateTime) when = NULL;
-	gint64 org, inventory, grni;
-	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
-	if (quantity <= 0 || unit_cost == NULL)
-		return refuse(error, "receipts need a positive quantity and unit cost");
-	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
-	txn = write_txn(self, inventory_item_id, quantity, VENTURE_INVENTORY_TXN_KIND_PURCHASE,
-		unit_cost, NULL, when, reference, 0, actor, error);
-	if (txn == NULL)
-		return FALSE;
-	org = venture_entity_get_organization_id(txn);
-	layer = venture_inventory_cost_layer_new();
-	g_object_set(layer, "inventory-item-id", inventory_item_id, "goods-receipt-line-id", receipt_line_id,
-		"received-at", when, "original-qty", quantity, "remaining-qty", quantity, "unit-cost", unit_cost,
-		"lot-txn-id", venture_entity_get_id(txn), NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(layer), org);
-	if (!save_owned(self, VENTURE_ENTITY(layer), actor, error))
-		return FALSE;
-	total = venture_money_multiply_int(unit_cost, quantity, error);
-	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
-	grni = account_code(self, org, "grni", "2010", "Goods received not invoiced",
-		VENTURE_ACCOUNT_KIND_LIABILITY, error);
-	if (total == NULL || inventory == 0 || grni == 0)
-		return FALSE;
-	/* GRNI is a liability; a credit increases it until the matched bill clears it. */
-	return post_pair(self, org, txn, inventory, grni, total, "Inventory receipt", when, actor, error);
-}
-
-static gboolean
-venture_inventory_service_issue_impl(VentureInventoryService *self, gint64 inventory_item_id,
-	gint64 quantity, GDateTime *date, const gchar *source_type, gint64 source_id,
-	const VentureActor *actor, GPtrArray **out_costs, GError **error)
-{
-	g_autoptr(GPtrArray) costs = venture_money_totals_new();
-	g_autoptr(VentureMoney) unit = NULL;
-	g_autofree gchar *notes = NULL;
-	g_autoptr(VentureEntity) txn = NULL;
-	g_autoptr(GDateTime) when = NULL;
-	gint64 org, inventory, cogs_id;
-	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
-	if (out_costs != NULL)
-		*out_costs = NULL;
-	if (quantity <= 0)
-		return refuse(error, "issues need a positive quantity");
-	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
-	if (!guard_stock(self, inventory_item_id, -quantity, error))
-		return FALSE;
-	if (!consume_fifo(self, inventory_item_id, quantity, actor, costs, error))
-		return FALSE;
-	/* The layers may have cost several currencies; each is kept apart
-	 * and each posts by its own treatment below. */
-	if (!movement_unit(costs, quantity, &unit, &notes, error))
-		return FALSE;
-	txn = write_txn(self, inventory_item_id, -quantity, VENTURE_INVENTORY_TXN_KIND_SALE,
-		unit, notes, when, source_type, g_strcmp0(source_type, "sale") == 0 ? source_id : 0, actor, error);
-	if (txn == NULL)
-		return FALSE;
-	org = venture_entity_get_organization_id(txn);
-	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
-	cogs_id = account_code(self, org, "cogs", "5000", "Cost of goods sold", VENTURE_ACCOUNT_KIND_EXPENSE, error);
-	if (inventory == 0 || cogs_id == 0)
-		return FALSE;
-	if (!post_costs(self, org, txn, cogs_id, inventory, costs, "Inventory issue", when, actor, error))
-		return FALSE;
-	if (out_costs != NULL)
-		*out_costs = g_steal_pointer(&costs);
-	return TRUE;
-}
-
-static gboolean
-venture_inventory_service_restore_impl(VentureInventoryService *self, gint64 inventory_item_id,
-	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
-	const gchar *reference, const VentureActor *actor, GError **error)
-{
-	g_autoptr(VentureEntity) txn = NULL;
-	g_autoptr(VentureMoney) total = NULL;
-	g_autoptr(GDateTime) when = NULL;
-	gint64 org, inventory, grni;
-	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
-	if (quantity <= 0 || unit_cost == NULL)
-		return refuse(error, "returns need a positive quantity and unit cost");
-	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
-	if (!guard_stock(self, inventory_item_id, -quantity, error))
-		return FALSE;
-	if (receipt_line_id != 0)
-	{
-		if (!restore_fifo(self, inventory_item_id, receipt_line_id, quantity, unit_cost, when, actor, error))
-			return FALSE;
-	}
-	else if (!consume_fifo(self, inventory_item_id, quantity, actor, NULL, error))
-		return FALSE;
-	txn = write_txn(self, inventory_item_id, -quantity, VENTURE_INVENTORY_TXN_KIND_RETURN,
-		unit_cost, NULL, when, reference, 0, actor, error);
-	if (txn == NULL)
-		return FALSE;
-	org = venture_entity_get_organization_id(txn);
-	total = venture_money_multiply_int(unit_cost, quantity, error);
-	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
-	grni = account_code(self, org, "grni", "2010", "Goods received not invoiced",
-		VENTURE_ACCOUNT_KIND_LIABILITY, error);
-	if (total == NULL || inventory == 0 || grni == 0)
-		return FALSE;
-	return post_pair(self, org, txn, grni, inventory, total, "Inventory return", when, actor, error);
-}
-
 /*
  * The currency a lot with no cost at all is carried in: the item's own
  * unit cost's, else its organization's book currency. It still needs a
- * layer -- consume_fifo() refuses to issue units that have none -- and a
- * zero never clashes with anything, because layers are totalled per
- * currency.
+ * layer -- an issue refuses units that have none -- and a zero never
+ * clashes with anything, because layers are totalled per currency.
  */
 static gchar *
 zero_cost_currency(VentureInventoryService *self, VentureEntity *item)
@@ -627,96 +591,829 @@ zero_cost_currency(VentureInventoryService *self, VentureEntity *item)
 	return currency;
 }
 
-/* A new cost layer of @quantity units at @unit on @item_id, in @lot. */
-static gboolean
-add_layer(VentureInventoryService *self, gint64 item_id, gint64 organization_id, gint64 quantity,
-	const VentureMoney *unit, gint64 lot, GDateTime *when, const VentureActor *actor, GError **error)
+/* --- Reading the stock --------------------------------------------------- */
+
+/* What @item_id's movement rows add up to, before @as_of when given: the
+ * history, and an item the engine has not met yet. */
+static gint64
+rows_on_hand(VentureInventoryService *self, gint64 item_id, GDateTime *as_of, GError **error)
 {
-	g_autoptr(VentureInventoryCostLayer) layer = venture_inventory_cost_layer_new();
-	g_object_set(layer, "inventory-item-id", item_id, "received-at", when,
-		"original-qty", quantity, "remaining-qty", quantity, "unit-cost", unit,
-		"lot-txn-id", lot, NULL);
-	venture_entity_set_organization_id(VENTURE_ENTITY(layer), organization_id);
-	return save_owned(self, VENTURE_ENTITY(layer), actor, error);
+	g_autoptr(GPtrArray) rows = find_rows(self, VENTURE_TYPE_INVENTORY_TXN, "inventory-item-id", item_id, error);
+	gint64 total = 0;
+	guint i;
+
+	if (rows == NULL)
+		return 0;
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autoptr(GDateTime) when = NULL;
+
+		g_object_get(g_ptr_array_index(rows, i), "occurred-at", &when, NULL);
+		if (as_of != NULL && when != NULL && g_date_time_compare(when, as_of) >= 0)
+			continue;
+		total += get_int(g_ptr_array_index(rows, i), "quantity");
+	}
+	return total;
 }
 
 /*
- * Gives @quantity units arriving on @item_id (by the movement @lot) the
- * cost @costs, one set of layers per currency that cost anything.
- *
- * Split exactly, never rounded: 10.00 over 3 units is one layer of 1 at
- * 3.34 and one of 2 at 3.33. A single layer at the rounded average would
- * leave a cent of cost behind (or invent one) every time, and cost of
- * goods sold would drift from what went in. Each currency is split on its
- * own, and all of them share @lot, so FIFO later takes every currency's
- * share of a unit together (consume_layers()).
- *
- * Zero totals make no layers when anything else cost something -- a
- * zero-cost GOLD input beside TICKET ones adds nothing to the unit. When
- * nothing cost anything the units still get one zero layer, in the first
- * zero total's currency, else the item's (zero_cost_currency()).
+ * What layer rows still hold, per currency, counting only layers received
+ * at or before @as_of; @units (optional) gets how many units carry each.
  */
 static gboolean
-add_lot_layers(VentureInventoryService *self, VentureEntity *item, gint64 quantity, GPtrArray *costs,
-	gint64 lot, GDateTime *when, const VentureActor *actor, GError **error)
+layers_value(GPtrArray *layers, GDateTime *as_of, GPtrArray *values, GHashTable *units, GError **error)
 {
-	gint64 item_id = venture_entity_get_id(item);
-	gint64 organization_id = venture_entity_get_organization_id(item);
-	gboolean made = FALSE;
 	guint i;
-	for (i = 0; costs != NULL && i < costs->len; i++)
+	for (i = 0; i < layers->len; i++)
 	{
-		const VentureMoney *total = g_ptr_array_index(costs, i);
-		gint64 amount = venture_money_get_amount(total);
-		gint64 base, over;
-		const gchar *currency = venture_money_get_currency(total);
-		guint8 exponent = venture_money_get_exponent(total);
-		if (amount == 0)
+		g_autoptr(GDateTime) when = NULL;
+		g_autoptr(VentureMoney) unit = NULL;
+		g_autoptr(VentureMoney) slice = NULL;
+		gint64 remaining = 0;
+		g_object_get(g_ptr_array_index(layers, i), "received-at", &when, "unit-cost", &unit,
+			"remaining-qty", &remaining, NULL);
+		if (as_of != NULL && when != NULL && g_date_time_compare(when, as_of) > 0)
 			continue;
-		base = amount / quantity;
-		over = amount % quantity;
-		/* A negative total (never made here) splits the same way with the
-		 * remainder's sign; keep the "higher" layer the one that moves the
-		 * sum toward the total. */
-		if (over < 0)
-		{
-			base -= 1;
-			over += quantity;
-		}
-		if (over > 0)
-		{
-			g_autoptr(VentureMoney) high = venture_money_new(base + 1, currency, exponent);
-			if (!add_layer(self, item_id, organization_id, over, high, lot, when, actor, error))
-				return FALSE;
-		}
-		if (quantity - over > 0)
-		{
-			g_autoptr(VentureMoney) low = venture_money_new(base, currency, exponent);
-			if (!add_layer(self, item_id, organization_id, quantity - over, low, lot, when, actor, error))
-				return FALSE;
-		}
-		made = TRUE;
-	}
-	if (!made)
-	{
-		g_autofree gchar *currency = (costs != NULL && costs->len > 0)
-			? g_strdup(venture_money_get_currency(g_ptr_array_index(costs, 0)))
-			: zero_cost_currency(self, item);
-		g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
-		if (!add_layer(self, item_id, organization_id, quantity, zero, lot, when, actor, error))
+		if (remaining <= 0 || unit == NULL)
+			continue;
+		slice = venture_money_multiply_int(unit, remaining, error);
+		if (slice == NULL || !venture_money_totals_add(values, slice, error))
 			return FALSE;
+		if (units != NULL)
+		{
+			gint64 *count = g_hash_table_lookup(units, venture_money_get_currency(unit));
+			if (count == NULL)
+			{
+				count = g_new0(gint64, 1);
+				g_hash_table_insert(units, g_strdup(venture_money_get_currency(unit)), count);
+			}
+			*count += remaining;
+		}
 	}
 	return TRUE;
 }
 
 /*
+ * What one item's stock is worth, per currency, into @values; @units
+ * (optional) gets how many units carry each currency. From the engine,
+ * counting the lots that came in at or before @as_of; an item the engine
+ * has not met is read from its rows, which hold the same.
+ */
+static gboolean
+item_worth(VentureInventoryService *self, gint64 item_id, GDateTime *as_of, GPtrArray *values,
+	GHashTable *units, GError **error)
+{
+	g_autoptr(GError) cause = NULL;
+	g_autoptr(LvCosts) costs = NULL;
+	gint64 engine_item = venture_stock_engine_find_item(self->database, item_id, error);
+	guint i;
+
+	if (engine_item == 0)
+	{
+		g_autoptr(GPtrArray) rows = NULL;
+
+		if (error != NULL && *error != NULL)
+			return FALSE;
+		rows = layer_rows(self, item_id, error);
+		return rows != NULL && layers_value(rows, as_of, values, units, error);
+	}
+	if (as_of != NULL)
+	{
+		g_autofree gchar *time = venture_stock_engine_time(as_of);
+
+		costs = lv_ledger_valuation_through(store_of(self, NULL), engine_item, NULL, time, &cause);
+	}
+	else
+		costs = lv_ledger_valuation(store_of(self, NULL), engine_item, NULL, &cause);
+	if (costs == NULL)
+	{
+		g_propagate_error(error, g_steal_pointer(&cause));
+		return FALSE;
+	}
+	for (i = 0; i < lv_costs_get_n(costs); i++)
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+		gint64 *count;
+
+		/* The engine answers an empty item with one zero and no units:
+		 * nothing is on hand, which is no amount at all here. */
+		if (lv_costs_get_units(costs, i) <= 0)
+			continue;
+		amount = venture_money_new_for_currency(lv_costs_get_amount(costs, i), lv_costs_get_currency(costs, i));
+		if (!venture_money_totals_add(values, amount, error))
+			return FALSE;
+		if (units == NULL)
+			continue;
+		count = g_hash_table_lookup(units, lv_costs_get_currency(costs, i));
+		if (count == NULL)
+		{
+			count = g_new0(gint64, 1);
+			g_hash_table_insert(units, g_strdup(lv_costs_get_currency(costs, i)), count);
+		}
+		*count += (gint64)lv_costs_get_units(costs, i);
+	}
+	return TRUE;
+}
+
+gint64
+venture_inventory_service_on_hand(VentureInventoryService *self, gint64 inventory_item_id,
+	GDateTime *as_of, GError **error)
+{
+	g_autoptr(GError) cause = NULL;
+	gint64 engine_item;
+	gdouble units;
+
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), 0);
+	/* The history before a time is the movements' own rows: the engine
+	 * holds an older item's stock as it stood when it came in, not the
+	 * movements before that. */
+	if (as_of != NULL)
+		return rows_on_hand(self, inventory_item_id, as_of, error);
+	engine_item = venture_stock_engine_find_item(self->database, inventory_item_id, error);
+	if (engine_item == 0)
+		return (error != NULL && *error != NULL) ? 0 : rows_on_hand(self, inventory_item_id, NULL, error);
+	units = lv_ledger_on_hand(store_of(self, NULL), engine_item, NULL, &cause);
+	if (cause != NULL)
+	{
+		g_propagate_error(error, g_steal_pointer(&cause));
+		return 0;
+	}
+	return (gint64)units;
+}
+
+GPtrArray *
+venture_inventory_service_valuation(VentureInventoryService *self, gint64 organization_id,
+	GDateTime *as_of, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVENTORY_ITEM);
+	g_autoptr(GPtrArray) items = NULL;
+	g_autoptr(GPtrArray) values = venture_money_totals_new();
+	g_autofree gchar *book = NULL;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), NULL);
+	venture_query_set_organization(query, organization_id);
+	venture_query_set_limit(query, 0);
+	/* A deleted item's stock is still stock: its layers always counted. */
+	venture_query_set_include_deleted(query, TRUE);
+	items = venture_database_find(self->database, query, error);
+	if (items == NULL)
+		return NULL;
+	/* Per currency: layers in GOLD and TICKET -- in one product or in two
+	 * -- are two figures, never a refusal of the whole organization. */
+	if (layers_kept())
+		for (i = 0; i < items->len; i++)
+			if (!item_worth(self, venture_entity_get_id(g_ptr_array_index(items, i)), as_of, values, NULL, error))
+				return NULL;
+	book = venture_posting_service_book_currency(venture_database_get_posting_service(self->database),
+		organization_id, NULL);
+	if (venture_string_is_empty(book))
+	{
+		g_free(book);
+		book = g_strdup(venture_money_get_default_currency());
+	}
+	if (values->len == 0)
+	{
+		g_autoptr(VentureMoney) zero = venture_money_new_zero(book);
+		g_ptr_array_add(values, g_steal_pointer(&zero));
+	}
+	venture_money_totals_sort(values, book);
+	return g_steal_pointer(&values);
+}
+
+GPtrArray *
+venture_inventory_service_item_value(VentureInventoryService *self, gint64 inventory_item_id,
+	GDateTime *as_of, GPtrArray **out_unit_costs, GError **error)
+{
+	g_autoptr(GPtrArray) values = venture_money_totals_new();
+	g_autoptr(GHashTable) units = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(GPtrArray) unit_costs = NULL;
+	g_autoptr(VentureEntity) item = NULL;
+	g_autofree gchar *book = NULL;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), NULL);
+	if (out_unit_costs != NULL)
+		*out_unit_costs = NULL;
+	/* Without the goods module there are no layers to read, and no
+	 * carrying cost but the one typed on the item. */
+	if (!layers_kept())
+	{
+		if (out_unit_costs != NULL)
+			*out_unit_costs = venture_money_totals_new();
+		return g_steal_pointer(&values);
+	}
+	item = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
+	if (item == NULL)
+		return NULL;
+	if (!item_worth(self, inventory_item_id, as_of, values, units, error))
+		return NULL;
+	book = venture_posting_service_book_currency(venture_database_get_posting_service(self->database),
+		venture_entity_get_organization_id(item), NULL);
+	venture_money_totals_sort(values, book);
+	unit_costs = venture_money_totals_new();
+	for (i = 0; i < values->len; i++)
+	{
+		const VentureMoney *value = g_ptr_array_index(values, i);
+		gint64 *count = g_hash_table_lookup(units, venture_money_get_currency(value));
+		VentureMoney *average = venture_money_multiply_rational(value, 1,
+			count != NULL && *count > 0 ? *count : 1, error);
+		if (average == NULL)
+			return NULL;
+		g_ptr_array_add(unit_costs, average);
+	}
+	if (out_unit_costs != NULL)
+		*out_unit_costs = g_steal_pointer(&unit_costs);
+	return g_steal_pointer(&values);
+}
+
+/* --- Bringing an item into the engine ------------------------------------ */
+
+/* The lot a layer row belongs to: its arrival movement, or itself (negated,
+ * so it cannot meet a movement id) when it predates lots. */
+static gint64
+layer_lot(VentureEntity *layer)
+{
+	gint64 lot = get_id(layer, "lot-txn-id");
+	return lot > 0 ? lot : -venture_entity_get_id(layer);
+}
+
+typedef struct
+{
+	gint64		 key;		/* layer_lot() */
+	GPtrArray	*rows;		/* its open layer rows, in order */
+} OpenLot;
+
+static void
+open_lot_free(gpointer data)
+{
+	OpenLot *lot = data;
+
+	g_ptr_array_unref(lot->rows);
+	g_free(lot);
+}
+
+static gint64
+floor_div(gint64 total, gint64 units)
+{
+	return total >= 0 ? total / units : -((-total + units - 1) / units);
+}
+
+/*
+ * Whether the engine's exact split of @rows' cost, per currency, over the
+ * lot's @units gives @rows back: every row of a currency at the floor of
+ * the share or one minor unit above it, and the units above it exactly
+ * the remainder -- as every lot the service made was written. Then the lot
+ * goes in whole, its sibling currencies sharing it.
+ */
+static gboolean
+lot_splits_exactly(GPtrArray *rows, gint64 units)
+{
+	g_autoptr(GHashTable) totals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(GHashTable) counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_autoptr(GHashTable) dear = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	GHashTableIter iter;
+	gpointer key, value;
+	guint i;
+
+	if (units <= 0)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autoptr(VentureMoney) unit = NULL;
+		gint64 remaining = get_int(g_ptr_array_index(rows, i), "remaining-qty");
+		gint64 *total, *count;
+
+		g_object_get(g_ptr_array_index(rows, i), "unit-cost", &unit, NULL);
+		if (unit == NULL)
+			return FALSE;
+		total = g_hash_table_lookup(totals, venture_money_get_currency(unit));
+		count = g_hash_table_lookup(counts, venture_money_get_currency(unit));
+		if (total == NULL)
+		{
+			total = g_new0(gint64, 1);
+			count = g_new0(gint64, 1);
+			g_hash_table_insert(totals, g_strdup(venture_money_get_currency(unit)), total);
+			g_hash_table_insert(counts, g_strdup(venture_money_get_currency(unit)), count);
+			g_hash_table_insert(dear, g_strdup(venture_money_get_currency(unit)), g_new0(gint64, 1));
+		}
+		*total += venture_money_get_amount(unit) * remaining;
+		*count += remaining;
+	}
+	g_hash_table_iter_init(&iter, counts);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+		if (*(gint64 *)value != units)
+			return FALSE;
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autoptr(VentureMoney) unit = NULL;
+		gint64 floor;
+
+		g_object_get(g_ptr_array_index(rows, i), "unit-cost", &unit, NULL);
+		floor = floor_div(*(gint64 *)g_hash_table_lookup(totals, venture_money_get_currency(unit)), units);
+		if (venture_money_get_amount(unit) == floor + 1)
+			*(gint64 *)g_hash_table_lookup(dear, venture_money_get_currency(unit)) +=
+				get_int(g_ptr_array_index(rows, i), "remaining-qty");
+		else if (venture_money_get_amount(unit) != floor)
+			return FALSE;
+	}
+	g_hash_table_iter_init(&iter, totals);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		gint64 total = *(gint64 *)value;
+
+		if (*(gint64 *)g_hash_table_lookup(dear, key) != total - floor_div(total, units) * units)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* Posts one opening movement of @units at what @rows still hold, dated
+ * when the first of them came in, and links each row to its engine layer. */
+static gboolean
+open_rows(VentureInventoryService *self, gint64 engine_item, GPtrArray *rows, gint64 units, const gchar *key,
+	GError **error)
+{
+	g_autoptr(GPtrArray) totals = venture_money_totals_new();
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new("opening");
+	g_autoptr(LvCosts) cost = NULL;
+	g_autoptr(LvMovement) movement = NULL;
+	g_autoptr(GPtrArray) moves = NULL;
+	g_autoptr(GPtrArray) layers = NULL;
+	g_autoptr(GDateTime) received = NULL;
+	g_autoptr(GError) cause = NULL;
+	g_autofree gchar *date = NULL;
+	g_autofree gchar *reference = NULL;
+	VentureEntity *first = g_ptr_array_index(rows, 0);
+	gint64 lot;
+	guint i, j;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		g_autoptr(VentureMoney) unit = NULL;
+		g_autoptr(VentureMoney) slice = NULL;
+
+		g_object_get(g_ptr_array_index(rows, i), "unit-cost", &unit, NULL);
+		slice = venture_money_multiply_int(unit, get_int(g_ptr_array_index(rows, i), "remaining-qty"), error);
+		if (slice == NULL || !venture_money_totals_add(totals, slice, error))
+			return FALSE;
+	}
+	if (!add_currencies(self, totals, error))
+		return FALSE;
+	g_object_get(first, "received-at", &received, NULL);
+	date = venture_stock_engine_time(received);
+	reference = get_id(first, "lot-txn-id") > 0
+		? g_strdup_printf("inventory_txn:%" G_GINT64_FORMAT, get_id(first, "lot-txn-id"))
+		: g_strdup_printf("inventory_cost_layer:%" G_GINT64_FORMAT, venture_entity_get_id(first));
+	cost = engine_costs(totals);
+	lv_movement_request_set_date(request, date);
+	lv_movement_request_set_reference(request, reference);
+	lv_movement_request_set_key(request, key);
+	lv_movement_request_give(request, engine_item, NULL, (gdouble)units, NULL, cost);
+	movement = venture_stock_engine_post(self->database, request, NULL, NULL, error);
+	moves = movement != NULL ? moves_of(self, movement, error) : NULL;
+	if (moves == NULL)
+		return FALSE;
+	lot = lot_made(moves, engine_item);
+	layers = lv_ledger_list_layers(store_of(self, NULL), engine_item, &cause);
+	if (layers == NULL)
+	{
+		g_propagate_error(error, g_steal_pointer(&cause));
+		return FALSE;
+	}
+	/* One row per layer the split made: same currency, same unit cost. */
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		g_autoptr(VentureMoney) unit = NULL;
+
+		g_object_get(row, "unit-cost", &unit, NULL);
+		for (j = 0; j < layers->len; j++)
+		{
+			LvLayer *layer = g_ptr_array_index(layers, j);
+
+			if (layer->lot_id != lot || g_strcmp0(layer->currency, venture_money_get_currency(unit)) != 0 ||
+				layer->quantity <= 0 || layer->cost != venture_money_get_amount(unit) * (gint64)layer->quantity)
+				continue;
+			g_object_set(row, "stock-layer-id", layer->id, NULL);
+			if (!save_owned(self, row, NULL, error))
+				return FALSE;
+			break;
+		}
+		if (j == layers->len)
+			return refuse(error, "an open cost layer has no place in the stock engine");
+	}
+	return TRUE;
+}
+
+gboolean
+venture_inventory_service_import_item(VentureInventoryService *self, VentureEntity *item, GError **error)
+{
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) lots = g_ptr_array_new_with_free_func(open_lot_free);
+	g_autoptr(GHashTable) by_key = g_hash_table_new(g_int64_hash, g_int64_equal);
+	gint64 item_id = venture_entity_get_id(item);
+	gint64 engine_item, quantity, covered = 0;
+	gboolean created = FALSE;
+	guint i, j;
+
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	engine_item = venture_stock_engine_ensure_item(self->database, item, &created, error);
+	if (engine_item == 0)
+		return FALSE;
+	if (!created)
+		return TRUE;
+	quantity = rows_on_hand(self, item_id, NULL, error);
+	if (error != NULL && *error != NULL)
+		return FALSE;
+	if (layers_kept())
+	{
+		rows = layer_rows(self, item_id, error);
+		if (rows == NULL)
+			return FALSE;
+	}
+	/* The open lots, in the order first in, first out takes them. */
+	for (i = 0; rows != NULL && i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		OpenLot *lot;
+		gint64 key = layer_lot(row);
+
+		if (get_int(row, "remaining-qty") <= 0)
+			continue;
+		lot = g_hash_table_lookup(by_key, &key);
+		if (lot == NULL)
+		{
+			lot = g_new0(OpenLot, 1);
+			lot->key = key;
+			lot->rows = g_ptr_array_new_with_free_func(g_object_unref);
+			g_ptr_array_add(lots, lot);
+			g_hash_table_insert(by_key, &lot->key, lot);
+		}
+		g_ptr_array_add(lot->rows, g_object_ref(row));
+	}
+	for (i = 0; i < lots->len; i++)
+	{
+		OpenLot *lot = g_ptr_array_index(lots, i);
+		g_autoptr(VentureMoney) lead = NULL;
+		gint64 units = 0;
+
+		/* A lot has as many units as its first currency's layers hold. */
+		g_object_get(g_ptr_array_index(lot->rows, 0), "unit-cost", &lead, NULL);
+		for (j = 0; lead != NULL && j < lot->rows->len; j++)
+		{
+			g_autoptr(VentureMoney) unit = NULL;
+
+			g_object_get(g_ptr_array_index(lot->rows, j), "unit-cost", &unit, NULL);
+			if (unit != NULL && g_strcmp0(venture_money_get_currency(unit), venture_money_get_currency(lead)) == 0)
+				units += get_int(g_ptr_array_index(lot->rows, j), "remaining-qty");
+		}
+		if (lead != NULL && lot_splits_exactly(lot->rows, units))
+		{
+			g_autofree gchar *key = g_strdup_printf("venture-opening:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
+				item_id, lot->key);
+
+			if (!open_rows(self, engine_item, lot->rows, units, key, error))
+				return FALSE;
+			covered += units;
+			continue;
+		}
+		/* Never written so by this service: each row comes in as a lot
+		 * of its own, at what it still holds, so the value is the same. */
+		for (j = 0; j < lot->rows->len; j++)
+		{
+			VentureEntity *row = g_ptr_array_index(lot->rows, j);
+			g_autoptr(GPtrArray) one = g_ptr_array_new();
+			g_autofree gchar *key = g_strdup_printf("venture-opening:%" G_GINT64_FORMAT ":layer:%"
+				G_GINT64_FORMAT, item_id, venture_entity_get_id(row));
+			gint64 remaining = get_int(row, "remaining-qty");
+			g_autoptr(VentureMoney) unit = NULL;
+
+			g_object_get(row, "unit-cost", &unit, NULL);
+			if (unit == NULL)
+				continue;
+			g_ptr_array_add(one, row);
+			if (!open_rows(self, engine_item, one, remaining, key, error))
+				return FALSE;
+			if (lead != NULL && g_strcmp0(venture_money_get_currency(unit), venture_money_get_currency(lead)) == 0)
+				covered += remaining;
+		}
+	}
+	/* The units no layer covers: a count, at the count's own place, so it
+	 * never takes a costed unit. Below zero when the rows were. */
+	if (quantity != covered)
+	{
+		g_autoptr(LvMovementRequest) request = lv_movement_request_new("adjustment");
+		g_autoptr(LvMovement) movement = NULL;
+		g_autofree gchar *key = g_strdup_printf("venture-opening:%" G_GINT64_FORMAT ":count", item_id);
+		g_autofree gchar *date = venture_stock_engine_time(NULL);
+
+		lv_movement_request_set_date(request, date);
+		lv_movement_request_set_reference(request, "opening count");
+		lv_movement_request_set_key(request, key);
+		if (quantity > covered)
+			lv_movement_request_give(request, engine_item, VENTURE_STOCK_COUNT_PLACE,
+				(gdouble)(quantity - covered), NULL, NULL);
+		else
+			lv_movement_request_take(request, engine_item, VENTURE_STOCK_COUNT_PLACE,
+				(gdouble)(covered - quantity));
+		movement = venture_stock_engine_post(self->database, request, NULL, NULL, error);
+		if (movement == NULL)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* --- Movements ----------------------------------------------------------- */
+
+/* Each operation is one level of the database's transaction: nested in a
+ * caller's, it joins it, and a failure abandons the whole -- the engine's
+ * savepoint, the rows and the journal together. */
+static gboolean
+fail(VentureInventoryService *self)
+{
+	venture_database_rollback(self->database);
+	return FALSE;
+}
+
+static gboolean
+venture_inventory_service_receive_impl(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
+	const gchar *reference, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) item = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(GPtrArray) totals = venture_money_totals_new();
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new("purchase");
+	g_autoptr(LvCosts) cost = NULL;
+	g_autoptr(LvMovement) movement = NULL;
+	g_autoptr(GPtrArray) moves = NULL;
+	g_autoptr(GHashTable) lots = lots_new();
+	g_autoptr(GDateTime) when = NULL;
+	g_autofree gchar *time = NULL;
+	gint64 org, inventory, grni, engine_item;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	if (quantity <= 0 || unit_cost == NULL)
+		return refuse(error, "receipts need a positive quantity and unit cost");
+	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
+	total = venture_money_multiply_int(unit_cost, quantity, error);
+	if (total == NULL || !venture_money_totals_add(totals, total, error) ||
+		!venture_database_begin(self->database, error))
+		return FALSE;
+	item = get_item(self, inventory_item_id, error);
+	engine_item = item != NULL ? engine_item_for(self, item, error) : 0;
+	if (engine_item == 0 || !add_currencies(self, totals, error))
+		return fail(self);
+	time = venture_stock_engine_time(when);
+	cost = engine_costs(totals);
+	lv_movement_request_set_date(request, time);
+	lv_movement_request_set_reference(request, reference);
+	lv_movement_request_give(request, engine_item, NULL, (gdouble)quantity, NULL, cost);
+	movement = venture_stock_engine_post(self->database, request, NULL, NULL, error);
+	moves = movement != NULL ? moves_of(self, movement, error) : NULL;
+	if (moves == NULL)
+		return fail(self);
+	txn = write_txn(self, item, quantity, VENTURE_INVENTORY_TXN_KIND_PURCHASE, unit_cost, NULL, when, reference, 0,
+		actor, error);
+	if (txn == NULL)
+		return fail(self);
+	lots_add(lots, lot_made(moves, engine_item), venture_entity_get_id(txn));
+	if (!sync_layers(self, item, engine_item, lots, receipt_line_id, actor, error))
+		return fail(self);
+	org = venture_entity_get_organization_id(txn);
+	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
+	grni = account_code(self, org, "grni", "2010", "Goods received not invoiced",
+		VENTURE_ACCOUNT_KIND_LIABILITY, error);
+	if (inventory == 0 || grni == 0)
+		return fail(self);
+	/* GRNI is a liability; a credit increases it until the matched bill clears it. */
+	if (!post_pair(self, org, txn, inventory, grni, total, "Inventory receipt", when, actor, error))
+		return fail(self);
+	return venture_database_commit(self->database, error);
+}
+
+/*
+ * Takes @quantity out of @item by an engine movement of @kind, costed lots
+ * first and, unless the item allows negative stock, only costed units.
+ * Gives the movement's costs per currency and writes its txn row.
+ */
+static VentureEntity *
+take_out(VentureInventoryService *self, VentureEntity *item, gint64 engine_item, gint64 quantity,
+	const gchar *kind, VentureInventoryTxnKind txn_kind, GDateTime *when, const gchar *reference, gint64 sale_id,
+	GPtrArray **out_costs, const VentureActor *actor, GError **error)
+{
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new(kind);
+	g_autoptr(GHashTable) strict = strict_for(item, engine_item);
+	g_autoptr(LvMovement) movement = NULL;
+	g_autoptr(LvCosts) moved = NULL;
+	g_autoptr(GPtrArray) costs = NULL;
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autofree gchar *time = venture_stock_engine_time(when);
+	VentureEntity *txn;
+
+	*out_costs = NULL;
+	if (!guard_stock(self, item, engine_item, -quantity, error))
+		return NULL;
+	lv_movement_request_set_date(request, time);
+	lv_movement_request_set_reference(request, reference);
+	lv_movement_request_set_lot_order(request, LV_LOT_ORDER_COSTED_FIRST);
+	lv_movement_request_take(request, engine_item, NULL, (gdouble)quantity);
+	movement = venture_stock_engine_post(self->database, request, strict, &moved, error);
+	if (movement == NULL)
+		return NULL;
+	/* The layers may have cost several currencies; each is kept apart
+	 * and each posts by its own treatment. */
+	costs = venture_costs(moved, error);
+	if (costs == NULL || !sync_layers(self, item, engine_item, NULL, 0, actor, error) ||
+		!movement_unit(costs, quantity, &unit, &notes, error))
+		return NULL;
+	txn = write_txn(self, item, -quantity, txn_kind, unit, notes, when, reference, sale_id, actor, error);
+	if (txn != NULL)
+		*out_costs = g_steal_pointer(&costs);
+	return txn;
+}
+
+static gboolean
+venture_inventory_service_issue_impl(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, GDateTime *date, const gchar *source_type, gint64 source_id,
+	const VentureActor *actor, GPtrArray **out_costs, GError **error)
+{
+	g_autoptr(GPtrArray) costs = NULL;
+	g_autoptr(VentureEntity) item = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	gint64 org, inventory, cogs_id, engine_item;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	if (out_costs != NULL)
+		*out_costs = NULL;
+	if (quantity <= 0)
+		return refuse(error, "issues need a positive quantity");
+	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	item = get_item(self, inventory_item_id, error);
+	engine_item = item != NULL ? engine_item_for(self, item, error) : 0;
+	if (engine_item == 0)
+		return fail(self);
+	txn = take_out(self, item, engine_item, quantity, "sale", VENTURE_INVENTORY_TXN_KIND_SALE, when, source_type,
+		g_strcmp0(source_type, "sale") == 0 ? source_id : 0, &costs, actor, error);
+	if (txn == NULL)
+		return fail(self);
+	org = venture_entity_get_organization_id(txn);
+	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
+	cogs_id = account_code(self, org, "cogs", "5000", "Cost of goods sold", VENTURE_ACCOUNT_KIND_EXPENSE, error);
+	if (inventory == 0 || cogs_id == 0 ||
+		!post_costs(self, org, txn, cogs_id, inventory, costs, "Inventory issue", when, actor, error))
+		return fail(self);
+	if (!venture_database_commit(self->database, error))
+		return FALSE;
+	if (out_costs != NULL)
+		*out_costs = g_steal_pointer(&costs);
+	return TRUE;
+}
+
+/*
+ * The engine lots of @item's receipt line, oldest first: the rows of that
+ * line point at their engine layers, and each layer at its lot.
+ */
+static gboolean
+receipt_lots(VentureInventoryService *self, VentureEntity *item, gint64 engine_item, gint64 receipt_line_id,
+	GArray *lots, GError **error)
+{
+	g_autoptr(GPtrArray) rows = layer_rows(self, venture_entity_get_id(item), error);
+	g_autoptr(GPtrArray) layers = NULL;
+	g_autoptr(GError) cause = NULL;
+	guint i, j, k;
+
+	if (rows == NULL)
+		return FALSE;
+	layers = lv_ledger_list_layers(store_of(self, NULL), engine_item, &cause);
+	if (layers == NULL)
+	{
+		g_propagate_error(error, g_steal_pointer(&cause));
+		return FALSE;
+	}
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+
+		if (get_id(row, "goods-receipt-line-id") != receipt_line_id || get_int(row, "remaining-qty") <= 0)
+			continue;
+		for (j = 0; j < layers->len; j++)
+		{
+			LvLayer *layer = g_ptr_array_index(layers, j);
+			gboolean seen = FALSE;
+
+			if (layer->id != get_int(row, "stock-layer-id"))
+				continue;
+			for (k = 0; k < lots->len; k++)
+				seen = seen || g_array_index(lots, gint64, k) == layer->lot_id;
+			if (!seen)
+				g_array_append_val(lots, layer->lot_id);
+		}
+	}
+	return TRUE;
+}
+
+static gboolean
+venture_inventory_service_restore_impl(VentureInventoryService *self, gint64 inventory_item_id,
+	gint64 quantity, const VentureMoney *unit_cost, GDateTime *date, gint64 receipt_line_id,
+	const gchar *reference, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) item = NULL;
+	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	gint64 org, inventory, grni, engine_item;
+	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
+	if (quantity <= 0 || unit_cost == NULL)
+		return refuse(error, "returns need a positive quantity and unit cost");
+	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	item = get_item(self, inventory_item_id, error);
+	engine_item = item != NULL ? engine_item_for(self, item, error) : 0;
+	if (engine_item == 0)
+		return fail(self);
+	if (receipt_line_id != 0)
+	{
+		/* The units of that receipt go back, not the oldest units. */
+		g_autoptr(LvMovementRequest) request = lv_movement_request_new("return");
+		g_autoptr(GArray) lots = g_array_new(FALSE, FALSE, sizeof(gint64));
+		g_autoptr(LvMovement) movement = NULL;
+		g_autofree gchar *time = venture_stock_engine_time(when);
+		gint64 need = quantity;
+		guint i;
+
+		if (!guard_stock(self, item, engine_item, -quantity, error) ||
+			!receipt_lots(self, item, engine_item, receipt_line_id, lots, error))
+			return fail(self);
+		for (i = 0; i < lots->len && need > 0; i++)
+		{
+			g_autoptr(LvLot) lot = lv_store_get(store_of(self, NULL), LV_TYPE_LOT, g_array_index(lots, gint64, i),
+				NULL);
+			gint64 take = lot != NULL ? MIN((gint64)lot->quantity, need) : 0;
+
+			if (take <= 0)
+				continue;
+			lv_movement_request_take_lot(request, engine_item, lot->id, (gdouble)take);
+			need -= take;
+		}
+		if (need > 0)
+		{
+			refuse(error, "negative stock is refused");
+			return fail(self);
+		}
+		lv_movement_request_set_date(request, time);
+		lv_movement_request_set_reference(request, reference);
+		movement = venture_stock_engine_post(self->database, request, NULL, NULL, error);
+		if (movement == NULL || !sync_layers(self, item, engine_item, NULL, 0, actor, error))
+			return fail(self);
+		txn = write_txn(self, item, -quantity, VENTURE_INVENTORY_TXN_KIND_RETURN, unit_cost, NULL, when, reference,
+			0, actor, error);
+	}
+	else
+	{
+		g_autoptr(GPtrArray) costs = NULL;
+		g_autoptr(LvMovementRequest) request = lv_movement_request_new("return");
+		g_autoptr(GHashTable) strict = strict_for(item, engine_item);
+		g_autoptr(LvMovement) movement = NULL;
+		g_autofree gchar *time = venture_stock_engine_time(when);
+
+		/* First in, first out, and only costed units, as an issue; the
+		 * row shows the price the supplier is credited at. */
+		if (!guard_stock(self, item, engine_item, -quantity, error))
+			return fail(self);
+		lv_movement_request_set_date(request, time);
+		lv_movement_request_set_reference(request, reference);
+		lv_movement_request_set_lot_order(request, LV_LOT_ORDER_COSTED_FIRST);
+		lv_movement_request_take(request, engine_item, NULL, (gdouble)quantity);
+		movement = venture_stock_engine_post(self->database, request, strict, NULL, error);
+		if (movement == NULL || !sync_layers(self, item, engine_item, NULL, 0, actor, error))
+			return fail(self);
+		txn = write_txn(self, item, -quantity, VENTURE_INVENTORY_TXN_KIND_RETURN, unit_cost, NULL, when, reference,
+			0, actor, error);
+	}
+	if (txn == NULL)
+		return fail(self);
+	org = venture_entity_get_organization_id(txn);
+	total = venture_money_multiply_int(unit_cost, quantity, error);
+	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
+	grni = account_code(self, org, "grni", "2010", "Goods received not invoiced",
+		VENTURE_ACCOUNT_KIND_LIABILITY, error);
+	if (total == NULL || inventory == 0 || grni == 0 ||
+		!post_pair(self, org, txn, grni, inventory, total, "Inventory return", when, actor, error))
+		return fail(self);
+	return venture_database_commit(self->database, error);
+}
+
+/*
  * A receipt paid from @credit_id rather than accrued to goods received not
  * invoiced: stock bought outright at a venue, whose money left the venue's
- * cash the moment it was bought. Layers and FIFO are exactly a receipt's,
- * except that the cost is a total split over the units exactly (one layer
- * a minor unit higher and one at the floor, in one lot), because 100.00
- * paid for 7 units has no exact unit cost and a rounded one would leave a
- * cent behind on every flip.
+ * cash the moment it was bought. The cost is a total the engine splits
+ * over the units exactly (one layer a minor unit higher and one at the
+ * floor, in one lot), because 100.00 paid for 7 units has no exact unit
+ * cost and a rounded one would leave a cent behind on every flip.
  */
 static gboolean
 receive_from_impl(VentureInventoryService *self, gint64 inventory_item_id, gint64 quantity,
@@ -726,11 +1423,17 @@ receive_from_impl(VentureInventoryService *self, gint64 inventory_item_id, gint6
 	g_autoptr(GPtrArray) costs = venture_money_totals_new();
 	g_autoptr(VentureMoney) unit = NULL;
 	g_autofree gchar *notes = NULL;
+	g_autofree gchar *time = NULL;
 	g_autoptr(VentureEntity) txn = NULL;
 	g_autoptr(VentureEntity) item = NULL;
 	g_autoptr(VentureEntity) credit = NULL;
 	g_autoptr(GDateTime) when = NULL;
-	gint64 org, inventory;
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new("bought");
+	g_autoptr(LvCosts) cost = NULL;
+	g_autoptr(LvMovement) movement = NULL;
+	g_autoptr(GPtrArray) moves = NULL;
+	g_autoptr(GHashTable) lots = lots_new();
+	gint64 org, inventory, engine_item;
 	if (quantity <= 0 || total_cost == NULL || venture_money_is_negative(total_cost))
 		return refuse(error, "receipts need a positive quantity and a cost of zero or more");
 	if (credit_id <= 0)
@@ -742,28 +1445,42 @@ receive_from_impl(VentureInventoryService *self, gint64 inventory_item_id, gint6
 	org = venture_entity_get_organization_id(item);
 	/* The account paid from must be the item's organization's: a journal
 	 * between two organizations' charts is refused by the posting service
-	 * anyway, but only after the layers were written. */
+	 * anyway, but only after the stock moved. */
 	credit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, credit_id, error);
 	if (credit == NULL)
 		return FALSE;
 	if (venture_entity_get_organization_id(credit) != org)
 		return refuse(error, "the account paid from belongs to another organization");
-	if (!venture_money_totals_add(costs, total_cost, error))
+	if (!venture_money_totals_add(costs, total_cost, error) ||
+		!movement_unit(costs, quantity, &unit, &notes, error) || !venture_database_begin(self->database, error))
 		return FALSE;
-	if (!movement_unit(costs, quantity, &unit, &notes, error))
-		return FALSE;
-	txn = write_txn(self, inventory_item_id, quantity, VENTURE_INVENTORY_TXN_KIND_PURCHASE,
-		unit, notes, when, reference, 0, actor, error);
+	engine_item = engine_item_for(self, item, error);
+	if (engine_item == 0 || !add_currencies(self, costs, error))
+		return fail(self);
+	time = venture_stock_engine_time(when);
+	cost = engine_costs(costs);
+	lv_movement_request_set_date(request, time);
+	lv_movement_request_set_reference(request, reference);
+	lv_movement_request_give(request, engine_item, NULL, (gdouble)quantity, NULL, cost);
+	movement = venture_stock_engine_post(self->database, request, NULL, NULL, error);
+	moves = movement != NULL ? moves_of(self, movement, error) : NULL;
+	if (moves == NULL)
+		return fail(self);
+	txn = write_txn(self, item, quantity, VENTURE_INVENTORY_TXN_KIND_PURCHASE, unit, notes, when, reference, 0,
+		actor, error);
 	if (txn == NULL)
-		return FALSE;
-	if (!add_lot_layers(self, item, quantity, costs, venture_entity_get_id(txn), when, actor, error))
-		return FALSE;
+		return fail(self);
+	lots_add(lots, lot_made(moves, engine_item), venture_entity_get_id(txn));
+	if (!sync_layers(self, item, engine_item, lots, 0, actor, error))
+		return fail(self);
 	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
 	if (inventory == 0)
-		return FALSE;
+		return fail(self);
 	/* Dr inventory, Cr the account paid from. GRNI is not touched: there
 	 * is no bill to come that would clear it. */
 	if (!post_pair(self, org, txn, inventory, credit_id, total_cost, "Inventory bought", when, actor, error))
+		return fail(self);
+	if (!venture_database_commit(self->database, error))
 		return FALSE;
 	if (out_txn != NULL)
 		*out_txn = g_steal_pointer(&txn);
@@ -774,21 +1491,20 @@ receive_from_impl(VentureInventoryService *self, gint64 inventory_item_id, gint6
  * An issue whose cost goes to @debit_id rather than cost of goods sold:
  * stock leaving for an arbitrage position (sold at a venue, or written off
  * when the trade is abandoned), whose profit or loss is decided when the
- * position closes. FIFO, the lots and the per-currency posting are an
- * issue's, unchanged.
+ * position closes. First in, first out, the lots and the per-currency
+ * posting are an issue's, unchanged.
  */
 static gboolean
 issue_to_impl(VentureInventoryService *self, gint64 inventory_item_id, gint64 quantity,
 	GDateTime *date, const gchar *reference, gint64 debit_id, VentureInventoryTxnKind kind,
 	const VentureActor *actor, VentureEntity **out_txn, GPtrArray **out_costs, GError **error)
 {
-	g_autoptr(GPtrArray) costs = venture_money_totals_new();
-	g_autoptr(VentureMoney) unit = NULL;
-	g_autofree gchar *notes = NULL;
+	g_autoptr(GPtrArray) costs = NULL;
 	g_autoptr(VentureEntity) txn = NULL;
+	g_autoptr(VentureEntity) item = NULL;
 	g_autoptr(VentureEntity) debit = NULL;
 	g_autoptr(GDateTime) when = NULL;
-	gint64 org, inventory;
+	gint64 org, inventory, engine_item;
 	if (quantity <= 0)
 		return refuse(error, "issues need a positive quantity");
 	if (kind != VENTURE_INVENTORY_TXN_KIND_SALE && kind != VENTURE_INVENTORY_TXN_KIND_WRITE_OFF)
@@ -796,27 +1512,33 @@ issue_to_impl(VentureInventoryService *self, gint64 inventory_item_id, gint64 qu
 	if (debit_id <= 0)
 		return refuse(error, "an issue to an account needs the account");
 	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
-	if (!guard_stock(self, inventory_item_id, -quantity, error))
+	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	if (!consume_fifo(self, inventory_item_id, quantity, actor, costs, error))
-		return FALSE;
-	if (!movement_unit(costs, quantity, &unit, &notes, error))
-		return FALSE;
-	txn = write_txn(self, inventory_item_id, -quantity, kind, unit, notes, when, reference, 0, actor, error);
+	item = get_item(self, inventory_item_id, error);
+	engine_item = item != NULL ? engine_item_for(self, item, error) : 0;
+	if (engine_item == 0)
+		return fail(self);
+	txn = take_out(self, item, engine_item, quantity,
+		kind == VENTURE_INVENTORY_TXN_KIND_WRITE_OFF ? LV_BASE_WRITE_OFF : "sale", kind, when, reference, 0, &costs,
+		actor, error);
 	if (txn == NULL)
-		return FALSE;
+		return fail(self);
 	org = venture_entity_get_organization_id(txn);
 	debit = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, debit_id, error);
 	if (debit == NULL)
-		return FALSE;
+		return fail(self);
 	if (venture_entity_get_organization_id(debit) != org)
-		return refuse(error, "the account issued to belongs to another organization");
+	{
+		refuse(error, "the account issued to belongs to another organization");
+		return fail(self);
+	}
 	inventory = account_code(self, org, "inventory", "1200", "Inventory", VENTURE_ACCOUNT_KIND_ASSET, error);
-	if (inventory == 0)
-		return FALSE;
-	if (!post_costs(self, org, txn, debit_id, inventory, costs,
-		kind == VENTURE_INVENTORY_TXN_KIND_WRITE_OFF ? "Inventory written off" : "Inventory issued",
-		when, actor, error))
+	if (inventory == 0 ||
+		!post_costs(self, org, txn, debit_id, inventory, costs,
+			kind == VENTURE_INVENTORY_TXN_KIND_WRITE_OFF ? "Inventory written off" : "Inventory issued",
+			when, actor, error))
+		return fail(self);
+	if (!venture_database_commit(self->database, error))
 		return FALSE;
 	if (out_txn != NULL)
 		*out_txn = g_steal_pointer(&txn);
@@ -825,41 +1547,141 @@ issue_to_impl(VentureInventoryService *self, gint64 inventory_item_id, gint64 qu
 	return TRUE;
 }
 
+/* What the movement's take lines out of @engine_item cost, per currency;
+ * @any is set when one of them carried a cost (a layer at zero counts). */
+static GPtrArray *
+taken_costs(GPtrArray *moves, gint64 engine_item, gboolean *any, GError **error)
+{
+	g_autoptr(GPtrArray) totals = venture_money_totals_new();
+	guint i, j;
+
+	for (i = 0; i < moves->len; i++)
+	{
+		LvMove *move = g_ptr_array_index(moves, i);
+		g_autoptr(GPtrArray) costs = NULL;
+
+		if (move->quantity >= 0 || move->item_id != engine_item)
+			continue;
+		costs = move_costs(move, error);
+		if (costs == NULL)
+			return NULL;
+		for (j = 0; j < costs->len; j++)
+		{
+			if (!venture_money_totals_add(totals, g_ptr_array_index(costs, j), error))
+				return NULL;
+			if (any != NULL)
+				*any = TRUE;
+		}
+	}
+	return g_steal_pointer(&totals);
+}
+
+/*
+ * Moves @quantity from one inventory item to another -- two places of one
+ * product -- in one engine movement: the units leave @from first in, first
+ * out, and arrive at @to as a new lot carrying what they cost, re-split
+ * exactly per currency; with no cost at all, one zero layer in the
+ * destination's currency.
+ */
 static gboolean
 venture_inventory_service_transfer_impl(VentureInventoryService *self, gint64 from_item_id,
 	gint64 to_item_id, gint64 quantity, GDateTime *date, const VentureActor *actor, GError **error)
 {
-	g_autoptr(GPtrArray) costs = venture_money_totals_new();
-	g_autoptr(VentureMoney) unit = NULL;
-	g_autofree gchar *notes = NULL;
+	g_autoptr(VentureEntity) from = NULL;
+	g_autoptr(VentureEntity) to = NULL;
 	g_autoptr(VentureEntity) out = NULL;
 	g_autoptr(VentureEntity) in = NULL;
-	g_autoptr(VentureEntity) destination = NULL;
 	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new("item-transfer");
+	g_autoptr(LvMovement) movement = NULL;
+	g_autoptr(GPtrArray) moves = NULL;
+	g_autoptr(GPtrArray) costs = NULL;
+	g_autoptr(GHashTable) strict = NULL;
+	g_autoptr(GHashTable) lots = lots_new();
+	g_autoptr(VentureMoney) unit = NULL;
+	g_autofree gchar *notes = NULL;
+	g_autofree gchar *time = NULL;
+	g_autofree gchar *zero = NULL;
+	gint64 from_engine = 0, to_engine = 0;
 	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), FALSE);
 	if (quantity <= 0 || from_item_id == to_item_id)
 		return refuse(error, "transfers move a positive quantity between two locations");
 	when = date != NULL ? g_date_time_ref(date) : venture_time_now();
-	if (!guard_stock(self, from_item_id, -quantity, error))
+	if (!venture_database_begin(self->database, error))
 		return FALSE;
-	if (!consume_fifo(self, from_item_id, quantity, actor, costs, error))
-		return FALSE;
-	if (!movement_unit(costs, quantity, &unit, &notes, error))
-		return FALSE;
-	out = write_txn(self, from_item_id, -quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER,
-		unit, notes, when, "transfer", 0, actor, error);
-	in = write_txn(self, to_item_id, quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER,
-		unit, notes, when, "transfer", 0, actor, error);
-	if (out == NULL || in == NULL)
-		return FALSE;
-	destination = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, to_item_id, error);
-	if (destination == NULL)
-		return FALSE;
-	/* The units keep what they cost, in every currency and exactly: a
-	 * lot split at a rounded average would drift by a minor unit per
-	 * move. */
-	return add_lot_layers(self, destination, quantity, costs, venture_entity_get_id(in),
-		when, actor, error);
+	from = get_item(self, from_item_id, error);
+	to = from != NULL ? get_item(self, to_item_id, error) : NULL;
+	if (to != NULL)
+		from_engine = engine_item_for(self, from, error);
+	if (from_engine != 0)
+		to_engine = engine_item_for(self, to, error);
+	if (to_engine == 0 || !guard_stock(self, from, from_engine, -quantity, error))
+		return fail(self);
+	zero = zero_cost_currency(self, to);
+	if (!venture_stock_engine_add_currency(self->database, zero, error))
+		return fail(self);
+	time = venture_stock_engine_time(when);
+	strict = strict_for(from, from_engine);
+	lv_movement_request_set_date(request, time);
+	lv_movement_request_set_reference(request, "transfer");
+	lv_movement_request_set_currency(request, zero);
+	lv_movement_request_set_lot_order(request, LV_LOT_ORDER_COSTED_FIRST);
+	lv_movement_request_take(request, from_engine, NULL, (gdouble)quantity);
+	lv_movement_request_give(request, to_engine, NULL, (gdouble)quantity, NULL, NULL);
+	movement = venture_stock_engine_post(self->database, request, strict, NULL, error);
+	moves = movement != NULL ? moves_of(self, movement, error) : NULL;
+	costs = moves != NULL ? taken_costs(moves, from_engine, NULL, error) : NULL;
+	if (costs == NULL || !movement_unit(costs, quantity, &unit, &notes, error))
+		return fail(self);
+	out = write_txn(self, from, -quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER, unit, notes, when, "transfer", 0,
+		actor, error);
+	in = out != NULL ? write_txn(self, to, quantity, VENTURE_INVENTORY_TXN_KIND_TRANSFER, unit, notes, when,
+		"transfer", 0, actor, error) : NULL;
+	if (in == NULL)
+		return fail(self);
+	lots_add(lots, lot_made(moves, to_engine), venture_entity_get_id(in));
+	if (!sync_layers(self, from, from_engine, NULL, 0, actor, error) ||
+		!sync_layers(self, to, to_engine, lots, 0, actor, error))
+		return fail(self);
+	return venture_database_commit(self->database, error);
+}
+
+/*
+ * The share of @totals (what @whole units cost) that @part units take,
+ * after @before units took theirs: each currency by the units, in whole
+ * minor units, so the shares of one item add up to its cost exactly. A
+ * craft that names one item twice takes it once in the engine.
+ */
+static GPtrArray *
+share_of(GPtrArray *totals, gint64 whole, gint64 part, gint64 before, GError **error)
+{
+	g_autoptr(GPtrArray) shares = venture_money_totals_new();
+	guint i;
+
+	for (i = 0; i < totals->len; i++)
+	{
+		const VentureMoney *total = g_ptr_array_index(totals, i);
+		gint64 amount = venture_money_get_amount(total);
+		gint64 upto = whole > 0 ? (amount * (before + part)) / whole : 0;
+		gint64 prior = whole > 0 ? (amount * before) / whole : 0;
+		g_autoptr(VentureMoney) slice = venture_money_new_for_currency(before + part == whole ? amount - prior
+			: upto - prior, venture_money_get_currency(total));
+
+		if (!venture_money_totals_add(shares, slice, error))
+			return NULL;
+	}
+	return g_steal_pointer(&shares);
+}
+
+static gint
+input_index(GPtrArray *inputs, gint64 item_id)
+{
+	guint i;
+
+	for (i = 0; i < inputs->len; i++)
+		if (venture_entity_get_id(g_ptr_array_index(inputs, i)) == item_id)
+			return (gint)i;
+	return -1;
 }
 
 static gboolean
@@ -868,55 +1690,114 @@ produce_body(VentureInventoryService *self, const VentureInventoryDraw *draws, g
 	const VentureActor *actor, VentureEntity **out_txn, GPtrArray **out_costs, GError **error)
 {
 	g_autoptr(GPtrArray) total = venture_money_totals_new();
+	g_autoptr(GPtrArray) inputs = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GArray) engines = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GArray) wanted = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GArray) given = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new("production");
+	g_autoptr(LvMovement) movement = NULL;
+	g_autoptr(GPtrArray) moves = NULL;
+	g_autoptr(GHashTable) lots = lots_new();
 	g_autoptr(VentureMoney) unit = NULL;
 	g_autofree gchar *notes = NULL;
+	g_autofree gchar *time = NULL;
+	g_autofree gchar *zero = NULL;
 	g_autoptr(VentureEntity) output = NULL;
 	g_autoptr(VentureEntity) txn = NULL;
-	gboolean costed;
+	gboolean costed = layers_kept();
 	gboolean consumed = FALSE;
-	guint i;
-	/* Cost layers belong to the goods module. Without it there is no
-	 * FIFO to consume or to add to, and a craft moves quantities only --
-	 * exactly what every other stock movement does on such an install. */
-	costed = venture_entity_registry_lookup(venture_entity_registry_get_default(),
-		"inventory_cost_layer") != G_TYPE_INVALID;
-	output = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, output_item_id, error);
-	if (output == NULL)
+	gint64 output_engine;
+	guint i, j;
+	output = get_item(self, output_item_id, error);
+	output_engine = output != NULL ? engine_item_for(self, output, error) : 0;
+	if (output_engine == 0)
 		return FALSE;
 
-	/* --- What goes in --- */
+	/* --- What goes in: each item once, its draws summed --- */
 	for (i = 0; i < n_draws; i++)
 	{
-		g_autoptr(GPtrArray) cost = venture_money_totals_new();
+		gint at = input_index(inputs, draws[i].inventory_item_id);
+
+		if (at < 0)
+		{
+			VentureEntity *input = get_item(self, draws[i].inventory_item_id, error);
+			gint64 engine_input = 0;
+			gint64 none = 0;
+
+			if (input == NULL)
+				return FALSE;
+			g_ptr_array_add(inputs, input);
+			engine_input = engine_item_for(self, input, error);
+			if (engine_input == 0)
+				return FALSE;
+			g_array_append_val(engines, engine_input);
+			g_array_append_val(wanted, none);
+			g_array_append_val(given, none);
+			at = (gint)inputs->len - 1;
+		}
+		g_array_index(wanted, gint64, at) += draws[i].quantity;
+	}
+	/* Units that arrived without a layer -- an adjustment typed in by
+	 * hand -- are real stock with no recorded cost, used after the costed
+	 * ones at no cost: refusing them would make stock the count says is
+	 * there unusable. */
+	for (j = 0; j < inputs->len; j++)
+		if (!guard_stock(self, g_ptr_array_index(inputs, j), g_array_index(engines, gint64, j),
+			-g_array_index(wanted, gint64, j), error))
+			return FALSE;
+	zero = zero_cost_currency(self, output);
+	if (!venture_stock_engine_add_currency(self->database, zero, error))
+		return FALSE;
+	time = venture_stock_engine_time(when);
+	lv_movement_request_set_date(request, time);
+	lv_movement_request_set_reference(request, reference);
+	lv_movement_request_set_currency(request, zero);
+	lv_movement_request_set_lot_order(request, LV_LOT_ORDER_COSTED_FIRST);
+	for (j = 0; j < inputs->len; j++)
+		lv_movement_request_take(request, g_array_index(engines, gint64, j), NULL,
+			(gdouble)g_array_index(wanted, gint64, j));
+	lv_movement_request_give(request, output_engine, NULL, (gdouble)output_quantity, NULL, NULL);
+	movement = venture_stock_engine_post(self->database, request, NULL, NULL, error);
+	moves = movement != NULL ? moves_of(self, movement, error) : NULL;
+	if (moves == NULL)
+		return FALSE;
+
+	/* Each draw leaves as its own row at its share of what its item cost;
+	 * per currency, never added across: a made unit whose inputs cost GOLD
+	 * and TICKET carries both. */
+	for (i = 0; i < n_draws; i++)
+	{
+		gint at = input_index(inputs, draws[i].inventory_item_id);
+		g_autoptr(GPtrArray) item_costs = NULL;
+		g_autoptr(GPtrArray) cost = NULL;
 		g_autoptr(VentureMoney) each = NULL;
 		g_autofree gchar *each_notes = NULL;
 		g_autoptr(VentureEntity) out = NULL;
-		gint64 uncosted = 0;
-		guint j;
-		if (!guard_stock(self, draws[i].inventory_item_id, -draws[i].quantity, error))
+
+		item_costs = taken_costs(moves, g_array_index(engines, gint64, at), NULL, error);
+		if (item_costs == NULL)
 			return FALSE;
-		/* What layers there are, and the rest uncosted: the caller has
-		 * already checked stock on hand, and units that arrived without a
-		 * layer -- an adjustment typed in by hand -- are real stock with
-		 * no recorded cost. Refusing them would make stock the count says
-		 * is there unusable. */
-		if (costed && !consume_layers(self, draws[i].inventory_item_id, draws[i].quantity,
-			actor, cost, &uncosted, error))
+		cost = share_of(item_costs, g_array_index(wanted, gint64, at), draws[i].quantity,
+			g_array_index(given, gint64, at), error);
+		if (cost == NULL)
 			return FALSE;
-		/* Per currency, never added across: a made unit whose inputs
-		 * cost GOLD and TICKET carries both, as sibling layers below. */
+		g_array_index(given, gint64, at) += draws[i].quantity;
+		/* Without the goods module no layer is read, and a craft moves
+		 * quantities only. */
+		if (!costed)
+			g_ptr_array_set_size(cost, 0);
 		for (j = 0; j < cost->len; j++)
 		{
 			if (!venture_money_totals_add(total, g_ptr_array_index(cost, j), error))
 				return FALSE;
 			consumed = TRUE;
 		}
-		/* The transaction shows the average it left at, for reading;
-		 * the layers are what the books count. */
+		/* The row shows the average it left at, for reading; the layers
+		 * are what the books count. */
 		if (!movement_unit(cost, draws[i].quantity, &each, &each_notes, error))
 			return FALSE;
-		out = write_txn(self, draws[i].inventory_item_id, -draws[i].quantity,
-			VENTURE_INVENTORY_TXN_KIND_PRODUCTION, each, each_notes, when, reference, 0, actor, error);
+		out = write_txn(self, g_ptr_array_index(inputs, at), -draws[i].quantity, VENTURE_INVENTORY_TXN_KIND_PRODUCTION,
+			each, each_notes, when, reference, 0, actor, error);
 		if (out == NULL)
 			return FALSE;
 	}
@@ -924,12 +1805,16 @@ produce_body(VentureInventoryService *self, const VentureInventoryDraw *draws, g
 	/* --- What comes out --- */
 	if (!movement_unit(total, output_quantity, &unit, &notes, error))
 		return FALSE;
-	txn = write_txn(self, output_item_id, output_quantity, VENTURE_INVENTORY_TXN_KIND_PRODUCTION,
-		unit, notes, when, reference, 0, actor, error);
+	txn = write_txn(self, output, output_quantity, VENTURE_INVENTORY_TXN_KIND_PRODUCTION, unit, notes, when,
+		reference, 0, actor, error);
 	if (txn == NULL)
 		return FALSE;
-	if (costed && !add_lot_layers(self, output, output_quantity, total, venture_entity_get_id(txn),
-		when, actor, error))
+	lots_add(lots, lot_made(moves, output_engine), venture_entity_get_id(txn));
+	for (j = 0; j < inputs->len; j++)
+		if (!sync_layers(self, g_ptr_array_index(inputs, j), g_array_index(engines, gint64, j), NULL, 0, actor,
+			error))
+			return FALSE;
+	if (!sync_layers(self, output, output_engine, lots, 0, actor, error))
 		return FALSE;
 	if (out_txn != NULL)
 		*out_txn = g_steal_pointer(&txn);
@@ -986,125 +1871,77 @@ venture_inventory_service_produce(VentureInventoryService *self,
 	return TRUE;
 }
 
+/* --- A count typed in by hand -------------------------------------------- */
+
 /*
- * What @layers still hold, per currency, counting only layers received at
- * or before @as_of; @units (optional, parallel to the result by currency)
- * gets how many units carry a cost in each. A lot bought in two currencies
- * appears in both, which is right: its units cost both.
+ * An inventory_txn saved by anyone but this service is a count: the
+ * quantity changes and no cost does. It posts an engine count at the
+ * count's own place first -- up brings units with no cost, down takes the
+ * count's units and then goes below zero there, never a costed unit -- and
+ * the row is written beside it, in one transaction. An edit posts the
+ * difference; a move to another item takes it back from the first.
  */
 static gboolean
-layers_value(GPtrArray *layers, GDateTime *as_of, GPtrArray *values, GHashTable *units, GError **error)
+save_count(VentureInventoryService *self, VentureEntity *record, const VentureActor *actor, GError **error)
 {
-	guint i;
-	for (i = 0; i < layers->len; i++)
-	{
-		g_autoptr(GDateTime) when = NULL;
-		g_autoptr(VentureMoney) unit = NULL;
-		g_autoptr(VentureMoney) slice = NULL;
-		gint64 remaining = 0;
-		g_object_get(g_ptr_array_index(layers, i), "received-at", &when, "unit-cost", &unit,
-			"remaining-qty", &remaining, NULL);
-		if (as_of != NULL && when != NULL && g_date_time_compare(when, as_of) > 0)
-			continue;
-		if (remaining <= 0 || unit == NULL)
-			continue;
-		slice = venture_money_multiply_int(unit, remaining, error);
-		if (slice == NULL || !venture_money_totals_add(values, slice, error))
-			return FALSE;
-		if (units != NULL)
-		{
-			gint64 *count = g_hash_table_lookup(units, venture_money_get_currency(unit));
-			if (count == NULL)
-			{
-				count = g_new0(gint64, 1);
-				g_hash_table_insert(units, g_strdup(venture_money_get_currency(unit)), count);
-			}
-			*count += remaining;
-		}
-	}
-	return TRUE;
-}
-
-GPtrArray *
-venture_inventory_service_valuation(VentureInventoryService *self, gint64 organization_id,
-	GDateTime *as_of, GError **error)
-{
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVENTORY_COST_LAYER);
-	g_autoptr(GPtrArray) layers = NULL;
-	g_autoptr(GPtrArray) values = venture_money_totals_new();
-	g_autofree gchar *book = NULL;
-	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), NULL);
-	venture_query_set_organization(query, organization_id);
-	venture_query_set_limit(query, 0);
-	layers = venture_database_find(self->database, query, error);
-	if (layers == NULL)
-		return NULL;
-	/* Per currency: layers in GOLD and TICKET -- in one product or in two
-	 * -- are two figures, never a refusal of the whole organization. */
-	if (!layers_value(layers, as_of, values, NULL, error))
-		return NULL;
-	book = venture_posting_service_book_currency(venture_database_get_posting_service(self->database),
-		organization_id, NULL);
-	if (venture_string_is_empty(book))
-	{
-		g_free(book);
-		book = g_strdup(venture_money_get_default_currency());
-	}
-	if (values->len == 0)
-	{
-		g_autoptr(VentureMoney) zero = venture_money_new_zero(book);
-		g_ptr_array_add(values, g_steal_pointer(&zero));
-	}
-	venture_money_totals_sort(values, book);
-	return g_steal_pointer(&values);
-}
-
-GPtrArray *
-venture_inventory_service_item_value(VentureInventoryService *self, gint64 inventory_item_id,
-	GDateTime *as_of, GPtrArray **out_unit_costs, GError **error)
-{
-	g_autoptr(GPtrArray) layers = NULL;
-	g_autoptr(GPtrArray) values = venture_money_totals_new();
-	g_autoptr(GHashTable) units = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-	g_autoptr(GPtrArray) unit_costs = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
 	g_autoptr(VentureEntity) item = NULL;
-	g_autofree gchar *book = NULL;
-	guint i;
-	g_return_val_if_fail(VENTURE_IS_INVENTORY_SERVICE(self), NULL);
-	if (out_unit_costs != NULL)
-		*out_unit_costs = NULL;
-	/* Without the goods module there are no layers to read, and no
-	 * carrying cost but the one typed on the item. */
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(),
-		"inventory_cost_layer") == G_TYPE_INVALID)
+	g_autoptr(VentureEntity) old_item = NULL;
+	g_autoptr(GDateTime) when = NULL;
+	g_autoptr(LvMovementRequest) request = lv_movement_request_new("adjustment");
+	g_autoptr(LvMovement) movement = NULL;
+	g_autofree gchar *time = NULL;
+	g_autofree gchar *reference = NULL;
+	gint64 item_id = get_id(record, "inventory-item-id");
+	gint64 quantity = get_int(record, "quantity");
+	gint64 old_item_id = 0, old_quantity = 0, delta;
+	gint64 engine_item, old_engine = 0;
+
+	if (venture_entity_is_persisted(record))
 	{
-		if (out_unit_costs != NULL)
-			*out_unit_costs = venture_money_totals_new();
-		return g_steal_pointer(&values);
+		stored = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_TXN, venture_entity_get_id(record),
+			error);
+		if (stored == NULL)
+			return error == NULL || *error != NULL ? FALSE : refuse(error, "the movement does not exist");
+		old_item_id = get_id(stored, "inventory-item-id");
+		old_quantity = get_int(stored, "quantity");
 	}
-	item = venture_database_get(self->database, VENTURE_TYPE_INVENTORY_ITEM, inventory_item_id, error);
-	if (item == NULL)
-		return NULL;
-	layers = layers_for(self, inventory_item_id, error);
-	if (layers == NULL || !layers_value(layers, as_of, values, units, error))
-		return NULL;
-	book = venture_posting_service_book_currency(venture_database_get_posting_service(self->database),
-		venture_entity_get_organization_id(item), NULL);
-	venture_money_totals_sort(values, book);
-	unit_costs = venture_money_totals_new();
-	for (i = 0; i < values->len; i++)
+	if (old_item_id == item_id && old_quantity == quantity)
+		return save_owned(self, record, actor, error);
+	delta = old_item_id == item_id ? quantity - old_quantity : quantity;
+	g_object_get(record, "occurred-at", &when, "reference", &reference, NULL);
+	if (!venture_database_begin(self->database, error))
+		return FALSE;
+	item = get_item(self, item_id, error);
+	engine_item = item != NULL ? engine_item_for(self, item, error) : 0;
+	if (engine_item == 0)
+		return fail(self);
+	if (old_item_id != 0 && old_item_id != item_id)
 	{
-		const VentureMoney *value = g_ptr_array_index(values, i);
-		gint64 *count = g_hash_table_lookup(units, venture_money_get_currency(value));
-		VentureMoney *average = venture_money_multiply_rational(value, 1,
-			count != NULL && *count > 0 ? *count : 1, error);
-		if (average == NULL)
-			return NULL;
-		g_ptr_array_add(unit_costs, average);
+		old_item = get_item(self, old_item_id, error);
+		old_engine = old_item != NULL ? engine_item_for(self, old_item, error) : 0;
+		if (old_engine == 0 || !guard_stock(self, old_item, old_engine, -old_quantity, error))
+			return fail(self);
 	}
-	if (out_unit_costs != NULL)
-		*out_unit_costs = g_steal_pointer(&unit_costs);
-	return g_steal_pointer(&values);
+	if (!guard_stock(self, item, engine_item, delta, error))
+		return fail(self);
+	time = venture_stock_engine_time(when);
+	lv_movement_request_set_date(request, time);
+	lv_movement_request_set_reference(request, reference);
+	if (old_engine != 0 && old_quantity > 0)
+		lv_movement_request_take(request, old_engine, VENTURE_STOCK_COUNT_PLACE, (gdouble)old_quantity);
+	else if (old_engine != 0 && old_quantity < 0)
+		lv_movement_request_give(request, old_engine, VENTURE_STOCK_COUNT_PLACE, (gdouble)-old_quantity, NULL, NULL);
+	if (delta > 0)
+		lv_movement_request_give(request, engine_item, VENTURE_STOCK_COUNT_PLACE, (gdouble)delta, NULL, NULL);
+	else if (delta < 0)
+		lv_movement_request_take(request, engine_item, VENTURE_STOCK_COUNT_PLACE, (gdouble)-delta);
+	if ((delta != 0 || old_quantity != 0) &&
+		(movement = venture_stock_engine_post(self->database, request, NULL, NULL, error)) == NULL)
+		return fail(self);
+	if (!save_owned(self, record, actor, error))
+		return fail(self);
+	return venture_database_commit(self->database, error);
 }
 
 gboolean
@@ -1283,8 +2120,11 @@ venture_goods_check_write(VentureDatabase *database, VentureEntity *record, gboo
 	if (g_object_get_data(G_OBJECT(database), "venture-purchasing-writing") == record ||
 		g_object_get_data(G_OBJECT(database), "venture-sales-order-writing") == record)
 		return TRUE;
+	/* A movement row is the stock engine's history too: deleting it would
+	 * leave the engine holding stock the rows no longer show. A count is
+	 * corrected by another count. */
 	if (g_strcmp0(name, "inventory_txn") == 0)
-		return TRUE;
+		return !removal || refuse(error, "stock movements are kept; correct the stock with a count");
 	if (g_strcmp0(name, "inventory_cost_layer") == 0 || g_strcmp0(name, "fulfillment") == 0 ||
 		g_strcmp0(name, "goods_receipt") == 0 || g_strcmp0(name, "goods_receipt_line") == 0)
 		return refuse(error, "inventory evidence is owned by VentureInventoryService");
@@ -1362,12 +2202,10 @@ venture_goods_save_hook(VentureDatabase *database, VentureEntity *record,
 	self = venture_inventory_service_get(database);
 	if (self->writing == record)
 		return TRUE;
-	if (VENTURE_IS_INVENTORY_TXN(record) && !venture_entity_is_persisted(record))
+	if (VENTURE_IS_INVENTORY_TXN(record))
 	{
-		gint64 item_id = get_id(record, "inventory-item-id");
-		gint64 quantity = get_int(record, "quantity");
-		if (!guard_stock(self, item_id, quantity, error))
-			return FALSE;
+		*handled = TRUE;
+		return save_count(self, record, actor, error);
 	}
 	if (VENTURE_IS_SALE(record) &&
 		venture_inventory_product_is_stocked(database, get_id(record, "product-id")))

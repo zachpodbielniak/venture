@@ -635,6 +635,18 @@ DEBIAN_DEPS += libjose-dev libjansson-dev
 ARCH_DEPS += gmime3 gnutls
 ARCH_DEPS += jose jansson
 
+# The stock ledger: Libreventory's core archive (AGPL-3.0-only), built
+# against our own orm-glib, yaml-glib and htmx-glib headers and linked
+# with our copies, so the process has one GType of each. Its kinds and
+# units register from constructors, so the archive is linked whole
+# (LIBREVENTORY_LINK). Server and tests only: venturectl never sees it.
+LIBREVENTORY_DIR := $(DEPS_DIR)/libreventory
+LIBREVENTORY_LIB := $(LIBREVENTORY_DIR)/build/$(BUILD_TYPE)/liblibreventory-core-1.0.a
+LIBREVENTORY_LINK = -Wl,--whole-archive $(LIBREVENTORY_LIB) -Wl,--no-whole-archive
+LIBREVENTORY_SUBMAKE = CORE_DEP_CFLAGS="$(CFLAGS_ORM_GLIB) $(CFLAGS_YAML_GLIB) $(CFLAGS_HTMX_GLIB)"
+CFLAGS += -I$(LIBREVENTORY_DIR)/include
+TEST_CFLAGS += -I$(LIBREVENTORY_DIR)/include
+
 # The recovery GTest uses real authenticated archives, not a fake encryptor.
 FEDORA_DEPS += jq gnupg2
 DEBIAN_DEPS += jq gnupg

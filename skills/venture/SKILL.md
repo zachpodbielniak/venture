@@ -127,6 +127,11 @@ the one inbox, AI on messages, workflow settings) are in it too, against
 Competitor records and win/loss reporting were added on the remaining-gaps
 epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
 
+Stock runs on the Libreventory engine (`deps/libreventory`) from the
+inventory-on-libreventory branch: movement rows are its mirror, a person's
+`inventory_txn` is a count, and deleting one is refused
+(data-model-revenue.md; `docs/inventory.org` "The stock engine").
+
 The owner's plan switch (billing.md) and owner invitations sent in the
 business's own mail (operations.md, data-model.md, api-routes.md) were added
 after `7fc9fd69` (2026-10-30). API composition files an explicit

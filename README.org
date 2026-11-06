@@ -39,7 +39,7 @@ A venture does not have to be a business. VENTURE runs ventures of any kind -- b
 | =venture=    | The server. REST API, HTMX web UI, reporting, AI                 |
 | =venturectl= | The CLI, and =venturectl mcp=, a stdio MCP server over that API   |
 
-Both link every vendored dependency statically, so neither has a runtime dependency on =libyaml-glib.so=, =libhtmx-glib.so=, =libai-glib.so=, =liborm-glib.so=, =libpodomation.so=, =libcrispy.so=, =libmail-glib.so=, =libstripe-glib.so= or =liboidc-glib.so=. Only true system libraries stay dynamic.
+Both link every vendored dependency statically, so neither has a runtime dependency on =libyaml-glib.so=, =libhtmx-glib.so=, =libai-glib.so=, =liborm-glib.so=, =libpodomation.so=, =libcrispy.so=, =libmail-glib.so=, =libstripe-glib.so=, =liboidc-glib.so= or Libreventory, the stock engine (=deps/libreventory=, AGPL-3.0-only). Only true system libraries stay dynamic.
 
 Either can be built alone. =make venturectl= works on a machine that cannot build the server at all — no libpq, no sqlite headers, no readline — because the CLI links only =libventure-core.a= and yaml-glib.
 

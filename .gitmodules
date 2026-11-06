@@ -25,3 +25,6 @@
 [submodule "deps/oidc-glib"]
 	path = deps/oidc-glib
 	url = https://gitlab.com/Creplav/oidc-glib.git
+[submodule "deps/libreventory"]
+	path = deps/libreventory
+	url = https://git.mcgoaty.com/ben/libreventory.git

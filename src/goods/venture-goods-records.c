@@ -69,7 +69,12 @@ static const VentureFieldDecl inventory_cost_layer_fields[] = {
 	 * on older layers, each of which is a lot of its own. */
 	VENTURE_FIELD_REF("lot-txn-id", "Lot",
 		"The movement that brought these units in; layers sharing it are one lot",
-		"inventory_txn", VENTURE_COLUMN_FLAG_TECHNICAL)
+		"inventory_txn", VENTURE_COLUMN_FLAG_TECHNICAL),
+	/* The stock engine's layer this row mirrors (deps/libreventory). The
+	 * engine holds the cost; the row says the same, for every reader that
+	 * reads rows. Zero on a layer used up before the engine came. */
+	VENTURE_FIELD("stock-layer-id", "Engine layer", "The stock engine's layer this row mirrors",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL | VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureInventoryCostLayer, venture_inventory_cost_layer, inventory_cost_layer_fields)
 

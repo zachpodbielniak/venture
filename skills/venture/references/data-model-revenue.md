@@ -15,11 +15,14 @@ headline metrics, Stripe and commerce connectors. Conventions are in
 - `inventory_item` -- stock of a product at a place: **product_id**,
   `location_id -> location`, `unit_cost`, `reorder_point`,
   `reorder_quantity`, `lead_time_days`, `allow_negative`, `tags`.
-  Quantity on hand is the sum of its transactions, never stored.
+  Quantity on hand is the stock engine's (Libreventory, `deps/libreventory`);
+  its transactions add up to it. Never stored on the item.
 - `inventory_txn` -- a signed movement: `kind`
   [purchase|production|sale|return|adjustment|write_off|transfer],
   `quantity`, `unit_cost`, `occurred_at`, `reference` (e.g. `recipe:3`,
-  `session:8`), `sale_id`.
+  `session:8`), `sale_id`. One a person creates (or edits) is a count:
+  it moves the quantity and never a cost. Deleting one is refused --
+  correct the stock with another count.
 - `sale` -- money in from a sale: **venture_id**, `product_id`,
   `contact_id`, `campaign_id`, `channel`, `occurred_at`, `quantity`,
   `gross`, `discount`, `shipping_collected`, `shipping_cost`, `fees`,
@@ -108,7 +111,9 @@ project actions stage.
 `purchase_order_line` (`inventory_item_id`, `quantity`, `unit_price` in the
 order's currency), `goods_receipt`/`goods_receipt_line`,
 `inventory_cost_layer` (FIFO: `original_qty`, `remaining_qty`, `unit_cost`,
-`lot_txn_id` -- sibling layers of several currencies are one lot),
+`lot_txn_id` -- sibling layers of several currencies are one lot,
+`stock_layer_id` -- the engine layer the row mirrors; read-only, the
+service writes every layer row),
 `sales_order`/`sales_order_line` (`allocated_qty`, `fulfilled_qty`,
 `invoiced_qty`), `fulfillment`.
 

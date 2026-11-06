@@ -320,7 +320,7 @@ PUBLIC_HDRS += $(wildcard src/projects/*.h)
 PUBLIC_HDRS += $(wildcard src/mail/*.h)
 
 PUBLIC_HDRS += $(wildcard src/payables/*.h)
-PUBLIC_HDRS += $(wildcard src/goods/*.h)
+PUBLIC_HDRS += $(filter-out %-private.h src/goods/venture-stock-engine.h,$(wildcard src/goods/*.h))
 PUBLIC_HDRS += $(wildcard src/close/*.h)
 PUBLIC_HDRS += $(wildcard src/tax/*.h)
 PUBLIC_HDRS += $(wildcard src/capture/*.h)
@@ -766,6 +766,7 @@ endif
 
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 deps: $(OIDC_GLIB_LIB)
+deps: $(LIBREVENTORY_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl

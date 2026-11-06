@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "goods/venture-stock-engine.h"
 #include "core/venture-business-events-private.h"
 #include "db/venture-database-snapshot-private.h"
 #include "sequences/venture-sequence-service-private.h"
@@ -2867,7 +2868,12 @@ venture_database_migrate(
 	/* The currency table exists now, whatever state it was in when the
 	 * context was built; every stored amount in a user-defined currency
 	 * must display correctly from the first request. */
-	return venture_currency_database_migrated(self, error);
+	if (!venture_currency_database_migrated(self, error))
+		return FALSE;
+	/* The stock engine's tables, and every inventory item it has not met
+	 * yet brought in from its rows -- after the currencies, whose
+	 * exponents its costs need. */
+	return venture_stock_engine_migrate(self, error);
 }
 
 /* A one-use permit is consumed before callbacks can re-enter a generic save. */
