@@ -170,6 +170,9 @@ that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 the relay is the operator's single plaintext endpoint, and the sender name
 is the business (`mail.md`). A hosted workspace runs due sequence steps
 and then the outbox every five seconds.
+An owner or admin connects a business to Stripe without pasting keys:
+`POST /api/v1/organizations/ID/stripe/connect` (test mode only) and
+`POST /webhooks/stripe/connect` (`billing.md`).
 Named booking resources, a published price, job windows that block public
 slots, sequence one-click stop (`/sequences/u/:token`), a per-business
 Lightsite schedule token, `until_at` on tickets, and the `people` and
@@ -390,6 +393,7 @@ ids, notes) in words.
 | "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
+| "Connect a business to Stripe" | `POST /api/v1/organizations/ID/stripe/connect` with four HTTPS URLs; owner or admin; test platform keys; a missing business is 404 | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
 | "Order and receive stock" | `purchase_order` + lines, `purchase approve\|send\|receive` | [payables.md](references/payables.md) |
 | "Import a bank statement and match it" | `bank import`, `bank match AUTO`, `reconcile suggest` | [payables.md](references/payables.md) |

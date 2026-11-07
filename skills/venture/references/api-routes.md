@@ -84,6 +84,8 @@ in the repository lists today's.
 | `POST /commerce/import` | `commerce import` |
 | `GET /sales-tax/export` | `sales-tax export` |
 | `/webhooks/stripe/:connection_id` (no session; signature) | -- |
+| `GET`/`POST /organizations/:id/stripe/connect` (owner/admin; body is exactly four HTTPS URLs: `return_url`, `refresh_url`, `success_url`, `cancel_url`) | Connect with Stripe: state `not_connected`/`needs_more`/`ready`, mode `connect` or `keys`; a missing business is 404 |
+| `POST /webhooks/stripe/connect` (no session; platform Connect signature; before `/:connection_id`) | -- |
 
 ## The books
 
