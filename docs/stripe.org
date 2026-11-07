@@ -571,8 +571,9 @@ For Connect, Venture reads =GET /v1/accounts/{id}= with the platform key and
 no =Stripe-Account= header, and stores the state when it changed.
 =requirements.currently_due= and =disabled_reason= go to the log, never to
 the answer. Errors are the usual JSON error body: 403 for a person who is not
-owner or admin, 404 when Connect is off, 409 for pasted keys, 422 for a bad
-body, 502 when Stripe did not answer.
+owner or admin, 404 when Connect is off or the organization does not
+exist, 409 for pasted keys or a connection made in the other mode, 422 for a
+bad body, 502 when Stripe did not answer.
 
 ** The Connect webhook
 
@@ -596,4 +597,4 @@ Pasted-keys connections keep =/webhooks/stripe/<connection-id>=.
 
 ** Not in this step
 
-Live mode, a platform fee, Express or Custom accounts and payouts in Venture.
+A platform fee, Express or Custom accounts and payouts in Venture.

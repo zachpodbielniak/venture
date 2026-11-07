@@ -31,7 +31,7 @@ not ok /auth/pages-refuse-anonymous-requests - ... "/api/v1/organizations/1/stri
 | =/stripe/connect/refuse-viewer=       | a finance member (not owner or admin): 403, no provider call                  |
 | =/stripe/connect/refuse-http=         | an HTTP URL: 422, no provider call                                            |
 | =/stripe/connect/off=                 | no =stripe.connect.*=: 404 for start and status, webhook refused, no call     |
-| =/stripe/connect/status=              | =not_connected=, then =needs_more= and =ready= from =charges_enabled=, stored |
+| =/stripe/connect/status=              | a missing business is 404; then =not_connected=, =needs_more= and =ready= from =charges_enabled=, stored |
 | =/stripe/connect/webhooks=            | two businesses on two accounts: Checkout carries each account's =Stripe-Account= with the platform key; a bad signature and an unknown account record nothing; =checkout.session.completed= pays business B only; =account.updated= makes A =ready= only |
 | =/stripe/connect/webhooks-http=       | the same through =/webhooks/stripe/connect= (400, 200, then 503 when Connect is off) and the JSON routes (200, 422, 404) |
 | =/config/stripe-connect=              | nested YAML, =VENTURE_STRIPE_CONNECT_SECRET_KEY=, secrets hidden in describe, round trip |
