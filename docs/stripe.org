@@ -461,10 +461,10 @@ onboarding collects the owner's details. Ben chose this on 2026-11-06.
 
 | YAML                              | Environment                             | Value                                              |
 |-----------------------------------+-----------------------------------------+----------------------------------------------------|
-| =stripe.connect.secret_key=       | =VENTURE_STRIPE_CONNECT_SECRET_KEY=     | Platform secret key, =sk_test_=                    |
-| =stripe.connect.publishable_key=  | =VENTURE_STRIPE_CONNECT_PUBLISHABLE_KEY= | Platform publishable key, =pk_test_=               |
+| =stripe.connect.secret_key=       | =VENTURE_STRIPE_CONNECT_SECRET_KEY=     | Platform secret or restricted key, =sk_= or =rk_=  |
+| =stripe.connect.publishable_key=  | =VENTURE_STRIPE_CONNECT_PUBLISHABLE_KEY= | Platform publishable key, =pk_=                    |
 | =stripe.connect.webhook_secret=   | =VENTURE_STRIPE_CONNECT_WEBHOOK_SECRET= | Signing secret of the platform Connect endpoint    |
-| =stripe.connect.environment=      | =VENTURE_STRIPE_CONNECT_ENVIRONMENT=    | =test=; live mode is not enabled                   |
+| =stripe.connect.environment=      | =VENTURE_STRIPE_CONNECT_ENVIRONMENT=    | =test= or =live=                                   |
 | =stripe.connect.api_version=      | =VENTURE_STRIPE_CONNECT_API_VERSION=    | Pinned v1 API version for connected-account calls  |
 
 #+begin_src yaml
@@ -483,6 +483,24 @@ values empty means Connect is off. Then the Connect routes answer 404 (the
 webhook answers 503), and nothing else changes. The settings answer
 (=/api/v1/settings=) never shows the secret key or the webhook secret; it says
 only whether each is set.
+
+** Test and live mode
+
+=environment= is =test= or =live=. Every key must be of that mode:
+=sk_test_= or =rk_test_= with =pk_test_= in test, =sk_live_= or =rk_live_=
+with =pk_live_= in live. Any other pair keeps Connect off before anything is
+sent. A live key used as test would take real money from a business that
+thinks it is rehearsing. In live mode, use a restricted key with Connect
+write access, not the full secret key.
+
+A connected account exists in one mode only. The connection stores the mode
+it was made in. When the platform mode differs, connect and status answer
+409, payments for that business are refused, and a Connect webhook for its
+account records nothing. Venture does not reuse the account or make a new
+one. The owner disconnects and connects again in the new mode.
+
+Each mode has its own Connect webhook endpoint and signing secret. An event
+whose =livemode= differs from the platform mode is refused.
 
 ** The account
 

@@ -288,13 +288,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 	/* Connect with Stripe: the platform's own keys, a mapping inside the
 	 * stripe section. All empty turns Connect off. */
 	VC_STR("stripe-connect-secret-key", "stripe.connect", "secret_key", "",
-	       "Connect platform secret key (sk_test_); never shown, empty turns Connect off"),
+	       "Connect platform secret or restricted key (sk_ or rk_, of the environment's mode); never shown, empty turns Connect off"),
 	VC_STR("stripe-connect-publishable-key", "stripe.connect", "publishable_key", "",
-	       "Connect platform publishable key (pk_test_)"),
+	       "Connect platform publishable key (pk_, of the environment's mode)"),
 	VC_STR("stripe-connect-webhook-secret", "stripe.connect", "webhook_secret", "",
 	       "Signing secret of the platform's Connect webhook endpoint; never shown"),
 	VC_STR("stripe-connect-environment", "stripe.connect", "environment", "",
-	       "test; Connect live mode is not enabled yet"),
+	       "test or live; every Connect key must be of this mode"),
 	VC_STR("stripe-connect-api-version", "stripe.connect", "api_version", "",
 	       "Pinned Stripe v1 API version for connected-account calls"),
 	VC_BOOL("oidc-enabled", "oidc", "enabled", FALSE,
