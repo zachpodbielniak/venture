@@ -117,7 +117,70 @@ VentureIntegrationConnection *venture_stripe_settings_configure(VentureDatabase 
  */
 gboolean venture_stripe_settings_test(VentureDatabase *database, gint64 organization_id,
 	StripeTransport *transport, GError **error);
+/**
+ * venture_stripe_service_get_transport: (skip)
+ * @self: provider
+ * Returns: (transfer none) (nullable): the injected offline transport, or %NULL for the network
+ */
+StripeTransport *venture_stripe_service_get_transport(VentureStripeService *self);
+/**
+ * venture_stripe_connect_start: (skip)
+ * @database: storage
+ * @organization_id: the business, administered by the caller (owner or admin)
+ * @return_url: HTTPS page Stripe sends the owner back to
+ * @refresh_url: HTTPS page that asks for a new link when one expired
+ * @success_url: HTTPS page after a paid Checkout Session
+ * @cancel_url: HTTPS page after a cancelled Checkout Session
+ * @transport: (nullable): offline transport injection
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): refusal; %VENTURE_ERROR_CONFLICT when pasted keys are connected,
+ *   %VENTURE_ERROR_NOT_FOUND when stripe.connect.* is not configured
+ *
+ * Makes the business's Standard-style connected account once (Accounts v2,
+ * with the platform keys), or reuses it, and a hosted onboarding link.
+ * Returns: (transfer full) (nullable): {"state","mode":"connect","url"}
+ */
+JsonNode *venture_stripe_connect_start(VentureDatabase *database, gint64 organization_id,
+	const gchar *return_url, const gchar *refresh_url, const gchar *success_url, const gchar *cancel_url,
+	StripeTransport *transport, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_connect_status: (skip)
+ * @database: storage
+ * @organization_id: the business, administered by the caller (owner or admin)
+ * @transport: (nullable): offline transport injection
+ * @actor: (nullable): audit actor for a stored state change
+ * @error: (out) (optional): refusal
+ *
+ * Reads a connect account from Stripe with the platform key; charges_enabled
+ * gives ready, otherwise needs_more. A changed state is stored.
+ * Returns: (transfer full) (nullable): {"state":"not_connected"|"needs_more"|"ready","mode":null|"connect"|"keys"}
+ */
+JsonNode *venture_stripe_connect_status(VentureDatabase *database, gint64 organization_id,
+	StripeTransport *transport, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_connect_webhook: (skip)
+ * @database: storage
+ * @raw: the unmodified request body
+ * @signature: the Stripe-Signature header
+ * @transport: (nullable): offline transport injection
+ * @error: (out) (optional): refusal
+ *
+ * Verifies with the platform's Connect secret before parsing, then routes by
+ * the event's account: account.updated stores the state, every other event
+ * goes to that business's own service. An unknown account is ignored.
+ * Returns: %TRUE when the event was handled or ignored
+ */
+gboolean venture_stripe_connect_webhook(VentureDatabase *database, GBytes *raw, const gchar *signature,
+	StripeTransport *transport, GError **error);
 #endif
+/**
+ * venture_stripe_connect_set_config:
+ * @database: storage
+ * @config: (nullable): the installation configuration holding stripe.connect.*
+ *
+ * Gives the Stripe services the platform keys. The context calls this.
+ */
+void venture_stripe_connect_set_config(VentureDatabase *database, VentureConfig *config);
 /**
  * venture_stripe_service_can_checkout:
  * @self: provider

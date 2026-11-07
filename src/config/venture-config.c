@@ -285,6 +285,18 @@ static const VentureConfigSetting venture_config_settings[] = {
 
 	VC_BOOL("stripe-enabled", "stripe", "enabled", FALSE,
 	        "Enable hosted Stripe payments; requires deployment credentials"),
+	/* Connect with Stripe: the platform's own keys, a mapping inside the
+	 * stripe section. All empty turns Connect off. */
+	VC_STR("stripe-connect-secret-key", "stripe.connect", "secret_key", "",
+	       "Connect platform secret key (sk_test_); never shown, empty turns Connect off"),
+	VC_STR("stripe-connect-publishable-key", "stripe.connect", "publishable_key", "",
+	       "Connect platform publishable key (pk_test_)"),
+	VC_STR("stripe-connect-webhook-secret", "stripe.connect", "webhook_secret", "",
+	       "Signing secret of the platform's Connect webhook endpoint; never shown"),
+	VC_STR("stripe-connect-environment", "stripe.connect", "environment", "",
+	       "test; Connect live mode is not enabled yet"),
+	VC_STR("stripe-connect-api-version", "stripe.connect", "api_version", "",
+	       "Pinned Stripe v1 API version for connected-account calls"),
 	VC_BOOL("oidc-enabled", "oidc", "enabled", FALSE,
 	        "Enable explicitly linked organization OpenID Connect sign-in"),
 	VC_BOOL("oidc-allow-loopback", "oidc", "allow_loopback", FALSE,
@@ -1028,6 +1040,31 @@ venture_config_find_setting(
 	return NULL;
 }
 
+static gboolean
+venture_config_section_exists(const gchar *section)
+{
+	gsize i;
+
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		if (0 == g_strcmp0(venture_config_settings[i].section, section))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/*
+ * A setting whose value is itself a credential. The describe answer says
+ * only whether it is set, the way it does for the *_env settings.
+ */
+static gboolean
+venture_config_setting_is_secret(const VentureConfigSetting *setting)
+{
+	return (0 == g_strcmp0(setting->name, "stripe-connect-secret-key")) ||
+	       (0 == g_strcmp0(setting->name, "stripe-connect-webhook-secret"));
+}
+
 /*
  * Applies one section of the parsed document. Unknown keys are collected
  * rather than ignored: a setting that silently does nothing because of a
@@ -1054,6 +1091,20 @@ venture_config_apply_section(
 		GParamSpec *pspec;
 		JsonNode *node;
 
+		node = json_object_get_member(object, iter->data);
+
+		/* A mapping is a nested section such as stripe.connect, when a
+		 * setting lives there; otherwise it is an unknown key as before. */
+		if (JSON_NODE_HOLDS_OBJECT(node))
+		{
+			g_autofree gchar *nested = g_strdup_printf("%s.%s", section, (const gchar *)iter->data);
+			if (venture_config_section_exists(nested))
+			{
+				venture_config_apply_section(self, nested, json_node_get_object(node), unknown);
+				continue;
+			}
+		}
+
 		setting = venture_config_find_setting(section, iter->data);
 
 		if (NULL == setting)
@@ -1066,7 +1117,6 @@ venture_config_apply_section(
 
 		pspec = g_object_class_find_property(
 			G_OBJECT_GET_CLASS(self), setting->name);
-		node = json_object_get_member(object, iter->data);
 
 		if (!venture_json_value_from_node(node, pspec->value_type,
 		                                  &value, &local_error))
@@ -1960,6 +2010,7 @@ venture_config_to_yaml(
 ){
 	g_autoptr(GString) yaml = NULL;
 	const gchar *current_section = NULL;
+	g_autofree gchar *current_top = NULL;
 	gsize i;
 
 	g_return_val_if_fail(VENTURE_IS_CONFIG(self), NULL);
@@ -1971,6 +2022,7 @@ venture_config_to_yaml(
 		const VentureConfigSetting *setting;
 		g_auto(GValue) value = G_VALUE_INIT;
 		GParamSpec *pspec;
+		const gchar *indent;
 
 		setting = &venture_config_settings[i];
 
@@ -1987,11 +2039,29 @@ venture_config_to_yaml(
 		    g_param_value_defaults(pspec, &value))
 			continue;
 
+		/* A dotted section such as stripe.connect is written as a
+		 * mapping inside its parent, so the file reads back the same. */
 		if (0 != g_strcmp0(current_section, setting->section))
 		{
-			g_string_append_printf(yaml, "\n%s:\n", setting->section);
+			const gchar *dot = strchr(setting->section, '.');
+			g_autofree gchar *top = (NULL != dot)
+				? g_strndup(setting->section, (gsize)(dot - setting->section))
+				: g_strdup(setting->section);
+
+			if (0 != g_strcmp0(current_top, top))
+			{
+				g_string_append_printf(yaml, "\n%s:\n", top);
+				g_free(current_top);
+				current_top = g_steal_pointer(&top);
+			}
+
+			if (NULL != dot)
+				g_string_append_printf(yaml, "  %s:\n", dot + 1);
+
 			current_section = setting->section;
 		}
+
+		indent = (NULL != strchr(setting->section, '.')) ? "    " : "  ";
 
 		if (G_TYPE_STRV == pspec->value_type)
 		{
@@ -2002,16 +2072,16 @@ venture_config_to_yaml(
 
 			if ((NULL == items) || (NULL == items[0]))
 			{
-				g_string_append_printf(yaml, "  %s: []\n", setting->key);
+				g_string_append_printf(yaml, "%s%s: []\n", indent, setting->key);
 				continue;
 			}
 
-			g_string_append_printf(yaml, "  %s:\n", setting->key);
+			g_string_append_printf(yaml, "%s%s:\n", indent, setting->key);
 
 			for (item = 0; NULL != items[item]; item++)
 			{
-				g_string_append_printf(yaml, "    - \"%s\"\n",
-				                       items[item]);
+				g_string_append_printf(yaml, "%s  - \"%s\"\n",
+				                       indent, items[item]);
 			}
 
 			continue;
@@ -2019,7 +2089,7 @@ venture_config_to_yaml(
 
 		if (G_TYPE_BOOLEAN == pspec->value_type)
 		{
-			g_string_append_printf(yaml, "  %s: %s\n", setting->key,
+			g_string_append_printf(yaml, "%s%s: %s\n", indent, setting->key,
 			                       g_value_get_boolean(&value)
 			                               ? "true" : "false");
 			continue;
@@ -2027,20 +2097,20 @@ venture_config_to_yaml(
 
 		if (G_TYPE_INT64 == pspec->value_type)
 		{
-			g_string_append_printf(yaml, "  %s: %" G_GINT64_FORMAT "\n",
-			                       setting->key, g_value_get_int64(&value));
+			g_string_append_printf(yaml, "%s%s: %" G_GINT64_FORMAT "\n",
+			                       indent, setting->key, g_value_get_int64(&value));
 			continue;
 		}
 
 		if (G_TYPE_IS_ENUM(pspec->value_type))
 		{
-			g_string_append_printf(yaml, "  %s: \"%s\"\n", setting->key,
+			g_string_append_printf(yaml, "%s%s: \"%s\"\n", indent, setting->key,
 			                       venture_enum_to_nick(pspec->value_type,
 			                                            g_value_get_enum(&value)));
 			continue;
 		}
 
-		g_string_append_printf(yaml, "  %s: \"%s\"\n", setting->key,
+		g_string_append_printf(yaml, "%s%s: \"%s\"\n", indent, setting->key,
 		                       (NULL != g_value_get_string(&value))
 		                               ? g_value_get_string(&value) : "");
 	}
@@ -2176,7 +2246,13 @@ venture_config_describe(VentureConfig *self)
 
 			text = g_value_get_string(&value);
 
-			if (0 == g_strcmp0(setting->name, "database-uri"))
+			if (venture_config_setting_is_secret(setting))
+			{
+				json_builder_add_string_value(builder, "");
+				json_builder_set_member_name(builder, "secret_present");
+				json_builder_add_boolean_value(builder, !venture_string_is_empty(text));
+			}
+			else 			if (0 == g_strcmp0(setting->name, "database-uri"))
 			{
 				g_autofree gchar *redacted = NULL;
 

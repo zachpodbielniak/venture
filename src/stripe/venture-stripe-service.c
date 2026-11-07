@@ -473,6 +473,7 @@ stripe_event_exception(VentureStripeService *self, VentureStripeEvent *event,
 #include "venture-stripe-refund.inc"
 #include "venture-stripe-invoice-events.inc"
 #include "venture-stripe-events.inc"
+#include "venture-stripe-connect.inc"
 
 static gint64
 account_code(VentureStripeService *self, const gchar *code, GError **error)

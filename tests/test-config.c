@@ -831,6 +831,83 @@ test_config_describe_reports_secret_presence_not_value(void)
 	g_unsetenv("VENTURE_TEST_SECRET_PRESENT");
 }
 
+/*
+ * stripe.connect.* is a mapping inside the stripe section. The platform
+ * keys come from YAML or from VENTURE_STRIPE_CONNECT_*, and the describe
+ * answer never carries the secret key or the webhook secret: it says only
+ * whether each is set. What breaks if this regresses: Connect stays off on
+ * a configured installation, or /api/v1/settings shows a platform key.
+ */
+static void
+test_config_stripe_connect(void)
+{
+	static const gchar yaml[] =
+		"stripe:\n"
+		"  enabled: true\n"
+		"  connect:\n"
+		"    secret_key: sk_test_yaml_fixture\n"
+		"    publishable_key: pk_test_yaml_fixture\n"
+		"    webhook_secret: whsec_yaml_fixture\n"
+		"    environment: test\n"
+		"    api_version: 2025-08-27.basil\n";
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureConfig) restored = venture_config_new();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) described = NULL;
+	g_autofree gchar *secret = NULL, *publishable = NULL, *webhook = NULL;
+	g_autofree gchar *environment = NULL, *version = NULL, *dumped = NULL;
+	g_autofree gchar *text = NULL, *round = NULL;
+	JsonArray *settings;
+	guint i, seen = 0;
+
+	g_assert_true(venture_config_apply_yaml_string(config, yaml, &error));
+	g_assert_no_error(error);
+	g_object_get(config, "stripe-connect-secret-key", &secret,
+	             "stripe-connect-publishable-key", &publishable,
+	             "stripe-connect-webhook-secret", &webhook,
+	             "stripe-connect-environment", &environment,
+	             "stripe-connect-api-version", &version, NULL);
+	g_assert_cmpstr(secret, ==, "sk_test_yaml_fixture");
+	g_assert_cmpstr(publishable, ==, "pk_test_yaml_fixture");
+	g_assert_cmpstr(webhook, ==, "whsec_yaml_fixture");
+	g_assert_cmpstr(environment, ==, "test");
+	g_assert_cmpstr(version, ==, "2025-08-27.basil");
+
+	g_setenv("VENTURE_STRIPE_CONNECT_SECRET_KEY", "sk_test_env_fixture", TRUE);
+	venture_config_apply_environment(config);
+	g_unsetenv("VENTURE_STRIPE_CONNECT_SECRET_KEY");
+	g_clear_pointer(&secret, g_free);
+	g_object_get(config, "stripe-connect-secret-key", &secret, NULL);
+	g_assert_cmpstr(secret, ==, "sk_test_env_fixture");
+
+	described = venture_config_describe(config);
+	text = json_to_string(described, FALSE);
+	g_assert_null(strstr(text, "sk_test_env_fixture"));
+	g_assert_null(strstr(text, "whsec_yaml_fixture"));
+	settings = json_node_get_array(described);
+	for (i = 0; i < json_array_get_length(settings); i++)
+	{
+		JsonObject *setting = json_array_get_object_element(settings, i);
+		const gchar *name = json_object_get_string_member(setting, "name");
+		if (g_strcmp0(name, "stripe-connect-secret-key") && g_strcmp0(name, "stripe-connect-webhook-secret"))
+			continue;
+		seen++;
+		g_assert_true(json_object_get_boolean_member(setting, "secret_present"));
+		g_assert_cmpstr(json_object_get_string_member(setting, "env"), ==,
+		                !g_strcmp0(name, "stripe-connect-secret-key") ?
+		                "VENTURE_STRIPE_CONNECT_SECRET_KEY" : "VENTURE_STRIPE_CONNECT_WEBHOOK_SECRET");
+	}
+	g_assert_cmpuint(seen, ==, 2);
+
+	/* The written file nests connect under stripe and reads back. */
+	dumped = venture_config_to_yaml(config, FALSE);
+	g_assert_nonnull(strstr(dumped, "\nstripe:\n  enabled: true\n  connect:\n"));
+	g_assert_true(venture_config_apply_yaml_string(restored, dumped, &error));
+	g_assert_no_error(error);
+	g_object_get(restored, "stripe-connect-api-version", &round, NULL);
+	g_assert_cmpstr(round, ==, "2025-08-27.basil");
+}
+
 
 int
 main(
@@ -898,6 +975,7 @@ main(
 	                test_config_describe_redacts_the_database_password);
 	g_test_add_func("/config/describe-reports-secret-presence-not-value",
 	                test_config_describe_reports_secret_presence_not_value);
+	g_test_add_func("/config/stripe-connect", test_config_stripe_connect);
 
 	return g_test_run();
 }

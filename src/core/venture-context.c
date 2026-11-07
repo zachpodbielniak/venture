@@ -291,6 +291,7 @@ venture_context_new(
 	venture_mfa_service_configure(venture_mfa_service_get(self->database), config);
 	venture_ocr_service_configure(venture_ocr_service_get(self->database), config);
 	venture_stripe_actions_set_context(self->database, self);
+	venture_stripe_connect_set_config(self->database, config);
 	venture_marketing_service_configure(venture_marketing_service_get(self->database), self);
 
 	/*
