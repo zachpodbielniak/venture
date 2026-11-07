@@ -134,10 +134,10 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-01 against 768ec1c8 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-07 against 25ccbb3e -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=768ec1c8
+base=25ccbb3e
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -166,6 +166,16 @@ charges send it as a suffix, and an invoice uses it as the full descriptor
 only at 5 characters or more (`billing.md`).
 Public booking limits use a relay's last `X-Forwarded-For` hop only when
 that socket is listed in `security.booking_trusted_relays` (`mail.md`).
+`POST /api/v1/mail/connect` turns a business's mail on from one address;
+the relay is the operator's single plaintext endpoint, and the sender name
+is the business (`mail.md`). A hosted workspace runs due sequence steps
+and then the outbox every five seconds.
+An owner or admin connects a business to Stripe without pasting keys:
+`POST /api/v1/organizations/ID/stripe/connect` (test mode only) and
+`POST /webhooks/stripe/connect` (`billing.md`).
+A sent quote's `POST /api/v1/quotes/compose` reply includes
+`acceptance_url` (`/q/<token>` against `server-base-url`) and still omits
+the acceptance token (`receivables.md`).
 Named booking resources, a published price, job windows that block public
 slots, sequence one-click stop (`/sequences/u/:token`), a per-business
 Lightsite schedule token, `until_at` on tickets, and the `people` and
@@ -380,12 +390,14 @@ ids, notes) in words.
 | "Record a payment / credit / refund" | `create payment ...`; `customer_credit`; `refund` | [receivables.md](references/receivables.md) |
 | "What does this customer owe?" | `report receivables`, `report customer_statement ... customer_id=` | [receivables.md](references/receivables.md) |
 | "Send / accept / remind a quote" | `quote send\|accept\|decline\|revise\|remind ID` | [receivables.md](references/receivables.md) |
+| "Give the customer their quote link" | a sent quote's `POST /api/v1/quotes/compose` reply has `acceptance_url` when `server-base-url` is set; the token stays out | [receivables.md](references/receivables.md) |
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
 | "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
 | "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
+| "Connect a business to Stripe" | `POST /api/v1/organizations/ID/stripe/connect` with four HTTPS URLs; owner or admin; test platform keys; a missing business is 404 | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
 | "Order and receive stock" | `purchase_order` + lines, `purchase approve\|send\|receive` | [payables.md](references/payables.md) |
 | "Import a bank statement and match it" | `bank import`, `bank match AUTO`, `reconcile suggest` | [payables.md](references/payables.md) |
@@ -411,6 +423,7 @@ ids, notes) in words.
 | "Build / publish / embed a form, read its answers" | `create form`, `form_field`, `act form ID publish`, `report form_summary` | [forms.md](references/forms.md) |
 | "Enroll in a sequence / send a newsletter" | `sequence enroll`, then `mail deliver` for queued email steps; `marketing_send` preview -> approve -> run | [outreach.md](references/outreach.md) |
 | "Send / retry / sync mail" | `mail send\|deliver\|retry\|sync` | [mail.md](references/mail.md) |
+| "Turn a business's mail on from one address" | `POST /api/v1/mail/connect` with `organization_id` and `from`; the relay is the operator's one plaintext endpoint | [mail.md](references/mail.md) |
 | "Open / triage / answer a ticket" | `create ticket`, `ticket ID triage\|draft\|macro\|worklog` | [desk.md](references/desk.md) |
 | "Break an epic into stories / how far along is it?" | `create ticket issue_type=story parent_id=EPIC`, `report epic_progress milestone_id=N` | [desk.md](references/desk.md) |
 | "Plan work toward a goal / milestone" | `create milestone ... goal_id=N`, `update ticket ID goal_id=N`, `report goal_progress` | [desk.md](references/desk.md), [sessions-goals.md](references/sessions-goals.md) |

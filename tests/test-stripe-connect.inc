@@ -332,6 +332,14 @@ test_connect_status(Fixture *f, gconstpointer data)
 	g_autoptr(JsonNode) answer = NULL, started = NULL, settings = NULL;
 	(void)data;
 	connect_platform(f);
+	/* A missing business is not found. A NULL from the database used to
+	 * leave the error unset, and the route answered 500. */
+	answer = venture_stripe_connect_status(f->database, 9000000001, STRIPE_TRANSPORT(transport), NULL, &error);
+	g_assert_null(answer);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND);
+	g_assert_cmpstr(error->message, ==, "Organization not found");
+	g_clear_error(&error);
+	g_clear_pointer(&answer, json_node_unref);
 	answer = venture_stripe_connect_status(f->database, f->organization_id, STRIPE_TRANSPORT(transport), NULL, &error);
 	g_assert_no_error(error);
 	assert_connect_answer(answer, "not_connected", NULL);

@@ -938,7 +938,15 @@ venture_document_web_compose(HtmxRequest *request, GHashTable *params, gpointer 
 				? document_mail_after_send(self, result, &actor) : "");
 		return venture_web_redirect_to(path);
 	}
-	return venture_web_json_response(venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE), 200);
+	{
+		/* The token stays out of the record's JSON as a sensitive field;
+		 * a caller that mails the customer itself still needs the link. */
+		JsonNode *reply = venture_serializable_to_json(VENTURE_SERIALIZABLE(result), FALSE);
+		g_autofree gchar *link = quote ? quote_public_link(self, result) : NULL;
+		if (link != NULL && JSON_NODE_HOLDS_OBJECT(reply))
+			json_object_set_string_member(json_node_get_object(reply), "acceptance_url", link);
+		return venture_web_json_response(reply, 200);
+	}
 
 failed:
 	if (transaction)

@@ -146,6 +146,7 @@ many documents all-or-nothing. A non-admin must name the organization.
 
 ## Stripe (module `stripe`, opt-in)
 
+- **Connect with Stripe**: an owner or admin connects the business without pasting keys. `stripe.connect.*` holds the platform keys; all empty is off, and only `environment: test` is accepted. `POST /api/v1/organizations/ID/stripe/connect` with exactly `return_url`, `refresh_url`, `success_url` and `cancel_url` (HTTPS) makes one Standard-style account (or reuses it) and returns an onboarding `url`. `GET` the same path answers `state` (`not_connected`, `needs_more`, `ready`) and `mode` (`connect` or `keys`). A missing business is 404. A pasted-keys connection is 409 until it is disconnected. `POST /webhooks/stripe/connect` verifies the platform secret on the raw body, then routes by the event's account. Charges use the platform key plus `Stripe-Account` (`docs/stripe.org`).
 - **Statement name**: on the connection's settings page, *Save statement
   name* stores `statement_descriptor_suffix` without reentering credentials
   (`docs/stripe.org`). ASCII letters, digits and spaces, at least one letter,

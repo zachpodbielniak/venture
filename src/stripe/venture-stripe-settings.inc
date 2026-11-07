@@ -29,7 +29,14 @@ settings_manage(VentureDatabase *database, gint64 organization_id, GError **erro
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled");
 	organization = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, organization_id, error);
-	if (!organization) return FALSE;
+	/* venture_database_get() answers a missing row with NULL and no error.
+	 * Leaving that unset made Connect and the settings routes a 500. */
+	if (!organization)
+	{
+		if (error == NULL || *error == NULL)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Organization not found");
+		return FALSE;
+	}
 	if (venture_entity_is_deleted(organization)) return refuse(error, "Organization is unavailable");
 	return TRUE;
 }

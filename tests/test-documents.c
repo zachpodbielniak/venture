@@ -629,6 +629,57 @@ test_http_compose_organization(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(dir);
 }
 
+/* An integration composes and sends a quote over the API, then mails the
+ * customer itself. Without the acceptance link in the reply, that email
+ * cannot carry it and the customer cannot accept online. The token stays a
+ * sensitive field: only the resolved link is returned, and only when a
+ * public address is set, because a path on this server is no use on a
+ * customer's phone. */
+static void
+test_http_compose_quote_link(Fixture *f, gconstpointer data)
+{
+	const gchar *base = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) company = NULL, quote = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	g_autofree gchar *dir = g_dir_make_tmp("venture-documents-XXXXXX", NULL);
+	g_autofree gchar *body = NULL, *reply = NULL, *token = NULL, *expected = NULL;
+	JsonObject *object;
+	gint state = 0;
+	company = venture_database_get(f->db, VENTURE_TYPE_COMPANY, f->company, &error);
+	g_assert_no_error(error);
+	g_object_set(company, "email", "buyer@example.test", NULL);
+	save(f, company);
+	g_object_set(f->config, "state-dir", dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)0, "security-require-auth", FALSE,
+		"server-base-url", base != NULL ? base : "", NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	body = g_strdup_printf("{\"company_id\":%" G_GINT64_FORMAT ",\"currency\":\"USD\",\"send\":true,"
+		"\"lines\":[{\"description\":\"Repair\",\"quantity\":1,\"unit_price\":\"125 USD\"}]}", f->company);
+	g_assert_cmpuint(http_request(server, "POST", "/api/v1/quotes/compose", body, &reply), ==, 200);
+	g_assert_true(json_parser_load_from_data(parser, reply, -1, &error));
+	g_assert_no_error(error);
+	object = json_node_get_object(json_parser_get_root(parser));
+	quote = venture_database_get(f->db, VENTURE_TYPE_QUOTE, json_object_get_int_member(object, "id"), &error);
+	g_assert_no_error(error);
+	g_object_get(quote, "status", &state, "acceptance-token", &token, NULL);
+	g_assert_cmpint(state, ==, VENTURE_QUOTE_SENT);
+	g_assert_false(venture_string_is_empty(token));
+	g_assert_false(json_object_has_member(object, "acceptance_token"));
+	if (base == NULL)
+		g_assert_false(json_object_has_member(object, "acceptance_url"));
+	else
+	{
+		expected = g_strconcat(base, "/q/", token, NULL);
+		g_assert_cmpstr(json_object_get_string_member_with_default(object, "acceptance_url", NULL), ==, expected);
+	}
+	venture_web_server_stop(server);
+	venture_test_remove_tree(dir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -643,5 +694,7 @@ main(int argc, char **argv)
 	g_test_add("/documents/http-compose", Fixture, NULL, setup, test_http_compose, teardown);
 	g_test_add("/documents/http-compose-guards", Fixture, NULL, setup, test_http_compose_guards, teardown);
 	g_test_add("/documents/http-compose-organization", Fixture, NULL, setup, test_http_compose_organization, teardown);
+	g_test_add("/documents/http-compose-quote-link", Fixture, "https://quotes.example.test", setup, test_http_compose_quote_link, teardown);
+	g_test_add("/documents/http-compose-quote-link-no-base", Fixture, NULL, setup, test_http_compose_quote_link, teardown);
 	return g_test_run();
 }

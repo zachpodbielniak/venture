@@ -57,7 +57,7 @@ in the repository lists today's.
 
 | Route | venturectl |
 |---|---|
-| `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON`; API `organization_id` selects the business |
+| `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON`; API `organization_id` selects the business; a sent quote's reply has `acceptance_url` when `server-base-url` is set |
 | `POST /invoices/:id/send`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID` |
 | `POST /quotes/:id/:action` (send, accept, decline, revise, remind, start-subscription) | `quote ACTION ID` |
 | `POST /invoice/:id/actions/remind` (editor, stageable) | `act invoice ID remind` |
@@ -84,6 +84,8 @@ in the repository lists today's.
 | `POST /commerce/import` | `commerce import` |
 | `GET /sales-tax/export` | `sales-tax export` |
 | `/webhooks/stripe/:connection_id` (no session; signature) | -- |
+| `GET`/`POST /organizations/:id/stripe/connect` (owner/admin; body is exactly four HTTPS URLs: `return_url`, `refresh_url`, `success_url`, `cancel_url`) | Connect with Stripe: state `not_connected`/`needs_more`/`ready`, mode `connect` or `keys`; a missing business is 404 |
+| `POST /webhooks/stripe/connect` (no session; platform Connect signature; before `/:connection_id`) | -- |
 
 ## The books
 
@@ -117,7 +119,7 @@ in the repository lists today's.
 | `POST /sequence/:id/enroll`, `POST /sequence_enrollment/:id/:action` (pause, resume, exit, goal), `POST /sequences/run` | `sequence ...` |
 | `POST /crm_imports/preview`, `POST /crm_imports/:id/:action` | `crm preview\|import\|activate\|rollback` |
 | `GET /api/v1/marketing/domain-health?organization_id=&domain=&selector=` (owner/admin: SPF, DKIM, DMARC), `POST /api/v1/marketing/feedback-secret` (owner/admin: seal the feed's signing secret, shown once), `GET /api/v1/marketing/sends/:id/report` (counts and click map); pages `/marketing/deliverability`, `/marketing/sends/:id/report`; public `POST /hooks/deliverability/:org/:provider` (no session: the signed bounce and complaint feed, refused without the organization's secret) | -- |
-| `POST /mail/:action` (send, test, deliver), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss`, `GET /mail/preview/:kind/:id` (owner/admin: the email a sender would queue, with its checks; `kind=message` for a queued row) | `mail ...`, `mail preview KIND ID` |
+| `POST /mail/:action` (send, test, deliver, connect), `POST /mail_messages/:id/retry`, `POST /mail/sync`, `POST /mail_accounts/:id/sync`, `POST /mail_unmatched_senders/:id/create_contact\|dismiss`, `GET /mail/preview/:kind/:id` (owner/admin: the email a sender would queue, with its checks; `kind=message` for a queued row). `connect` body is exactly `{"organization_id","from"}` (owner/admin; the relay is the operator's one plaintext endpoint; 409 when it is missing, not unique, or a different transport is already bound; 404 for an unknown business) | `mail ...`, `mail preview KIND ID` |
 | `GET /email-design`, `GET /email-design/:id` (builder, owner/admin), `POST /email-design/new\|images\|logo-ask/dismiss`, `POST /email-design/:id/blocks\|brief\|edit\|undo`, public `GET /i/:org/:file` (hosted image, no cookie) | `act mail_template design_email\|edit_design\|undo_design\|rebuild_designs` |
 | `POST /calendar/sync` | `calendar sync` |
 | `GET /calendar` (`view`, `date`, `from`, `to`, `kind`, `venture_id`, `assignee=me`, `done`, `organization_id`; API also `on=YYYY-MM-DD` with `time_zone`, together); the same answer as the page `/calendar`, the feed `/calendar.ics` and the org-agenda file `/calendar.org`, all three at the site root, not under `/api/v1` | `calendar show [k=v ...]`, `calendar org [k=v ...]` |
