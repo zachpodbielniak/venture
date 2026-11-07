@@ -176,3 +176,30 @@ reopens a file database with a representative old document, preserves its
 metadata, adds the column, persists bytes, and reopens with CRM import
 disabled before enabling it again. No physical file cleanup is needed
 because payloads share the import transaction.
+
+* The stock engine
+
+=001000_stock_engine= checks the additive =inventory_cost_layers.stock_layer_id=
+column on both backends. It guards on =inventory_cost_layers=, so an install
+with the goods module off records the version and has nothing to check.
+
+The move of the stock into the engine is C, after the scripts and the seeds:
+=venture_stock_engine_migrate()=, the last step of =venture_database_migrate()=.
+It must be C, because the engine makes its own tables (prefix =stock_=, its
+own migration record =stock_lv_migrations=) and its rules split each cost.
+
+1. The engine's store opens on Venture's connection. Its tables go in the
+   current schema.
+2. Each inventory item with no engine item gets one. Deleted items too:
+   their layers were in the valuation.
+3. Each open lot of its layer rows becomes one =opening= movement, dated
+   when the lot came in, at what its layers still hold per currency. Each
+   open layer row gets =stock_layer_id=.
+4. The units no layer covers become a count, at the engine place =count=.
+
+The quantity and the value per currency of each item stay the same. A
+second start finds every item and does nothing. The engine's idempotency
+keys (=venture-opening:ITEM:LOT=) make a retry post each lot once.
+The history of movements stays in the =inventory_txn= rows. The test is
+=tests/test-venture-stock-engine.c= (=/venture-stock-engine/migration/sqlite=,
+and =/postgresql= with =VENTURE_TEST_MIGRATION_POSTGRES_URI=).

@@ -574,12 +574,61 @@ against those.
 wire spelling, what each reference points at, and what each enum accepts.
 Most CLI mistakes are a field name guessed rather than read.
 
+## The stock engine
+
+`src/goods/` keeps Venture's stock on Libreventory's ledger
+(`deps/libreventory`), embedded in our database with the table prefix
+`stock_`. `docs/inventory.org` ("The stock engine") has the whole of it.
+
+- **The engine keeps the stock; the rows are its mirror.** Quantities,
+  lots, cost layers and what a movement cost come from the engine.
+  `inventory_txn` and `inventory_cost_layer` rows are written by
+  `VentureInventoryService` from the engine's answer, in the same
+  transaction, and every reader keeps reading rows. Never write a layer
+  row, or a movement row's quantity, any other way: the two would part,
+  and `venture_stock_engine_check_mirror()` is what says so.
+- **One operation, one transaction, one engine movement.** Each service
+  call begins a level of the database's transaction, posts its movement
+  (a savepoint inside it), writes the rows and posts the journal; any
+  failure rolls back all of it. Before the engine, an issue refused for
+  want of cost layers kept the layers it had already used when no actor
+  held a transaction.
+- **A count typed in by hand lives at the engine place `count`.** A
+  person's `inventory_txn` save is handled by the goods save hook: a count
+  up gives units with no cost there, a count down takes those first and
+  then goes below zero there. It never takes a costed unit, so the value
+  stays, as it always did. Deleting a movement row is refused.
+- **The engine allows every item below zero; Venture's rules refuse.**
+  `guard_stock()` checks the item's `allow-negative` against the engine's
+  quantity before a post, and the `check-move` handler refuses a take
+  without a cost for the items a post names as strict (an issue, a
+  transfer, a return). A craft takes costed lots first, then uncosted ones
+  at no cost.
+- **Link the core archive whole, and never the engine's shared
+  library.** `LIBREVENTORY_LINK` is `--whole-archive`: its kinds register
+  from constructors. The shared library carries its own orm-glib and
+  htmx-glib, whose GTypes would be registered twice.
+- **The store opens at startup, outside any transaction.**
+  `venture_database_migrate()` calls `venture_stock_engine_migrate()`,
+  which makes the engine's tables and brings in every item it has not met.
+  A store opened lazily inside a transaction that rolls back is dropped,
+  because its tables went with it.
+- **History before the engine stays in the rows.** The import gives each
+  item its open lots (dated when they came in) and a count for the rest;
+  it does not replay old movements. So `on_hand()` with `as_of` reads the
+  rows, and valuation as of a time reads the engine's lots by the time
+  they came in.
+
 ## Dependencies
 
-Nine git submodules under `deps/`, all linked statically, all treated as the
+Ten git submodules under `deps/`, all linked statically, all treated as the
 canonical copies: `yaml-glib`, `htmx-glib`, `ai-glib`, `orm-glib`,
-`podomation`, `crispy`, `mail-glib`, `stripe-glib`, `oidc-glib`. Fixing a bug in
+`podomation`, `crispy`, `mail-glib`, `stripe-glib`, `oidc-glib`,
+`libreventory`. Fixing a bug in
 one and pushing it upstream is expected and has happened several times.
+`libreventory` (AGPL-3.0-only) is built as its core archive only, against
+our own orm-glib, yaml-glib and htmx-glib headers (`dep-libreventory`):
+its own submodules are never built or linked.
 
 Fedora build packages are printed by `make list-deps` (one per line, under a
 heading — skip that first line if you pipe it into `dnf`), plus `libetpan-devel`

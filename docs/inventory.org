@@ -3,14 +3,106 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-15]
-#+updated: [2026-10-04]
-#+version: 0.1.1
+#+updated: [2026-11-06]
+#+version: 0.2.0
+
+* The stock engine
+
+Venture's stock runs on Libreventory, an inventory engine by Ben Doty. It
+is the submodule =deps/libreventory=, under the GNU Affero General Public
+License version 3 only (AGPL-3.0-only). Venture is AGPL-3.0-or-later, so
+the program that links both is under the AGPL version 3.
+
+** What the engine keeps
+
+- The quantity on hand of each inventory item.
+- Lots, and first in, first out.
+- Cost layers, and the exact split of a cost over the units.
+- What each movement cost, per currency.
+- The valuation, per item and per organization.
+
+** What Venture keeps
+
+- The general ledger. =VentureInventoryService= posts each journal
+  from the costs that the engine gives back for the movement.
+- Its rules: which item can go below zero, and that an issue never
+  takes a unit with no cost layer.
+- The records =inventory_item=, =inventory_txn= and
+  =inventory_cost_layer=, with their pages, reports, API, CLI and MCP
+  tools.
+
+** How they are joined
+
+- The engine's store is in Venture's own database, on Venture's own
+  connection, with the table prefix =stock_=.
+- Each operation of the service posts one engine movement in a
+  savepoint of Venture's transaction. Then it writes the rows and the
+  journal in the same transaction. If the journal fails, the movement
+  goes too.
+- Each inventory item has one engine item. Its barcode is
+  =venture:inventory_item:ID=.
+- The =inventory_txn= and =inventory_cost_layer= rows are a mirror of
+  the engine. The service writes them from the engine's answer.
+  =stock_layer_id= on a layer row names its engine layer.
+- Venture builds the engine's core archive (=make core= in the
+  submodule) with its own orm-glib, yaml-glib and htmx-glib headers.
+  The program then has one copy of each of these libraries. The
+  engine's shared library has copies of its own, and their types
+  would clash.
+
+** Counts typed in by hand
+
+An =inventory_txn= row that a person saves is a count. The quantity
+changes and no cost changes. The service posts it to the engine at a
+place of its own, =count=. A count up brings units with no cost. A
+count down takes those units first, then goes below zero at that place.
+It never takes a costed unit, so the value of the stock stays.
+
+An edit of a count posts the difference. The service refuses a delete
+of any movement row, because the engine keeps the movement. Correct the
+stock with another count.
+
+** The movements
+
+| Service call   | Engine movement                                       |
+|----------------+-------------------------------------------------------|
+| =receive=      | =purchase= (a receipt) with the cost of the units     |
+| =receive_from= | =bought= (a receipt) with the total cost              |
+| =issue=        | =sale= (an issue), costed lots first                  |
+| =issue_to=     | =sale= or =write-off=, costed lots first              |
+| =restore=      | =return=, from the lot of the receipt line when given |
+| =transfer=     | =item-transfer=: out of one item, into the other      |
+| =produce=      | =production=: inputs out, the output in               |
+
+An issue, a transfer and a return refuse a unit with no cost layer.
+The exception is an item with =allow_negative=. A craft uses those units last,
+at no cost.
+
+** Upgrading a database
+
+Startup brings each inventory item that has no engine item into the
+engine (=venture_stock_engine_migrate()=):
+
+1. Each open lot of its layer rows becomes one =opening= movement. Its
+   date is the time the lot came in. Its cost is what the layers still
+   hold, per currency.
+2. Each open layer row gets the id of its engine layer.
+3. The units that no layer covers become a count.
+
+The quantity and the value per currency stay the same. The history of
+movements before the upgrade stays in the =inventory_txn= rows: a
+quantity as of an earlier time reads the rows. The engine does not
+replay that history, because the rows never said which lot each issue
+took. A second start finds every item, and does nothing. An item that a
+restore from a JSON backup wrote back gets the same import at its first
+movement. The test is =tests/test-venture-stock-engine.c=.
 
 * Quantity and cost
 
-Quantity on hand is still the sum of signed =inventory_txn= rows, never
-a stored field. FIFO cost lives on =inventory_cost_layer=, written by
-=VentureInventoryService= when goods are received. Issue consumes the
+The engine keeps the quantity on hand (see "The stock engine"), and the
+signed =inventory_txn= rows add up to it. FIFO cost lives on the
+engine's layers. =VentureInventoryService= writes them to
+=inventory_cost_layer= when goods come in. Issue consumes the
 oldest remaining quantity and posts Cost of goods sold 5000 against
 Inventory 1200 through =VenturePostingService=. The inventory control
 account is resolved with setup role =inventory=, or code 1200.

@@ -127,6 +127,10 @@ the one inbox, AI on messages, workflow settings) are in it too, against
 Competitor records and win/loss reporting were added on the remaining-gaps
 epic after `27c34e4a` (2026-10-25); see the CRM and CRM data-model guides.
 
+Stock runs on the Libreventory engine (`deps/libreventory`): movement rows
+are its mirror, a person's `inventory_txn` is a count, and deleting one is
+refused (data-model-revenue.md; `docs/inventory.org` "The stock engine").
+
 The owner's plan switch (billing.md) and owner invitations sent in the
 business's own mail (operations.md, data-model.md, api-routes.md) were added
 after `7fc9fd69` (2026-10-30). API composition files an explicit
@@ -134,10 +138,10 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-07 against 11252a05 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-07 against bd183a15 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=11252a05
+base=bd183a15
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says

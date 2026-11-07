@@ -100,9 +100,9 @@ $(OUTDIR)/$(LIB_STATIC): $(SERVER_OBJS) | $(OUTDIR)
 # All Venture objects are included directly. Vendor archives bundle shared
 # dependencies such as YAML, so extract their required members as a group
 # instead of forcing several copies of the same dependency into this DSO.
-$(OUTDIR)/$(LIB_SHARED_FULL): $(SERVER_OBJS) $(VENDOR_LIBS_SERVER) $(VENDOR_SHARED_LIBS) | $(OUTDIR)
+$(OUTDIR)/$(LIB_SHARED_FULL): $(SERVER_OBJS) $(LIBREVENTORY_LIB) $(VENDOR_LIBS_SERVER) $(VENDOR_SHARED_LIBS) | $(OUTDIR)
 	@echo "  LD      $@"
-	$(Q)$(CC) $(LDFLAGS_SHARED) -o $@ $(SERVER_OBJS) \
+	$(Q)$(CC) $(LDFLAGS_SHARED) -o $@ $(SERVER_OBJS) $(LIBREVENTORY_LINK) \
 		-Wl,--start-group $(VENDOR_SHARED_LIBS) \
 		$(filter-out $(ORM_GLIB_LIB) $(AI_GLIB_LIB) $(HTMX_GLIB_LIB),$(VENDOR_LIBS_SERVER)) -Wl,--end-group \
 		$(LDFLAGS)
@@ -120,10 +120,10 @@ $(OUTDIR)/$(LIB_SHARED_FULL): $(SERVER_OBJS) $(VENDOR_LIBS_SERVER) $(VENDOR_SHAR
 # main.c never names it. Loaded plugins and podomation modules resolve those
 # symbols against the executable (--export-dynamic, set in LDFLAGS), so
 # there is exactly one instance of each type in the process.
-$(OUTDIR)/venture: $(MAIN_OBJ) $(OUTDIR)/$(LIB_STATIC) $(VENDOR_LIBS_SERVER)
+$(OUTDIR)/venture: $(MAIN_OBJ) $(OUTDIR)/$(LIB_STATIC) $(LIBREVENTORY_LIB) $(VENDOR_LIBS_SERVER)
 	@echo "  LD      $@"
 	$(Q)$(CC) -o $@ $(MAIN_OBJ) \
-		-Wl,--whole-archive $(OUTDIR)/$(LIB_STATIC) -Wl,--no-whole-archive \
+		-Wl,--whole-archive $(OUTDIR)/$(LIB_STATIC) -Wl,--no-whole-archive $(LIBREVENTORY_LINK) \
 		$(VENDOR_LIBS_SERVER) $(LDFLAGS)
 
 # venturectl - the CLI. Deliberately links only libventure-core.a and
@@ -138,10 +138,10 @@ $(OUTDIR)/venturectl: $(CLI_OBJS) $(OUTDIR)/$(LIB_CORE_STATIC) $(VENDOR_LIBS_CLI
 # Tests
 # ---------------------------------------------------------------------------
 
-$(OUTDIR)/tests/test-%: $(OBJDIR)/tests/test-%.o $(OUTDIR)/$(LIB_STATIC) $(VENDOR_LIBS_SERVER) | $(OUTDIR)/tests
+$(OUTDIR)/tests/test-%: $(OBJDIR)/tests/test-%.o $(OUTDIR)/$(LIB_STATIC) $(LIBREVENTORY_LIB) $(VENDOR_LIBS_SERVER) | $(OUTDIR)/tests
 	@echo "  LD[test] $@"
 	$(Q)$(CC) -o $@ $< \
-		-Wl,--whole-archive $(OUTDIR)/$(LIB_STATIC) -Wl,--no-whole-archive \
+		-Wl,--whole-archive $(OUTDIR)/$(LIB_STATIC) -Wl,--no-whole-archive $(LIBREVENTORY_LINK) \
 		$(VENDOR_LIBS_SERVER) $(TEST_LDFLAGS)
 
 # ---------------------------------------------------------------------------
@@ -340,7 +340,7 @@ $(OUTDIR)/pod-modules:
 # dependencies. Sub-dependency directories are overridden (see config.mk) so
 # only our canonical copy of each library is ever compiled.
 
-.PHONY: dep-yaml-glib dep-htmx-glib dep-ai-glib dep-crispy dep-podomation dep-orm-glib
+.PHONY: dep-yaml-glib dep-htmx-glib dep-ai-glib dep-crispy dep-podomation dep-orm-glib dep-libreventory
 
 # The dependencies do not agree on what the archive target is called:
 # htmx-glib and ai-glib use `static`; yaml-glib, crispy and orm-glib use
@@ -375,6 +375,14 @@ dep-podomation-modules:
 dep-orm-glib:
 	$(Q)$(MAKE) --no-print-directory -C $(ORM_GLIB_DIR) DEBUG=$(DEBUG) $(ORM_GLIB_SUBMAKE) lib
 
+# Libreventory's core archive only: none of its own submodules. It is
+# compiled with our dependency headers (LIBREVENTORY_SUBMAKE in config.mk);
+# htmx-glib generates one of them, so htmx-glib is built first.
+dep-libreventory: dep-htmx-glib
+	$(Q)$(MAKE) --no-print-directory -C $(LIBREVENTORY_DIR) DEBUG=$(DEBUG) ASAN=0 UBSAN=0 \
+		$(LIBREVENTORY_SUBMAKE) core
+
+$(LIBREVENTORY_LIB): dep-libreventory
 $(YAML_GLIB_LIB): dep-yaml-glib
 $(HTMX_GLIB_LIB): dep-htmx-glib
 $(AI_GLIB_LIB): dep-ai-glib
@@ -410,7 +418,8 @@ clean-all: clean-deps
 clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
 	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(STRIPE_GLIB_DIR) \
-	             $(OTEL_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_GLIB_DIR)/deps/otel-glib $(OIDC_GLIB_DIR); do \
+	             $(OTEL_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_GLIB_DIR)/deps/otel-glib $(OIDC_GLIB_DIR) \
+	             $(LIBREVENTORY_DIR); do \
 		rm -rf $$d/build; \
 	done
 
