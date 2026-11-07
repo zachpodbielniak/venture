@@ -61,7 +61,9 @@ connect_token(const gchar *value)
 
 /* The platform keys, read when used so a changed configuration applies at
  * once. All empty is "Connect is off": the routes say so and nothing else
- * changes. Only test mode is accepted; live mode is a later, separate step. */
+ * changes. The mode is test or live, and every key must be of that mode: a
+ * live key used as test would take real money from a business that thinks
+ * it is rehearsing. A restricted key (rk_) stands in for the secret key. */
 static gboolean
 connect_platform_load(VentureDatabase *database, ConnectPlatform *platform, GError **error)
 {
@@ -88,21 +90,39 @@ connect_platform_load(VentureDatabase *database, ConnectPlatform *platform, GErr
 	}
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 		if (!connect_token(values[i])) goto invalid;
-	if (g_strcmp0(platform->environment, "test"))
+	if (g_strcmp0(platform->environment, "test") && g_strcmp0(platform->environment, "live"))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
-			"Stripe Connect accepts only stripe.connect.environment: test; live mode is not enabled");
+			"Stripe Connect accepts stripe.connect.environment: test or live");
 		connect_platform_clear(platform);
 		return FALSE;
 	}
-	if (!g_str_has_prefix(platform->secret, "sk_test_") || !g_str_has_prefix(platform->publishable, "pk_test_") ||
-		!g_str_has_prefix(platform->webhook, "whsec_"))
-		goto invalid;
+	{
+		g_autofree gchar *secret = g_strdup_printf("sk_%s_", platform->environment);
+		g_autofree gchar *restricted = g_strdup_printf("rk_%s_", platform->environment);
+		g_autofree gchar *publishable = g_strdup_printf("pk_%s_", platform->environment);
+		if ((!g_str_has_prefix(platform->secret, secret) && !g_str_has_prefix(platform->secret, restricted)) ||
+			!g_str_has_prefix(platform->publishable, publishable) || !g_str_has_prefix(platform->webhook, "whsec_"))
+			goto invalid;
+	}
 	return TRUE;
 invalid:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 		"Stripe Connect configuration is invalid; check stripe.connect.* (values are not shown)");
 	connect_platform_clear(platform);
+	return FALSE;
+}
+
+/* A connected account exists in one mode only. A business connected in the
+ * other mode is refused, never reused under these keys or replaced by a new
+ * account: the owner reconnects on purpose. */
+static gboolean
+connect_same_environment(const gchar *platform, const gchar *environment, GError **error)
+{
+	if (!g_strcmp0(platform, environment)) return TRUE;
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+		"This business was connected with Stripe in %s mode; disconnect it before connecting in %s mode",
+		!g_strcmp0(environment, "live") ? "live" : "test", platform);
 	return FALSE;
 }
 
@@ -161,11 +181,16 @@ settings_load_connect(VentureStripeService *self, JsonObject *object, const gcha
 	const gchar *state = settings_string(object, "state");
 	const gchar *success = settings_string(object, "success_url");
 	const gchar *cancel = settings_string(object, "cancel_url");
-	if (!connect_account_valid(account) || g_strcmp0(environment, "test") ||
+	if (!connect_account_valid(account) || (g_strcmp0(environment, "test") && g_strcmp0(environment, "live")) ||
 		(g_strcmp0(state, "needs_more") && g_strcmp0(state, "ready")) ||
 		!connect_https(success) || !connect_https(cancel))
-		return refuse(error, "Stripe Connect settings need an account, test environment, state and HTTPS return URLs");
+		return refuse(error, "Stripe Connect settings need an account, environment, state and HTTPS return URLs");
 	if (!connect_platform_load(self->database, &platform, error)) return FALSE;
+	if (!connect_same_environment(platform.environment, environment, error))
+	{
+		connect_platform_clear(&platform);
+		return FALSE;
+	}
 	yaml = connect_yaml(&platform, account);
 	connect_platform_clear(&platform);
 	client = stripe_client_new(yaml, self->transport, NULL, NULL);
@@ -315,6 +340,7 @@ venture_stripe_connect_start(VentureDatabase *database, gint64 organization_id,
 	{
 		/* Reuse the account; keep the newest return URLs for payments. */
 		JsonObject *object = json_node_get_object(settings);
+		if (!connect_same_environment(environment, settings_string(object, "environment"), error)) return NULL;
 		account = g_strdup(settings_string(object, "account"));
 		state = g_strdup(settings_string(object, "state"));
 		if (g_strcmp0(settings_string(object, "success_url"), success_url) ||
@@ -378,9 +404,11 @@ venture_stripe_connect_status(VentureDatabase *database, gint64 organization_id,
 	g_autoptr(JsonObject) details = NULL;
 	JsonObject *object, *requirements = NULL;
 	JsonNode *node;
+	g_autofree gchar *environment = NULL;
 	const gchar *state;
 	if (!settings_manage(database, organization_id, error)) return NULL;
 	if (!connect_platform_load(database, &platform, error)) return NULL;
+	environment = g_strdup(platform.environment);
 	client = connect_client(&platform, transport, error);
 	connect_platform_clear(&platform);
 	if (!client) return NULL;
@@ -389,6 +417,7 @@ venture_stripe_connect_status(VentureDatabase *database, gint64 organization_id,
 	/* Pasted keys that were verified and are enabled take payments. */
 	if (!connect_mode(settings)) return connect_answer("ready", "keys", NULL);
 	object = json_node_get_object(settings);
+	if (!connect_same_environment(environment, settings_string(object, "environment"), error)) return NULL;
 	read = stripe_request_new(STRIPE_CONNECT_ACCOUNT_RETRIEVE);
 	read->id = g_strdup(settings_string(object, "account"));
 	account = stripe_client_execute(client, read, NULL, NULL);
@@ -411,10 +440,11 @@ venture_stripe_connect_status(VentureDatabase *database, gint64 organization_id,
 	return connect_answer(state, "connect", NULL);
 }
 
-/* The enabled connect-mode Stripe connection for @account, whichever
- * business it belongs to. Pasted keys for the same account are not it. */
+/* The enabled connect-mode Stripe connection for @account in @environment,
+ * whichever business it belongs to. Pasted keys for the same account are
+ * not it, and neither is a connection made in the other mode. */
 static VentureIntegrationConnection *
-connect_find_account(VentureDatabase *database, const gchar *account, GError **error)
+connect_find_account(VentureDatabase *database, const gchar *account, const gchar *environment, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INTEGRATION_CONNECTION);
 	g_autoptr(GPtrArray) found = NULL;
@@ -432,7 +462,8 @@ connect_find_account(VentureDatabase *database, const gchar *account, GError **e
 		g_autoptr(JsonNode) settings = venture_integration_service_resolve_version(
 			venture_integration_service_get(database), venture_entity_get_organization_id(row),
 			venture_entity_get_id(row), venture_entity_get_version(row), FALSE, NULL);
-		if (!settings || !connect_mode(settings)) continue;
+		if (!settings || !connect_mode(settings) ||
+			g_strcmp0(settings_string(json_node_get_object(settings), "environment"), environment)) continue;
 		if (match)
 		{
 			g_clear_object(&match);
@@ -456,12 +487,14 @@ venture_stripe_connect_webhook(VentureDatabase *database, GBytes *raw, const gch
 	g_autoptr(VentureStripeService) service = NULL;
 	g_autoptr(GError) lookup = NULL;
 	gboolean live;
+	const gchar *environment;
 	JsonNode *node;
 	const gchar *account, *type;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled (stripe.enabled)");
 	if (!connect_platform_load(database, &platform, error)) return FALSE;
 	live = !g_strcmp0(platform.environment, "live");
+	environment = live ? "live" : "test";
 	verifier = connect_client(&platform, transport, error);
 	connect_platform_clear(&platform);
 	if (!verifier) return FALSE;
@@ -477,7 +510,7 @@ venture_stripe_connect_webhook(VentureDatabase *database, GBytes *raw, const gch
 	/* A platform event, or one for an account no business uses: answered
 	 * so Stripe stops retrying, and nothing is recorded. */
 	if (!account) return TRUE;
-	connection = connect_find_account(database, account, &lookup);
+	connection = connect_find_account(database, account, environment, &lookup);
 	if (!connection)
 	{
 		if (g_error_matches(lookup, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return TRUE;

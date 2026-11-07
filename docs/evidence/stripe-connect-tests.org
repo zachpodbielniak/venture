@@ -31,9 +31,30 @@ not ok /auth/pages-refuse-anonymous-requests - ... "/api/v1/organizations/1/stri
 | =/stripe/connect/refuse-viewer=       | a finance member (not owner or admin): 403, no provider call                  |
 | =/stripe/connect/refuse-http=         | an HTTP URL: 422, no provider call                                            |
 | =/stripe/connect/off=                 | no =stripe.connect.*=: 404 for start and status, webhook refused, no call     |
-| =/stripe/connect/status=              | =not_connected=, then =needs_more= and =ready= from =charges_enabled=, stored |
+| =/stripe/connect/status=              | a missing business is 404; then =not_connected=, =needs_more= and =ready= from =charges_enabled=, stored |
 | =/stripe/connect/webhooks=            | two businesses on two accounts: Checkout carries each account's =Stripe-Account= with the platform key; a bad signature and an unknown account record nothing; =checkout.session.completed= pays business B only; =account.updated= makes A =ready= only |
 | =/stripe/connect/webhooks-http=       | the same through =/webhooks/stripe/connect= (400, 200, then 503 when Connect is off) and the JSON routes (200, 422, 404) |
 | =/config/stripe-connect=              | nested YAML, =VENTURE_STRIPE_CONNECT_SECRET_KEY=, secrets hidden in describe, round trip |
 | =/orgaccess/stripe-connect-*=         | the webhook route is a protocol route for POST only                           |
 | =/auth/pages-refuse-anonymous-requests= | both API routes answer 401 when anonymous                                    |
+
+* Live mode
+
+The four tests were committed first and run against the test-only code:
+
+#+begin_example
+not ok /stripe/connect/live - ... Stripe Connect accepts only stripe.connect.environment: test; live mode is not enabled
+not ok /stripe/connect/live-restricted - ... Stripe Connect accepts only stripe.connect.environment: test; live mode is not enabled
+ok /stripe/connect/live-mismatch
+not ok /stripe/connect/live-switch - ... (error == (venture-error-quark, 4)): Stripe Connect accepts only stripe.connect.environment: test; live mode is not enabled
+#+end_example
+
+=live-mismatch= passed before the change on purpose. It pins the refusals
+that must survive it.
+
+| Test                              | What it shows                                                                 |
+|-----------------------------------+-------------------------------------------------------------------------------|
+| =/stripe/connect/live=            | live keys: the account is made with the live key and stored =live=; the business's client loads; a =livemode: false= event is refused; a live =account.updated= makes it =ready= |
+| =/stripe/connect/live-restricted= | the same with an =rk_live_= key                                                |
+| =/stripe/connect/live-mismatch=   | eight pairs of the wrong mode, or a mode that is neither: refused as configuration, no key in the message, no provider call |
+| =/stripe/connect/live-switch=     | a business connected in test, then live keys: start and status 409, its payment client refused, a live event for its account records nothing; the stored account stays test |

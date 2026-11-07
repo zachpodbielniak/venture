@@ -493,3 +493,123 @@ test_connect_charges_and_webhooks(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "state"), ==, "needs_more");
 	g_test_message("Connect webhooks: paid for B only; unknown account and bad signature recorded nothing; A ready");
 }
+
+/* The platform in @environment with these keys; the webhook secret and API
+ * version stay the fixture's. */
+static void
+connect_platform_keys(Fixture *f, const gchar *environment, const gchar *secret, const gchar *publishable)
+{
+	g_object_set(f->config, "stripe-connect-secret-key", secret,
+		"stripe-connect-publishable-key", publishable,
+		"stripe-connect-environment", environment, NULL);
+}
+
+/* Live mode is live keys under environment live, a restricted key too.
+ * Keys of the other mode, or a mode that is neither, keep Connect off
+ * before anything is sent: a live key used as test would take real money
+ * from a business that thinks it is rehearsing. */
+static void
+test_connect_live(Fixture *f, gconstpointer data)
+{
+	const gchar *mode = data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GObject) object = g_object_new(fake_transport_get_type(), NULL);
+	FakeTransport *transport = (FakeTransport *)object;
+	g_autoptr(JsonNode) answer = NULL, settings = NULL;
+	connect_platform(f);
+	if (!g_strcmp0(mode, "mismatch"))
+	{
+		static const gchar *const bad[][3] = {
+			{ "live", "sk_test_platform_fixture", "pk_live_platform_fixture" },
+			{ "live", "sk_live_platform_fixture", "pk_test_platform_fixture" },
+			{ "live", "rk_test_platform_fixture", "pk_live_platform_fixture" },
+			{ "test", "sk_live_platform_fixture", "pk_test_platform_fixture" },
+			{ "test", "rk_live_platform_fixture", "pk_test_platform_fixture" },
+			{ "test", "sk_test_platform_fixture", "pk_live_platform_fixture" },
+			{ "production", "sk_live_platform_fixture", "pk_live_platform_fixture" },
+			{ "Live", "sk_live_platform_fixture", "pk_live_platform_fixture" },
+		};
+		guint i;
+		for (i = 0; i < G_N_ELEMENTS(bad); i++)
+		{
+			connect_platform_keys(f, bad[i][0], bad[i][1], bad[i][2]);
+			answer = connect_start(f, f->organization_id, transport, "https://app.example.test/pay/done", &error);
+			g_assert_null(answer); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+			/* The message never quotes a key. */
+			g_assert_null(strstr(error->message, "platform_fixture"));
+			g_clear_error(&error);
+		}
+		g_assert_cmpuint(transport->calls, ==, 0);
+		return;
+	}
+	if (!g_strcmp0(mode, "switch"))
+	{
+		/* A business connected in test has a test account. Live keys
+		 * cannot drive it, so it is refused, not reused or replaced. */
+		g_autoptr(VentureStripeService) service = NULL;
+		g_autofree gchar *account = NULL;
+		const gchar *ready = "{\"id\":\"evt_live_ready\",\"object\":\"event\",\"type\":\"account.updated\",\"livemode\":true,\"account\":\"acct_connectA\",\"data\":{\"object\":{\"id\":\"acct_connectA\",\"object\":\"account\",\"charges_enabled\":true}}}";
+		guint calls;
+		answer = connect_start(f, f->organization_id, transport, "https://app.example.test/pay/done", &error);
+		g_assert_no_error(error);
+		g_clear_pointer(&answer, json_node_unref);
+		connect_platform_keys(f, "live", "sk_live_platform_fixture", "pk_live_platform_fixture");
+		calls = transport->calls;
+		answer = connect_start(f, f->organization_id, transport, "https://app.example.test/pay/done", &error);
+		g_assert_null(answer); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+		g_assert_nonnull(strstr(error->message, "test mode"));
+		g_clear_error(&error);
+		answer = venture_stripe_connect_status(f->database, f->organization_id, STRIPE_TRANSPORT(transport), NULL, &error);
+		g_assert_null(answer); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+		g_clear_error(&error);
+		service = venture_stripe_service_for_organization(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
+		g_assert_null(service); g_assert_nonnull(error);
+		g_clear_error(&error);
+		/* A live event for the test account is answered and changes nothing. */
+		g_assert_true(connect_event(f, transport, ready, CONNECT_WEBHOOK, &error));
+		g_assert_no_error(error);
+		g_assert_cmpuint(transport->calls, ==, calls);
+		g_assert_cmpuint(transport->account_creates, ==, 1);
+		settings = connect_settings(f, f->organization_id, &account);
+		g_assert_cmpstr(account, ==, "acct_connectA");
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "environment"), ==, "test");
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "state"), ==, "needs_more");
+		return;
+	}
+	/* "live" and "restricted": the same flow as test, stored as live. */
+	connect_platform_keys(f, "live", !g_strcmp0(mode, "restricted") ? "rk_live_platform_fixture" : "sk_live_platform_fixture",
+		"pk_live_platform_fixture");
+	answer = connect_start(f, f->organization_id, transport, "https://app.example.test/pay/done", &error);
+	g_assert_no_error(error);
+	assert_connect_answer(answer, "needs_more", "connect");
+	g_assert_cmpstr(transport->create_authorization, ==,
+		!g_strcmp0(mode, "restricted") ? "Bearer rk_live_platform_fixture" : "Bearer sk_live_platform_fixture");
+	settings = connect_settings(f, f->organization_id, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "environment"), ==, "live");
+	g_clear_pointer(&settings, json_node_unref);
+	{
+		g_autoptr(VentureIntegrationConnection) connection = venture_integration_service_find(
+			venture_integration_service_get(f->database), f->organization_id, "stripe", &error);
+		g_autofree gchar *environment = NULL;
+		g_assert_no_error(error);
+		g_object_get(connection, "environment", &environment, NULL);
+		g_assert_cmpstr(environment, ==, "live");
+	}
+	/* The business's own client drives its live account. */
+	{
+		g_autoptr(VentureStripeService) service = venture_stripe_service_for_organization(f->database,
+			f->organization_id, STRIPE_TRANSPORT(transport), &error);
+		g_assert_no_error(error); g_assert_nonnull(service);
+	}
+	/* A test event is refused under the live platform; a live one lands. */
+	g_assert_false(connect_event(f, transport, "{\"id\":\"evt_test_ready\",\"object\":\"event\",\"type\":\"account.updated\",\"livemode\":false,\"account\":\"acct_connectA\",\"data\":{\"object\":{\"id\":\"acct_connectA\",\"object\":\"account\",\"charges_enabled\":true}}}", CONNECT_WEBHOOK, &error));
+	g_assert_nonnull(error); g_clear_error(&error);
+	settings = connect_settings(f, f->organization_id, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "state"), ==, "needs_more");
+	g_clear_pointer(&settings, json_node_unref);
+	g_assert_true(connect_event(f, transport, "{\"id\":\"evt_live_ready\",\"object\":\"event\",\"type\":\"account.updated\",\"livemode\":true,\"account\":\"acct_connectA\",\"data\":{\"object\":{\"id\":\"acct_connectA\",\"object\":\"account\",\"charges_enabled\":true}}}", CONNECT_WEBHOOK, &error));
+	g_assert_no_error(error);
+	settings = connect_settings(f, f->organization_id, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "state"), ==, "ready");
+	g_test_message("Connect live (%s): account made with the live key, stored live, live event moved it to ready", mode);
+}

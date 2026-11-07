@@ -1254,6 +1254,10 @@ main(int argc, char **argv)
 	g_test_add("/stripe/connect/status", Fixture, NULL, set_up, test_connect_status, tear_down);
 	g_test_add("/stripe/connect/webhooks", Fixture, NULL, set_up, test_connect_charges_and_webhooks, tear_down);
 	g_test_add("/stripe/connect/webhooks-http", Fixture, "http", set_up, test_connect_charges_and_webhooks, tear_down);
+	g_test_add("/stripe/connect/live", Fixture, "live", set_up, test_connect_live, tear_down);
+	g_test_add("/stripe/connect/live-restricted", Fixture, "restricted", set_up, test_connect_live, tear_down);
+	g_test_add("/stripe/connect/live-mismatch", Fixture, "mismatch", set_up, test_connect_live, tear_down);
+	g_test_add("/stripe/connect/live-switch", Fixture, "switch", set_up, test_connect_live, tear_down);
 
 	return g_test_run();
 }
