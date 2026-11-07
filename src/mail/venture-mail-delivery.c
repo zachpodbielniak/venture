@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Outbox delivery that does not need the automation engine. A hosted
  * workspace refuses the engine (it is platform machinery), so the
- * mail_deliver rule never runs there; this timer delivers instead. */
+ * mail_deliver rule never runs there. This timer runs due sequence steps
+ * first, which queues the mail, then delivers the outbox. */
 #include <venture.h>
 
 #define MAIL_DELIVERY_SECONDS (5)
@@ -20,6 +21,24 @@ mail_delivery_can_send(VentureContext *context, gint64 organization)
 	connection = venture_integration_service_find(venture_integration_service_get(
 		venture_context_get_database(context)), organization, "smtp", NULL);
 	return connection != NULL;
+}
+
+/* A missing sequences module is a skip. Any other failure is one business;
+ * the rest of the sweep still runs. */
+static void
+mail_delivery_run_sequences(VentureContext *context, gint64 organization)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+	gint ran;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "sequence") == G_TYPE_INVALID)
+		return;
+	if (!venture_context_module_enabled(context, "sequences")) return;
+	ran = venture_sequence_service_run_due(venture_sequence_service_get(
+		venture_context_get_database(context)), organization, now, NULL, &error);
+	if (ran < 0)
+		g_warning("Sequence sweep for organization %" G_GINT64_FORMAT ": %s",
+			organization, error ? error->message : "failed");
 }
 
 gint
@@ -41,6 +60,7 @@ venture_mail_delivery_sweep(VentureContext *context, GError **error)
 		gint64 organization = venture_entity_get_id(g_ptr_array_index(businesses, i));
 		g_autoptr(GError) failure = NULL;
 		gint attempted;
+		mail_delivery_run_sequences(context, organization);
 		if (!mail_delivery_can_send(context, organization)) continue;
 		attempted = venture_mail_outbox_deliver_due(outbox, organization, MAIL_DELIVERY_BATCH, NULL, NULL, &failure);
 		/* One business's broken outbox must not hold up the others. */

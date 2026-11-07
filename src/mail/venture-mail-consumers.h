@@ -70,9 +70,10 @@ void venture_mail_consumers_preview_register(void);
  * @context: application context
  * @error: (out) (optional): a sweep that could not run at all
  *
- * Delivers the due outbox mail of every active business that can send. A
- * business that has not set up a mail account is skipped, so its mail stays
- * queued until it has one, rather than being given up on.
+ * Runs due sequence steps for every active business, which queues the mail,
+ * then delivers the due outbox of each business that can send. A business
+ * that has not set up a mail account still runs its sequences; its mail
+ * stays queued until it has one, rather than being given up on.
  * Returns: messages attempted, or -1 with @error set
  */
 gint venture_mail_delivery_sweep(VentureContext *context, GError **error);
