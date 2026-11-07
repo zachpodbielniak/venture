@@ -134,10 +134,10 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-07 against a449aff0 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-07 against 94813b6e -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=a449aff0
+base=94813b6e
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -173,6 +173,9 @@ and then the outbox every five seconds.
 An owner or admin connects a business to Stripe without pasting keys:
 `POST /api/v1/organizations/ID/stripe/connect` (test mode only) and
 `POST /webhooks/stripe/connect` (`billing.md`).
+A sent quote's `POST /api/v1/quotes/compose` reply includes
+`acceptance_url` (`/q/<token>` against `server-base-url`) and still omits
+the acceptance token (`receivables.md`).
 Named booking resources, a published price, job windows that block public
 slots, sequence one-click stop (`/sequences/u/:token`), a per-business
 Lightsite schedule token, `until_at` on tickets, and the `people` and
@@ -387,6 +390,7 @@ ids, notes) in words.
 | "Record a payment / credit / refund" | `create payment ...`; `customer_credit`; `refund` | [receivables.md](references/receivables.md) |
 | "What does this customer owe?" | `report receivables`, `report customer_statement ... customer_id=` | [receivables.md](references/receivables.md) |
 | "Send / accept / remind a quote" | `quote send\|accept\|decline\|revise\|remind ID` | [receivables.md](references/receivables.md) |
+| "Give the customer their quote link" | a sent quote's `POST /api/v1/quotes/compose` reply has `acceptance_url` when `server-base-url` is set; the token stays out | [receivables.md](references/receivables.md) |
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
 | "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
