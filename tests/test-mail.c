@@ -434,6 +434,49 @@ static void test_user_notices(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 2);
 }
+static void test_external_user(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureUser) user = venture_user_new(), ordinary = venture_user_new(), retry = venture_user_new();
+	g_autoptr(VentureQuery) messages = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(GError) error = NULL;
+	(void)data;
+	venture_query_set_organization(messages, f->org);
+	g_object_set(user, "organization-id", f->org, "username", "external-owner", "email", "external@example.test", NULL);
+	g_assert_true(venture_mail_outbox_create_external_user(f->outbox, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 0);
+	g_assert_no_error(error);
+	/* The exception is only creation, never a way to suppress a reset. */
+	g_object_set(user, "password-hash", "first", NULL);
+	g_assert_false(venture_mail_outbox_create_external_user(f->outbox, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(user), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 1);
+	g_assert_no_error(error);
+	/* A rejected password-bearing creation cannot affect the next ordinary save. */
+	g_object_set(ordinary, "organization-id", f->org, "username", "ordinary-owner",
+		"email", "ordinary@example.test", "password-hash", "first", NULL);
+	g_assert_false(venture_mail_outbox_create_external_user(f->outbox, VENTURE_ENTITY(ordinary), NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(ordinary)), ==, 0);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(ordinary), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 2);
+	g_assert_no_error(error);
+	/* A persistence refusal must also clear the one-save exception. */
+	g_object_set(retry, "organization-id", f->org, "email", "retry@example.test", NULL);
+	g_assert_false(venture_mail_outbox_create_external_user(f->outbox, VENTURE_ENTITY(retry), NULL, &error));
+	g_assert_nonnull(error);
+	g_clear_error(&error);
+	g_object_set(retry, "username", "retry-owner", NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(retry), NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_database_count(f->db, messages, &error), ==, 3);
+	g_assert_no_error(error);
+}
 static void test_attachment_missing(Fixture *f, gconstpointer data)
 {
 	g_autoptr(VentureMailMessage) message = venture_mail_message_new(), queued = NULL;
@@ -642,6 +685,7 @@ main(int argc, char **argv)
 	g_test_add("/mail/invoice-consumer", Fixture, NULL, setup, test_invoice_consumer, teardown);
 	g_test_add("/mail/invoice-atomic-failure", Fixture, GINT_TO_POINTER(1), setup, test_invoice_consumer, teardown);
 	g_test_add("/mail/user-notices", Fixture, NULL, setup, test_user_notices, teardown);
+	g_test_add("/mail/external-user", Fixture, NULL, setup, test_external_user, teardown);
 	g_test_add("/mail/attachment-missing", Fixture, NULL, setup, test_attachment_missing, teardown);
 	g_test_add("/mail/uncommitted-delivery", Fixture, NULL, setup, test_uncommitted_delivery, teardown);
 	g_test_add("/mail/attachment-snapshot", Fixture, NULL, setup, test_attachment_snapshot, teardown);

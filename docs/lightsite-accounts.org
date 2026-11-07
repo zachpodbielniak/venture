@@ -252,9 +252,12 @@ administration lock:
 4. The receipt (key, request hash, user, business, =linked=, issuer, subject,
    administrator) is stored and a =tenant.lightsite_signup= (or
    =tenant.lightsite_signup_link=) workspace event recorded. The ordinary
-   audit entries name the writer as =API token #<id>=. A new user with an
-   email gets Venture's ordinary welcome message queued in the new
-   business's outbox, which sends only once that business has mail settings.
+   audit entries name the writer as =API token #<id>=. Lightsite owns the
+   welcome email: this explicit passwordless provisioning path queues no
+   Venture-branded welcome, including on replay. Ordinary Venture user
+   creation and later password-change notifications keep their normal mail
+   behavior. The exception is scoped to this new-user save, not a persistent
+   user preference or a global mail switch.
 
 Any failure rolls all of it back, and the same request can simply be sent
 again. A first success is 201, a replay 200, both with =Cache-Control:
