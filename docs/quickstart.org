@@ -104,7 +104,7 @@ alive only while that process is. =Ctrl+C= stops it and leaves the data.
 
   This is shown once. Save it now.
 
-VENTURE 0.6.0 listening on http://127.0.0.1:8749
+VENTURE 0.8.0 listening on http://127.0.0.1:8749
 #+end_src
 
 What is in there: two ventures, a year of sales and expenses posted
