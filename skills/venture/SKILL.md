@@ -134,10 +134,10 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-01 against 768ec1c8 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-07 against abf44ff3 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=768ec1c8
+base=abf44ff3
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
