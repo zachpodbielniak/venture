@@ -158,7 +158,12 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 		json_object_set_string_member(values, "from", from);
 		/* Customers see the business, never the tool's own "Venture" default. */
 		business = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_ORGANIZATION, org, &error);
-		if (!business) return venture_web_error_response(error);
+		/* A missing row is NULL and no error. Returning that is a 500. */
+		if (!business || venture_entity_is_deleted(business)) {
+			if (!error)
+				g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Organization not found");
+			return venture_web_error_response(error);
+		}
 		g_object_get(business, "name", &name, NULL);
 		json_object_set_string_member(values, "from-name", name != NULL ? g_strstrip(name) : "");
 		selector = venture_organization_mailer_new(venture_context_get_database(self->context),

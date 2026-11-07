@@ -77,7 +77,7 @@ Five habits that settle most problems before a theory is needed:
 
 | Symptom | First check | Guide |
 |---|---|---|
-| mail stays queued | nothing delivers on a timer: `mail deliver` or a rule | [mail.md](mail.md) |
+| mail stays queued | outside hosted mode nothing delivers on a timer: `mail deliver` or a rule. A hosted workspace sweeps every five seconds, and runs due sequence steps first | [mail.md](mail.md) |
 | a message is `uncertain` | never retry automatically; decide deliberately | [mail.md](mail.md) |
 | outbound mail refused | the organization's SMTP binding and `mail.allowed_endpoints` | [mail.md](mail.md) |
 | reminders never sent | `dunning sweep`, then `mail deliver`; read `last_sweep` | [billing.md](billing.md) |

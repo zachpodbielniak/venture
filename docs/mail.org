@@ -105,10 +105,12 @@ As an organization owner/admin, open *Mail settings* on its record, or
 method, username, password and sender. Optional sender name/reply address
 and bounded timeout use the form's documented defaults. Credential fields
 always render blank, including after errors. Rotation requires complete
-settings and the exact displayed connection ID/version. Host, port,
-authentication identity and sender identify an account; changing them
-requires disconnect followed by connect. A stale form cannot overwrite a
-replacement connection even if their numeric versions happen to match.
+settings and the exact displayed connection ID/version. Host, port, TLS
+mode, authentication and username are the transport. Changing any of them
+is refused until the account is disconnected. The sender address and sender
+name stay on the same binding, so the address customers see can change
+without a new account. A stale form cannot overwrite a replacement
+connection even if their numeric versions happen to match.
 
 *Send test message* submits only its retained test message, using the
 selected connection/version, and reports its outbox outcome. It does not
@@ -275,8 +277,11 @@ GMime encodes the attachment bytes; Bcc addresses stay envelope-only.
   the operator's one plaintext endpoint, also listed in the allowed endpoints;
   the request carries no host, port, or password, and the response is only
   ={"connected":true}=. A missing or extra field, or an address that is not
-  one mailbox, is 422. Zero relays, or more than one, is 409. Repeating the
-  request is safe; using a new address updates the sender for later mail.
+  one mailbox, is 422. Zero relays, or more than one, is 409. An organization
+  that does not exist is 404. A binding whose transport is not this relay is
+  409 until that account is disconnected. Repeating the request is safe; a
+  new address on the same relay keeps the binding's id and updates the sender
+  for later mail. The sender name is the business's name.
 - =POST /api/v1/mail_messages/:id/retry=: deliberate retry, optional organization.
 - =POST /api/v1/invoices/:id/send=: atomic issue/enqueue/event, returns the message.
 - =POST /api/v1/mail/sync=: the inbound sweep; =organization_id= and =limit= (1–1000 accounts).

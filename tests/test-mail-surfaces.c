@@ -321,6 +321,10 @@ test_connect_one_relay(Fixture *f, gconstpointer unused)
 	extra = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"owner@example.test\",\"host\":\"evil.test\"}", org);
 	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", bad_from, NULL), ==, 422);
 	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", extra, NULL), ==, 422);
+	/* A global owner naming no such business is told it is missing, not a 500. */
+	g_free(bad_from);
+	bad_from = g_strdup("{\"organization_id\":999999,\"from\":\"owner@example.test\"}");
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", bad_from, NULL), ==, 404);
 	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, &body), ==, 200);
 	g_assert_nonnull(strstr(body, "\"connected\""));
 	g_assert_null(strstr(body, "127.0.0.1"));
@@ -329,18 +333,64 @@ test_connect_one_relay(Fixture *f, gconstpointer unused)
 	connection = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(connection);
-	/* A retry and an address change both finish from the same owner screen. */
-	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, NULL), ==, 200);
-	new_from = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"new-owner@example.test\"}", org);
-	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", new_from, NULL), ==, 200);
-	changed = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
-	g_assert_no_error(error);
-	g_assert_nonnull(changed);
+	/* A retry and an address change both finish from the same owner screen,
+	 * and both keep the binding. A new id would strand mail already queued. */
+	{
+		gint64 binding = venture_entity_get_id(VENTURE_ENTITY(connection));
+		g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, NULL), ==, 200);
+		new_from = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"new-owner@example.test\"}", org);
+		g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", new_from, NULL), ==, 200);
+		changed = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(changed);
+		g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(changed)), ==, binding);
+	}
 	settings = venture_integration_service_resolve_version(venture_integration_service_get(f->db), org,
 		venture_entity_get_id(VENTURE_ENTITY(changed)), venture_entity_get_version(VENTURE_ENTITY(changed)), FALSE, &error);
 	g_assert_no_error(error);
 	g_assert_nonnull(settings);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "from"), ==, "new-owner@example.test");
+}
+/* Connect is the one relay. An account already pointed somewhere else stays
+ * there until it is disconnected; the call must not retarget it. */
+static void
+test_connect_refuses_other_transport(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(JsonNode) settings = NULL;
+	g_autofree gchar *path = NULL, *page = NULL, *json = NULL;
+	gint64 org = venture_context_get_default_organization_id(f->context);
+	gint64 binding;
+	(void)unused;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	g_assert_no_error(error);
+	g_object_set(f->config, "mail-allowed-endpoints", "smtp.example.invalid:587,127.0.0.1:1025",
+		"mail-plaintext-endpoints", "127.0.0.1:1025", NULL);
+	path = g_strdup_printf("/organizations/%" G_GINT64_FORMAT "/settings/mail", org);
+	g_assert_cmpuint(request_full(f, "POST", path,
+		"operation=configure&version=0&connection_id=0&host=smtp.example.invalid&from=billing%40example.invalid&username=tenant-account&password=unique-fixture-secret",
+		"application/x-www-form-urlencoded", &page), ==, 200);
+	g_assert_nonnull(strstr(page, "SMTP settings saved"));
+	connection = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(connection);
+	binding = venture_entity_get_id(VENTURE_ENTITY(connection));
+	json = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"owner@example.test\"}", org);
+	g_clear_pointer(&page, g_free);
+	g_assert_cmpuint(request(f, "POST", "/api/v1/mail/connect", json, &page), ==, 409);
+	g_assert_nonnull(strstr(page, "Disconnect the existing SMTP account"));
+	g_assert_null(strstr(page, "127.0.0.1"));
+	g_clear_object(&connection);
+	connection = venture_integration_service_find(venture_integration_service_get(f->db), org, "smtp", &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(connection);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(connection)), ==, binding);
+	settings = venture_integration_service_resolve_version(venture_integration_service_get(f->db), org,
+		binding, venture_entity_get_version(VENTURE_ENTITY(connection)), FALSE, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(settings), "from"), ==, "billing@example.invalid");
 }
 /* Customers see the business as the sender, never the name of the tool. */
 static void
@@ -384,6 +434,7 @@ main(int argc, char **argv)
 	g_test_add("/mail-surfaces/inbound-actions", Fixture, NULL, setup, test_inbound_actions, teardown);
 	g_test_add("/mail-surfaces/organization-settings", Fixture, NULL, setup, test_organization_settings, teardown);
 	g_test_add("/mail-surfaces/connect-one-relay", Fixture, NULL, setup, test_connect_one_relay, teardown);
+	g_test_add("/mail-surfaces/connect-refuses-other-transport", Fixture, NULL, setup, test_connect_refuses_other_transport, teardown);
 	g_test_add("/mail-surfaces/connect-sends-as-business", Fixture, NULL, setup, test_connect_sends_as_business, teardown);
 	g_test_add("/mail-surfaces/cli-preview", Fixture, NULL, setup, test_cli_preview, teardown);
 	return g_test_run();
