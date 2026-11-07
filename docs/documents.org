@@ -15,6 +15,12 @@ API composition accepts =organization_id= in the JSON body or query string.
 It validates that organization and files the invoice or quote there. Without
 an explicit id, it uses the active browser organization or the server default.
 
+The API reply is the composed record. A quote that the call sent also has a
+top-level =acceptance_url=: the customer link, =/q/<token>= resolved against
+=server-base-url=. A caller that emails the customer itself puts this link in
+the message. The member is absent when the quote is not sent or no public
+address is set. The reply never contains the acceptance token as a field.
+
 Every line must be an object with a positive numeric quantity and an exact money price. Fractional quote quantities are refused rather than truncated; invoice quantities retain their existing fractional support. Validation or send failures roll back the document and all its lines.
 
 On the browser sheet, "Save and send" on an invoice issues it and then queues its email to the customer, exactly as the invoice's Send button does. The invoice page it lands on says "Emailed to <address>", or says plainly "Nothing was emailed" and why: the customer has no email address (with a link to add one), email is switched off, or the message could not be queued. The invoice stays issued either way. The JSON composer's =send= still only issues.

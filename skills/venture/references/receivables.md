@@ -107,7 +107,7 @@ returns `result_subscription_id`; a second start is refused. To stage an
 action use `--stage create quote_action quote_id=ID action=accept
 expected_version=N 'accepted_by=Full Name'` with the quote's current
 `version` (`revision` is the separate commercial revision number). The
-public proposal is `/q/:token` (accept with a typed name). Progress billing
+public proposal is `/q/:token` (accept with a typed name). A sent quote's `POST /api/v1/quotes/compose` reply adds `acceptance_url`, that path resolved against `server-base-url`, when the public address is set. The acceptance token stays out of the JSON. Without a public address the member is absent and the quote page shows the path on this server. Progress billing
 (`act quote ID progress_invoice percent=N`), retainers and retention:
 `docs/progress.org`.
 

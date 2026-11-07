@@ -1235,6 +1235,9 @@ public_capability_request(HtmxRequest *request)
 		return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
 	}
 	if (!g_strcmp0(path, "/webhooks/stripe")) return method == HTMX_METHOD_POST;
+	/* The platform's one Connect endpoint: it verifies the platform
+	 * signature, then finds the business by the event's account. */
+	if (!g_strcmp0(path, "/webhooks/stripe/connect")) return method == HTMX_METHOD_POST;
 	if (g_str_has_prefix(path, "/webhooks/stripe/"))
 	{
 		const gchar *digit = path + strlen("/webhooks/stripe/");

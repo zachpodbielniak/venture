@@ -317,13 +317,18 @@ test_missing_key(void)
 
 typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; gchar *checkout_suffix; gchar *invoice_suffix; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
 	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live, setup_open; guint setup_delay_us; gchar *last_invoice_id; guint invoice_count, payment_calls;
-	gint64 refund_amount; guint refund_creates; gboolean drop_refund; gchar *refund_key, *refund_intent; } FakeTransport;
+	gint64 refund_amount; guint refund_creates; gboolean drop_refund; gchar *refund_key, *refund_intent;
+	/* Connect (test-stripe-connect.inc): what each connected-account call carried. */
+	const gchar *connect_id; guint account_creates, account_reads, account_links; gboolean charges_enabled;
+	gchar *create_body, *create_key, *create_version, *create_type, *create_authorization, *read_header, *read_authorization;
+	gchar *link_body, *link_header, *last_account, *checkout_account, *checkout_authorization, *checkout_fee; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
 G_DEFINE_TYPE_WITH_CODE(FakeTransport, fake_transport, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(STRIPE_TYPE_TRANSPORT, fake_iface))
 #include "test-stripe-provider.inc"
+static StripeResponse *fake_connect_send(FakeTransport *self, const StripeHttpRequest *request);
 static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	GCancellable *cancellable, GError **error)
@@ -331,6 +336,9 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	FakeTransport *self = (FakeTransport *)transport;
 	(void)cancellable; (void)error;
 	self->calls++;
+	g_free(self->last_account); self->last_account = g_strdup(request->stripe_account);
+	if (strstr(request->url, "/v2/core/accounts") || strstr(request->url, "/v1/accounts/") || g_str_has_suffix(request->url, "/v1/account_links"))
+		return fake_connect_send(self, request);
 	if (g_str_has_suffix(request->url, "/account"))
 	{
 		g_autofree gchar *body = g_strdup_printf("{\"id\":\"%s\",\"object\":\"account\",\"settings\":{\"card_payments\":{\"statement_descriptor_prefix\":\"VENDOR\"}}}", self->account_id ? self->account_id : "acct_offline");
@@ -409,6 +417,9 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	g_free(self->key);
 	self->key = g_strdup(request->idempotency_key);
 	self->checkouts++;
+	g_free(self->checkout_account); self->checkout_account = g_strdup(request->stripe_account);
+	g_free(self->checkout_authorization); self->checkout_authorization = g_strdup(request->authorization);
+	g_free(self->checkout_fee); self->checkout_fee = g_strdup(strstr(request->body, "application_fee"));
 	self->checkout_ach = strstr(request->body, "us_bank_account") != NULL;
 	{
 		g_autoptr(GHashTable) form = soup_form_decode(request->body);
@@ -449,6 +460,14 @@ static void fake_finalize(GObject *object)
 	g_free(((FakeTransport *)object)->last_invoice_id);
 	g_free(((FakeTransport *)object)->refund_key);
 	g_free(((FakeTransport *)object)->refund_intent);
+	{
+		FakeTransport *connect = (FakeTransport *)object;
+		g_free(connect->create_body); g_free(connect->create_key); g_free(connect->create_version);
+		g_free(connect->create_type); g_free(connect->create_authorization); g_free(connect->read_header);
+		g_free(connect->read_authorization); g_free(connect->link_body); g_free(connect->link_header);
+		g_free(connect->last_account); g_free(connect->checkout_account); g_free(connect->checkout_authorization);
+		g_free(connect->checkout_fee);
+	}
 	g_clear_pointer(&((FakeTransport *)object)->invoices, g_hash_table_unref);
 	g_clear_pointer(&((FakeTransport *)object)->invoice_keys, g_hash_table_unref);
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
@@ -918,7 +937,7 @@ test_dependency_pin(void)
 		const gchar *head[] = { "git", "-C", "deps/stripe-glib", "rev-parse", "HEAD", NULL };
 		g_assert_true(g_spawn_sync(NULL, (gchar **)head, NULL, G_SPAWN_SEARCH_PATH,
 			NULL, NULL, &out, NULL, &status, &error));
-		g_assert_cmpstr(g_strstrip(out), ==, "39e4805526f93a897c2a0e8004626efbe692817d");
+		g_assert_cmpstr(g_strstrip(out), ==, "c15395e49831574ff488f40d278af967e8d95241");
 	}
 }
 
@@ -1104,6 +1123,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-links.inc"
 #include "test-stripe-automatic.inc"
 #include "test-hosted-stripe.inc"
+#include "test-stripe-connect.inc"
 
 int
 main(int argc, char **argv)
@@ -1226,6 +1246,18 @@ main(int argc, char **argv)
 	g_test_add("/stripe/hosted-money-back", Fixture, "money-back", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-lost", Fixture, "money-back-lost", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-late", Fixture, "money-back-late", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/connect/create", Fixture, NULL, set_up, test_connect_create, tear_down);
+	g_test_add("/stripe/connect/refuse-keys", Fixture, "keys", set_up, test_connect_refusals, tear_down);
+	g_test_add("/stripe/connect/refuse-viewer", Fixture, "viewer", set_up, test_connect_refusals, tear_down);
+	g_test_add("/stripe/connect/refuse-http", Fixture, "http", set_up, test_connect_refusals, tear_down);
+	g_test_add("/stripe/connect/off", Fixture, "off", set_up, test_connect_refusals, tear_down);
+	g_test_add("/stripe/connect/status", Fixture, NULL, set_up, test_connect_status, tear_down);
+	g_test_add("/stripe/connect/webhooks", Fixture, NULL, set_up, test_connect_charges_and_webhooks, tear_down);
+	g_test_add("/stripe/connect/webhooks-http", Fixture, "http", set_up, test_connect_charges_and_webhooks, tear_down);
+	g_test_add("/stripe/connect/live", Fixture, "live", set_up, test_connect_live, tear_down);
+	g_test_add("/stripe/connect/live-restricted", Fixture, "restricted", set_up, test_connect_live, tear_down);
+	g_test_add("/stripe/connect/live-mismatch", Fixture, "mismatch", set_up, test_connect_live, tear_down);
+	g_test_add("/stripe/connect/live-switch", Fixture, "switch", set_up, test_connect_live, tear_down);
 
 	return g_test_run();
 }

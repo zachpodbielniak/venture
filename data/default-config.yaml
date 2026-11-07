@@ -568,6 +568,15 @@ backup:
 # Hosted Stripe payments; requires deployment credentials. See docs/stripe.org.
 # stripe:
 #   enabled: false
+#   # Connect with Stripe: the platform keys. All empty turns Connect off.
+#   # Also VENTURE_STRIPE_CONNECT_SECRET_KEY and the other
+#   # VENTURE_STRIPE_CONNECT_* variables. Test mode only.
+#   connect:
+#     secret_key: ""
+#     publishable_key: ""
+#     webhook_secret: ""
+#     environment: ""
+#     api_version: ""
 #
 # Imported payroll runs; native tax calculation is out of scope.
 # payroll:

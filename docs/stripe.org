@@ -14,8 +14,9 @@ or =/organizations/<id>/settings/stripe=. Supply =secret_key=,
 =publishable_key=, =webhook_secret=, =api_version=, =success_url=,
 =cancel_url= and =environment= (=test= or =live=). Return URLs require HTTPS
 without credentials. The adapter verifies the account through authenticated
-=GET /v1/account= before encrypting settings. Stripe Connect delegation and
-restricted-key account discovery are outside this adapter's contract.
+=GET /v1/account= before encrypting settings. Restricted-key account
+discovery is outside this adapter's contract. For Standard-style connected
+accounts made by the installation, see [[*Connect with Stripe]].
 
 An optional =statement_descriptor_suffix= names the product on card statements.
 For example, set the billing organization's suffix to =LIGHTSITE= to distinguish
@@ -448,3 +449,152 @@ A declined intent can have no current payment method. For a verified failure,
 the pinned invoice read must instead retain the authorized attempted method in
 =last_payment_error.payment_method=. The invoice's configured method and every
 other reservation check still apply; this fallback cannot prove a payment.
+
+* Connect with Stripe
+
+Connect lets a business take card payments on its own Stripe account without
+pasting keys. The installation holds the platform keys. Venture makes a
+Standard-style connected account for the business, and Stripe's hosted
+onboarding collects the owner's details. Ben chose this on 2026-11-06.
+
+** Configuration
+
+| YAML                              | Environment                             | Value                                              |
+|-----------------------------------+-----------------------------------------+----------------------------------------------------|
+| =stripe.connect.secret_key=       | =VENTURE_STRIPE_CONNECT_SECRET_KEY=     | Platform secret or restricted key, =sk_= or =rk_=  |
+| =stripe.connect.publishable_key=  | =VENTURE_STRIPE_CONNECT_PUBLISHABLE_KEY= | Platform publishable key, =pk_=                    |
+| =stripe.connect.webhook_secret=   | =VENTURE_STRIPE_CONNECT_WEBHOOK_SECRET= | Signing secret of the platform Connect endpoint    |
+| =stripe.connect.environment=      | =VENTURE_STRIPE_CONNECT_ENVIRONMENT=    | =test= or =live=                                   |
+| =stripe.connect.api_version=      | =VENTURE_STRIPE_CONNECT_API_VERSION=    | Pinned v1 API version for connected-account calls  |
+
+#+begin_src yaml
+stripe:
+  enabled: true
+  connect:
+    secret_key: sk_test_...
+    publishable_key: pk_test_...
+    webhook_secret: whsec_...
+    environment: test
+    api_version: 2025-08-27.basil
+#+end_src
+
+Put the keys in the environment, not in a file in a repository. All five
+values empty means Connect is off. Then the Connect routes answer 404 (the
+webhook answers 503), and nothing else changes. The settings answer
+(=/api/v1/settings=) never shows the secret key or the webhook secret; it says
+only whether each is set.
+
+** Test and live mode
+
+=environment= is =test= or =live=. Every key must be of that mode:
+=sk_test_= or =rk_test_= with =pk_test_= in test, =sk_live_= or =rk_live_=
+with =pk_live_= in live. Any other pair keeps Connect off before anything is
+sent. A live key used as test would take real money from a business that
+thinks it is rehearsing. In live mode, use a restricted key with Connect
+write access, not the full secret key.
+
+A connected account exists in one mode only. The connection stores the mode
+it was made in. When the platform mode differs, connect and status answer
+409, payments for that business are refused, and a Connect webhook for its
+account records nothing. Venture does not reuse the account or make a new
+one. The owner disconnects and connects again in the new mode.
+
+Each mode has its own Connect webhook endpoint and signing secret. An event
+whose =livemode= differs from the platform mode is refused.
+
+** The account
+
+=POST /v2/core/accounts= with =Stripe-Version: 2026-09-30.endive= (stripe-glib
+=STRIPE_CONNECT_ACCOUNT_CREATE=). Stripe refuses v1 account creation for a new
+Connect platform. The body is fixed:
+
+- =dashboard: full=: the owner gets the full Stripe dashboard.
+- =defaults.responsibilities.fees_collector: stripe= and =losses_collector:
+  stripe=: Stripe charges its fees to the owner and recovers dispute losses
+  from the owner.
+- =configuration.merchant.capabilities.card_payments.requested: true=.
+- =identity.country: us=.
+- =contact_email= is the organization's email, else the calling person's
+  email. =display_name= is the organization's name.
+
+The idempotency key is =venture-connect-account-<organization UUID>=, so a
+retry never makes a second account. No application fee is ever sent.
+
+** A connection's mode
+
+The organization's Stripe connection keeps its sealed settings. Pasted keys
+have no =mode= (or =mode: keys=) and work as before. A Connect connection
+holds only public facts:
+
+#+begin_src json
+{"mode": "connect", "account": "acct_...", "environment": "test",
+ "success_url": "https://...", "cancel_url": "https://...", "state": "needs_more"}
+#+end_src
+
+Its client is the platform secret key plus the stripe-glib =stripe_account=
+setting. Every call then carries =Stripe-Account: acct_...=: customers, the
+Checkout Session behind =/pay/<token>= and refunds live on the owner's
+account. Each payment is a direct charge.
+
+** Routes
+
+Both API routes act as the calling person. Only an owner or admin of the
+organization passes, the same check as the Stripe settings page.
+
+=POST /api/v1/organizations/{org}/stripe/connect= takes exactly
+={"return_url", "refresh_url", "success_url", "cancel_url"}=, all HTTPS.
+
+- No Stripe connection: Venture makes the account and stores the connection
+  (provider =stripe=, the =acct_= account, the configured environment,
+  enabled, mode =connect=, state =needs_more=).
+- A Connect connection: Venture reuses its account. It stores new success and
+  cancel URLs when they changed.
+- A pasted-keys connection: 409, and nothing changes. Disconnect it first.
+
+Then =POST /v1/account_links= (=type=account_onboarding=) makes a link. The
+answer:
+
+#+begin_src json
+{"state": "needs_more", "mode": "connect", "url": "https://connect.stripe.com/..."}
+#+end_src
+
+=GET /api/v1/organizations/{org}/stripe/connect= answers the state:
+
+| Connection                     | Answer                                        |
+|--------------------------------+-----------------------------------------------|
+| none                           | ={"state": "not_connected", "mode": null}=    |
+| Connect, =charges_enabled= false | ={"state": "needs_more", "mode": "connect"}= |
+| Connect, =charges_enabled= true  | ={"state": "ready", "mode": "connect"}=      |
+| enabled pasted keys            | ={"state": "ready", "mode": "keys"}=          |
+
+For Connect, Venture reads =GET /v1/accounts/{id}= with the platform key and
+no =Stripe-Account= header, and stores the state when it changed.
+=requirements.currently_due= and =disabled_reason= go to the log, never to
+the answer. Errors are the usual JSON error body: 403 for a person who is not
+owner or admin, 404 when Connect is off or the organization does not
+exist, 409 for pasted keys or a connection made in the other mode, 422 for a
+bad body, 502 when Stripe did not answer.
+
+** The Connect webhook
+
+Register one Connect endpoint for the platform: =POST /webhooks/stripe/connect=
+(on staging, a =stripe listen --forward-connect-to= listener; its signing
+secret is =stripe.connect.webhook_secret=).
+
+1. Venture verifies the signature on the raw bytes with the platform Connect
+   secret, before it reads JSON. A bad signature answers 400.
+2. It reads the event's =account= and finds the enabled Connect connection
+   with that account. An event with no =account=, or for an account no
+   business uses, answers 200 and records nothing.
+3. =account.updated= sets the state from =data.object.charges_enabled= and
+   stores it when it changed.
+4. Every other event goes to that connection's Stripe service. The service
+   verifies again, checks that the event's =account= is its own, records the
+   event and, for =checkout.session.completed=, marks that business's invoice
+   paid. No other business sees the event.
+
+Pasted-keys connections keep =/webhooks/stripe/<connection-id>=.
+
+** Not in this step
+
+A platform fee, Express or Custom accounts and payouts in Venture.

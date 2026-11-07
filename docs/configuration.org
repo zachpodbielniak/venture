@@ -252,6 +252,10 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *backup* — where scheduled backups go and how many are kept; see below
 - *stripe*, *payroll*, *bankfeed*, *commerce*, *group* — one =enabled=
   switch each, off by default, equivalent to the =modules= entry
+- *stripe.connect* — the Connect platform keys (=secret_key=,
+  =publishable_key=, =webhook_secret=, =environment=, =api_version=), a
+  mapping inside =stripe=; =VENTURE_STRIPE_CONNECT_*= in the environment. All
+  empty turns Connect off. See [[file:stripe.org::*Connect with Stripe][Connect with Stripe]]
 - *ocr* — the local OCR engine; see [[file:ocr.org][OCR]]
 - *oidc* — organization sign-in, its issuer allowlist and loopback
   exception; see [[file:oidc.org][OIDC]]

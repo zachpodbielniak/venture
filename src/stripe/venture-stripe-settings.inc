@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Included beside the provider client so clear settings never cross a UI API. */
+static gboolean settings_load_connect(VentureStripeService *self, JsonObject *object, const gchar *suffix, GError **error);
+
 static const gchar *
 settings_string(JsonObject *object, const gchar *name)
 {
@@ -27,7 +29,14 @@ settings_manage(VentureDatabase *database, gint64 organization_id, GError **erro
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_checkout") == G_TYPE_INVALID)
 		return refuse(error, "Stripe module is disabled");
 	organization = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, organization_id, error);
-	if (!organization) return FALSE;
+	/* venture_database_get() answers a missing row with NULL and no error.
+	 * Leaving that unset made Connect and the settings routes a 500. */
+	if (!organization)
+	{
+		if (error == NULL || *error == NULL)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Organization not found");
+		return FALSE;
+	}
 	if (venture_entity_is_deleted(organization)) return refuse(error, "Organization is unavailable");
 	return TRUE;
 }
@@ -75,6 +84,14 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 		self->ach_enabled = json_node_get_boolean(node);
 	}
 	else self->ach_enabled = FALSE;
+	/* Mode "connect": the installation's platform keys plus this account
+	 * (venture-stripe-connect.inc). No mode, or "keys", is pasted keys. */
+	if (json_object_has_member(object, "mode"))
+	{
+		const gchar *mode = settings_string(object, "mode");
+		if (!g_strcmp0(mode, "connect")) return settings_load_connect(self, object, suffix, error);
+		if (g_strcmp0(mode, "keys")) return refuse(error, "Stripe settings mode must be keys or connect");
+	}
 	for (i = 0; i < G_N_ELEMENTS(names); i++)
 	{
 		values[i] = settings_string(object, names[i]);
@@ -175,6 +192,10 @@ stripe_refresh(VentureStripeService *self, gboolean allow_disabled, GError **err
 	if (!settings) return FALSE;
 	if (g_strcmp0(settings_string(json_node_get_object(settings), "environment"), environment))
 		return refuse(error, "Stripe settings do not match the connection environment");
+	/* A connect connection's client acts as exactly its bound account. */
+	if (!g_strcmp0(settings_string(json_node_get_object(settings), "mode"), "connect") &&
+		g_strcmp0(settings_string(json_node_get_object(settings), "account"), account))
+		return refuse(error, "Stripe connection identity does not match this endpoint");
 	if (!self->client || self->connection_version != venture_entity_get_version(connection))
 	{
 		if (!settings_load(self, settings, error)) return FALSE;

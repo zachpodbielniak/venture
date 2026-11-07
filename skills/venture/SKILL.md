@@ -138,10 +138,10 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-07 against abf44ff3 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-07 against 11252a05 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=abf44ff3
+base=11252a05
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -174,6 +174,13 @@ that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 the relay is the operator's single plaintext endpoint, and the sender name
 is the business (`mail.md`). A hosted workspace runs due sequence steps
 and then the outbox every five seconds.
+An owner or admin connects a business to Stripe without pasting keys:
+`POST /api/v1/organizations/ID/stripe/connect` (test or live; `sk_` or `rk_`
+with `pk_` of that mode) and `POST /webhooks/stripe/connect` (`billing.md`).
+A business connected in the other mode is 409 until it is disconnected.
+A sent quote's `POST /api/v1/quotes/compose` reply includes
+`acceptance_url` (`/q/<token>` against `server-base-url`) and still omits
+the acceptance token (`receivables.md`).
 Named booking resources, a published price, job windows that block public
 slots, sequence one-click stop (`/sequences/u/:token`), a per-business
 Lightsite schedule token, `until_at` on tickets, and the `people` and
@@ -388,12 +395,14 @@ ids, notes) in words.
 | "Record a payment / credit / refund" | `create payment ...`; `customer_credit`; `refund` | [receivables.md](references/receivables.md) |
 | "What does this customer owe?" | `report receivables`, `report customer_statement ... customer_id=` | [receivables.md](references/receivables.md) |
 | "Send / accept / remind a quote" | `quote send\|accept\|decline\|revise\|remind ID` | [receivables.md](references/receivables.md) |
+| "Give the customer their quote link" | a sent quote's `POST /api/v1/quotes/compose` reply has `acceptance_url` when `server-base-url` is set; the token stays out | [receivables.md](references/receivables.md) |
 | "Start / change / cancel a subscription" | `billing start\|change\|change-seats\|cancel ...` | [billing.md](references/billing.md) |
 | "What is MRR / churn?" | `report mrr`, `report churn` (billing) or `customer_churn` | [billing.md](references/billing.md) |
 | "Chase overdue invoices" | `dunning sweep ... dry_run=true`, then for real, then `mail deliver`; one customer today is `act invoice ID remind` | [billing.md](references/billing.md) |
 | "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
+| "Connect a business to Stripe" | `POST /api/v1/organizations/ID/stripe/connect` with four HTTPS URLs; owner or admin; test or live keys (`sk_` or `rk_` with `pk_`); a missing business is 404; the other mode is 409 | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
 | "Order and receive stock" | `purchase_order` + lines, `purchase approve\|send\|receive` | [payables.md](references/payables.md) |
 | "Import a bank statement and match it" | `bank import`, `bank match AUTO`, `reconcile suggest` | [payables.md](references/payables.md) |
