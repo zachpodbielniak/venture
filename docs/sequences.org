@@ -78,7 +78,9 @@ steps can carry a survey. See [[file:forms.org][Forms: prefill and personal link
 Call =venture_sequence_service_run_due()=, =venturectl sequence run= or
 =POST /api/v1/sequences/run=. Execution is lazy and bounded to 1000 due
 enrollments per call; an operator or scheduled automation must invoke the
-sweep. There is no database worker thread. Each enrollment transition is
+sweep. A hosted workspace has no automation engine, so its mail timer calls
+=venture_sequence_service_run_due()= for every active business and then
+delivers the outbox. There is no database worker thread. Each enrollment transition is
 one transaction. A failed transaction rolls back its delivery, inbox message,
 progress and audit records; other enrollments already committed by a sweep
 stay committed.

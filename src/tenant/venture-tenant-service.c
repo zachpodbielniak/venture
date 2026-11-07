@@ -1900,7 +1900,9 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 		 * through targeted recovery. The user belongs to the business it owns. */
 		user = g_object_new(VENTURE_TYPE_USER, "username", username, "email", email, "display-name", display,
 			"role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, "organization-id", organization_id, NULL);
-		if (!venture_database_save(self->database, user, &audit, error)) goto rollback;
+		/* Lightsite owns onboarding and sends its own welcome. */
+		if (!venture_mail_outbox_create_external_user(venture_database_get_mail_outbox(self->database),
+		        user, &audit, error)) goto rollback;
 		user_id = venture_entity_get_id(user);
 	}
 	receipt = g_object_new(VENTURE_TYPE_TENANT_SIGNUP, "idempotency-key", idempotency_key, "request-hash", hash,

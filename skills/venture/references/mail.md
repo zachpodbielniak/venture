@@ -64,7 +64,15 @@ Outbound `mail test`, `mail send` and `mail deliver` use the explicit
 business organization's SMTP binding. Missing configuration never falls
 back to installation credentials. An organization owner/admin configures it
 at `/organizations/ID/settings/mail`; the operator must first permit the
-relay in `mail.allowed_endpoints` (deny by default). Password inputs are
+relay in `mail.allowed_endpoints` (deny by default). A hosted owner turns
+mail on with `POST /api/v1/mail/connect` and exactly
+`{"organization_id":N,"from":"owner@example.com"}`. The relay is the
+operator's single `mail.plaintext_endpoints` entry (also on the allowlist),
+never a field of the request. The response is `{"connected":true}`. The
+sender name is the business's name. The same call changes the address and
+keeps the binding id. A different host, port, TLS mode or username is 409
+until that account is disconnected. Zero or several plaintext endpoints is
+409. An unknown business is 404. Password inputs are
 write-only. A delivery retains `connection_id` and `connection_version`
 before SMTP: a retry can use rotated credentials for the same connection,
 but replacing an account does not move old attempts to it. The settings

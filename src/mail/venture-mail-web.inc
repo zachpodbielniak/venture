@@ -1,6 +1,64 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Included by the web server so these thin action adapters share its guards. */
 static HtmxResponse *venture_web_mail_sync(HtmxRequest *request, GHashTable *params, gpointer data);
+
+/* The owner names the address customers see. The relay is the operator's
+ * single plaintext endpoint, never a field on this request. */
+static gboolean
+mail_connect_address(const gchar *from)
+{
+	const gchar *at, *p;
+	if (!from || !*from || strlen(from) > 254) return FALSE;
+	at = strchr(from, '@');
+	if (!at || at == from || at[1] == '\0' || strchr(at + 1, '@')) return FALSE;
+	for (p = from; *p; p++)
+		if (g_ascii_isspace(*p)) return FALSE;
+	return TRUE;
+}
+
+static gboolean
+mail_connect_exact(JsonObject *object)
+{
+	JsonObjectIter iterator;
+	const gchar *name;
+	JsonNode *value;
+	guint n = 0;
+	if (!object) return FALSE;
+	json_object_iter_init(&iterator, object);
+	while (json_object_iter_next(&iterator, &name, &value)) {
+		if (g_strcmp0(name, "organization_id") && g_strcmp0(name, "from")) return FALSE;
+		n++;
+	}
+	return n == 2;
+}
+
+static gboolean
+mail_connect_relay(VentureConfig *config, gchar **host, gint64 *port, GError **error)
+{
+	g_autofree gchar *list = NULL;
+	g_auto(GStrv) entries = NULL;
+	const gchar *chosen = NULL, *colon;
+	gchar *end = NULL;
+	gint64 parsed;
+	guint i, count = 0;
+	g_object_get(config, "mail-plaintext-endpoints", &list, NULL);
+	entries = g_strsplit(list ? list : "", ",", -1);
+	for (i = 0; entries[i]; i++) {
+		g_strstrip(entries[i]);
+		if (*entries[i]) { chosen = entries[i]; count++; }
+	}
+	colon = count == 1 ? strrchr(chosen, ':') : NULL;
+	parsed = colon && colon != chosen ? g_ascii_strtoll(colon + 1, &end, 10) : 0;
+	if (count != 1 || !colon || colon == chosen || !end || *end || parsed < 1 || parsed > 65535) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"Email from this business cannot be turned on from here yet.");
+		return FALSE;
+	}
+	*host = g_strndup(chosen, (gsize)(colon - chosen));
+	*port = parsed;
+	return TRUE;
+}
+
 static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *params, gpointer data)
 {
 	VentureWebServer *self = data;
@@ -64,6 +122,71 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 			node = venture_serializable_to_json(VENTURE_SERIALIZABLE(queued), FALSE);
 			return venture_web_json_response(node, 202);
 		}
+	} else if (!g_strcmp0(action, "connect")) {
+		static const gint roles[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+		g_autoptr(VentureOrganizationMailer) selector = NULL;
+		g_autoptr(VentureIntegrationConnection) connection = NULL;
+		g_autoptr(JsonObject) values = NULL;
+		g_autoptr(VentureEntity) business = NULL;
+		g_autofree gchar *host = NULL, *name = NULL;
+		const gchar *from;
+		gint64 relay_port = 0;
+		if (!mail_connect_exact(object)) {
+			venture_set_error_validation(&error, "mail", "Turn on email with the business and the address customers should see");
+			return venture_web_error_response(error);
+		}
+		from = venture_json_object_get_string(object, "from", "");
+		if (!mail_connect_address(from)) {
+			venture_set_error_validation(&error, "from", "Enter the email address customers should see");
+			return venture_web_error_response(error);
+		}
+		if (!venture_access_policy_has_organization_role(venture_database_get_access_policy(
+			venture_context_get_database(self->context)), principal, org, roles, G_N_ELEMENTS(roles))) {
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+				"Organization integration administration is required");
+			return venture_web_error_response(error);
+		}
+		if (!mail_connect_relay(venture_context_get_config(self->context), &host, &relay_port, &error))
+			return venture_web_error_response(error);
+		values = json_object_new();
+		json_object_set_string_member(values, "host", host);
+		json_object_set_int_member(values, "port", relay_port);
+		json_object_set_string_member(values, "tls", "none");
+		json_object_set_string_member(values, "auth", "none");
+		json_object_set_string_member(values, "username", "");
+		json_object_set_string_member(values, "password", "");
+		json_object_set_string_member(values, "from", from);
+		/* Customers see the business, never the tool's own "Venture" default. */
+		business = venture_database_get(venture_context_get_database(self->context), VENTURE_TYPE_ORGANIZATION, org, &error);
+		/* A missing row is NULL and no error. Returning that is a 500. */
+		if (!business || venture_entity_is_deleted(business)) {
+			if (!error)
+				g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Organization not found");
+			return venture_web_error_response(error);
+		}
+		g_object_get(business, "name", &name, NULL);
+		json_object_set_string_member(values, "from-name", name != NULL ? g_strstrip(name) : "");
+		selector = venture_organization_mailer_new(venture_context_get_database(self->context),
+			venture_context_get_config(self->context));
+		connection = venture_integration_service_find(venture_integration_service_get(
+			venture_context_get_database(self->context)), org, "smtp", &error);
+		if (error != NULL && !g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG))
+			return venture_web_error_response(error);
+		g_clear_error(&error);
+		{
+			gint64 current_id = connection != NULL ? venture_entity_get_id(VENTURE_ENTITY(connection)) : 0;
+			gint64 current_version = connection != NULL ? venture_entity_get_version(VENTURE_ENTITY(connection)) : 0;
+			g_clear_object(&connection);
+			connection = venture_organization_mailer_configure(selector, org, values,
+				current_version, current_id, &actor, &error);
+		}
+		if (!connection) return venture_web_error_response(error);
+		json_builder_begin_object(result);
+		json_builder_set_member_name(result, "connected");
+		json_builder_add_boolean_value(result, TRUE);
+		json_builder_end_object(result);
+		node = json_builder_get_root(result);
+		return venture_web_json_response(node, 200);
 	} else {
 		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Unknown mail action"); return venture_web_error_response(error);
 	}
