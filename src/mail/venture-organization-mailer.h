@@ -27,9 +27,11 @@ VentureOrganizationMailer *venture_organization_mailer_new(VentureDatabase *data
  * @actor: (nullable): audit actor; authority comes from the access scope
  * @error: (out) (optional): redacted refusal
  *
- * Requires an operator-allowed endpoint and TLS. Identity includes the host,
- * port, username and sender, so changing any requires explicit disconnect.
- * Password rotation preserves identity. No test message is sent here.
+ * Requires an operator-allowed endpoint and TLS. The account id stays when
+ * only the sender address or sender name changes. Host, port, TLS,
+ * authentication and username are the transport: changing any of them is
+ * refused until the account is disconnected. Password rotation preserves
+ * identity. No test message is sent here.
  *
  * Returns: (transfer full) (nullable): safe binding record
  */

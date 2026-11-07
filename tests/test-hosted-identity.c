@@ -517,6 +517,28 @@ static void test_self_link(Fixture *f, gconstpointer data)
 	seen = authority_of(f, token, business);
 	g_assert_cmpstr(seen, ==, "owner/manage");
 }
+/* A business editor may work in mail, but cannot change its sender. */
+static void test_mail_connect_editor_refused(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *cookie = NULL, *token = NULL, *payload = NULL, *body = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	gint64 business;
+	(void)data;
+	business = sign_up(f, "signup-mail-editor", "owner-mail@example.test", "kc-subject-mail-owner", "Mail Example", NULL);
+	member_with_password(f, "mail-editor", business, VENTURE_ORGANIZATION_ROLE_EDITOR);
+	token = token_for(f, "kc-subject-mail-editor");
+	g_assert_cmpuint(exchange(f, "POST", "/login", NULL, NULL, "application/x-www-form-urlencoded",
+		"username=mail-editor&password=member-test-password", NULL, &cookie), ==, 302);
+	payload = g_strdup_printf("{\"access_token\":\"%s\"}", token);
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/account/identity-link", cookie, NULL,
+		"application/json", payload, NULL, NULL), ==, 200);
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"from\":\"owner-mail@example.test\"}", business);
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/mail/connect", NULL, token,
+		"application/json", body, NULL, NULL), ==, 403);
+	connection = venture_integration_service_find(venture_integration_service_get(f->db), business, "smtp", &error);
+	g_assert_null(connection);
+}
 /* Deactivation and "sign out everywhere" end provider-token access at once. */
 static void test_revocation(Fixture *f, gconstpointer data)
 {
@@ -561,6 +583,7 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-identity/refusals", Fixture, NULL, setup, test_refusals, teardown);
 	g_test_add("/hosted-identity/untrusted", Fixture, "untrusted", setup, test_untrusted, teardown);
 	g_test_add("/hosted-identity/self-link", Fixture, NULL, setup, test_self_link, teardown);
+	g_test_add("/hosted-identity/mail-connect-editor-refused", Fixture, NULL, setup, test_mail_connect_editor_refused, teardown);
 	g_test_add("/hosted-identity/revocation", Fixture, NULL, setup, test_revocation, teardown);
 	g_test_add("/hosted-identity/browser-records", Fixture, "browser", setup, test_browser_records, teardown);
 	g_test_add("/hosted-identity/browser-refusals", Fixture, "browser", setup, test_browser_refusals, teardown);
