@@ -134,10 +134,10 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-07 against 94813b6e -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-07 against 25ccbb3e -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=94813b6e
+base=25ccbb3e
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -170,6 +170,9 @@ that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 the relay is the operator's single plaintext endpoint, and the sender name
 is the business (`mail.md`). A hosted workspace runs due sequence steps
 and then the outbox every five seconds.
+An owner or admin connects a business to Stripe without pasting keys:
+`POST /api/v1/organizations/ID/stripe/connect` (test mode only) and
+`POST /webhooks/stripe/connect` (`billing.md`).
 A sent quote's `POST /api/v1/quotes/compose` reply includes
 `acceptance_url` (`/q/<token>` against `server-base-url`) and still omits
 the acceptance token (`receivables.md`).
@@ -394,6 +397,7 @@ ids, notes) in words.
 | "Pause late fees for this customer" / "waive this fee" | `act company N pause_late_fees`, `act late_fee N waive reason=...` (stageable) | [billing.md](references/billing.md) |
 | "Set up a recurring invoice / bill" | a `recurring_schedule`, then `recurring run` | [billing.md](references/billing.md) |
 | "Take a card payment" | `invoice checkout ID`; `act invoice ID payment_link` (Stripe on) | [billing.md](references/billing.md) |
+| "Connect a business to Stripe" | `POST /api/v1/organizations/ID/stripe/connect` with four HTTPS URLs; owner or admin; test platform keys; a missing business is 404 | [billing.md](references/billing.md) |
 | "Enter and pay a supplier bill" | `create vendor_bill` + lines, `bill approve`, `bill pay` | [payables.md](references/payables.md) |
 | "Order and receive stock" | `purchase_order` + lines, `purchase approve\|send\|receive` | [payables.md](references/payables.md) |
 | "Import a bank statement and match it" | `bank import`, `bank match AUTO`, `reconcile suggest` | [payables.md](references/payables.md) |

@@ -5638,6 +5638,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	return response;
 }
 #include "stripe/venture-stripe-web.inc"
+#include "stripe/venture-stripe-connect-web.inc"
 #include "ai/venture-ai-settings-web.inc"
 #include "mail/venture-mail-settings-web.inc"
 #include "forge/venture-forge-settings-web.inc"
@@ -34837,6 +34838,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
+	venture_stripe_connect_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_webhook, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe/:connection_id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_webhook, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_settings, self);

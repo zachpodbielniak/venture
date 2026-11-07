@@ -228,6 +228,7 @@ screen's ordinary sync-and-import test.
 - [[file:evidence/125-connectors-demo.org][Private connector demonstration]] — explicit IMAP/CalDAV settings, delegation and import privacy
 - [[file:evidence/commerce-accounts-demonstration.org][Commerce account demonstration]] — account boundary, connection-scoped webhooks and reproduction steps
 - [[file:evidence/stripe-accounts-demonstration.org][Stripe account boundary demonstration]] — hosted links, disclosure and ACH-return guards, zero provider contact
+- [[file:evidence/stripe-connect-tests.org][Connect with Stripe test evidence]] — tests seen failing, then passing, for Standard-style connected accounts
 - [[file:evidence/calls-demonstration.org][Call logging and follow-up demonstration]] — logging, replay, lead-only history, report counts and recording-URL redaction
 - [[file:evidence/ocr-demonstration.org][Local OCR and capture review demonstration]] — bounds, provenance, batch isolation and retry/cancel/resume
 - [[file:evidence/backup-retention-demonstration.org][Local backup retention demonstration]] — archive catalog, explicit expiry plans, holds and crash reconciliation
