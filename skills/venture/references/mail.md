@@ -69,7 +69,9 @@ mail on with `POST /api/v1/mail/connect` and exactly
 `{"organization_id":N,"from":"owner@example.com"}`. The relay is the
 operator's single `mail.plaintext_endpoints` entry (also on the allowlist),
 never a field of the request. The response is `{"connected":true}`. The
-sender name is the business's name. The same call changes the address and
+sender name is the business's name. A name still stored as the tool
+default Venture is replaced at delivery by the organization's name; any
+other explicit name is kept. The same call changes the address and
 keeps the binding id. A different host, port, TLS mode or username is 409
 until that account is disconnected. Zero or several plaintext endpoints is
 409. An unknown business is 404. Password inputs are

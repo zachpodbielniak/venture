@@ -281,7 +281,9 @@ GMime encodes the attachment bytes; Bcc addresses stay envelope-only.
   that does not exist is 404. A binding whose transport is not this relay is
   409 until that account is disconnected. Repeating the request is safe; a
   new address on the same relay keeps the binding's id and updates the sender
-  for later mail. The sender name is the business's name.
+  for later mail. The sender name is the business's name. A name still stored
+  as the tool default Venture is not what the customer sees: delivery uses
+  the organization's name, and any other stored sender name is sent as stored.
 - =POST /api/v1/mail_messages/:id/retry=: deliberate retry, optional organization.
 - =POST /api/v1/invoices/:id/send=: atomic issue/enqueue/event, returns the message.
 - =POST /api/v1/mail/sync=: the inbound sweep; =organization_id= and =limit= (1–1000 accounts).
