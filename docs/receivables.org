@@ -151,6 +151,8 @@ balance. Invoice issues increase what the customer owes; payments and
 credit notes reduce it; refunds increase it. Allocations move credit to
 invoices without changing the customer's net balance. The service's
 =venture_settlement_service_customer_balance()= reads the same events.
+=venture_settlement_service_customer_balances()= gives the balance of many
+customers with one read per kind of event, counted by the same code.
 
 Reports read retained history, including soft-deleted rows. They select
 one legal entity and currency and never convert or combine currencies.

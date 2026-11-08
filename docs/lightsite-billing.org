@@ -194,6 +194,11 @@ Lightsite businesses are not listed.
 Above 2,000 customers the request is refused (422) rather than answering a
 list that silently stops.
 
+The overview reads each kind of record once for all customers, not once
+per customer. Two reads are still made per customer: the business's own
+Stripe binding, and the balance of each invoice that is past due. The
+test =overview-statements= keeps this cost from growing again.
+
 * Staging recipe
 
 Run against the local disposable instance with an administrator's =venturectl=
