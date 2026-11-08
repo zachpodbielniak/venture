@@ -315,8 +315,9 @@ test_missing_key(void)
 	g_setenv("VENTURE_STRIPE_SECRET_KEY", "offline", TRUE);
 }
 
-typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; gchar *checkout_suffix; gchar *invoice_suffix; const gchar *setup_customer; GHashTable *invoices, *invoice_keys;
-	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live, setup_open; guint setup_delay_us; gchar *last_invoice_id; guint invoice_count, payment_calls;
+typedef struct { gchar *reference; gchar *deadline; gchar *consent; } FakeSetup;
+typedef struct { GObject parent; guint calls; guint customers; guint checkouts; gchar *key; const gchar *account_id; const gchar *price_json; gint64 price_amount; gboolean checkout_drop; gboolean checkout_timeout; gboolean checkout_ach; VentureDatabase *reservation_database; VentureStripeService *early_service; gchar *deadline; gchar *setup_reference; gchar *setup_consent; gchar *checkout_suffix; gchar *invoice_suffix; const gchar *setup_customer; GHashTable *invoices, *invoice_keys, *setups_by_id;
+	gboolean hide_invoice_response, hide_pay_response, setup_bank, bad_mandate, setup_live, setup_open; guint setup_delay_us, setups; gchar *last_invoice_id; guint invoice_count, payment_calls;
 	gint64 refund_amount; guint refund_creates; gboolean drop_refund; gchar *refund_key, *refund_intent;
 	/* Connect (test-stripe-connect.inc): what each connected-account call carried. */
 	const gchar *connect_id; guint account_creates, account_reads, account_links; gboolean charges_enabled;
@@ -328,6 +329,15 @@ static void fake_iface(StripeTransportInterface *iface);
 G_DEFINE_TYPE_WITH_CODE(FakeTransport, fake_transport, G_TYPE_OBJECT,
 	G_IMPLEMENT_INTERFACE(STRIPE_TYPE_TRANSPORT, fake_iface))
 #include "test-stripe-provider.inc"
+static void
+fake_setup_free(gpointer data)
+{
+	FakeSetup *setup = data;
+	g_free(setup->reference);
+	g_free(setup->deadline);
+	g_free(setup->consent);
+	g_free(setup);
+}
 static StripeResponse *fake_connect_send(FakeTransport *self, const StripeHttpRequest *request);
 static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
@@ -392,10 +402,33 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 		g_assert_nonnull(strstr(request->body, "venture_company_uuid"));
 		return stripe_response_new(200, "{\"id\":\"cus_offline\",\"object\":\"customer\"}", NULL, NULL);
 	}
-	if (strstr(request->url, "/checkout/sessions/cs_setup?"))
+	/* Each new Setup (a new client reference) is a new session, method and
+	 * card: the first is a Visa ending 4242, a replacement a Mastercard
+	 * ending 4444. A retry of the same Setup is the same session. */
+	if (strstr(request->url, "/checkout/sessions/cs_setup"))
 	{
+		const gchar *mark = strstr(request->url, "cs_setup");
+		const gchar *end = mark;
+		g_autofree gchar *session_id = NULL;
+		FakeSetup *kept;
+		const gchar *reference, *deadline, *consent;
+		gboolean first;
+		g_autofree gchar *suffix = NULL;
+		g_autofree gchar *card = NULL;
+		g_autofree gchar *body = NULL;
+		while (*end && *end != '?' && *end != '&') end++;
+		session_id = g_strndup(mark, (gsize)(end - mark));
+		kept = self->setups_by_id ? g_hash_table_lookup(self->setups_by_id, session_id) : NULL;
+		reference = kept ? kept->reference : self->setup_reference;
+		deadline = kept ? kept->deadline : self->deadline;
+		consent = kept ? kept->consent : self->setup_consent;
+		first = !g_strcmp0(session_id, "cs_setup");
+		suffix = first ? g_strdup("") : g_strdup(session_id + strlen("cs_setup"));
+		card = first ?
+			g_strdup("\"card\":{\"brand\":\"visa\",\"last4\":\"4242\",\"exp_month\":8,\"exp_year\":2028}") :
+			g_strdup("\"card\":{\"brand\":\"mastercard\",\"last4\":\"4444\",\"exp_month\":12,\"exp_year\":2030}");
 		if (self->setup_delay_us) g_usleep(self->setup_delay_us);
-		g_autofree gchar *body = g_strdup_printf("{\"id\":\"cs_setup\",\"mode\":\"setup\",\"status\":\"%s\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\",%s},\"mandate\":%s}}", self->setup_open ? "open" : "complete", self->setup_customer ? self->setup_customer : "cus_offline", self->setup_reference, self->deadline, self->setup_consent, self->setup_live ? "true" : "false", self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? "\"us_bank_account\":{\"bank_name\":\"STRIPE TEST BANK\",\"last4\":\"6789\"}" : "\"card\":{\"brand\":\"visa\",\"last4\":\"4242\"}", self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
+		body = g_strdup_printf("{\"id\":\"%s\",\"mode\":\"setup\",\"status\":\"%s\",\"customer\":\"%s\",\"client_reference_id\":\"%s\",\"livemode\":false,\"expires_at\":%s,\"custom_text\":{\"submit\":{\"message\":\"%s\"}},\"setup_intent\":{\"id\":\"seti_offline%s\",\"livemode\":%s,\"status\":\"succeeded\",\"usage\":\"off_session\",\"customer\":\"cus_offline\",\"payment_method\":{\"id\":\"pm_offline%s\",\"livemode\":false,\"customer\":\"cus_offline\",\"type\":\"%s\",%s},\"mandate\":%s}}", session_id, self->setup_open ? "open" : "complete", self->setup_customer ? self->setup_customer : "cus_offline", reference, deadline, consent, suffix, self->setup_live ? "true" : "false", suffix, self->setup_bank ? "us_bank_account" : "card", self->setup_bank ? "\"us_bank_account\":{\"bank_name\":\"STRIPE TEST BANK\",\"last4\":\"6789\"}" : card, self->setup_bank ? (self->bad_mandate ? "{\"id\":\"mandate_offline\",\"status\":\"inactive\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}" : "{\"id\":\"mandate_offline\",\"status\":\"active\",\"type\":\"multi_use\",\"payment_method\":\"pm_offline\"}") : "null");
 		g_assert_cmpstr(request->method, ==, "GET");
 		g_assert_nonnull(strstr(request->url, "setup_intent.payment_method"));
 		return stripe_response_new(200, body, NULL, NULL);
@@ -403,14 +436,29 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	if (strstr(request->body, "mode=setup"))
 	{
 		g_autoptr(GHashTable) form = soup_form_decode(request->body);
-		g_free(self->setup_reference); self->setup_reference = g_strdup(g_hash_table_lookup(form, "client_reference_id"));
+		g_autofree gchar *created = NULL;
+		g_autofree gchar *session_id = NULL;
+		FakeSetup *kept;
+		const gchar *reference = g_hash_table_lookup(form, "client_reference_id");
+		if (self->setup_reference && g_strcmp0(self->setup_reference, reference)) self->setups++;
+		g_free(self->setup_reference); self->setup_reference = g_strdup(reference);
 		g_free(self->setup_consent); self->setup_consent = g_strdup(g_hash_table_lookup(form, "custom_text[submit][message]"));
 		g_free(self->deadline); self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
 		g_assert_cmpstr(request->api_version, ==, "2024-06-20");
 		g_assert_nonnull(strstr(request->body, "custom_text%5Bsubmit%5D%5Bmessage%5D="));
 		g_assert_nonnull(strstr(request->body, "customer=cus_offline"));
 		g_assert_null(strstr(request->body, "line_items"));
-		return stripe_response_new(200, "{\"id\":\"cs_setup\",\"object\":\"checkout.session\",\"url\":\"https://checkout.stripe.com/setup\"}", NULL, NULL);
+		session_id = self->setups ? g_strdup_printf("cs_setup%u", self->setups + 1) : g_strdup("cs_setup");
+		kept = g_new0(FakeSetup, 1);
+		kept->reference = g_strdup(self->setup_reference);
+		kept->deadline = g_strdup(self->deadline);
+		kept->consent = g_strdup(self->setup_consent);
+		if (!self->setups_by_id)
+			self->setups_by_id = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, fake_setup_free);
+		g_hash_table_replace(self->setups_by_id, g_strdup(session_id), kept);
+		if (!self->setups) return stripe_response_new(200, "{\"id\":\"cs_setup\",\"object\":\"checkout.session\",\"url\":\"https://checkout.stripe.com/setup\"}", NULL, NULL);
+		created = g_strdup_printf("{\"id\":\"%s\",\"object\":\"checkout.session\",\"url\":\"https://checkout.stripe.com/setup%u\"}", session_id, self->setups + 1);
+		return stripe_response_new(200, created, NULL, NULL);
 	}
 	g_assert_true(strstr(request->body, "price_offline") || strstr(request->body, "price_data"));
 	g_assert_null(strstr(request->body, "metadata"));
@@ -470,10 +518,22 @@ static void fake_finalize(GObject *object)
 	}
 	g_clear_pointer(&((FakeTransport *)object)->invoices, g_hash_table_unref);
 	g_clear_pointer(&((FakeTransport *)object)->invoice_keys, g_hash_table_unref);
+	g_clear_pointer(&((FakeTransport *)object)->setups_by_id, g_hash_table_unref);
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
 static void fake_transport_init(FakeTransport *self) { (void)self; }
+
+/* A hosted test shortens one session's stored expiry and still expects that
+ * session, not whichever Setup was created last, to verify on its own. */
+static void
+fake_setup_set_deadline(FakeTransport *self, const gchar *session_id, const gchar *deadline)
+{
+	FakeSetup *kept = self->setups_by_id ? g_hash_table_lookup(self->setups_by_id, session_id) : NULL;
+	g_assert_nonnull(kept);
+	g_free(kept->deadline);
+	kept->deadline = g_strdup(deadline);
+}
 
 static void
 environment(void)
@@ -1242,6 +1302,9 @@ main(int argc, char **argv)
 	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/hosted-saved-card", Fixture, NULL, set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-card-confirmed-on-return", Fixture, "confirm-on-return", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-change-card", Fixture, "change-card", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-change-card-on-return", Fixture, "change-card-return", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-change-card-retire", Fixture, "change-card-retire", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-expired-then-published", Fixture, "expired", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back", Fixture, "money-back", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-lost", Fixture, "money-back-lost", set_up, test_hosted_saved_card, tear_down);

@@ -423,6 +423,22 @@ gboolean venture_stripe_service_lose_chargeback(VentureStripeService *self, gint
 VentureStripeAuthorization *venture_stripe_service_authorize_subscription(VentureStripeService *self,
 	gint64 subscription_id, const VentureMoney *limit, const VentureActor *actor, GError **error);
 /**
+ * venture_stripe_service_replace_authorization:
+ * @self: organization provider
+ * @subscription_id: subscription with a verified saved method
+ * @actor: (nullable): finance audit actor
+ * @error: (out) (optional): refusal; %VENTURE_ERROR_CONFLICT with no verified method
+ *
+ * Starts a card change: a second permission on the same terms, disabled
+ * while its hosted Setup is open, so the method in use is still the one
+ * charged. Its verification (the signed webhook or a direct read) disables
+ * the old permission and enables the new one in one transaction. Asking
+ * again while the Setup is open answers the same session.
+ * Returns: (transfer full) (nullable): the pending change with its transient hosted URL
+ */
+VentureStripeAuthorization *venture_stripe_service_replace_authorization(VentureStripeService *self,
+	gint64 subscription_id, const VentureActor *actor, GError **error);
+/**
  * venture_stripe_service_verify_authorization:
  * @self: bound provider
  * @authorization_id: pending hosted permission

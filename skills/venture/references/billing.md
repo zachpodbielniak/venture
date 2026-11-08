@@ -225,7 +225,7 @@ page load is not payment evidence.
 
 Hosted self-serve enrollment is a trusted bearer call, not `billing start`
 and not `POST /lightsite/billing/subscriptions` (that binding still starts
-immediately). The routes are `enroll`, `prepay`, `setup`, `publish`,
+immediately). The routes are `enroll`, `prepay`, `setup`, `change-card`, `publish`,
 `first-charge`, `cancel`, `money-back`, `guarantee`, and GET `made-back` and
 `notifications` ([api-routes.md](api-routes.md)). Enrollment and prepay
 issue no invoice. Enrollment opens a thirty-day setup window (`expires_at`
@@ -255,7 +255,18 @@ first-charge returns it instead of charging again. Split shares are minor units 
 to Stripe charge units (ISK and UGX use two charge decimals). The
 guarantee is one capped credit, including zero. `stripe_prepayment` is
 service-owned, and checkout is refused while a non-failed prepayment owns
-the invoice. No route returns a card or a provider customer id. The
+the invoice. No route returns a card number or a provider customer id;
+the billing view's `card` is the card on file's brand, last four and
+expiry only (null members when never recorded, `card` null with no
+verified card). `change-card` (exactly `organization_id`) returns
+`awaiting_card` and a hosted Setup URL; the card in use is still charged
+until Stripe confirms the new one, which then replaces it (old permission
+`replaced`, new one `active`) and the notifications feed says
+`card_changed`, never a second `card_saved`. Asking again with at least
+half an hour left returns the same page; less than that retires it
+(`revoked`) and opens another, and the retired page changes nothing.
+Verification leaves one enabled permission. No saved card, a cancelled
+business and prepaid terms are 409. The
 contract, bodies and fixtures are `docs/hosted-billing.org`.
 
 **The owner's plan switch** is `POST /api/v1/lightsite/billing/switch-preview`

@@ -138,6 +138,12 @@ after `7fc9fd69` (2026-10-30). API composition files an explicit
 before the Setup read; the return page and the Stripe timer confirm the
 card (billing.md).
 
+The card on file (brand, last four, expiry in the hosted billing view) and
+the owner's card change (`POST /lightsite/billing/change-card`, a second
+Setup that replaces the card only once Stripe confirms it) were added after
+`ec60e31b` (2026-11-07, server version 0.9.0); see billing.md,
+api-routes.md and data-model-revenue.md.
+
 <!-- skill-baseline:start -- incrementally updated 2026-11-07 against bd183a15 -->
 ```bash
 # From a checkout: what changed since this skill was written?

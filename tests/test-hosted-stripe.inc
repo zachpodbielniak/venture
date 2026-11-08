@@ -79,6 +79,323 @@ money_back_after_payment(Fixture *f, FakeTransport *transport, gint64 business, 
 		!g_strcmp0(kind, "money-back-lost") ? "; a lost refund answer recovered from the provider" : "");
 }
 
+/* The card on file as the billing view shows it: brand, last four and
+ * expiry, and nothing else. */
+static void
+assert_view_card(Fixture *f, gint64 business, const gchar *brand, const gchar *last4, gint64 month, gint64 year)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) view = venture_lightsite_billing_view(f->database, f->organization_id, business, &error);
+	JsonObject *card;
+	g_assert_no_error(error); g_assert_nonnull(view);
+	card = json_object_get_object_member(json_node_get_object(view), "card");
+	g_assert_nonnull(card);
+	g_assert_cmpuint(json_object_get_size(card), ==, 4);
+	g_assert_cmpstr(json_object_get_string_member(card, "brand"), ==, brand);
+	g_assert_cmpstr(json_object_get_string_member(card, "last4"), ==, last4);
+	g_assert_cmpint(json_object_get_int_member(card, "exp_month"), ==, month);
+	g_assert_cmpint(json_object_get_int_member(card, "exp_year"), ==, year);
+}
+
+static guint
+hosted_notice_count(Fixture *f, gint64 business, const gchar *kind)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) answer = venture_lightsite_billing_notifications(f->database, f->organization_id, business, &error);
+	JsonArray *events;
+	guint i, count = 0;
+	g_assert_no_error(error); g_assert_nonnull(answer);
+	events = json_object_get_array_member(json_node_get_object(answer), "events");
+	for (i = 0; i < json_array_get_length(events); i++)
+		if (!g_strcmp0(json_object_get_string_member(json_array_get_object_element(events, i), "kind"), kind)) count++;
+	return count;
+}
+
+static VentureEntity *
+authorization_at(Fixture *f, guint index, gchar **status, gboolean *enabled)
+{
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+	g_autoptr(GPtrArray) found = rows(f, "stripe_authorization");
+	VentureEntity *row;
+	g_assert_cmpuint(found->len, >, index);
+	row = g_object_ref(g_ptr_array_index(found, index));
+	g_object_get(row, "status", status, "enabled", enabled, NULL);
+	return row;
+}
+
+/* The owner changes the card on file. The card in use stays in use until
+ * Stripe confirms the new one; then the new one is charged and shown, and
+ * the old one is kept as evidence but never charged again. If this breaks,
+ * an owner either cannot replace an expired card or is left with no card
+ * at all while the hosted page is open. */
+static void
+hosted_change_card(Fixture *f, VentureStripeService *provider, FakeTransport *transport, gint64 business, gboolean on_return)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) change = NULL, again = NULL, refused = NULL;
+	g_autoptr(VentureEntity) first = NULL, second = NULL;
+	g_autofree gchar *url = NULL, *status = NULL, *body = NULL, *sig = NULL, *detached = NULL, *detached_sig = NULL;
+	g_autoptr(GBytes) raw = NULL, raw_detached = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	gboolean enabled = FALSE;
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	change = venture_lightsite_billing_change_card(f->context, f->organization_id, business, &error);
+	g_assert_no_error(error); g_assert_nonnull(change);
+	g_assert_cmpuint(json_object_get_size(json_node_get_object(change)), ==, 2);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(change), "state"), ==, "awaiting_card");
+	url = g_strdup(json_object_get_string_member(json_node_get_object(change), "url"));
+	g_assert_true(g_str_has_prefix(url, "https://checkout.stripe.com/"));
+	/* Asking again while the page is open is the same page, not a second. */
+	again = venture_lightsite_billing_change_card(f->context, f->organization_id, business, &error);
+	g_assert_no_error(error);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(again), "url"), ==, url);
+	first = authorization_at(f, 0, &status, &enabled);
+	g_assert_cmpstr(status, ==, "active"); g_assert_true(enabled);
+	g_clear_pointer(&status, g_free);
+	second = authorization_at(f, 1, &status, &enabled);
+	g_assert_cmpstr(status, ==, "replacing"); g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(GPtrArray) all = rows(f, "stripe_authorization");
+		g_assert_cmpuint(all->len, ==, 2);
+	}
+	/* Until Stripe confirms, the old card is the card. */
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	/* The owner comes back with the page unfinished: Setup asks Stripe,
+	 * answers card_ready (there is a card) and changes nothing. */
+	transport->setup_open = TRUE;
+	{
+		g_autoptr(JsonNode) back = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(back), "state"), ==, "card_ready");
+	}
+	transport->setup_open = FALSE;
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	if (on_return) {
+		/* Back with the page finished, before Stripe's callback: the
+		 * answer comes from Stripe's record of the Setup, so the new card
+		 * is the card the moment the owner is back. */
+		g_autoptr(JsonNode) back = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(back), "state"), ==, "card_ready");
+		assert_view_card(f, business, "mastercard", "4444", 12, 2030);
+		g_test_message("Change card confirmed on return, with no callback");
+		return;
+	}
+	/* Stripe confirms with a signed event. It is answered before any
+	 * provider read; the Stripe timer's own step then reads the Setup. */
+	body = g_strdup_printf("{\"id\":\"evt_card_change\",\"type\":\"checkout.session.completed\",\"livemode\":false,\"data\":{\"object\":{\"id\":\"cs_setup2\",\"mode\":\"setup\",\"client_reference_id\":\"%s\",\"setup_intent\":\"seti_offline2\"}}}",
+		venture_entity_get_uuid(second));
+	sig = binding_signature(body, "whsec_original");
+	raw = g_bytes_new(body, strlen(body));
+	g_assert_true(venture_stripe_service_handle_webhook(provider, raw, sig, &error)); g_assert_no_error(error);
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		events = rows(f, "stripe_event");
+		g_assert_cmpuint(events->len, >=, 1);
+		g_assert_true(venture_stripe_service_finish_event(provider,
+			venture_entity_get_id(g_ptr_array_index(events, events->len - 1)), NULL, &error));
+		g_assert_no_error(error);
+	}
+	assert_view_card(f, business, "mastercard", "4444", 12, 2030);
+	g_clear_object(&first); g_clear_object(&second);
+	first = authorization_at(f, 0, &status, &enabled);
+	g_assert_cmpstr(status, ==, "replaced"); g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	second = authorization_at(f, 1, &status, &enabled);
+	g_assert_cmpstr(status, ==, "active"); g_assert_true(enabled);
+	g_clear_pointer(&status, g_free);
+	/* The owner's mail is "card changed", never a second "card saved"
+	 * (which promises the first payment). */
+	g_assert_cmpuint(hosted_notice_count(f, business, "card_saved"), ==, 1);
+	g_assert_cmpuint(hosted_notice_count(f, business, "card_changed"), ==, 1);
+	/* Setup still answers card_ready: the business has a card. */
+	{
+		g_autoptr(JsonNode) ready = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(ready), "state"), ==, "card_ready");
+	}
+	/* With no card on file there is nothing to change: Setup saves the first. */
+	detached = g_strdup("{\"id\":\"evt_card_detached\",\"type\":\"payment_method.detached\",\"livemode\":false,\"data\":{\"object\":{\"id\":\"pm_offline2\"}}}");
+	detached_sig = binding_signature(detached, "whsec_original");
+	raw_detached = g_bytes_new(detached, strlen(detached));
+	g_assert_true(venture_stripe_service_handle_webhook(provider, raw_detached, detached_sig, &error)); g_assert_no_error(error);
+	{
+		g_autoptr(JsonNode) view = venture_lightsite_billing_view(f->database, f->organization_id, business, &error);
+		g_assert_no_error(error);
+		g_assert_true(json_node_is_null(json_object_get_member(json_node_get_object(view), "card")));
+	}
+	refused = venture_lightsite_billing_change_card(f->context, f->organization_id, business, &error);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	(void)transport;
+	g_test_message("Change card: old card in use until Stripe confirms; then the new card is shown and charged, one card_changed notice");
+}
+
+static void
+finish_setup_event(Fixture *f, VentureStripeService *provider, const gchar *event_id,
+	const gchar *session, const gchar *reference)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *intent = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *sig = NULL;
+	g_autoptr(GBytes) raw = NULL;
+	g_autoptr(GPtrArray) events = NULL;
+	const gchar *suffix = (session && g_strcmp0(session, "cs_setup")) ? session + strlen("cs_setup") : "";
+	intent = g_strdup_printf("seti_offline%s", suffix);
+	body = g_strdup_printf("{\"id\":\"%s\",\"type\":\"checkout.session.completed\",\"livemode\":false,\"data\":{\"object\":{\"id\":\"%s\",\"mode\":\"setup\",\"client_reference_id\":\"%s\",\"setup_intent\":\"%s\"}}}",
+		event_id, session, reference, intent);
+	sig = binding_signature(body, "whsec_original");
+	raw = g_bytes_new(body, strlen(body));
+	g_assert_true(venture_stripe_service_handle_webhook(provider, raw, sig, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		events = rows(f, "stripe_event");
+		g_assert_cmpuint(events->len, >=, 1);
+		g_assert_true(venture_stripe_service_finish_event(provider,
+			venture_entity_get_id(g_ptr_array_index(events, events->len - 1)), NULL, &error));
+		g_assert_no_error(error);
+	}
+}
+
+static guint
+enabled_permissions(Fixture *f)
+{
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+	g_autoptr(GPtrArray) all = rows(f, "stripe_authorization");
+	guint i, n = 0;
+	for (i = 0; i < all->len; i++)
+	{
+		gboolean enabled = FALSE;
+		g_object_get(g_ptr_array_index(all, i), "enabled", &enabled, NULL);
+		if (enabled) n++;
+	}
+	return n;
+}
+
+/* A page with under half an hour left is retired, and a finished retired
+ * page must not become a second enabled card. Verification of a change
+ * that was left open on purpose still leaves exactly one enabled
+ * permission: collection charges whichever enabled row it sees last. */
+static void
+hosted_retire_dying_page(Fixture *f, VentureStripeService *provider, FakeTransport *transport, gint64 business)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) change = NULL, again = NULL, refused = NULL;
+	g_autoptr(VentureEntity) first = NULL, dying = NULL, opened = NULL;
+	g_autofree gchar *url = NULL, *url2 = NULL, *status = NULL, *session = NULL, *reference = NULL, *was = NULL;
+	gboolean enabled = FALSE;
+	gint64 dying_id = 0;
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(GPtrArray) subs = rows(f, "customer_subscription");
+		g_autofree gchar *sql = NULL;
+		VentureEntity *sub;
+		g_assert_cmpuint(subs->len, ==, 1);
+		sub = g_ptr_array_index(subs, 0);
+		g_object_get(sub, "external-id", &was, NULL);
+		sql = g_strdup_printf("UPDATE customer_subscriptions SET external_id='prepaid:retire' WHERE id=%" G_GINT64_FORMAT, venture_entity_get_id(sub));
+		g_assert_true(venture_database_execute(f->database, sql, NULL, &error));
+		g_assert_no_error(error);
+	}
+	refused = venture_lightsite_billing_change_card(f->context, f->organization_id, business, &error);
+	g_assert_null(refused);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(GPtrArray) subs = rows(f, "customer_subscription");
+		g_autofree gchar *sql = g_strdup_printf("UPDATE customer_subscriptions SET external_id='%s' WHERE id=%" G_GINT64_FORMAT,
+			was, venture_entity_get_id(g_ptr_array_index(subs, 0)));
+		g_assert_true(venture_database_execute(f->database, sql, NULL, &error));
+		g_assert_no_error(error);
+	}
+	change = venture_lightsite_billing_change_card(f->context, f->organization_id, business, &error);
+	g_assert_no_error(error);
+	url = g_strdup(json_object_get_string_member(json_node_get_object(change), "url"));
+	dying = authorization_at(f, 1, &status, &enabled);
+	g_assert_cmpstr(status, ==, "replacing");
+	g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	dying_id = venture_entity_get_id(dying);
+	g_object_get(dying, "session-id", &session, "uuid", &reference, NULL);
+	{
+		g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+		g_autoptr(GDateTime) soon = g_date_time_add_minutes(now, 10);
+		g_autofree gchar *stored = venture_time_to_string(soon);
+		g_autofree gchar *unix_deadline = g_strdup_printf("%" G_GINT64_FORMAT, g_date_time_to_unix(soon));
+		g_autofree gchar *sql = g_strdup_printf("UPDATE stripe_authorizations SET expires_at='%s' WHERE id=%" G_GINT64_FORMAT, stored, dying_id);
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		/* The service owns this row. A direct save is refused, and the
+		 * next read comes from SQL, so the deadline moves there. */
+		g_assert_true(venture_database_execute(f->database, sql, NULL, &error));
+		g_assert_no_error(error);
+		fake_setup_set_deadline(transport, session, unix_deadline);
+	}
+	again = venture_lightsite_billing_change_card(f->context, f->organization_id, business, &error);
+	g_assert_no_error(error);
+	url2 = g_strdup(json_object_get_string_member(json_node_get_object(again), "url"));
+	g_assert_cmpstr(url2, !=, url);
+	g_clear_object(&first);
+	g_clear_object(&dying);
+	first = authorization_at(f, 0, &status, &enabled);
+	g_assert_cmpstr(status, ==, "active");
+	g_assert_true(enabled);
+	g_clear_pointer(&status, g_free);
+	dying = authorization_at(f, 1, &status, &enabled);
+	g_assert_cmpstr(status, ==, "revoked");
+	g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	opened = authorization_at(f, 2, &status, &enabled);
+	g_assert_cmpstr(status, ==, "replacing");
+	g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	finish_setup_event(f, provider, "evt_card_retired", session, reference);
+	assert_view_card(f, business, "visa", "4242", 8, 2028);
+	g_clear_object(&dying);
+	dying = authorization_at(f, 1, &status, &enabled);
+	g_assert_cmpstr(status, ==, "revoked");
+	g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	/* Put that retired page back to an open change, which is the state a
+	 * second page used to leave behind. Verifying it, then the newer page,
+	 * must still end on one enabled card. */
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autofree gchar *sql = g_strdup_printf("UPDATE stripe_authorizations SET status='replacing' WHERE id=%" G_GINT64_FORMAT, dying_id);
+		g_assert_true(venture_database_execute(f->database, sql, NULL, &error));
+		g_assert_no_error(error);
+	}
+	finish_setup_event(f, provider, "evt_card_late", session, reference);
+	g_assert_cmpuint(enabled_permissions(f), ==, 1);
+	{
+		g_autofree gchar *newer_session = NULL, *newer_reference = NULL;
+		g_object_get(opened, "session-id", &newer_session, "uuid", &newer_reference, NULL);
+		finish_setup_event(f, provider, "evt_card_newer", newer_session, newer_reference);
+	}
+	g_assert_cmpuint(enabled_permissions(f), ==, 1);
+	g_clear_object(&first);
+	g_clear_object(&dying);
+	g_clear_object(&opened);
+	first = authorization_at(f, 0, &status, &enabled);
+	g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	dying = authorization_at(f, 1, &status, &enabled);
+	g_assert_false(enabled);
+	g_clear_pointer(&status, g_free);
+	opened = authorization_at(f, 2, &status, &enabled);
+	g_assert_cmpstr(status, ==, "active");
+	g_assert_true(enabled);
+	assert_view_card(f, business, "mastercard", "4444", 12, 2030);
+	g_test_message("Dying change page retired; a late confirmation cannot leave two cards enabled");
+}
+
 static void
 test_hosted_saved_card(Fixture *f, gconstpointer data)
 {
@@ -157,6 +474,14 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(setup), "state"), ==, "card_ready");
 	assert_hosted_notice(f, business, "card_saved");
+	if (data && !g_strcmp0(data, "change-card-retire")) {
+		hosted_retire_dying_page(f, provider, (FakeTransport *)transport, business);
+		return;
+	}
+	if (data && g_str_has_prefix(data, "change-card")) {
+		hosted_change_card(f, provider, (FakeTransport *)transport, business, !g_strcmp0(data, "change-card-return"));
+		return;
+	}
 	gboolean expired = data && !g_strcmp0(data, "expired");
 	if (expired) {
 		/* A saved card is not consent to charge before go-live. On day 31,

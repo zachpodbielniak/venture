@@ -92,6 +92,22 @@ JsonNode *venture_lightsite_billing_enroll(VentureDatabase *database, gint64 bil
 JsonNode *venture_lightsite_billing_setup(VentureContext *context, gint64 billing,
 	gint64 business, GError **error);
 /**
+ * venture_lightsite_billing_change_card:
+ * @context: hosted application context
+ * @billing: configured billing organization
+ * @business: customer business with a verified saved card
+ * @error: (out) (optional): refusal; %VENTURE_ERROR_CONFLICT without a saved card
+ *
+ * Starts a card change for the business's subscription. The card in use is
+ * still charged until Stripe confirms the new one; then the new one is the
+ * card on file. Asking again while the hosted page is open answers the
+ * same page.
+ *
+ * Returns: (transfer full) (nullable): state awaiting_card and a transient hosted URL
+ */
+JsonNode *venture_lightsite_billing_change_card(VentureContext *context, gint64 billing,
+	gint64 business, GError **error);
+/**
  * venture_lightsite_billing_first_charge:
  * @context: hosted application context
  * @billing: configured billing organization

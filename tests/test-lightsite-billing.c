@@ -474,8 +474,10 @@ test_subscribe_new(Fixture *f, gconstpointer data)
 	answer = subscribe_text(f, bea, "team", "bill:bea:1", 201);
 	result = parse(answer);
 	view = json_node_get_object(result);
-	g_assert_cmpuint(json_object_get_size(view), ==, 9);
+	g_assert_cmpuint(json_object_get_size(view), ==, 10);
 	g_assert_cmpint(json_object_get_int_member(view, "organization_id"), ==, bea);
+	/* No card was ever saved: the card on file is null, never a guess. */
+	g_assert_true(json_node_is_null(json_object_get_member(view, "card")));
 	assert_plan(view, "team", "Plan A", "10.00");
 	g_assert_cmpstr(json_object_get_string_member(view, "state"), ==, "active");
 	g_assert_nonnull(json_object_get_string_member(view, "current_period_end"));
@@ -759,7 +761,7 @@ test_staff_list(Fixture *f, gconstpointer data)
 	 * yet, nothing owed. */
 	dot_view = view_text(f, dot);
 	none = parse(dot_view);
-	g_assert_cmpuint(json_object_get_size(json_node_get_object(none)), ==, 9);
+	g_assert_cmpuint(json_object_get_size(json_node_get_object(none)), ==, 10);
 	g_assert_true(json_object_get_null_member(json_node_get_object(none), "plan"));
 	g_assert_true(json_object_get_null_member(json_node_get_object(none), "last_invoice"));
 	g_assert_true(json_object_get_null_member(json_node_get_object(none), "current_period_end"));

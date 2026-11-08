@@ -176,7 +176,15 @@ static const VentureFieldDecl authorization_fields[] = {
 	VENTURE_FIELD("ach-enabled", "Authorized bank option", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("url", "Copy authorization link", "One-time action output; never persisted", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT),
 	VENTURE_FIELD("method-label", "Collects from", "Which saved method is charged, such as card ending 4242; from verified provider evidence",
-		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("method-brand", "Card brand", "Such as visa; from verified provider evidence, empty for a bank account",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("method-last4", "Last four digits", "From verified provider evidence; never more of the number",
+		VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("method-exp-month", "Card expiry month", "1-12; 0 when not known", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("method-exp-year", "Card expiry year", "0 when not known", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("replaces-id", "Replaces", "The saved method this Setup replaces once verified; 0 for a first Setup",
+		VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripeAuthorization, venture_stripe_authorization, authorization_fields,
 	venture_entity_class_set_unique_partition(VENTURE_ENTITY_CLASS(klass), "connection-id");

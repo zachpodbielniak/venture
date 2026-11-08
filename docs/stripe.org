@@ -324,6 +324,14 @@ engine. No internal entitlement consumer or Lightsite provisioning is implemente
    after three days, leaving the event an exception. =POST
    /api/v1/lightsite/billing/setup= does that read when the owner returns, so a
    finished Setup is a saved card without waiting for the callback.
+   A card change (=venture_stripe_service_replace_authorization()=, used by
+   =/api/v1/lightsite/billing/change-card=) is a second permission with
+   status =replacing=, disabled until the same verification enables it and
+   marks every other enabled permission on that subscription =replaced=.
+   Asking again with at least half an hour left returns the same page; less
+   than that retires the open page (=revoked=) and opens another, and the
+   retired page changes nothing. Verification also keeps the card's
+   brand, last four and expiry, and nothing else of the method.
 3. The running server examines one due authorization every five seconds on its
    main context. A Setup event still waiting on its provider read goes first,
    one event a tick, and a collection check waits for the next tick. Each claimed permission gets a durable next-check time at least

@@ -169,6 +169,7 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /organizations/:id/invitations/:invitation/revoke` | link never accepts; unsent mail cancelled | -- |
 | `POST /lightsite/billing/prepay` | frozen 24-month prepaid terms, no invoice until publication | -- |
 | `POST /lightsite/billing/setup` | hosted saved-method setup, no charge | -- |
+| `POST /lightsite/billing/change-card` | hosted Setup for a new card; the old card is charged until Stripe confirms the new one | -- |
 | `POST /lightsite/billing/publish` | record first go-live (`published_at` optional, stored once as `go_live_at`); may start the first charge | -- |
 | `POST /lightsite/billing/first-charge` | first collection only at publication; unpublished and past `expires_at` is `expired` with no invoice | -- |
 | `POST /lightsite/billing/cancel` | unpublished and uninvoiced cancels free immediately; otherwise period end | -- |
@@ -176,7 +177,7 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /lightsite/billing/guarantee` | one-time capped account credit from a retained measurement | -- |
 | `GET /lightsite/billing/:organization_id/made-back` | won, invoiced and overlap since go-live | -- |
 | `GET /lightsite/billing/:organization_id/notifications` | owner notification facts, no payment credentials | -- |
-| `GET /lightsite/billing/:organization_id` | business plan, balance and own Stripe status | -- |
+| `GET /lightsite/billing/:organization_id` | business plan, balance, own Stripe status and card on file (brand, last four, expiry) | -- |
 | `GET /lightsite/billing` | staff billing overview | -- |
 | `POST /lightsite/schedule-tokens/:id/rotate` | replace that business's `lightsite:schedule` token; secret once | -- |
 | `POST /lightsite/schedule-tokens/:id/revoke` | deactivate that business's schedule tokens | -- |
