@@ -244,22 +244,23 @@ monthly_price(VentureDatabase *database, gint64 billing, const gchar *code, GErr
 	return g_object_ref(chosen);
 }
 
-static gboolean
-stripe_connected(VentureDatabase *database, gint64 organization_id, gboolean *connected, GError **error)
+/* Which of @businesses connected their own Stripe. Unconfigured, ambiguous
+ * or the integrations module off all mean "not connected"; only a storage
+ * failure is a failure. */
+static GHashTable *
+stripe_connected(VentureDatabase *database, const gint64 *businesses, guint n, GError **error)
 {
 	g_autoptr(GError) local = NULL;
-	g_autoptr(VentureIntegrationConnection) connection = venture_integration_service_find(
-		venture_integration_service_get(database), organization_id, "stripe", &local);
-	*connected = connection != NULL;
-	/* Unconfigured, ambiguous or the integrations module off all mean "not
-	 * connected"; only a storage failure is a failure. */
-	if (!connection && local && !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_CONFIG) &&
+	GHashTable *connected = venture_integration_service_find_each(venture_integration_service_get(database),
+		businesses, n, "stripe", &local);
+	if (connected) return connected;
+	if (!g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_CONFIG) &&
 	    !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED) &&
 	    !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_VALIDATION)) {
 		g_propagate_error(error, g_steal_pointer(&local));
-		return FALSE;
+		return NULL;
 	}
-	return TRUE;
+	return g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_object_unref);
 }
 
 /* The records the views of some businesses are built from. Each kind is
@@ -273,6 +274,7 @@ typedef struct {
 	GHashTable *invoices;      /* company id -> its invoices, id ascending */
 	GHashTable *issued;        /* invoice id -> its issued total; NULL: no amount */
 	GHashTable *cards;         /* subscription id -> its enabled, active permission */
+	GHashTable *connected;     /* business id -> its own Stripe binding */
 } Reads;
 
 static GHashTable *
@@ -309,6 +311,7 @@ reads_clear(Reads *reads)
 	g_clear_pointer(&reads->invoices, g_hash_table_unref);
 	g_clear_pointer(&reads->issued, g_hash_table_unref);
 	g_clear_pointer(&reads->cards, g_hash_table_unref);
+	g_clear_pointer(&reads->connected, g_hash_table_unref);
 }
 
 static void
@@ -422,9 +425,11 @@ read_cards(VentureDatabase *database, gint64 billing, GPtrArray *ids, Reads *rea
 	return TRUE;
 }
 
-/* Everything else the views of @companies need, after their subscriptions. */
+/* Everything else the views need, after the subscriptions: of @companies,
+ * and of @businesses (one per view, with or without a company). */
 static gboolean
-read_views(VentureDatabase *database, gint64 billing, GPtrArray *companies, Reads *reads, GError **error)
+read_views(VentureDatabase *database, gint64 billing, GPtrArray *companies, const gint64 *businesses, guint n,
+	Reads *reads, GError **error)
 {
 	g_autoptr(GHashTable) currencies = by_id_new(g_free);
 	g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
@@ -462,7 +467,10 @@ read_views(VentureDatabase *database, gint64 billing, GPtrArray *companies, Read
 		if (invoices && invoices->len)
 			operand_add(latest, venture_entity_get_id(g_ptr_array_index(invoices, invoices->len - 1)));
 	}
-	return read_issued(database, latest, reads, error) && read_cards(database, billing, subscriptions, reads, error);
+	if (!read_issued(database, latest, reads, error) || !read_cards(database, billing, subscriptions, reads, error))
+		return FALSE;
+	reads->connected = stripe_connected(database, businesses, n, error);
+	return reads->connected != NULL;
 }
 
 /* The invoices half of the view: whether any is overdue -- open and a
@@ -574,10 +582,7 @@ view_from(VentureDatabase *database, gint64 billing, gint64 organization_id, Ven
 		if (!invoice_facts(database, reads, venture_entity_get_id(company), &overdue, &last, error)) return NULL;
 	} else
 		owed = nothing = venture_money_new_zero(currency);
-	if (!stripe_connected(database, organization_id, &connected, error)) {
-		if (last) json_node_unref(last);
-		return NULL;
-	}
+	connected = by_id(reads->connected, organization_id) != NULL;
 	object = json_object_new();
 	json_object_set_int_member(object, "organization_id", organization_id);
 	if (plan) {
@@ -621,7 +626,7 @@ build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, Ve
 	JsonNode *view = NULL;
 	if (company) g_ptr_array_add(companies, company);
 	if (read_subscriptions(database, billing, companies, &reads, error) &&
-	    read_views(database, billing, companies, &reads, error))
+	    read_views(database, billing, companies, &organization_id, 1, &reads, error))
 		view = view_from(database, billing, organization_id, company, &reads, error);
 	reads_clear(&reads);
 	return view;
@@ -736,7 +741,8 @@ overview_impl(VentureDatabase *database, gint64 billing_organization_id, GError 
 		g_ptr_array_add(chosen, company);
 		g_array_append_val(businesses, organization_id);
 	}
-	ok = ok && read_views(database, billing_organization_id, chosen, &reads, error);
+	ok = ok && read_views(database, billing_organization_id, chosen, (const gint64 *)(gpointer)businesses->data,
+		businesses->len, &reads, error);
 	for (i = 0; ok && i < chosen->len; i++) {
 		JsonNode *view = view_from(database, billing_organization_id, g_array_index(businesses, gint64, i),
 			g_ptr_array_index(chosen, i), &reads, error);

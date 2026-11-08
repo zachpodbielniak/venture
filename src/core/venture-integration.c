@@ -278,6 +278,45 @@ venture_integration_service_find(VentureIntegrationService *self, gint64 organiz
 	return g_object_ref(g_ptr_array_index(rows, 0));
 }
 
+GHashTable *
+venture_integration_service_find_each(VentureIntegrationService *self, const gint64 *organization_ids,
+	guint n_organizations, const gchar *provider, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free), rows = NULL;
+	g_autoptr(GHashTable) counts = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	g_autoptr(GHashTable) found = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_object_unref);
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_INTEGRATION_SERVICE(self), NULL);
+	if (!self->database) { refuse(error, VENTURE_ERROR_FAILED, "Integration repository is no longer available"); return NULL; }
+	for (i = 0; i < n_organizations; i++)
+		if (organization_ids[i] <= 0) { refuse(error, VENTURE_ERROR_VALIDATION, "Explicit organization and provider are required"); return NULL; }
+	if (!identifier(provider))
+	{ refuse(error, VENTURE_ERROR_VALIDATION, "Explicit organization and provider are required"); return NULL; }
+	if (!n_organizations) return g_steal_pointer(&found);
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "integration_connection") == G_TYPE_INVALID)
+	{ refuse(error, VENTURE_ERROR_PERMISSION_DENIED, "Integrations module is disabled"); return NULL; }
+	for (i = 0; i < n_organizations; i++) g_ptr_array_add(ids, g_strdup_printf("%" G_GINT64_FORMAT, organization_ids[i]));
+	/* active_rows for every organization at once: the same filters, no limit,
+	 * so an organization with two bindings is seen as ambiguous here too. */
+	query = venture_query_new(VENTURE_TYPE_INTEGRATION_CONNECTION);
+	if (!venture_query_add_filter(query, "organization-id", VENTURE_FILTER_OP_IN, ids, error) ||
+		!venture_query_add_filter_string(query, "provider", VENTURE_FILTER_OP_EQ, provider, error) ||
+		!venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, 1, error)) return NULL;
+	rows = venture_database_find(self->database, query, error);
+	if (!rows) return NULL;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		gint64 organization = venture_entity_get_organization_id(row);
+		guint seen = GPOINTER_TO_UINT(g_hash_table_lookup(counts, &organization)) + 1;
+		g_hash_table_insert(counts, g_memdup2(&organization, sizeof organization), GUINT_TO_POINTER(seen));
+		if (seen == 1) g_hash_table_insert(found, g_memdup2(&organization, sizeof organization), g_object_ref(row));
+		else g_hash_table_remove(found, &organization);
+	}
+	return g_steal_pointer(&found);
+}
+
 VentureIntegrationConnection *
 venture_integration_service_configure(VentureIntegrationService *self, gint64 organization_id,
 	const gchar *provider, const gchar *account_id, const gchar *environment, JsonNode *settings,

@@ -1124,7 +1124,7 @@ overview_statements(Fixture *f)
 }
 
 /* The overview runs on the server's one loop, so its cost must not grow
- * by a dozen statements per customer: it reads each kind of record once. */
+ * with the customers: it reads each kind of record once. */
 static void
 test_overview_statements(Fixture *f, gconstpointer data)
 {
@@ -1139,9 +1139,9 @@ test_overview_statements(Fixture *f, gconstpointer data)
 	customer(f, "fox", "starter", FALSE, FALSE);
 	six = overview_statements(f);
 	g_test_message("overview statements: %" G_GUINT64_FORMAT " for 2 customers, %" G_GUINT64_FORMAT " for 6", two, six);
-	/* Only the business's own Stripe binding, and the balance of an
-	 * overdue invoice, are still read one customer at a time. */
-	g_assert_cmpuint(six - two, <=, 2 * 4);
+	/* Only the balance of an invoice past due is still read one invoice
+	 * at a time (two statements): dan's is the one among the four added. */
+	g_assert_cmpuint(six - two, <=, 4);
 }
 
 int

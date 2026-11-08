@@ -113,6 +113,23 @@ VentureIntegrationConnection *venture_integration_service_configure_for_owner(Ve
 VentureIntegrationConnection *venture_integration_service_find(VentureIntegrationService *self,
 	gint64 organization_id, const gchar *provider, GError **error);
 /**
+ * venture_integration_service_find_each:
+ * @self: service
+ * @organization_ids: (array length=n_organizations): verified organizations
+ * @n_organizations: how many
+ * @provider: provider identifier
+ * @error: (out) (optional): unavailable or storage failure
+ *
+ * The active binding of each organization, in one read: an organization is
+ * in the result exactly when venture_integration_service_find() would
+ * answer it a binding.
+ *
+ * Returns: (transfer full) (nullable) (element-type gint64 VentureIntegrationConnection):
+ *   organization id to its binding, or NULL on error
+ */
+GHashTable *venture_integration_service_find_each(VentureIntegrationService *self,
+	const gint64 *organization_ids, guint n_organizations, const gchar *provider, GError **error);
+/**
  * venture_integration_service_resolve:
  * @self: service
  * @organization_id: expected organization
