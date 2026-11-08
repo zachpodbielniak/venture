@@ -35,7 +35,7 @@
 # ---------------------------------------------------------------------------
 
 VERSION_MAJOR := 0
-VERSION_MINOR := 8
+VERSION_MINOR := 9
 VERSION_MICRO := 0
 VERSION := $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_MICRO)
 
