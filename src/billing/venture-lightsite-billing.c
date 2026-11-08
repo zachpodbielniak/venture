@@ -351,9 +351,15 @@ card_on_file(VentureDatabase *database, gint64 billing, VentureEntity *subscript
 		return TRUE;
 	query = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
 	venture_query_set_organization(query, billing);
-	venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(subscription), NULL);
-	venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, NULL);
-	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", NULL);
+	/* Newest enabled permission. Collection walks every row and keeps the
+	 * last; an unordered read here can show a card the next charge does
+	 * not use. One row is the view. */
+	if (!venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(subscription), error) ||
+		!venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, error) ||
+		!venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", error) ||
+		!venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, error))
+		return FALSE;
+	venture_query_set_limit(query, 1);
 	rows = find(database, query, error);
 	if (!rows) return FALSE;
 	if (!rows->len) return TRUE;

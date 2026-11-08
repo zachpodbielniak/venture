@@ -262,7 +262,11 @@ verified card). `change-card` (exactly `organization_id`) returns
 `awaiting_card` and a hosted Setup URL; the card in use is still charged
 until Stripe confirms the new one, which then replaces it (old permission
 `replaced`, new one `active`) and the notifications feed says
-`card_changed`, never a second `card_saved`. No saved card is 409. The
+`card_changed`, never a second `card_saved`. Asking again with at least
+half an hour left returns the same page; less than that retires it
+(`revoked`) and opens another, and the retired page changes nothing.
+Verification leaves one enabled permission. No saved card, a cancelled
+business and prepaid terms are 409. The
 contract, bodies and fixtures are `docs/hosted-billing.org`.
 
 **The owner's plan switch** is `POST /api/v1/lightsite/billing/switch-preview`

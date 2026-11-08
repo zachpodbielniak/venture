@@ -153,7 +153,8 @@ service writes every layer row),
   `stripe_authorization` (customer's recurring permission; *actions*
   `verify`, `revoke_authorization`, `collect_due (0)`; status `pending`,
   `active`, `revoked`, or for a card change `replacing` (disabled until
-  verified) then the old one `replaced`; `method-brand`, `method-last4`,
+  verified) then every other enabled permission `replaced` (a page with
+  under half an hour left is `revoked` instead of handed back); `method-brand`, `method-last4`,
   `method-exp-month`, `method-exp-year` from verified evidence),
   `stripe_prepayment` (service-owned 24-month collection journal:
   `payment_path` single/installments/ach/wire/split, `state`, sensitive
