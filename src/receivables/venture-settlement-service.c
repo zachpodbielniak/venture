@@ -206,9 +206,10 @@ venture_settlement_service_get_state_machine(VentureSettlementService *self)
 	return self->machine;
 }
 
+/* Rows of @type whose @field is @id, or one of @ids when @ids is given. */
 static GPtrArray *
-find_rows(VentureSettlementService *self, GType type, const gchar *field,
-	gint64 id, GDateTime *cutoff, GError **error)
+find_rows_among(VentureSettlementService *self, GType type, const gchar *field,
+	gint64 id, GPtrArray *ids, GDateTime *cutoff, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(VentureEntity) prototype = g_object_new(type, NULL);
@@ -228,7 +229,9 @@ find_rows(VentureSettlementService *self, GType type, const gchar *field,
 	query = venture_query_new(type);
 	venture_query_set_limit(query, 0);
 	venture_query_set_include_deleted(query, TRUE);
-	if (field != NULL && !venture_query_add_filter_int(query, field, VENTURE_FILTER_OP_EQ, id, error))
+	if (ids != NULL && !venture_query_add_filter(query, field, VENTURE_FILTER_OP_IN, ids, error))
+		return NULL;
+	if (ids == NULL && field != NULL && !venture_query_add_filter_int(query, field, VENTURE_FILTER_OP_EQ, id, error))
 		return NULL;
 	if (cutoff != NULL)
 	{
@@ -239,6 +242,13 @@ find_rows(VentureSettlementService *self, GType type, const gchar *field,
 			return NULL;
 	}
 	return venture_database_find(self->database, query, error);
+}
+
+static GPtrArray *
+find_rows(VentureSettlementService *self, GType type, const gchar *field,
+	gint64 id, GDateTime *cutoff, GError **error)
+{
+	return find_rows_among(self, type, field, id, NULL, cutoff, error);
 }
 
 static gint64
@@ -2622,36 +2632,39 @@ venture_settlement_service_settle_invoice(VentureSettlementService *self,
 		venture_accounting_operation_finish(operation, error);
 }
 
-VentureMoney *
-venture_settlement_service_customer_balance(VentureSettlementService *self,
-	gint64 organization_id, gint64 customer_id, GDateTime *as_of,
-	const gchar *currency, GError **error)
-{
-	GType types[4];
-	g_autoptr(VentureMoney) total = NULL;
-	guint t;
+/* The kinds of record that move a customer's balance, in counting order. */
+#define BALANCE_KINDS 4
 
+static void
+balance_types(GType types[BALANCE_KINDS])
+{
 	types[0] = VENTURE_TYPE_INVOICE_EVENT;
 	types[1] = VENTURE_TYPE_PAYMENT;
 	types[2] = VENTURE_TYPE_CUSTOMER_CREDIT;
 	types[3] = VENTURE_TYPE_REFUND;
+}
+
+/* One customer's balance in @currency from its rows: @records[t] holds
+ * the rows of the t-th kind of balance_types(). */
+static VentureMoney *
+balance_of(gint64 organization_id, GPtrArray *const records[BALANCE_KINDS], const gchar *currency, GError **error)
+{
+	g_autoptr(VentureMoney) total = NULL;
+	guint t;
+
 	total = venture_money_new_zero(currency);
-	for (t = 0; t < G_N_ELEMENTS(types); t++)
+	for (t = 0; t < BALANCE_KINDS; t++)
 	{
-		g_autoptr(GPtrArray) records = NULL;
 		guint i;
 
-		records = find_rows(self, types[t], "customer-id", customer_id, as_of, error);
-		if (records == NULL)
-			return NULL;
-		for (i = 0; i < records->len; i++)
+		for (i = 0; i < records[t]->len; i++)
 		{
 			VentureEntity *record;
 			g_autoptr(VentureMoney) amount = NULL;
 			g_autofree gchar *kind = NULL;
 			gboolean subtract;
 
-			record = g_ptr_array_index(records, i);
+			record = g_ptr_array_index(records[t], i);
 			if (venture_entity_get_organization_id(record) != organization_id)
 				continue;
 			if (t == 2 && get_id(record, "payment-id") != 0)
@@ -2677,6 +2690,95 @@ venture_settlement_service_customer_balance(VentureSettlementService *self,
 		}
 	}
 	return g_steal_pointer(&total);
+}
+
+VentureMoney *
+venture_settlement_service_customer_balance(VentureSettlementService *self,
+	gint64 organization_id, gint64 customer_id, GDateTime *as_of,
+	const gchar *currency, GError **error)
+{
+	GType types[BALANCE_KINDS];
+	GPtrArray *records[BALANCE_KINDS] = { NULL };
+	VentureMoney *total = NULL;
+	guint t;
+
+	balance_types(types);
+	for (t = 0; t < BALANCE_KINDS; t++)
+		if ((records[t] = find_rows(self, types[t], "customer-id", customer_id, as_of, error)) == NULL)
+			break;
+	if (t == BALANCE_KINDS)
+		total = balance_of(organization_id, records, currency, error);
+	for (t = 0; t < BALANCE_KINDS; t++)
+		if (records[t] != NULL)
+			g_ptr_array_unref(records[t]);
+	return total;
+}
+
+GHashTable *
+venture_settlement_service_customer_balances(VentureSettlementService *self,
+	gint64 organization_id, GHashTable *currencies, GError **error)
+{
+	GType types[BALANCE_KINDS];
+	GHashTable *groups[BALANCE_KINDS] = { NULL };
+	g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GPtrArray) none = g_ptr_array_new();
+	g_autoptr(GHashTable) balances = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
+		(GDestroyNotify)venture_money_free);
+	GHashTableIter iter;
+	gpointer key, value;
+	gboolean ok = TRUE;
+	guint t, i;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), NULL);
+	g_return_val_if_fail(currencies != NULL, NULL);
+	if (g_hash_table_size(currencies) == 0)
+		return g_steal_pointer(&balances);
+	balance_types(types);
+	g_hash_table_iter_init(&iter, currencies);
+	while (g_hash_table_iter_next(&iter, &key, NULL))
+		g_ptr_array_add(ids, g_strdup_printf("%" G_GINT64_FORMAT, *(gint64 *)key));
+	/* One statement per kind for every customer, grouped by customer. */
+	for (t = 0; ok && t < BALANCE_KINDS; t++)
+	{
+		g_autoptr(GPtrArray) rows = find_rows_among(self, types[t], "customer-id", 0, ids, NULL, error);
+
+		groups[t] = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
+		ok = rows != NULL;
+		for (i = 0; ok && i < rows->len; i++)
+		{
+			VentureEntity *record = g_ptr_array_index(rows, i);
+			gint64 customer = get_id(record, "customer-id");
+			GPtrArray *group = g_hash_table_lookup(groups[t], &customer);
+
+			if (group == NULL)
+			{
+				group = g_ptr_array_new_with_free_func(g_object_unref);
+				g_hash_table_insert(groups[t], g_memdup2(&customer, sizeof customer), group);
+			}
+			g_ptr_array_add(group, g_object_ref(record));
+		}
+	}
+	g_hash_table_iter_init(&iter, currencies);
+	while (ok && g_hash_table_iter_next(&iter, &key, &value))
+	{
+		GPtrArray *records[BALANCE_KINDS];
+		VentureMoney *total;
+
+		for (t = 0; t < BALANCE_KINDS; t++)
+		{
+			records[t] = g_hash_table_lookup(groups[t], key);
+			if (records[t] == NULL)
+				records[t] = none;
+		}
+		total = balance_of(organization_id, records, value, error);
+		ok = total != NULL;
+		if (ok)
+			g_hash_table_insert(balances, g_memdup2(key, sizeof(gint64)), total);
+	}
+	for (t = 0; t < BALANCE_KINDS; t++)
+		if (groups[t] != NULL)
+			g_hash_table_unref(groups[t]);
+	return ok ? g_steal_pointer(&balances) : NULL;
 }
 
 static gboolean
