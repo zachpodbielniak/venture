@@ -172,7 +172,8 @@ Public booking limits use a relay's last `X-Forwarded-For` hop only when
 that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 `POST /api/v1/mail/connect` turns a business's mail on from one address;
 the relay is the operator's single plaintext endpoint, and the sender name
-is the business (`mail.md`). A hosted workspace runs due sequence steps
+is the business (`mail.md`). A stored tool default of Venture is replaced
+at delivery by the organization's name; any other explicit name is kept. A hosted workspace runs due sequence steps
 and then the outbox every five seconds.
 An owner or admin connects a business to Stripe without pasting keys:
 `POST /api/v1/organizations/ID/stripe/connect` (test or live; `sk_` or `rk_`
