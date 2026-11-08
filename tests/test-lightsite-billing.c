@@ -353,9 +353,10 @@ setup(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) home = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", "the operator", "active", TRUE,
 		"is-default", TRUE, NULL);
 	gboolean ok;
-	(void)data;
 	f->db = venture_test_accounting_database(&error); g_assert_no_error(error);
 	f->config = venture_config_new();
+	/* data "stripe": the operator collects through Stripe, so saved cards show. */
+	if (g_strcmp0(data, "stripe") == 0) g_object_set(f->config, "stripe-enabled", TRUE, NULL);
 	f->directory = g_dir_make_tmp("venture-lightsite-billing-XXXXXX", &error); g_assert_no_error(error);
 	f->session = soup_session_new_with_options("timeout", 10, NULL);
 	g_object_set(f->config, "hosted-enabled", TRUE, "hosted-workspace-id", WORKSPACE, "hosted-origin", ORIGIN,
@@ -378,6 +379,13 @@ setup(Fixture *f, gconstpointer data)
 	f->admin_id = venture_entity_get_id(g_ptr_array_index(users, 0));
 	f->admin_secret = mint(f->db, f->admin_id, VENTURE_USER_ROLE_EDITOR);
 	f->context = venture_context_new(f->config, f->db);
+	/* An earlier case in this process left the Stripe module hidden, so the
+	 * first migration skipped its tables; the context has applied the
+	 * config now. */
+	if (g_strcmp0(data, "stripe") == 0) {
+		ok = venture_database_migrate(f->db, venture_entity_registry_get_default(), &error);
+		g_assert_no_error(error); g_assert_true(ok);
+	}
 	f->server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
 	g_assert_true(venture_web_server_start(f->server, &error)); g_assert_no_error(error);
 }
@@ -980,6 +988,162 @@ test_receipts_guarded(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(count_in(f, "lightsite_billing_receipt", 0), ==, 1);
 }
 
+/* A business on @plan; with @failed the processor reported a failed
+ * attempt, with @overdue its invoices fell ten days past due. */
+static gint64
+customer(Fixture *f, const gchar *slug, const gchar *plan, gboolean overdue, gboolean failed)
+{
+	gint64 organization = business(f, slug, slug);
+	g_autofree gchar *key = g_strdup_printf("bill:%s:1", slug);
+	g_autoptr(JsonNode) result = subscribe(f, organization, plan, key, 201);
+	g_autoptr(VentureEntity) company = customer_company(f, organization);
+	g_autoptr(GError) error = NULL;
+	if (overdue) {
+		g_autoptr(GDateTime) now = g_date_time_new_now_utc(), past = g_date_time_add_days(now, -10);
+		g_autofree gchar *stamp = g_date_time_format_iso8601(past);
+		g_autofree gchar *update = g_strdup_printf("UPDATE invoices SET due_at='%s' WHERE company_id=%" G_GINT64_FORMAT,
+			stamp, venture_entity_get_id(company));
+		sql(f->db, update);
+	}
+	if (failed) {
+		g_autoptr(VentureEntity) subscription = only_subscription(f, venture_entity_get_id(company));
+		g_autoptr(VentureBillingRequest) request = venture_billing_request_new();
+		g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->db), NULL);
+		gboolean ok;
+		venture_entity_set_organization_id(VENTURE_ENTITY(request), f->home);
+		g_object_set(request, "action", "mark-payment-failed", "subscription-id", venture_entity_get_id(subscription),
+			"at", now, NULL);
+		ok = venture_billing_service_execute(venture_billing_service_get(f->db), request, NULL, &error);
+		g_assert_no_error(error); g_assert_true(ok);
+	}
+	return organization;
+}
+
+static gchar *
+overview_entry(JsonArray *customers, guint i)
+{
+	g_autoptr(JsonNode) entry = json_node_copy(json_array_get_element(customers, i));
+	return venture_json_to_string(entry, FALSE);
+}
+
+static gchar *
+view_compact(Fixture *f, gint64 organization)
+{
+	g_autofree gchar *text = view_text(f, organization);
+	g_autoptr(JsonNode) node = parse(text);
+	return venture_json_to_string(node, FALSE);
+}
+
+/* The overview reads every customer at once, and each view one at a time:
+ * for every kind of customer the two must say exactly the same. */
+static void
+test_overview_matches_views(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(JsonNode) settings = stripe_settings(), changed = NULL, list = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL, operator = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL, *update = NULL, *insert = NULL;
+	gint64 ids[6];
+	JsonArray *customers;
+	guint i, overdue = 0, failed = 0, connected = 0, states = 0, cards = 0;
+	(void)data;
+	ids[0] = customer(f, "ann", "team", FALSE, FALSE);
+	ids[1] = customer(f, "bob", "growth", TRUE, FALSE);
+	ids[2] = customer(f, "cat", "starter", TRUE, TRUE);
+	ids[3] = customer(f, "dan", "team", FALSE, FALSE);
+	ids[4] = customer(f, "eli", "growth", FALSE, FALSE);
+	ids[5] = customer(f, "fox", "starter", FALSE, FALSE);
+	/* dan changes plan at renewal; eli's subscription ended. */
+	changed = subscribe(f, ids[3], "starter", "bill:dan:2", 201);
+	{
+		g_autoptr(VentureEntity) company = customer_company(f, ids[4]);
+		update = g_strdup_printf("UPDATE customer_subscriptions SET status='cancelled' WHERE company_id=%" G_GINT64_FORMAT,
+			venture_entity_get_id(company));
+		sql(f->db, update);
+	}
+	/* fox connected its own Stripe. */
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->db), key, &error));
+	g_assert_no_error(error);
+	{
+		g_autoptr(VentureTenantMaintenance) maintenance = venture_tenant_service_enter_maintenance(f->service, "Connect Stripe", &error);
+		g_assert_no_error(error);
+		connection = venture_integration_service_configure(venture_integration_service_get(f->db), ids[5], "stripe",
+			"acct_business_fixture", "test", settings, 0, NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(connection);
+		operator = venture_integration_service_configure(venture_integration_service_get(f->db), f->home, "stripe",
+			"acct_operator_fixture", "test", settings, 0, NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(operator);
+		g_assert_true(venture_tenant_maintenance_finish(maintenance, &error)); g_assert_no_error(error);
+	}
+	/* ann pays by a card saved through the operator's Stripe. */
+	{
+		g_autoptr(VentureEntity) company = customer_company(f, ids[0]);
+		g_autoptr(VentureEntity) subscription = only_subscription(f, venture_entity_get_id(company));
+		insert = g_strdup_printf("INSERT INTO stripe_authorizations (uuid, organization_id, created_at, updated_at, version, "
+			"next_check_at, connection_id, subscription_id, company_id, plan_price_id, price_version, seats, enabled, status, "
+			"expires_at, success_url, cancel_url, method_brand, method_last4, method_exp_month, method_exp_year) VALUES "
+			"('6d1f0f59-3c2a-4a43-9a51-0c2b6c3d4e5f', %" G_GINT64_FORMAT ", '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z', 1, "
+			"'2026-11-01T00:00:00Z', %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", 1, 1, 1, 'active', "
+			"'2026-11-02T00:00:00Z', 'https://example.test/paid', 'https://example.test/cancel', 'visa', '4242', 12, 2030)",
+			f->home, venture_entity_get_id(VENTURE_ENTITY(operator)), venture_entity_get_id(subscription),
+			venture_entity_get_id(company), integer(subscription, "plan-price-id"));
+		sql(f->db, insert);
+	}
+
+	text = call_text(f, "GET", OVERVIEW, f->admin_secret, NULL, NULL, 200);
+	list = parse(text);
+	customers = json_object_get_array_member(json_node_get_object(list), "customers");
+	g_assert_cmpuint(json_array_get_length(customers), ==, G_N_ELEMENTS(ids));
+	for (i = 0; i < G_N_ELEMENTS(ids); i++) {
+		g_autofree gchar *entry = overview_entry(customers, i), *view = view_compact(f, ids[i]);
+		JsonObject *object = json_array_get_object_element(customers, i);
+		g_assert_cmpstr(entry, ==, view);
+		overdue += json_object_get_boolean_member(object, "overdue");
+		failed += json_object_get_boolean_member(object, "failed_payment");
+		connected += json_object_get_boolean_member(object, "stripe_connected");
+		states += g_strcmp0(json_object_get_string_member(object, "state"), "cancelled") == 0;
+		cards += !json_node_is_null(json_object_get_member(object, "card"));
+	}
+	/* The fixture covers what it claims to. */
+	g_assert_cmpuint(overdue, ==, 2);
+	g_assert_cmpuint(failed, ==, 1);
+	g_assert_cmpuint(connected, ==, 1);
+	g_assert_cmpuint(states, ==, 1);
+	g_assert_cmpuint(cards, ==, 1);
+}
+
+/* Statements the overview sends. */
+static guint64
+overview_statements(Fixture *f)
+{
+	guint64 before = venture_database_get_statement_count(f->db);
+	g_autofree gchar *text = call_text(f, "GET", OVERVIEW, f->admin_secret, NULL, NULL, 200);
+	return venture_database_get_statement_count(f->db) - before;
+}
+
+/* The overview runs on the server's one loop, so its cost must not grow
+ * by a dozen statements per customer: it reads each kind of record once. */
+static void
+test_overview_statements(Fixture *f, gconstpointer data)
+{
+	guint64 two, six;
+	(void)data;
+	customer(f, "ann", "team", FALSE, FALSE);
+	customer(f, "bob", "growth", TRUE, FALSE);
+	two = overview_statements(f);
+	customer(f, "cat", "starter", FALSE, FALSE);
+	customer(f, "dan", "team", TRUE, FALSE);
+	customer(f, "eli", "growth", FALSE, FALSE);
+	customer(f, "fox", "starter", FALSE, FALSE);
+	six = overview_statements(f);
+	g_test_message("overview statements: %" G_GUINT64_FORMAT " for 2 customers, %" G_GUINT64_FORMAT " for 6", two, six);
+	/* Only the business's own Stripe binding, and the balance of an
+	 * overdue invoice, are still read one customer at a time. */
+	g_assert_cmpuint(six - two, <=, 2 * 4);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -990,6 +1154,8 @@ main(int argc, char **argv)
 	g_test_add("/lightsite-billing/overdue-and-failed", Fixture, NULL, setup, test_overdue_and_failed, teardown);
 	g_test_add("/lightsite-billing/stripe-connected", Fixture, NULL, setup, test_stripe_connected, teardown);
 	g_test_add("/lightsite-billing/staff-list", Fixture, NULL, setup, test_staff_list, teardown);
+	g_test_add("/lightsite-billing/overview-matches-views", Fixture, "stripe", setup, test_overview_matches_views, teardown);
+	g_test_add("/lightsite-billing/overview-statements", Fixture, NULL, setup, test_overview_statements, teardown);
 	g_test_add("/lightsite-billing/authority", Fixture, NULL, setup, test_authority, teardown);
 	g_test_add("/lightsite-billing/unconfigured", Fixture, NULL, setup, test_unconfigured, teardown);
 	g_test_add("/lightsite-billing/body", Fixture, NULL, setup, test_body, teardown);
