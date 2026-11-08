@@ -837,6 +837,78 @@ test_disabled_module_upgrade(void)
 }
 
 /*
+ * A card saved before 001010 keeps its last four: they are in its label,
+ * written from the same verified evidence. A bank account's label is not
+ * a card's, and a brand or expiry that was never kept stays unknown. If
+ * this breaks, every owner who saved a card before the upgrade sees no
+ * card on file -- or, worse, a bank account read as a card.
+ */
+static void
+test_card_on_file_backfill(void)
+{
+	g_autofree gchar *directory = g_dir_make_tmp("venture-migrations-XXXXXX", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s/database.db", directory);
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *card = NULL, *bank = NULL, *unknown = NULL, *brand = NULL, *runs = NULL;
+	guint pass;
+	gboolean ok;
+
+	g_object_set(config, "stripe-enabled", TRUE, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	/* The shape of a database from before 1010: three saved methods, none
+	 * of the new columns, the script not recorded. */
+	ok = venture_database_execute(database,
+		"INSERT INTO stripe_authorizations (uuid, organization_id, created_at, updated_at, version, next_check_at, "
+		"connection_id, subscription_id, company_id, plan_price_id, price_version, seats, status, enabled, expires_at, "
+		"success_url, cancel_url, method_label) VALUES "
+		"('00000000-0000-4000-8000-000000000101', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, '2026-01-01T00:00:00Z', 1, 81, 1, 1, 1, 1, 'active', 1, '2026-01-02T00:00:00Z', 'https://example.test/ok', 'https://example.test/no', 'card ending 4242'),"
+		" ('00000000-0000-4000-8000-000000000102', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, '2026-01-01T00:00:00Z', 1, 82, 1, 1, 1, 1, 'active', 1, '2026-01-02T00:00:00Z', 'https://example.test/ok', 'https://example.test/no', 'bank account ending 6789'),"
+		" ('00000000-0000-4000-8000-000000000103', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, '2026-01-01T00:00:00Z', 1, 83, 1, 1, 1, 1, 'active', 1, '2026-01-02T00:00:00Z', 'https://example.test/ok', 'https://example.test/no', NULL);"
+		"ALTER TABLE stripe_authorizations DROP COLUMN method_brand;"
+		"ALTER TABLE stripe_authorizations DROP COLUMN method_last4;"
+		"ALTER TABLE stripe_authorizations DROP COLUMN method_exp_month;"
+		"ALTER TABLE stripe_authorizations DROP COLUMN method_exp_year;"
+		"ALTER TABLE stripe_authorizations DROP COLUMN replaces_id;"
+		"DELETE FROM schema_migrations WHERE version >= 1010", NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(ok);
+	g_clear_object(&context);
+	g_clear_object(&database);
+
+	/* Upgrade, then restart: the second start runs nothing again. */
+	for (pass = 0; pass < 2; pass++) {
+		database = venture_database_new(uri, &error);
+		g_assert_no_error(error);
+		context = venture_context_new(config, database);
+		g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+		g_assert_no_error(error);
+		g_clear_pointer(&card, g_free); g_clear_pointer(&bank, g_free); g_clear_pointer(&unknown, g_free);
+		g_clear_pointer(&brand, g_free); g_clear_pointer(&runs, g_free);
+		card = query_text(database, "SELECT method_last4 FROM stripe_authorizations WHERE subscription_id = 81");
+		bank = query_text(database, "SELECT COALESCE(method_last4, '') FROM stripe_authorizations WHERE subscription_id = 82");
+		unknown = query_text(database, "SELECT COALESCE(method_last4, '') FROM stripe_authorizations WHERE subscription_id = 83");
+		brand = query_text(database, "SELECT COALESCE(method_brand, '') || '/' || CAST(COALESCE(method_exp_month, 0) AS TEXT) "
+			"FROM stripe_authorizations WHERE subscription_id = 81");
+		runs = query_text(database, "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = 1010");
+		g_assert_cmpstr(card, ==, "4242");
+		g_assert_cmpstr(bank, ==, "");
+		g_assert_cmpstr(unknown, ==, "");
+		g_assert_cmpstr(brand, ==, "/0");
+		g_assert_cmpstr(runs, ==, "1");
+		g_clear_object(&context);
+		g_clear_object(&database);
+	}
+	venture_test_remove_tree(directory);
+}
+
+/*
  * An install upgrading into categories and locations: the rows are there
  * before the scripts run, as they would be, and a restart runs nothing
  * twice. The rows the scripts insert must be whole records -- read back
@@ -1968,6 +2040,7 @@ main(int argc, char **argv)
 	g_test_add_func("/migrations/cutover-adjustment-upgrade", test_cutover_adjustment_upgrade);
 	g_test_add_func("/migrations/master-980-prefix", test_master_980_stays_a_prefix);
 	g_test_add_func("/migrations/disabled-module-upgrade", test_disabled_module_upgrade);
+	g_test_add_func("/migrations/card-on-file-backfill", test_card_on_file_backfill);
 	g_test_add_func("/migrations/taxonomy-backfill", test_taxonomy_backfill);
 	g_test_add_func("/migrations/taxonomy-sales-off", test_taxonomy_sales_off);
 	g_test_add_func("/migrations/account-holdings", test_account_holdings);

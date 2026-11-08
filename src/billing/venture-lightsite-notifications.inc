@@ -33,8 +33,11 @@ mail_cards(VentureDatabase *db, gint64 billing, gint64 subscription, JsonArray *
 	for (i = 0; i < rows->len; i++) {
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		g_autoptr(GDateTime) at = NULL;
-		g_object_get(row, "authorized-at", &at, NULL);
-		if (at) mail_fact(events, "card_saved", venture_entity_get_id(row), at, NULL);
+		gint64 replaces = 0;
+		g_object_get(row, "authorized-at", &at, "replaces-id", &replaces, NULL);
+		/* A verified card change is its own fact: "card saved" promises
+		 * the first payment, which a change after go-live must not. */
+		if (at) mail_fact(events, replaces > 0 ? "card_changed" : "card_saved", venture_entity_get_id(row), at, NULL);
 	}
 	return TRUE;
 }

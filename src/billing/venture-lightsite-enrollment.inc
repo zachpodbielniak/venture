@@ -316,6 +316,39 @@ enrollment_permission(VentureDatabase *db, gint64 billing, gint64 subscription, 
 	return venture_database_find_one(db, query, error);
 }
 
+/* The owner is back from changing the card, maybe before Stripe's callback
+ * has been handled: ask the provider about the open change, as Setup does
+ * for a first card. A change not finished stays open, and a provider that
+ * cannot be reached is the callback's to finish; either way the card in use
+ * is still the card, so nothing here refuses. */
+static void
+enrollment_confirm_change(VentureContext *context, VentureDatabase *db, gint64 billing, gint64 subscription,
+	VentureStripeService **provider, const VentureActor *actor)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GError) ignored = NULL;
+	g_autofree gchar *session = NULL;
+	VentureEntity *change;
+	if (!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "stripe_authorization")) return;
+	query = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
+	venture_query_set_organization(query, billing);
+	venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, subscription, NULL);
+	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "replacing", NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, NULL);
+	venture_query_set_limit(query, 1);
+	rows = venture_database_find(db, query, &ignored);
+	if (!rows || !rows->len) return;
+	change = g_ptr_array_index(rows, 0);
+	g_object_get(change, "session-id", &session, NULL);
+	if (!session || !*session) return;
+	if (!*provider) *provider = enrollment_provider(context, billing, &ignored);
+	if (!*provider) return;
+	if (!venture_stripe_service_verify_authorization(*provider, venture_entity_get_id(change), actor, &ignored))
+		g_debug("hosted card change %" G_GINT64_FORMAT " not confirmed yet: %s",
+			venture_entity_get_id(change), ignored ? ignored->message : "no reason");
+}
+
 JsonNode *
 venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 business, GError **error)
 {
@@ -385,6 +418,7 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 		}
 	}
 	if (!g_strcmp0(status, "active")) {
+		enrollment_confirm_change(context, db, billing, subscription, &provider, &actor);
 		json_object_set_string_member(object, "state", "card_ready");
 		return g_steal_pointer(&result);
 	}
@@ -400,6 +434,50 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 	json_object_set_string_member(object, "state", "awaiting_card");
 	json_object_set_string_member(object, "url", url);
 	return g_steal_pointer(&result);
+}
+
+JsonNode *
+venture_lightsite_billing_change_card(VentureContext *context, gint64 billing, gint64 business, GError **error)
+{
+	g_autoptr(GError) discarded = NULL;
+	VentureDatabase *db = venture_context_get_database(context);
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureEntity) company = NULL, subscription = NULL;
+	g_autoptr(VentureStripeService) provider = NULL;
+	g_autoptr(VentureStripeAuthorization) change = NULL;
+	g_autoptr(JsonNode) cancellation = NULL;
+	g_autofree gchar *url = NULL;
+	JsonObject *object;
+	JsonNode *result;
+	VentureActor actor = { VENTURE_ACTOR_KIND_IMPORT, "Hosted card change", NULL, NULL, NULL };
+	if (!error) error = &discarded;
+	if (!prepare(db, billing, NULL, error)) return NULL;
+	internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
+	if (!business_valid(db, billing, business, error)) return NULL;
+	cancellation = enrollment_read(db, billing, business, "cancel", error);
+	if (*error) return NULL;
+	if (cancellation) {
+		refuse(error, VENTURE_ERROR_CONFLICT, "a cancelled business has no card to change"); return NULL;
+	}
+	company = customer_company(db, billing, business, error);
+	if (!company) {
+		if (!*error) refuse(error, VENTURE_ERROR_CONFLICT, "no saved card to change; save one through setup first");
+		return NULL;
+	}
+	subscription = current_subscription(db, billing, venture_entity_get_id(company), error);
+	if (!subscription) {
+		if (!*error) refuse(error, VENTURE_ERROR_CONFLICT, "no saved card to change; save one through setup first");
+		return NULL;
+	}
+	provider = enrollment_provider(context, billing, error);
+	if (!provider) return NULL;
+	change = venture_stripe_service_replace_authorization(provider, venture_entity_get_id(subscription), &actor, error);
+	if (!change) return NULL;
+	g_object_get(change, "url", &url, NULL);
+	object = json_object_new(); result = json_node_new(JSON_NODE_OBJECT); json_node_take_object(result, object);
+	json_object_set_string_member(object, "state", "awaiting_card");
+	json_object_set_string_member(object, "url", url);
+	return result;
 }
 
 /* Adoption of a scheduler-created first invoice uses retained billing events,

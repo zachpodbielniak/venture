@@ -203,3 +203,15 @@ keys (=venture-opening:ITEM:LOT=) make a retry post each lot once.
 The history of movements stays in the =inventory_txn= rows. The test is
 =tests/test-venture-stock-engine.c= (=/venture-stock-engine/migration/sqlite=,
 and =/postgresql= with =VENTURE_TEST_MIGRATION_POSTGRES_URI=).
+
+* The card on file
+
+=001010_stripe_card_on_file= fills =stripe_authorizations.method_last4= for
+cards saved before it, from their label (=card ending 4242=), which was
+written from the same verified provider evidence. A bank account's label
+is left alone, and the brand and expiry, never kept before, stay unknown.
+Reconciliation adds the five columns (brand, last four, expiry month and
+year, and =replaces_id= for a card change). It guards on
+=stripe_authorizations=, so an install with Stripe off records the version.
+=/migrations/card-on-file-backfill= upgrades a database of that shape and
+restarts it.

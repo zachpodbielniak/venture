@@ -27,6 +27,55 @@ stripe_automatic_ready(VentureStripeService *self, GError **error)
 	return TRUE;
 }
 
+/* The hosted Setup for a reserved permission, after its reservation has
+ * committed: no database write is held across the provider call. The
+ * idempotency key is the permission's own, so asking again while the page
+ * is open answers the same session. */
+static VentureStripeAuthorization *
+stripe_authorization_session(VentureStripeService *self, VentureStripeAuthorization *authorization,
+	gint64 company_id, const gchar *currency, GDateTime *deadline, const VentureActor *actor, GError **error)
+{
+	g_autoptr(StripeRequest) request = NULL;
+	g_autoptr(StripeResource) resource = NULL;
+	g_autoptr(VentureEntity) live = NULL;
+	g_autofree gchar *customer_id = NULL, *stored = NULL;
+	const gchar *session, *url;
+	customer_id = stripe_customer(self, company_id, 0, actor, error);
+	if (!customer_id) return NULL;
+	/* Customer identity is durable before the hosted operation can deliver an
+	 * early callback. Its idempotency key is shared with ordinary Checkout. */
+	g_object_set(authorization, "customer-id", customer_id, NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(authorization), actor, error)) return NULL;
+	request = stripe_request_new(STRIPE_CHECKOUT_CREATE);
+	request->mode = STRIPE_CHECKOUT_SETUP;
+	request->customer = g_steal_pointer(&customer_id);
+	request->currency = g_ascii_strdown(currency, -1);
+	request->payment_methods = stripe_flag(VENTURE_ENTITY(authorization), "ach-enabled") ? STRIPE_CHECKOUT_CARD_AND_US_BANK : STRIPE_CHECKOUT_CARD;
+	request->expires_at = (guint64)g_date_time_to_unix(deadline);
+	request->client_reference_id = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(authorization)));
+	g_object_get(authorization, "success-url", &request->success_url, "cancel-url", &request->cancel_url, "consent-text", &request->consent_text, NULL);
+	g_free(request->idempotency_key);
+	request->idempotency_key = g_strdup_printf("venture-authorization-%s", venture_entity_get_uuid(VENTURE_ENTITY(authorization)));
+	resource = stripe_client_execute(self->client, request, NULL, error);
+	if (!resource) return NULL;
+	session = stripe_resource_get_string(resource, "id"); url = stripe_resource_get_string(resource, "url");
+	if (!session || !g_str_has_prefix(session, "cs_") || !url || !g_str_has_prefix(url, "https://checkout.stripe.com/"))
+	{
+		refuse(error, "Provider returned no valid hosted authorization session"); return NULL;
+	}
+	live = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, venture_entity_get_id(VENTURE_ENTITY(authorization)), error);
+	if (!live) return NULL;
+	g_object_get(live, "session-id", &stored, NULL);
+	if (stored && *stored && g_strcmp0(stored, session))
+	{
+		refuse(error, "Hosted authorization identity conflicts with retained evidence"); return NULL;
+	}
+	g_object_set(live, "session-id", session, NULL);
+	if (!venture_stripe_save_owned(self->database, live, actor, error)) return NULL;
+	g_object_set(live, "url", url, NULL);
+	return VENTURE_STRIPE_AUTHORIZATION(g_steal_pointer(&live));
+}
+
 VentureStripeAuthorization *
 venture_stripe_service_authorize_subscription(VentureStripeService *self,
 	gint64 subscription_id, const VentureMoney *limit, const VentureActor *actor, GError **error)
@@ -37,14 +86,11 @@ venture_stripe_service_authorize_subscription(VentureStripeService *self,
 	g_autoptr(GPtrArray) prior = NULL;
 	g_autoptr(VentureMoney) amount = NULL, recurring = NULL, difference = NULL;
 	g_autoptr(GDateTime) now = venture_time_now(), deadline = NULL;
-	g_autoptr(StripeRequest) request = NULL;
-	g_autoptr(StripeResource) resource = NULL;
-	g_autofree gchar *customer_id = NULL, *consent = NULL, *formatted = NULL, *currency = NULL;
+	g_autofree gchar *consent = NULL, *formatted = NULL, *currency = NULL;
 	gint64 seats, company_id, price_id, provider_amount;
 	guint i;
 	gint state;
 	gboolean transaction = FALSE;
-	const gchar *session, *url;
 	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), NULL);
 	if (!stripe_finance(self, error) || !stripe_automatic_ready(self, error)) return NULL;
 	if (!limit || venture_money_get_amount(limit) <= 0 || !to_stripe_amount(limit, &provider_amount, error))
@@ -117,44 +163,7 @@ venture_stripe_service_authorize_subscription(VentureStripeService *self,
 		refuse(error, "Hosted setup deadline expired; revoke this request and create a new authorization"); goto fail;
 	}
 	if (!venture_database_commit(self->database, error)) goto fail;
-	transaction = FALSE;
-	customer_id = stripe_customer(self, company_id, 0, actor, error);
-	if (!customer_id) goto fail;
-	/* Customer identity is durable before the hosted operation can deliver an
-	 * early callback. Its idempotency key is shared with ordinary Checkout. */
-	g_object_set(authorization, "customer-id", customer_id, NULL);
-	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(authorization), actor, error)) goto fail;
-	request = stripe_request_new(STRIPE_CHECKOUT_CREATE);
-	request->mode = STRIPE_CHECKOUT_SETUP;
-	request->customer = g_steal_pointer(&customer_id);
-	request->currency = g_ascii_strdown(currency, -1);
-	request->payment_methods = stripe_flag(VENTURE_ENTITY(authorization), "ach-enabled") ? STRIPE_CHECKOUT_CARD_AND_US_BANK : STRIPE_CHECKOUT_CARD;
-	request->expires_at = (guint64)g_date_time_to_unix(deadline);
-	request->client_reference_id = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(authorization)));
-	g_object_get(authorization, "success-url", &request->success_url, "cancel-url", &request->cancel_url, "consent-text", &request->consent_text, NULL);
-	g_free(request->idempotency_key);
-	request->idempotency_key = g_strdup_printf("venture-authorization-%s", venture_entity_get_uuid(VENTURE_ENTITY(authorization)));
-	resource = stripe_client_execute(self->client, request, NULL, error);
-	if (!resource) goto fail;
-	session = stripe_resource_get_string(resource, "id"); url = stripe_resource_get_string(resource, "url");
-	if (!session || !g_str_has_prefix(session, "cs_") || !url || !g_str_has_prefix(url, "https://checkout.stripe.com/"))
-	{
-		refuse(error, "Provider returned no valid hosted authorization session"); goto fail;
-	}
-	{
-		g_autoptr(VentureEntity) live = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, venture_entity_get_id(VENTURE_ENTITY(authorization)), error);
-		g_autofree gchar *stored = NULL;
-		if (!live) goto fail;
-		g_object_get(live, "session-id", &stored, NULL);
-		if (stored && *stored && g_strcmp0(stored, session))
-		{
-			refuse(error, "Hosted authorization identity conflicts with retained evidence"); goto fail;
-		}
-		g_object_set(live, "session-id", session, NULL);
-		if (!venture_stripe_save_owned(self->database, live, actor, error)) goto fail;
-		g_object_set(live, "url", url, NULL);
-		return VENTURE_STRIPE_AUTHORIZATION(g_steal_pointer(&live));
-	}
+	return stripe_authorization_session(self, authorization, company_id, currency, deadline, actor, error);
 fail:
 	if (transaction) venture_database_rollback(self->database);
 	return NULL;
@@ -183,9 +192,20 @@ stripe_json_integer(JsonObject *object, const gchar *field, gint64 expected)
 	return node && json_node_get_value_type(node) == G_TYPE_INT64 && json_node_get_int(node) == expected;
 }
 
+/* A card change is a second permission, kept disabled while its Setup is
+ * open so the card in use is still the one charged. Only verification
+ * reads it, on the same terms as an enabled one. */
 static gboolean
-stripe_authorized_terms_for_collection(VentureStripeService *self, VentureEntity *authorization,
-	gboolean final_usage, GError **error)
+stripe_replacing(VentureEntity *authorization)
+{
+	g_autofree gchar *status = NULL;
+	g_object_get(authorization, "status", &status, NULL);
+	return !g_strcmp0(status, "replacing");
+}
+
+static gboolean
+stripe_terms(VentureStripeService *self, VentureEntity *authorization,
+	gboolean final_usage, gboolean replacing, GError **error)
 {
 	g_autoptr(VentureEntity) subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION,
 		stripe_number(authorization, "subscription-id"), error);
@@ -198,12 +218,19 @@ stripe_authorized_terms_for_collection(VentureStripeService *self, VentureEntity
 	/* Referenced prices are commercially immutable in the billing validator.
 	 * Their permitted catalog-active edit must not cancel existing consent;
 	 * the captured GObject version remains provenance, not permission state. */
-	if (!stripe_flag(authorization, "enabled") || (state > 2 && !(final_usage && state == 4)) ||
+	if (!(replacing || stripe_flag(authorization, "enabled")) || (state > 2 && !(final_usage && state == 4)) ||
 		stripe_number(subscription, "company-id") != stripe_number(authorization, "company-id") ||
 		stripe_number(subscription, "plan-price-id") != stripe_number(authorization, "plan-price-id") ||
 		stripe_number(subscription, "seats") != stripe_number(authorization, "seats"))
 		return refuse(error, "Authorization is disabled or subscription terms changed; new hosted permission is required");
 	return TRUE;
+}
+
+static gboolean
+stripe_authorized_terms_for_collection(VentureStripeService *self, VentureEntity *authorization,
+	gboolean final_usage, GError **error)
+{
+	return stripe_terms(self, authorization, final_usage, FALSE, error);
 }
 
 /* Ending a subscription keeps permission only for its already incurred
@@ -212,6 +239,133 @@ static gboolean
 stripe_authorized_terms(VentureStripeService *self, VentureEntity *authorization, GError **error)
 {
 	return stripe_authorized_terms_for_collection(self, authorization, FALSE, error);
+}
+
+/* The terms verification judges: an enabled permission's, or a pending
+ * card change's as if it were enabled. Collection never sees the latter. */
+static gboolean
+stripe_verifiable_terms(VentureStripeService *self, VentureEntity *authorization, GError **error)
+{
+	return stripe_terms(self, authorization, FALSE, stripe_replacing(authorization), error);
+}
+
+/*
+ * Brand, last four and expiry of a verified card, for the owner to
+ * recognise it. Each is bounded and checked, and anything else of the
+ * method is dropped: these reach the hosted billing view. A bank
+ * account keeps its last four and no brand or expiry.
+ */
+static void
+stripe_method_details(JsonObject *method, const gchar *type, gchar **brand, gchar **last4,
+	gint64 *month, gint64 *year)
+{
+	gboolean bank = !g_strcmp0(type, "us_bank_account");
+	JsonObject *details = object_member(method, bank ? "us_bank_account" : "card");
+	const gchar *digits = string_member(details, "last4"), *name = bank ? NULL : string_member(details, "brand");
+	JsonNode *node;
+	const gchar *p;
+	guint i;
+	*brand = NULL; *last4 = NULL; *month = 0; *year = 0;
+	if (digits && strlen(digits) == 4) {
+		for (i = 0; i < 4 && g_ascii_isdigit(digits[i]); i++) { }
+		if (i == 4) *last4 = g_strdup(digits);
+	}
+	if (name && *name && strlen(name) <= 32) {
+		for (p = name; *p && (g_ascii_islower(*p) || *p == '_'); p++) { }
+		if (!*p) *brand = g_strdup(name);
+	}
+	if (bank) return;
+	node = details ? json_object_get_member(details, "exp_month") : NULL;
+	if (node && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64 &&
+		json_node_get_int(node) >= 1 && json_node_get_int(node) <= 12) *month = json_node_get_int(node);
+	node = details ? json_object_get_member(details, "exp_year") : NULL;
+	if (node && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64 &&
+		json_node_get_int(node) >= 2000 && json_node_get_int(node) <= 9999) *year = json_node_get_int(node);
+}
+
+VentureStripeAuthorization *
+venture_stripe_service_replace_authorization(VentureStripeService *self,
+	gint64 subscription_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) subscription = NULL, current = NULL, price = NULL;
+	g_autoptr(VentureStripeAuthorization) authorization = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
+	g_autoptr(GPtrArray) prior = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), deadline = NULL;
+	g_autofree gchar *currency = NULL, *identity = NULL;
+	gint64 company_id = 0;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), NULL);
+	if (!stripe_finance(self, error) || !stripe_automatic_ready(self, error)) return NULL;
+	if (!venture_database_begin_serializable(self->database, error)) return NULL;
+	subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, error);
+	if (!subscription || !venture_access_policy_check_write(venture_database_get_access_policy(self->database), subscription, "write", error)) goto fail;
+	g_object_get(subscription, "external-id", &identity, NULL);
+	if (identity && g_str_has_prefix(identity, "prepaid:")) {
+		refuse(error, "Prepaid terms keep the method they were paid with"); goto fail;
+	}
+	venture_query_set_organization(query, self->organization_id);
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, subscription_id, error) ||
+		!venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, error)) goto fail;
+	prior = venture_database_find(self->database, query, error);
+	if (!prior) goto fail;
+	for (i = 0; i < prior->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(prior, i);
+		g_autofree gchar *status = NULL;
+		g_object_get(row, "status", &status, NULL);
+		if (stripe_flag(row, "enabled") && !g_strcmp0(status, "active")) g_set_object(&current, row);
+	}
+	if (!current)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"No verified payment method to change; save one through Setup first");
+		goto fail;
+	}
+	if (!stripe_authorized_terms(self, current, error)) goto fail;
+	/* An open change for this card is the same change: the same page. */
+	for (i = 0; i < prior->len && !authorization; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(prior, i);
+		g_autoptr(GDateTime) expires = NULL;
+		if (!stripe_replacing(row) || stripe_number(row, "replaces-id") != venture_entity_get_id(current) ||
+			stripe_number(row, "connection-id") != self->connection_id) continue;
+		g_object_get(row, "expires-at", &expires, NULL);
+		if (expires && g_date_time_difference(expires, now) >= 30 * G_TIME_SPAN_MINUTE)
+		{
+			authorization = g_object_ref(VENTURE_STRIPE_AUTHORIZATION(row));
+			deadline = g_date_time_ref(expires);
+		}
+	}
+	if (!authorization)
+	{
+		g_autoptr(VentureMoney) limit = NULL;
+		g_autofree gchar *consent = NULL;
+		gboolean ach = FALSE;
+		authorization = venture_stripe_authorization_new();
+		venture_entity_set_organization_id(VENTURE_ENTITY(authorization), self->organization_id);
+		deadline = g_date_time_add_hours(now, 23);
+		/* The same terms and the same wording the card in use was given:
+		 * a new card is a new method, not new consent to new terms. */
+		g_object_get(current, "limit", &limit, "consent-text", &consent, "ach-enabled", &ach, NULL);
+		g_object_set(authorization, "connection-id", self->connection_id, "subscription-id", subscription_id,
+			"company-id", stripe_number(current, "company-id"), "plan-price-id", stripe_number(current, "plan-price-id"),
+			"price-version", stripe_number(current, "price-version"), "seats", stripe_number(current, "seats"),
+			"limit", limit, "consent-text", consent, "enabled", FALSE, "status", "replacing", "next-check-at", now,
+			"expires-at", deadline, "success-url", self->success_url, "cancel-url", self->cancel_url,
+			"ach-enabled", ach, "replaces-id", venture_entity_get_id(current), NULL);
+		if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(authorization), actor, error)) goto fail;
+	}
+	company_id = stripe_number(current, "company-id");
+	price = owned_get(self, VENTURE_TYPE_PLAN_PRICE, stripe_number(current, "plan-price-id"), error);
+	if (!price) goto fail;
+	g_object_get(price, "currency", &currency, NULL);
+	if (!venture_database_commit(self->database, error)) goto fail;
+	return stripe_authorization_session(self, authorization, company_id, currency, deadline, actor, error);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
 }
 
 /*
@@ -243,15 +397,16 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 	g_autoptr(JsonNode) evidence_node = json_node_new(JSON_NODE_OBJECT);
 	g_autoptr(GDateTime) deadline = NULL, now = venture_time_now();
 	g_autofree gchar *customer = NULL, *consent = NULL, *digest = NULL, *serialized = NULL, *label = NULL;
+	g_autofree gchar *brand = NULL, *last4 = NULL;
 	JsonObject *setup, *method, *mandate;
 	const gchar *method_id, *method_type, *setup_id;
-	gint64 config_version;
+	gint64 config_version, exp_month = 0, exp_year = 0;
 	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), FALSE);
 	if (!stripe_finance(self, error) || !stripe_automatic_ready(self, error)) return FALSE;
 	if (venture_database_has_transaction(self->database))
 		return refuse(error, "Provider authorization verification requires an idle transaction boundary");
 	authorization = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, authorization_id, error);
-	if (!authorization || !stripe_authorized_terms(self, authorization, error) ||
+	if (!authorization || !stripe_verifiable_terms(self, authorization, error) ||
 		!venture_access_policy_check_write(venture_database_get_access_policy(self->database), authorization, "write", error)) return FALSE;
 	g_object_get(authorization, "session-id", &request->id, "customer-id", &customer,
 		"consent-text", &consent, "expires-at", &deadline, NULL);
@@ -302,9 +457,10 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 	json_node_set_object(evidence_node, evidence);
 	serialized = venture_json_to_string(evidence_node, FALSE);
 	label = stripe_method_label(method, method_type);
+	stripe_method_details(method, method_type, &brand, &last4, &exp_month, &exp_year);
 	if (!venture_database_begin_serializable(self->database, error)) return FALSE;
 	current = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, authorization_id, error);
-	if (!current || !stripe_authorized_terms(self, current, error)) goto fail;
+	if (!current || !stripe_verifiable_terms(self, current, error)) goto fail;
 	if (venture_entity_get_version(current) != venture_entity_get_version(authorization))
 	{
 		refuse(error, "Authorization changed during provider verification; retry the current record"); goto fail;
@@ -326,9 +482,25 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 			return TRUE;
 		}
 	}
+	/* A verified card change takes over in one transaction: the card it
+	 * replaces is disabled first (one enabled permission per subscription)
+	 * and kept as evidence, and the new one is what collection charges. */
+	if (stripe_replacing(current))
+	{
+		gint64 replaces = stripe_number(current, "replaces-id");
+		g_autoptr(VentureEntity) previous = replaces > 0 ? owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, replaces, error) : NULL;
+		if (replaces > 0 && !previous) goto fail;
+		if (previous && stripe_flag(previous, "enabled"))
+		{
+			g_object_set(previous, "enabled", FALSE, "status", "replaced", NULL);
+			if (!venture_stripe_save_owned(self->database, previous, actor, error)) goto fail;
+		}
+		g_object_set(current, "enabled", TRUE, NULL);
+	}
 	g_object_set(current, "setup-intent-id", setup_id, "payment-method-id", method_id,
 		"mandate-id", string_member(mandate, "id"), "status", "active", "evidence", serialized, "authorized-at", now,
-		"method-label", label, NULL);
+		"method-label", label, "method-brand", brand, "method-last4", last4,
+		"method-exp-month", exp_month, "method-exp-year", exp_year, NULL);
 	if (!venture_stripe_save_owned(self->database, current, actor, error) || !venture_database_commit(self->database, error)) goto fail;
 	return TRUE;
 fail:
@@ -412,13 +584,13 @@ stripe_authorization_event(VentureStripeService *self, JsonObject *event,
 		VentureEntity *authorization = g_ptr_array_index(matches, i);
 		g_autofree gchar *session = NULL, *setup = NULL, *status = NULL;
 		const gchar *presented_setup = string_member(object, "setup_intent");
-		if (!stripe_flag(authorization, "enabled")) continue;
 		g_object_get(authorization, "session-id", &session, "setup-intent-id", &setup, "status", &status, NULL);
+		if (!stripe_flag(authorization, "enabled") && g_strcmp0(status, "replacing")) continue;
 		if (g_str_has_prefix(type, "checkout.session.") && session && *session && g_strcmp0(session, id))
 			return refuse(error, "Signed setup identity conflicts with retained authorization");
 		if (!g_strcmp0(type, "checkout.session.expired"))
 		{
-			if (!g_strcmp0(status, "pending"))
+			if (!g_strcmp0(status, "pending") || !g_strcmp0(status, "replacing"))
 			{
 				g_object_set(authorization, "enabled", FALSE, "status", "revoked", NULL);
 				if (!venture_stripe_save_owned(self->database, authorization, actor, error)) return FALSE;

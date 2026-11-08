@@ -334,6 +334,46 @@ invoice_facts(VentureDatabase *database, gint64 billing, gint64 company_id, gboo
 
 /* The view of one business, given its customer company when known.
  * @company NULL means the business has none yet: nothing on, nothing owed. */
+/* The card the subscription is charged to: the enabled, verified
+ * permission's brand, last four and expiry, each null when it was never
+ * recorded. Nothing else of the method leaves; with no verified method,
+ * or the Stripe module off, there is no card. */
+static gboolean
+card_on_file(VentureDatabase *database, gint64 billing, VentureEntity *subscription, JsonNode **card, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *brand = NULL, *last4 = NULL;
+	JsonObject *object;
+	gint64 month = 0, year = 0;
+	*card = json_node_new(JSON_NODE_NULL);
+	if (!subscription || !venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "stripe_authorization"))
+		return TRUE;
+	query = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
+	venture_query_set_organization(query, billing);
+	venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(subscription), NULL);
+	venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, NULL);
+	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", NULL);
+	rows = find(database, query, error);
+	if (!rows) return FALSE;
+	if (!rows->len) return TRUE;
+	g_object_get(g_ptr_array_index(rows, 0), "method-brand", &brand, "method-last4", &last4,
+		"method-exp-month", &month, "method-exp-year", &year, NULL);
+	object = json_object_new();
+	if (brand && *brand) json_object_set_string_member(object, "brand", brand);
+	else json_object_set_null_member(object, "brand");
+	if (last4 && *last4) json_object_set_string_member(object, "last4", last4);
+	else json_object_set_null_member(object, "last4");
+	if (month > 0) json_object_set_int_member(object, "exp_month", month);
+	else json_object_set_null_member(object, "exp_month");
+	if (year > 0) json_object_set_int_member(object, "exp_year", year);
+	else json_object_set_null_member(object, "exp_year");
+	json_node_unref(*card);
+	*card = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(*card, object);
+	return TRUE;
+}
+
 static JsonNode *
 build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, VentureEntity *company, GError **error)
 {
@@ -341,7 +381,7 @@ build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, Ve
 	g_autoptr(VentureMoney) owed = NULL;
 	g_autoptr(GDateTime) period_end = NULL, past_due_at = NULL;
 	g_autofree gchar *currency = NULL;
-	JsonNode *last = NULL, *node;
+	JsonNode *last = NULL, *node, *card = NULL;
 	JsonObject *object;
 	gboolean overdue = FALSE, failed = FALSE, connected = FALSE;
 	const gchar *state = "none";
@@ -367,8 +407,10 @@ build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, Ve
 		if (!invoice_facts(database, billing, venture_entity_get_id(company), &overdue, &last, error)) return NULL;
 	} else
 		owed = venture_money_new_zero(currency);
-	if (!stripe_connected(database, organization_id, &connected, error)) {
+	if (!stripe_connected(database, organization_id, &connected, error) ||
+		!card_on_file(database, billing, subscription, &card, error)) {
 		if (last) json_node_unref(last);
+		if (card) json_node_unref(card);
 		return NULL;
 	}
 	object = json_object_new();
@@ -399,6 +441,7 @@ build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, Ve
 	if (last) json_object_set_member(object, "last_invoice", last);
 	else json_object_set_null_member(object, "last_invoice");
 	json_object_set_boolean_member(object, "stripe_connected", connected);
+	json_object_set_member(object, "card", card);
 	node = json_node_new(JSON_NODE_OBJECT);
 	json_node_take_object(node, object);
 	return node;

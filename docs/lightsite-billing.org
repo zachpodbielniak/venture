@@ -153,7 +153,8 @@ than the billing organization (422).
  "failed_payment":false,
  "last_invoice":{"number":"BILL-b991e07f-f3fe-4523-90cd-0156f438212d-2026-10-04","status":"sent",
                  "total":"10.00","due_date":"2026-10-04T23:34:34.537657Z","paid_at":null},
- "stripe_connected":false}
+ "stripe_connected":false,
+ "card":{"brand":"visa","last4":"4242","exp_month":8,"exp_year":2028}}
 #+end_src
 
 | Member | Meaning |
@@ -167,6 +168,7 @@ than the billing organization (422).
 | =failed_payment= | A failed payment is on record: the subscription is =past_due= or carries an overdue-since date (=mark-payment-failed=, by an operator or the verified Stripe adapter, until =recover= or =resume=) |
 | =last_invoice= | The customer's latest invoice: its number, status (=draft=, =sent=, =partially_paid=, =paid=, =void=), issued total, due and paid times; =null= with none |
 | =stripe_connected= | Whether the *business's own organization* has exactly one active Stripe connection. Never a key or an account ID; the operator's own connection on the billing organization does not count |
+| =card= | The card the subscription is charged to: =brand= (Stripe's name, such as =visa=), =last4=, =exp_month= and =exp_year=. A member that was never recorded is =null= (a card saved before 0.9.0 has its last four only; a bank account has no brand or expiry). =null= with no verified saved method. Never more of the number, and nothing secret |
 
 Amounts are exact decimal strings in the currency's own exponent, never
 floating point; times are ISO 8601 UTC, the canonical transmitted form.

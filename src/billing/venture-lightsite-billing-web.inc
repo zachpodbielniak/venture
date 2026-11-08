@@ -231,6 +231,8 @@ venture_web_lightsite_billing_transition(HtmxRequest *request, GHashTable *param
 		result = venture_lightsite_billing_money_back(self->context, lightsite_billing_organization(self), json_node_get_int(business), &error);
 	else if (g_str_has_suffix(path, "/cancel"))
 		result = venture_lightsite_billing_cancel(db, lightsite_billing_organization(self), json_node_get_int(business), &error);
+	else if (g_str_has_suffix(path, "/change-card"))
+		result = venture_lightsite_billing_change_card(self->context, lightsite_billing_organization(self), json_node_get_int(business), &error);
 	else if (g_str_has_suffix(path, "/setup"))
 		result = venture_lightsite_billing_setup(self->context, lightsite_billing_organization(self), json_node_get_int(business), &error);
 	else if (publish)
@@ -360,6 +362,8 @@ venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *sel
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/guarantee",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_guarantee, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/setup",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/change-card",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/publish",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
