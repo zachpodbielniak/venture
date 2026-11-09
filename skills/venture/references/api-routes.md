@@ -164,7 +164,7 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `POST /lightsite/billing/switch-preview` | owner (or trusted service) previews a plan switch from the next bill; writes nothing | -- |
 | `POST /lightsite/billing/switch` | owner confirms (`accepted: true`); change at period end, no charge, no proration | -- |
 | `GET /organizations/:id/invitations` | the owner's invitations with state and delivery | -- |
-| `GET /organizations/:organization_id/lightsite-areas` | area types this caller may open; a type whose list is 403 or 404 is left out. `unpaid` follows `invoice`. `receivables` and `dunning_worklist` follow that report existing. `calendar` follows `event` | -- |
+| `GET /organizations/:organization_id/lightsite-areas?types=` | the asked area types this caller may open; a missing or oversized list is 422; a type whose list is 403 or 404 is left out; a type that was not asked is absent. `unpaid` follows `invoice`. `receivables` and `dunning_worklist` follow that report existing. `calendar` follows `event` | -- |
 | `POST /organizations/:id/invitations` | owner invites to their business; sent in the business's own mail | -- |
 | `POST /organizations/:id/invitations/:invitation/resend` | new link, old one dies; same key sends nothing | -- |
 | `POST /organizations/:id/invitations/:invitation/revoke` | link never accepts; unsent mail cancelled | -- |

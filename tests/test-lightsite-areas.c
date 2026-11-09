@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
-/* GET /api/v1/organizations/{id}/lightsite-areas names the area types this
- * caller may open. A type whose list is 403 or 404 is absent. A missing
+/* GET /api/v1/organizations/{id}/lightsite-areas?types= names the asked
+ * types this caller may open. A type whose list is 403 or 404 is absent.
+ * A type that was not asked is absent. No types list is 422. A missing
  * organization is 404. No credential is 401. */
 #include <venture.h>
 #include <libsoup/soup.h>
@@ -157,18 +158,55 @@ static void teardown(Fixture *f, gconstpointer unused)
 	g_free(f->directory); g_free(f->token);
 }
 
+static guint type_count(JsonNode *body, const gchar *type)
+{
+	JsonArray *types = json_object_get_array_member(json_node_get_object(body), "types");
+	guint i, n = 0;
+	g_assert_nonnull(types);
+	for (i = 0; i < json_array_get_length(types); i++)
+		if (!g_strcmp0(json_array_get_string_element(types, i), type)) n++;
+	return n;
+}
+
 static void test_areas(Fixture *f, gconstpointer unused)
 {
-	g_autofree gchar *path = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT "/lightsite-areas", f->business);
-	g_autofree gchar *missing = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT "/lightsite-areas", f->business + 1000);
-	g_autoptr(JsonNode) anon = NULL, body = NULL, gone = NULL;
+	g_autofree gchar *path = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT
+		"/lightsite-areas?types=company,invoice,user,calendar,receivables,dunning_worklist,unpaid,not_a_type", f->business);
+	g_autofree gchar *twice = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT
+		"/lightsite-areas?types=company,company,invoice", f->business);
+	g_autofree gchar *bare = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT "/lightsite-areas", f->business);
+	g_autofree gchar *bad = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT
+		"/lightsite-areas?types=Company", f->business);
+	g_autofree gchar *missing = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT
+		"/lightsite-areas?types=company", f->business + 1000);
+	g_autoptr(GString) many = g_string_new(NULL);
+	g_autofree gchar *too_many = NULL;
+	g_autoptr(JsonNode) anon = NULL, body = NULL, again = NULL, bare_body = NULL, bad_body = NULL, gone = NULL, huge = NULL;
+	guint i;
 	(void)unused;
 	anon = exchange(f, path, FALSE, 401);
 	g_clear_pointer(&anon, json_node_unref);
 	body = exchange(f, path, TRUE, 200);
 	g_assert_true(type_listed(body, "company"));
 	g_assert_true(type_listed(body, "invoice"));
+	g_assert_true(type_listed(body, "calendar"));
+	g_assert_true(type_listed(body, "receivables"));
+	g_assert_true(type_listed(body, "dunning_worklist"));
+	g_assert_true(type_listed(body, "unpaid"));
+	g_assert_false(type_listed(body, "ticket"));
 	g_assert_false(type_listed(body, "user"));
+	g_assert_false(type_listed(body, "not_a_type"));
+	again = exchange(f, twice, TRUE, 200);
+	g_assert_cmpuint(type_count(again, "company"), ==, 1);
+	g_assert_false(type_listed(again, "ticket"));
+	bare_body = exchange(f, bare, TRUE, 422);
+	g_clear_pointer(&bare_body, json_node_unref);
+	bad_body = exchange(f, bad, TRUE, 422);
+	g_clear_pointer(&bad_body, json_node_unref);
+	for (i = 0; i < 65; i++) g_string_append(many, i ? ",company" : "company");
+	too_many = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT "/lightsite-areas?types=%s", f->business, many->str);
+	huge = exchange(f, too_many, TRUE, 422);
+	g_clear_pointer(&huge, json_node_unref);
 	gone = exchange(f, missing, TRUE, 404);
 	g_clear_pointer(&gone, json_node_unref);
 }
