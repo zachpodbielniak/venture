@@ -301,6 +301,16 @@ gboolean venture_http_limits_validate(VentureConfig *config, GError **error)
 			"HTTP limits require max_request_size_mb=1..1024, request_timeout=1..3600, max_connections=1..4096 and max_buffered_request_mb=max_request_size_mb..4096");
 		return FALSE;
 	}
+	{
+		gint64 workers;
+		g_object_get(config, "server-read-workers", &workers, NULL);
+		if (workers < 0 || workers > 64)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+				"server.read_workers must be 0..64 (0 answers every request on the main thread)");
+			return FALSE;
+		}
+	}
 	return TRUE;
 }
 void venture_http_limits_install(SoupServer *server, VentureConfig *config, VentureHttpBodyLimit body_limit, gpointer data)

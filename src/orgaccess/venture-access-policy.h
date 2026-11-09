@@ -69,6 +69,61 @@ VentureAccessScope *venture_access_policy_enter(VentureAccessPolicy *self, const
 VentureAccessScope *venture_access_policy_enter_organization(VentureAccessPolicy *self,
 	const VentureAuthPrincipal *actor, gint64 organization_id);
 /**
+ * VentureAccessSnapshot:
+ *
+ * A copy of one thread's reader -- the principal, the organization pin,
+ * the read action and the shared-only narrowing -- to judge as the same
+ * reader on another thread.
+ */
+typedef struct _VentureAccessSnapshot VentureAccessSnapshot;
+
+/**
+ * venture_access_policy_bind_thread:
+ * @self: policy
+ *
+ * Gives the calling thread a reader state of its own until
+ * venture_access_policy_unbind_thread(). A worker serving a parallel read
+ * binds before entering any scope, so readers on several threads never
+ * share an actor or a list cache. Threads that never bind share the
+ * policy's own state, as before.
+ */
+void venture_access_policy_bind_thread(VentureAccessPolicy *self);
+
+/**
+ * venture_access_policy_unbind_thread:
+ * @self: policy the calling thread bound
+ *
+ * Drops the calling thread's own state. Every scope entered on it must
+ * have been left first.
+ */
+void venture_access_policy_unbind_thread(VentureAccessPolicy *self);
+
+/**
+ * venture_access_policy_snapshot:
+ * @self: policy
+ *
+ * Returns: (transfer full): a copy of the calling thread's reader
+ */
+VentureAccessSnapshot *venture_access_policy_snapshot(VentureAccessPolicy *self);
+
+/**
+ * venture_access_policy_enter_snapshot:
+ * @self: policy
+ * @snapshot: a reader captured with venture_access_policy_snapshot()
+ *
+ * Returns: (transfer full): a scope judging as exactly that reader
+ */
+VentureAccessScope *venture_access_policy_enter_snapshot(VentureAccessPolicy *self,
+	const VentureAccessSnapshot *snapshot);
+
+/**
+ * venture_access_snapshot_free:
+ * @snapshot: (nullable): a snapshot
+ */
+void venture_access_snapshot_free(VentureAccessSnapshot *snapshot);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureAccessSnapshot, venture_access_snapshot_free)
+
+/**
  * venture_access_policy_enter_shared:
  * @self: repository policy
  * @organization_id: positive organization whose shared records are read

@@ -93,6 +93,10 @@ only that user's tokens. A bearer token cannot mint another.
 
 ## Skill baseline -- maintained
 
+Parallel record reads (`server.read_workers`, operations.md) checked against
+the commit that introduced them (2026-11-08): list and get answers are
+unchanged, only their concurrency.
+
 Household children 1–7 checked against `aebfac60` plus the private accounts,
 owner-controlled sharing and settlement changes (2026-10-21). See
 [household.md](references/household.md) for scope, selector, reports and

@@ -481,6 +481,7 @@ do not alter the transport budget of existing connections.
 | =max_buffered_request_mb= | 64 | At least one maximum body, up to 4096 MiB within the platform address space; aggregate bodies awaiting dispatch |
 | =max_connections= | 128 | 1..4096 accepted connections on this workspace listener |
 | =request_timeout= | 60 | 1..3600 seconds; absolute receive deadline and keep-alive idle deadline |
+| =read_workers= | 4 | 0..64 threads answering =GET /api/v1/:type= and =GET /api/v1/:type/:id= in parallel, each on a read-only connection of its own (0 answers every request on the main thread; hosted installs and an in-memory SQLite database always do). See [[file:architecture.org::*Concurrency][Concurrency]] |
 
 Invalid limits fail before the server executable opens its database or creates a
 workspace binding. Embedded server construction validates before initializing its

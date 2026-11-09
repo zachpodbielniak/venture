@@ -341,8 +341,12 @@ order the data flows.
   - `g_task_run_in_thread` under the feeds worker: provider parsing, exec
     providers and `venture_func_data_source_provider_new()` fetches. They
     see only their `VentureFeedRequest`.
+  - the **read workers** (`venture-parallel.c`, `server.read_workers`):
+    the one exception, and fenced -- see "Parallel reads" below. They read
+    the database through leased read-only connections, inside a gate the
+    main thread holds whenever it is not asleep in poll().
 
-  None of them may touch `VentureDatabase`, the entity registry, the
+  None of the others may touch `VentureDatabase`, the entity registry, the
   configuration, a plugin's settings or a non-atomic counter of the main
   loop's. `VentureDatabase` remembers the thread that made it, and `save`,
   `begin`, `begin_serializable` and `execute` from any other raise a
@@ -542,6 +546,54 @@ order the data flows.
   32-hex-digit bearer rule never withholds a public picture. The AI
   designer's grounding rule is code (`venture-email-ground.c`): a number or
   "free" not in the brief or the records is removed or refuses the design.
+
+## Parallel reads
+
+`GET /api/v1/:type` and `GET /api/v1/:type/:id` are answered on read worker
+threads (`server.read_workers`, 4; 0 keeps everything on the main thread).
+`docs/architecture.org` ("Concurrency") has the design; these are the traps.
+
+- **The gate is what makes it safe, not an audit.** `venture-parallel.c`
+  holds a writer-preferring lock the main thread owns at all times except
+  while its *outermost* poll sleeps (`g_main_depth() == 0`); a job holds it
+  shared. So a job never runs beside any main-thread code -- a write, a
+  signal handler, a timer, a registry reload, a handler in a nested loop.
+  Do not open the gate anywhere else, and never make a job wait for the
+  main thread (an invoke-sync, a nested loop on the default context): the
+  main thread is waiting for the job, and that is a deadlock.
+- **What jobs share with each other is the remaining risk, and it is
+  named.** The access policy's reader is per thread
+  (`venture_access_policy_bind_thread()`; a job enters a
+  `VentureAccessSnapshot` taken on the main thread), the database lease is
+  per thread, and the caches a read touches are locked (currency registry,
+  entity property layout) or made before the workers start
+  (`venture_web_parallel_start()` pre-warms the tenant service). A new lazy
+  `g_object_set_data` on the database reached from a read path must be
+  pre-warmed there too, or two jobs race to create it.
+- **Leased connections are read-only at the database** (`PRAGMA
+  query_only`, `READ ONLY` session) and see only committed data. A job
+  that writes gets an error from SQLite or PostgreSQL before anything else.
+  `reader_begin()` is refused on the home thread: a lease there would hide
+  an open transaction's rows from the thread that wrote them.
+- **The work outside the gate touches only what the job read.** A job's
+  `outside` phase (records into JSON) runs beside the main thread; only
+  per-object data, class metadata fixed at startup and locked registries
+  belong there. Anything that reads the policy, the registries or the
+  configuration goes in the gated phase.
+- **One body per answer.** `venture_web_api_list_fetch()`/`_render()` and
+  `venture_web_api_get_answer()` serve both paths;
+  `/parallel/worker-answers-match-main-thread` holds them to the same
+  bytes. Middleware that reads the response after `next()` must handle a
+  deferred one with `htmx_response_on_complete()`, as the metrics
+  middleware does.
+- **Hosted installs and in-memory databases never use the workers.** The
+  first because workspace admission and support scopes wrap the handler;
+  the second because each connection to `:memory:` is a different empty
+  database. So most of the suite runs the main-thread path, and
+  `tests/test-parallel.c` uses a file.
+- **A new parallel route** authenticates, checks roles and builds its
+  query on the main thread, then submits; never authenticate on a worker
+  (sessions are written on sign-in paths).
 
 ## The CLI, and its skill
 

@@ -346,6 +346,61 @@ venture_database_find_one(
 );
 
 /**
+ * venture_database_enable_parallel_reads:
+ * @self: a #VentureDatabase
+ * @connections: read connections to keep, one per read worker
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Opens a pool of read-only connections for read workers. Call it on the
+ * database's own thread. Refused for an in-memory SQLite database, whose
+ * connections would each be a separate, empty database.
+ *
+ * Returns: %TRUE if parallel reads are available
+ */
+gboolean
+venture_database_enable_parallel_reads(
+	VentureDatabase	 *self,
+	guint		  connections,
+	GError		**error
+);
+
+/**
+ * venture_database_has_parallel_reads:
+ * @self: a #VentureDatabase
+ *
+ * Returns: %TRUE once venture_database_enable_parallel_reads() succeeded
+ */
+gboolean
+venture_database_has_parallel_reads(VentureDatabase *self);
+
+/**
+ * venture_database_reader_begin:
+ * @self: a #VentureDatabase with parallel reads enabled
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Leases a read-only connection to the calling worker thread until
+ * venture_database_reader_end(). Every read the thread makes meanwhile
+ * goes through it, without the primary connection's lock, and sees only
+ * committed data. Refused on the database's own thread.
+ *
+ * Returns: %TRUE if the thread now holds a lease
+ */
+gboolean
+venture_database_reader_begin(
+	VentureDatabase	 *self,
+	GError		**error
+);
+
+/**
+ * venture_database_reader_end:
+ * @self: a #VentureDatabase the calling thread leased from
+ *
+ * Gives the thread's connection back to the pool.
+ */
+void
+venture_database_reader_end(VentureDatabase *self);
+
+/**
  * VentureDatabaseEachFunc:
  * @entity: (transfer none): the record just read
  * @user_data: (closure): the data passed to venture_database_find_each()

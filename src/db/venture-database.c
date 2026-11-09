@@ -65,12 +65,23 @@ struct _VentureDatabase
 	guint64			 statements;
 
 	/*
-	 * Serialises every operation. SQLite admits one writer at a time
-	 * regardless, and for a single-operator system one connection behind
-	 * a mutex is both simpler and easier to reason about than a pool --
-	 * there is no interleaving to get wrong.
+	 * Serialises every operation on the primary connection: every write,
+	 * every transaction and every read the main thread makes. SQLite
+	 * admits one writer at a time regardless, and one writer connection
+	 * behind a mutex leaves no interleaving to get wrong.
 	 */
 	GRecMutex		 lock;
+
+	/*
+	 * Read-only connections for the parallel read workers
+	 * (venture_database_enable_parallel_reads()). A worker leases one for
+	 * a whole request (venture_database_reader_begin()), reads committed
+	 * data from it without this lock, and never sees the primary
+	 * connection. NULL when parallel reads are off, which an in-memory
+	 * SQLite database always is: each of its connections is a different,
+	 * empty database.
+	 */
+	OrmConnectionPool	*read_pool;
 
 	/*
 	 * The thread that made the database, which is the only one that may
@@ -157,6 +168,12 @@ venture_database_finalize(GObject *object)
 	g_clear_object(&self->transaction);
 	g_clear_object(&self->billing);
 	g_clear_object(&self->lead_service);
+
+	if (NULL != self->read_pool)
+	{
+		orm_connection_pool_close(self->read_pool);
+		g_clear_object(&self->read_pool);
+	}
 
 	if (NULL != self->connection)
 	{
@@ -566,6 +583,145 @@ venture_database_check_thread(
 		           "database; hand the result to the main thread instead", what);
 }
 
+/* --- Parallel reads ------------------------------------------------------ */
+
+/* The connections this thread has leased, one per database. */
+typedef struct ReaderLease ReaderLease;
+struct ReaderLease
+{
+	VentureDatabase	*database;
+	OrmConnection	*connection;
+	ReaderLease	*next;
+};
+static GPrivate reader_leases;
+
+static OrmConnection *
+reader_lease_for(VentureDatabase *self)
+{
+	ReaderLease *lease;
+
+	for (lease = g_private_get(&reader_leases); NULL != lease; lease = lease->next)
+		if (lease->database == self)
+			return lease->connection;
+	return NULL;
+}
+
+/*
+ * Every leased connection is read-only at the database, not just by
+ * convention: a write slipping into a worker's path is an error from
+ * SQLite or PostgreSQL, before the g_critical a write would raise here.
+ */
+gboolean
+venture_database_enable_parallel_reads(
+	VentureDatabase	 *self,
+	guint		  connections,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	OrmConnectionPool *pool;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(connections > 0, FALSE);
+	venture_database_check_thread(self, "venture_database_enable_parallel_reads()");
+
+	if (NULL != self->read_pool)
+		return TRUE;
+
+	pool = orm_connection_pool_new(self->engine, connections, &local_error);
+	if (NULL == pool)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "Parallel reads are not available: %s",
+		            (NULL != local_error) ? local_error->message : "no pool");
+		return FALSE;
+	}
+	orm_connection_pool_set_init_sql(pool,
+		(VENTURE_DATABASE_BACKEND_POSTGRES == self->backend)
+			? "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"
+			: "PRAGMA query_only = 1");
+	self->read_pool = pool;
+	return TRUE;
+}
+
+gboolean
+venture_database_has_parallel_reads(VentureDatabase *self)
+{
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+
+	return NULL != self->read_pool;
+}
+
+gboolean
+venture_database_reader_begin(
+	VentureDatabase	 *self,
+	GError		**error
+){
+	g_autoptr(GError) local_error = NULL;
+	OrmConnection *connection;
+	ReaderLease *lease;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+
+	/* The home thread reads its own writes on the primary connection; a
+	 * lease there would hide an open transaction's rows from it. */
+	if (g_thread_self() == self->home_thread)
+	{
+		g_critical("venture_database_reader_begin() on the database's own thread");
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		                    "Only a read worker leases a connection");
+		return FALSE;
+	}
+	if (NULL == self->read_pool)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		                    "Parallel reads are not enabled");
+		return FALSE;
+	}
+	g_return_val_if_fail(NULL == reader_lease_for(self), FALSE);
+
+	connection = orm_connection_pool_acquire(self->read_pool, NULL, &local_error);
+	if (NULL == connection)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+		            "No read connection: %s",
+		            (NULL != local_error) ? local_error->message : "unknown failure");
+		return FALSE;
+	}
+
+	lease = g_new0(ReaderLease, 1);
+	lease->database = g_object_ref(self);
+	lease->connection = connection;
+	lease->next = g_private_get(&reader_leases);
+	g_private_set(&reader_leases, lease);
+	return TRUE;
+}
+
+void
+venture_database_reader_end(VentureDatabase *self)
+{
+	ReaderLease *previous = NULL;
+	ReaderLease *lease;
+
+	g_return_if_fail(VENTURE_IS_DATABASE(self));
+
+	for (lease = g_private_get(&reader_leases); NULL != lease; previous = lease, lease = lease->next)
+	{
+		if (lease->database != self)
+			continue;
+		if (NULL == previous)
+			g_private_set(&reader_leases, lease->next);
+		else
+			previous->next = lease->next;
+		/* Release takes the reference, closes any cursor left open and
+		 * rolls back anything a read began. */
+		orm_connection_pool_release(self->read_pool, lease->connection);
+		g_object_unref(lease->database);
+		g_free(lease);
+		return;
+	}
+	g_critical("venture_database_reader_end(): this thread holds no lease");
+}
+
 gboolean
 venture_database_execute(
 	VentureDatabase	 *self,
@@ -593,7 +749,7 @@ venture_database_execute(
 		return FALSE;
 	}
 
-	self->statements++;
+	__atomic_add_fetch(&self->statements, 1, __ATOMIC_RELAXED);
 	ok = (NULL != params)
 		? orm_connection_execute_with_params(self->connection, sql,
 		                                     params, &local_error)
@@ -625,6 +781,28 @@ venture_database_query_raw(
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), NULL);
 	g_return_val_if_fail(NULL != sql, NULL);
 
+	/* A parallel read worker reads through its own leased connection,
+	 * never the primary one and never under its lock. */
+	{
+		OrmConnection *leased = reader_lease_for(self);
+
+		if (NULL != leased)
+		{
+			__atomic_add_fetch(&self->statements, 1, __ATOMIC_RELAXED);
+			result = (NULL != params)
+				? orm_connection_query_with_params(leased, sql, params, &local_error)
+				: orm_connection_query(leased, sql, &local_error);
+			if (NULL == result)
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
+				            "%s", (NULL != local_error) ? local_error->message
+				                                        : "query failed");
+				return NULL;
+			}
+			return result;
+		}
+	}
+
 	g_rec_mutex_lock(&self->lock);
 
 	/* PostgreSQL inserts use RETURNING through this path as well. */
@@ -636,7 +814,7 @@ venture_database_query_raw(
 		return NULL;
 	}
 
-	self->statements++;
+	__atomic_add_fetch(&self->statements, 1, __ATOMIC_RELAXED);
 	result = (NULL != params)
 		? orm_connection_query_with_params(self->connection, sql, params,
 		                                   &local_error)
@@ -3088,5 +3266,5 @@ venture_database_get_statement_count(
 ){
 	g_return_val_if_fail(VENTURE_IS_DATABASE(self), 0);
 
-	return self->statements;
+	return __atomic_load_n(&self->statements, __ATOMIC_RELAXED);
 }

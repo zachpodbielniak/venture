@@ -47,6 +47,13 @@ server:
   # Aggregate body bytes awaiting dispatch; must cover one maximum body.
   max_buffered_request_mb: 64
 
+  # Threads answering record reads (GET /api/v1/TYPE and /api/v1/TYPE/ID)
+  # in parallel, each on a read-only connection of its own. They run only
+  # while the main thread is idle, so writes keep every guarantee they had.
+  # 0 answers every request on the main thread. An in-memory SQLite
+  # database cannot share connections and always uses the main thread.
+  read_workers: 4
+
 database:
   # sqlite:///absolute/path.db, sqlite://relative/path.db, sqlite://:memory:
   # postgres://user@host/dbname   (password from the environment, see below)

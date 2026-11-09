@@ -1,12 +1,16 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 
-struct _VentureAccessPolicy
+/*
+ * Who is reading, and the answers kept for one list read. The home thread
+ * (and any thread that never bound one) uses the policy's own; a worker
+ * serving a parallel read binds a state of its own for the job
+ * (venture_access_policy_bind_thread()), so readers on several threads
+ * never see each other's actor or caches.
+ */
+typedef struct
 {
-	GObject parent_instance;
-	VentureDatabase *database;
 	const VentureAuthPrincipal *actor;
-	guint decide_signal;
 	const gchar *read_action;
 	gint64 organization_id;
 	/*
@@ -21,11 +25,41 @@ struct _VentureAccessPolicy
 	GHashTable *batch_members;
 	GHashTable *batch_resources;
 	gboolean shared_only;
+} PolicyState;
+
+struct _VentureAccessPolicy
+{
+	GObject parent_instance;
+	VentureDatabase *database;
+	guint decide_signal;
+	PolicyState state;
 };
+
+/* A thread's own states, one per policy it has bound. */
+typedef struct ThreadBinding ThreadBinding;
+struct ThreadBinding
+{
+	VentureAccessPolicy *policy;
+	PolicyState state;
+	ThreadBinding *next;
+};
+static GPrivate thread_bindings;
+
+static PolicyState *
+st(VentureAccessPolicy *self)
+{
+	ThreadBinding *binding;
+	for (binding = g_private_get(&thread_bindings); NULL != binding; binding = binding->next)
+		if (binding->policy == self)
+			return &binding->state;
+	return &self->state;
+}
+
 struct _VentureAccessScope
 {
 	GObject parent_instance;
 	VentureAccessPolicy *policy;
+	PolicyState *state;	/* the state this scope changed, on its thread */
 	const VentureAuthPrincipal *previous;
 	VentureAuthPrincipal *actor;
 	const gchar *previous_action;
@@ -102,16 +136,16 @@ static void
 venture_access_policy_init(VentureAccessPolicy *self)
 {
 	self->decide_signal = g_signal_lookup("decide", VENTURE_TYPE_ACCESS_POLICY);
-	self->read_action = "read";
+	self->state.read_action = "read";
 }
 static void
 scope_finalize(GObject *object)
 {
 	VentureAccessScope *self = VENTURE_ACCESS_SCOPE(object);
-	self->policy->actor = self->previous;
-	self->policy->read_action = self->previous_action;
-	self->policy->organization_id = self->previous_organization;
-	self->policy->shared_only = self->previous_shared_only;
+	self->state->actor = self->previous;
+	self->state->read_action = self->previous_action;
+	self->state->organization_id = self->previous_organization;
+	self->state->shared_only = self->previous_shared_only;
 	g_clear_pointer(&self->actor, venture_auth_principal_free);
 	g_clear_object(&self->policy);
 	G_OBJECT_CLASS(venture_access_scope_parent_class)->finalize(object);
@@ -125,6 +159,115 @@ static void
 venture_access_scope_init(VentureAccessScope *self)
 {
 }
+/*
+ * A worker thread serving a parallel read gets a state of its own, so its
+ * actor, its organization pin and its list caches are never another
+ * thread's. Unbound threads share the policy's own state, as every thread
+ * always did.
+ */
+void
+venture_access_policy_bind_thread(VentureAccessPolicy *self)
+{
+	ThreadBinding *binding;
+
+	g_return_if_fail(VENTURE_IS_ACCESS_POLICY(self));
+	for (binding = g_private_get(&thread_bindings); NULL != binding; binding = binding->next)
+		g_return_if_fail(binding->policy != self);
+
+	binding = g_new0(ThreadBinding, 1);
+	binding->policy = g_object_ref(self);
+	binding->state.read_action = "read";
+	binding->state.batch_tenant_administrator = -1;
+	binding->next = g_private_get(&thread_bindings);
+	g_private_set(&thread_bindings, binding);
+}
+
+void
+venture_access_policy_unbind_thread(VentureAccessPolicy *self)
+{
+	ThreadBinding *head = g_private_get(&thread_bindings);
+	ThreadBinding *previous = NULL;
+	ThreadBinding *binding;
+
+	g_return_if_fail(VENTURE_IS_ACCESS_POLICY(self));
+	for (binding = head; NULL != binding; previous = binding, binding = binding->next)
+	{
+		if (binding->policy != self)
+			continue;
+		/* A scope still open would restore into freed state. */
+		g_warn_if_fail(NULL == binding->state.actor && NULL == binding->state.batch_actor);
+		if (NULL == previous)
+			g_private_set(&thread_bindings, binding->next);
+		else
+			previous->next = binding->next;
+		g_clear_pointer(&binding->state.batch_members, g_hash_table_unref);
+		g_clear_pointer(&binding->state.batch_resources, g_hash_table_unref);
+		g_object_unref(binding->policy);
+		g_free(binding);
+		return;
+	}
+	g_critical("venture_access_policy_unbind_thread(): this thread never bound the policy");
+}
+
+struct _VentureAccessSnapshot
+{
+	VentureAuthPrincipal *actor;	/* NULL: trusted internal work */
+	const gchar *read_action;	/* a static string */
+	gint64 organization_id;
+	gboolean shared_only;
+};
+
+/*
+ * What this thread's reader is right now, to be read again on another
+ * thread: the request is authenticated and scoped on the main thread and
+ * answered on a worker, which must judge as exactly the same reader.
+ */
+VentureAccessSnapshot *
+venture_access_policy_snapshot(VentureAccessPolicy *self)
+{
+	VentureAccessSnapshot *snapshot;
+	PolicyState *state;
+
+	g_return_val_if_fail(VENTURE_IS_ACCESS_POLICY(self), NULL);
+	state = st(self);
+	snapshot = g_new0(VentureAccessSnapshot, 1);
+	if (NULL != state->actor)
+	{
+		snapshot->actor = g_new(VentureAuthPrincipal, 1);
+		*snapshot->actor = *state->actor;
+		snapshot->actor->name = g_strdup(state->actor->name);
+	}
+	snapshot->read_action = state->read_action;
+	snapshot->organization_id = state->organization_id;
+	snapshot->shared_only = state->shared_only;
+	return snapshot;
+}
+
+void
+venture_access_snapshot_free(VentureAccessSnapshot *snapshot)
+{
+	if (NULL == snapshot)
+		return;
+	g_clear_pointer(&snapshot->actor, venture_auth_principal_free);
+	g_free(snapshot);
+}
+
+VentureAccessScope *
+venture_access_policy_enter_snapshot(VentureAccessPolicy *self, const VentureAccessSnapshot *snapshot)
+{
+	VentureAccessScope *scope;
+	PolicyState *state;
+
+	g_return_val_if_fail(VENTURE_IS_ACCESS_POLICY(self), NULL);
+	g_return_val_if_fail(NULL != snapshot, NULL);
+	scope = venture_access_policy_enter(self, snapshot->actor);
+	state = st(self);
+	state->read_action = snapshot->read_action;
+	state->organization_id = snapshot->organization_id;
+	state->shared_only = snapshot->shared_only;
+	return scope;
+}
+
 VentureAccessPolicy *
 venture_access_policy_new(VentureDatabase *database)
 {
@@ -137,21 +280,22 @@ venture_access_policy_enter(VentureAccessPolicy *self, const VentureAuthPrincipa
 {
 	VentureAccessScope *scope = g_object_new(VENTURE_TYPE_ACCESS_SCOPE, NULL);
 	scope->policy = g_object_ref(self);
-	scope->previous = self->actor;
-	scope->previous_action = self->read_action;
-	scope->previous_organization = self->organization_id;
-	scope->previous_shared_only = self->shared_only;
+	scope->state = st(self);
+	scope->previous = st(self)->actor;
+	scope->previous_action = st(self)->read_action;
+	scope->previous_organization = st(self)->organization_id;
+	scope->previous_shared_only = st(self)->shared_only;
 	/* An internal boundary starts independent work. Nested user scopes
 	 * retain restrictions instead of widening a paid organization's tools. */
-	if (!actor) { self->organization_id = 0; self->shared_only = FALSE; }
-	self->read_action = "read";
+	if (!actor) { st(self)->organization_id = 0; st(self)->shared_only = FALSE; }
+	st(self)->read_action = "read";
 	if (NULL != actor)
 	{
 		scope->actor = g_new(VentureAuthPrincipal, 1);
 		*scope->actor = *actor;
 		scope->actor->name = g_strdup(actor->name);
 	}
-	self->actor = scope->actor;
+	st(self)->actor = scope->actor;
 	return scope;
 }
 VentureAccessScope *
@@ -159,26 +303,26 @@ venture_access_policy_enter_organization(VentureAccessPolicy *self,
 	const VentureAuthPrincipal *actor, gint64 organization_id)
 {
 	VentureAccessScope *scope = venture_access_policy_enter(self, actor);
-	self->organization_id = organization_id > 0 &&
+	st(self)->organization_id = organization_id > 0 &&
 		(scope->previous_organization == 0 || scope->previous_organization == organization_id) ? organization_id : -1;
 	return scope;
 }
 VentureAccessScope *
 venture_access_policy_enter_shared(VentureAccessPolicy *self, gint64 organization_id)
 {
-	VentureAccessScope *scope = venture_access_policy_enter_organization(self, self->actor, organization_id);
-	self->shared_only = TRUE;
+	VentureAccessScope *scope = venture_access_policy_enter_organization(self, st(self)->actor, organization_id);
+	st(self)->shared_only = TRUE;
 	return scope;
 }
 gint64
 venture_access_policy_get_organization(VentureAccessPolicy *self)
 {
-	return self->organization_id;
+	return st(self)->organization_id;
 }
 const VentureAuthPrincipal *
 venture_access_policy_get_actor(VentureAccessPolicy *self)
 {
-	return self->actor;
+	return st(self)->actor;
 }
 static gboolean
 administrator(const VentureAuthPrincipal *actor)
@@ -207,28 +351,28 @@ tenant_administrator_uncached(VentureAccessPolicy *self, const VentureAuthPrinci
 static gboolean
 batched(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
 {
-	return NULL != actor && actor == self->batch_actor;
+	return NULL != actor && actor == st(self)->batch_actor;
 }
 static gboolean
 tenant_administrator(VentureAccessPolicy *self, const VentureAuthPrincipal *actor)
 {
 	if (!batched(self, actor))
 		return tenant_administrator_uncached(self, actor);
-	if (self->batch_tenant_administrator < 0)
-		self->batch_tenant_administrator = tenant_administrator_uncached(self, actor);
-	return self->batch_tenant_administrator;
+	if (st(self)->batch_tenant_administrator < 0)
+		st(self)->batch_tenant_administrator = tenant_administrator_uncached(self, actor);
+	return st(self)->batch_tenant_administrator;
 }
 /* The workspace accepts this reader. A refusal is never kept, so its
  * error is always the service's own. */
 static gboolean
 principal_allowed(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, GError **error)
 {
-	if (batched(self, actor) && self->batch_principal)
+	if (batched(self, actor) && st(self)->batch_principal)
 		return TRUE;
 	if (!venture_tenant_service_check_principal(venture_tenant_service_get(self->database), actor, error))
 		return FALSE;
 	if (batched(self, actor))
-		self->batch_principal = TRUE;
+		st(self)->batch_principal = TRUE;
 	return TRUE;
 }
 /* The workspace's consent to reading or writing this kind of record. */
@@ -240,12 +384,12 @@ resource_allowed(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, V
 	 * type. OR-ing it in would make a write of one type look like a read
 	 * of the next. */
 	gpointer key = GSIZE_TO_POINTER(((gsize)G_OBJECT_TYPE(entity) << 1) | (write ? 1u : 0u));
-	if (batched(self, actor) && g_hash_table_contains(self->batch_resources, key))
+	if (batched(self, actor) && g_hash_table_contains(st(self)->batch_resources, key))
 		return TRUE;
 	if (!venture_tenant_service_check_resource(venture_tenant_service_get(self->database), G_OBJECT(entity), write, error))
 		return FALSE;
 	if (batched(self, actor))
-		g_hash_table_add(self->batch_resources, key);
+		g_hash_table_add(st(self)->batch_resources, key);
 	return TRUE;
 }
 static gint
@@ -278,10 +422,10 @@ membership(VentureAccessPolicy *self, const VentureAuthPrincipal *actor, gint64 
 	gpointer known;
 	if (!batched(self, actor))
 		return membership_uncached(self, actor, org);
-	if (g_hash_table_lookup_extended(self->batch_members, &org, NULL, &known))
+	if (g_hash_table_lookup_extended(st(self)->batch_members, &org, NULL, &known))
 		return known ? g_object_ref(known) : NULL;
 	member = membership_uncached(self, actor, org);
-	g_hash_table_insert(self->batch_members, g_memdup2(&org, sizeof org), member ? g_object_ref(member) : NULL);
+	g_hash_table_insert(st(self)->batch_members, g_memdup2(&org, sizeof org), member ? g_object_ref(member) : NULL);
 	return member;
 }
 static VentureEntity *
@@ -759,7 +903,7 @@ venture_access_policy_can(VentureAccessPolicy *self, const VentureAuthPrincipal 
 	if (!read && 0 != g_strcmp0(action, "write") && 0 != g_strcmp0(action, "delete"))
 		return refuse(error, FALSE);
 	org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
-	if (self->organization_id != 0 && org != self->organization_id)
+	if (st(self)->organization_id != 0 && org != st(self)->organization_id)
 		return refuse(error, TRUE);
 	/* This feed combines outcomes from several permission domains. Only
 	 * the organization's administrators may consume its complete stream. */
@@ -975,7 +1119,7 @@ venture_access_policy_requires_approval(VentureAccessPolicy *self, const Venture
 	 * judges it; its own organization column says nothing about who runs
 	 * it, and reading it refused an owner her own profile as not found. */
 	gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
-	if (self->organization_id != 0 && org != self->organization_id)
+	if (st(self)->organization_id != 0 && org != st(self)->organization_id)
 	{
 		refuse(error, TRUE);
 		return FALSE;
@@ -1033,7 +1177,7 @@ member_organizations(VentureAccessPolicy *self, GType type)
 	g_autoptr(VentureEntity) prototype = NULL;
 	g_autoptr(GPtrArray) fields = NULL;
 	VentureTenantService *tenant = venture_tenant_service_get(self->database);
-	const VentureAuthPrincipal *actor = self->actor;
+	const VentureAuthPrincipal *actor = st(self)->actor;
 	GHashTable *organizations;
 	guint i;
 	if (NULL == actor || !actor->authenticated || actor->user_id <= 0 || administrator(actor))
@@ -1114,7 +1258,7 @@ organization_column(GType type)
 static gboolean
 decided_by_organization(VentureAccessPolicy *self, GType type, GArray **organizations)
 {
-	const VentureAuthPrincipal *actor = self->actor;
+	const VentureAuthPrincipal *actor = st(self)->actor;
 	g_autoptr(VentureEntity) prototype = NULL;
 	g_autoptr(GPtrArray) fields = NULL;
 	g_autoptr(GArray) visible = NULL;
@@ -1131,7 +1275,7 @@ decided_by_organization(VentureAccessPolicy *self, GType type, GArray **organiza
 	    type == VENTURE_TYPE_INTEGRATION_CONNECTION || type == VENTURE_TYPE_RECORD_LINK ||
 	    type == VENTURE_TYPE_JOURNAL || type == VENTURE_TYPE_ACCOUNT)
 		return FALSE;
-	if (0 != g_strcmp0(self->read_action, "read") && 0 != g_strcmp0(self->read_action, "export"))
+	if (0 != g_strcmp0(st(self)->read_action, "read") && 0 != g_strcmp0(st(self)->read_action, "export"))
 		return FALSE;
 	if (venture_tenant_service_is_enabled(venture_tenant_service_get(self->database)))
 		return FALSE;
@@ -1163,8 +1307,8 @@ decided_by_organization(VentureAccessPolicy *self, GType type, GArray **organiza
 	/* The organizations the reader is an active member of, or just the
 	 * pinned one; membership() then says whether each really counts. */
 	candidates = g_array_new(FALSE, FALSE, sizeof(gint64));
-	if (0 != self->organization_id)
-		g_array_append_val(candidates, self->organization_id);
+	if (0 != st(self)->organization_id)
+		g_array_append_val(candidates, st(self)->organization_id);
 	else
 	{
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(self, NULL);
@@ -1206,7 +1350,7 @@ decided_by_organization(VentureAccessPolicy *self, GType type, GArray **organiza
 		if (role != VENTURE_ORGANIZATION_ROLE_OWNER && role != VENTURE_ORGANIZATION_ROLE_ADMIN &&
 		    role != VENTURE_ORGANIZATION_ROLE_EDITOR && role != VENTURE_ORGANIZATION_ROLE_FINANCE)
 			return FALSE;
-		if (!role_allows(self, actor, self->read_action, prototype, role))
+		if (!role_allows(self, actor, st(self)->read_action, prototype, role))
 			continue;
 		if (actor->token_id > 0)
 		{
@@ -1216,7 +1360,7 @@ decided_by_organization(VentureAccessPolicy *self, GType type, GArray **organiza
 			if (token != VENTURE_ORGANIZATION_ROLE_OWNER && token != VENTURE_ORGANIZATION_ROLE_ADMIN &&
 			    token != VENTURE_ORGANIZATION_ROLE_EDITOR && token != VENTURE_ORGANIZATION_ROLE_FINANCE)
 				return FALSE;
-			if (!role_allows(self, actor, self->read_action, prototype, token))
+			if (!role_allows(self, actor, st(self)->read_action, prototype, token))
 				continue;
 		}
 		g_array_append_val(visible, org);
@@ -1238,9 +1382,9 @@ narrowed_query(VentureAccessPolicy *self, VentureQuery *query, GArray *organizat
 	GType type = venture_query_get_entity_type(query);
 	guint i;
 
-	if (0 != self->organization_id &&
+	if (0 != st(self)->organization_id &&
 	    !venture_query_add_filter_int(copy, organization_column(type), VENTURE_FILTER_OP_EQ,
-	                                  self->organization_id, NULL))
+	                                  st(self)->organization_id, NULL))
 		return NULL;
 	if (NULL != organizations)
 	{
@@ -1286,25 +1430,25 @@ visible_walk_row(VentureEntity *entity, gpointer user_data)
 {
 	VisibleWalk *walk = user_data;
 	VentureAccessPolicy *self = walk->policy;
-	const VentureAuthPrincipal *inner_actor = self->actor;
-	gint64 inner_organization = self->organization_id;
-	gboolean inner_shared = self->shared_only;
-	const gchar *inner_action = self->read_action;
+	const VentureAuthPrincipal *inner_actor = st(self)->actor;
+	gint64 inner_organization = st(self)->organization_id;
+	gboolean inner_shared = st(self)->shared_only;
+	const gchar *inner_action = st(self)->read_action;
 	gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
 	gboolean readable;
 
 	if (NULL != walk->members && !g_hash_table_contains(walk->members, &org))
 		return TRUE;
 
-	self->actor = walk->actor;
-	self->organization_id = walk->organization_id;
-	self->shared_only = walk->shared_only;
-	self->read_action = walk->read_action;
+	st(self)->actor = walk->actor;
+	st(self)->organization_id = walk->organization_id;
+	st(self)->shared_only = walk->shared_only;
+	st(self)->read_action = walk->read_action;
 	readable = venture_access_policy_check_read(self, entity, NULL);
-	self->actor = inner_actor;
-	self->organization_id = inner_organization;
-	self->shared_only = inner_shared;
-	self->read_action = inner_action;
+	st(self)->actor = inner_actor;
+	st(self)->organization_id = inner_organization;
+	st(self)->shared_only = inner_shared;
+	st(self)->read_action = inner_action;
 
 	if (!readable)
 		return TRUE;
@@ -1340,10 +1484,10 @@ walk_visible(VentureAccessPolicy *self, VentureQuery *query, GPtrArray *result, 
 	walk.offset = (NULL != result) ? venture_query_get_offset(query) : 0;
 	walk.limit = (NULL != result) ? venture_query_get_limit(query) : 0;
 	walk.visible = 0;
-	walk.actor = self->actor;
-	walk.organization_id = self->organization_id;
-	walk.shared_only = self->shared_only;
-	walk.read_action = self->read_action;
+	walk.actor = st(self)->actor;
+	walk.organization_id = st(self)->organization_id;
+	walk.shared_only = st(self)->shared_only;
+	walk.read_action = st(self)->read_action;
 
 	internal = venture_access_policy_enter(self, NULL);
 	ok = venture_database_find_each(self->database, all, visible_walk_row, &walk, error);
@@ -1395,26 +1539,26 @@ find_visible(VentureAccessPolicy *self, VentureQuery *query, GError **error)
 static void
 begin_batch(VentureAccessPolicy *self)
 {
-	self->batch_actor = self->actor;
-	self->batch_principal = FALSE;
-	self->batch_tenant_administrator = -1;
-	self->batch_members = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, unref_member);
-	self->batch_resources = g_hash_table_new(g_direct_hash, g_direct_equal);
+	st(self)->batch_actor = st(self)->actor;
+	st(self)->batch_principal = FALSE;
+	st(self)->batch_tenant_administrator = -1;
+	st(self)->batch_members = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, unref_member);
+	st(self)->batch_resources = g_hash_table_new(g_direct_hash, g_direct_equal);
 }
 
 static void
 end_batch(VentureAccessPolicy *self)
 {
-	self->batch_actor = NULL;
-	g_clear_pointer(&self->batch_members, g_hash_table_unref);
-	g_clear_pointer(&self->batch_resources, g_hash_table_unref);
+	st(self)->batch_actor = NULL;
+	g_clear_pointer(&st(self)->batch_members, g_hash_table_unref);
+	g_clear_pointer(&st(self)->batch_resources, g_hash_table_unref);
 }
 
 GPtrArray *
 venture_access_policy_find(VentureAccessPolicy *self, VentureQuery *query, GError **error)
 {
 	GPtrArray *result;
-	if (NULL == self->actor || NULL != self->batch_actor)
+	if (NULL == st(self)->actor || NULL != st(self)->batch_actor)
 		return find_visible(self, query, error);
 	begin_batch(self);
 	result = find_visible(self, query, error);
@@ -1444,7 +1588,7 @@ check_mutation_authority(VentureAccessPolicy *self, VentureEntity *entity, const
 	g_autoptr(VentureAccessScope) internal = NULL;
 	if (record_write && !venture_tenant_service_check_write(venture_tenant_service_get(self->database), entity, error))
 		return FALSE;
-	if (NULL == self->actor && self->organization_id == 0)
+	if (NULL == st(self)->actor && st(self)->organization_id == 0)
 		return TRUE;
 	if (venture_entity_is_persisted(entity))
 	{
@@ -1453,14 +1597,14 @@ check_mutation_authority(VentureAccessPolicy *self, VentureEntity *entity, const
 		g_clear_object(&internal);
 		if (NULL == previous)
 			return refuse(error, TRUE);
-		if (!(self->actor ? venture_access_policy_can(self, self->actor, action, previous, error) :
+		if (!(st(self)->actor ? venture_access_policy_can(self, st(self)->actor, action, previous, error) :
 			venture_access_policy_check_read(self, previous, error)))
 			return FALSE;
 	}
-	if (NULL != self->actor && !administrator(self->actor) && !tenant_administrator(self, self->actor) &&
+	if (NULL != st(self)->actor && !administrator(st(self)->actor) && !tenant_administrator(self, st(self)->actor) &&
 	    organization_structure_changed(entity, previous))
 		return refuse(error, FALSE);
-	return self->actor ? venture_access_policy_can(self, self->actor, action, entity, error) :
+	return st(self)->actor ? venture_access_policy_can(self, st(self)->actor, action, entity, error) :
 		venture_access_policy_check_read(self, entity, error);
 }
 
@@ -1484,9 +1628,9 @@ gboolean
 venture_access_policy_check_read(VentureAccessPolicy *self, VentureEntity *entity, GError **error)
 {
 	gint64 org = VENTURE_IS_ORGANIZATION(entity) ? venture_entity_get_id(entity) : venture_entity_get_organization_id(entity);
-	if (self->shared_only && personal_record(self, entity)) return refuse(error, TRUE);
-	if (self->organization_id != 0 && org != self->organization_id) return refuse(error, TRUE);
-	return NULL == self->actor || venture_access_policy_can(self, self->actor, self->read_action, entity, error);
+	if (st(self)->shared_only && personal_record(self, entity)) return refuse(error, TRUE);
+	if (st(self)->organization_id != 0 && org != st(self)->organization_id) return refuse(error, TRUE);
+	return NULL == st(self)->actor || venture_access_policy_can(self, st(self)->actor, st(self)->read_action, entity, error);
 }
 gint64
 venture_access_policy_count(VentureAccessPolicy *self, VentureQuery *query, GError **error)
@@ -1509,7 +1653,7 @@ venture_access_policy_count(VentureAccessPolicy *self, VentureQuery *query, GErr
 	}
 
 	/* Row by row, as a list read: the same batch answers, no rows kept. */
-	if (NULL == self->actor || NULL != self->batch_actor)
+	if (NULL == st(self)->actor || NULL != st(self)->batch_actor)
 		return walk_visible(self, query, NULL, &count, error) ? count : -1;
 	begin_batch(self);
 	if (!walk_visible(self, query, NULL, &count, error))
@@ -1632,7 +1776,7 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 			}
 			scope = venture_access_policy_enter(policy, actor);
 			if (venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context))) > 0)
-				policy->organization_id = venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context)));
+				st(policy)->organization_id = venture_tenant_service_get_support_organization(venture_tenant_service_get(venture_context_get_database(context)));
 			/* /metrics belongs to no organization: a scraper's token has
 			 * no membership and is answered there, not sent to /account. */
 			if (!g_object_get_data(G_OBJECT(request), "venture-hosted-control") &&
@@ -1662,7 +1806,7 @@ venture_orgaccess_web_dispatch(VentureAuth *auth, VentureContext *context,
 	if (venture_mfa_web_gate(context, http, actor))
 		return;
 	if (NULL != scope && (g_str_has_suffix(path, "/export") || 0 == g_strcmp0(htmx_request_get_query_param(request, "format"), "csv")))
-		scope->policy->read_action = "export";
+		scope->state->read_action = "export";
 	next(http, next_data);
 }
 
