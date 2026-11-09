@@ -35464,6 +35464,9 @@ venture_web_server_start(
 			socket_address = g_inet_socket_address_new(address, self->port);
 			if (!soup_server_listen(server, socket_address, SOUP_SERVER_LISTEN_HTTPS, error))
 				return FALSE;
+			/* Bound behind htmx-glib's back, so it would keep GSocket's
+			 * backlog of ten and drop a burst of clients' SYNs. */
+			htmx_server_apply_listen_backlog(self->server);
 			uris = soup_server_get_uris(server);
 			g_free(self->base_url);
 			self->base_url = g_uri_to_string((GUri *)uris->data);

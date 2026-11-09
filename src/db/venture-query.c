@@ -149,6 +149,68 @@ venture_query_new(GType entity_type)
 	return self;
 }
 
+/*
+ * Every member is copied, the filter operands too, so a caller may narrow
+ * the copy (the access policy adds its organization bound) without the
+ * query it was handed changing underneath whoever owns that one.
+ */
+VentureQuery *
+venture_query_copy(VentureQuery *self)
+{
+	VentureQuery *copy;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), NULL);
+
+	copy = venture_query_new(self->entity_type);
+
+	for (i = 0; i < self->filters->len; i++)
+	{
+		const VentureQueryFilterEntry *entry = g_ptr_array_index(self->filters, i);
+		VentureQueryFilterEntry *dup = g_new0(VentureQueryFilterEntry, 1);
+		guint j;
+
+		dup->column = g_strdup(entry->column);
+		dup->value_type = entry->value_type;
+		dup->op = entry->op;
+		if (NULL != entry->values)
+		{
+			dup->values = g_ptr_array_new_with_free_func(g_free);
+			for (j = 0; j < entry->values->len; j++)
+				g_ptr_array_add(dup->values,
+					g_strdup(g_ptr_array_index(entry->values, j)));
+		}
+		g_ptr_array_add(copy->filters, dup);
+	}
+
+	for (i = 0; i < self->orders->len; i++)
+	{
+		const VentureQueryOrderEntry *entry = g_ptr_array_index(self->orders, i);
+		VentureQueryOrderEntry *dup = g_new0(VentureQueryOrderEntry, 1);
+
+		dup->column = g_strdup(entry->column);
+		dup->direction = entry->direction;
+		g_ptr_array_add(copy->orders, dup);
+	}
+
+	copy->search = g_strdup(self->search);
+	copy->limit = self->limit;
+	copy->offset = self->offset;
+	copy->organization_id = self->organization_id;
+	if (NULL != self->organization_tree)
+	{
+		copy->organization_tree = g_array_sized_new(FALSE, FALSE, sizeof(gint64),
+			self->organization_tree->len);
+		g_array_append_vals(copy->organization_tree,
+			self->organization_tree->data, self->organization_tree->len);
+	}
+	copy->include_deleted = self->include_deleted;
+	if (NULL != self->as_of)
+		copy->as_of = g_date_time_ref(self->as_of);
+
+	return copy;
+}
+
 VentureQuery *
 venture_query_new_for_name(
 	VentureEntityRegistry	 *registry,

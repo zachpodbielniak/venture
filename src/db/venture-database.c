@@ -2056,6 +2056,64 @@ venture_database_find(
 	return entities;
 }
 
+/*
+ * One record at a time, from one cursor, so a reader that needs only the
+ * first N rows that pass a test stops reading at the Nth instead of
+ * building every row of the table first. The access policy pages a list
+ * this way: it judges each row itself, which is why this refuses to run
+ * while an actor or an organization is in scope -- it would hand back
+ * rows nobody had judged.
+ */
+gboolean
+venture_database_find_each(
+	VentureDatabase		 *self,
+	VentureQuery		 *query,
+	VentureDatabaseEachFunc	  func,
+	gpointer		  user_data,
+	GError			**error
+){
+	g_autoptr(OrmResult) result = NULL;
+	g_autofree gchar *sql = NULL;
+	GType entity_type;
+	GList *params = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_DATABASE(self), FALSE);
+	g_return_val_if_fail(VENTURE_IS_QUERY(query), FALSE);
+	g_return_val_if_fail(NULL != func, FALSE);
+
+	if (NULL != venture_access_policy_get_actor(self->access_policy) ||
+	    0 != venture_access_policy_get_organization(self->access_policy))
+	{
+		g_critical("venture_database_find_each() called inside an access scope; "
+		           "it would return rows the policy never judged");
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Streaming reads run only in the internal scope");
+		return FALSE;
+	}
+
+	entity_type = venture_query_get_entity_type(query);
+	sql = venture_query_to_sql(query, venture_database_dialect(self), FALSE,
+	                           &params);
+	result = venture_database_query_raw(self, sql, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+
+	if (NULL == result)
+		return FALSE;
+
+	while (orm_result_next(result))
+	{
+		g_autoptr(VentureEntity) entity = g_object_new(entity_type, NULL);
+
+		venture_schema_populate_entity(entity, orm_result_get_row(result));
+		if (!func(entity, user_data))
+			break;
+	}
+
+	/* A half-read cursor holds SQLite's read snapshot until it is
+	 * finalized; the autoptr closes it here, before anything else runs. */
+	return TRUE;
+}
+
 VentureEntity *
 venture_database_find_one(
 	VentureDatabase	 *self,

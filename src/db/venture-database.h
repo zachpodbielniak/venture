@@ -346,6 +346,40 @@ venture_database_find_one(
 );
 
 /**
+ * VentureDatabaseEachFunc:
+ * @entity: (transfer none): the record just read
+ * @user_data: (closure): the data passed to venture_database_find_each()
+ *
+ * Returns: %TRUE to read the next record, %FALSE to stop
+ */
+typedef gboolean (*VentureDatabaseEachFunc)(VentureEntity *entity, gpointer user_data);
+
+/**
+ * venture_database_find_each:
+ * @self: a #VentureDatabase
+ * @query: the query to run
+ * @func: (scope call): called with each matching record, in order
+ * @user_data: (closure func): data for @func
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Streams the records @query matches from one cursor, stopping as soon as
+ * @func returns %FALSE. Only the internal scope may call it: inside an
+ * actor's or an organization's scope it refuses, because it does not judge
+ * the rows it reads.
+ *
+ * Returns: %TRUE if the rows were read (all of them or until @func
+ *   stopped), %FALSE on error
+ */
+gboolean
+venture_database_find_each(
+	VentureDatabase		 *self,
+	VentureQuery		 *query,
+	VentureDatabaseEachFunc	  func,
+	gpointer		  user_data,
+	GError			**error
+);
+
+/**
  * venture_database_find:
  * @self: a #VentureDatabase
  * @query: the query to run

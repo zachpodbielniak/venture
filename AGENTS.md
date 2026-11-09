@@ -412,6 +412,19 @@ order the data flows.
   it to narrow. Push it into the `VentureQuery` (an `IN` over
   `venture_category_descendants()` for "this category and beneath"), and
   test with `venture_aggregate_set_max_rows()` rather than 20 000 rows.
+- **A list an actor reads is paged in SQL only when the organization
+  decides it.** `decided_by_organization()` in `venture-access-policy.c`
+  is `check_read()` worked out once per type and reader; it must give up
+  (return FALSE) for anything that looks past the row's organization --
+  a privacy field, a type with its own rule in `can()`, a row-level role
+  (viewer, sales, support, accountant), a hosted workspace, a connected
+  `decide` handler. Adding a rule to `can()` that reads the row means
+  adding its type or role there too. Every row the shortcut returns is
+  re-judged and a refusal falls back, so a mistake hides rows rather than
+  leaking them; `/orgaccess/list-paging-matches-row-by-row` is the alarm.
+  Everything else streams through `venture_database_find_each()` and
+  stops at a full page: never go back to building the whole table to cut
+  out a page.
 - **SQL that aggregates must say what type it wants.** SQLite returns
   `SUM(integer)` as an integer; PostgreSQL widens it to numeric, and the
   typed accessor asserts. Cast aggregates explicitly — `CAST(SUM(x) AS

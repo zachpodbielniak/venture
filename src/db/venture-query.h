@@ -58,6 +58,18 @@ VentureQuery *
 venture_query_new(GType entity_type);
 
 /**
+ * venture_query_copy:
+ * @self: a #VentureQuery
+ *
+ * Makes an independent copy: filters, orders, search, paging, the
+ * organization scope, deleted rows and the as-of cutoff.
+ *
+ * Returns: (transfer full): a new query equal to @self
+ */
+VentureQuery *
+venture_query_copy(VentureQuery *self);
+
+/**
  * venture_query_new_for_name:
  * @registry: the registry to resolve @entity_name in
  * @entity_name: the record type name
