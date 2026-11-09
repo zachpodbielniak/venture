@@ -95,6 +95,23 @@ VentureMoney *venture_settlement_service_invoice_balance(VentureSettlementServic
 	gint64 invoice_id, GDateTime *as_of, GError **error);
 
 /**
+ * venture_settlement_service_invoice_balances:
+ * @self: the service
+ * @invoice_ids: (array length=n_invoices): the invoices
+ * @n_invoices: how many
+ * @error: (out) (optional): the error
+ *
+ * The balance of many invoices now, each exactly as
+ * venture_settlement_service_invoice_balance() counts it with no cutoff,
+ * read with at most three statements rather than two or more per invoice.
+ *
+ * Returns: (transfer full) (nullable) (element-type gint64 VentureMoney):
+ *   each invoice id to its balance, or NULL on error
+ */
+GHashTable *venture_settlement_service_invoice_balances(VentureSettlementService *self,
+	const gint64 *invoice_ids, guint n_invoices, GError **error);
+
+/**
  * venture_settlement_service_customer_balance:
  * @self: the service
  * @organization_id: one legal entity

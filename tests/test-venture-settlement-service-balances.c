@@ -211,10 +211,83 @@ test_balances_match(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(many_statements, ==, few_statements);
 }
 
+/* Each invoice's balance from the batch equals its balance alone: unpaid,
+ * paid in part through an allocation, a refund on that allocation, never
+ * issued; and the batch reads in three statements, whatever the count. */
+static void
+test_invoice_balances_match(Fixture *f, gconstpointer data)
+{
+	VentureSettlementService *settlement = venture_settlement_service_get(f->database);
+	g_autoptr(GHashTable) balances = NULL, few = NULL;
+	g_autoptr(VentureEntity) payment = record_new(f, "payment");
+	g_autoptr(VentureEntity) allocation = record_new(f, "payment_allocation");
+	g_autoptr(VentureEntity) refund = record_new(f, "refund");
+	g_autoptr(VentureEntity) draft = record_new(f, "invoice");
+	g_autoptr(GError) error = NULL;
+	gint64 customer = customer_new(f, "Customer");
+	gint64 invoices[4];
+	guint64 before, many_statements, few_statements;
+	guint i;
+
+	(void)data;
+	invoices[0] = invoice_new(f, customer, "I-1", "100 USD");
+	invoices[1] = invoice_new(f, customer, "I-2", "80 USD");
+	invoices[2] = invoice_new(f, customer, "I-3", "30 USD");
+	g_object_set(draft, "number", "I-4", "company-id", customer, NULL);
+	field(draft, "issued-at", "2026-07-01");
+	field(draft, "due-at", "2026-07-01");
+	save(f, draft);
+	invoices[3] = venture_entity_get_id(draft);
+	/* I-2: 50 paid through an allocation, then 10 of it refunded. */
+	g_object_set(payment, "customer-id", customer, "method", "manual", NULL);
+	field(payment, "amount", "50 USD");
+	field(payment, "date", "2026-07-10");
+	save(f, payment);
+	g_object_set(allocation, "payment-id", venture_entity_get_id(payment), "invoice-id", invoices[1], NULL);
+	field(allocation, "amount", "50 USD");
+	field(allocation, "date", "2026-07-12");
+	save(f, allocation);
+	g_object_set(refund, "customer-id", customer, "allocation-id", venture_entity_get_id(allocation), NULL);
+	field(refund, "date", "2026-07-20");
+	field(refund, "amount", "10 USD");
+	save(f, refund);
+
+	before = venture_database_get_statement_count(f->database);
+	balances = venture_settlement_service_invoice_balances(settlement, invoices, G_N_ELEMENTS(invoices), &error);
+	many_statements = venture_database_get_statement_count(f->database) - before;
+	g_assert_no_error(error);
+	g_assert_nonnull(balances);
+	g_assert_cmpuint(g_hash_table_size(balances), ==, G_N_ELEMENTS(invoices));
+	for (i = 0; i < G_N_ELEMENTS(invoices); i++) {
+		VentureMoney *batch = g_hash_table_lookup(balances, &invoices[i]);
+		g_autoptr(VentureMoney) alone = venture_settlement_service_invoice_balance(settlement, invoices[i], NULL, &error);
+
+		g_assert_no_error(error);
+		g_assert_nonnull(batch);
+		g_assert_nonnull(alone);
+		g_assert_cmpstr(venture_money_get_currency(batch), ==, venture_money_get_currency(alone));
+		g_assert_cmpint(venture_money_get_amount(batch), ==, venture_money_get_amount(alone));
+	}
+	/* The fixture covers what it claims to. */
+	g_assert_cmpint(venture_money_get_amount(g_hash_table_lookup(balances, &invoices[0])), ==, 10000);
+	g_assert_cmpint(venture_money_get_amount(g_hash_table_lookup(balances, &invoices[1])), ==, 4000);
+	g_assert_cmpint(venture_money_get_amount(g_hash_table_lookup(balances, &invoices[3])), ==, 0);
+
+	before = venture_database_get_statement_count(f->database);
+	few = venture_settlement_service_invoice_balances(settlement, invoices, 1, &error);
+	few_statements = venture_database_get_statement_count(f->database) - before;
+	g_assert_no_error(error);
+	g_test_message("statements: %" G_GUINT64_FORMAT " for one invoice, %" G_GUINT64_FORMAT " for four",
+		few_statements, many_statements);
+	g_assert_cmpuint(many_statements, <=, 3);
+	g_assert_cmpuint(many_statements, >=, few_statements);
+}
+
 int
 main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/settlement/balances-match", Fixture, NULL, set_up, test_balances_match, tear_down);
+	g_test_add("/settlement/invoice-balances-match", Fixture, NULL, set_up, test_invoice_balances_match, tear_down);
 	return g_test_run();
 }

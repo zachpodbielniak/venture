@@ -308,22 +308,15 @@ issue_event(VentureSettlementService *self, gint64 invoice_id, GDateTime *cutoff
 	return NULL;
 }
 
-VentureMoney *
-venture_settlement_service_invoice_balance(VentureSettlementService *self,
-	gint64 invoice_id, GDateTime *as_of, GError **error)
+/* The issued part of an invoice's balance from its @events: the issue and
+ * any late fees. Sets @issued and @voided as the events say. */
+static gboolean
+invoice_issued_total(GPtrArray *events, VentureMoney **total, gboolean *issued, gboolean *voided, GError **error)
 {
-	g_autoptr(GPtrArray) events = NULL;
-	g_autoptr(GPtrArray) allocations = NULL;
-	g_autoptr(VentureMoney) total = NULL;
-	gboolean issued;
-	gboolean voided;
 	guint i;
 
-	events = find_rows(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", invoice_id, as_of, error);
-	if (events == NULL)
-		return NULL;
-	issued = FALSE;
-	voided = FALSE;
+	*issued = FALSE;
+	*voided = FALSE;
 	for (i = 0; i < events->len; i++)
 	{
 		VentureEntity *event;
@@ -333,24 +326,93 @@ venture_settlement_service_invoice_balance(VentureSettlementService *self,
 		g_object_get(event, "kind", &state, NULL);
 		if (g_strcmp0(state, "issue") == 0)
 		{
-			issued = TRUE;
-			if (!accumulate_record(&total, event, FALSE, error))
-				return NULL;
+			*issued = TRUE;
+			if (!accumulate_record(total, event, FALSE, error))
+				return FALSE;
 		}
 		if (g_strcmp0(state, "void") == 0)
-			voided = TRUE;
+			*voided = TRUE;
 	}
 	/* A late fee is a separate adjustment on top of the frozen issue, added
 	 * after it; it never edits the invoice's lines. */
-	for (i = 0; issued && i < events->len; i++)
+	for (i = 0; *issued && i < events->len; i++)
 	{
 		VentureEntity *event = g_ptr_array_index(events, i);
 		g_autofree gchar *state = NULL;
 
 		g_object_get(event, "kind", &state, NULL);
-		if (g_strcmp0(state, VENTURE_INVOICE_EVENT_LATE_FEE) == 0 && !accumulate_record(&total, event, FALSE, error))
-			return NULL;
+		if (g_strcmp0(state, VENTURE_INVOICE_EVENT_LATE_FEE) == 0 && !accumulate_record(total, event, FALSE, error))
+			return FALSE;
 	}
+	return TRUE;
+}
+
+/* Less what was allocated to the invoice, plus what was refunded of each
+ * allocation: @refunds holds an allocation id to its refunds. */
+static gboolean
+invoice_settled_total(GPtrArray *allocations, GHashTable *refunds, VentureMoney **total, GError **error)
+{
+	guint i, j;
+
+	for (i = 0; i < allocations->len; i++)
+	{
+		VentureEntity *allocation = g_ptr_array_index(allocations, i);
+		gint64 id = venture_entity_get_id(allocation);
+		GPtrArray *returned = g_hash_table_lookup(refunds, &id);
+
+		if (!accumulate_record(total, allocation, TRUE, error))
+			return FALSE;
+		for (j = 0; returned != NULL && j < returned->len; j++)
+			if (!accumulate_record(total, g_ptr_array_index(returned, j), FALSE, error))
+				return FALSE;
+	}
+	return TRUE;
+}
+
+static GHashTable *
+rows_by_id_new(void)
+{
+	return g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_ptr_array_unref);
+}
+
+/* @rows grouped by their @field. */
+static void
+rows_group(GHashTable *groups, GPtrArray *rows, const gchar *field)
+{
+	guint i;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		gint64 key = get_id(row, field);
+		GPtrArray *group = g_hash_table_lookup(groups, &key);
+
+		if (group == NULL)
+		{
+			group = g_ptr_array_new_with_free_func(g_object_unref);
+			g_hash_table_insert(groups, g_memdup2(&key, sizeof key), group);
+		}
+		g_ptr_array_add(group, g_object_ref(row));
+	}
+}
+
+VentureMoney *
+venture_settlement_service_invoice_balance(VentureSettlementService *self,
+	gint64 invoice_id, GDateTime *as_of, GError **error)
+{
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(GPtrArray) allocations = NULL;
+	g_autoptr(GHashTable) refunds = rows_by_id_new();
+	g_autoptr(VentureMoney) total = NULL;
+	gboolean issued;
+	gboolean voided;
+	guint i;
+
+	events = find_rows(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", invoice_id, as_of, error);
+	if (events == NULL)
+		return NULL;
+	if (!invoice_issued_total(events, &total, &issued, &voided, error))
+		return NULL;
 	if (!issued)
 		return venture_money_new_zero(NULL);
 	if (voided)
@@ -360,21 +422,108 @@ venture_settlement_service_invoice_balance(VentureSettlementService *self,
 		return NULL;
 	for (i = 0; i < allocations->len; i++)
 	{
-		VentureEntity *allocation;
-		g_autoptr(GPtrArray) refunds = NULL;
-		guint j;
+		g_autoptr(GPtrArray) returned = NULL;
 
-		allocation = g_ptr_array_index(allocations, i);
-		if (!accumulate_record(&total, allocation, TRUE, error))
+		returned = find_rows(self, VENTURE_TYPE_REFUND, "allocation-id",
+			venture_entity_get_id(g_ptr_array_index(allocations, i)), as_of, error);
+		if (returned == NULL)
 			return NULL;
-		refunds = find_rows(self, VENTURE_TYPE_REFUND, "allocation-id", venture_entity_get_id(allocation), as_of, error);
-		if (refunds == NULL)
-			return NULL;
-		for (j = 0; j < refunds->len; j++)
-			if (!accumulate_record(&total, g_ptr_array_index(refunds, j), FALSE, error))
-				return NULL;
+		rows_group(refunds, returned, "allocation-id");
 	}
+	if (!invoice_settled_total(allocations, refunds, &total, error))
+		return NULL;
 	return g_steal_pointer(&total);
+}
+
+GHashTable *
+venture_settlement_service_invoice_balances(VentureSettlementService *self,
+	const gint64 *invoice_ids, guint n_invoices, GError **error)
+{
+	g_autoptr(GHashTable) balances = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
+		(GDestroyNotify)venture_money_free);
+	g_autoptr(GHashTable) events = rows_by_id_new();
+	g_autoptr(GHashTable) allocations = rows_by_id_new();
+	g_autoptr(GHashTable) refunds = rows_by_id_new();
+	g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GPtrArray) open = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GPtrArray) allocated = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) none = g_ptr_array_new();
+	g_autoptr(GHashTable) pending = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
+		(GDestroyNotify)venture_money_free);
+	GHashTableIter iter;
+	gpointer key, value;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), NULL);
+	if (n_invoices == 0)
+		return g_steal_pointer(&balances);
+	for (i = 0; i < n_invoices; i++)
+		g_ptr_array_add(ids, g_strdup_printf("%" G_GINT64_FORMAT, invoice_ids[i]));
+	/* One statement per kind of record, as the single balance reads them. */
+	rows = find_rows_among(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", 0, ids, NULL, error);
+	if (rows == NULL)
+		return NULL;
+	rows_group(events, rows, "invoice-id");
+	for (i = 0; i < n_invoices; i++)
+	{
+		GPtrArray *own = g_hash_table_lookup(events, &invoice_ids[i]);
+		VentureMoney *total = NULL;
+		gboolean issued, voided;
+
+		if (g_hash_table_contains(balances, &invoice_ids[i]) || g_hash_table_contains(pending, &invoice_ids[i]))
+			continue;
+		if (!invoice_issued_total(own != NULL ? own : none, &total, &issued, &voided, error))
+		{
+			g_clear_pointer(&total, venture_money_free);
+			return NULL;
+		}
+		if (!issued || voided)
+		{
+			VentureMoney *answer = !issued ? venture_money_new_zero(NULL) :
+				venture_money_new(0, venture_money_get_currency(total), venture_money_get_exponent(total));
+			g_clear_pointer(&total, venture_money_free);
+			g_hash_table_insert(balances, g_memdup2(&invoice_ids[i], sizeof(gint64)), answer);
+			continue;
+		}
+		g_hash_table_insert(pending, g_memdup2(&invoice_ids[i], sizeof(gint64)), total);
+		g_ptr_array_add(open, g_strdup_printf("%" G_GINT64_FORMAT, invoice_ids[i]));
+	}
+	if (open->len > 0)
+	{
+		g_clear_pointer(&rows, g_ptr_array_unref);
+		rows = find_rows_among(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id", 0, open, NULL, error);
+		if (rows == NULL)
+			return NULL;
+		rows_group(allocations, rows, "invoice-id");
+		for (i = 0; i < rows->len; i++)
+			g_ptr_array_add(allocated, g_strdup_printf("%" G_GINT64_FORMAT,
+				venture_entity_get_id(g_ptr_array_index(rows, i))));
+	}
+	if (allocated->len > 0)
+	{
+		g_clear_pointer(&rows, g_ptr_array_unref);
+		rows = find_rows_among(self, VENTURE_TYPE_REFUND, "allocation-id", 0, allocated, NULL, error);
+		if (rows == NULL)
+			return NULL;
+		rows_group(refunds, rows, "allocation-id");
+	}
+	g_hash_table_iter_init(&iter, pending);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		GPtrArray *own = g_hash_table_lookup(allocations, key);
+		g_autoptr(VentureMoney) total = value;
+
+		/* Own the total first: each step frees it and makes a new one. */
+		g_hash_table_iter_steal(&iter);
+		if (!invoice_settled_total(own != NULL ? own : none, refunds, &total, error))
+		{
+			g_free(key);
+			return NULL;
+		}
+		g_hash_table_insert(balances, key, g_steal_pointer(&total));
+	}
+	return g_steal_pointer(&balances);
 }
 
 static gboolean
