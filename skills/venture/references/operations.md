@@ -162,6 +162,19 @@ Rejected partial bodies never reach a handler. Do not blindly retry a write
 whose response was lost after dispatch: read its retained identity first.
 Changes need a restart; HTTP/2 must terminate at the gateway.
 
+## Parallel reads
+
+`GET /api/v1/:type` and `GET /api/v1/:type/:id` are answered on
+`server.read_workers` threads (4; `VENTURE_SERVER_READ_WORKERS`; 0 answers
+everything on the main thread), each on a read-only connection, while the
+main thread is idle. Writes and every other route stay on the main thread.
+A client wanting throughput should send reads concurrently (several
+connections); they come back in parallel. A worker sees committed data only,
+so a read sent while a write is still in flight may not see it yet: read
+after the write's response. Hosted installs and `sqlite://:memory:` never
+use the workers. The log says "Answering record reads on N worker threads"
+at startup when they are on.
+
 ## Metrics
 
 `GET /metrics` (root, not `/api/v1`) is Prometheus text: the process

@@ -148,6 +148,34 @@ static gboolean same_transport(JsonObject *old, JsonObject *next)
 		!g_strcmp0(venture_json_object_get_string(old, "auth", ""), venture_json_object_get_string(next, "auth", "")) &&
 		!g_strcmp0(venture_json_object_get_string(old, "username", ""), venture_json_object_get_string(next, "username", ""));
 }
+/* The field-table fallback is the tool, not a name the owner chose.
+ * An empty stored name is the same case. Any other stored name stays. */
+static const gchar *tool_sender_name(void)
+{
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(fields); i++)
+		if (!g_strcmp0(fields[i].name, "from-name"))
+			return fields[i].fallback != NULL ? fields[i].fallback : "";
+	return "";
+}
+static gchar *shown_sender_name(VentureOrganizationMailer *self, gint64 org, const gchar *stored, GError **error)
+{
+	g_autoptr(VentureEntity) business = NULL;
+	g_autofree gchar *name = NULL;
+	if (stored != NULL && stored[0] != '\0' && g_strcmp0(stored, tool_sender_name()) != 0)
+		return g_strdup(stored);
+	business = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, org, error);
+	if (business == NULL || venture_entity_is_deleted(business))
+	{
+		if (error != NULL && *error == NULL)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Organization not found");
+		return NULL;
+	}
+	g_object_get(business, "name", &name, NULL);
+	if (name != NULL) g_strstrip(name);
+	if (name != NULL && name[0] != '\0') return g_strdup(name);
+	return g_strdup("");
+}
 static VentureMailer *prepare(VentureMailer *mailer, VentureMailMessage *message, GError **error)
 {
 	VentureOrganizationMailer *self = VENTURE_ORGANIZATION_MAILER(mailer);
@@ -179,6 +207,14 @@ static VentureMailer *prepare(VentureMailer *mailer, VentureMailMessage *message
 			refuse(error, "The support mailbox must match the configured SMTP sender");
 			return NULL;
 		}
+	}
+	{
+		g_autofree gchar *shown = NULL;
+		const gchar *stored = venture_json_object_get_string(json_node_get_object(settings), "from-name", "");
+		shown = shown_sender_name(self, org, stored, error);
+		if (shown == NULL) return NULL;
+		/* In memory only. The sealed account keeps the name it stored. */
+		json_object_set_string_member(json_node_get_object(settings), "from-name", shown);
 	}
 	g_object_get(self->config, "mail-tls-ca-file", &ca_file, NULL);
 	if (ca_file != NULL && *ca_file != '\0')

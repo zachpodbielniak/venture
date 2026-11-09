@@ -96,6 +96,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Maximum accepted HTTP connections per workspace process"),
 	VC_INT ("server-max-buffered-request-mb", "server", "max_buffered_request_mb", 64,
 	        "Aggregate body bytes awaiting request dispatch, in MiB"),
+	VC_INT ("server-read-workers", "server", "read_workers", 4,
+	        "Threads answering record reads in parallel; 0 answers every request on the main thread"),
 
 	VC_STR ("database-uri", "database", "uri", "sqlite://venture.db",
 	        "Connection URI"),

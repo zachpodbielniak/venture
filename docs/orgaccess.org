@@ -55,6 +55,38 @@ organization, the workspace's consent per record type -- are asked once.
 =tests/test-venture-access-policy.c= holds every owner page to the same
 statement count beside twenty other businesses as alone.
 
+A page must also cost the page, not the table. A list used to build every
+row of its type and judge each one before cutting out the page, and its
+total did the same again, so a fifty-row page of a large table cost the
+whole table twice (31 ms at 800 companies; seconds at a hundred thousand
+invoices). Two paths replace that, both in =venture-access-policy.c=:
+
+- *Decided by organization.* Where nothing in the policy looks past a
+  row's organization -- a type with no privacy field and no rule of its
+  own (comments, users, audit entries, inbox rows, business events,
+  integration connections, record links, journals, accounts), no hosted
+  workspace, no =decide= handler connected, and a reader who is an
+  administrator or holds only owner, admin, editor or finance roles --
+  =decided_by_organization()= works out which organizations' rows are
+  visible, and the page (=LIMIT=/=OFFSET=) and the total (=COUNT=) are
+  asked of SQL with =organization_id IN (...)= added to a copy of the
+  query. Every row returned is still judged by =check_read()=; one
+  refusal means the shortcut was wrong for that reader and the page is
+  answered row by row instead. So a mistake there can hide a row, never
+  show one.
+- *Row by row, stopping at a full page.* Everything else streams the rows
+  through one cursor (=venture_database_find_each()=, which refuses to run
+  inside an actor's scope because it judges nothing) and judges each as
+  the reader, stopping at the last row of the page. A total still reads
+  every row but keeps none.
+
+=/orgaccess/list-paging-matches-row-by-row= holds the shortcut to the
+row-by-row answer for every role, both kinds of type (ordinary and
+financial), with and without an organization pinned, across paging
+windows. Connecting any =decide= handler is how it gets the reference
+answer, and how a module that vetoes rows keeps every list judged row by
+row. =/orgaccess/list-page-stops-early= pins the early stop.
+
 Global owners and admins retain their data authority. Other users require an
 active membership in the record's exact organization; a parent organization
 is a presentation hierarchy and never grants a child's membership. Finance

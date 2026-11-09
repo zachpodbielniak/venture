@@ -279,6 +279,7 @@
 #include "core/venture-business-events.h"
 #include "core/venture-routing.h"
 #include "core/venture-currency.h"
+#include "core/venture-parallel.h"
 #include "core/venture-category.h"
 #include "core/venture-ticket-tree.h"
 #include "core/venture-company-tree.h"

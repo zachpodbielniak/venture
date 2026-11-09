@@ -346,6 +346,95 @@ venture_database_find_one(
 );
 
 /**
+ * venture_database_enable_parallel_reads:
+ * @self: a #VentureDatabase
+ * @connections: read connections to keep, one per read worker
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Opens a pool of read-only connections for read workers. Call it on the
+ * database's own thread. Refused for an in-memory SQLite database, whose
+ * connections would each be a separate, empty database.
+ *
+ * Returns: %TRUE if parallel reads are available
+ */
+gboolean
+venture_database_enable_parallel_reads(
+	VentureDatabase	 *self,
+	guint		  connections,
+	GError		**error
+);
+
+/**
+ * venture_database_has_parallel_reads:
+ * @self: a #VentureDatabase
+ *
+ * Returns: %TRUE once venture_database_enable_parallel_reads() succeeded
+ */
+gboolean
+venture_database_has_parallel_reads(VentureDatabase *self);
+
+/**
+ * venture_database_reader_begin:
+ * @self: a #VentureDatabase with parallel reads enabled
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Leases a read-only connection to the calling worker thread until
+ * venture_database_reader_end(). Every read the thread makes meanwhile
+ * goes through it, without the primary connection's lock, and sees only
+ * committed data. Refused on the database's own thread.
+ *
+ * Returns: %TRUE if the thread now holds a lease
+ */
+gboolean
+venture_database_reader_begin(
+	VentureDatabase	 *self,
+	GError		**error
+);
+
+/**
+ * venture_database_reader_end:
+ * @self: a #VentureDatabase the calling thread leased from
+ *
+ * Gives the thread's connection back to the pool.
+ */
+void
+venture_database_reader_end(VentureDatabase *self);
+
+/**
+ * VentureDatabaseEachFunc:
+ * @entity: (transfer none): the record just read
+ * @user_data: (closure): the data passed to venture_database_find_each()
+ *
+ * Returns: %TRUE to read the next record, %FALSE to stop
+ */
+typedef gboolean (*VentureDatabaseEachFunc)(VentureEntity *entity, gpointer user_data);
+
+/**
+ * venture_database_find_each:
+ * @self: a #VentureDatabase
+ * @query: the query to run
+ * @func: (scope call): called with each matching record, in order
+ * @user_data: (closure func): data for @func
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Streams the records @query matches from one cursor, stopping as soon as
+ * @func returns %FALSE. Only the internal scope may call it: inside an
+ * actor's or an organization's scope it refuses, because it does not judge
+ * the rows it reads.
+ *
+ * Returns: %TRUE if the rows were read (all of them or until @func
+ *   stopped), %FALSE on error
+ */
+gboolean
+venture_database_find_each(
+	VentureDatabase		 *self,
+	VentureQuery		 *query,
+	VentureDatabaseEachFunc	  func,
+	gpointer		  user_data,
+	GError			**error
+);
+
+/**
  * venture_database_find:
  * @self: a #VentureDatabase
  * @query: the query to run

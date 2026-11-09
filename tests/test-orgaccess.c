@@ -1143,6 +1143,235 @@ test_list_cost_is_local(void)
 	venture_test_remove_tree(directory);
 }
 
+/* --- Paging what a reader may only partly see ---------------------------- */
+
+/*
+ * A "decide" handler that refuses nothing. Any handler at all makes the
+ * policy judge a list row by row (it might veto a row), so connecting
+ * this one gives the reference answer to hold the SQL shortcut to.
+ */
+static GError *
+judged_rows(VentureAccessPolicy *policy, gpointer actor, const gchar *action, VentureEntity *entity, gpointer data)
+{
+	guint *calls = data;
+	(void)policy;
+	(void)actor;
+	(void)action;
+	(void)entity;
+	if (NULL != calls)
+		(*calls)++;
+	return NULL;
+}
+
+static GArray *
+listed_ids(VentureDatabase *db, GType type, guint limit, guint offset, gint64 *total)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(type);
+	g_autoptr(GPtrArray) rows = NULL;
+	GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+	guint i;
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	venture_query_set_limit(query, limit);
+	venture_query_set_offset(query, offset);
+	rows = venture_database_find(db, query, NULL);
+	g_assert_nonnull(rows);
+	for (i = 0; i < rows->len; i++)
+	{
+		gint64 id = venture_entity_get_id(g_ptr_array_index(rows, i));
+		g_array_append_val(ids, id);
+	}
+	*total = venture_database_count(db, query, NULL);
+	/* The caller's query is never narrowed in place. */
+	g_assert_cmpuint(venture_query_get_limit(query), ==, limit);
+	g_assert_cmpuint(venture_query_get_offset(query), ==, offset);
+	return ids;
+}
+
+static gint64
+paging_member(VentureDatabase *db, const gchar *name, gint64 user_id, gint64 organization_id, gint role)
+{
+	g_autoptr(VentureEntity) member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", user_id,
+		"organization-id", organization_id, "active", TRUE, "role", role, NULL);
+	(void)name;
+	g_assert_true(venture_database_save(db, member, NULL, NULL));
+	return venture_entity_get_id(member);
+}
+
+/*
+ * A list a reader may only partly see used to build every row of the type
+ * and judge each one in C, for the page and again for its total -- a
+ * fifty-row page of a large table cost the whole table twice. Where the
+ * reader's role decides by organization alone, the page and the total are
+ * now asked of SQL. Breaks if that shortcut ever answers differently from
+ * judging row by row: for every role, both kinds of type (an ordinary one
+ * and a financial one), with and without an organization pinned, and for
+ * every paging window, the ids and the total must be identical.
+ */
+static void
+test_list_paging_matches_row_by_row(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	VentureAccessPolicy *policy;
+	static const guint windows[][2] = { { 0, 0 }, { 3, 0 }, { 3, 2 }, { 5, 7 }, { 1, 100 }, { 4, 13 } };
+	GType types[2];
+	gint64 orgs[3];
+	gint64 users[6];
+	VentureAuthPrincipal actors[7];
+	guint a, t, w, p, i;
+
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	context = venture_context_new(config, db);
+	policy = venture_database_get_access_policy(db);
+	types[0] = VENTURE_TYPE_COMPANY;
+	types[1] = VENTURE_TYPE_INVOICE;
+	orgs[0] = venture_context_get_default_organization_id(context);
+	for (i = 1; i < G_N_ELEMENTS(orgs); i++)
+	{
+		g_autofree gchar *name = g_strdup_printf("Paging business %u", i);
+		g_autofree gchar *slug = g_strdup_printf("paging-%u", i);
+		g_autoptr(VentureEntity) org = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", name, "slug", slug, NULL);
+		g_assert_true(venture_database_save(db, org, NULL, NULL));
+		orgs[i] = venture_entity_get_id(org);
+	}
+	for (i = 0; i < G_N_ELEMENTS(users); i++)
+	{
+		g_autofree gchar *name = g_strdup_printf("pager-%u", i);
+		g_autoptr(VentureEntity) user = g_object_new(VENTURE_TYPE_USER, "username", name, "active", TRUE,
+			"role", VENTURE_USER_ROLE_EDITOR, NULL);
+		g_assert_true(venture_database_save(db, user, NULL, NULL));
+		users[i] = venture_entity_get_id(user);
+	}
+	/* 0: editor at home, finance in the second business.
+	 * 1: finance in the second business only.
+	 * 2: editor at home, viewer in the third (a row-level role).
+	 * 3: owner of the third business.
+	 * 4: no membership at all.
+	 * 5: accountant at home (a row-level rule for documents). */
+	paging_member(db, "editor", users[0], orgs[0], VENTURE_ORGANIZATION_ROLE_EDITOR);
+	paging_member(db, "editor", users[0], orgs[1], VENTURE_ORGANIZATION_ROLE_FINANCE);
+	paging_member(db, "finance", users[1], orgs[1], VENTURE_ORGANIZATION_ROLE_FINANCE);
+	paging_member(db, "mixed", users[2], orgs[0], VENTURE_ORGANIZATION_ROLE_EDITOR);
+	paging_member(db, "mixed", users[2], orgs[2], VENTURE_ORGANIZATION_ROLE_VIEWER);
+	paging_member(db, "owner", users[3], orgs[2], VENTURE_ORGANIZATION_ROLE_OWNER);
+	paging_member(db, "accountant", users[5], orgs[0], VENTURE_ORGANIZATION_ROLE_ACCOUNTANT);
+
+	/* Rows in every business, interleaved so a page crosses them, some
+	 * owned by the viewer so its "owned" rule has rows to find. */
+	for (i = 0; i < 24; i++)
+	{
+		gint64 org = orgs[i % G_N_ELEMENTS(orgs)];
+		g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Paged customer",
+			"organization-id", org, "owner-user-id", (i % 4 == 0) ? users[2] : (gint64)0, NULL);
+		g_autoptr(VentureEntity) invoice = NULL;
+		g_autofree gchar *number = g_strdup_printf("PAGE-%02u", i);
+		g_assert_true(venture_database_save(db, company, NULL, NULL));
+		invoice = g_object_new(VENTURE_TYPE_INVOICE, "organization-id", org,
+			"company-id", venture_entity_get_id(company), "number", number, NULL);
+		g_assert_true(venture_database_save(db, invoice, NULL, NULL));
+	}
+
+	for (a = 0; a < G_N_ELEMENTS(actors); a++)
+	{
+		memset(&actors[a], 0, sizeof actors[a]);
+		actors[a].authenticated = TRUE;
+		if (a < G_N_ELEMENTS(users))
+		{
+			actors[a].user_id = users[a];
+			actors[a].role = VENTURE_USER_ROLE_EDITOR;
+		}
+		else
+		{
+			/* A workspace administrator, who reads everything. */
+			actors[a].user_id = users[0];
+			actors[a].role = VENTURE_USER_ROLE_ADMIN;
+		}
+	}
+
+	for (a = 0; a < G_N_ELEMENTS(actors); a++)
+		for (p = 0; p <= G_N_ELEMENTS(orgs); p++)
+			for (t = 0; t < G_N_ELEMENTS(types); t++)
+				for (w = 0; w < G_N_ELEMENTS(windows); w++)
+				{
+					g_autoptr(VentureAccessScope) scope = NULL;
+					g_autoptr(GArray) fast = NULL;
+					g_autoptr(GArray) slow = NULL;
+					gint64 fast_total, slow_total;
+					gulong handler;
+
+					/* p == 0: no organization pinned; otherwise the pth one. */
+					scope = (0 == p) ? venture_access_policy_enter(policy, &actors[a]) :
+						venture_access_policy_enter_organization(policy, &actors[a], orgs[p - 1]);
+					fast = listed_ids(db, types[t], windows[w][0], windows[w][1], &fast_total);
+					handler = g_signal_connect(policy, "decide", G_CALLBACK(judged_rows), NULL);
+					slow = listed_ids(db, types[t], windows[w][0], windows[w][1], &slow_total);
+					g_signal_handler_disconnect(policy, handler);
+
+					if (fast->len != slow->len || fast_total != slow_total ||
+					    (fast->len > 0 && 0 != memcmp(fast->data, slow->data, fast->len * sizeof(gint64))))
+						g_error("actor %u, pin %u, %s, limit %u offset %u: shortcut gave %u rows of %" G_GINT64_FORMAT
+						        ", row by row %u of %" G_GINT64_FORMAT, a, p, g_type_name(types[t]),
+						        windows[w][0], windows[w][1], fast->len, fast_total, slow->len, slow_total);
+				}
+}
+
+/*
+ * The row-by-row path stops at a full page. It used to build and judge
+ * every row of the type before paging, so a five-row page of sixty rows
+ * judged sixty. Breaks if it reads to the end again.
+ */
+static void
+test_list_page_stops_early(void)
+{
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) db = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GArray) ids = NULL;
+	VentureAccessPolicy *policy;
+	VentureAuthPrincipal actor;
+	gint64 home, total;
+	guint calls = 0;
+	gulong handler;
+	guint i;
+
+	g_assert_true(venture_database_migrate(db, venture_entity_registry_get_default(), NULL));
+	context = venture_context_new(config, db);
+	policy = venture_database_get_access_policy(db);
+	home = venture_context_get_default_organization_id(context);
+	user = g_object_new(VENTURE_TYPE_USER, "username", "early", "active", TRUE, "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	g_assert_true(venture_database_save(db, user, NULL, NULL));
+	paging_member(db, "early", venture_entity_get_id(user), home, VENTURE_ORGANIZATION_ROLE_EDITOR);
+	for (i = 0; i < 60; i++)
+	{
+		g_autoptr(VentureEntity) company = g_object_new(VENTURE_TYPE_COMPANY, "name", "Early row",
+			"organization-id", home, NULL);
+		g_assert_true(venture_database_save(db, company, NULL, NULL));
+	}
+
+	memset(&actor, 0, sizeof actor);
+	actor.authenticated = TRUE;
+	actor.user_id = venture_entity_get_id(user);
+	actor.role = VENTURE_USER_ROLE_EDITOR;
+	scope = venture_access_policy_enter(policy, &actor);
+	handler = g_signal_connect(policy, "decide", G_CALLBACK(judged_rows), &calls);
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_COMPANY);
+		g_autoptr(GPtrArray) rows = NULL;
+		venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+		venture_query_set_limit(query, 5);
+		rows = venture_database_find(db, query, NULL);
+		g_assert_cmpuint(rows->len, ==, 5);
+	}
+	g_assert_cmpuint(calls, ==, 5);
+	calls = 0;
+	ids = listed_ids(db, VENTURE_TYPE_COMPANY, 5, 0, &total);
+	g_assert_cmpint(total, ==, 60);
+	g_signal_handler_disconnect(policy, handler);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1166,6 +1395,8 @@ main(int argc, char **argv)
 	g_test_add_func("/orgaccess/crm-ai-scopes", test_crm_ai_scopes);
 	g_test_add_func("/orgaccess/type-level-actions", test_type_level_actions);
 	g_test_add_func("/orgaccess/list-cost-is-local", test_list_cost_is_local);
+	g_test_add_func("/orgaccess/list-paging-matches-row-by-row", test_list_paging_matches_row_by_row);
+	g_test_add_func("/orgaccess/list-page-stops-early", test_list_page_stops_early);
 	g_test_add_func("/orgaccess/household-account-privacy", test_household_account_privacy);
 	g_test_add_func("/orgaccess/household-privacy-upgrade", test_household_privacy_upgrade);
 	return g_test_run();

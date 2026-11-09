@@ -104,7 +104,22 @@ So none of them contribute SQL. A filter names a field, an operator from a close
 
 ** Concurrency
 
-One connection behind a recursive mutex. SQLite admits one writer at a time regardless, and for a single-operator system the simplicity is worth more than the concurrency a pool would buy.
+Every write, transaction and main-thread read goes through one connection behind a recursive mutex. SQLite admits one writer at a time regardless, and one writer connection leaves no interleaving to get wrong.
+
+Record reads (=GET /api/v1/:type= and =GET /api/v1/:type/:id=) are the exception: they are answered on read worker threads (=server.read_workers=, 4 by default; 0 answers everything on the main thread), so an application using VENTURE as its backend gets several reads at once instead of one at a time.
+
+The design avoids proving that every line a read touches is thread-safe. VENTURE's registries, configuration, automation engine and signal handlers were written for one thread, and a wrong guess is a crash under load and nowhere else. Instead the workers are fenced:
+
+- *The gate* (=src/core/venture-parallel.c=) is a reader-writer lock the main thread holds at all times except while its outermost main loop sleeps in =poll()=. A worker holds it shared for the part of a job that reads. Jobs therefore run side by side with each other and never beside main-thread code: a write, a timer, a signal handler, or a handler waiting in a nested main loop (which does not open the gate). The lock prefers the main thread, so a stream of reads cannot starve writes: once the main thread wants the gate back, no new job enters until it is idle again.
+- *Per-thread reader state.* The access policy's current reader, organization pin and list caches belong to the thread (=venture_access_policy_bind_thread()=). The main thread authenticates the request, checks the roles and builds the query, then snapshots its reader (=venture_access_policy_snapshot()=); the worker judges every row as exactly that reader.
+- *Leased read connections.* =venture_database_enable_parallel_reads()= opens an =OrmConnectionPool= (orm-glib) of read-only connections (=PRAGMA query_only= on SQLite, a =READ ONLY= session on PostgreSQL). A worker leases one for the request; its reads bypass the primary connection and its lock and see committed data only. A write slipping into a worker is refused by the database itself.
+- *Answers built on the main thread.* The handler returns an htmx-glib deferred response; the server pauses the message and goes on serving. The worker reads under the gate, then turns the records into JSON outside it (that touches only the records and fixed class metadata), and the response is built and written on the main thread. Middleware that reads the response afterwards (metrics) registers a completion hook.
+
+The two paths share one body (=venture_web_api_list_fetch()= / =_render()=, =venture_web_api_get_answer()=), and =tests/test-parallel.c= holds a worker's answer to the main thread's, byte for byte, along with the gate's guarantees, isolation between concurrent readers of different businesses, reads beside writes and the read-only connections.
+
+Hosted installs keep every request on the main thread (workspace admission and support scopes wrap the handler), and so does an in-memory SQLite database (each of its connections is a different, empty database).
+
+What it buys depends on how long a read takes against the main thread's fixed share of each request (parsing, authentication, the query, writing the answer). Measured on a loaded 24-thread machine, 16 clients, release build: a fifty-row page of companies went from 385 to about 625 requests a second with four workers, and a two-hundred-row page from 115 to 215. More workers than four bought nothing there: the main thread's share is the limit.
 
 Lost updates are prevented at the record level instead: every entity carries a version, an update's =WHERE= clause names the version the caller last saw, and a mismatch affects no rows and raises =VENTURE_ERROR_CONFLICT=.
 

@@ -301,8 +301,12 @@ venture_stripe_service_replace_authorization(VentureStripeService *self,
 	subscription = owned_get(self, VENTURE_TYPE_CUSTOMER_SUBSCRIPTION, subscription_id, error);
 	if (!subscription || !venture_access_policy_check_write(venture_database_get_access_policy(self->database), subscription, "write", error)) goto fail;
 	g_object_get(subscription, "external-id", &identity, NULL);
+	/* Same conflict as "no card" and a cancelled business: the route is 409.
+	 * refuse() is a validation error, which the client would read as 422. */
 	if (identity && g_str_has_prefix(identity, "prepaid:")) {
-		refuse(error, "Prepaid terms keep the method they were paid with"); goto fail;
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+			"Prepaid terms keep the method they were paid with");
+		goto fail;
 	}
 	venture_query_set_organization(query, self->organization_id);
 	venture_query_set_limit(query, 0);
@@ -337,6 +341,19 @@ venture_stripe_service_replace_authorization(VentureStripeService *self,
 			authorization = g_object_ref(VENTURE_STRIPE_AUTHORIZATION(row));
 			deadline = g_date_time_ref(expires);
 		}
+	}
+	/* A page with under half an hour left is not the page to hand back.
+	 * Retire every other open change so a finished old page cannot replace
+	 * the card after a newer one was opened. */
+	for (i = 0; i < prior->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(prior, i);
+		if (!stripe_replacing(row)) continue;
+		if (authorization != NULL &&
+			venture_entity_get_id(row) == venture_entity_get_id(VENTURE_ENTITY(authorization)))
+			continue;
+		g_object_set(row, "enabled", FALSE, "status", "revoked", NULL);
+		if (!venture_stripe_save_owned(self->database, row, actor, error)) goto fail;
 	}
 	if (!authorization)
 	{
@@ -482,18 +499,32 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 			return TRUE;
 		}
 	}
-	/* A verified card change takes over in one transaction: the card it
-	 * replaces is disabled first (one enabled permission per subscription)
-	 * and kept as evidence, and the new one is what collection charges. */
+	/* A verified card change takes over in one transaction. Every other
+	 * enabled permission on this subscription is disabled first, not only
+	 * the one replaces-id names: a second open change can finish after a
+	 * newer card is already in use, and collection charges the last enabled
+	 * row it happens to see. The old rows stay as evidence. */
 	if (stripe_replacing(current))
 	{
 		gint64 replaces = stripe_number(current, "replaces-id");
 		g_autoptr(VentureEntity) previous = replaces > 0 ? owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, replaces, error) : NULL;
+		g_autoptr(VentureQuery) others = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
+		g_autoptr(GPtrArray) rows = NULL;
+		guint j;
 		if (replaces > 0 && !previous) goto fail;
-		if (previous && stripe_flag(previous, "enabled"))
+		venture_query_set_organization(others, self->organization_id);
+		venture_query_set_limit(others, 0);
+		if (!venture_query_add_filter_int(others, "subscription-id", VENTURE_FILTER_OP_EQ,
+			stripe_number(current, "subscription-id"), error)) goto fail;
+		rows = venture_database_find(self->database, others, error);
+		if (!rows) goto fail;
+		for (j = 0; j < rows->len; j++)
 		{
-			g_object_set(previous, "enabled", FALSE, "status", "replaced", NULL);
-			if (!venture_stripe_save_owned(self->database, previous, actor, error)) goto fail;
+			VentureEntity *row = g_ptr_array_index(rows, j);
+			if (venture_entity_get_id(row) == venture_entity_get_id(current)) continue;
+			if (!stripe_flag(row, "enabled")) continue;
+			g_object_set(row, "enabled", FALSE, "status", "replaced", NULL);
+			if (!venture_stripe_save_owned(self->database, row, actor, error)) goto fail;
 		}
 		g_object_set(current, "enabled", TRUE, NULL);
 	}

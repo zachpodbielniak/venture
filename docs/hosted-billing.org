@@ -62,15 +62,17 @@ business whose subscription has a verified saved method. Without one it is
 The change is a second permission on the same terms and wording as the card
 in use, with =replaces_id= naming it. It stays disabled, status
 =replacing=, while the hosted page is open, so collection still charges the
-card in use. Asking again while the page is open answers the same page. A
-page that expires, or is abandoned, changes nothing.
+card in use. Asking again while that page has at least half an hour left
+answers the same page. A page with less than that left is retired (status
+=revoked=) and a new page is opened; the retired page changes nothing, and
+a page that expires or is abandoned changes nothing.
 
 Stripe confirms the new card with the same signed Setup event as a first
 card. The webhook answers before it reads the provider, and the Stripe
-timer then verifies the Setup. Verification disables the old permission
-(status =replaced=, kept as evidence) and enables the new one in one
-transaction: from then on the new card is charged, and it is the =card= of
-the billing view. =POST /setup= does the same read when the owner comes
+timer then verifies the Setup. Verification disables every other enabled
+permission on that subscription (status =replaced=, kept as evidence) and
+enables the new one in one transaction, so one card is charged and shown.
+=POST /setup= does the same read when the owner comes
 back: it still answers =card_ready=, and a finished change is the card from
 then on, without waiting for the callback. The notifications feed gives =card_changed= for it, never
 a second =card_saved=, which promises the first payment.

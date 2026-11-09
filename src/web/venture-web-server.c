@@ -115,6 +115,13 @@ struct _VentureWebServer
 	guint16		 port;
 
 	/*
+	 * Whether record reads go to the read workers (venture-parallel.c):
+	 * set at start when server.read_workers is above zero, the database
+	 * can lend read connections and the install is not hosted.
+	 */
+	gboolean	 parallel_reads;
+
+	/*
 	 * Freshly minted API tokens, keyed by a random handle, waiting to be
 	 * shown to the browser exactly once.
 	 *
@@ -208,6 +215,13 @@ venture_web_server_finalize(GObject *object)
 	VentureWebServer *self;
 
 	self = VENTURE_WEB_SERVER(object);
+
+	/* Read jobs hold a reference on the server, so none is left here. */
+	if (self->parallel_reads)
+	{
+		self->parallel_reads = FALSE;
+		venture_parallel_uninstall();
+	}
 
 	g_clear_object(&self->context);
 	g_clear_object(&self->auth);
@@ -3633,56 +3647,48 @@ venture_web_build_query(
 	return g_steal_pointer(&query);
 }
 
-static HtmxResponse *
-venture_web_api_list(
-	HtmxRequest	*request,
-	GHashTable	*params,
-	gpointer	 user_data
+/* --- Record reads, on the main thread or a read worker ---------------- */
+
+/*
+ * The answer to GET /api/v1/TYPE, in two halves so a read worker can
+ * serialise outside the gate: venture_web_api_list_fetch() reads the page
+ * and its total (database, access policy), venture_web_api_list_render()
+ * turns them into the JSON text (the records alone). One pair for both
+ * paths, so a list answered by a read worker is byte for byte the list
+ * the main thread would have sent.
+ */
+static GPtrArray *
+venture_web_api_list_fetch(
+	VentureDatabase	 *database,
+	VentureQuery	 *query,
+	gint64		 *total,
+	GError		**error
 ){
-	VentureWebServer *self;
-	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) records = NULL;
-	g_autoptr(JsonBuilder) builder = NULL;
-	g_autoptr(JsonNode) node = NULL;
-	g_autoptr(GError) error = NULL;
-	GType entity_type;
-	gint64 total;
-	guint i;
 
-	self = user_data;
-	principal = venture_auth_authenticate(self->auth, request);
-
-	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
-	                          &error))
-		return venture_web_error_response(error);
-
-	if (!venture_web_resolve_type(self, params, &entity_type, &error))
-		return venture_web_error_response(error);
-
-	if (!venture_web_require_for_type(self, principal, entity_type,
-	                                  VENTURE_USER_ROLE_VIEWER, &error))
-		return venture_web_error_response(error);
-
-	query = venture_web_build_query(self, entity_type, request, &error);
-
-	if (NULL == query)
-		return venture_web_error_response(error);
-
-	records = venture_database_find(venture_context_get_database(self->context),
-	                                query, &error);
-
+	records = venture_database_find(database, query, error);
 	if (NULL == records)
-		return venture_web_error_response(error);
+		return NULL;
 
-	total = venture_database_count(venture_context_get_database(self->context),
-	                               query, &error);
+	*total = venture_database_count(database, query, error);
 
 	/* The UI path renders a failed count as "?", but an API client reads
 	 * numbers programmatically, and a total of -1 walking into someone's
 	 * pagination arithmetic is worse than an honest error. */
-	if (total < 0)
-		return venture_web_error_response(error);
+	if (*total < 0)
+		return NULL;
+
+	return g_steal_pointer(&records);
+}
+
+static gchar *
+venture_web_api_list_render(
+	GPtrArray	*records,
+	gint64		 total
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	guint i;
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -3709,7 +3715,266 @@ venture_web_api_list(
 	json_builder_end_object(builder);
 	node = json_builder_get_root(builder);
 
+	return venture_json_to_string(node, TRUE);
+}
+
+/* The JSON text as the response venture_web_json_response() would build. */
+static HtmxResponse *
+venture_web_json_body_response(
+	const gchar	*body,
+	guint		 status
+){
+	HtmxResponse *response;
+
+	response = htmx_response_new_with_content(body);
+	htmx_response_set_content_type(response, "application/json; charset=utf-8");
+	htmx_response_set_status(response, status);
+
+	return response;
+}
+
+/*
+ * The answer to GET /api/v1/TYPE/ID from a record already read (or not
+ * found), on the main thread: the dedupe forward builds a redirect.
+ */
+static HtmxResponse *
+venture_web_api_get_answer(
+	VentureWebServer	*self,
+	VentureEntity		*record,
+	const gchar		*id_text,
+	GError			*error
+){
+	g_autoptr(GError) local_error = error;
+	g_autoptr(JsonNode) node = NULL;
+
+	if (NULL == record)
+	{
+		if (NULL == local_error)
+		{
+			g_set_error(&local_error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No such record: %s", id_text);
+		}
+
+		return venture_web_error_response(local_error);
+	}
+
+	{
+		/* A merged-away id forwards to its survivor; see docs/dedupe.org. */
+		HtmxResponse *forward = venture_web_dedupe_forward(self, record, "/api/v1");
+
+		if (NULL != forward)
+			return forward;
+	}
+
+	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
+
 	return venture_web_json_response(node, 200);
+}
+
+/*
+ * One read handed to a read worker. Authentication, the role checks and
+ * the query were all made on the main thread; the worker reads as the
+ * same reader (the access snapshot), through a connection of its own, and
+ * hands back plain data. The response is built on the main thread.
+ */
+typedef struct
+{
+	VentureWebServer	*server;
+	VentureDatabase		*database;
+	VentureAccessSnapshot	*reader;
+	HtmxResponse		*deferred;
+
+	/* A list ... */
+	VentureQuery		*query;
+	GPtrArray		*records;
+	gint64			 total;
+	gchar			*body;
+
+	/* ... or one record. */
+	GType			 entity_type;
+	gint64			 id;
+	gchar			*id_text;
+	VentureEntity		*record;
+
+	GError			*error;
+} VentureWebRead;
+
+static void
+venture_web_read_free(VentureWebRead *job)
+{
+	g_clear_object(&job->server);
+	g_clear_object(&job->database);
+	g_clear_pointer(&job->reader, venture_access_snapshot_free);
+	g_clear_object(&job->deferred);
+	g_clear_object(&job->query);
+	g_clear_pointer(&job->records, g_ptr_array_unref);
+	g_clear_pointer(&job->body, g_free);
+	g_clear_pointer(&job->id_text, g_free);
+	g_clear_object(&job->record);
+	g_clear_error(&job->error);
+	g_free(job);
+}
+
+/* On a read worker, inside the gate. */
+static void
+venture_web_read_run(gpointer data)
+{
+	VentureWebRead *job = data;
+	VentureAccessPolicy *policy = venture_database_get_access_policy(job->database);
+
+	venture_access_policy_bind_thread(policy);
+	if (venture_database_reader_begin(job->database, &job->error))
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter_snapshot(policy, job->reader);
+
+		if (NULL != job->query)
+			job->records = venture_web_api_list_fetch(job->database, job->query, &job->total, &job->error);
+		else
+			job->record = venture_database_get(job->database, job->entity_type, job->id, &job->error);
+
+		g_clear_object(&scope);
+		venture_database_reader_end(job->database);
+	}
+	venture_access_policy_unbind_thread(policy);
+}
+
+/* Still on the worker, the gate given back: records into JSON. */
+static void
+venture_web_read_render(gpointer data)
+{
+	VentureWebRead *job = data;
+
+	if (NULL != job->records)
+	{
+		job->body = venture_web_api_list_render(job->records, job->total);
+		g_clear_pointer(&job->records, g_ptr_array_unref);
+	}
+}
+
+/* Back on the main thread: build the answer and let the message go. */
+static void
+venture_web_read_done(gpointer data)
+{
+	VentureWebRead *job = data;
+	g_autoptr(HtmxResponse) response = NULL;
+
+	if (NULL != job->query)
+		response = (NULL != job->body)
+			? venture_web_json_body_response(job->body, 200)
+			: venture_web_error_response(job->error);
+	else
+		response = venture_web_api_get_answer(job->server, job->record, job->id_text,
+		                                      g_steal_pointer(&job->error));
+
+	htmx_response_complete(job->deferred, response);
+	venture_web_read_free(job);
+}
+
+/* Queues @job and returns the placeholder the router answers with. */
+static HtmxResponse *
+venture_web_read_submit(VentureWebServer *self, VentureWebRead *job)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+
+	job->server = g_object_ref(self);
+	job->database = g_object_ref(database);
+	job->reader = venture_access_policy_snapshot(venture_database_get_access_policy(database));
+	job->deferred = htmx_response_new_deferred();
+	venture_parallel_submit(venture_web_read_run, venture_web_read_render, venture_web_read_done, job);
+
+	return g_object_ref(job->deferred);
+}
+
+/*
+ * Starts the read workers if this server may use them. Hosted installs
+ * keep every request on the main thread: their per-workspace admission
+ * and support scopes wrap the handler and were not written for an answer
+ * that arrives after it returns.
+ */
+static void
+venture_web_parallel_start(VentureWebServer *self)
+{
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(GError) error = NULL;
+	gboolean hosted = FALSE;
+	gint64 workers = 0;
+
+	if (self->parallel_reads)
+		return;
+
+	g_object_get(venture_context_get_config(self->context),
+	             "server-read-workers", &workers, "hosted-enabled", &hosted, NULL);
+	if (workers <= 0 || hosted ||
+	    venture_tenant_service_is_enabled(venture_tenant_service_get(database)))
+		return;
+
+	if (!venture_database_enable_parallel_reads(database, (guint)workers, &error))
+	{
+		g_debug("Record reads stay on the main thread: %s", error->message);
+		return;
+	}
+
+	/* Made here, on the main thread, so no worker is the first to ask
+	 * for it and races another to create it. */
+	(void)venture_database_get_access_policy(database);
+	(void)venture_tenant_service_get(database);
+	(void)venture_entity_registry_get_default();
+
+	venture_parallel_install((guint)workers);
+	self->parallel_reads = TRUE;
+	g_message("Answering record reads on %" G_GINT64_FORMAT " worker threads", workers);
+}
+
+static HtmxResponse *
+venture_web_api_list(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) records = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(GError) error = NULL;
+	GType entity_type;
+	gint64 total = 0;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
+	                          &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_resolve_type(self, params, &entity_type, &error))
+		return venture_web_error_response(error);
+
+	if (!venture_web_require_for_type(self, principal, entity_type,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(error);
+
+	query = venture_web_build_query(self, entity_type, request, &error);
+
+	if (NULL == query)
+		return venture_web_error_response(error);
+
+	if (self->parallel_reads)
+	{
+		VentureWebRead *job = g_new0(VentureWebRead, 1);
+
+		job->query = g_steal_pointer(&query);
+		return venture_web_read_submit(self, job);
+	}
+
+	records = venture_web_api_list_fetch(venture_context_get_database(self->context),
+	                                     query, &total, &error);
+
+	if (NULL == records)
+		return venture_web_error_response(error);
+
+	body = venture_web_api_list_render(records, total);
+	return venture_web_json_body_response(body, 200);
 }
 
 static HtmxResponse *
@@ -3728,7 +3993,6 @@ venture_web_api_get(
 	VentureWebServer *self;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(VentureEntity) record = NULL;
-	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
 	GType entity_type;
 	const gchar *id_text;
@@ -3749,32 +4013,21 @@ venture_web_api_get(
 
 	id_text = g_hash_table_lookup(params, "id");
 
+	if (self->parallel_reads)
+	{
+		VentureWebRead *job = g_new0(VentureWebRead, 1);
+
+		job->entity_type = entity_type;
+		job->id = g_ascii_strtoll(id_text, NULL, 10);
+		job->id_text = g_strdup(id_text);
+		return venture_web_read_submit(self, job);
+	}
+
 	record = venture_database_get(venture_context_get_database(self->context),
 	                              entity_type,
 	                              g_ascii_strtoll(id_text, NULL, 10), &error);
 
-	if (NULL == record)
-	{
-		if (NULL == error)
-		{
-			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-			            "No such record: %s", id_text);
-		}
-
-		return venture_web_error_response(error);
-	}
-
-	{
-		/* A merged-away id forwards to its survivor; see docs/dedupe.org. */
-		HtmxResponse *forward = venture_web_dedupe_forward(self, record, "/api/v1");
-
-		if (NULL != forward)
-			return forward;
-	}
-
-	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(record), FALSE);
-
-	return venture_web_json_response(node, 200);
+	return venture_web_api_get_answer(self, record, id_text, g_steal_pointer(&error));
 }
 
 /*
@@ -17466,6 +17719,59 @@ venture_web_metrics_describe(VentureMetrics *metrics)
 }
 
 /*
+ * Counts one finished request: the in-flight gauge, the status and the
+ * time it took.
+ */
+static void
+venture_web_metrics_record(
+	VentureWebServer	*self,
+	const gchar		*klass,
+	HtmxResponse		*response,
+	gint64			 started
+){
+	VentureMetrics *metrics = venture_metrics_for_context(self->context);
+	g_autofree gchar *class_labels = NULL;
+	g_autofree gchar *status_labels = NULL;
+	g_autofree gchar *status = NULL;
+
+	self->metrics_in_flight--;
+	venture_metrics_set(metrics, "venture_http_requests_in_flight", NULL, (gdouble)self->metrics_in_flight);
+
+	status = g_strdup_printf("%u", (NULL != response) ? htmx_response_get_status(response) : 0u);
+	class_labels = venture_metrics_labels("class", klass, NULL);
+	status_labels = venture_metrics_labels("class", klass, "status", status, NULL);
+
+	venture_metrics_add(metrics, "venture_http_requests_total", status_labels, 1);
+	venture_metrics_observe(metrics, "venture_http_request_duration_seconds", class_labels,
+	                        (gdouble)(g_get_monotonic_time() - started) / G_USEC_PER_SEC);
+}
+
+typedef struct
+{
+	VentureWebServer	*server;
+	const gchar		*klass;		/* a static label */
+	gint64			 started;
+} VentureWebMetricsLater;
+
+static void
+venture_web_metrics_later_free(gpointer data)
+{
+	VentureWebMetricsLater *later = data;
+
+	g_clear_object(&later->server);
+	g_free(later);
+}
+
+static void
+venture_web_metrics_complete(HtmxResponse *deferred, HtmxResponse *response, gpointer data)
+{
+	VentureWebMetricsLater *later = data;
+	(void)deferred;
+
+	venture_web_metrics_record(later->server, later->klass, response, later->started);
+}
+
+/*
  * Outermost of the middleware: times every request the router sees, the
  * catch-all 404 included. Requests the transport refuses before routing
  * (a body past the cap, a connection past the limit) are not here.
@@ -17480,9 +17786,6 @@ venture_web_metrics_middleware(
 	VentureWebServer *self = user_data;
 	VentureMetrics *metrics;
 	HtmxResponse *response;
-	g_autofree gchar *class_labels = NULL;
-	g_autofree gchar *status_labels = NULL;
-	g_autofree gchar *status = NULL;
 	const gchar *klass;
 	gint64 started;
 
@@ -17495,17 +17798,22 @@ venture_web_metrics_middleware(
 
 	next(context, next_data);
 
-	self->metrics_in_flight--;
-	venture_metrics_set(metrics, "venture_http_requests_in_flight", NULL, (gdouble)self->metrics_in_flight);
-
 	response = htmx_context_get_response(context);
-	status = g_strdup_printf("%u", (NULL != response) ? htmx_response_get_status(response) : 0u);
-	class_labels = venture_metrics_labels("class", klass, NULL);
-	status_labels = venture_metrics_labels("class", klass, "status", status, NULL);
 
-	venture_metrics_add(metrics, "venture_http_requests_total", status_labels, 1);
-	venture_metrics_observe(metrics, "venture_http_request_duration_seconds", class_labels,
-	                        (gdouble)(g_get_monotonic_time() - started) / G_USEC_PER_SEC);
+	/* Answered later by a read worker: count it when it is answered. */
+	if (NULL != response && htmx_response_is_deferred(response))
+	{
+		VentureWebMetricsLater *later = g_new0(VentureWebMetricsLater, 1);
+
+		later->server = g_object_ref(self);
+		later->klass = klass;
+		later->started = started;
+		htmx_response_on_complete(response, venture_web_metrics_complete, later,
+		                          venture_web_metrics_later_free);
+		return;
+	}
+
+	venture_web_metrics_record(self, klass, response, started);
 }
 
 /*
@@ -35437,6 +35745,8 @@ venture_web_server_start(
 
 	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(self), FALSE);
 
+	venture_web_parallel_start(self);
+
 	/* Honor the existing TLS settings. A partially configured certificate
 	 * must fail closed, never start a plaintext listener by accident. */
 	{
@@ -35467,6 +35777,9 @@ venture_web_server_start(
 			socket_address = g_inet_socket_address_new(address, self->port);
 			if (!soup_server_listen(server, socket_address, SOUP_SERVER_LISTEN_HTTPS, error))
 				return FALSE;
+			/* Bound behind htmx-glib's back, so it would keep GSocket's
+			 * backlog of ten and drop a burst of clients' SYNs. */
+			htmx_server_apply_listen_backlog(self->server);
 			uris = soup_server_get_uris(server);
 			g_free(self->base_url);
 			self->base_url = g_uri_to_string((GUri *)uris->data);
@@ -35513,6 +35826,11 @@ venture_web_server_stop(VentureWebServer *self)
 	venture_http_limits_shutdown(htmx_server_get_soup_server(self->server));
 	soup_server_disconnect(htmx_server_get_soup_server(self->server));
 	htmx_server_stop(self->server);
+	if (self->parallel_reads)
+	{
+		self->parallel_reads = FALSE;
+		venture_parallel_uninstall();
+	}
 }
 
 const gchar *

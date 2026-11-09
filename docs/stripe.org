@@ -327,7 +327,10 @@ engine. No internal entitlement consumer or Lightsite provisioning is implemente
    A card change (=venture_stripe_service_replace_authorization()=, used by
    =/api/v1/lightsite/billing/change-card=) is a second permission with
    status =replacing=, disabled until the same verification enables it and
-   marks the one it replaces =replaced=. Verification also keeps the card's
+   marks every other enabled permission on that subscription =replaced=.
+   Asking again with at least half an hour left returns the same page; less
+   than that retires the open page (=revoked=) and opens another, and the
+   retired page changes nothing. Verification also keeps the card's
    brand, last four and expiry, and nothing else of the method.
 3. The running server examines one due authorization every five seconds on its
    main context. A Setup event still waiting on its provider read goes first,
