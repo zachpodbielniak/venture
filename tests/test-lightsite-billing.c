@@ -1133,15 +1133,15 @@ test_overview_statements(Fixture *f, gconstpointer data)
 	customer(f, "ann", "team", FALSE, FALSE);
 	customer(f, "bob", "growth", TRUE, FALSE);
 	two = overview_statements(f);
-	customer(f, "cat", "starter", FALSE, FALSE);
+	/* Each added customer has an invoice past due, so a balance read per
+	 * invoice would show here. */
+	customer(f, "cat", "starter", TRUE, FALSE);
 	customer(f, "dan", "team", TRUE, FALSE);
-	customer(f, "eli", "growth", FALSE, FALSE);
-	customer(f, "fox", "starter", FALSE, FALSE);
+	customer(f, "eli", "growth", TRUE, FALSE);
+	customer(f, "fox", "starter", TRUE, FALSE);
 	six = overview_statements(f);
 	g_test_message("overview statements: %" G_GUINT64_FORMAT " for 2 customers, %" G_GUINT64_FORMAT " for 6", two, six);
-	/* Only the balance of an invoice past due is still read one invoice
-	 * at a time (two statements): dan's is the one among the four added. */
-	g_assert_cmpuint(six - two, <=, 4);
+	g_assert_cmpuint(six - two, <=, 2);
 }
 
 int

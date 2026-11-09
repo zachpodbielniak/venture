@@ -275,6 +275,7 @@ typedef struct {
 	GHashTable *issued;        /* invoice id -> its issued total; NULL: no amount */
 	GHashTable *cards;         /* subscription id -> its enabled, active permission */
 	GHashTable *connected;     /* business id -> its own Stripe binding */
+	GHashTable *past_due;      /* invoice id past due -> its balance now */
 } Reads;
 
 static GHashTable *
@@ -310,6 +311,7 @@ reads_clear(Reads *reads)
 	g_clear_pointer(&reads->owed, g_hash_table_unref);
 	g_clear_pointer(&reads->invoices, g_hash_table_unref);
 	g_clear_pointer(&reads->issued, g_hash_table_unref);
+	g_clear_pointer(&reads->past_due, g_hash_table_unref);
 	g_clear_pointer(&reads->cards, g_hash_table_unref);
 	g_clear_pointer(&reads->connected, g_hash_table_unref);
 }
@@ -427,6 +429,40 @@ read_cards(VentureDatabase *database, gint64 billing, GPtrArray *ids, Reads *rea
 
 /* Everything else the views need, after the subscriptions: of @companies,
  * and of @businesses (one per view, with or without a company). */
+/* Whether @invoice counts toward overdue once its balance is known: open
+ * and a whole day past due, the receivables aging's rule. */
+static gboolean
+past_due(VentureEntity *invoice, GDateTime *now)
+{
+	g_autoptr(GDateTime) due = NULL;
+	const gchar *status = enum_nick(invoice, "status");
+	if (g_strcmp0(status, "draft") == 0 || g_strcmp0(status, "void") == 0) return FALSE;
+	g_object_get(invoice, "due-at", &due, NULL);
+	return due && g_date_time_difference(now, due) / G_TIME_SPAN_DAY >= 1;
+}
+
+/* The balance of every invoice past due in @reads, read at once. */
+static gboolean
+read_past_due(VentureDatabase *database, Reads *reads, GError **error)
+{
+	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GDateTime) now = venture_time_now();
+	GHashTableIter iter;
+	gpointer value;
+	guint i;
+	g_hash_table_iter_init(&iter, reads->invoices);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) {
+		GPtrArray *rows = value;
+		for (i = 0; i < rows->len; i++) {
+			gint64 id = venture_entity_get_id(g_ptr_array_index(rows, i));
+			if (past_due(g_ptr_array_index(rows, i), now)) g_array_append_val(ids, id);
+		}
+	}
+	reads->past_due = venture_settlement_service_invoice_balances(venture_settlement_service_get(database),
+		(const gint64 *)(gpointer)ids->data, ids->len, error);
+	return reads->past_due != NULL;
+}
+
 static gboolean
 read_views(VentureDatabase *database, gint64 billing, GPtrArray *companies, const gint64 *businesses, guint n,
 	Reads *reads, GError **error)
@@ -461,7 +497,7 @@ read_views(VentureDatabase *database, gint64 billing, GPtrArray *companies, cons
 	venture_query_set_organization(query, billing);
 	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
 	reads->invoices = grouped(database, query, "company-id", ids, error);
-	if (!reads->invoices) return FALSE;
+	if (!reads->invoices || !read_past_due(database, reads, error)) return FALSE;
 	for (i = 0; i < companies->len; i++) {
 		GPtrArray *invoices = by_id(reads->invoices, venture_entity_get_id(g_ptr_array_index(companies, i)));
 		if (invoices && invoices->len)
@@ -488,15 +524,15 @@ invoice_facts(VentureDatabase *database, Reads *reads, gint64 company_id, gboole
 	*last = NULL;
 	for (i = 0; rows && i < rows->len; i++) {
 		VentureEntity *invoice = g_ptr_array_index(rows, i);
-		g_autoptr(VentureMoney) balance = NULL;
-		g_autoptr(GDateTime) due = NULL;
-		const gchar *status = enum_nick(invoice, "status");
+		gint64 id = venture_entity_get_id(invoice);
+		g_autoptr(VentureMoney) alone = NULL;
+		VentureMoney *balance;
 		latest = invoice;
-		if (*overdue || g_strcmp0(status, "draft") == 0 || g_strcmp0(status, "void") == 0) continue;
-		g_object_get(invoice, "due-at", &due, NULL);
-		if (!due || g_date_time_difference(now, due) / G_TIME_SPAN_DAY < 1) continue;
-		balance = venture_settlement_service_invoice_balance(settlement, venture_entity_get_id(invoice), NULL, error);
-		if (!balance) return FALSE;
+		if (*overdue || !past_due(invoice, now)) continue;
+		/* Read with the others, unless it fell due after that read. */
+		balance = reads->past_due ? by_id(reads->past_due, id) : NULL;
+		if (!balance && !(balance = alone = venture_settlement_service_invoice_balance(settlement, id, NULL, error)))
+			return FALSE;
 		if (venture_money_get_amount(balance) > 0) *overdue = TRUE;
 	}
 	if (latest) {
