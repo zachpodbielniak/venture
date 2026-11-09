@@ -3,7 +3,7 @@
 #+authors: Ben Doty
 #+categories: projects docs
 #+created: [2026-10-04]
-#+updated: [2026-10-04]
+#+updated: [2026-11-08]
 #+version: 0.1.0
 
 * Who sent whom
@@ -148,6 +148,32 @@ venturectl act referral_reward 7 apply
 
 A given reward cannot be changed or deleted; what it gave is in the books,
 and a correction goes there.
+
+* Refund window
+
+A program has =refund_window_days=.
+Use 0 or a greater number.
+0 revokes no reward.
+Venture refuses a negative number.
+
+Venture reads the first payment for the company that received the referral.
+That payment is the earliest payment record.
+Venture skips a payment that only moves the books.
+Venture does not invent a payment time.
+When no such payment exists, a refund does not revoke the reward.
+
+A refund for that company inside the window sets the reward status to =revoked=.
+The window starts on the first payment date.
+The window ends that many days later.
+The payment date and the end date both count.
+Venture records the business event =referral_reward.revoked=.
+GET =/api/v1/referral_reward/{id}= then shows status =revoked=.
+
+The credit note stays in the books.
+The free-period adjustment stays in the books.
+Correct that money in a separate entry.
+You cannot change a revoked reward.
+You cannot delete a revoked reward.
 
 * Report
 

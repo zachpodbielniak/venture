@@ -48,6 +48,7 @@ venture_referral_reward_status_get_type(void)
 		static const GEnumValue values[] = {
 			{ VENTURE_REFERRAL_REWARD_APPLIED, "VENTURE_REFERRAL_REWARD_APPLIED", "applied" },
 			{ VENTURE_REFERRAL_REWARD_FAILED, "VENTURE_REFERRAL_REWARD_FAILED", "failed" },
+			{ VENTURE_REFERRAL_REWARD_REVOKED, "VENTURE_REFERRAL_REWARD_REVOKED", "revoked" },
 			{ 0, NULL, NULL }
 		};
 		GType id = g_enum_register_static("VentureReferralRewardStatus", values);
@@ -62,6 +63,7 @@ static const VentureFieldDecl program_fields[] = {
 	VENTURE_FIELD_ENUM("reward-kind", "Reward", "What the referrer is given for each customer won", venture_referral_reward_kind_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_MONEY("reward-amount", "Credit per customer won", "Credit rewards: the credit note given to the referrer"),
 	VENTURE_FIELD("landing-url", "Landing page", "Where a shared link points; the code is added as ?ref=", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("refund-window-days", "Refund window", "Days after the referred company's first payment during which a refund revokes the reward; 0 revokes nothing", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureReferralProgram, venture_referral_program, program_fields,

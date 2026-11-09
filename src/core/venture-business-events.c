@@ -72,6 +72,9 @@ event_name(VentureEntity *entity, VentureEntity *previous)
 	}
 	if (VENTURE_IS_DEAL(entity) && changed_enum(entity, previous, "stage", VENTURE_DEAL_STAGE_WON))
 		return "deal.won";
+	if (VENTURE_IS_REFERRAL_REWARD(entity) && previous != NULL &&
+	    changed_enum(entity, previous, "status", VENTURE_REFERRAL_REWARD_REVOKED))
+		return "referral_reward.revoked";
 	return NULL;
 }
 
