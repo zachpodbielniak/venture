@@ -41,6 +41,27 @@ mail_delivery_run_sequences(VentureContext *context, gint64 organization)
 			organization, error ? error->message : "failed");
 }
 
+GArray *
+venture_mail_delivery_due_organizations(VentureContext *context, GDateTime *now, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
+	g_autoptr(GPtrArray) businesses = NULL;
+	GArray *due;
+	guint i;
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(now != NULL, NULL);
+	venture_query_add_filter_int(query, "active", VENTURE_FILTER_OP_EQ, TRUE, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	businesses = venture_database_find(venture_context_get_database(context), query, error);
+	if (!businesses) return NULL;
+	due = g_array_new(FALSE, FALSE, sizeof(gint64));
+	for (i = 0; i < businesses->len; i++) {
+		gint64 organization = venture_entity_get_id(g_ptr_array_index(businesses, i));
+		g_array_append_val(due, organization);
+	}
+	return due;
+}
+
 gint
 venture_mail_delivery_sweep(VentureContext *context, GError **error)
 {
