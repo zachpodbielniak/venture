@@ -17,7 +17,8 @@ static const VentureFieldDecl message_fields[] = {
 	VENTURE_FIELD("private-unsubscribe-url", "Private unsubscribe URL", "Service-owned one-click endpoint", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE),
 	VENTURE_FIELD("attachments", "Attachments", "Document references: JSON array of type and id", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
 	STR("related-type", "Related type"), INT("related-id", "Related record"),
-	STR("state", "State"), INT("attempts", "Attempts"),
+	/* Indexed: the hosted sweep reads the businesses with mail to send by state. */
+	VENTURE_FIELD("state", "State", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED), INT("attempts", "Attempts"),
 	DATE("next-attempt-at", "Next attempt"), DATE("lease-until", "Lease expires"),
 	VENTURE_FIELD_TEXT("last-error", "Last error", NULL),
 	STR("message-id", "Message-ID"), DATE("sent-at", "Sent at"),
