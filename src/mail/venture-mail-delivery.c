@@ -41,23 +41,130 @@ mail_delivery_run_sequences(VentureContext *context, gint64 organization)
 			organization, error ? error->message : "failed");
 }
 
+/* One placeholder. PostgreSQL numbers them as $N; SQLite reads ?N the same way. */
+static void
+mail_delivery_bind(GString *sql, gboolean postgres, GList **params, OrmValue *value)
+{
+	*params = g_list_append(*params, value);
+	g_string_append_printf(sql, "%c%u", postgres ? '$' : '?', g_list_length(*params));
+}
+
+/* A stored whole second is twenty characters and sorts after every fraction
+ * of that second. venture_query_append_filter() pads a <= the same way, so
+ * a step due at 12:00:00.5 is not missed because the row says 12:00:00Z. */
+static void
+mail_delivery_time_lte(GString *sql, gboolean postgres, GList **params, const gchar *column, GDateTime *when)
+{
+	g_autoptr(GDateTime) utc = g_date_time_to_utc(when);
+	g_autofree gchar *bound = g_date_time_format(utc, "%Y-%m-%dT%H:%M:%S.%fZ");
+	g_string_append_printf(sql,
+		"(CASE WHEN LENGTH(%s) = 20 THEN REPLACE(%s, 'Z', '.000000Z') ELSE %s END) <= ",
+		column, column, column);
+	mail_delivery_bind(sql, postgres, params, orm_value_new_string(bound));
+}
+
+/* The sequence work venture_sequence_service_run_due() would find for one
+ * business, for all businesses at once: an email step waiting for the
+ * outbox (venture_sequence_mail_recover()), an enrollment whose next step
+ * is due, and a feed trigger with an event of its kind past its position
+ * (venture_sequence_service_run_triggers()). A quote is read once it is N
+ * days old; at least one day is asked here, so a quote between one and N
+ * days old lists its business early, and that sweep finds nothing. */
+static void
+mail_delivery_sequence_work(GString *sql, gboolean postgres, GList **params, GDateTime *now)
+{
+	g_autoptr(GDateTime) day_ago = g_date_time_add_days(now, -1);
+	g_string_append(sql,
+		" UNION SELECT \"organization_id\" FROM \"sequence_deliveries\" WHERE \"deleted_at\" IS NULL"
+		" AND \"state\" = 'pending' AND \"channel\" = 'email'"
+		" UNION SELECT \"organization_id\" FROM \"sequence_enrollments\" WHERE \"deleted_at\" IS NULL"
+		" AND \"status\" = 'active' AND ");
+	mail_delivery_time_lte(sql, postgres, params, "\"next_run_at\"", now);
+	g_string_append(sql,
+		" UNION SELECT t.\"organization_id\" FROM \"sequence_triggers\" t JOIN \"business_events\" e"
+		" ON e.\"organization_id\" = t.\"organization_id\" AND e.\"id\" > t.\"feed_cursor\" AND e.\"deleted_at\" IS NULL"
+		" WHERE t.\"deleted_at\" IS NULL AND t.\"active\" = ");
+	mail_delivery_bind(sql, postgres, params, orm_value_new_boolean(TRUE));
+	g_string_append(sql,
+		" AND ((t.\"kind\" = 'invoice_paid' AND e.\"event\" = 'invoice.paid')"
+		" OR (t.\"kind\" = 'booking_made' AND e.\"event\" = 'booking.created')"
+		" OR (t.\"kind\" = 'quote_not_accepted' AND e.\"event\" = 'quote.sent' AND ");
+	mail_delivery_time_lte(sql, postgres, params, "e.\"occurred_at\"", day_ago);
+	g_string_append(sql, "))");
+}
+
+GArray *
+venture_mail_delivery_due_organizations(VentureContext *context, GDateTime *now, GError **error)
+{
+	VentureDatabase *database;
+	VentureEntityRegistry *registry = venture_entity_registry_get_default();
+	g_autoptr(GString) sql = g_string_new(NULL);
+	g_autoptr(OrmResult) result = NULL;
+	GList *params = NULL;
+	gboolean postgres;
+	GArray *due;
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(now != NULL, NULL);
+	database = venture_context_get_database(context);
+	postgres = venture_database_get_backend(database) == VENTURE_DATABASE_BACKEND_POSTGRES;
+	/* The outbox's own due rule (due() and the expired-lease branch of
+	 * deliver_selected()): queued or failed whose next attempt has arrived,
+	 * and a sending row whose lease is missing or over. A later retry, and
+	 * a send still inside its lease, are not work. */
+	g_string_append(sql, "SELECT \"id\" FROM \"organizations\" WHERE \"deleted_at\" IS NULL AND \"active\" = ");
+	mail_delivery_bind(sql, postgres, &params, orm_value_new_boolean(TRUE));
+	g_string_append(sql, " AND \"id\" IN (SELECT \"organization_id\" FROM \"mail_messages\" WHERE \"deleted_at\" IS NULL"
+		" AND ((\"state\" IN ('queued', 'failed') AND (\"next_attempt_at\" IS NULL OR ");
+	mail_delivery_time_lte(sql, postgres, &params, "\"next_attempt_at\"", now);
+	g_string_append(sql, ")) OR (\"state\" = 'sending' AND (\"lease_until\" IS NULL OR ");
+	mail_delivery_time_lte(sql, postgres, &params, "\"lease_until\"", now);
+	g_string_append(sql, ")))");
+	/* Mail a business cannot send yet waits for its setup, not for us
+	 * (mail_delivery_can_send()). */
+	if (VENTURE_IS_ORGANIZATION_MAILER(venture_context_get_mailer(context))) {
+		if (venture_entity_registry_lookup(registry, "integration_connection") == G_TYPE_INVALID)
+			g_string_append(sql, " AND 0 = 1");
+		else {
+			g_string_append(sql, " AND \"organization_id\" IN (SELECT \"organization_id\" FROM \"integration_connections\""
+				" WHERE \"deleted_at\" IS NULL AND \"provider\" = 'smtp' AND \"enabled\" = ");
+			mail_delivery_bind(sql, postgres, &params, orm_value_new_boolean(TRUE));
+			g_string_append_c(sql, ')');
+		}
+	}
+	if (venture_entity_registry_lookup(registry, "sequence") != G_TYPE_INVALID &&
+		venture_context_module_enabled(context, "sequences"))
+		mail_delivery_sequence_work(sql, postgres, &params, now);
+	g_string_append(sql, ") ORDER BY \"id\"");
+	result = venture_database_query_raw(database, sql->str, params, error);
+	g_list_free_full(params, (GDestroyNotify)orm_value_free);
+	if (!result) return NULL;
+	due = g_array_new(FALSE, FALSE, sizeof(gint64));
+	while (orm_result_next(result)) {
+		gint64 organization = orm_row_get_integer(orm_result_get_row(result), 0);
+		g_array_append_val(due, organization);
+	}
+	return due;
+}
+
 gint
 venture_mail_delivery_sweep(VentureContext *context, GError **error)
 {
 	VentureMailOutbox *outbox;
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_ORGANIZATION);
-	g_autoptr(GPtrArray) businesses = NULL;
+	g_autoptr(GArray) due = NULL;
+	g_autoptr(GDateTime) now = NULL;
 	gint total = 0;
 	guint i;
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), -1);
 	outbox = venture_context_get_mail_outbox(context);
 	if (!outbox) return 0;
-	venture_query_add_filter_int(query, "active", VENTURE_FILTER_OP_EQ, TRUE, NULL);
-	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
-	businesses = venture_database_find(venture_context_get_database(context), query, error);
-	if (!businesses) return -1;
-	for (i = 0; i < businesses->len; i++) {
-		gint64 organization = venture_entity_get_id(g_ptr_array_index(businesses, i));
+	/* The timer runs on the main loop. Visiting every active business on
+	 * each tick held it for seconds with hundreds of them, so the sweep
+	 * visits only the businesses with work, read in one statement. */
+	now = g_date_time_new_now_utc();
+	due = venture_mail_delivery_due_organizations(context, now, error);
+	if (!due) return -1;
+	for (i = 0; i < due->len; i++) {
+		gint64 organization = g_array_index(due, gint64, i);
 		g_autoptr(GError) failure = NULL;
 		gint attempted;
 		mail_delivery_run_sequences(context, organization);

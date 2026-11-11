@@ -183,8 +183,7 @@ that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 `POST /api/v1/mail/connect` turns a business's mail on from one address;
 the relay is the operator's single plaintext endpoint, and the sender name
 is the business (`mail.md`). A stored tool default of Venture is replaced
-at delivery by the organization's name; any other explicit name is kept. A hosted workspace runs due sequence steps
-and then the outbox every five seconds.
+at delivery by the organization's name; any other explicit name is kept. A hosted workspace visits only businesses with work (mail the outbox would send or mark uncertain now, a due sequence step, or a feed event) every five seconds; an idle tick is one statement (`mail.md`).
 An owner or admin connects a business to Stripe without pasting keys:
 `POST /api/v1/organizations/ID/stripe/connect` (test or live; `sk_` or `rk_`
 with `pk_` of that mode) and `POST /webhooks/stripe/connect` (`billing.md`).
