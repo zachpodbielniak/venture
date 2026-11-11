@@ -200,6 +200,13 @@ baseline (`mail.md`, `outreach.md`, `operations.md`, `reports.md`,
 A company can be a customer and a supplier (`crm.md`). Browser reports
 follow the sidebar business when that business is readable (`reports.md`).
 CRM import keeps attachment bytes and dated commercial history (`crm.md`).
+The staff billing overview reads each kind once for every Lightsite
+customer, including Stripe bindings and past-due balances
+(`docs/lightsite-billing.org`).
+`GET /api/v1/organizations/ID/lightsite-areas?types=` names which asked
+area types this caller may open. A referral program's
+`refund_window_days` revokes a reward after a refund inside that window
+and leaves the credit note in the books (`crm.md`).
 The full-system baseline above remains
 the last complete inventory review.
 

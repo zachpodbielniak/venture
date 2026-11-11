@@ -87,6 +87,15 @@ once, whoever sent them first, and a hand-recorded referral saved as `won`
 pays its reward the same way a converted lead does.
 Report: `report referrals`. See `docs/referrals.org`.
 
+`refund_window_days` on the program (0 revokes nothing; a negative number
+is refused) is how long after the referred company's first payment that is
+not only a bookkeeping movement a refund sets the reward to `revoked`.
+With no such payment the window has no start and the refund changes
+nothing. Both ends of the window count. The credit note and any
+free-period adjustment stay in the books; correct that money separately.
+A revoked reward cannot be edited or deleted, and the business event is
+`referral_reward.revoked`.
+
 ## Deals and pipelines (module `pipelines`)
 
 ```bash

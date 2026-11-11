@@ -52,10 +52,13 @@ GType venture_referral_status_get_type(void) G_GNUC_CONST;
  * VentureReferralRewardStatus:
  * @VENTURE_REFERRAL_REWARD_APPLIED: given to the referrer
  * @VENTURE_REFERRAL_REWARD_FAILED: could not be given; the record says why
+ * @VENTURE_REFERRAL_REWARD_REVOKED: taken back after a refund inside the program window
  */
 typedef enum {
 	VENTURE_REFERRAL_REWARD_APPLIED,
-	VENTURE_REFERRAL_REWARD_FAILED
+	VENTURE_REFERRAL_REWARD_FAILED,
+	/* Appended, never inserted: stored rewards read back by value. */
+	VENTURE_REFERRAL_REWARD_REVOKED
 } VentureReferralRewardStatus;
 /**
  * venture_referral_reward_status_get_type:

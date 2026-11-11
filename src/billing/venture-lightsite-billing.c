@@ -161,28 +161,37 @@ status_live(gint status)
 	return status >= 0 && status <= 3;
 }
 
-/* The company's live subscription, else its latest one, else NULL. */
+/* The live subscription among a company's @rows (id ascending), else its
+ * latest one, else NULL. */
 static VentureEntity *
-current_subscription(VentureDatabase *database, gint64 billing, gint64 company_id, GError **error)
+pick_subscription(GPtrArray *rows)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
-	g_autoptr(GPtrArray) rows = NULL;
 	VentureEntity *live = NULL, *latest = NULL;
 	guint i;
-	venture_query_set_organization(query, billing);
-	venture_query_add_filter_int(query, "company-id", VENTURE_FILTER_OP_EQ, company_id, NULL);
-	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
-	rows = find(database, query, error);
-	if (!rows) return NULL;
-	for (i = 0; i < rows->len; i++) {
+	for (i = 0; rows && i < rows->len; i++) {
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		gint status = 0;
 		g_object_get(row, "status", &status, NULL);
 		latest = row;
 		if (status_live(status)) live = row;
 	}
-	if (live) return g_object_ref(live);
-	return latest ? g_object_ref(latest) : NULL;
+	return live ? live : latest;
+}
+
+/* The company's live subscription, else its latest one, else NULL. */
+static VentureEntity *
+current_subscription(VentureDatabase *database, gint64 billing, gint64 company_id, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+	g_autoptr(GPtrArray) rows = NULL;
+	VentureEntity *chosen;
+	venture_query_set_organization(query, billing);
+	venture_query_add_filter_int(query, "company-id", VENTURE_FILTER_OP_EQ, company_id, NULL);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	rows = find(database, query, error);
+	if (!rows) return NULL;
+	chosen = pick_subscription(rows);
+	return chosen ? g_object_ref(chosen) : NULL;
 }
 
 /* The one active monthly price of the plan coded @code in the billing
@@ -235,87 +244,303 @@ monthly_price(VentureDatabase *database, gint64 billing, const gchar *code, GErr
 	return g_object_ref(chosen);
 }
 
-static gboolean
-stripe_connected(VentureDatabase *database, gint64 organization_id, gboolean *connected, GError **error)
+/* Which of @businesses connected their own Stripe. Unconfigured, ambiguous
+ * or the integrations module off all mean "not connected"; only a storage
+ * failure is a failure. */
+static GHashTable *
+stripe_connected(VentureDatabase *database, const gint64 *businesses, guint n, GError **error)
 {
 	g_autoptr(GError) local = NULL;
-	g_autoptr(VentureIntegrationConnection) connection = venture_integration_service_find(
-		venture_integration_service_get(database), organization_id, "stripe", &local);
-	*connected = connection != NULL;
-	/* Unconfigured, ambiguous or the integrations module off all mean "not
-	 * connected"; only a storage failure is a failure. */
-	if (!connection && local && !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_CONFIG) &&
+	GHashTable *connected = venture_integration_service_find_each(venture_integration_service_get(database),
+		businesses, n, "stripe", &local);
+	if (connected) return connected;
+	if (!g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_CONFIG) &&
 	    !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED) &&
 	    !g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_VALIDATION)) {
 		g_propagate_error(error, g_steal_pointer(&local));
-		return FALSE;
+		return NULL;
 	}
-	return TRUE;
+	return g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_object_unref);
 }
 
-/* The issued total of an invoice, from its issue event; NULL when it was
- * never issued. */
-static VentureMoney *
-issued_total(VentureDatabase *database, gint64 invoice_id, GError **error)
+/* The records the views of some businesses are built from. Each kind is
+ * read once for all of them, never once per business: the staff overview
+ * answers for every customer on the server's one loop. */
+typedef struct {
+	GHashTable *subscriptions; /* company id -> its subscriptions, id ascending */
+	GHashTable *prices;        /* plan price id -> plan price */
+	GHashTable *plans;         /* plan id -> plan */
+	GHashTable *owed;          /* company id -> what it owes */
+	GHashTable *invoices;      /* company id -> its invoices, id ascending */
+	GHashTable *issued;        /* invoice id -> its issued total; NULL: no amount */
+	GHashTable *cards;         /* subscription id -> its enabled, active permission */
+	GHashTable *connected;     /* business id -> its own Stripe binding */
+	GHashTable *past_due;      /* invoice id past due -> its balance now */
+} Reads;
+
+static GHashTable *
+by_id_new(GDestroyNotify free_value)
+{
+	return g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, free_value);
+}
+
+static void
+by_id_insert(GHashTable *table, gint64 id, gpointer value)
+{
+	g_hash_table_insert(table, g_memdup2(&id, sizeof id), value);
+}
+
+static gpointer
+by_id(GHashTable *table, gint64 id)
+{
+	return table ? g_hash_table_lookup(table, &id) : NULL;
+}
+
+static void
+money_free(gpointer money)
+{
+	if (money) venture_money_free(money);
+}
+
+static void
+reads_clear(Reads *reads)
+{
+	g_clear_pointer(&reads->subscriptions, g_hash_table_unref);
+	g_clear_pointer(&reads->prices, g_hash_table_unref);
+	g_clear_pointer(&reads->plans, g_hash_table_unref);
+	g_clear_pointer(&reads->owed, g_hash_table_unref);
+	g_clear_pointer(&reads->invoices, g_hash_table_unref);
+	g_clear_pointer(&reads->issued, g_hash_table_unref);
+	g_clear_pointer(&reads->past_due, g_hash_table_unref);
+	g_clear_pointer(&reads->cards, g_hash_table_unref);
+	g_clear_pointer(&reads->connected, g_hash_table_unref);
+}
+
+static void
+operand_add(GPtrArray *operands, gint64 id)
+{
+	g_ptr_array_add(operands, g_strdup_printf("%" G_GINT64_FORMAT, id));
+}
+
+/* Rows of @query whose @field is one of @ids, grouped by @field, each
+ * group in the query's order. No ids: no statement. */
+static GHashTable *
+grouped(VentureDatabase *database, VentureQuery *query, const gchar *field, GPtrArray *ids, GError **error)
+{
+	g_autoptr(GPtrArray) rows = NULL;
+	GHashTable *groups = by_id_new((GDestroyNotify)g_ptr_array_unref);
+	guint i;
+	if (!ids->len) return groups;
+	if (!venture_query_add_filter(query, field, VENTURE_FILTER_OP_IN, ids, error) || !(rows = find(database, query, error))) {
+		g_hash_table_unref(groups);
+		return NULL;
+	}
+	for (i = 0; i < rows->len; i++) {
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		GPtrArray *group = by_id(groups, number(row, field));
+		if (!group) {
+			group = g_ptr_array_new_with_free_func(g_object_unref);
+			by_id_insert(groups, number(row, field), group);
+		}
+		g_ptr_array_add(group, g_object_ref(row));
+	}
+	return groups;
+}
+
+/* A plan or price by id, read once per answer. */
+static VentureEntity *
+cached_record(VentureDatabase *database, GHashTable *cache, GType type, gint64 id, GError **error)
+{
+	VentureEntity *record = by_id(cache, id);
+	if (record) return record;
+	record = get_record(database, type, id, error);
+	if (record) by_id_insert(cache, id, record);
+	return record;
+}
+
+static VentureEntity *
+subscription_of(Reads *reads, VentureEntity *company)
+{
+	return company ? pick_subscription(by_id(reads->subscriptions, venture_entity_get_id(company))) : NULL;
+}
+
+/* The subscriptions of @companies: enough to know which have one. */
+static gboolean
+read_subscriptions(VentureDatabase *database, gint64 billing, GPtrArray *companies, Reads *reads, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CUSTOMER_SUBSCRIPTION);
+	g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+	guint i;
+	for (i = 0; i < companies->len; i++) operand_add(ids, venture_entity_get_id(g_ptr_array_index(companies, i)));
+	venture_query_set_organization(query, billing);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	reads->subscriptions = grouped(database, query, "company-id", ids, error);
+	return reads->subscriptions != NULL;
+}
+
+/* The issued total of each invoice in @ids, from its latest issue event. */
+static gboolean
+read_issued(VentureDatabase *database, GPtrArray *ids, Reads *reads, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE_EVENT);
 	g_autoptr(GPtrArray) rows = NULL;
 	guint i;
-	venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, invoice_id, NULL);
-	rows = find(database, query, error);
-	if (!rows) return NULL;
+	reads->issued = by_id_new(money_free);
+	if (!ids->len) return TRUE;
+	if (!venture_query_add_filter(query, "invoice-id", VENTURE_FILTER_OP_IN, ids, error) || !(rows = find(database, query, error)))
+		return FALSE;
 	for (i = 0; i < rows->len; i++) {
+		VentureEntity *event = g_ptr_array_index(rows, i);
 		g_autofree gchar *kind = NULL;
 		VentureMoney *amount = NULL;
-		g_object_get(g_ptr_array_index(rows, i), "kind", &kind, NULL);
-		if (g_strcmp0(kind, "issue") != 0) continue;
-		g_object_get(g_ptr_array_index(rows, i), "amount", &amount, NULL);
-		return amount;
+		gint64 invoice = number(event, "invoice-id");
+		g_object_get(event, "kind", &kind, NULL);
+		if (g_strcmp0(kind, "issue") != 0 || g_hash_table_contains(reads->issued, &invoice)) continue;
+		g_object_get(event, "amount", &amount, NULL);
+		by_id_insert(reads->issued, invoice, amount);
 	}
-	return NULL;
+	return TRUE;
+}
+
+/* The enabled, active permission of each subscription in @ids; none when
+ * the Stripe module is off. */
+static gboolean
+read_cards(VentureDatabase *database, gint64 billing, GPtrArray *ids, Reads *reads, GError **error)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i;
+	reads->cards = by_id_new(g_object_unref);
+	if (!ids->len || !venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "stripe_authorization"))
+		return TRUE;
+	query = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
+	venture_query_set_organization(query, billing);
+	venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, NULL);
+	venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", NULL);
+	if (!venture_query_add_filter(query, "subscription-id", VENTURE_FILTER_OP_IN, ids, error) || !(rows = find(database, query, error)))
+		return FALSE;
+	for (i = 0; i < rows->len; i++) {
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		gint64 subscription = number(row, "subscription-id");
+		if (!g_hash_table_contains(reads->cards, &subscription)) by_id_insert(reads->cards, subscription, g_object_ref(row));
+	}
+	return TRUE;
+}
+
+/* Everything else the views need, after the subscriptions: of @companies,
+ * and of @businesses (one per view, with or without a company). */
+/* Whether @invoice counts toward overdue once its balance is known: open
+ * and a whole day past due, the receivables aging's rule. */
+static gboolean
+past_due(VentureEntity *invoice, GDateTime *now)
+{
+	g_autoptr(GDateTime) due = NULL;
+	const gchar *status = enum_nick(invoice, "status");
+	if (g_strcmp0(status, "draft") == 0 || g_strcmp0(status, "void") == 0) return FALSE;
+	g_object_get(invoice, "due-at", &due, NULL);
+	return due && g_date_time_difference(now, due) / G_TIME_SPAN_DAY >= 1;
+}
+
+/* The balance of every invoice past due in @reads, read at once. */
+static gboolean
+read_past_due(VentureDatabase *database, Reads *reads, GError **error)
+{
+	g_autoptr(GArray) ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+	g_autoptr(GDateTime) now = venture_time_now();
+	GHashTableIter iter;
+	gpointer value;
+	guint i;
+	g_hash_table_iter_init(&iter, reads->invoices);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) {
+		GPtrArray *rows = value;
+		for (i = 0; i < rows->len; i++) {
+			gint64 id = venture_entity_get_id(g_ptr_array_index(rows, i));
+			if (past_due(g_ptr_array_index(rows, i), now)) g_array_append_val(ids, id);
+		}
+	}
+	reads->past_due = venture_settlement_service_invoice_balances(venture_settlement_service_get(database),
+		(const gint64 *)(gpointer)ids->data, ids->len, error);
+	return reads->past_due != NULL;
+}
+
+static gboolean
+read_views(VentureDatabase *database, gint64 billing, GPtrArray *companies, const gint64 *businesses, guint n,
+	Reads *reads, GError **error)
+{
+	g_autoptr(GHashTable) currencies = by_id_new(g_free);
+	g_autoptr(GPtrArray) ids = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GPtrArray) latest = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(GPtrArray) subscriptions = g_ptr_array_new_with_free_func(g_free);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
+	guint i;
+	reads->prices = by_id_new(g_object_unref);
+	reads->plans = by_id_new(g_object_unref);
+	for (i = 0; i < companies->len; i++) {
+		VentureEntity *company = g_ptr_array_index(companies, i);
+		VentureEntity *subscription = subscription_of(reads, company);
+		gchar *currency = NULL;
+		if (subscription) {
+			VentureEntity *price = cached_record(database, reads->prices, VENTURE_TYPE_PLAN_PRICE,
+				number(subscription, "plan-price-id"), error);
+			if (!price || !cached_record(database, reads->plans, VENTURE_TYPE_PLAN, number(price, "plan-id"), error))
+				return FALSE;
+			g_object_get(price, "currency", &currency, NULL);
+			operand_add(subscriptions, venture_entity_get_id(subscription));
+		}
+		if (!currency) currency = venture_database_get_book_currency(database, billing);
+		by_id_insert(currencies, venture_entity_get_id(company), currency);
+		operand_add(ids, venture_entity_get_id(company));
+	}
+	reads->owed = venture_settlement_service_customer_balances(venture_settlement_service_get(database), billing,
+		currencies, error);
+	if (!reads->owed) return FALSE;
+	venture_query_set_organization(query, billing);
+	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
+	reads->invoices = grouped(database, query, "company-id", ids, error);
+	if (!reads->invoices || !read_past_due(database, reads, error)) return FALSE;
+	for (i = 0; i < companies->len; i++) {
+		GPtrArray *invoices = by_id(reads->invoices, venture_entity_get_id(g_ptr_array_index(companies, i)));
+		if (invoices && invoices->len)
+			operand_add(latest, venture_entity_get_id(g_ptr_array_index(invoices, invoices->len - 1)));
+	}
+	if (!read_issued(database, latest, reads, error) || !read_cards(database, billing, subscriptions, reads, error))
+		return FALSE;
+	reads->connected = stripe_connected(database, businesses, n, error);
+	return reads->connected != NULL;
 }
 
 /* The invoices half of the view: whether any is overdue -- open and a
  * whole day past due, the receivables aging's rule -- and the latest. */
 static gboolean
-invoice_facts(VentureDatabase *database, gint64 billing, gint64 company_id, gboolean *overdue,
+invoice_facts(VentureDatabase *database, Reads *reads, gint64 company_id, gboolean *overdue,
 	JsonNode **last, GError **error)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_INVOICE);
-	g_autoptr(GPtrArray) rows = NULL;
+	GPtrArray *rows = by_id(reads->invoices, company_id);
 	g_autoptr(GDateTime) now = venture_time_now();
 	VentureSettlementService *settlement = venture_settlement_service_get(database);
 	VentureEntity *latest = NULL;
 	guint i;
 	*overdue = FALSE;
 	*last = NULL;
-	venture_query_set_organization(query, billing);
-	venture_query_add_filter_int(query, "company-id", VENTURE_FILTER_OP_EQ, company_id, NULL);
-	venture_query_add_order(query, "id", VENTURE_SORT_ASCENDING, NULL);
-	rows = find(database, query, error);
-	if (!rows) return FALSE;
-	for (i = 0; i < rows->len; i++) {
+	for (i = 0; rows && i < rows->len; i++) {
 		VentureEntity *invoice = g_ptr_array_index(rows, i);
-		g_autoptr(VentureMoney) balance = NULL;
-		g_autoptr(GDateTime) due = NULL;
-		const gchar *status = enum_nick(invoice, "status");
+		gint64 id = venture_entity_get_id(invoice);
+		g_autoptr(VentureMoney) alone = NULL;
+		VentureMoney *balance;
 		latest = invoice;
-		if (*overdue || g_strcmp0(status, "draft") == 0 || g_strcmp0(status, "void") == 0) continue;
-		g_object_get(invoice, "due-at", &due, NULL);
-		if (!due || g_date_time_difference(now, due) / G_TIME_SPAN_DAY < 1) continue;
-		balance = venture_settlement_service_invoice_balance(settlement, venture_entity_get_id(invoice), NULL, error);
-		if (!balance) return FALSE;
+		if (*overdue || !past_due(invoice, now)) continue;
+		/* Read with the others, unless it fell due after that read. */
+		balance = reads->past_due ? by_id(reads->past_due, id) : NULL;
+		if (!balance && !(balance = alone = venture_settlement_service_invoice_balance(settlement, id, NULL, error)))
+			return FALSE;
 		if (venture_money_get_amount(balance) > 0) *overdue = TRUE;
 	}
 	if (latest) {
-		g_autoptr(VentureMoney) total = NULL;
+		VentureMoney *total = by_id(reads->issued, venture_entity_get_id(latest));
 		g_autoptr(GDateTime) due = NULL, paid = NULL;
 		g_autofree gchar *invoice_number = NULL;
 		g_autofree gchar *total_text = NULL;
 		JsonObject *object = json_object_new();
-		g_autoptr(GError) local = NULL;
-		total = issued_total(database, venture_entity_get_id(latest), &local);
-		if (local) { g_propagate_error(error, g_steal_pointer(&local)); json_object_unref(object); return FALSE; }
 		g_object_get(latest, "number", &invoice_number, "due-at", &due, "paid-at", &paid, NULL);
 		json_object_set_string_member(object, "number", invoice_number ? invoice_number : "");
 		json_object_set_string_member(object, "status", enum_nick(latest, "status"));
@@ -332,38 +557,20 @@ invoice_facts(VentureDatabase *database, gint64 billing, gint64 company_id, gboo
 	return TRUE;
 }
 
-/* The view of one business, given its customer company when known.
- * @company NULL means the business has none yet: nothing on, nothing owed. */
 /* The card the subscription is charged to: the enabled, verified
  * permission's brand, last four and expiry, each null when it was never
  * recorded. Nothing else of the method leaves; with no verified method,
  * or the Stripe module off, there is no card. */
-static gboolean
-card_on_file(VentureDatabase *database, gint64 billing, VentureEntity *subscription, JsonNode **card, GError **error)
+static JsonNode *
+card_on_file(Reads *reads, VentureEntity *subscription)
 {
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) rows = NULL;
+	VentureEntity *permission = subscription ? by_id(reads->cards, venture_entity_get_id(subscription)) : NULL;
 	g_autofree gchar *brand = NULL, *last4 = NULL;
 	JsonObject *object;
+	JsonNode *card;
 	gint64 month = 0, year = 0;
-	*card = json_node_new(JSON_NODE_NULL);
-	if (!subscription || !venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "stripe_authorization"))
-		return TRUE;
-	query = venture_query_new(VENTURE_TYPE_STRIPE_AUTHORIZATION);
-	venture_query_set_organization(query, billing);
-	/* Newest enabled permission. Collection walks every row and keeps the
-	 * last; an unordered read here can show a card the next charge does
-	 * not use. One row is the view. */
-	if (!venture_query_add_filter_int(query, "subscription-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(subscription), error) ||
-		!venture_query_add_filter_int(query, "enabled", VENTURE_FILTER_OP_EQ, TRUE, error) ||
-		!venture_query_add_filter_string(query, "status", VENTURE_FILTER_OP_EQ, "active", error) ||
-		!venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING, error))
-		return FALSE;
-	venture_query_set_limit(query, 1);
-	rows = find(database, query, error);
-	if (!rows) return FALSE;
-	if (!rows->len) return TRUE;
-	g_object_get(g_ptr_array_index(rows, 0), "method-brand", &brand, "method-last4", &last4,
+	if (!permission) return json_node_new(JSON_NODE_NULL);
+	g_object_get(permission, "method-brand", &brand, "method-last4", &last4,
 		"method-exp-month", &month, "method-exp-year", &year, NULL);
 	object = json_object_new();
 	if (brand && *brand) json_object_set_string_member(object, "brand", brand);
@@ -374,31 +581,30 @@ card_on_file(VentureDatabase *database, gint64 billing, VentureEntity *subscript
 	else json_object_set_null_member(object, "exp_month");
 	if (year > 0) json_object_set_int_member(object, "exp_year", year);
 	else json_object_set_null_member(object, "exp_year");
-	json_node_unref(*card);
-	*card = json_node_new(JSON_NODE_OBJECT);
-	json_node_take_object(*card, object);
-	return TRUE;
+	card = json_node_new(JSON_NODE_OBJECT);
+	json_node_take_object(card, object);
+	return card;
 }
 
+/* The view of one business from @reads, given its customer company when
+ * known. @company NULL means the business has none yet: nothing on,
+ * nothing owed. */
 static JsonNode *
-build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, VentureEntity *company, GError **error)
+view_from(VentureDatabase *database, gint64 billing, gint64 organization_id, VentureEntity *company, Reads *reads,
+	GError **error)
 {
-	g_autoptr(VentureEntity) subscription = NULL, price = NULL, plan = NULL;
-	g_autoptr(VentureMoney) owed = NULL;
+	VentureEntity *subscription = subscription_of(reads, company), *price = NULL, *plan = NULL;
+	g_autoptr(VentureMoney) nothing = NULL;
+	const VentureMoney *owed;
 	g_autoptr(GDateTime) period_end = NULL, past_due_at = NULL;
 	g_autofree gchar *currency = NULL;
-	JsonNode *last = NULL, *node, *card = NULL;
+	JsonNode *last = NULL, *node;
 	JsonObject *object;
 	gboolean overdue = FALSE, failed = FALSE, connected = FALSE;
 	const gchar *state = "none";
-	if (company) {
-		subscription = current_subscription(database, billing, venture_entity_get_id(company), error);
-		if (!subscription && error && *error) return NULL;
-	}
 	if (subscription) {
-		price = get_record(database, VENTURE_TYPE_PLAN_PRICE, number(subscription, "plan-price-id"), error);
-		if (!price) return NULL;
-		plan = get_record(database, VENTURE_TYPE_PLAN, number(price, "plan-id"), error);
+		price = by_id(reads->prices, number(subscription, "plan-price-id"));
+		plan = price ? by_id(reads->plans, number(price, "plan-id")) : NULL;
 		if (!plan) return NULL;
 		g_object_get(price, "currency", &currency, NULL);
 		g_object_get(subscription, "current-period-end", &period_end, "past-due-at", &past_due_at, NULL);
@@ -407,18 +613,12 @@ build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, Ve
 	}
 	if (!currency) currency = venture_database_get_book_currency(database, billing);
 	if (company) {
-		owed = venture_settlement_service_customer_balance(venture_settlement_service_get(database), billing,
-			venture_entity_get_id(company), NULL, currency, error);
+		owed = by_id(reads->owed, venture_entity_get_id(company));
 		if (!owed) return NULL;
-		if (!invoice_facts(database, billing, venture_entity_get_id(company), &overdue, &last, error)) return NULL;
+		if (!invoice_facts(database, reads, venture_entity_get_id(company), &overdue, &last, error)) return NULL;
 	} else
-		owed = venture_money_new_zero(currency);
-	if (!stripe_connected(database, organization_id, &connected, error) ||
-		!card_on_file(database, billing, subscription, &card, error)) {
-		if (last) json_node_unref(last);
-		if (card) json_node_unref(card);
-		return NULL;
-	}
+		owed = nothing = venture_money_new_zero(currency);
+	connected = by_id(reads->connected, organization_id) != NULL;
 	object = json_object_new();
 	json_object_set_int_member(object, "organization_id", organization_id);
 	if (plan) {
@@ -447,10 +647,25 @@ build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, Ve
 	if (last) json_object_set_member(object, "last_invoice", last);
 	else json_object_set_null_member(object, "last_invoice");
 	json_object_set_boolean_member(object, "stripe_connected", connected);
-	json_object_set_member(object, "card", card);
+	json_object_set_member(object, "card", card_on_file(reads, subscription));
 	node = json_node_new(JSON_NODE_OBJECT);
 	json_node_take_object(node, object);
 	return node;
+}
+
+/* The view of one business, given its customer company when known. */
+static JsonNode *
+build_view(VentureDatabase *database, gint64 billing, gint64 organization_id, VentureEntity *company, GError **error)
+{
+	Reads reads = { NULL };
+	g_autoptr(GPtrArray) companies = g_ptr_array_new();
+	JsonNode *view = NULL;
+	if (company) g_ptr_array_add(companies, company);
+	if (read_subscriptions(database, billing, companies, &reads, error) &&
+	    read_views(database, billing, companies, &organization_id, 1, &reads, error))
+		view = view_from(database, billing, organization_id, company, &reads, error);
+	reads_clear(&reads);
+	return view;
 }
 
 /* Authority first, then whether billing is on: an anonymous or ordinary
@@ -505,22 +720,37 @@ by_business(gconstpointer a, gconstpointer b)
 	return x < y ? -1 : (x > y ? 1 : 0);
 }
 
+/* The business a customer company stands for, from its external id. The
+ * query's LIKE is a superset (an underscore matches anything); the prefix
+ * and the number are checked exactly here. */
+static gboolean
+business_of(VentureEntity *company, gint64 *organization_id)
+{
+	g_autofree gchar *reference = NULL;
+	g_object_get(company, "external-id", &reference, NULL);
+	return reference && g_str_has_prefix(reference, LIGHTSITE_REFERENCE_PREFIX) &&
+		g_ascii_string_to_signed(reference + strlen(LIGHTSITE_REFERENCE_PREFIX), 10, 1, G_MAXINT64, organization_id, NULL);
+}
+
 static JsonNode *
 overview_impl(VentureDatabase *database, gint64 billing_organization_id, GError **error)
 {
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) companies = NULL;
+	g_autoptr(GPtrArray) linked = g_ptr_array_new();
+	g_autoptr(GPtrArray) chosen = g_ptr_array_new();
+	g_autoptr(GArray) businesses = g_array_new(FALSE, FALSE, sizeof(gint64));
 	g_autoptr(GPtrArray) views = g_ptr_array_new_with_free_func((GDestroyNotify)json_node_unref);
 	g_autoptr(GHashTable) seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	Reads reads = { NULL };
 	JsonArray *customers;
 	JsonObject *object;
 	JsonNode *node;
+	gboolean ok;
 	guint i;
 		if (!prepare(database, billing_organization_id, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);
-	/* The LIKE is a superset (an underscore matches anything); the prefix
-	 * and the number are checked exactly below. */
 	query = venture_query_new(VENTURE_TYPE_COMPANY);
 	venture_query_set_organization(query, billing_organization_id);
 	venture_query_add_filter_string(query, "external-id", VENTURE_FILTER_OP_LIKE, LIGHTSITE_REFERENCE_PREFIX "%", NULL);
@@ -528,30 +758,35 @@ overview_impl(VentureDatabase *database, gint64 billing_organization_id, GError 
 	companies = find(database, query, error);
 	if (!companies) return NULL;
 	for (i = 0; i < companies->len; i++) {
-		VentureEntity *company = g_ptr_array_index(companies, i);
-		g_autoptr(VentureEntity) subscription = NULL;
-		g_autofree gchar *reference = NULL;
 		gint64 organization_id = 0;
-		JsonNode *view;
-		g_object_get(company, "external-id", &reference, NULL);
-		if (!reference || !g_str_has_prefix(reference, LIGHTSITE_REFERENCE_PREFIX) ||
-		    !g_ascii_string_to_signed(reference + strlen(LIGHTSITE_REFERENCE_PREFIX), 10, 1, G_MAXINT64, &organization_id, NULL) ||
-		    g_hash_table_contains(seen, &organization_id))
-			continue;
-		subscription = current_subscription(database, billing_organization_id, venture_entity_get_id(company), error);
-		if (!subscription) {
-			if (error && *error) return NULL;
-			continue;
-		}
-		if (views->len >= LIGHTSITE_MAX_CUSTOMERS) {
-			refuse(error, VENTURE_ERROR_VALIDATION, "more Lightsite customers than one overview answers");
-			return NULL;
+		if (business_of(g_ptr_array_index(companies, i), &organization_id))
+			g_ptr_array_add(linked, g_ptr_array_index(companies, i));
+	}
+	ok = read_subscriptions(database, billing_organization_id, linked, &reads, error);
+	/* A business's first company with a subscription stands for it. */
+	for (i = 0; ok && i < linked->len; i++) {
+		VentureEntity *company = g_ptr_array_index(linked, i);
+		gint64 organization_id = 0;
+		business_of(company, &organization_id);
+		if (g_hash_table_contains(seen, &organization_id) || !subscription_of(&reads, company)) continue;
+		if (chosen->len >= LIGHTSITE_MAX_CUSTOMERS) {
+			ok = refuse(error, VENTURE_ERROR_VALIDATION, "more Lightsite customers than one overview answers");
+			break;
 		}
 		g_hash_table_add(seen, g_memdup2(&organization_id, sizeof organization_id));
-		view = build_view(database, billing_organization_id, organization_id, company, error);
-		if (!view) return NULL;
-		g_ptr_array_add(views, view);
+		g_ptr_array_add(chosen, company);
+		g_array_append_val(businesses, organization_id);
 	}
+	ok = ok && read_views(database, billing_organization_id, chosen, (const gint64 *)(gpointer)businesses->data,
+		businesses->len, &reads, error);
+	for (i = 0; ok && i < chosen->len; i++) {
+		JsonNode *view = view_from(database, billing_organization_id, g_array_index(businesses, gint64, i),
+			g_ptr_array_index(chosen, i), &reads, error);
+		ok = view != NULL;
+		if (ok) g_ptr_array_add(views, view);
+	}
+	reads_clear(&reads);
+	if (!ok) return NULL;
 	g_ptr_array_sort(views, by_business);
 	customers = json_array_new();
 	for (i = 0; i < views->len; i++)

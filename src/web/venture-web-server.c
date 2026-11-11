@@ -442,6 +442,8 @@ venture_web_set_module_disabled_error(
 }
 
 #include "venture-web-account-identity.inc"
+static gboolean venture_web_require_for_type(VentureWebServer *self, VentureAuthPrincipal *principal, GType entity_type, VentureUserRole ordinary, GError **error);
+#include "venture-web-lightsite-areas.inc"
 
 /*
  * Refuses an API request into a module that is off.
@@ -35381,6 +35383,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/signups", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_signup, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/rotate", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/revoke", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/lightsite-areas", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_areas, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/invitations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations/:invitation_id/resend", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);

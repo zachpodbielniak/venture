@@ -95,6 +95,23 @@ VentureMoney *venture_settlement_service_invoice_balance(VentureSettlementServic
 	gint64 invoice_id, GDateTime *as_of, GError **error);
 
 /**
+ * venture_settlement_service_invoice_balances:
+ * @self: the service
+ * @invoice_ids: (array length=n_invoices): the invoices
+ * @n_invoices: how many
+ * @error: (out) (optional): the error
+ *
+ * The balance of many invoices now, each exactly as
+ * venture_settlement_service_invoice_balance() counts it with no cutoff,
+ * read with at most three statements rather than two or more per invoice.
+ *
+ * Returns: (transfer full) (nullable) (element-type gint64 VentureMoney):
+ *   each invoice id to its balance, or NULL on error
+ */
+GHashTable *venture_settlement_service_invoice_balances(VentureSettlementService *self,
+	const gint64 *invoice_ids, guint n_invoices, GError **error);
+
+/**
  * venture_settlement_service_customer_balance:
  * @self: the service
  * @organization_id: one legal entity
@@ -107,6 +124,24 @@ VentureMoney *venture_settlement_service_invoice_balance(VentureSettlementServic
 VentureMoney *venture_settlement_service_customer_balance(VentureSettlementService *self,
 	gint64 organization_id, gint64 customer_id, GDateTime *as_of,
 	const gchar *currency, GError **error);
+
+/**
+ * venture_settlement_service_customer_balances:
+ * @self: the service
+ * @organization_id: one legal entity
+ * @currencies: (element-type gint64 utf8): each customer id, keyed by a
+ *   pointer to the id, with the currency to report its balance in
+ * @error: (out) (optional): the error
+ *
+ * The balance of many customers now, each exactly as
+ * venture_settlement_service_customer_balance() counts it with no cutoff,
+ * read with one statement per kind of record rather than four per customer.
+ *
+ * Returns: (transfer full) (nullable) (element-type gint64 VentureMoney):
+ *   each customer id to its balance, or NULL on error
+ */
+GHashTable *venture_settlement_service_customer_balances(VentureSettlementService *self,
+	gint64 organization_id, GHashTable *currencies, GError **error);
 
 /**
  * venture_settlement_service_refresh_credit:

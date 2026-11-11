@@ -16,6 +16,11 @@
  * the referrer. So a referral that becomes won is only remembered, and the
  * reward is given once the outermost transaction has committed, in a
  * transaction of its own. One that cannot be given is recorded with why.
+ *
+ * A refund is remembered the same way. After it commits, an applied reward
+ * for that customer becomes revoked when the refund date is inside the
+ * program window. The window starts at the first payment record. Zero days
+ * revokes nothing. The credit note stays in the books.
  */
 
 typedef struct _VentureReferralService VentureReferralService;
@@ -24,6 +29,7 @@ struct _VentureReferralService {
 	gboolean installed;
 	gboolean rewarding;
 	GArray *won;
+	GArray *refunds;
 	VentureEntity *writing;
 };
 
@@ -36,6 +42,7 @@ service_free(gpointer data)
 {
 	VentureReferralService *self = data;
 	g_array_unref(self->won);
+	g_array_unref(self->refunds);
 	g_free(self);
 }
 
@@ -49,6 +56,7 @@ service_get(VentureDatabase *database)
 		/* Not a reference: the database owns the service through its data. */
 		self->database = database;
 		self->won = g_array_new(FALSE, FALSE, sizeof(gint64));
+		self->refunds = g_array_new(FALSE, FALSE, sizeof(gint64));
 		g_object_set_data_full(G_OBJECT(database), "venture-referral-service", self, service_free);
 	}
 	return self;
@@ -231,6 +239,8 @@ validate_program(VentureDatabase *database, VentureEntity *entity, VentureEntity
 	(void)previous;
 	(void)data;
 	g_object_get(entity, "reward-amount", &amount, NULL);
+	if (number(entity, "refund-window-days") < 0)
+		return refuse(error, "refund-window-days", "The refund window cannot be negative");
 	if (choice(entity, "reward-kind") == VENTURE_REFERRAL_REWARD_CREDIT &&
 	    (amount == NULL || venture_money_get_amount(amount) <= 0))
 		return refuse(error, "reward-amount", "A credit reward needs a positive amount");
@@ -428,11 +438,18 @@ validate_reward(VentureDatabase *database, VentureEntity *entity, VentureEntity 
 		return refuse(error, "status", "Rewards are given by the referral service; retry one with its apply action");
 	if (number(entity, "referral-id") == 0)
 		return refuse(error, "referral-id", "A reward is for a referral");
-	if (previous != NULL && choice(previous, "status") == VENTURE_REFERRAL_REWARD_APPLIED &&
-	    (choice(entity, "status") != VENTURE_REFERRAL_REWARD_APPLIED ||
-	     number(entity, "credit-id") != number(previous, "credit-id") ||
-	     number(entity, "subscription-id") != number(previous, "subscription-id")))
-		return refuse(error, "status", "A reward that was given cannot be changed; record a correction in the books");
+	if (previous != NULL && choice(previous, "status") == VENTURE_REFERRAL_REWARD_REVOKED)
+		return refuse(error, "status", "A revoked reward cannot be changed");
+	if (previous != NULL && choice(previous, "status") == VENTURE_REFERRAL_REWARD_APPLIED)
+	{
+		gboolean same_books = number(entity, "credit-id") == number(previous, "credit-id") &&
+			number(entity, "subscription-id") == number(previous, "subscription-id");
+		/* The service takes the reward back. The credit note stays. */
+		if (choice(entity, "status") == VENTURE_REFERRAL_REWARD_REVOKED && same_books)
+			return TRUE;
+		if (choice(entity, "status") != VENTURE_REFERRAL_REWARD_APPLIED || !same_books)
+			return refuse(error, "status", "A reward that was given cannot be changed; record a correction in the books");
+	}
 	return TRUE;
 }
 
@@ -612,6 +629,114 @@ done:
 		g_message("referrals: referral #%" G_GINT64_FORMAT " reward not recorded: %s", referral_id, error->message);
 }
 
+/* The window includes the payment date and the date that many days later. */
+static gboolean
+inside_window(GDateTime *paid, GDateTime *refunded, gint64 days)
+{
+	g_autoptr(GDateTime) end = NULL;
+	if (days <= 0 || days > G_MAXINT || paid == NULL || refunded == NULL)
+		return FALSE;
+	end = g_date_time_add_days(paid, (gint)days);
+	if (end == NULL)
+		return FALSE;
+	return g_date_time_compare(refunded, paid) >= 0 && g_date_time_compare(refunded, end) <= 0;
+}
+
+/* Earliest payment that is not only a book move. NULL when there is none. */
+static GDateTime *
+first_payment_at(VentureDatabase *database, gint64 org, gint64 customer, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_PAYMENT);
+	g_autoptr(GPtrArray) rows = NULL;
+	guint i;
+	venture_query_set_organization(query, org);
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "customer-id", VENTURE_FILTER_OP_EQ, customer, error))
+		return NULL;
+	if (!venture_query_add_order(query, "date", VENTURE_SORT_ASCENDING, error))
+		return NULL;
+	rows = venture_database_find(database, query, error);
+	if (rows == NULL)
+		return NULL;
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *payment = g_ptr_array_index(rows, i);
+		GDateTime *when = NULL;
+		if (venture_payment_is_bookkeeping(VENTURE_PAYMENT(payment)))
+			continue;
+		g_object_get(payment, "date", &when, NULL);
+		if (when != NULL)
+			return when;
+	}
+	return NULL;
+}
+
+static void
+revoke_reward(VentureDatabase *database, VentureEntity *reward)
+{
+	g_autoptr(VentureEntity) copy = same_row(reward);
+	g_autoptr(GError) error = NULL;
+	g_object_set(copy, "status", VENTURE_REFERRAL_REWARD_REVOKED, NULL);
+	if (!write_reward(database, copy, NULL, &error))
+		g_message("referrals: reward #%" G_GINT64_FORMAT " was not revoked: %s",
+			venture_entity_get_id(reward), error != NULL ? error->message : "unknown error");
+}
+
+static void
+revoke_for_refund(VentureReferralService *self, gint64 refund_id)
+{
+	VentureDatabase *database = self->database;
+	g_autoptr(VentureEntity) refund = NULL;
+	g_autoptr(VentureMoney) amount = NULL;
+	g_autoptr(GDateTime) refunded = NULL;
+	g_autoptr(GPtrArray) rewards = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 customer, org;
+	guint i;
+	if (!enabled("referral_reward"))
+		return;
+	refund = venture_database_get(database, VENTURE_TYPE_REFUND, refund_id, &error);
+	if (refund == NULL || venture_entity_is_deleted(refund))
+		goto done;
+	g_object_get(refund, "amount", &amount, NULL);
+	if (amount == NULL || venture_money_get_amount(amount) <= 0)
+		goto done;
+	customer = number(refund, "customer-id");
+	if (customer == 0)
+		goto done;
+	g_object_get(refund, "date", &refunded, NULL);
+	if (refunded == NULL)
+		goto done;
+	org = venture_entity_get_organization_id(refund);
+	rewards = find(database, VENTURE_TYPE_REFERRAL_REWARD, org, "referred-company-id", customer, FALSE, &error);
+	if (rewards == NULL)
+		goto done;
+	for (i = 0; i < rewards->len; i++)
+	{
+		VentureEntity *reward = g_ptr_array_index(rewards, i);
+		g_autoptr(VentureEntity) program = NULL;
+		g_autoptr(GDateTime) paid = NULL;
+		g_autoptr(GError) local = NULL;
+		if (choice(reward, "status") != VENTURE_REFERRAL_REWARD_APPLIED)
+			continue;
+		program = venture_database_get(database, VENTURE_TYPE_REFERRAL_PROGRAM, number(reward, "program-id"), &local);
+		if (program == NULL || local != NULL)
+			continue;
+		paid = first_payment_at(database, org, customer, &local);
+		if (local != NULL)
+		{
+			g_message("referrals: refund #%" G_GINT64_FORMAT " could not read the first payment: %s",
+				refund_id, local->message);
+			continue;
+		}
+		if (inside_window(paid, refunded, number(program, "refund-window-days")))
+			revoke_reward(database, reward);
+	}
+done:
+	if (error != NULL)
+		g_message("referrals: refund #%" G_GINT64_FORMAT " did not revoke a reward: %s", refund_id, error->message);
+}
+
 static void
 flush(VentureReferralService *self)
 {
@@ -623,6 +748,12 @@ flush(VentureReferralService *self)
 		gint64 id = g_array_index(self->won, gint64, 0);
 		g_array_remove_index(self->won, 0);
 		give_reward(self, id);
+	}
+	while (self->refunds->len > 0)
+	{
+		gint64 id = g_array_index(self->refunds, gint64, 0);
+		g_array_remove_index(self->refunds, 0);
+		revoke_for_refund(self, id);
 	}
 	self->rewarding = FALSE;
 }
@@ -637,7 +768,10 @@ transaction_finished(VentureDatabase *database, gboolean committed, gpointer dat
 	if (!committed)
 	{
 		if (!self->rewarding)
+		{
 			g_array_set_size(self->won, 0);
+			g_array_set_size(self->refunds, 0);
+		}
 		return;
 	}
 	flush(self);
@@ -739,6 +873,14 @@ entity_saved(VentureDatabase *database, VentureEntity *entity, gboolean created,
 		lead_saved(self, entity);
 		return;
 	}
+	if (VENTURE_IS_REFUND(entity))
+	{
+		id = venture_entity_get_id(entity);
+		g_array_append_val(self->refunds, id);
+		if (!venture_database_has_transaction(database))
+			flush(self);
+		return;
+	}
 	if (!VENTURE_IS_REFERRAL(entity) || choice(entity, "status") != VENTURE_REFERRAL_WON)
 		return;
 	id = venture_entity_get_id(entity);
@@ -770,6 +912,8 @@ venture_referrals_check_removal(VentureEntity *entity, GError **error)
 {
 	if (VENTURE_IS_REFERRAL_REWARD(entity) && choice(entity, "status") == VENTURE_REFERRAL_REWARD_APPLIED)
 		return refuse(error, "status", "A reward that was given cannot be deleted; record a correction in the books");
+	if (VENTURE_IS_REFERRAL_REWARD(entity) && choice(entity, "status") == VENTURE_REFERRAL_REWARD_REVOKED)
+		return refuse(error, "status", "A revoked reward cannot be deleted");
 	return TRUE;
 }
 
