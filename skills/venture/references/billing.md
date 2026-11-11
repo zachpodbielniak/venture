@@ -218,6 +218,12 @@ commands in that organization. See `docs/lightsite-billing.org` for the recipe.
 A business appears there as a `company` with
 `external_id=lightsite:organization:<id>`; change its subscription through
 `billing change`, never by editing the subscription record directly.
+`GET /api/v1/lightsite/billing` is the staff overview: each kind of record,
+including Stripe bindings and past-due balances, is read once for every
+customer, and more than 2,000 customers is 422.
+`GET /api/v1/organizations/ID/lightsite-areas?types=` (comma-separated, required)
+names which of those area types this caller may open; a missing or oversized
+list is 422, and a type whose list is 403 or 404 is left out.
 
 The operator's billing organization and each customer business keep separate Stripe
 connections. These routes expose connection status, never keys. A successful

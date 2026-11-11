@@ -369,7 +369,9 @@ order the data flows.
   `referral_id` (deleted rows included) is what makes it once only. The
   referral itself is written inside the lead's transaction, and its handler
   sets the derived status before saving, because an empty diff returns
-  before any validator runs.
+  before any validator runs. A refund inside `refund-window-days` revokes
+  the reward the same way, after the refund commits, and leaves the credit
+  note in the books.
 - **The portal manages a subscription only by token and only its own.**
   `/portal/:token/subscriptions/:id` answers NOT_FOUND for anything not the
   token's customer's, and goes through `venture_billing_service_execute()`

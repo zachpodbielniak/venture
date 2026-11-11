@@ -151,29 +151,20 @@ and a correction goes there.
 
 * Refund window
 
-A program has =refund_window_days=.
-Use 0 or a greater number.
-0 revokes no reward.
-Venture refuses a negative number.
+A program's =refund-window-days= is how long after the referred company's
+first real payment a refund still takes the reward back. Zero revokes
+nothing, and a negative number is refused. The first payment is the
+earliest payment record that is not only moving the books; with none, a
+refund changes nothing, because the window has no start to invent.
 
-Venture reads the first payment for the company that received the referral.
-That payment is the earliest payment record.
-Venture skips a payment that only moves the books.
-Venture does not invent a payment time.
-When no such payment exists, a refund does not revoke the reward.
-
-A refund for that company inside the window sets the reward status to =revoked=.
-The window starts on the first payment date.
-The window ends that many days later.
-The payment date and the end date both count.
-Venture records the business event =referral_reward.revoked=.
-GET =/api/v1/referral_reward/{id}= then shows status =revoked=.
-
-The credit note stays in the books.
-The free-period adjustment stays in the books.
-Correct that money in a separate entry.
-You cannot change a revoked reward.
-You cannot delete a revoked reward.
+The window runs from that payment's time through the same time N days
+later, and both ends count. A refund of that company inside it sets the
+reward's status to =revoked= after the refund commits, the same way a
+reward is given after the conversion commits, and records
+=referral_reward.revoked=. The credit note and the free-period adjustment
+stay in the books; correct that money with a separate entry. A revoked
+reward cannot be changed or deleted. GET =/api/v1/referral_reward/{id}=
+shows the status.
 
 * Report
 
