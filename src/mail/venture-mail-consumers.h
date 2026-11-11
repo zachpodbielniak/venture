@@ -72,11 +72,16 @@ void venture_mail_consumers_preview_register(void);
  * @error: (out) (optional): a read that failed
  *
  * The active businesses that have work for venture_mail_delivery_sweep(),
- * read in one statement for all businesses together: mail in the outbox
- * that the business can send (with per-business sending, only once it has
- * set sending up), an email step waiting for the outbox, an enrollment
- * whose next step is due, or a feed trigger with an event of its kind past
- * its position. An idle business is not listed.
+ * read in one statement for all businesses together: mail the outbox would
+ * send or mark uncertain now (a queued or failed message whose next attempt
+ * has arrived, or a sending row whose lease is missing or over; a later
+ * retry and a send still inside its lease are not work) and that the
+ * business can send (with per-business sending, only once it has set
+ * sending up), an email step waiting for the outbox, an enrollment whose
+ * next step is due, or a feed trigger with an event of its kind past its
+ * position. Times compare the way a query filter does, so a stored whole
+ * second is not later than a fraction of that second. An idle business is
+ * not listed.
  * Returns: (transfer full) (element-type gint64): organization ids in
  * ascending order, or %NULL with @error set
  */

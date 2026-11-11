@@ -49,6 +49,20 @@ mail_delivery_bind(GString *sql, gboolean postgres, GList **params, OrmValue *va
 	g_string_append_printf(sql, "%c%u", postgres ? '$' : '?', g_list_length(*params));
 }
 
+/* A stored whole second is twenty characters and sorts after every fraction
+ * of that second. venture_query_append_filter() pads a <= the same way, so
+ * a step due at 12:00:00.5 is not missed because the row says 12:00:00Z. */
+static void
+mail_delivery_time_lte(GString *sql, gboolean postgres, GList **params, const gchar *column, GDateTime *when)
+{
+	g_autoptr(GDateTime) utc = g_date_time_to_utc(when);
+	g_autofree gchar *bound = g_date_time_format(utc, "%Y-%m-%dT%H:%M:%S.%fZ");
+	g_string_append_printf(sql,
+		"(CASE WHEN LENGTH(%s) = 20 THEN REPLACE(%s, 'Z', '.000000Z') ELSE %s END) <= ",
+		column, column, column);
+	mail_delivery_bind(sql, postgres, params, orm_value_new_string(bound));
+}
+
 /* The sequence work venture_sequence_service_run_due() would find for one
  * business, for all businesses at once: an email step waiting for the
  * outbox (venture_sequence_mail_recover()), an enrollment whose next step
@@ -60,13 +74,12 @@ static void
 mail_delivery_sequence_work(GString *sql, gboolean postgres, GList **params, GDateTime *now)
 {
 	g_autoptr(GDateTime) day_ago = g_date_time_add_days(now, -1);
-	g_autofree gchar *cutoff = venture_time_to_string(now), *matured = venture_time_to_string(day_ago);
 	g_string_append(sql,
 		" UNION SELECT \"organization_id\" FROM \"sequence_deliveries\" WHERE \"deleted_at\" IS NULL"
 		" AND \"state\" = 'pending' AND \"channel\" = 'email'"
 		" UNION SELECT \"organization_id\" FROM \"sequence_enrollments\" WHERE \"deleted_at\" IS NULL"
-		" AND \"status\" = 'active' AND \"next_run_at\" <= ");
-	mail_delivery_bind(sql, postgres, params, orm_value_new_string(cutoff));
+		" AND \"status\" = 'active' AND ");
+	mail_delivery_time_lte(sql, postgres, params, "\"next_run_at\"", now);
 	g_string_append(sql,
 		" UNION SELECT t.\"organization_id\" FROM \"sequence_triggers\" t JOIN \"business_events\" e"
 		" ON e.\"organization_id\" = t.\"organization_id\" AND e.\"id\" > t.\"feed_cursor\" AND e.\"deleted_at\" IS NULL"
@@ -75,8 +88,8 @@ mail_delivery_sequence_work(GString *sql, gboolean postgres, GList **params, GDa
 	g_string_append(sql,
 		" AND ((t.\"kind\" = 'invoice_paid' AND e.\"event\" = 'invoice.paid')"
 		" OR (t.\"kind\" = 'booking_made' AND e.\"event\" = 'booking.created')"
-		" OR (t.\"kind\" = 'quote_not_accepted' AND e.\"event\" = 'quote.sent' AND e.\"occurred_at\" <= ");
-	mail_delivery_bind(sql, postgres, params, orm_value_new_string(matured));
+		" OR (t.\"kind\" = 'quote_not_accepted' AND e.\"event\" = 'quote.sent' AND ");
+	mail_delivery_time_lte(sql, postgres, params, "e.\"occurred_at\"", day_ago);
 	g_string_append(sql, "))");
 }
 
@@ -94,11 +107,18 @@ venture_mail_delivery_due_organizations(VentureContext *context, GDateTime *now,
 	g_return_val_if_fail(now != NULL, NULL);
 	database = venture_context_get_database(context);
 	postgres = venture_database_get_backend(database) == VENTURE_DATABASE_BACKEND_POSTGRES;
-	/* The outbox's own states (venture_mail_outbox_deliver_due()). */
+	/* The outbox's own due rule (due() and the expired-lease branch of
+	 * deliver_selected()): queued or failed whose next attempt has arrived,
+	 * and a sending row whose lease is missing or over. A later retry, and
+	 * a send still inside its lease, are not work. */
 	g_string_append(sql, "SELECT \"id\" FROM \"organizations\" WHERE \"deleted_at\" IS NULL AND \"active\" = ");
 	mail_delivery_bind(sql, postgres, &params, orm_value_new_boolean(TRUE));
 	g_string_append(sql, " AND \"id\" IN (SELECT \"organization_id\" FROM \"mail_messages\" WHERE \"deleted_at\" IS NULL"
-		" AND \"state\" IN ('queued', 'failed', 'sending')");
+		" AND ((\"state\" IN ('queued', 'failed') AND (\"next_attempt_at\" IS NULL OR ");
+	mail_delivery_time_lte(sql, postgres, &params, "\"next_attempt_at\"", now);
+	g_string_append(sql, ")) OR (\"state\" = 'sending' AND (\"lease_until\" IS NULL OR ");
+	mail_delivery_time_lte(sql, postgres, &params, "\"lease_until\"", now);
+	g_string_append(sql, ")))");
 	/* Mail a business cannot send yet waits for its setup, not for us
 	 * (mail_delivery_can_send()). */
 	if (VENTURE_IS_ORGANIZATION_MAILER(venture_context_get_mailer(context))) {

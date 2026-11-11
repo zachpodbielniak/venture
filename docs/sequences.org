@@ -83,11 +83,16 @@ sweep. A hosted workspace has no automation engine, so its mail timer
 =venture_sequence_service_run_due()= and then delivers the outbox, for each
 active business that has work. One statement reads that list for all
 businesses: =venture_mail_delivery_due_organizations()=. A business has
-work when it has mail in the outbox that it can send, a pending email step,
-an enrollment whose next step is due, or a feed trigger with an event of its
-kind after its position. A sent quote counts from one day old, so a business
-can be visited before its quote trigger's day count; that visit finds
-nothing. An idle business costs the timer nothing. There is no database
+work when it has mail the outbox would send or mark uncertain at this clock
+(a queued or failed message whose next attempt has arrived, or a sending
+row whose lease is missing or over) and that it can send, a pending email
+step, an enrollment whose next step is due, or a feed trigger with an event
+of its kind after its position. A retry that is still in the future, and a
+send still inside its lease, are not work. A stored whole second compares
+as that second, the same way a date filter does, so it is not treated as
+later than a fraction of itself. A sent quote counts from one day old, so a
+business can be visited before its quote trigger's day count; that visit
+finds nothing. An idle business costs the timer nothing. There is no database
 worker thread. Each enrollment transition is
 one transaction. A failed transaction rolls back its delivery, inbox message,
 progress and audit records; other enrollments already committed by a sweep

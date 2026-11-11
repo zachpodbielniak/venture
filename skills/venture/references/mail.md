@@ -25,6 +25,11 @@ venturectl mail retry 88                        # deliberate resend, same Messag
   mail_message ...` when approval is required.
 - Subscription notices are queued inside the billing instruction and keyed
   for once-only delivery ([billing.md](billing.md)).
+- A hosted workspace has no automation engine. Every five seconds it visits
+  only businesses with work: mail the outbox would send or mark uncertain
+  at that clock (a future retry, and a send still inside its lease, wait),
+  a due sequence step, or a feed event. An idle tick is one statement
+  (`docs/sequences.org`).
 
 ### Previews and test sends
 

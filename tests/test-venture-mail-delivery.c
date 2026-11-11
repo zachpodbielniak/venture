@@ -318,6 +318,55 @@ test_idle_tick_is_one_statement(Fixture *f, gconstpointer unused)
 	g_assert_cmpuint(venture_database_get_statement_count(f->db) - before, ==, 1);
 }
 
+/* A transient failure waits out its backoff. Listing the business on every
+ * tick would visit it for nothing, which is the stall this list avoids. */
+static void
+test_retry_waits_until_due(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) send_error = g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_MAIL_TRANSIENT, "Connection refused");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) later = g_date_time_add_hours(f->now, 2);
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	g_autoptr(VentureEntity) row = NULL;
+	g_autofree gchar *state = NULL;
+	gint64 org = venture_entity_get_id(f->organization);
+	(void)unused;
+	queue_mail(f, f->organization, "mail-delivery:retry");
+	venture_log_mailer_set_error(f->mailer, send_error);
+	sweep(f);
+	/* The log mailer records the attempt even when it refuses it. */
+	venture_query_set_organization(query, org);
+	row = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(row);
+	g_object_get(row, "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "failed");
+	g_assert_false(listed(f, org));
+	g_assert_true(listed_at(f, later, org));
+	venture_log_mailer_set_error(f->mailer, NULL);
+}
+
+/* A stored whole second sorts after a fraction of that second unless the
+ * comparison writes the fraction back. The enrollment and quote comparisons
+ * use the same padding. */
+static void
+test_whole_second_is_due(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GDateTime) second = g_date_time_new_utc(2026, 1, 1, 0, 0, 0);
+	g_autoptr(GDateTime) inside = g_date_time_add(second, 500000);
+	g_autoptr(GDateTime) before = g_date_time_add_seconds(second, -1);
+	g_autoptr(GError) error = NULL;
+	gint64 org = venture_entity_get_id(f->organization);
+	(void)unused;
+	queue_mail(f, f->organization, "mail-delivery:whole-second");
+	g_assert_true(venture_database_execute(f->db,
+		"UPDATE \"mail_messages\" SET \"next_attempt_at\" = '2026-01-01T00:00:00Z'", NULL, &error));
+	g_assert_no_error(error);
+	g_assert_false(listed_at(f, before, org));
+	g_assert_true(listed_at(f, inside, org));
+	g_assert_true(listed_at(f, second, org));
+}
+
 /* The work list finds mail to send through an index on its state, not by
  * reading every message the business ever sent. */
 static void
@@ -346,6 +395,8 @@ main(int argc, char **argv)
 	g_test_add("/mail-delivery/unsendable-mail-not-listed", Fixture, NULL, setup, test_unsendable_mail_not_listed, teardown);
 	g_test_add("/mail-delivery/trigger-listed-on-new-event", Fixture, NULL, setup, test_trigger_listed_on_new_event, teardown);
 	g_test_add("/mail-delivery/idle-tick-is-one-statement", Fixture, NULL, setup, test_idle_tick_is_one_statement, teardown);
+	g_test_add("/mail-delivery/retry-waits-until-due", Fixture, NULL, setup, test_retry_waits_until_due, teardown);
+	g_test_add("/mail-delivery/whole-second-is-due", Fixture, NULL, setup, test_whole_second_is_due, teardown);
 	g_test_add("/mail-delivery/mail-state-indexed", Fixture, NULL, setup, test_mail_state_indexed, teardown);
 	return g_test_run();
 }
