@@ -148,10 +148,10 @@ Setup that replaces the card only once Stripe confirms it) were added after
 `ec60e31b` (2026-11-07, server version 0.9.0); see billing.md,
 api-routes.md and data-model-revenue.md.
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-07 against bd183a15 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-11 against 469915d2 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=bd183a15
+base=469915d2
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
