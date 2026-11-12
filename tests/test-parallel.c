@@ -152,6 +152,126 @@ test_gate_runs_jobs_together(void)
 
 typedef struct
 {
+	GMutex	 lock;
+	GCond	 cond;
+	gboolean outside_reached;
+	gboolean released;
+	gint	 done;
+	GThread	*done_thread;
+} HandBack;
+
+/* The job's ungated phase: holds until the main thread has left its loop. */
+static void
+hand_back_outside(gpointer data)
+{
+	HandBack *hb = data;
+
+	g_mutex_lock(&hb->lock);
+	hb->outside_reached = TRUE;
+	g_cond_broadcast(&hb->cond);
+	while (!hb->released)
+		g_cond_wait(&hb->cond, &hb->lock);
+	g_mutex_unlock(&hb->lock);
+}
+
+static void
+hand_back_done(gpointer data)
+{
+	HandBack *hb = data;
+
+	g_mutex_lock(&hb->lock);
+	hb->done++;
+	hb->done_thread = g_thread_self();
+	g_mutex_unlock(&hb->lock);
+}
+
+static void
+hand_back_job(gpointer data)
+{
+	(void)data;
+}
+
+static gboolean
+hand_back_tick(gpointer data)
+{
+	(void)data;
+	return G_SOURCE_CONTINUE;
+}
+
+/*
+ * Breaks if a job's done callback can run anywhere but on the main
+ * thread's loop. A job finishing while the main thread is between two
+ * g_main_context_iteration() calls -- owning no context -- had its
+ * callback run on the worker by g_main_context_invoke_full(), beside
+ * whatever the main thread was doing, and the main thread's next
+ * iteration then slept in poll() with nothing left to wake it: this
+ * suite hung for hours in gate-runs-jobs-together that way.
+ */
+static void
+test_done_runs_on_main_loop(void)
+{
+	HandBack hb;
+	gint64 deadline;
+	guint tick;
+	gint done;
+
+	memset(&hb, 0, sizeof hb);
+	g_mutex_init(&hb.lock);
+	g_cond_init(&hb.cond);
+	venture_parallel_install(1);
+	/* Something to wake each iteration while the job is in the gate. */
+	tick = g_timeout_add(10, hand_back_tick, NULL);
+
+	venture_parallel_submit(hand_back_job, hand_back_outside, hand_back_done, &hb);
+	deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+	for (;;)
+	{
+		gboolean reached;
+
+		g_mutex_lock(&hb.lock);
+		reached = hb.outside_reached;
+		g_mutex_unlock(&hb.lock);
+		if (reached || g_get_monotonic_time() >= deadline)
+			break;
+		g_main_context_iteration(NULL, TRUE);
+	}
+	g_source_remove(tick);
+	g_assert_true(hb.outside_reached);
+
+	/* Out of the loop, owning no context: let the job finish now. */
+	g_mutex_lock(&hb.lock);
+	hb.released = TRUE;
+	g_cond_broadcast(&hb.cond);
+	g_mutex_unlock(&hb.lock);
+	g_usleep(200 * G_TIME_SPAN_MILLISECOND);
+
+	g_mutex_lock(&hb.lock);
+	done = hb.done;
+	g_mutex_unlock(&hb.lock);
+	g_assert_cmpint(done, ==, 0);
+
+	/* The finished job must also have woken the loop. */
+	deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+	while (g_get_monotonic_time() < deadline)
+	{
+		g_mutex_lock(&hb.lock);
+		done = hb.done;
+		g_mutex_unlock(&hb.lock);
+		if (done > 0)
+			break;
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
+	g_assert_cmpint(done, ==, 1);
+	g_assert_true(hb.done_thread == g_thread_self());
+
+	venture_parallel_uninstall();
+	g_mutex_clear(&hb.lock);
+	g_cond_clear(&hb.cond);
+}
+
+typedef struct
+{
 	GateProbe	*probe;
 	gboolean	 finished;
 } NestedRun;
@@ -620,6 +740,7 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/parallel/gate-waits-for-idle-main", test_gate_waits_for_idle_main);
 	g_test_add_func("/parallel/gate-runs-jobs-together", test_gate_runs_jobs_together);
+	g_test_add_func("/parallel/done-runs-on-main-loop", test_done_runs_on_main_loop);
 	g_test_add_func("/parallel/gate-stays-shut-in-nested-loop", test_gate_stays_shut_in_nested_loop);
 	g_test_add_func("/parallel/worker-answers-match-main-thread", test_worker_answers_match_main_thread);
 	g_test_add_func("/parallel/readers-never-cross", test_readers_never_cross);

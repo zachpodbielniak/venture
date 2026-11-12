@@ -582,6 +582,12 @@ threads (`server.read_workers`, 4; 0 keeps everything on the main thread).
   (`venture_web_parallel_start()` pre-warms the tenant service). A new lazy
   `g_object_set_data` on the database reached from a read path must be
   pre-warmed there too, or two jobs race to create it.
+- **A job's result goes back as a source on the main context, never
+  through `g_main_context_invoke_full()`.** From a worker that call runs
+  the function on the worker whenever nobody owns the context -- every
+  gap between two `g_main_context_iteration()` calls -- beside main-thread
+  code, and the loop is never woken: `test-parallel` hung for hours that
+  way. `/parallel/done-runs-on-main-loop` pins it.
 - **Leased connections are read-only at the database** (`PRAGMA
   query_only`, `READ ONLY` session) and see only committed data. A job
   that writes gets an error from SQLite or PostgreSQL before anything else.

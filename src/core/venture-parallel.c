@@ -125,6 +125,7 @@ static void
 job_run(gpointer data, gpointer pool_data)
 {
 	Job *job = data;
+	GSource *source;
 	(void)pool_data;
 
 	gate_take_shared();
@@ -138,7 +139,22 @@ job_run(gpointer data, gpointer pool_data)
 		job->outside(job->user_data);
 	__atomic_add_fetch(&gate_jobs_run, 1, __ATOMIC_RELAXED);
 
-	g_main_context_invoke_full(gate_context, G_PRIORITY_DEFAULT, job_done, job, g_free);
+	/*
+	 * Always a source on the main context, never
+	 * g_main_context_invoke_full(): that calls the function right here,
+	 * on this worker, whenever no thread owns the context at the moment,
+	 * which is every gap between two g_main_context_iteration() calls.
+	 * The done callback then ran beside main-thread code (the very
+	 * thing the gate forbids), and the main thread's next iteration
+	 * found no source and no wakeup and slept in poll() for good.
+	 * Attaching a source wakes the context and runs it on its owner.
+	 */
+	source = g_idle_source_new();
+	g_source_set_priority(source, G_PRIORITY_DEFAULT);
+	g_source_set_callback(source, job_done, job, g_free);
+	g_source_set_static_name(source, "venture-parallel-done");
+	g_source_attach(source, gate_context);
+	g_source_unref(source);
 }
 
 void
