@@ -6,7 +6,7 @@
 
 /* A real socket must be rejected before either a future plugin route or generic
  * record writer can see its body. Handler-side Content-Length checks miss this. */
-typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; guint marked_writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; } Fixture;
+typedef struct { VentureConfig *config; VentureDatabase *database; VentureContext *context; VentureWebServer *server; gchar *state; guint port; guint writes; guint marked_writes; gboolean tls; GMainContext *owner; const gchar *nested_request; gchar *nested_response; GPtrArray *held; } Fixture;
 typedef struct { guint port; gchar *request; gchar *response; gint done; GError *error; guint delay; guint timeout; gboolean tls; } Exchange;
 static gchar *exchange(Fixture *f, const gchar *request);
 static gchar *probe(Fixture *f, const gchar *request, guint seconds);
@@ -26,6 +26,26 @@ static HtmxResponse *write_handler(HtmxRequest *request, GHashTable *params, gpo
 		f->nested_response = probe(f, request_text, 1);
 	}
 	return htmx_response_new_with_content(body && g_bytes_get_size(body) == 3 && !memcmp(g_bytes_get_data(body, NULL), "abc", 3) ? "yes" : "bad");
+}
+/* Keeps every piece of storage Soup holds the body in -- each chunk, and
+ * the flattened copy the limits make in request-read -- so the test can
+ * look at it after the request is over. A held GBytes stays allocated, so
+ * reading it afterwards is defined. */
+static HtmxResponse *hold_handler(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	Fixture *f = data;
+	SoupMessageBody *body = soup_server_message_get_request_body(htmx_request_get_message(request));
+	goffset offset = 0;
+	(void)params;
+	if (!f->held) f->held = g_ptr_array_new_with_free_func((GDestroyNotify)g_bytes_unref);
+	while (offset < body->length)
+	{
+		GBytes *chunk = soup_message_body_get_chunk(body, offset);
+		if (!chunk || !g_bytes_get_size(chunk)) { g_clear_pointer(&chunk, g_bytes_unref); break; }
+		offset += (goffset)g_bytes_get_size(chunk); g_ptr_array_add(f->held, chunk);
+	}
+	g_ptr_array_add(f->held, soup_message_body_flatten(body));
+	return htmx_response_new_with_content(g_strcmp0(htmx_request_get_form_value(request, "password"), "hunter2-hunter2") ? "bad" : "yes");
 }
 static HtmxResponse *error_handler(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -132,6 +152,7 @@ static void setup(Fixture *f, gconstpointer data)
 	f->context = venture_context_new(f->config, f->database);
 	f->server = venture_web_server_new(f->context, &error); g_assert_no_error(error);
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_POST, "/fixture/write", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, write_handler, f);
+	venture_web_server_add_classified_route(f->server, HTMX_METHOD_POST, "/fixture/hold", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, hold_handler, f);
 	venture_web_server_add_classified_route(f->server, HTMX_METHOD_GET, "/fixture/error", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, error_handler, f);
 	g_assert_true(venture_web_server_start(f->server, &error)); g_assert_no_error(error);
 	f->port = venture_web_server_get_port(f->server);
@@ -141,6 +162,7 @@ static void teardown(Fixture *f, gconstpointer data)
 	(void)data;
 	if (f->server) { venture_web_server_stop(f->server); g_object_unref(f->server); } g_object_unref(f->context);
 	g_object_unref(f->database); g_object_unref(f->config); g_clear_pointer(&f->nested_response, g_free);
+	g_clear_pointer(&f->held, g_ptr_array_unref);
 	venture_test_remove_tree(f->state); g_free(f->state); g_main_context_unref(f->owner);
 }
 static void test_declared(Fixture *f, gconstpointer data)
@@ -472,6 +494,30 @@ static void test_form_upload_bounds(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(response, " 408 "));
 }
 
+/* A login form's password arrives in a request body, and Soup's chunks and
+ * the flattened copy the limits make of them were truncated -- handed back
+ * to the allocator uncleared -- once the request finished, leaving the
+ * plaintext in the heap for a core dump or an over-read to find. Two
+ * chunks, so both the chunks and the flattened copy exist. The handler must
+ * still read the password: the wipe happens after it, not instead of it. */
+static void test_body_wiped(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *response = exchange(f, "POST /fixture/hold HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+		"d\r\nusername=ada&\r\n18\r\npassword=hunter2-hunter2\r\n0\r\n\r\n");
+	guint i;
+	(void)data;
+	g_assert_nonnull(strstr(response, " 200 ")); g_assert_nonnull(strstr(response, "yes"));
+	pump();
+	g_assert_nonnull(f->held); g_assert_cmpuint(f->held->len, >=, 3);
+	for (i = 0; i < f->held->len; i++)
+	{
+		gsize size = 0, j;
+		const guint8 *bytes = g_bytes_get_data(g_ptr_array_index(f->held, i), &size);
+		g_assert_cmpuint(size, >, 0);
+		for (j = 0; j < size; j++) g_assert_cmpuint(bytes[j], ==, 0);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -497,6 +543,7 @@ int main(int argc, char **argv)
 	g_test_add("/http-limits/active-teardown", Fixture, NULL, setup, test_active_teardown, teardown);
 	g_test_add("/http-limits/negative-length", Fixture, NULL, setup, test_negative_length, teardown);
 	g_test_add_func("/http-limits/private-context", test_private_context);
+	g_test_add("/http-limits/body-wiped", Fixture, NULL, setup, test_body_wiped, teardown);
 	g_test_add("/http-limits/form-upload-bounds", Fixture, NULL, setup, test_form_upload_bounds, teardown);
 	return g_test_run();
 }

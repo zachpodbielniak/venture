@@ -160,6 +160,11 @@ incomplete TLS/header or a saturated listener
 (`server.max_connections`, 128) can close without an HTTP response.
 Rejected partial bodies never reach a handler. Do not blindly retry a write
 whose response was lost after dispatch: read its retained identity first.
+Request bodies (where passwords arrive) are wiped from memory once the
+request finishes or is refused -- libsoup's chunks, htmx-glib's copy and
+the form values -- not merely freed; a core dump taken after a sign-in no
+longer holds the password (`docs/security.org`, "Passwords in request
+bodies"). Network, TLS and kernel buffers are out of reach.
 Changes need a restart; HTTP/2 must terminate at the gateway.
 
 ## Parallel reads

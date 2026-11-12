@@ -99,7 +99,9 @@ static void connection_reject(Connection *connection, guint status)
 		soup_server_message_get_http_version(message) < SOUP_HTTP_2_0;
 	connection->rejecting = TRUE;
 	source_clear(&connection->deadline);
-	soup_message_body_truncate(soup_server_message_get_request_body(message));
+	/* Wiped, not only truncated: a refused body can be a login form, and
+	 * truncation hands its chunks back to the allocator uncleared. */
+	htmx_secret_wipe_message_body(soup_server_message_get_request_body(message));
 	/* A status alone does not stop Soup's non-Expect body reader. Steal only
 	 * established HTTP/1 streams; this preserves TLS encryption. Unparsed or
 	 * multiplexed connections close without inventing an HTTP/1 response. */
@@ -191,8 +193,10 @@ static void request_finished(SoupServer *server, SoupServerMessage *message, gpo
 	if (!connection) return;
 	/* Soup has freed the message's I/O by now, so neither body is read or
 	 * written again. Dropping both keeps a keep-alive connection from
-	 * retaining its last response for as long as the peer stays idle. */
-	soup_message_body_truncate(soup_server_message_get_request_body(message));
+	 * retaining its last response for as long as the peer stays idle.
+	 * The request body is wiped before it goes: it may hold a password,
+	 * and this handler may run before HtmxServer's own wipe of it. */
+	htmx_secret_wipe_message_body(soup_server_message_get_request_body(message));
 	soup_message_body_truncate(soup_server_message_get_response_body(message));
 	connection->headers = FALSE; connection->dispatching = FALSE;
 	deadline_reset(connection);

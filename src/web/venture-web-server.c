@@ -4199,16 +4199,31 @@ venture_web_api_write(
 	    json_object_has_member(json_node_get_object(body), "password"))
 	{
 		const gchar *password;
+		gboolean allowed;
+		gboolean set;
 
-		if (!venture_web_hosted_auth_require(self, request, principal,
-		                          VENTURE_USER_ROLE_OWNER, &error))
-			return venture_web_error_response(error);
+		allowed = venture_web_hosted_auth_require(self, request, principal,
+		                          VENTURE_USER_ROLE_OWNER, &error);
 
 		password = json_object_get_string_member(json_node_get_object(body),
 		                                         "password");
 
-		if (!venture_auth_set_password(self->auth, VENTURE_USER(record),
-		                               password, &error))
+		set = allowed && venture_auth_set_password(self->auth,
+		                                           VENTURE_USER(record),
+		                                           password, &error);
+
+		/*
+		 * htmx-glib wipes its copies of the request body, but this tree is
+		 * json-glib's own copy of every string in it, and a JsonNode frees
+		 * its string uncleared. The tree is this function's alone and
+		 * nothing reads the member again, so the plaintext is cleared in
+		 * place -- on the refusals too, which are where a guessed password
+		 * arrives.
+		 */
+		if (NULL != password)
+			htmx_secret_wipe((gpointer)password, strlen(password));
+
+		if (!set)
 			return venture_web_error_response(error);
 	}
 

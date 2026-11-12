@@ -1,10 +1,10 @@
 #+title: Security: the second factor
-#+description: TOTP enrolment, verification at sign-in, recovery codes and the require-MFA setting; token names in history; where market data feeds and exec plugins may reach
+#+description: TOTP enrolment, verification at sign-in, recovery codes and the require-MFA setting; token names in history; request bodies wiped from memory; where market data feeds and exec plugins may reach
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-18]
-#+updated: [2026-10-04]
-#+version: 0.2.0
+#+updated: [2026-11-12]
+#+version: 0.3.0
 
 * What it is
 
@@ -210,6 +210,22 @@ keeps it: ticket comment authors, ticket assignees, worklog authors,
 =by=, =accepted_by=, activity owners, and the audit diffs of those fields.
 Nothing in those strings says reliably which were a token, so a rewrite
 would be a guess.
+
+* Passwords in request bodies
+
+A password reaches the server in a request body: the sign-in form, a password change, the MFA confirmation, an invitation or Lightsite sign-up, an OIDC link, and =POST /api/v1/users= with a =password= member. Until 2026-11-12 every copy of that body was freed without being cleared, so the plaintext stayed in the heap until the allocator reused the block, readable by a core dump, a crash report or an unrelated over-read.
+
+Every copy is now cleared before its memory is released:
+
+- *libsoup's copy.* The chunks read off the socket and the flattened buffer the HTTP limits make of them in =request-read= are wiped when the request finishes (or is aborted), by htmx-glib's =HtmxServer= and again by the limits' own =request-finished= handler, which used to truncate them. A body the limits refuse (413, 408, 400) is wiped as it is refused. Both use =htmx_secret_wipe_message_body()=; never =soup_message_body_truncate()= a request body, which releases it uncleared.
+- *htmx-glib's copy.* =HtmxRequest= holds one copy (it used to hold two), allocated by =htmx_secret_bytes_new()= and cleared when its last reference goes. The decoded form values, the query parameters, multipart fields and uploaded files free through =htmx_secret_free()= / secret bytes.
+- *json-glib's copy.* =htmx_request_get_json()= parses into a tree of fresh strings. =venture_web_api_write()= clears the =password= member in place after hashing it, on the refusals too.
+
+Venture's hashing (=venture_hash_password()=, =venture_verify_password()=) reads the form value where htmx-glib left it and makes no copy of its own.
+
+What this cannot reach, and does not claim to: libsoup's socket read buffer and header parser, GnuTLS records, the kernel's socket buffers, swap, and any copy a future handler makes of a value. A handler that must keep a secret longer than the request (a credential sealed into the store, say) copies it into memory it clears itself with =htmx_secret_wipe()=.
+
+=/http-limits/body-wiped= posts a login-shaped chunked body through the real server and limits, keeps references to every buffer libsoup held, and checks each is zero once the request is over; it fails if either wipe is removed.
 
 * Market data feeds: where the server may reach
 

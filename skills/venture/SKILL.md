@@ -93,6 +93,10 @@ only that user's tokens. A bearer token cannot mint another.
 
 ## Skill baseline -- maintained
 
+Request-body wiping (operations.md, "HTTP transport limits") checked
+against the change that added it (2026-11-12): no verb, route or answer
+changed.
+
 Parallel record reads (`server.read_workers`, operations.md) checked against
 the commit that introduced them (2026-11-08): list and get answers are
 unchanged, only their concurrency.

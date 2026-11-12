@@ -125,6 +125,16 @@ order the data flows.
 - **Sensitive fields** (`VENTURE_COLUMN_FLAG_SENSITIVE`) must never reach a
   response, a log line, a form or the AI. A URI carrying a password gets
   `venture_string_redact_uri()` before it is shown anywhere.
+- **A request body is wiped, never truncated.** It is where passwords
+  arrive. Release a request `SoupMessageBody` with
+  `htmx_secret_wipe_message_body()`, not `soup_message_body_truncate()`,
+  which hands the chunks back uncleared; htmx-glib's own copies (body,
+  form values, multipart fields) clear themselves. A handler that pulls a
+  secret out of a JSON body clears that string in place
+  (`htmx_secret_wipe()`) -- json-glib copied it and frees it uncleared --
+  as `venture_web_api_write()` does for `password`.
+  `/http-limits/body-wiped` and `docs/security.org` ("Passwords in request
+  bodies").
 - **An API token acts as "API token #<id>", never under its name.** The
   name is whatever the owner typed and the actor string reaches the audit
   log, every record's activity and the inbox, which viewers read. The
