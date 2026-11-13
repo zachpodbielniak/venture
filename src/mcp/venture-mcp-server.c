@@ -39,6 +39,7 @@ struct _VentureMcpServer
 	gchar			*base_url;
 	gchar			*token;
 	gboolean		 stage_writes;
+	gchar			*server_name;
 
 	/*
 	 * Whether the VENTURE server on the other end can stage a write.
@@ -72,6 +73,7 @@ venture_mcp_server_finalize(GObject *object)
 		self->transport_notify(self->transport_data);
 
 	g_clear_pointer(&self->base_url, g_free);
+	g_clear_pointer(&self->server_name, g_free);
 
 	/*
 	 * The token is wiped rather than merely freed. It is the one value in
@@ -193,6 +195,17 @@ venture_mcp_server_set_transport(
 	self->transport = func;
 	self->transport_data = user_data;
 	self->transport_notify = notify;
+}
+
+void
+venture_mcp_server_set_server_name(
+	VentureMcpServer	*self,
+	const gchar		*name
+){
+	g_return_if_fail(VENTURE_IS_MCP_SERVER(self));
+
+	g_free(self->server_name);
+	self->server_name = g_strdup(name);
 }
 
 void
@@ -1442,7 +1455,8 @@ venture_mcp_handle_initialize(VentureMcpServer *self)
 	json_builder_set_member_name(builder, "serverInfo");
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "name");
-	json_builder_add_string_value(builder, "venturectl");
+	json_builder_add_string_value(builder,
+		(NULL != self->server_name) ? self->server_name : "venturectl");
 	json_builder_set_member_name(builder, "version");
 	json_builder_add_string_value(builder, venture_get_version_string());
 	json_builder_end_object(builder);

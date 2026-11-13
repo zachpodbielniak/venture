@@ -3,12 +3,12 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-29]
-#+updated: [2026-10-05]
+#+updated: [2026-11-12]
 #+version: 0.6.0
 
 * venturectl mcp
 
-=venturectl mcp= is a Model Context Protocol server on standard input and standard output. It puts VENTURE in front of an outside AI agent — Claude Code, opencode, grok, or anything else that reads an =.mcp.json= — by translating tool calls into requests against the [[file:api.org][REST API]] with a bearer token.
+=venturectl mcp= is a Model Context Protocol server on standard input and standard output. The VENTURE server answers the same protocol over HTTPS at =/mcp= for agents that cannot spawn a process; see [[*Remote MCP over HTTPS: POST /mcp][Remote MCP over HTTPS]]. It puts VENTURE in front of an outside AI agent — Claude Code, opencode, grok, or anything else that reads an =.mcp.json= — by translating tool calls into requests against the [[file:api.org][REST API]] with a bearer token.
 
 This is a different thing from [[file:ai.org][the AI inside VENTURE]], and the difference matters. The in-process assistant is a participant in the server: it shares the repository and is audited with the prompt that caused each change. =venturectl mcp= is an ordinary API client that happens to speak MCP; it holds a token, it has whatever authority that token's account has, and its writes are audited as that account.
 
@@ -193,6 +193,77 @@ A genuine 404 still reads as a missing record; a 403 says the account may not do
 
 Pair it with [[file:../skills/venture/SKILL.md][the venture skill]], which covers the same server from the shell and over raw HTTP, and explains the system as a whole.
 
+** Remote MCP over HTTPS: POST /mcp
+
+A hosted agent cannot spawn =venturectl=. grok, a claude.ai connector and anything else configured as "Remote HTTPS" takes a URL and some headers and nothing more, so the VENTURE server answers the same protocol itself at =/mcp=.
+
+*** Configuring a client
+
+| Field          | Value                                                       |
+|----------------+-------------------------------------------------------------|
+| Name           | anything, e.g. =venture=                                    |
+| Type           | Remote HTTPS (Streamable HTTP)                              |
+| Server URL     | =https://venture.example.com/mcp=                           |
+| HTTP header    | key =Authorization=, value =Bearer vk_...=                  |
+| Client ID      | leave empty: =/mcp= does not do OAuth                       |
+
+The token is an ordinary API token, minted at =/account/tokens= (see [[*Minting a token][Minting a token]] above). Mint one per agent and name it for the agent, so its writes are audited as that token and revoking it cuts off that agent alone. The agent acts with the token's role and nothing more: a viewer's token gives a read-only agent.
+
+The same thing as a JSON client config, for a client that takes one:
+
+#+begin_src json
+{
+  "mcpServers": {
+    "venture": {
+      "type": "http",
+      "url": "https://venture.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${VENTURE_TOKEN}" }
+    }
+  }
+}
+#+end_src
+
+And by hand, which is the quickest way to tell a token problem from a client problem:
+
+#+begin_src sh
+curl -s https://venture.example.com/mcp \
+  -H "Authorization: Bearer $VENTURE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+#+end_src
+
+*** HTTPS
+
+=/mcp= is a route on the ordinary listener, so it is HTTPS exactly when the server is: either =server.tls_certificate= and =server.tls_private_key= are set, or (the usual arrangement) a reverse proxy or tunnel in front terminates TLS and forwards to the plain listener. A remote client will not connect to plain =http= on a public address, and a bearer token should never cross a network in the clear.
+
+*** What it is
+
+The same nineteen tools as =venturectl mcp=, from the same code. The POST body goes to the same =VentureMcpServer= the stdio command runs; only its transport differs. Where the stdio command sends its requests across the network to =VENTURE_URL=, the HTTP door sends them back into the server that received the POST, with the caller's own bearer token. So a tool call *is* an API request by the caller: the same validators, access policy, staging and audit line, naming the same token. Nothing reachable through =/mcp= is out of reach of the same token and =curl=, which is what makes the door safe to open by default.
+
+Details that follow from that:
+
+- *A bearer token or nothing.* A browser session cookie is refused even when it is valid. A cookie rides along on a cross-site request from any page the signed-in person opens; a bearer token never does. That is also why the transport's =Origin= check is not needed: DNS rebinding can reach the route, but not with a token. A missing, wrong or revoked token is a 401 with a =WWW-Authenticate: Bearer= challenge, before any tool runs.
+- *Stateless.* No =Mcp-Session-Id= is issued and none is needed: each POST carries its own credential and is answered on its own. =GET /mcp= (the server-initiated event stream) and =DELETE /mcp= (ending a session) answer 405, which the transport allows a server to do.
+- *JSON answers.* Every reply is one =application/json= body; there is no event stream to hold open. A notification is answered 202 with no body. A batch (an array, allowed before revision 2025-06-18) is answered with the array of answers that exist.
+- *Off the main loop.* The work runs on a GIO worker thread so the server can answer the loopback requests it makes. Nothing on that thread touches the database: it only speaks HTTP to the server.
+- *The loopback is pinned and labelled.* Under native TLS it accepts exactly the listener's own certificate, nothing else. It forwards the original =Host=, so a hosted workspace routes it as it routed the POST, and appends the real client to =X-Forwarded-For=, so nothing that trusts a local caller (=metrics.access: loopback=) mistakes it for one. It uses no proxy from the environment.
+- *Two API reads per tool call.* =tools/list= and =tools/call= read =/api/v1/schema= and =/api/v1/health= first, because the tool surface depends on what the caller may see. =initialize= and =ping= are not charged for them.
+
+*** Configuration
+
+| Setting            | Default | Meaning                                                                 |
+|--------------------+---------+-------------------------------------------------------------------------|
+| =mcp.enabled=      | =true=  | answer at =/mcp=; =false= makes it a 404                                |
+| =mcp.apply_writes= | =false= | write tools apply instead of staging, like =venturectl mcp --apply-writes= |
+
+Both are read on every request rather than frozen at startup. Writes stage by default for the reason given in [[*Writes are staged by default][Writes are staged by default]]: a hosted agent is no less able to hallucinate a tool call than a local one.
+
+*** Not supported
+
+- *OAuth.* The "Client ID" field of a connector dialog is for an OAuth 2.1 authorization server, which VENTURE does not run for MCP. Use the header.
+- *Server-initiated messages.* Sampling, elicitation and progress notifications need the event stream this endpoint does not open; none of the tools uses them.
+
 ** Telling an agent that something changed
 
 The MCP server is a pull: the agent asks. For a push, VENTURE's podomation module raises =on_created=, =on_updated= and =on_deleted= for every record change from every surface, and podomation's webhook module POSTs — so "tell the agent when a deal closes" is a rule and no code at all.
@@ -214,6 +285,8 @@ Two protocol details that are load-bearing:
 - **Nothing but protocol may reach stdout.** GLib's default log writer sends =g_message()= and =g_info()= to *stdout*, and one such line between two JSON-RPC messages breaks the client's parser while looking perfectly fine in a terminal. =venture_mcp_server_run()= installs a writer that sends everything to stderr before reading the first line.
 
 ** Testing
+
+=tests/test-mcp-http.c= covers =POST /mcp= against a real server on a kernel-chosen port, plain and TLS: the handshake, the bearer refusals, a tool list and a read through the loopback, a write staged and then applied under =mcp.apply_writes=, notifications, batches and the refused verbs.
 
 =tests/test-mcp.c=, 27 tests, and every response comes from a fixture: the transport is an injection point, so the suite needs no VENTURE server, no network and no subprocess. =unshare -rn ./build/debug/tests/test-mcp= demonstrates it.
 

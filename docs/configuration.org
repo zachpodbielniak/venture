@@ -225,6 +225,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *server* — bind address, port, TLS, request limits
 - *metrics* — =access= (=off=): who may read =GET /metrics= -- =off=, =loopback=, =token= or =loopback_or_token=. See [[*Metrics][Metrics]] below
 - *database* — URI, pool size, automatic migration
+- *mcp* — =enabled= (on): answer the Model Context Protocol at =POST /mcp= for a caller holding an API token; =apply_writes= (off): let its write tools apply instead of staging. See [[file:mcp.org::*Remote MCP over HTTPS: POST /mcp][Remote MCP over HTTPS]]
 - *security* — authentication, sessions, password iterations, rate limit.
   =booking_trusted_relays= (empty) is the socket addresses whose last
   =X-Forwarded-For= hop keys public booking limits; see [[file:calendar.org][Scheduling links]]

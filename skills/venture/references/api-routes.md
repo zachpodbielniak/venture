@@ -14,6 +14,7 @@ in the repository lists today's.
 |---|---|---|
 | `GET /health` (no auth) | build capabilities | `health` |
 | `GET /metrics` -- at the root, not under `/api/v1` | Prometheus text: process, HTTP, feeds, stores, upkeep, alert hits. Off by default (404); `metrics.access` = `loopback` (no forwarding headers), `token` (API token with scope `metrics`, or owner) or `loopback_or_token` | -- |
+| `POST /mcp` -- at the root, not under `/api/v1` | MCP (Streamable HTTP, JSON replies, stateless) for remote agents: the `venturectl mcp` tools, run as the caller. `Authorization: Bearer` only (a session cookie is refused; 401 + `WWW-Authenticate`); writes staged unless `mcp.apply_writes`; `mcp.enabled: false` makes it 404. `GET`/`DELETE /mcp` are 405 | -- |
 | `GET /schema`, `/schema/:type` | types, fields, actions | `types`, `describe` |
 | `GET /modules` | modules, state, reasons | `modules` |
 | `GET /settings` | resolved configuration, secrets redacted | -- |

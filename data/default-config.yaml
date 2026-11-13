@@ -54,6 +54,17 @@ server:
   # database cannot share connections and always uses the main thread.
   read_workers: 4
 
+mcp:
+  # Answer the Model Context Protocol (Streamable HTTP) at POST /mcp, so a
+  # remote MCP client -- grok, a claude.ai connector, opencode -- reaches
+  # VENTURE with a URL and an "Authorization: Bearer vk_..." header. Every
+  # call acts as that token's account, exactly as the REST API would.
+  enabled: true
+
+  # Write tools propose changes into the confirmation queue unless this is
+  # true. Same policy as `venturectl mcp` without --apply-writes.
+  apply_writes: false
+
 database:
   # sqlite:///absolute/path.db, sqlite://relative/path.db, sqlite://:memory:
   # postgres://user@host/dbname   (password from the environment, see below)

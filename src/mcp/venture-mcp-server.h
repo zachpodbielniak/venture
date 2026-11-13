@@ -149,6 +149,25 @@ gboolean
 venture_mcp_server_get_stage_writes(VentureMcpServer *self);
 
 /**
+ * venture_mcp_server_set_server_name:
+ * @self: a #VentureMcpServer
+ * @name: (nullable): what `initialize` reports as `serverInfo.name`;
+ *   %NULL restores "venturectl"
+ *
+ * Names the server to the client.
+ *
+ * The same protocol answers on two doors: `venturectl mcp` on stdio and
+ * `POST /mcp` inside the VENTURE server. A client that lists both should
+ * be able to tell them apart, and "venturectl" is wrong for the second --
+ * nothing named venturectl is running.
+ */
+void
+venture_mcp_server_set_server_name(
+	VentureMcpServer	*self,
+	const gchar		*name
+);
+
+/**
  * venture_mcp_server_load_catalog:
  * @self: a #VentureMcpServer
  * @error: (out) (optional): return location for a #GError

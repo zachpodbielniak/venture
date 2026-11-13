@@ -181,3 +181,12 @@ queued. Read which one you got -- telling somebody to approve a change that
 was never sent wastes their time and leaves it unmade. Generated action
 tools always stage, even with `--apply-writes`; building a dashboard and
 publishing a release refuse while staging is on.
+
+**The same tools over HTTPS.** An agent that cannot spawn a process (grok,
+a claude.ai "Remote HTTPS" connector) points at the server's own
+`https://HOST/mcp` with the header `Authorization: Bearer vk_...` and no
+OAuth client id. Each tool call loops back into the API as that token, so
+the role, staging and audit are the token's. Staging there is
+`mcp.apply_writes` (off) in the server's configuration, not a flag; the
+door is `mcp.enabled` (on). HTTPS is the listener's (`server.tls_*`) or a
+reverse proxy's. See `docs/mcp.org` "Remote MCP over HTTPS".

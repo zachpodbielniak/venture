@@ -17613,6 +17613,10 @@ venture_web_api_settings(
 	return venture_web_json_response(g_steal_pointer(&described), 200);
 }
 
+/* --- MCP over HTTPS ------------------------------------------------------- */
+
+#include "venture-web-mcp.inc"
+
 /* --- Health -------------------------------------------------------------- */
 
 static HtmxResponse *
@@ -17702,7 +17706,8 @@ venture_web_metrics_class(const gchar *path)
 	if (0 == g_strcmp0(path, "/api/v1/health"))
 		return "health";
 
-	if (g_str_has_prefix(path, "/api/"))
+	/* An MCP call is an API call in another envelope. */
+	if (g_str_has_prefix(path, "/api/") || (0 == g_strcmp0(path, "/mcp")))
 		return "api";
 
 	if (g_str_has_prefix(path, "/hooks/"))
@@ -35359,6 +35364,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/business-events", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_business_events, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/metrics", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_metrics, self);
+	/* The Model Context Protocol for remote agents; see venture-web-mcp.inc. */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mcp", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mcp_post, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/mcp", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mcp_not_allowed, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_DELETE, "/mcp", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mcp_not_allowed, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/f/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lead_capture, self);
 	/* The forms door: no session, a capability token, and the form's own
 	 * origin list. See src/forms/venture-forms-web.inc. */

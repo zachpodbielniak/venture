@@ -93,6 +93,10 @@ only that user's tokens. A bearer token cannot mint another.
 
 ## Skill baseline -- maintained
 
+Remote MCP at `POST /mcp` (cli.md, api-routes.md; config `mcp.enabled`,
+`mcp.apply_writes`) added 2026-11-12: the `venturectl mcp` tools over
+Streamable HTTP, bearer only, run as the caller through the API.
+
 Request-body wiping (operations.md, "HTTP transport limits") checked
 against the change that added it (2026-11-12): no verb, route or answer
 changed.
@@ -485,6 +489,7 @@ ids, notes) in words.
 | "Replay retained business outcomes" | `update webhook ID business_events=true`; `GET /api/v1/business-events?organization_id=N&after=CURSOR` (owner/admin) | [automation.md](references/automation.md) |
 | "Approve what an agent proposed" | `GET /api/v1/confirmations`, `POST .../approve\|reject` | [api.md](references/api.md) |
 | "Give an AI agent access" | a token + `venturectl mcp` (writes staged) | [cli.md](references/cli.md) |
+| "Connect grok / a claude.ai connector (Remote HTTPS MCP)" | URL `https://HOST/mcp`, header `Authorization: Bearer vk_...`, Client ID empty; writes staged unless `mcp.apply_writes` | [cli.md](references/cli.md) |
 | "Add a user / token / membership" | `create user ... password=`, `/account/tokens`, `organization_membership` | [platform.md](references/platform.md) |
 | "Turn a module on/off / what is configured?" | `modules:` in config; `GET /api/v1/settings` | [platform.md](references/platform.md) |
 | "Back up / verify a restore" | `backup run\|verify\|restore-drill` | [operations.md](references/operations.md) |

@@ -243,7 +243,7 @@ server is spawned from a config file, and an argv is world-readable through
 =/proc=. Writes are staged rather than applied by default, matching the
 in-process AI's =confirm_writes= policy: the change is queued on the server as
 a confirmation and a person approves it from the same panel the assistant's
-staged writes appear in. See [[file:docs/mcp.org][the MCP documentation]].
+staged writes appear in. A hosted agent that cannot spawn a process -- grok, a claude.ai connector -- uses the server's own =POST /mcp= instead, with the token in an =Authorization: Bearer= header and the same tools. See [[file:docs/mcp.org][the MCP documentation]].
 
 *** Federation and offline collaboration
 

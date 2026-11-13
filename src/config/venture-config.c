@@ -99,6 +99,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_INT ("server-read-workers", "server", "read_workers", 4,
 	        "Threads answering record reads in parallel; 0 answers every request on the main thread"),
 
+	VC_BOOL("mcp-enabled", "mcp", "enabled", TRUE,
+	        "Answer the Model Context Protocol at POST /mcp for callers holding an API token"),
+	VC_BOOL("mcp-apply-writes", "mcp", "apply_writes", FALSE,
+	        "Let /mcp write tools apply changes instead of staging them for approval"),
+
 	VC_STR ("database-uri", "database", "uri", "sqlite://venture.db",
 	        "Connection URI"),
 	VC_STR ("database-password-env", "database", "password_env",

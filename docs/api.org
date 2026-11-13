@@ -66,7 +66,7 @@ who may do less and mint it there.
 =venturectl mcp= serves this API to an outside AI agent as an MCP server,
 taking its token from =VENTURE_TOKEN= and generating its tool surface from
 =/api/v1/schema= so a plugin's record type is offered without any change.
-See [[file:mcp.org][venturectl mcp]].
+See [[file:mcp.org][venturectl mcp]]. The server answers the same tools itself at =POST /mcp= for a remote agent holding a token in an =Authorization: Bearer= header; see [[file:mcp.org::*Remote MCP over HTTPS: POST /mcp][Remote MCP over HTTPS]].
 
 * Endpoints
 
