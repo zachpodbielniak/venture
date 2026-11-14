@@ -388,13 +388,71 @@ fail:
 	return FALSE;
 }
 
+/*
+ * owner-user-id names the owner by account, for a writer who may not read
+ * a username. Written (new, or changed), it must be an active member of the
+ * page's organization and the writer that organization's owner or
+ * administrator -- anyone else could turn account ids into usernames -- and
+ * the member's username replaces owner. Kept while owner is changed by hand,
+ * it no longer names the owner and is cleared, or the old account would
+ * keep the page through the policy's owner-user-id rule.
+ */
+static gboolean booking_resolve_owner(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, GError **error)
+{
+	static const gint managers[] = { VENTURE_ORGANIZATION_ROLE_OWNER, VENTURE_ORGANIZATION_ROLE_ADMIN };
+	VentureAccessPolicy *policy = venture_database_get_access_policy(database);
+	const VentureAuthPrincipal *actor = venture_access_policy_get_actor(policy);
+	gint64 user_id = booking_int(entity, "owner-user-id");
+	gint64 org = venture_entity_get_organization_id(entity);
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autofree gchar *username = NULL;
+	gboolean active = FALSE;
+	gint64 members;
+	if (user_id < 0)
+		return refuse(error, VENTURE_ERROR_VALIDATION, "owner_user_id must be an account id, or 0 for none");
+	if (user_id == 0)
+		return TRUE;
+	if (previous != NULL && booking_int(previous, "owner-user-id") == user_id) {
+		g_autofree gchar *owner = booking_string(entity, "owner");
+		g_autofree gchar *before = booking_string(previous, "owner");
+		if (g_strcmp0(owner, before) != 0)
+			g_object_set(entity, "owner-user-id", (gint64)0, NULL);
+		return TRUE;
+	}
+	if (actor != NULL && !venture_access_policy_has_organization_role(policy, actor, org, managers, G_N_ELEMENTS(managers)))
+		return refuse(error, VENTURE_ERROR_PERMISSION_DENIED,
+			"Only the organization's owner or administrator may name the owner by owner_user_id; name a username in owner");
+	internal = venture_access_policy_enter(policy, NULL);
+	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ, user_id, NULL);
+	venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, org, NULL);
+	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ, "true", NULL);
+	members = venture_database_count(database, query, error);
+	if (members < 0)
+		return FALSE;
+	if (members > 0)
+		user = venture_database_get(database, VENTURE_TYPE_USER, user_id, NULL);
+	if (user != NULL && !venture_entity_is_deleted(user))
+		g_object_get(user, "username", &username, "active", &active, NULL);
+	if (!active || venture_string_is_empty(username))
+		return refuse(error, VENTURE_ERROR_VALIDATION,
+			"owner_user_id must name an active member of the page's organization");
+	g_object_set(entity, "owner", username, NULL);
+	return TRUE;
+}
+
 static gboolean booking_validate_page(VentureDatabase *database, VentureEntity *entity,
 	VentureEntity *previous, gpointer data, GError **error)
 {
 	g_autofree gchar *origin = booking_string(entity, "public-origin");
 	gboolean active = FALSE, valid;
 	Page shape;
-	(void)database; (void)previous; (void)data;
+	(void)data;
+	if (!booking_resolve_owner(database, entity, previous, error))
+		return FALSE;
 	if (booking_int(entity, "capacity") < 0 || booking_int(entity, "capacity") > 10000 ||
 	    (!venture_string_is_empty(origin) && !booking_origin_valid(origin)))
 		return refuse(error, VENTURE_ERROR_VALIDATION, "Use capacity 0 to 10000 and an HTTPS public origin");

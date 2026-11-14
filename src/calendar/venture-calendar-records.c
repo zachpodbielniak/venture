@@ -50,6 +50,11 @@ static const VentureFieldDecl booking_fields[] = {
 	VENTURE_FIELD_NAME("title", "Title", "Shown on the public page"),
 	VENTURE_FIELD("slug", "Slug", "The public path is /book/<slug>", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
 	VENTURE_FIELD("owner", "Owner", "Username who takes the meetings", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
+	/* An organization owner may not read a username (a user record is the
+	 * platform owner's), so it names the owner by account and the save
+	 * writes the username. An integer, not a reference: the reference check
+	 * reads the user under the writer's scope and would refuse it. */
+	VENTURE_FIELD("owner-user-id", "Owner account", "Account id of a member of this organization; the save writes that member's username into Owner. Only the organization's owner or administrator may set it", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_TECHNICAL),
 	INT("duration-minutes", "Duration", "Minutes per slot"),
 	INT("buffer-minutes", "Buffer", "Minutes kept free before and after every meeting"),
 	STR("timezone", "Timezone", "IANA zone the availability windows are written in, for example America/Chicago"),
