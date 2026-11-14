@@ -1631,6 +1631,13 @@ than one that fails.
   `X-Venture-Inline` and shows the refusal above the form. Do not add a
   per-route HTML error path; `tests/test-record-view.c` pins all three
   answers.
+- **The inline submitter requests a redirect's target twice.** It
+  `fetch()`es the post, `fetch()` follows the 302, and the script then
+  navigates to `response.url`; only the second answer is shown. A page that
+  spends something on read -- the token mint's one-time reveal handle --
+  shows nothing. Such a form carries `data-no-inline` (so does one that
+  redirects off-origin; see `docs/record-view.org`).
+  `/auth/tokens-mint-form-not-inline` pins the token form.
 - **A refused save always says why.** `venture_database_get()` answers a
   missing row with NULL and *no* error, so a check that does
   `x = get(...); if (!x) return FALSE;` refuses without a reason, and the

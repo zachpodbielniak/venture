@@ -169,6 +169,12 @@ Every route reports a failure as JSON, and a person never sees it:
   provider (a redirect to the identity provider). =redirect: "manual"= is
   not an alternative: it hides the =Location= of every same-origin
   post-redirect-get.
+- A form whose redirect lands on a page that can be read *once* must
+  carry =data-no-inline= too. The script's =fetch()= follows the redirect
+  itself, then navigates to =response.url=, so the target is requested
+  twice and only the second answer is shown. Minting an API token is the
+  case: the first request spends the one-time reveal handle and the page
+  shown has no secret on it (=/auth/tokens-mint-form-not-inline=).
 - An htmx request's refusal is a toast.
 - A refusal always says why. A save that fails names the field it could
   not accept (an invoice line with no invoice is a 422 naming

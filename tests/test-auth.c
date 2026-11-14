@@ -3938,6 +3938,31 @@ test_auth_tokens_page_limits_member(
 }
 
 /*
+ * The mint form is posted by the browser, never by the page's inline
+ * submitter. That script fetch()es a post, follows the 302 itself -- which
+ * spends the one-time reveal handle on a response nobody sees -- and then
+ * navigates to the same URL again, so the page shown has no secret on it.
+ * A minted token whose secret was never displayed is unusable.
+ */
+static void
+test_auth_tokens_mint_form_not_inline(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *page = NULL;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/account/tokens",
+		cookie, NULL, &page, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(page,
+		"<form method=\"post\" action=\"/account/tokens\" data-no-inline>"));
+}
+
+/*
  * A business owner is an editor, not a platform administrator. The page
  * docs/mcp.org sends them to must mint a token that carries their own role,
  * expires, and lists only their own credentials. Another person's token
@@ -7793,6 +7818,9 @@ main(
 
 	g_test_add("/auth/tokens-page-limits-member", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_tokens_page_limits_member,
+	           server_fixture_tear_down);
+	g_test_add("/auth/tokens-mint-form-not-inline", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_tokens_mint_form_not_inline,
 	           server_fixture_tear_down);
 	g_test_add("/auth/owner-mints-own-token", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_owner_mints_own_token,

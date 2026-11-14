@@ -29,6 +29,7 @@ Five habits that settle most problems before a theory is needed:
 |---|---|---|
 | exit 7, connection refused | `venturectl -s URL health`; the port | [cli.md](cli.md) |
 | exit 5 / 401 "Sign in to continue" | `VENTURE_TOKEN` set, not revoked/expired, minted on *this* server | [api.md](api.md) |
+| minted a token at `/account/tokens`, no secret shown (`?reveal=` in the URL) | a server from before the mint form was `data-no-inline`: the handle was spent unseen. Revoke it and mint again on a fixed build | [api.md](api.md) |
 | 403 on `user`, `api_token`, `forge`, `webhook`, `comment`, `notification` | owner-only types; `forge_rule`, `plugin_config`, `currency` writes are admin | [system.md](system.md) |
 | 404 for a whole type or route | `venturectl modules` -- the module is off | [system.md](system.md) |
 | 404 for a record that exists | another organization, or not readable by your role (never 403) | [system.md](system.md) |

@@ -93,6 +93,10 @@ only that user's tokens. A bearer token cannot mint another.
 
 ## Skill baseline -- maintained
 
+The token mint form posts natively (`data-no-inline`, 2026-11-13), so the
+one-time secret is shown again; troubleshooting.md has the symptom of an
+older server. No verb, route or answer changed.
+
 Remote MCP at `POST /mcp` (cli.md, api-routes.md; config `mcp.enabled`,
 `mcp.apply_writes`) added 2026-11-12: the `venturectl mcp` tools over
 Streamable HTTP, bearer only, run as the caller through the API.

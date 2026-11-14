@@ -16073,8 +16073,15 @@ venture_web_ui_tokens(
 			" Yours expires within 90 days, and this list shows only "
 			"your tokens.</p>");
 
+	/*
+	 * data-no-inline: the browser posts this one itself. The inline
+	 * submitter (venture.js) fetch()es the post, which follows the 302 and
+	 * spends the one-time reveal handle, then navigates to the same URL a
+	 * second time -- so the page that is actually shown has nothing to
+	 * reveal and the secret is lost.
+	 */
 	g_string_append(content,
-		"<form method=\"post\" action=\"/account/tokens\">"
+		"<form method=\"post\" action=\"/account/tokens\" data-no-inline>"
 		"<label>Name"
 		"<input type=\"text\" name=\"name\" required maxlength=\"120\" "
 		"placeholder=\"laptop venturectl\"></label>"
