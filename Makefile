@@ -546,29 +546,67 @@ pod-modules: $(OUTDIR)/$(LIB_STATIC) $(POD_MODULE_SOS)
 # any teardown, which is deliberate -- those directories are what somebody
 # debugging the failure wants -- and moving them under a private TMPDIR would
 # otherwise have hidden them.
-test: $(TEST_BINS) plugins
+#
+# The suite is one make target per test binary, so `make -jN test` runs N
+# binaries at once and a plain `make test` still runs them one by one. Every
+# binary is independent: servers listen on port 0 and fixtures come from
+# g_dir_make_tmp() under the run's TMPDIR. A test that breaks that rule breaks
+# the parallel suite, so do not write one.
+#
+# test-prep makes the run's TMPDIR and records its path in the results
+# directory, because every per-binary recipe is its own shell and must find
+# the same one. Each binary writes pass or fail to its .result file and its
+# TAP and stderr to its .log; FORCE reruns every binary on every `make test`
+# and overwrites both. A failure does not stop make, so one red binary never
+# hides the rest. The `test` recipe then reads the results, prints the log of
+# every failure, and only on a green suite runs the litter check, the version
+# check and the demo scripts -- serially, after every binary is done.
+#
+# The PostgreSQL tests share one database, and some drop its public schema, so
+# when one of the PostgreSQL variables is set they hold a flock while they run
+# and never overlap each other. On SQLite there is nothing to share and no lock.
+TEST_RESULTS_DIR := $(OUTDIR)/test-results
+TEST_RESULTS := $(patsubst tests/%.c,$(TEST_RESULTS_DIR)/%.result,$(TEST_SRCS))
+TEST_ENV := VENTURE_PLUGIN_PATH="$(abspath $(OUTDIR)/plugins)" \
+	VENTURE_POD_MODULE_PATH="$(abspath $(OUTDIR)/pod-modules)" \
+	G_DEBUG=fatal-warnings
+ifneq ($(VENTURE_TEST_DB)$(VENTURE_TEST_ACCOUNTING_POSTGRES_URI)$(VENTURE_TEST_MIGRATION_POSTGRES_URI),)
+TEST_SERIAL := $(basename $(notdir $(shell grep -lE 'VENTURE_TEST_DB|_POSTGRES_URI' $(TEST_SRCS))))
+endif
+
+.PHONY: test-prep FORCE
+FORCE:
+
+test-prep:
 	@echo "Running test suite ($(BUILD_TYPE))..."
+	@mkdir -p $(TEST_RESULTS_DIR)
 	@TMPDIR=$$(mktemp -d /tmp/venture-run-XXXXXX); export TMPDIR; \
-	bash $(TOOLSDIR)/venture-test-litter.sh snapshot $(OUTDIR)/test-litter; \
-	failed=0; total=0; \
-	for t in $(TEST_BINS); do \
-		total=$$((total + 1)); \
-		echo "  --- $$(basename $$t)"; \
-		if VENTURE_PLUGIN_PATH="$(abspath $(OUTDIR)/plugins)" \
-		   VENTURE_POD_MODULE_PATH="$(abspath $(OUTDIR)/pod-modules)" \
-		   G_DEBUG=fatal-warnings $$t --tap > /dev/null; then \
-			echo "      PASS"; \
-		else \
-			echo "      FAIL"; \
-			VENTURE_PLUGIN_PATH="$(abspath $(OUTDIR)/plugins)" \
-			VENTURE_POD_MODULE_PATH="$(abspath $(OUTDIR)/pod-modules)" \
-			G_DEBUG=fatal-warnings $$t --tap | sed 's/^/      /'; \
-			failed=$$((failed + 1)); \
-		fi; \
-	done; \
+	echo "$$TMPDIR" > $(TEST_RESULTS_DIR)/tmpdir; \
+	bash $(TOOLSDIR)/venture-test-litter.sh snapshot $(OUTDIR)/test-litter
+
+$(TEST_RESULTS_DIR)/%.result: $(OUTDIR)/tests/% plugins test-prep FORCE
+	@TMPDIR=$$(cat $(TEST_RESULTS_DIR)/tmpdir); export TMPDIR; \
+	lock=; \
+	case " $(TEST_SERIAL) " in *" $* "*) lock="flock $(TEST_RESULTS_DIR)/postgres.lock";; esac; \
+	if $(TEST_ENV) $$lock $< --tap > $(TEST_RESULTS_DIR)/$*.log 2>&1; then \
+		echo "  PASS $*"; echo pass > $@; \
+	else \
+		echo "  FAIL $*"; echo fail > $@; \
+	fi
+
+test: $(TEST_RESULTS)
+	@TMPDIR=$$(cat $(TEST_RESULTS_DIR)/tmpdir); export TMPDIR; \
+	total=$$(cat $(TEST_RESULTS) | wc -l); \
+	failed=$$(grep -l '^fail$$' $(TEST_RESULTS) || true); \
 	echo ""; \
-	if [ $$failed -gt 0 ]; then \
-		echo "$$failed of $$total test binaries failed"; \
+	if [ -n "$$failed" ]; then \
+		for r in $$failed; do \
+			echo "  --- $$(basename "$$r" .result)"; \
+			sed 's/^/      /' "$${r%.result}.log"; \
+		done; \
+		echo ""; \
+		echo "$$(echo "$$failed" | wc -l) of $$total test binaries failed"; \
+		echo "logs are under $(TEST_RESULTS_DIR)"; \
 		echo "fixtures from this run are under $$TMPDIR"; \
 		exit 1; \
 	fi; \

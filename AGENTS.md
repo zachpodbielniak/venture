@@ -13,11 +13,21 @@ one instead is the failure worth designing out.
 
 ```sh
 make DEBUG=1                 # debug build into build/debug
-make DEBUG=1 test            # the whole GTest suite
+make DEBUG=1 -j8 test        # the whole GTest suite (-j: half the cores)
 make DEBUG=1 test-one T=test-money
 make                         # release build into build/release
 make compose-up              # rebuild the image and recreate the local stack
 ```
+
+**Run the suite with a sensible `-j` — normally half the core count**
+(`make DEBUG=1 -j$(( $(nproc) / 2 )) test`). Each test binary is its own make
+target, so `-j` runs that many at once; serially the suite takes about half
+an hour. Half the cores, not all of them, because several tests time real
+deadlines and leases, and an oversubscribed machine turns those into flakes.
+Every binary must stay independent of the others: listen on port 0, make
+fixtures with `g_dir_make_tmp()`, never a fixed path or port. The PostgreSQL
+tests serialise among themselves through a `flock` when a PostgreSQL URI is
+set. Failure logs are kept under `build/debug/test-results/`.
 
 **Always build and test the DEBUG version.** `make test` builds the plugins
 first, because the suite loads the example plugin for real; without them that
