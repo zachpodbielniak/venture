@@ -1,0 +1,270 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_forms.tlw - a form's quiz score, result band and score report, and
+ * a paid form's order total.
+ *
+ * The C reads the published definition and the answers (JSON, choice ids,
+ * field lookups) and hands this plain numbers:
+ *
+ *  - quiz scoring: the points a field earns -- its selected choices'
+ *    points, then the points of every numeric range its answer falls in --
+ *    added onto the running score one at a time, so a score that leaves
+ *    the i64 range is found where it does (OutOfRange), as it was;
+ *  - the result band: the first band whose bounds hold the score;
+ *  - the score report: (version, score) replies sorted by the C, counted
+ *    into bins, each with its version's total for the share;
+ *  - pricing: a quantity answer read as a whole count from 0 to a
+ *    million, each line's unit price times its quantity, and the order's
+ *    total at the lines' common exponent (vk_money), positive or refused.
+ *
+ * Replaces quiz_add, the range test and band choice of
+ * venture_forms_quiz_apply and the binning of venture_forms_quiz_report
+ * (src/forms/venture-forms-quiz.c), and the quantity, line and total
+ * arithmetic of venture_forms_price_total (src/forms/venture-forms-pricing.c).
+ */
+module vk_forms;
+
+import vk_units;
+import vk_money as Money;
+import tallow.math as M;
+
+/* the largest quantity a priced line may take (FORMS_QUANTITY_MAX) */
+let QUANTITY_MAX = 1000000;
+
+/* ---- quiz scoring ---- */
+
+/* a running score, or the point at which it left the i64 range */
+type Score = Scored { points: i64 } | OutOfRange;
+
+/* a numeric scoring range: an answer from low to high (inclusive) earns
+ * points */
+struct Range { low: f64, high: f64, points: i64 }
+
+/* a result band: a score from low to high (inclusive) */
+struct Band { low: i64, high: i64 }
+
+/* one scored response as the report counts it: its form version and score */
+struct Reply { version: i64, score: i64 }
+
+/* a bin of the score report: how many responses of one form version
+ * scored one score, out of that version's scored responses */
+struct Bin { version: i64, score: i64, count: i64, of: i64 }
+
+/* a numeric answer inside a range's bounds */
+pure fn within(value: f64, low: f64, high: f64) -> bool = value >= low && value <= high;
+
+/* the points of every range value falls in, in the ranges' order */
+pure fn ranged(value: f64, ranges: [Range]) -> own [i64] = ranged_from(value, ranges, 0, []);
+
+pure fn ranged_from(value: f64, ranges: [Range], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= ranges.len()
+	decreases ranges.len() - i
+= match i >= ranges.len() {
+	true => acc,
+	false => match within(value, ranges[i].low, ranges[i].high) {
+		true => {
+			acc.push(ranges[i].points);
+			ranged_from(value, ranges, i + 1, acc)
+		},
+		false => ranged_from(value, ranges, i + 1, acc),
+	},
+};
+
+/* total with each of points added in order; OutOfRange as soon as a
+ * running sum leaves the i64 range */
+pure fn tally(total: i64, points: [i64]) -> own Score = tally_from(points, 0, total);
+
+pure fn tally_from(points: [i64], i: i64, acc: i64) -> own Score
+	requires i >= 0 && i <= points.len()
+	decreases points.len() - i
+= match i >= points.len() {
+	true => Score.Scored { points = acc },
+	false => match M.checked_add(acc, points[i]) {
+		some next => tally_from(points, i + 1, next),
+		none => Score.OutOfRange,
+	},
+};
+
+/* a score inside a band's bounds */
+pure fn holds(low: i64, high: i64, score: i64) -> bool = score >= low && score <= high;
+
+/* the position of the first band holding score, if any */
+pure fn band(score: i64, bands: [Band]) -> ?i64 = band_from(score, bands, 0);
+
+pure fn band_from(score: i64, bands: [Band], i: i64) -> ?i64
+	requires i >= 0 && i <= bands.len()
+	decreases bands.len() - i
+= match i >= bands.len() {
+	true => none,
+	false => match holds(bands[i].low, bands[i].high, score) {
+		true => i,
+		false => band_from(score, bands, i + 1),
+	},
+};
+
+/* ---- the score report ---- */
+
+/*
+ * The bins of scored responses, sorted by version and then score (the C
+ * sorts them). One Bin per distinct pair, in that order, its count and
+ * its version's total.
+ */
+pure fn bins(replies: [Reply]) -> own [Bin] = bins_from(replies, 0, 0, []);
+
+/* the bins from i, the start of a pair's run; of is the responses of
+ * replies[i]'s version, or 0 when i starts a new version */
+pure fn bins_from(replies: [Reply], i: i64, of: i64, acc: own [Bin]) -> own [Bin]
+	requires i >= 0 && i <= replies.len()
+	decreases replies.len() - i
+= match i >= replies.len() {
+	true => acc,
+	false => {
+		let end = pair_end(replies, i, i + 1);
+		let total = match of == 0 {
+			true => version_end(replies, i, i + 1) - i,
+			false => of,
+		};
+		acc.push(Bin { version = replies[i].version, score = replies[i].score, count = end - i, of = total });
+		bins_from(replies, end, same_version(replies, i, end, total), acc)
+	},
+};
+
+/* the version total carried to the run at end: kept while the version
+ * goes on, 0 when a new one starts */
+pure fn same_version(replies: [Reply], i: i64, end: i64, total: i64) -> i64
+	requires i >= 0 && i < replies.len() && end >= 0 && end <= replies.len()
+= match end < replies.len() {
+	true => match replies[end].version == replies[i].version {
+		true => total,
+		false => 0,
+	},
+	false => 0,
+};
+
+/* the end (exclusive) of the run of replies equal to the one at i */
+pure fn pair_end(replies: [Reply], i: i64, j: i64) -> i64
+	requires i >= 0 && i < j && j <= replies.len()
+	ensures result >= j && result <= replies.len()
+	decreases replies.len() - j
+= match j >= replies.len() {
+	true => j,
+	false => match replies[j].version == replies[i].version && replies[j].score == replies[i].score {
+		true => pair_end(replies, i, j + 1),
+		false => j,
+	},
+};
+
+/* the end (exclusive) of the run of replies of replies[i]'s version */
+pure fn version_end(replies: [Reply], i: i64, j: i64) -> i64
+	requires i >= 0 && i < j && j <= replies.len()
+	ensures result >= j && result <= replies.len()
+	decreases replies.len() - j
+= match j >= replies.len() {
+	true => j,
+	false => match replies[j].version == replies[i].version {
+		true => version_end(replies, i, j + 1),
+		false => j,
+	},
+};
+
+/* ---- pricing ---- */
+
+/* a priced line's amount, at its unit price's exponent */
+struct Line { amount: i64<minor>, exponent: i64 }
+
+/* an order's total, or why there is none to charge: a running sum that
+ * overflowed (or a line at an exponent money cannot carry), or a total of
+ * zero or less (no lines chosen is zero) */
+type Order =
+	| Payable { amount: i64<minor>, exponent: i64 }
+	| Overflow
+	| NotPositive;
+
+/* a quantity answer as a whole count from 0 to QUANTITY_MAX, or none */
+pure fn quantity(number: f64) -> ?i64 = match !M.is_finite(number) || number < 0.0 || number > (QUANTITY_MAX as f64) || M.floor(number) != number {
+	true => none,
+	false => number as i64,
+};
+
+/* a line's amount: its unit price times its quantity, exact; none on
+ * overflow */
+pure fn line_amount(unit: i64<minor>, quantity: i64) -> ?i64<minor> = Money.multiply_int(unit, quantity);
+
+/* the lines' total at their common exponent, positive or refused */
+pure fn order(lines: [Line]) -> own Order = order_from(lines, 0, 0<minor>, 0);
+
+pure fn order_from(lines: [Line], i: i64, acc: i64<minor>, e: i64) -> own Order
+	requires i >= 0 && i <= lines.len() && e >= 0 && e <= Money.MAX_EXPONENT
+	decreases lines.len() - i
+= match i >= lines.len() {
+	true => match acc > 0<minor> {
+		true => Order.Payable { amount = acc, exponent = e },
+		false => Order.NotPositive,
+	},
+	false => match lines[i].exponent >= 0 && lines[i].exponent <= Money.MAX_EXPONENT {
+		false => Order.Overflow,
+		true => match Money.add(acc, e, lines[i].amount, lines[i].exponent) {
+			some next => order_from(lines, i + 1, next, Money.common_exponent(e, lines[i].exponent)),
+			none => Order.Overflow,
+		},
+	},
+};
+
+/* ---- tests ---- */
+
+/* a Score's points, for tests; -1 when it is OutOfRange */
+pure fn points_of(s: Score) -> i64 = match s {
+	Scored { points } => points,
+	OutOfRange => -1,
+};
+
+/* an Order's amount, for tests; -1 when there is none */
+pure fn payable_of(o: Order) -> i64 = match o {
+	Payable { amount, exponent } => amount as i64,
+	_ => -1,
+};
+
+test "scoring" {
+	assert(within(5.0, 1.0, 5.0) && within(1.0, 1.0, 5.0) && !within(5.5, 1.0, 5.0));
+	let earned = ranged(3.0, [Range { low = 0.0, high = 2.0, points = 1 }, Range { low = 3.0, high = 4.0, points = 5 }, Range { low = 3.0, high = 3.0, points = -2 }]);
+	assert(earned.len() == 2 && earned[0] == 5 && earned[1] == -2);
+	assert(points_of(tally(10, [5, -2, 7])) == 20);
+	assert(points_of(tally(0, [])) == 0);
+	assert(tally(M.I64_MAX - 1, [1, 1]) is OutOfRange);
+	/* the running sum is what is checked: up past the top and back is out */
+	assert(tally(M.I64_MAX, [1, -1]) is OutOfRange);
+	assert(points_of(tally(M.I64_MAX, [-1, 1])) == M.I64_MAX);
+}
+
+test "bands" {
+	let bands = [Band { low = 0, high = 4 }, Band { low = 5, high = 9 }];
+	assert((band(5, bands) ?? -1) == 1);
+	assert((band(0, bands) ?? -1) == 0);
+	assert(band(10, bands) == none);
+	assert(band(-1, bands) == none);
+}
+
+test "bins" {
+	let b = bins([Reply { version = 1, score = 3 }, Reply { version = 1, score = 3 }, Reply { version = 1, score = 5 }, Reply { version = 2, score = 3 }, Reply { version = 2, score = 4 }]);
+	assert(b.len() == 4);
+	assert(b[0].version == 1 && b[0].score == 3 && b[0].count == 2 && b[0].of == 3);
+	assert(b[1].version == 1 && b[1].score == 5 && b[1].count == 1 && b[1].of == 3);
+	assert(b[2].version == 2 && b[2].score == 3 && b[2].count == 1 && b[2].of == 2);
+	assert(b[3].version == 2 && b[3].score == 4 && b[3].count == 1 && b[3].of == 2);
+	assert(bins([]).len() == 0);
+}
+
+test "pricing" {
+	assert((quantity(3.0) ?? -1) == 3);
+	assert((quantity(0.0) ?? -1) == 0);
+	assert((quantity(1000000.0) ?? -1) == 1000000);
+	assert(quantity(1000001.0) == none);
+	assert(quantity(2.5) == none);
+	assert(quantity(-1.0) == none);
+	assert((line_amount(1250<minor>, 3) ?? 0<minor>) == 3750<minor>);
+	assert(line_amount(M.I64_MAX as i64<minor>, 2) == none);
+	assert(payable_of(order([Line { amount = 3750<minor>, exponent = 2 }, Line { amount = 5<minor>, exponent = 3 }])) == 37505);
+	assert(order([]) is NotPositive);
+	assert(order([Line { amount = 0<minor>, exponent = 2 }]) is NotPositive);
+	assert(order([Line { amount = M.I64_MAX as i64<minor>, exponent = 2 }, Line { amount = 1<minor>, exponent = 2 }]) is Overflow);
+}
