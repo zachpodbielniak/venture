@@ -1,0 +1,525 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_arbitrage.tlw - the arithmetic of arbitrage: odds, surebets, back and
+ * lay, and the figures a flip is judged by.
+ *
+ * Replaces the formulas of src/arbitrage/venture-arbitrage-math.c. The C
+ * there still reads text, checks what a caller passed and turns each
+ * failure into its message; everything it computes comes from here.
+ *
+ * Two rules run through the module:
+ *
+ *  - money is minor units (`i64<minor>`), rounded once, half to even,
+ *    where a ratio meets an amount (round_minor);
+ *  - where odds multiply money they do so as integers scaled by a million,
+ *    so 100 x 1.13 pays 113 and not the 112.99999 a double would floor to,
+ *    and every payout is rounded against the person.
+ *
+ * Odds, probabilities and returns are ratios, so they are f64. An f64
+ * kernel is checked by its contracts, the fuzzer and the tests, not by
+ * `tallow verify`; the integer cores below it are proved.
+ */
+module vk_arbitrage;
+
+import vk_units;
+import vk_round as R;
+import vk_money as Money;
+import tallow.math as M;
+
+/* 2^53: past here a double no longer holds every integer */
+let EXACT_LIMIT: f64 = 9007199254740992.0;
+
+/* odds as integers: millionths (the series store's VENTURE_SERIES_ODDS_SCALE) */
+let ODDS_SCALE = 1000000;
+
+/* how close S must be to one to count as one (VENTURE_ARBITRAGE_ODDS_EPSILON) */
+let ODDS_EPSILON: f64 = 0.000000000001;
+
+/* the same scale as a double */
+let ODDS_SCALE_F: f64 = 1000000.0;
+
+/* ---- rounding a ratio's product to minor units ---- */
+
+/*
+ * v rounded to the nearest whole, ties to the even one: what nearbyint()
+ * does in the default rounding mode. v - trunc(v) is exact for every
+ * double, so the tie is seen exactly and never manufactured.
+ */
+pure fn nearest_even(v: f64) -> f64 {
+	let t = M.trunc(v);
+	let d = M.fabs(v - t);
+	let away = match v < 0.0 {
+		true => t - 1.0,
+		false => t + 1.0,
+	};
+	return match d < 0.5 {
+		true => t,
+		false => match d > 0.5 {
+			true => away,
+			false => match M.fmod(t, 2.0) == 0.0 {
+				true => t,
+				false => away,
+			},
+		},
+	};
+}
+
+/*
+ * A ratio's product as minor units, half to even; none when it is not a
+ * number or past 2^53, where a double no longer holds every integer and
+ * the rounding would be wrong.
+ */
+pure fn round_minor(v: f64) -> ?i64<minor> = match !M.is_finite(v) || M.fabs(v) > EXACT_LIMIT {
+	true => none,
+	false => (nearest_even(v) as i64) as i64<minor>,
+};
+
+/* an amount scaled by a ratio, rounded once (venture_arbitrage_money_scale) */
+pure fn scale(amount: i64<minor>, factor: f64) -> ?i64<minor> = round_minor((amount as f64) * factor);
+
+/* ---- odds ---- */
+
+/* decimal odds that pay more than the stake */
+pure fn is_odds(odds: f64) -> bool = M.is_finite(odds) && odds > 1.0;
+
+/* American odds as decimal: +A is 1 + A/100, -A is 1 + 100/A; none for a
+ * magnitude under 100, which is no moneyline */
+pure fn american(value: f64) -> ?f64 = match M.fabs(value) < 100.0 {
+	true => none,
+	false => match value > 0.0 {
+		true => 1.0 + value / 100.0,
+		false => 1.0 + 100.0 / -value,
+	},
+};
+
+/* fractional odds a/b as decimal, 1 + a/b; none unless both parts are
+ * above zero */
+pure fn fractional(numerator: f64, denominator: f64) -> ?f64 = match numerator <= 0.0 || denominator <= 0.0 {
+	true => none,
+	false => 1.0 + numerator / denominator,
+};
+
+/* the probability decimal odds imply, 1/d; none for what is not odds */
+pure fn implied_probability(odds: f64) -> ?f64 = match is_odds(odds) {
+	true => 1.0 / odds,
+	false => none,
+};
+
+/* the position of the first entry that is not odds, or none */
+@tailrec
+pure fn first_not_odds(odds: [f64], i: i64) -> ?i64
+	requires i >= 0 && i <= odds.len()
+	decreases odds.len() - i
+= match i >= odds.len() {
+	true => none,
+	false => match is_odds(odds[i]) {
+		true => return first_not_odds(odds, i + 1),
+		false => i,
+	},
+};
+
+/* S, the sum of the implied probabilities, added in order from the first */
+pure fn inverse_sum(odds: [f64]) -> f64 = inverse_sum_from(odds, 0, 0.0);
+
+@tailrec
+pure fn inverse_sum_from(odds: [f64], i: i64, acc: f64) -> f64
+	requires i >= 0 && i <= odds.len()
+	decreases odds.len() - i
+= match i >= odds.len() {
+	true => acc,
+	false => return inverse_sum_from(odds, i + 1, acc + 1.0 / odds[i]),
+};
+
+/* S - 1: the bookmaker's margin over a fair book (negative is an edge) */
+pure fn overround(odds: [f64]) -> f64 = inverse_sum(odds) - 1.0;
+
+/* the return a book of these odds gives on a fair stake, 1/S - 1 */
+pure fn margin(sum: f64) -> f64 = 1.0 / sum - 1.0;
+
+/* S far enough below one to be an edge, not binary noise around "no edge" */
+pure fn is_surebet(sum: f64) -> bool = sum < 1.0 - ODDS_EPSILON;
+
+/* each outcome's probability with the margin taken out: (1/d_i) / S */
+pure fn no_vig(odds: [f64]) -> own [f64] = no_vig_from(odds, inverse_sum(odds), 0, []);
+
+@tailrec
+pure fn no_vig_from(odds: [f64], sum: f64, i: i64, acc: own [f64]) -> own [f64]
+	requires i >= 0 && i <= odds.len()
+	decreases odds.len() - i
+{
+	if i >= odds.len() {
+		return acc;
+	}
+	acc.push((1.0 / odds[i]) / sum);
+	return no_vig_from(odds, sum, i + 1, acc);
+}
+
+/*
+ * Decimal odds as an integer number of millionths, rounded against the
+ * person: down for a payout, up (`up`) for a liability. The thousandth of
+ * a step absorbs the double's own error, so 1.13 is exactly 1130000 either
+ * way. None for what is not odds or is too large to hold exactly.
+ */
+pure fn scaled(odds: f64, up: bool) -> ?i64 {
+	let s = odds * ODDS_SCALE_F;
+	return match !is_odds(odds) || s > EXACT_LIMIT {
+		true => none,
+		false => match up {
+			true => M.ceil(s - 0.001) as i64,
+			false => M.floor(s + 0.001) as i64,
+		},
+	};
+}
+
+/* minor x scaled / ODDS_SCALE rounded down (toward negative infinity); none
+ * when the product does not fit 64 bits */
+pure fn times_odds(minor: i64<minor>, odds_scaled: i64) -> ?i64<minor> = match M.checked_mul(minor as i64, odds_scaled) {
+	some p => (R.floor(p, ODDS_SCALE)) as i64<minor>,
+	none => none,
+};
+
+/* ---- surebets ---- */
+
+/*
+ * The split of a total stake across every outcome, or why not:
+ *   Inexact   a stake or ideal figure is past 2^53 minor units
+ *   NotOdds   odds too large to scale exactly (`odds` names them)
+ *   TooLarge  a stake times its odds does not fit 64 bits
+ *   Unsummable the stakes do not add up within 64 bits
+ */
+type Surebet =
+	| Split {
+		stakes: own [i64],
+		payouts: own [i64],
+		staked: i64<minor>,
+		worst: i64<minor>,
+		payout_ideal: i64<minor>,
+		profit_ideal: i64<minor>,
+	}
+	| Inexact
+	| NotOdds { odds: f64 }
+	| TooLarge
+	| Unsummable;
+
+/*
+ * Splits `total` (positive) across the outcomes so each pays T/S before
+ * rounding: stake i is T(1/d_i)/S, half to even. What each rounded stake
+ * pays is worked out at the odds scale and rounded down, because no
+ * bookmaker pays part of a minor unit; the least of those is `worst`, what
+ * the split is sure to return. The unrounded T/S and T(1/S - 1) are kept
+ * as the ideal figures. The caller computes residual = total - staked and
+ * profit = worst - staked, so the stakes and the residual sum to the total.
+ */
+pure fn surebet(odds: [f64], total: i64<minor>) -> own Surebet
+	requires odds.len() >= 2 && odds.len() <= 64 && total > 0<minor>
+	requires forall x in odds: x > 1.0
+= split_from(odds, total, inverse_sum(odds), 0, [], [], 0<minor>, M.I64_MAX as i64<minor>);
+
+@tailrec
+pure fn split_from(odds: [f64], total: i64<minor>, sum: f64, i: i64, stakes: own [i64], payouts: own [i64], staked: i64<minor>, worst: i64<minor>) -> own Surebet
+	requires i >= 0 && i <= odds.len()
+	decreases odds.len() - i
+{
+	if i >= odds.len() {
+		return ideals(stakes, payouts, staked, worst, total, sum);
+	}
+	return match round_minor((total as f64) * (1.0 / odds[i]) / sum) {
+		none => Surebet.Inexact,
+		some stake => match scaled(odds[i], false) {
+			none => Surebet.NotOdds { odds = odds[i] },
+			some s => match times_odds(stake, s) {
+				none => Surebet.TooLarge,
+				some payout => match M.checked_add(staked as i64, stake as i64) {
+					none => Surebet.Unsummable,
+					some next => {
+						stakes.push(stake as i64);
+						payouts.push(payout as i64);
+						return split_from(odds, total, sum, i + 1, stakes, payouts, next as i64<minor>, least(worst, payout));
+					},
+				},
+			},
+		},
+	};
+}
+
+/* the split, finished with T/S and T(1/S - 1), each half to even */
+pure fn ideals(stakes: own [i64], payouts: own [i64], staked: i64<minor>, worst: i64<minor>, total: i64<minor>, sum: f64) -> own Surebet
+= match round_minor((total as f64) / sum) {
+	none => Surebet.Inexact,
+	some payout_ideal => match round_minor((total as f64) * (1.0 / sum - 1.0)) {
+		none => Surebet.Inexact,
+		some profit_ideal => Surebet.Split { stakes, payouts, staked, worst, payout_ideal, profit_ideal },
+	},
+};
+
+/* the lesser amount */
+pure fn least(a: i64<minor>, b: i64<minor>) -> i64<minor>
+	ensures result <= a && result <= b && (result == a || result == b)
+= match b < a {
+	true => b,
+	false => a,
+};
+
+/* ---- back and lay ---- */
+
+/* odds backed at a venue that keeps `commission` of the winnings:
+ * 1 + (d - 1)(1 - c); none outside odds > 1, commission in [0, 1) */
+pure fn effective_back_odds(odds: f64, commission: f64) -> ?f64 = match is_commission(odds, commission) {
+	true => 1.0 + (odds - 1.0) * (1.0 - commission),
+	false => none,
+};
+
+/* odds laid at an exchange that keeps `commission`: 1 + (d - 1)/(1 - c) */
+pure fn effective_lay_odds(odds: f64, commission: f64) -> ?f64 = match is_commission(odds, commission) {
+	true => 1.0 + (odds - 1.0) / (1.0 - commission),
+	false => none,
+};
+
+/* odds above one and a commission a share of winnings, [0, 1) */
+pure fn is_commission(odds: f64, commission: f64) -> bool =
+	is_odds(odds) && M.is_finite(commission) && commission >= 0.0 && commission < 1.0;
+
+/*
+ * A back bet matched by a lay, or why not (the same failures as Surebet).
+ * Every part of `worst` is rounded against the person: the back winnings
+ * and what a winning lay keeps down, the liability up.
+ */
+type BackLay =
+	| Pair {
+		lay_stake: i64<minor>,
+		liability: i64<minor>,
+		if_back_wins: i64<minor>,
+		if_lay_wins: i64<minor>,
+		worst: i64<minor>,
+		ideal: i64<minor>,
+		rating: f64,
+	}
+	| Inexact
+	| NotOdds { odds: f64 }
+	| TooLarge;
+
+/*
+ * The lay stake that makes both results equal is B d/(L - c), half to
+ * even; L > 1 and c < 1, so the denominator is above zero. The liability
+ * lay_stake (L - 1) and the back winnings B (d - 1) are integers times
+ * scaled odds, exact before their one rounding.
+ */
+pure fn back_lay(back_odds: f64, lay_odds: f64, commission: f64, stake: i64<minor>) -> own BackLay
+	requires back_odds > 1.0 && lay_odds > 1.0 && commission >= 0.0 && commission < 1.0 && stake > 0<minor>
+= match round_minor((stake as f64) * back_odds / (lay_odds - commission)) {
+	none => BackLay.Inexact,
+	some lay_stake => match scaled(back_odds, false) {
+		none => BackLay.NotOdds { odds = back_odds },
+		some back_scaled => match scaled(lay_odds, true) {
+			none => BackLay.NotOdds { odds = lay_odds },
+			some lay_scaled => match times_odds(-lay_stake, lay_scaled - ODDS_SCALE) {
+				none => BackLay.TooLarge,
+				some negative_liability => match times_odds(stake, back_scaled - ODDS_SCALE) {
+					none => BackLay.TooLarge,
+					some back_gross => match round_minor((stake as f64) * back_odds * (1.0 - commission) / (lay_odds - commission) - (stake as f64)) {
+						none => BackLay.Inexact,
+						some ideal => pair(lay_stake, -negative_liability, back_gross, kept(lay_stake, commission), stake, ideal,
+							back_odds * (1.0 - commission) / (lay_odds - commission)),
+					},
+				},
+			},
+		},
+	},
+};
+
+/* what the exchange leaves of a winning lay, rounded down; a millionth of
+ * a minor unit absorbs a product meant to be whole (100 x 0.95) landing a
+ * hair under it */
+pure fn kept(lay_stake: i64<minor>, commission: f64) -> i64<minor> =
+	(M.floor((lay_stake as f64) * (1.0 - commission) + 0.000001) as i64) as i64<minor>;
+
+/* the figures of a pair from its rounded parts */
+pure fn pair(lay_stake: i64<minor>, liability: i64<minor>, back_gross: i64<minor>, lay_kept: i64<minor>, stake: i64<minor>, ideal: i64<minor>, rating: f64) -> own BackLay {
+	let back_wins = difference(back_gross, liability);
+	let lay_wins = difference(lay_kept, stake);
+	return BackLay.Pair {
+		lay_stake,
+		liability,
+		if_back_wins = back_wins,
+		if_lay_wins = lay_wins,
+		worst = least(back_wins, lay_wins),
+		ideal,
+		rating,
+	};
+}
+
+/* a - b for amounts a ratio produced: each is within 2^61 (round_minor
+ * holds them to 2^53, times_odds to 2^63 / 10^6), so it cannot overflow */
+pure fn difference(a: i64<minor>, b: i64<minor>) -> i64<minor>
+	requires a >= -2305843009213693952<minor> && a <= 2305843009213693952<minor>
+	requires b >= -2305843009213693952<minor> && b <= 2305843009213693952<minor>
+	ensures result == a - b
+= a - b;
+
+/* ---- flips ---- */
+
+/* what reading a sale rate gave */
+type Relists =
+	| Expected { relists: f64 }
+	| Unknown
+	| NeverSells
+	| NotAShare;
+
+/* listings expected to expire before one sells at sale rate r: 1/r - 1 */
+pure fn expected_relists(sale_rate: f64) -> own Relists = match !M.is_finite(sale_rate) {
+	true => Relists.Unknown,
+	false => match sale_rate <= 0.0 {
+		true => Relists.NeverSells,
+		false => match sale_rate > 1.0 {
+			true => Relists.NotAShare,
+			false => Relists.Expected { relists = 1.0 / sale_rate - 1.0 },
+		},
+	},
+};
+
+/* what annualising a return gave */
+type Annual =
+	| Annualized { rate: f64 }
+	| NoHold
+	| TooShort;
+
+/* (1 + roi)^(365/days) - 1; everything lost stays everything lost */
+pure fn annualize(roi: f64, lock_days: f64) -> own Annual = match !M.is_finite(roi) || !M.is_finite(lock_days) || lock_days <= 0.0 {
+	true => Annual.NoHold,
+	false => match roi <= -1.0 {
+		true => Annual.Annualized { rate = -1.0 },
+		false => annual_value(M.pow(1.0 + roi, 365.0 / lock_days) - 1.0),
+	},
+};
+
+pure fn annual_value(v: f64) -> own Annual = match M.is_finite(v) {
+	true => Annual.Annualized { rate = v },
+	false => Annual.TooShort,
+};
+
+/* deposits lost per lot: one per expected relist, and the selling
+ * listing's own too when the venue keeps it */
+pure fn listing_factor(relists: f64, refundable: bool) -> f64 = relists + match refundable {
+	true => 0.0,
+	false => 1.0,
+};
+
+/* days the money is tied up: units / (sold per day x share) + transit;
+ * none when nothing is known to sell */
+pure fn lock_days(units: i64, sold_per_day: f64, share: f64, transit_days: f64) -> ?f64
+	requires units >= 1
+= match M.is_finite(sold_per_day) && sold_per_day > 0.0 {
+	true => (units as f64) / (sold_per_day * share) + transit_days,
+	false => none,
+};
+
+/* x held to [0, 1] (CLAMP's order: above first, then below) */
+pure fn unit_interval(x: f64) -> f64 = match x > 1.0 {
+	true => 1.0,
+	false => match x < 0.0 {
+		true => 0.0,
+		false => x,
+	},
+};
+
+/*
+ * net / capital, each at its own exponent: both are brought to the finer
+ * one first (the C this replaces divided the raw minor units, so a net in
+ * cents over capital in mills was off by ten). None when either does not
+ * fit there.
+ */
+pure fn roi(net: i64<minor>, net_exponent: i64, capital: i64<minor>, capital_exponent: i64) -> ?f64
+	requires net_exponent >= 0 && net_exponent <= 18 && capital_exponent >= 0 && capital_exponent <= 18
+{
+	let e = Money.common_exponent(net_exponent, capital_exponent);
+	return match Money.rescale(net, net_exponent, e) {
+		some n => match Money.rescale(capital, capital_exponent, e) {
+			some c => (n as f64) / (c as f64),
+			none => none,
+		},
+		none => none,
+	};
+}
+
+/* ---- confidence ---- */
+
+/*
+ * How sure a price is, in [0, 1]: freshness x breadth x stability x depth.
+ * `fallback` is the update interval to assume when none was learned.
+ */
+pure fn confidence(interval_seconds: i64, fallback: i64, age_seconds: i64, venues: i64, dispersion: f64, depth: f64) -> f64 {
+	let interval = match interval_seconds > 0 {
+		true => interval_seconds as f64,
+		false => fallback as f64,
+	};
+	let age = match 0.0 > (age_seconds as f64) {
+		true => 0.0,
+		false => age_seconds as f64,
+	};
+	let fresh = unit_interval(1.0 - (age - interval) / (3.0 * interval));
+	let breadth = match 1.0 < (venues as f64) / 3.0 {
+		true => 1.0,
+		false => (venues as f64) / 3.0,
+	};
+	let stability = match M.is_finite(dispersion) && dispersion >= 0.0 {
+		true => 1.0 / (1.0 + dispersion),
+		false => 0.8,
+	};
+	let held = match M.is_finite(depth) {
+		true => unit_interval(depth),
+		false => 0.5,
+	};
+	return unit_interval(fresh * breadth * stability * held);
+}
+
+test "round minor" {
+	assert((round_minor(2.5) ?? 0<minor>) == 2<minor>);
+	assert((round_minor(3.5) ?? 0<minor>) == 4<minor>);
+	assert((round_minor(-2.5) ?? 0<minor>) == -2<minor>);
+	assert((round_minor(-3.5) ?? 0<minor>) == -4<minor>);
+	assert((round_minor(2.4999) ?? 0<minor>) == 2<minor>);
+	assert((round_minor(-0.49999999999999994) ?? 1<minor>) == 0<minor>);
+	assert((round_minor(9007199254740992.0) ?? 0<minor>) == 9007199254740992<minor>);
+	assert(round_minor(9007199254740994.0) == none);
+	assert(round_minor(1.0 / 0.0) == none);
+}
+
+test "odds" {
+	assert((american(150.0) ?? 0.0) == 2.5);
+	assert((american(-200.0) ?? 0.0) == 1.5);
+	assert(american(99.0) == none);
+	assert((fractional(3.0, 2.0) ?? 0.0) == 2.5);
+	assert(fractional(0.0, 2.0) == none);
+	assert((implied_probability(4.0) ?? 0.0) == 0.25);
+	assert(implied_probability(1.0) == none);
+	assert((scaled(1.13, false) ?? 0) == 1130000);
+	assert((scaled(1.13, true) ?? 0) == 1130000);
+	assert(scaled(1.0, false) == none);
+	assert((times_odds(100<minor>, 1130000) ?? 0<minor>) == 113<minor>);
+	assert((times_odds(-1<minor>, 1500000) ?? 0<minor>) == -2<minor>);
+	assert((first_not_odds([2.0, 1.0, 3.0], 0) ?? -1) == 1);
+	assert(first_not_odds([2.0, 3.0], 0) == none);
+}
+
+test "surebet" {
+	let s = surebet([2.5, 1.8], 10000<minor>);
+	assert(s is Split);
+	let even = surebet([2.0, 2.0], 100<minor>);
+	assert(even is Split);
+}
+
+test "back lay" {
+	let p = back_lay(3.0, 3.1, 0.05, 1000<minor>);
+	assert(p is Pair);
+}
+
+test "flips" {
+	assert(expected_relists(0.0) is NeverSells);
+	assert(expected_relists(1.5) is NotAShare);
+	assert(expected_relists(0.0 / 0.0) is Unknown);
+	assert(annualize(-1.0, 10.0) is Annualized);
+	assert(annualize(1.0, 0.0) is NoHold);
+	assert((roi(150<minor>, 2, 10000<minor>, 3) ?? 0.0) == 0.15);
+	assert((roi(-5<minor>, 0, 10<minor>, 0) ?? 0.0) == -0.5);
+	assert(unit_interval(2.0) == 1.0 && unit_interval(-1.0) == 0.0);
+}
