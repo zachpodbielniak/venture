@@ -12,6 +12,7 @@
  */
 
 #include "venture.h"
+#include <vk-kernels.h>
 
 #include <string.h>
 
@@ -732,6 +733,7 @@ venture_tax_code_levy(VentureTaxCode *self, const VentureMoney *net, GError **er
 {
 	gint64 numerator = 0;
 	gint64 denominator = 0;
+	TlwOptI64 levy;
 
 	if (net == NULL)
 	{
@@ -740,7 +742,16 @@ venture_tax_code_levy(VentureTaxCode *self, const VentureMoney *net, GError **er
 	}
 	if (!venture_tax_code_get_rate(self, &numerator, &denominator, error))
 		return NULL;
-	return venture_money_multiply_rational(net, numerator, denominator, error);
+	/* vk_lines_levy: net times the exact rate, half to even, once */
+	levy = vk_lines_levy(venture_money_get_amount(net), numerator, denominator);
+	if (!levy.has)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT "/%" G_GINT64_FORMAT
+			" overflows a 64-bit minor-unit amount", venture_money_get_amount(net), numerator, denominator);
+		return NULL;
+	}
+	return venture_money_new(levy.val, venture_money_get_currency(net), venture_money_get_exponent(net));
 }
 
 /* ==========================================================================
@@ -3341,7 +3352,9 @@ venture_invoice_line_get_amount(
 ){
 	g_autoptr(VentureMoney) unit_price = NULL;
 	gdouble quantity;
+	gdouble halves;
 	gint64 thousandths;
+	TlwOptI64 product;
 
 	g_return_val_if_fail(VENTURE_IS_INVOICE_LINE(self), NULL);
 
@@ -3361,20 +3374,42 @@ venture_invoice_line_get_amount(
 	 * to even once -- the same discipline as every other money
 	 * computation here. Multiplying by the double directly would let
 	 * 0.1 + binary representation error into an invoice total.
+	 *
+	 * The double becomes thousandths rounded half away from zero, the
+	 * rule stored totals were computed with: twice the thousandths,
+	 * truncated, keeps whether the fraction reached a half in its odd
+	 * unit, and vk_lines_thousandths rounds that HalfUp. A quantity whose
+	 * thousandths do not fit an i64 (or is not a number) is refused; the
+	 * cast used to be undefined there.
 	 */
-	thousandths = (gint64)(quantity * 1000.0 +
-	                       ((quantity >= 0.0) ? 0.5 : -0.5));
+	halves = quantity * 1000.0 * 2.0;
+	if (!(halves > -9223372036854775808.0 && halves < 9223372036854775808.0))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "The line's quantity is out of range");
+		return NULL;
+	}
+	thousandths = vk_lines_thousandths((gint64)halves);
 
 	{
-		g_autoptr(VentureMoney) subtotal = venture_money_multiply_rational(unit_price, thousandths, 1000, error);
+		g_autoptr(VentureMoney) subtotal = NULL;
 		g_autoptr(VentureMoney) frozen_net = NULL;
 		g_autoptr(VentureMoney) frozen_tax = NULL;
 		gint64 discount_percent;
 		gint64 tax_percent;
 		g_object_get(self, "discount-percent", &discount_percent, "tax-percent", &tax_percent,
 			"income-amount", &frozen_net, "tax-amount", &frozen_tax, NULL);
-		if (subtotal == NULL)
+		product = vk_lines_line_subtotal(venture_money_get_amount(unit_price), thousandths);
+		if (!product.has)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
+			            "/1000 overflows a 64-bit minor-unit amount",
+			            venture_money_get_amount(unit_price), thousandths);
 			return NULL;
+		}
+		subtotal = venture_money_new(product.val, venture_money_get_currency(unit_price),
+		                             venture_money_get_exponent(unit_price));
 		if (frozen_net != NULL && frozen_tax != NULL)
 			return venture_money_add(frozen_net, frozen_tax, error);
 		return venture_quote_apply_percentages(subtotal, discount_percent, tax_percent, error);

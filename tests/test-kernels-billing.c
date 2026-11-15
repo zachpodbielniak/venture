@@ -228,6 +228,96 @@ test_kernels_billing_reports(void)
 	g_assert_cmpint(r.val, ==, 125);
 }
 
+/* --- vk_lines -------------------------------------------------------------- */
+
+/* The parts add up: discount + net is the subtotal, net + tax the total. */
+static void
+test_kernels_lines_parts(void)
+{
+	g_autoptr(VentureMoney) subtotal = venture_money_new(12345, "USD", 2);
+	g_autoptr(VentureMoney) discount = NULL;
+	g_autoptr(VentureMoney) net = NULL;
+	g_autoptr(VentureMoney) tax = NULL;
+	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 pct;
+
+	g_assert_true(venture_quote_rate_parts(subtotal, 15, 825, 10000, &discount, &net, &tax, &total, &error));
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_money_get_amount(discount), ==, 1852);
+	g_assert_cmpint(venture_money_get_amount(net), ==, 10493);
+	g_assert_cmpint(venture_money_get_amount(tax), ==, 866);
+	g_assert_cmpint(venture_money_get_amount(total), ==, 11359);
+
+	for (pct = 0; pct <= 100; pct += 7)
+	{
+		g_autoptr(VkLinesParts) parts = vk_lines_rate_parts(-98765, pct, 7, 3);
+		g_assert_nonnull(parts);
+		g_assert_cmpint(parts->discount + parts->net, ==, -98765);
+		g_assert_cmpint(parts->net + parts->tax, ==, parts->total);
+	}
+
+	g_assert_false(venture_quote_rate_parts(subtotal, 101, 0, 1, NULL, NULL, NULL, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
+/* An invoice line of @quantity at @unit_price minor units (USD). */
+static VentureInvoiceLine *
+line_of(gdouble quantity, gint64 unit_price)
+{
+	g_autoptr(VentureMoney) price = venture_money_new(unit_price, "USD", 2);
+	VentureInvoiceLine *line;
+
+	line = venture_invoice_line_new();
+	g_object_set(line, "description", "Hours", "quantity", quantity, "unit-price", price, NULL);
+	return line;
+}
+
+/* Quantities become thousandths rounded half away from zero, as stored
+ * totals were computed. */
+static void
+test_kernels_lines_quantity(void)
+{
+	static const gdouble quantities[] = { 2.5, 0.0005, -0.0005, 0.0004, 1.0015, -1.0015 };
+	static const gint64 expected[] = { 2500, 1, -1, 0, 1002, -1002 };
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(quantities); i++)
+	{
+		g_autoptr(VentureInvoiceLine) line = line_of(quantities[i], 1000);
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(GError) error = NULL;
+
+		amount = venture_invoice_line_get_amount(line, &error);
+		g_assert_no_error(error);
+		g_assert_cmpint(venture_money_get_amount(amount), ==, expected[i]);
+	}
+}
+
+/*
+ * A quantity whose thousandths do not fit 64 bits, or that is not a
+ * number, is refused as invalid input. The cast from the double used to
+ * be unchecked: undefined behaviour, which on x86-64 produced G_MININT64
+ * thousandths and an overflow error from the money layer instead.
+ */
+static void
+test_kernels_lines_quantity_range(void)
+{
+	static const gdouble quantities[] = { 1e17, -1e17, 1e300 };
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(quantities); i++)
+	{
+		g_autoptr(VentureInvoiceLine) line = line_of(quantities[i], 100);
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autoptr(GError) error = NULL;
+
+		amount = venture_invoice_line_get_amount(line, &error);
+		g_assert_null(amount);
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	}
+}
+
 int
 main(
 	int	  argc,
@@ -242,6 +332,9 @@ main(
 	g_test_add_func("/kernels-billing/billing/tail-share", test_kernels_billing_tail_share);
 	g_test_add_func("/kernels-billing/billing/discount", test_kernels_billing_discount);
 	g_test_add_func("/kernels-billing/billing/reports", test_kernels_billing_reports);
+	g_test_add_func("/kernels-billing/lines/parts", test_kernels_lines_parts);
+	g_test_add_func("/kernels-billing/lines/quantity", test_kernels_lines_quantity);
+	g_test_add_func("/kernels-billing/lines/quantity-range", test_kernels_lines_quantity_range);
 
 	return g_test_run();
 }

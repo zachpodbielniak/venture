@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <vk-kernels.h>
 
 GType
 venture_quote_status_get_type(void)
@@ -129,10 +130,9 @@ venture_quote_rate_parts(const VentureMoney *subtotal, gint64 discount_percent,
 	gint64 tax_numerator, gint64 tax_denominator, VentureMoney **discount, VentureMoney **net,
 	VentureMoney **tax, VentureMoney **total, GError **error)
 {
-	g_autoptr(VentureMoney) taken = NULL;
-	g_autoptr(VentureMoney) remaining = NULL;
-	g_autoptr(VentureMoney) levy = NULL;
-	g_autoptr(VentureMoney) gross = NULL;
+	g_autoptr(VkLinesParts) parts = NULL;
+	const gchar *code;
+	guint8 exponent;
 	if (discount != NULL)
 		*discount = NULL;
 	if (net != NULL)
@@ -141,32 +141,32 @@ venture_quote_rate_parts(const VentureMoney *subtotal, gint64 discount_percent,
 		*tax = NULL;
 	if (total != NULL)
 		*total = NULL;
-	if (discount_percent < 0 || discount_percent > 100 || tax_numerator < 0 || tax_denominator <= 0)
+	if (!vk_lines_valid(discount_percent, tax_numerator, tax_denominator))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
 			"Discount must be 0..100 and the tax rate a nonnegative numerator over a positive denominator");
 		return FALSE;
 	}
-	taken = venture_money_multiply_rational(subtotal, discount_percent, 100, error);
-	if (taken == NULL)
+	/* vk_lines_rate_parts: the discount and the tax each rounded half to
+	 * even once at the subtotal's exponent; discount + net is the
+	 * subtotal and net + tax the total, by contract. */
+	parts = vk_lines_rate_parts(venture_money_get_amount(subtotal), discount_percent, tax_numerator, tax_denominator);
+	if (parts == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"A discount, tax or total overflows a 64-bit minor-unit amount");
 		return FALSE;
-	remaining = venture_money_subtract(subtotal, taken, error);
-	if (remaining == NULL)
-		return FALSE;
-	levy = venture_money_multiply_rational(remaining, tax_numerator, tax_denominator, error);
-	if (levy == NULL)
-		return FALSE;
-	gross = venture_money_add(remaining, levy, error);
-	if (gross == NULL)
-		return FALSE;
+	}
+	code = venture_money_get_currency(subtotal);
+	exponent = venture_money_get_exponent(subtotal);
 	if (discount != NULL)
-		*discount = g_steal_pointer(&taken);
+		*discount = venture_money_new(parts->discount, code, exponent);
 	if (net != NULL)
-		*net = g_steal_pointer(&remaining);
+		*net = venture_money_new(parts->net, code, exponent);
 	if (tax != NULL)
-		*tax = g_steal_pointer(&levy);
+		*tax = venture_money_new(parts->tax, code, exponent);
 	if (total != NULL)
-		*total = g_steal_pointer(&gross);
+		*total = venture_money_new(parts->total, code, exponent);
 	return TRUE;
 }
 
