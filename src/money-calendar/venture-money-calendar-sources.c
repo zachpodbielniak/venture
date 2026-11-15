@@ -15,6 +15,8 @@
 #include "venture.h"
 #include "money-calendar/venture-money-calendar-private.h"
 
+#include <vk-kernels.h>
+
 #include <string.h>
 
 /* The recurring module's enums are registered as GEnums, not C constants;
@@ -63,6 +65,47 @@ money(VentureEntity *e, const gchar *field)
 	VentureMoney *value = NULL;
 	g_object_get(e, field, &value, NULL);
 	return value;
+}
+
+/* @amounts (VentureMoney *) added in order onto @start, or onto a zero at
+ * the first amount's exponent when @start is NULL; %NULL with @error when
+ * an amount is in another currency (venture_money_add's words) or the sum
+ * leaves the 64-bit range. The fold is vk_ledger_net, so the total keeps
+ * the exponent it reaches. With nothing to add, %NULL and no error. */
+static VentureMoney *
+sum_onto(const VentureMoney *start, GPtrArray *amounts, GError **error)
+{
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_line_free);
+	g_autoptr(VkLedgerTotal) sum = NULL;
+	const VentureMoney *base;
+	guint i;
+
+	base = start != NULL ? start : (amounts->len > 0 ? g_ptr_array_index(amounts, 0) : NULL);
+	if (base == NULL)
+		return NULL;
+	if (start != NULL)
+		g_ptr_array_add(lines, vk_ledger_line_new(start->amount, (gint64)start->exponent, TRUE));
+	for (i = 0; i < amounts->len; i++)
+	{
+		const VentureMoney *amount = g_ptr_array_index(amounts, i);
+
+		if (g_ascii_strcasecmp(base->currency, amount->currency) != 0)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Cannot combine %s and %s: no exchange rate is available "
+				"and guessing one would be wrong", base->currency, amount->currency);
+			return NULL;
+		}
+		g_ptr_array_add(lines, vk_ledger_line_new(amount->amount, (gint64)amount->exponent, TRUE));
+	}
+	sum = vk_ledger_net(lines, (gint64)base->exponent);
+	if (sum->tag != VK_LEDGER_TOTAL_SUM)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Monetary addition overflows a 64-bit minor-unit amount");
+		return NULL;
+	}
+	return venture_money_new(sum->u.sum.amount, base->currency, (guint8)sum->u.sum.exponent);
 }
 
 static gchar *
@@ -267,7 +310,7 @@ template_amount(VentureEntity *schedule, gint kind, const gchar *book_currency, 
 	{
 		JsonNode *lines_node = json_object_get_member(object, "lines");
 		const gchar *currency = venture_json_object_get_string(object, "currency", book_currency);
-		g_autoptr(VentureMoney) total = NULL;
+		g_autoptr(GPtrArray) amounts = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
 		JsonArray *lines;
 		guint i;
 		if (lines_node == NULL || !JSON_NODE_HOLDS_ARRAY(lines_node))
@@ -276,24 +319,16 @@ template_amount(VentureEntity *schedule, gint kind, const gchar *book_currency, 
 		for (i = 0; i < json_array_get_length(lines); i++)
 		{
 			JsonNode *line = json_array_get_element(lines, i);
-			g_autoptr(VentureMoney) amount = NULL;
+			VentureMoney *amount;
 			if (!JSON_NODE_HOLDS_OBJECT(line))
 				continue;
 			amount = line_amount(json_node_get_object(line), currency, error);
 			if (amount == NULL)
 				return NULL;
-			if (total == NULL)
-				total = g_steal_pointer(&amount);
-			else
-			{
-				VentureMoney *sum = venture_money_add(total, amount, error);
-				if (sum == NULL)
-					return NULL;
-				venture_money_free(total);
-				total = sum;
-			}
+			g_ptr_array_add(amounts, amount);
 		}
-		return total != NULL ? g_steal_pointer(&total) : venture_money_new_zero(currency);
+		/* the lines' total from the first line's exponent (vk_ledger_net) */
+		return amounts->len > 0 ? sum_onto(NULL, amounts, error) : venture_money_new_zero(currency);
 	}
 }
 
@@ -716,39 +751,35 @@ payroll_expand(VentureMoneyCalendarSource *self, VentureContext *context, gint64
 		g_autoptr(GPtrArray) lines = NULL;
 		g_autofree gchar *key = text(run, "run-key");
 		g_autofree gchar *currency = text(run, "currency");
+		g_autoptr(VentureMoney) zero = NULL;
 		g_autoptr(VentureMoney) net = NULL;
 		g_autoptr(VentureMoney) liabilities = NULL;
+		g_autoptr(GPtrArray) nets = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+		g_autoptr(GPtrArray) withheld = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
 		guint j;
 		if (period_end == NULL)
 			continue;
 		lines = rows_with_int(db, VENTURE_TYPE_PAYROLL_LINE, org, "run-id", venture_entity_get_id(run), error);
 		if (lines == NULL)
 			return FALSE;
-		net = venture_money_new_zero(currency);
-		liabilities = venture_money_new_zero(currency);
 		for (j = 0; j < lines->len; j++)
 		{
 			VentureEntity *line = g_ptr_array_index(lines, j);
-			g_autoptr(VentureMoney) line_net = money(line, "net");
-			g_autoptr(VentureMoney) line_liabilities = money(line, "liabilities");
-			VentureMoney *sum;
+			VentureMoney *line_net = money(line, "net");
+			VentureMoney *line_liabilities = money(line, "liabilities");
 			if (line_net != NULL)
-			{
-				sum = venture_money_add(net, line_net, error);
-				if (sum == NULL)
-					return FALSE;
-				venture_money_free(net);
-				net = sum;
-			}
+				g_ptr_array_add(nets, line_net);
 			if (line_liabilities != NULL)
-			{
-				sum = venture_money_add(liabilities, line_liabilities, error);
-				if (sum == NULL)
-					return FALSE;
-				venture_money_free(liabilities);
-				liabilities = sum;
-			}
+				g_ptr_array_add(withheld, line_liabilities);
 		}
+		/* each total from a zero of the run's currency (vk_ledger_net) */
+		zero = venture_money_new_zero(currency);
+		net = sum_onto(zero, nets, error);
+		if (net == NULL)
+			return FALSE;
+		liabilities = sum_onto(zero, withheld, error);
+		if (liabilities == NULL)
+			return FALSE;
 		if (!flag(run, "net-disbursed") && !venture_money_is_zero(net))
 		{
 			g_autofree gchar *title = g_strdup_printf("Payroll %s net pay", key ? key : "");

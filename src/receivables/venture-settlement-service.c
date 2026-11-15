@@ -1,6 +1,9 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "receivables/venture-settlement-private.h"
+
+#include <vk-kernels.h>
 
 #include <string.h>
 
@@ -308,65 +311,165 @@ issue_event(VentureSettlementService *self, gint64 invoice_id, GDateTime *cutoff
 	return NULL;
 }
 
-/* The issued part of an invoice's balance from its @events: the issue and
- * any late fees. Sets @issued and @voided as the events say. */
-static gboolean
-invoice_issued_total(GPtrArray *events, VentureMoney **total, gboolean *issued, gboolean *voided, GError **error)
+/* --- Open balances: the records the vk_settlement kernel folds ---------- */
+
+struct _VentureSettlementRecords
+{
+	/* the error prefix of the service that reads them */
+	gchar *who;
+	/* VkSettlementRecord *, in fold order */
+	GPtrArray *records;
+	/* VentureMoney * or NULL, parallel to records: the codes and the
+	 * currency an answer is in */
+	GPtrArray *amounts;
+};
+
+static void
+money_free0(gpointer money)
+{
+	if (money != NULL)
+		venture_money_free(money);
+}
+
+VentureSettlementRecords *
+venture_settlement_records_new(const gchar *who)
+{
+	VentureSettlementRecords *self = g_new0(VentureSettlementRecords, 1);
+
+	self->who = g_strdup(who);
+	self->records = g_ptr_array_new_with_free_func((GDestroyNotify)vk_settlement_record_free);
+	self->amounts = g_ptr_array_new_with_free_func(money_free0);
+	return self;
+}
+
+void
+venture_settlement_records_free(VentureSettlementRecords *self)
+{
+	if (self == NULL)
+		return;
+	g_free(self->who);
+	g_ptr_array_unref(self->records);
+	g_ptr_array_unref(self->amounts);
+	g_free(self);
+}
+
+/* The number of @amount's currency: the position of the first amount
+ * already added in the same currency, compared case-insensitively as
+ * adding VentureMoney compares it, or the next position for a new one. */
+static gint64
+records_currency(VentureSettlementRecords *self, const VentureMoney *amount)
 {
 	guint i;
 
-	*issued = FALSE;
-	*voided = FALSE;
-	for (i = 0; i < events->len; i++)
+	for (i = 0; i < self->amounts->len; i++)
 	{
-		VentureEntity *event;
-		g_autofree gchar *state = NULL;
+		const VentureMoney *seen = g_ptr_array_index(self->amounts, i);
 
-		event = g_ptr_array_index(events, i);
-		g_object_get(event, "kind", &state, NULL);
-		if (g_strcmp0(state, "issue") == 0)
-		{
-			*issued = TRUE;
-			if (!accumulate_record(total, event, FALSE, error))
-				return FALSE;
-		}
-		if (g_strcmp0(state, "void") == 0)
-			*voided = TRUE;
+		if (seen != NULL && g_ascii_strcasecmp(venture_money_get_currency(seen),
+			venture_money_get_currency(amount)) == 0)
+			return (gint64)i;
 	}
-	/* A late fee is a separate adjustment on top of the frozen issue, added
-	 * after it; it never edits the invoice's lines. */
-	for (i = 0; *issued && i < events->len; i++)
+	return (gint64)self->amounts->len;
+}
+
+/* Adds @record's "amount" as a record of @kind; an unset amount is kept
+ * as one, which the kernel refuses only if it counts it. */
+static void
+records_add(VentureSettlementRecords *self, VkSettlementKind kind, VentureEntity *record)
+{
+	g_autoptr(VentureMoney) amount = NULL;
+
+	g_object_get(record, "amount", &amount, NULL);
+	if (amount == NULL)
+		g_ptr_array_add(self->records, vk_settlement_record_new_unset(kind));
+	else
+		g_ptr_array_add(self->records, vk_settlement_record_new_money(kind, venture_money_get_amount(amount),
+			(gint64)venture_money_get_exponent(amount), records_currency(self, amount)));
+	g_ptr_array_add(self->amounts, g_steal_pointer(&amount));
+}
+
+void
+venture_settlement_records_add_events(VentureSettlementRecords *self, GPtrArray *events, gboolean late_fees)
+{
+	guint i;
+
+	g_return_if_fail(self != NULL && events != NULL);
+	for (i = 0; i < events->len; i++)
 	{
 		VentureEntity *event = g_ptr_array_index(events, i);
 		g_autofree gchar *state = NULL;
 
 		g_object_get(event, "kind", &state, NULL);
-		if (g_strcmp0(state, VENTURE_INVOICE_EVENT_LATE_FEE) == 0 && !accumulate_record(total, event, FALSE, error))
-			return FALSE;
+		if (g_strcmp0(state, "issue") == 0)
+			records_add(self, VK_SETTLEMENT_KIND_ISSUE, event);
+		else if (g_strcmp0(state, "void") == 0)
+			records_add(self, VK_SETTLEMENT_KIND_VOID, event);
+		/* A late fee is a separate adjustment on top of the frozen
+		 * issue; it never edits the invoice's lines. */
+		else if (late_fees && g_strcmp0(state, VENTURE_INVOICE_EVENT_LATE_FEE) == 0)
+			records_add(self, VK_SETTLEMENT_KIND_LATE_FEE, event);
 	}
-	return TRUE;
 }
 
-/* Less what was allocated to the invoice, plus what was refunded of each
- * allocation: @refunds holds an allocation id to its refunds. */
-static gboolean
-invoice_settled_total(GPtrArray *allocations, GHashTable *refunds, VentureMoney **total, GError **error)
+void
+venture_settlement_records_add_allocation(VentureSettlementRecords *self, VentureEntity *allocation, GPtrArray *refunds)
 {
-	guint i, j;
+	guint i;
 
-	for (i = 0; i < allocations->len; i++)
+	g_return_if_fail(self != NULL && allocation != NULL);
+	records_add(self, VK_SETTLEMENT_KIND_ALLOCATION, allocation);
+	for (i = 0; refunds != NULL && i < refunds->len; i++)
+		records_add(self, VK_SETTLEMENT_KIND_REFUND, g_ptr_array_index(refunds, i));
+}
+
+/* The currency code of the record at @at. */
+static const gchar *
+records_code(VentureSettlementRecords *self, gint64 at)
+{
+	const VentureMoney *amount = g_ptr_array_index(self->amounts, (guint)at);
+
+	return amount != NULL ? venture_money_get_currency(amount) : NULL;
+}
+
+VentureMoney *
+venture_settlement_records_balance(VentureSettlementRecords *self, gboolean *open, GError **error)
+{
+	g_autoptr(VkSettlementBalance) balance = NULL;
+	VkSettlementRecord *record;
+
+	g_return_val_if_fail(self != NULL, NULL);
+	if (open != NULL)
+		*open = FALSE;
+	balance = vk_settlement_balance(self->records);
+	switch (balance->tag)
 	{
-		VentureEntity *allocation = g_ptr_array_index(allocations, i);
-		gint64 id = venture_entity_get_id(allocation);
-		GPtrArray *returned = g_hash_table_lookup(refunds, &id);
-
-		if (!accumulate_record(total, allocation, TRUE, error))
-			return FALSE;
-		for (j = 0; returned != NULL && j < returned->len; j++)
-			if (!accumulate_record(total, g_ptr_array_index(returned, j), FALSE, error))
-				return FALSE;
+	case VK_SETTLEMENT_BALANCE_NOT_ISSUED:
+		return venture_money_new_zero(NULL);
+	case VK_SETTLEMENT_BALANCE_VOIDED:
+		return venture_money_new(0, records_code(self, balance->u.voided.first), (guint8)balance->u.voided.exponent);
+	case VK_SETTLEMENT_BALANCE_OPEN:
+		if (open != NULL)
+			*open = TRUE;
+		return venture_money_new(balance->u.open_.amount, records_code(self, balance->u.open_.first),
+			(guint8)balance->u.open_.exponent);
+	case VK_SETTLEMENT_BALANCE_MISSING:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "%s: An event has no amount", self->who);
+		return NULL;
+	case VK_SETTLEMENT_BALANCE_MISMATCH:
+		/* worded as venture_money_add() words it */
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Cannot combine %s and %s: no exchange rate is available and guessing one would be wrong",
+			records_code(self, balance->u.mismatch.first), records_code(self, balance->u.mismatch.at));
+		return NULL;
+	case VK_SETTLEMENT_BALANCE_OVERFLOW:
+	default:
+		record = g_ptr_array_index(self->records, (guint)balance->u.overflow.at);
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			vk_settlement_kind_of(record) == VK_SETTLEMENT_KIND_ALLOCATION
+			? "Monetary subtraction overflows a 64-bit minor-unit amount"
+			: "Monetary addition overflows a 64-bit minor-unit amount");
+		return NULL;
 	}
-	return TRUE;
 }
 
 static GHashTable *
@@ -396,43 +499,41 @@ rows_group(GHashTable *groups, GPtrArray *rows, const gchar *field)
 	}
 }
 
+/* An invoice's records as of @as_of (NULL: all), its payments read only
+ * when it is open, as the balance needs them. */
 VentureMoney *
 venture_settlement_service_invoice_balance(VentureSettlementService *self,
 	gint64 invoice_id, GDateTime *as_of, GError **error)
 {
 	g_autoptr(GPtrArray) events = NULL;
 	g_autoptr(GPtrArray) allocations = NULL;
-	g_autoptr(GHashTable) refunds = rows_by_id_new();
-	g_autoptr(VentureMoney) total = NULL;
-	gboolean issued;
-	gboolean voided;
+	g_autoptr(VentureSettlementRecords) records = venture_settlement_records_new("VentureSettlementService");
+	g_autoptr(VentureMoney) issued = NULL;
+	gboolean open;
 	guint i;
 
 	events = find_rows(self, VENTURE_TYPE_INVOICE_EVENT, "invoice-id", invoice_id, as_of, error);
 	if (events == NULL)
 		return NULL;
-	if (!invoice_issued_total(events, &total, &issued, &voided, error))
-		return NULL;
-	if (!issued)
-		return venture_money_new_zero(NULL);
-	if (voided)
-		return venture_money_new(0, venture_money_get_currency(total), venture_money_get_exponent(total));
+	venture_settlement_records_add_events(records, events, TRUE);
+	issued = venture_settlement_records_balance(records, &open, error);
+	if (issued == NULL || !open)
+		return g_steal_pointer(&issued);
 	allocations = find_rows(self, VENTURE_TYPE_PAYMENT_ALLOCATION, "invoice-id", invoice_id, as_of, error);
 	if (allocations == NULL)
 		return NULL;
 	for (i = 0; i < allocations->len; i++)
 	{
+		VentureEntity *allocation = g_ptr_array_index(allocations, i);
 		g_autoptr(GPtrArray) returned = NULL;
 
 		returned = find_rows(self, VENTURE_TYPE_REFUND, "allocation-id",
-			venture_entity_get_id(g_ptr_array_index(allocations, i)), as_of, error);
+			venture_entity_get_id(allocation), as_of, error);
 		if (returned == NULL)
 			return NULL;
-		rows_group(refunds, returned, "allocation-id");
+		venture_settlement_records_add_allocation(records, allocation, returned);
 	}
-	if (!invoice_settled_total(allocations, refunds, &total, error))
-		return NULL;
-	return g_steal_pointer(&total);
+	return venture_settlement_records_balance(records, NULL, error);
 }
 
 GHashTable *
@@ -449,11 +550,12 @@ venture_settlement_service_invoice_balances(VentureSettlementService *self,
 	g_autoptr(GPtrArray) allocated = g_ptr_array_new_with_free_func(g_free);
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GPtrArray) none = g_ptr_array_new();
+	/* invoice id -> its VentureSettlementRecords, for the open ones */
 	g_autoptr(GHashTable) pending = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free,
-		(GDestroyNotify)venture_money_free);
+		(GDestroyNotify)venture_settlement_records_free);
 	GHashTableIter iter;
 	gpointer key, value;
-	guint i;
+	guint i, j;
 
 	g_return_val_if_fail(VENTURE_IS_SETTLEMENT_SERVICE(self), NULL);
 	if (n_invoices == 0)
@@ -468,25 +570,23 @@ venture_settlement_service_invoice_balances(VentureSettlementService *self,
 	for (i = 0; i < n_invoices; i++)
 	{
 		GPtrArray *own = g_hash_table_lookup(events, &invoice_ids[i]);
-		VentureMoney *total = NULL;
-		gboolean issued, voided;
+		g_autoptr(VentureSettlementRecords) records = NULL;
+		g_autoptr(VentureMoney) issued = NULL;
+		gboolean is_open;
 
 		if (g_hash_table_contains(balances, &invoice_ids[i]) || g_hash_table_contains(pending, &invoice_ids[i]))
 			continue;
-		if (!invoice_issued_total(own != NULL ? own : none, &total, &issued, &voided, error))
-		{
-			g_clear_pointer(&total, venture_money_free);
+		records = venture_settlement_records_new("VentureSettlementService");
+		venture_settlement_records_add_events(records, own != NULL ? own : none, TRUE);
+		issued = venture_settlement_records_balance(records, &is_open, error);
+		if (issued == NULL)
 			return NULL;
-		}
-		if (!issued || voided)
+		if (!is_open)
 		{
-			VentureMoney *answer = !issued ? venture_money_new_zero(NULL) :
-				venture_money_new(0, venture_money_get_currency(total), venture_money_get_exponent(total));
-			g_clear_pointer(&total, venture_money_free);
-			g_hash_table_insert(balances, g_memdup2(&invoice_ids[i], sizeof(gint64)), answer);
+			g_hash_table_insert(balances, g_memdup2(&invoice_ids[i], sizeof(gint64)), g_steal_pointer(&issued));
 			continue;
 		}
-		g_hash_table_insert(pending, g_memdup2(&invoice_ids[i], sizeof(gint64)), total);
+		g_hash_table_insert(pending, g_memdup2(&invoice_ids[i], sizeof(gint64)), g_steal_pointer(&records));
 		g_ptr_array_add(open, g_strdup_printf("%" G_GINT64_FORMAT, invoice_ids[i]));
 	}
 	if (open->len > 0)
@@ -512,16 +612,20 @@ venture_settlement_service_invoice_balances(VentureSettlementService *self,
 	while (g_hash_table_iter_next(&iter, &key, &value))
 	{
 		GPtrArray *own = g_hash_table_lookup(allocations, key);
-		g_autoptr(VentureMoney) total = value;
+		VentureSettlementRecords *records = value;
+		VentureMoney *total;
 
-		/* Own the total first: each step frees it and makes a new one. */
-		g_hash_table_iter_steal(&iter);
-		if (!invoice_settled_total(own != NULL ? own : none, refunds, &total, error))
+		for (j = 0; own != NULL && j < own->len; j++)
 		{
-			g_free(key);
-			return NULL;
+			VentureEntity *allocation = g_ptr_array_index(own, j);
+			gint64 id = venture_entity_get_id(allocation);
+
+			venture_settlement_records_add_allocation(records, allocation, g_hash_table_lookup(refunds, &id));
 		}
-		g_hash_table_insert(balances, key, g_steal_pointer(&total));
+		total = venture_settlement_records_balance(records, NULL, error);
+		if (total == NULL)
+			return NULL;
+		g_hash_table_insert(balances, g_memdup2(key, sizeof(gint64)), total);
 	}
 	return g_steal_pointer(&balances);
 }

@@ -104,8 +104,9 @@ venture_report_money_calendar(VentureContext *context, VentureDateRange *period,
 	venture_report_result_add_column(result, "day_net", "Day net", VENTURE_REPORT_COLUMN_TEXT);
 	venture_report_result_add_column(result, "week_net", "Week net", VENTURE_REPORT_COLUMN_TEXT);
 
-	/* Totals over the span, one metric per currency, in and out and net. */
-	totals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)venture_money_free);
+	/* Totals over the span, one metric per currency, in and out and net
+	 * (venture_money_calendar_totals: vk_settlement_net_fitting). */
+	totals = venture_money_calendar_totals(events);
 	for (i = 0; i < events->len; i++)
 	{
 		VentureMoneyCalendarEvent *event = g_ptr_array_index(events, i);
@@ -128,20 +129,6 @@ venture_report_money_calendar(VentureContext *context, VentureDateRange *period,
 		venture_report_result_set_text(result, "record", record);
 		venture_report_result_set_text(result, "day_net", day_net);
 		venture_report_result_set_text(result, "week_net", week_net);
-		if (venture_money_calendar_event_get_counts_in_net(event))
-		{
-			const gchar *cur = venture_money_calendar_event_get_currency(event);
-			g_autofree gchar *key = g_strdup_printf("%s|%s", venture_money_calendar_event_get_direction(event), cur);
-			g_autofree gchar *net_key = g_strdup_printf("net|%s", cur);
-			g_autoptr(VentureMoney) signed_amount = venture_money_calendar_event_signed_amount(event);
-			VentureMoney *running = g_hash_table_lookup(totals, key);
-			VentureMoney *net = g_hash_table_lookup(totals, net_key);
-			g_hash_table_insert(totals, g_strdup(key), running == NULL
-				? venture_money_copy(venture_money_calendar_event_get_amount(event))
-				: venture_money_add(running, venture_money_calendar_event_get_amount(event), NULL));
-			g_hash_table_insert(totals, g_strdup(net_key), net == NULL
-				? venture_money_copy(signed_amount) : venture_money_add(net, signed_amount, NULL));
-		}
 	}
 	venture_report_result_add_metric(result, venture_metric_new_count("events", "Events", events->len));
 	{

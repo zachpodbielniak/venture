@@ -8,6 +8,8 @@
 #include "venture.h"
 #include "money-calendar/venture-money-calendar-private.h"
 
+#include <vk-kernels.h>
+
 #include <string.h>
 
 /* --- The source interface -------------------------------------------------- */
@@ -210,38 +212,126 @@ venture_money_calendar_filter(GPtrArray *events, const gchar *kind, gint64 compa
 
 /* --- Nets ---------------------------------------------------------------------- */
 
+/* One key's running total: its amounts in the order added, folded by
+ * vk_settlement_net_fitting from the first amount's exponent, in the
+ * first amount's currency. */
+typedef struct
+{
+	gchar *currency;
+	gint64 exponent;
+	GPtrArray *lines;
+} KeyedTotal;
+
+static void
+keyed_total_free(gpointer data)
+{
+	KeyedTotal *total = data;
+
+	g_free(total->currency);
+	g_ptr_array_unref(total->lines);
+	g_free(total);
+}
+
+/* Adds @amount to @key's total in @groups. An amount in another currency
+ * than the key's first is left out, as adding VentureMoney refused it. */
+static void
+keyed_add(GHashTable *groups, const gchar *key, const VentureMoney *amount)
+{
+	KeyedTotal *total = g_hash_table_lookup(groups, key);
+
+	if (total == NULL)
+	{
+		total = g_new0(KeyedTotal, 1);
+		total->currency = g_strdup(venture_money_get_currency(amount));
+		total->exponent = (gint64)venture_money_get_exponent(amount);
+		total->lines = g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_line_free);
+		g_hash_table_insert(groups, g_strdup(key), total);
+	}
+	if (g_ascii_strcasecmp(total->currency, venture_money_get_currency(amount)) != 0)
+		return;
+	g_ptr_array_add(total->lines, vk_ledger_line_new(venture_money_get_amount(amount),
+		(gint64)venture_money_get_exponent(amount), TRUE));
+}
+
+/* The totals of @groups, key to VentureMoney: each the sum of its amounts
+ * in order, where an amount that would take the sum out of range is
+ * skipped and the sum carries on without it. */
+static GHashTable *
+keyed_totals(GHashTable *groups)
+{
+	GHashTable *totals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)venture_money_free);
+	GHashTableIter iter;
+	gpointer key, value;
+
+	g_hash_table_iter_init(&iter, groups);
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		KeyedTotal *total = value;
+		g_autoptr(VkLedgerTotal) sum = vk_settlement_net_fitting(total->lines, total->exponent);
+
+		/* net_fitting skips what does not fit, so it always has a sum */
+		g_assert(sum->tag == VK_LEDGER_TOTAL_SUM);
+		g_hash_table_insert(totals, g_strdup(key),
+			venture_money_new(sum->u.sum.amount, total->currency, (guint8)sum->u.sum.exponent));
+	}
+	return totals;
+}
+
+static GHashTable *
+keyed_new(void)
+{
+	return g_hash_table_new_full(g_str_hash, g_str_equal, g_free, keyed_total_free);
+}
+
 /* Keyed "bucket|CUR". Two currencies in one day are two entries; the table
  * never holds a sum that crossed a currency. */
 GHashTable *
 venture_money_calendar_nets(GPtrArray *events, gboolean by_week)
 {
-	GHashTable *nets = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)venture_money_free);
+	g_autoptr(GHashTable) groups = keyed_new();
 	guint i;
-	g_return_val_if_fail(events != NULL, nets);
+
+	g_return_val_if_fail(events != NULL, keyed_totals(groups));
 	for (i = 0; i < events->len; i++)
 	{
 		VentureMoneyCalendarEvent *event = g_ptr_array_index(events, i);
 		g_autoptr(VentureMoney) signed_amount = NULL;
 		g_autofree gchar *key = NULL;
-		VentureMoney *running;
+
 		if (!venture_money_calendar_event_get_counts_in_net(event))
 			continue;
 		signed_amount = venture_money_calendar_event_signed_amount(event);
 		key = g_strdup_printf("%s|%s", by_week ? venture_money_calendar_event_get_week(event)
 			: venture_money_calendar_event_get_day(event), venture_money_get_currency(signed_amount));
-		running = g_hash_table_lookup(nets, key);
-		if (running == NULL)
-		{
-			g_hash_table_insert(nets, g_steal_pointer(&key), g_steal_pointer(&signed_amount));
-			continue;
-		}
-		{
-			VentureMoney *sum = venture_money_add(running, signed_amount, NULL);
-			if (sum != NULL)
-				g_hash_table_insert(nets, g_strdup(key), sum);
-		}
+		keyed_add(groups, key, signed_amount);
 	}
-	return nets;
+	return keyed_totals(groups);
+}
+
+GHashTable *
+venture_money_calendar_totals(GPtrArray *events)
+{
+	g_autoptr(GHashTable) groups = keyed_new();
+	guint i;
+
+	g_return_val_if_fail(events != NULL, keyed_totals(groups));
+	for (i = 0; i < events->len; i++)
+	{
+		VentureMoneyCalendarEvent *event = g_ptr_array_index(events, i);
+		const gchar *currency = venture_money_calendar_event_get_currency(event);
+		g_autofree gchar *key = NULL;
+		g_autofree gchar *net_key = NULL;
+		g_autoptr(VentureMoney) signed_amount = NULL;
+
+		if (!venture_money_calendar_event_get_counts_in_net(event))
+			continue;
+		key = g_strdup_printf("%s|%s", venture_money_calendar_event_get_direction(event), currency);
+		net_key = g_strdup_printf("net|%s", currency);
+		signed_amount = venture_money_calendar_event_signed_amount(event);
+		keyed_add(groups, key, venture_money_calendar_event_get_amount(event));
+		keyed_add(groups, net_key, signed_amount);
+	}
+	return keyed_totals(groups);
 }
 
 static gint
