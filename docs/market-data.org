@@ -301,19 +301,21 @@ A snapshot older than the venue's newest is *late*: its hourly and daily history
 
 All of these are pure functions in =src/series/venture-series-math.c=, with no database, and pinned by =tests/test-series-math.c=. "Rounded" always means half to even, applied once, to an exact integer quotient.
 
+The arithmetic is the Tallow kernel =src/kernels/vk_series.tlw=, compiled natively ([[file:kernels.org][Kernels]]); =venture-series-math.c= keeps the C API and converts at the edge -- a tier array becomes two arrays, prices and quantities, and =VENTURE_SERIES_NONE= is an absent value inside the kernel and the sentinel again outside it. Every figure is the same integer the hand-written C gave; =tests/test-kernels-trading.c= pins the parts that had to be rebuilt (the exact means, the sort, the heat cells).
+
 *** Per snapshot, per instrument
 
 The listings are sorted by price and merged into tiers. With Q units in total:
 
 - *Minimum, maximum*: the first and last tier's price.
-- *Mean*: Σ pᵢqᵢ / Q, rounded. The sum is formed in 128-bit arithmetic: a commodity of forty million units at three hundred million copper is past 64 bits, and the result still fits.
+- *Mean*: Σ pᵢqᵢ / Q, rounded. The sum is exact past 64 bits (a commodity of forty million units at three hundred million copper is past them, and the result still fits): with the divisor Q known first, each pᵢqᵢ is split by a 128-bit product into a quotient and a remainder of Q, the remainders are carried without ever adding past Q, and the total is rounded once. It is the integer an unsigned 128-bit sum divided by Q gives, on any compiler. The other weighted means here (the market value's survivors, the EWMA, the plain mean, a heat cell) are formed the same way.
 - *Standard deviation*: the quantity-weighted population deviation around the exact mean, computed in long double (it is a statistic, not money) and rounded once to minor units.
 - *Median*: the price of the middle unit; with an even Q, the mean of the two middle units, rounded.
 - *p15*: the price of the unit at nearest rank ⌈0.15 Q⌉.
 - *Market value*, the way TradeSkillMaster's AuctionDB computes one snapshot's:
   1. Take the first max(1, ⌈0.15 Q⌉) units unconditionally.
   2. Keep taking, up to ⌊0.30 Q⌋ units, until a unit's price is at least 20% above the unit before it (5(p − p_prev) ≥ p_prev); that unit and everything after are left out. A jump inside the first 15% cuts nothing.
-  3. Over the units taken, compute the mean m and population standard deviation s, and drop every unit with |p − m| > 1.5 s.
+  3. Over the units taken, compute the mean m and population standard deviation s, and drop every unit with |p − m| > 1.5 s. This test is the one part computed in C, in long double: it is a statistic that only decides which units are outliers, Tallow has no long double, and a double would move the boundary.
   4. The market value is the exact mean of the units left, rounded.
 - *Tiers kept*: the 64 cheapest (=VENTURE_SERIES_MAX_TIERS=). A buyer walking deeper than that is past where anyone prices from, and the bulk calculator says it ran out rather than guess.
 
