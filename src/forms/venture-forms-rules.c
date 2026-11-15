@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include "venture-forms-private.h"
+#include "formula/venture-formula-private.h"
 #include <math.h>
 #include <string.h>
 
@@ -32,17 +33,87 @@ rule_field_index(GPtrArray *fields, const gchar *key, guint *page)
 	return -1;
 }
 
+/* An expression rule: a Tallow formula (docs/formulas.org) over the answers
+ * to the questions it names. The questions it reads are the ones whose key
+ * it quotes ("kind"), and only their answers reach it, so it stays as
+ * closed as a condition list: earlier questions only, no files, no repeat
+ * groups. The server decides it -- the browser never runs a formula -- so
+ * a show, hide or require rule must read questions on an earlier page
+ * than its target, where the answer is known when the page is drawn. */
+static JsonObject *
+rule_from_expression(VentureEntity *record, GPtrArray *fields, const gchar *expression, GError **error)
+{
+	g_autofree gchar *target = venture_forms_get_string(record, "target-key");
+	g_autoptr(JsonObject) rule = json_object_new();
+	g_autoptr(JsonArray) read = json_array_new();
+	gint action;
+	gint target_index = -1;
+	guint target_page = 0, source_page = 0, i, page = 0;
+	g_object_get(record, "action", &action, NULL);
+	if (action != VENTURE_FORM_RULE_END)
+	{
+		VentureFormsField *destination;
+		target_index = rule_field_index(fields, target, &target_page);
+		if (target_index < 0) goto invalid;
+		destination = g_ptr_array_index(fields, target_index);
+		if ((destination->kind == VENTURE_FORM_FIELD_PAGE_BREAK) != (action == VENTURE_FORM_RULE_JUMP)) goto invalid;
+		if (!venture_string_is_empty(destination->group_key)) goto grouped;
+	}
+	else if (!venture_string_is_empty(target)) goto invalid;
+	for (i = 0; i < fields->len; i++)
+	{
+		VentureFormsField *source = g_ptr_array_index(fields, i);
+		g_autofree gchar *quoted = NULL;
+		if (source->kind == VENTURE_FORM_FIELD_PAGE_BREAK) { page++; continue; }
+		quoted = g_strdup_printf("\"%s\"", source->key);
+		if (strstr(expression, quoted) == NULL) continue;
+		if (source->kind == VENTURE_FORM_FIELD_FILE) goto invalid;
+		if (!venture_string_is_empty(source->group_key)) goto grouped;
+		if (action != VENTURE_FORM_RULE_END && (gint)i >= target_index) goto invalid;
+		source_page = MAX(source_page, page);
+		json_array_add_string_element(read, source->key);
+	}
+	if (json_array_get_length(read) == 0 || json_array_get_length(read) > 16) goto invalid;
+	if (action != VENTURE_FORM_RULE_END && target_page <= source_page)
+	{
+		venture_set_error_validation(error, "Rule", "an expression rule is decided by the server: "
+			"the questions it reads must be on an earlier page than its target");
+		return NULL;
+	}
+	json_object_set_int_member(rule, "action", action);
+	json_object_set_string_member(rule, "target", target != NULL ? target : "");
+	json_object_set_int_member(rule, "from_page", source_page);
+	json_object_set_int_member(rule, "to_page", target_page);
+	json_object_set_boolean_member(rule, "any", FALSE);
+	json_object_set_array_member(rule, "conditions", json_array_new());
+	json_object_set_string_member(rule, "expression", expression);
+	json_object_set_array_member(rule, "reads", json_array_ref(read));
+	return g_steal_pointer(&rule);
+invalid:
+	venture_set_error_validation(error, "Rule", "an expression reads 1–16 earlier questions by their quoted key, "
+		"none of them a file; a jump targets a later page break, an end no target");
+	return NULL;
+grouped:
+	venture_set_error_validation(error, "Rule", "an expression rule cannot read or target questions in a repeat group; use conditions");
+	return NULL;
+}
+
 static JsonObject *
 rule_from_record(VentureEntity *record, GPtrArray *fields, GError **error)
 {
-	g_autofree gchar *text = venture_forms_get_string(record, "conditions");
+	g_autofree gchar *expression = venture_forms_get_string(record, "expression");
+	g_autofree gchar *text = NULL;
 	g_autofree gchar *target = venture_forms_get_string(record, "target-key");
-	g_autoptr(JsonNode) conditions = text != NULL ? json_from_string(text, NULL) : NULL;
+	g_autoptr(JsonNode) conditions = NULL;
 	g_autoptr(JsonObject) rule = json_object_new();
 	gint action;
 	gint target_index = -1;
 	guint target_page = 0, source_page = 0, i;
 	JsonArray *array;
+	if (!venture_string_is_empty(expression))
+		return rule_from_expression(record, fields, expression, error);
+	text = venture_forms_get_string(record, "conditions");
+	conditions = text != NULL ? json_from_string(text, NULL) : NULL;
 	g_object_get(record, "action", &action, NULL);
 	if (conditions == NULL || !JSON_NODE_HOLDS_ARRAY(conditions)) goto invalid;
 	array = json_node_get_array(conditions);
@@ -141,7 +212,8 @@ venture_forms_rules_restore(GPtrArray *fields, JsonNode *node, GError **error)
 		if (action < VENTURE_FORM_RULE_SHOW || action > VENTURE_FORM_RULE_END) goto invalid;
 		text = json_to_string(conditions, FALSE);
 		g_object_set(record, "action", (gint)action, "target-key", rule_string(object, "target"),
-			"conditions", text, "any-condition", json_node_get_boolean(any_node), NULL);
+			"conditions", text, "any-condition", json_node_get_boolean(any_node),
+			"expression", rule_string(object, "expression"), NULL);
 		rule = rule_from_record(record, fields, error);
 		if (rule == NULL) return FALSE;
 		json_array_add_object_element(rules, rule);
@@ -174,7 +246,12 @@ venture_forms_validate_rule(VentureDatabase *database, VentureEntity *entity,
 	fields = venture_forms_definition_from_records(database, form, error);
 	if (fields == NULL) return FALSE;
 	rule = rule_from_record(entity, fields, error);
-	return rule != NULL;
+	if (rule == NULL) return FALSE;
+	/* Compiled only here, on save: a published form whose formula a later
+	 * configuration refuses still loads, and that rule then never matches. */
+	if (rule_string(rule, "expression") != NULL &&
+	    !venture_formula_check(rule_string(rule, "expression"), VENTURE_FORMULA_KIND_BOOL, error)) return FALSE;
+	return TRUE;
 }
 
 gboolean
@@ -264,12 +341,39 @@ venture_forms_condition_matches(JsonObject *condition, JsonObject *values)
 	return g_strcmp0(op, "not_equals") == 0 ? !match : match;
 }
 
+/* An expression sees only the answers to the questions it names, never
+ * a later or a hidden one. A formula that fails (a panic, a limit) does
+ * not match, and says why in the log. */
+static gboolean
+rule_expression_matches(JsonObject *rule, JsonObject *values)
+{
+	const gchar *expression = rule_string(rule, "expression");
+	JsonArray *read = json_object_has_member(rule, "reads") ? json_object_get_array_member(rule, "reads") : NULL;
+	g_autoptr(JsonObject) record = json_object_new();
+	g_autoptr(GError) error = NULL;
+	gboolean matched = FALSE;
+	guint i;
+	for (i = 0; read != NULL && i < json_array_get_length(read); i++)
+	{
+		const gchar *key = json_array_get_string_element(read, i);
+		JsonNode *answer = values != NULL && key != NULL ? json_object_get_member(values, key) : NULL;
+		if (answer != NULL) json_object_set_member(record, key, json_node_copy(answer));
+	}
+	if (!venture_formula_eval_bool_object(expression, record, &matched, &error))
+	{
+		g_message("forms: a rule's expression did not run, so it does not match: %s", error->message);
+		return FALSE;
+	}
+	return matched;
+}
+
 gboolean
 venture_forms_rule_matches(JsonObject *rule, JsonObject *values)
 {
 	JsonArray *conditions = json_object_get_array_member(rule, "conditions");
 	gboolean any = json_object_get_boolean_member(rule, "any");
 	guint i;
+	if (rule_string(rule, "expression") != NULL) return rule_expression_matches(rule, values);
 	for (i = 0; i < json_array_get_length(conditions); i++)
 	{
 		gboolean matches = venture_forms_condition_matches(json_array_get_object_element(conditions, i), values);

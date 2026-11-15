@@ -676,6 +676,13 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 			JsonNode *copy = json_from_string(rule_text, NULL);
 			json_object_set_boolean_member(json_node_get_object(copy), "matched",
 				venture_forms_rule_matches(json_node_get_object(copy), options->values));
+			/* The browser never runs a formula: it keeps the server's outcome. */
+			if (json_object_has_member(json_node_get_object(copy), "expression"))
+			{
+				json_object_remove_member(json_node_get_object(copy), "expression");
+				json_object_remove_member(json_node_get_object(copy), "reads");
+				json_object_set_boolean_member(json_node_get_object(copy), "server", TRUE);
+			}
 			{
 				JsonArray *conditions = json_object_get_array_member(json_node_get_object(copy), "conditions");
 				JsonArray *matches = json_array_new();
