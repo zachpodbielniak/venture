@@ -600,6 +600,8 @@ A venue names a model in =fee_model= and gives its parameters in =fee_params= (Y
 
 Percents are read exactly (4.75% is 47500 parts per million, at most four decimal places); an amount with no currency is in the sale's, and one naming another currency is refused rather than converted. Booleans read =true=/=false=, =yes=/=no=, =on=/=off= or =1=/=0=.
 
+What =percent= and =commission= charge is the Tallow kernel =src/kernels/vk_fees.tlw= ([[file:kernels.org][Kernels]]): the cut (the sale times the rate in parts per million, half to even), then the fixed fee per unit times the units and the fixed fee per order, each added at the finer of the two exponents as =VentureMoney= adds, then the floor, which replaces a smaller fee at the floor's own exponent. A deposit is the same share of its basis. The registry, the reading of parameters and currencies and the messages stay in =venture-arbitrage-fees.c=.
+
 *Judged when written.* A venue's model and parameters are checked against the registry when either is written -- an unregistered model is refused naming the registered ones, a parameter the model does not take is refused by name (=cut_percnt= read as no cut is the fee nobody charged). A name kept from before is never judged again, so a venue saved under a plugin's model stays editable after the plugin is gone, and with the arbitrage module off nothing is judged at all: nothing loaded is not evidence that a name is wrong. The built-in models are always registered, so a name written while a plugin is not loaded is refused -- write it once the plugin is there. A scan at a venue whose model is missing blanks the row and names the model.
 
 ** Bounds

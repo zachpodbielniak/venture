@@ -20,10 +20,16 @@
  * parameters (the save validator below); a name kept is never judged
  * again, so a venue saved under a plugin's model stays editable after the
  * plugin is gone -- its rows in a scan say the model is missing instead.
+ *
+ * What the percent and commission models charge is the Tallow kernel
+ * src/kernels/vk_fees.tlw; this file reads the parameters and the
+ * currencies and turns the kernel's outcome into a VentureFeeQuote.
  */
 
 #include "venture.h"
 #include "arbitrage/venture-arbitrage-engine-private.h"
+
+#include <vk-kernels.h>
 
 #include <yaml-glib.h>
 #include <math.h>
@@ -411,36 +417,47 @@ arb_percent_validate(
 	return TRUE;
 }
 
-/* @amount x @ppm / 1e6, rounded half to even. */
+/* @amount x @ppm / 1e6, rounded half to even (vk_fees_share). */
 static VentureMoney *
 arb_fees_share(
 	const VentureMoney	 *amount,
 	gint64			  ppm,
 	GError			**error
 ){
-	return venture_money_multiply_rational(amount, ppm, 1000000, error);
+	TlwOptI64 part;
+
+	part = vk_fees_share(venture_money_get_amount(amount), ppm);
+
+	if (!part.has)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
+		            "/1000000 overflows a 64-bit minor-unit amount",
+		            venture_money_get_amount(amount), ppm);
+		return NULL;
+	}
+
+	return venture_money_new(part.val, venture_money_get_currency(amount),
+	                         venture_money_get_exponent(amount));
 }
 
-static gboolean
-arb_fees_add(
-	VentureMoney		**total,
-	const VentureMoney	 *part,
-	GError			**error
-){
-	VentureMoney *next;
+/* An optional amount as the kernel takes it: its minor units, or none. */
+static TlwOptI64
+arb_fees_optional(const VentureMoney *amount)
+{
+	TlwOptI64 out;
 
-	if (NULL == part)
-		return TRUE;
+	out.has = (NULL != amount);
+	out.val = out.has ? venture_money_get_amount(amount) : 0;
 
-	next = venture_money_add(*total, part, error);
+	return out;
+}
 
-	if (NULL == next)
-		return FALSE;
-
-	venture_money_free(*total);
-	*total = next;
-
-	return TRUE;
+/* The exponent of an optional amount (any will do when there is none). */
+static gint64
+arb_fees_exponent(const VentureMoney *amount)
+{
+	return (NULL != amount) ? (gint64)venture_money_get_exponent(amount) : 0;
 }
 
 static gboolean
@@ -455,11 +472,10 @@ arb_percent_compute(
 	gpointer		  user_data,
 	GError			**error
 ){
-	g_autoptr(VentureMoney) fee = NULL;
+	g_autoptr(VkFeesFee) charged = NULL;
 	g_autoptr(VentureMoney) per_unit = NULL;
 	g_autoptr(VentureMoney) per_order = NULL;
 	g_autoptr(VentureMoney) min_fee = NULL;
-	g_autoptr(VentureMoney) units_fee = NULL;
 	const gchar *currency;
 	const gchar *basis;
 	JsonObject *side_params;
@@ -496,30 +512,42 @@ arb_percent_compute(
 	    !venture_arbitrage_member_bool(side_params, "deposit_refundable", TRUE, &refundable, error))
 		return FALSE;
 
-	/* The cut, then the fixed parts, then the floor. */
-	fee = arb_fees_share(amount, cut, error);
+	/* The cut, then the fixed parts, then the floor (vk_fees_percent);
+	 * each amount at its own exponent, combined at the finer. */
+	charged = vk_fees_percent(venture_money_get_amount(amount),
+	                          (gint64)venture_money_get_exponent(amount), cut,
+	                          arb_fees_optional(per_unit), arb_fees_exponent(per_unit), units,
+	                          arb_fees_optional(per_order), arb_fees_exponent(per_order),
+	                          arb_fees_optional(min_fee), arb_fees_exponent(min_fee));
 
-	if (NULL == fee)
+	switch (charged->tag)
+	{
+	case VK_FEES_FEE_CHARGED:
+		break;
+
+	case VK_FEES_FEE_CUT:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
+		            "/1000000 overflows a 64-bit minor-unit amount",
+		            venture_money_get_amount(amount), cut);
 		return FALSE;
 
-	if (NULL != per_unit)
-	{
-		units_fee = venture_money_multiply_int(per_unit, units, error);
-
-		if (NULL == units_fee)
-			return FALSE;
-	}
-
-	if (!arb_fees_add(&fee, units_fee, error) || !arb_fees_add(&fee, per_order, error))
+	case VK_FEES_FEE_UNITS:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
+		            " overflows a 64-bit minor-unit amount",
+		            venture_money_get_amount(per_unit), units);
 		return FALSE;
 
-	if ((NULL != min_fee) && (venture_money_compare(fee, min_fee) < 0))
-	{
-		venture_money_free(fee);
-		fee = venture_money_copy(min_fee);
+	case VK_FEES_FEE_SUM:
+	default:
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Monetary addition overflows a 64-bit minor-unit amount");
+		return FALSE;
 	}
 
-	out->fee = g_steal_pointer(&fee);
+	out->fee = venture_money_new(charged->u.charged.fee, currency,
+	                             (guint8)charged->u.charged.exponent);
 	out->deposit_refundable = refundable;
 
 	if (deposit > 0)
@@ -610,6 +638,7 @@ arb_commission_compute(
 	gpointer		  user_data,
 	GError			**error
 ){
+	TlwOptI64 fee;
 	gint64 ppm;
 
 	(void)units;
@@ -620,16 +649,24 @@ arb_commission_compute(
 	if (!venture_arbitrage_member_percent(params, "rate_percent", 0, FALSE, &ppm, error))
 		return FALSE;
 
-	out->commission = (gdouble)ppm / 1000000.0;
+	out->commission = vk_fees_commission_share(ppm);
 
-	/* Only winnings pay commission: a stake, or a losing result, none. */
-	if ((VENTURE_FEE_SIDE_SELL == side) && (venture_money_get_amount(amount) > 0))
+	/* Only winnings pay commission: a stake, or a losing result, none
+	 * (vk_fees_commission). */
+	fee = vk_fees_commission(venture_money_get_amount(amount), ppm,
+	                         VENTURE_FEE_SIDE_SELL == side);
+
+	if (!fee.has)
 	{
-		out->fee = arb_fees_share(amount, ppm, error);
-		return NULL != out->fee;
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
+		            "/1000000 overflows a 64-bit minor-unit amount",
+		            venture_money_get_amount(amount), ppm);
+		return FALSE;
 	}
 
-	out->fee = arb_fees_zero(amount);
+	out->fee = venture_money_new(fee.val, venture_money_get_currency(amount),
+	                             venture_money_get_exponent(amount));
 
 	return TRUE;
 }

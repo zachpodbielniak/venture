@@ -209,6 +209,80 @@ test_kernels_arbitrage_surebet(void)
 	g_assert_cmpint(split->u.split.worst, ==, 108);
 }
 
+/* --- vk_fees --------------------------------------------------------------- */
+
+static TlwOptI64
+some_minor(gint64 value)
+{
+	TlwOptI64 out;
+
+	out.has = TRUE;
+	out.val = value;
+
+	return out;
+}
+
+static TlwOptI64
+no_minor(void)
+{
+	TlwOptI64 out;
+
+	out.has = FALSE;
+	out.val = 0;
+
+	return out;
+}
+
+/*
+ * The percent model combines its parts the way VentureMoney.add does: a
+ * fixed fee in whole units joins a cut in cents at the cents, and a floor
+ * written in thousandths replaces a smaller fee at its own exponent.
+ */
+static void
+test_kernels_fees_percent(void)
+{
+	g_autoptr(VkFeesFee) fee = NULL;
+	g_autoptr(VkFeesFee) floor_fee = NULL;
+	g_autoptr(VkFeesFee) overflow = NULL;
+
+	/* 5% of 100.00 is 5.00, plus 3 x 2 units at exponent 0, plus 0.25 */
+	fee = vk_fees_percent(10000, 2, 50000, some_minor(3), 0, 2, some_minor(25), 2, no_minor(), 0);
+	g_assert_cmpint(fee->tag, ==, VK_FEES_FEE_CHARGED);
+	g_assert_cmpint(fee->u.charged.fee, ==, 1125);
+	g_assert_cmpint(fee->u.charged.exponent, ==, 2);
+
+	/* 1% of 1.00 is 0.01, under a floor of 0.050 */
+	floor_fee = vk_fees_percent(100, 2, 10000, no_minor(), 0, 1, no_minor(), 0, some_minor(50), 3);
+	g_assert_cmpint(floor_fee->tag, ==, VK_FEES_FEE_CHARGED);
+	g_assert_cmpint(floor_fee->u.charged.fee, ==, 50);
+	g_assert_cmpint(floor_fee->u.charged.exponent, ==, 3);
+
+	overflow = vk_fees_percent(100, 2, 10000, some_minor(2), 0, G_MAXINT64, no_minor(), 0,
+	                           no_minor(), 0);
+	g_assert_cmpint(overflow->tag, ==, VK_FEES_FEE_UNITS);
+}
+
+/* Only a positive amount on the selling side pays commission. */
+static void
+test_kernels_fees_commission(void)
+{
+	TlwOptI64 fee;
+
+	fee = vk_fees_commission(1001, 50000, TRUE);
+	g_assert_true(fee.has);
+	g_assert_cmpint(fee.val, ==, 50);
+
+	fee = vk_fees_commission(1000, 50000, FALSE);
+	g_assert_true(fee.has);
+	g_assert_cmpint(fee.val, ==, 0);
+
+	fee = vk_fees_commission(-1000, 50000, TRUE);
+	g_assert_true(fee.has);
+	g_assert_cmpint(fee.val, ==, 0);
+
+	g_assert_cmpfloat(vk_fees_commission_share(50000), ==, 0.05);
+}
+
 int
 main(
 	int	  argc,
@@ -222,6 +296,8 @@ main(
 	g_test_add_func("/kernels-trading/arbitrage/flip-exponent", test_kernels_arbitrage_flip_exponent);
 	g_test_add_func("/kernels-trading/arbitrage/percent-edges", test_kernels_arbitrage_percent_edges);
 	g_test_add_func("/kernels-trading/arbitrage/surebet", test_kernels_arbitrage_surebet);
+	g_test_add_func("/kernels-trading/fees/percent", test_kernels_fees_percent);
+	g_test_add_func("/kernels-trading/fees/commission", test_kernels_fees_commission);
 
 	return g_test_run();
 }
