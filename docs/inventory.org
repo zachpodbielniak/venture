@@ -248,7 +248,7 @@ else the organization's book currency -- because an issue refuses units
 with no layer.
 
 A movement's transaction shows a unit cost only for reading: the average
-when it moved one currency. A movement that moved several leaves
+when it moved one currency (its cost over its quantity, half to even, in the cost's exponent: =vk_inventory_unit_cost=, see [[file:kernels.org][Kernels]]). A movement that moved several leaves
 =unit_cost= empty and says in =notes= what each currency came to ("Cost
 1.0000 GOLD + 50 TICKET for 3 units"); the layers are what the books count.
 

@@ -432,6 +432,30 @@ test_kernels_ledger_tax_best(void)
 	g_assert_false(chosen.has);
 }
 
+/* --- vk_inventory ---------------------------------------------------------- */
+
+/* The unit cost is the cost over the quantity, half to even, as
+ * venture_money_multiply_rational(cost, 1, quantity) gave it. */
+static void
+test_kernels_ledger_unit_cost(void)
+{
+	static const gint64 costs[] = { 1000, 25, 35, -35, 1, G_MAXINT64, G_MININT64, 0 };
+	guint i;
+	gint64 q;
+
+	for (i = 0; i < G_N_ELEMENTS(costs); i++)
+		for (q = 1; q < 40; q++)
+		{
+			g_autoptr(VentureMoney) cost = venture_money_new(costs[i], "USD", 2);
+			g_autoptr(VentureMoney) unit = venture_money_multiply_rational(cost, 1, q, NULL);
+
+			g_assert_nonnull(unit);
+			g_assert_cmpint(vk_inventory_unit_cost(costs[i], q), ==, unit->amount);
+		}
+	g_assert_cmpint(vk_inventory_unit_cost(1000, 3), ==, 333);
+	g_assert_cmpint(vk_inventory_unit_cost(25, 10), ==, 2);
+}
+
 gint
 main(
 	gint	 argc,
@@ -451,6 +475,7 @@ main(
 	g_test_add_func("/kernels-ledger/budget/period", test_kernels_ledger_budget_period);
 	g_test_add_func("/kernels-ledger/budget/covers", test_kernels_ledger_budget_covers);
 	g_test_add_func("/kernels-ledger/tax/best", test_kernels_ledger_tax_best);
+	g_test_add_func("/kernels-ledger/inventory/unit-cost", test_kernels_ledger_unit_cost);
 
 	return g_test_run();
 }
