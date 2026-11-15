@@ -1,0 +1,153 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_budget.tlw - budget periods: what "2026" and "2026-03" mean and
+ * which budget lines a requested period sees.
+ *
+ * A budget and its lines name a period as text, a year ("2026") or a
+ * month ("2026-03"). This reads that text into a Period (years 1 to 9998,
+ * months 1 to 12) and decides whether a line covers a requested period: a
+ * line's own period, or its budget's when the line names none, covers the
+ * same period, a month of it when it is a year, and the year a month
+ * requested belongs to.
+ *
+ * It replaces the parsing in period_range and covers() in
+ * src/budgets/venture-budget-service.c; C still turns a Period into the
+ * UTC dates of a VentureDateRange. A line's actual on its normal side is
+ * vk_ledger_normal_balance.
+ */
+module vk_budget;
+
+/* a budget period, read */
+type Period = Year { year: i64 } | Month { year: i64, month: i64 } | Invalid;
+
+/* the last year a period may name: its end, the next January, must still
+ * be a date GLib can make */
+let LAST_YEAR = 9998;
+
+/* an ASCII digit */
+pure fn digit(b: u8) -> bool = b >= 48 && b <= 57;
+
+/* the value of an ASCII digit */
+pure fn value(b: u8) -> i64
+	requires b >= 48 && b <= 57
+	ensures result >= 0 && result <= 9
+= (b as i64) - 48;
+
+/* the bytes from i on have the shape YYYY or YYYY-MM: a dash at 4, digits
+ * everywhere else */
+pure fn shaped(bs: [u8], i: i64) -> bool
+	requires i >= 0 && i <= bs.len()
+	decreases bs.len() - i
+= match i >= bs.len() {
+	true => true,
+	false => match i == 4 {
+		true => bs[i] == 45,
+		false => digit(bs[i]),
+	} && shaped(bs, i + 1),
+};
+
+/* the number the digits from i to end spell (all digits: shaped says so) */
+pure fn number(bs: [u8], i: i64, end: i64, acc: i64) -> i64
+	requires i >= 0 && i <= end && end <= bs.len() && end - i <= 4 && acc >= 0 && acc <= 9999
+	decreases end - i
+= match i >= end {
+	true => acc,
+	false => match digit(bs[i]) && acc <= 999 {
+		true => number(bs, i + 1, end, acc * 10 + value(bs[i])),
+		false => acc,
+	},
+};
+
+/* a year a budget period may name */
+pure fn year_ok(year: i64) -> bool = year >= 1 && year <= LAST_YEAR;
+
+/* a month of the year */
+pure fn month_ok(month: i64) -> bool = month >= 1 && month <= 12;
+
+/* a period's text read: YYYY or YYYY-MM, in range, or Invalid */
+pure fn period(text: str) -> own Period {
+	let bs = text.bytes();
+	return match (bs.len() == 4 || bs.len() == 7) && shaped(bs, 0) {
+		false => Period.Invalid,
+		true => dated(number(bs, 0, 4, 0), match bs.len() == 7 {
+			true => number(bs, 5, 7, 0),
+			false => -1,
+		}),
+	};
+}
+
+/* a year and a month (-1 for none) as a Period */
+pure fn dated(year: i64, month: i64) -> own Period = match year_ok(year) {
+	false => Period.Invalid,
+	true => match month < 0 {
+		true => Period.Year { year },
+		false => match month_ok(month) {
+			true => Period.Month { year, month },
+			false => Period.Invalid,
+		},
+	},
+};
+
+/*
+ * Whether a budget line covers the requested period. Its own period
+ * counts when it names one (not empty), else its budget's; a line with
+ * neither covers nothing. A period covers itself; a month requested is
+ * covered by a line of the same month; a year line covers every month of
+ * that year.
+ */
+pure fn covers(line: ?str, budget: ?str, requested: str) -> bool = match line {
+	some l => match l.len() > 0 {
+		true => effective_covers(l, requested),
+		false => budget_covers(budget, requested),
+	},
+	none => budget_covers(budget, requested),
+};
+
+pure fn budget_covers(budget: ?str, requested: str) -> bool = match budget {
+	some b => effective_covers(b, requested),
+	none => false,
+};
+
+pure fn effective_covers(effective: str, requested: str) -> bool =
+	effective == requested ||
+	(requested.len() == 7 && effective.starts_with(requested)) ||
+	(effective.len() == 4 && requested.starts_with(effective));
+
+/* ---- tests ---- */
+
+pure fn year_of(p: Period) -> i64 = match p {
+	Year { year } => year,
+	Month { year, .. } => year,
+	Invalid => -1,
+};
+
+pure fn month_of(p: Period) -> i64 = match p {
+	Month { month, .. } => month,
+	_ => -1,
+};
+
+test "periods" {
+	assert(year_of(period("2026")) == 2026 && month_of(period("2026")) == -1);
+	assert(year_of(period("2026-03")) == 2026 && month_of(period("2026-03")) == 3);
+	assert(period("2026-13") is Invalid);
+	assert(period("2026-00") is Invalid);
+	assert(period("0000") is Invalid);
+	assert(period("9999") is Invalid);
+	assert(period("9998-12") is Month);
+	assert(period("26") is Invalid);
+	assert(period("2026/03") is Invalid);
+	assert(period("2026-3") is Invalid);
+	assert(period("") is Invalid);
+	assert(period("20a6") is Invalid);
+}
+
+test "covers" {
+	assert(covers("2026", none, "2026-03"));
+	assert(covers("2026-03", none, "2026-03"));
+	assert(!covers("2026-03", none, "2026"));
+	assert(!covers("2026-04", none, "2026-03"));
+	assert(covers("", "2026", "2026-05"));
+	assert(covers(none, "2026", "2026"));
+	assert(!covers(none, none, "2026"));
+	assert(!covers("2025", "2026", "2026"));
+}

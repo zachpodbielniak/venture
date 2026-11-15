@@ -8,11 +8,11 @@ A plan names a period (=YYYY= or =YYYY-MM=), a book currency and an optional
 default dimension. Each line names an account, a period, an amount and an
 optional dimension.
 
-Period strings must match =YYYY= or =YYYY-MM= exactly; trailing text and out-of-range dates are refused. Named report periods use their calendar bounds rather than their display label.
+Period strings must match =YYYY= or =YYYY-MM= exactly (years 1 to 9998, months 1 to 12); trailing text and out-of-range dates are refused. Named report periods use their calendar bounds rather than their display label. Reading a period and deciding which lines a requested period sees (a line's own period, else its plan's; a year covers its months) is the =vk_budget= kernel ([[file:kernels.org][Kernels]]).
 
 =VentureBudgetService= compares those lines with posted ledger movement from
 =VentureLedgerBalances=. Expense actuals are period debits less credits;
-income actuals are credits less debits. Variance is actual less budget.
+income actuals are credits less debits -- each account's normal side, =vk_ledger_normal_balance= -- computed as checked money at the balances' exponent, never as raw minor units: 40.005 USD spent is 40.005 USD, not 400.05. Balances in another currency than the line's are refused rather than relabelled. Variance is actual less budget.
 
 * Cash forecast
 

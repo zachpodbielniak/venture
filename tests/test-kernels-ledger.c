@@ -370,6 +370,43 @@ test_kernels_ledger_reconcile_score(void)
 	g_assert_true(vk_reconcile_exact_near(VK_RECONCILE_RELATION_EQUAL, d));
 }
 
+/* --- vk_budget ------------------------------------------------------------- */
+
+/* "YYYY" and "YYYY-MM", in range, and nothing else. */
+static void
+test_kernels_ledger_budget_period(void)
+{
+	g_autoptr(VkBudgetPeriod) year = vk_budget_period("2026");
+	g_autoptr(VkBudgetPeriod) month = vk_budget_period("2026-03");
+	g_autoptr(VkBudgetPeriod) bad_month = vk_budget_period("2026-13");
+	g_autoptr(VkBudgetPeriod) zero = vk_budget_period("0000");
+	g_autoptr(VkBudgetPeriod) late = vk_budget_period("9999");
+	g_autoptr(VkBudgetPeriod) trailing = vk_budget_period("2026-03x");
+	g_autoptr(VkBudgetPeriod) empty = vk_budget_period("");
+
+	g_assert_cmpint(year->tag, ==, VK_BUDGET_PERIOD_YEAR);
+	g_assert_cmpint(year->u.year.year, ==, 2026);
+	g_assert_cmpint(month->tag, ==, VK_BUDGET_PERIOD_MONTH);
+	g_assert_cmpint(month->u.month.month, ==, 3);
+	g_assert_cmpint(bad_month->tag, ==, VK_BUDGET_PERIOD_INVALID);
+	g_assert_cmpint(zero->tag, ==, VK_BUDGET_PERIOD_INVALID);
+	g_assert_cmpint(late->tag, ==, VK_BUDGET_PERIOD_INVALID);
+	g_assert_cmpint(trailing->tag, ==, VK_BUDGET_PERIOD_INVALID);
+	g_assert_cmpint(empty->tag, ==, VK_BUDGET_PERIOD_INVALID);
+}
+
+/* A line's own period, else its plan's; a year covers its months. */
+static void
+test_kernels_ledger_budget_covers(void)
+{
+	g_assert_true(vk_budget_covers("2026", NULL, "2026-03"));
+	g_assert_true(vk_budget_covers("", "2026", "2026-05"));
+	g_assert_true(vk_budget_covers(NULL, "2026-05", "2026-05"));
+	g_assert_false(vk_budget_covers("2026-03", NULL, "2026"));
+	g_assert_false(vk_budget_covers("2025", "2026", "2026"));
+	g_assert_false(vk_budget_covers(NULL, NULL, "2026"));
+}
+
 gint
 main(
 	gint	 argc,
@@ -386,6 +423,8 @@ main(
 	g_test_add_func("/kernels-ledger/holdings/floor", test_kernels_ledger_holdings_floor);
 	g_test_add_func("/kernels-ledger/reconcile/relation", test_kernels_ledger_reconcile_relation);
 	g_test_add_func("/kernels-ledger/reconcile/score", test_kernels_ledger_reconcile_score);
+	g_test_add_func("/kernels-ledger/budget/period", test_kernels_ledger_budget_period);
+	g_test_add_func("/kernels-ledger/budget/covers", test_kernels_ledger_budget_covers);
 
 	return g_test_run();
 }
