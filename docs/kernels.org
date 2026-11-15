@@ -248,6 +248,34 @@ In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/ventu
 *** vk_inventory
 =unit_cost(cost, quantity)= is a movement's average unit cost, half to even, proved to lie between zero and the cost. Shim: =movement_unit= in =src/goods/venture-inventory-service.c=.
 
+*** vk_series
+The market-data arithmetic behind the series store. A book is two arrays, prices and quantities; =VENTURE_SERIES_NONE= is a =?i64= inside the kernel and becomes the sentinel again in C.
+
+Exact weighted means need no 128-bit accumulator. Each product is split by =tallow.math.mul_div= / =mul_mod= into a quotient and a remainder of the known divisor. The remainders are carried (=carries=, =rest=, both proved), and =vk_round.settle= rounds once, half to even. This replaced =series_wide_div_round= and its 64-bit fallback.
+
+The functions:
+- =normalise= (=Book=) and =summarise= (=Summary=);
+- the market value's =take= and =kept_mean=; the outlier test itself stays in C, in long double;
+- =percentile=, =median=, =p33= and =deal_price=, sorted by a heap sort on an owned copy;
+- =ewma= and =mean= (=Average=);
+- =bulk_cost= (=Fill=), =realisable=, =sale_estimate=, =heat= (=Heat=) and =learn_interval=.
+
+Proved: =share_ceil=, =share_floor=, =midpoint=, =is_jump=, =heat_cell=, =clamp=, =larger=, =smaller= and =ewma_weight=. Shim: =src/series/venture-series-math.c=. Its output matched the old C on 200000 random inputs.
+
+*Speed, and a lead for later.* This is the one kernel slower than the C it replaced: 3-7x in a release build. That is about 5.4-6 µs per order book against 0.75-1.4 µs, and about 12 µs against 4 µs per round of EWMA, median and deal price. At the store's volume (about 10000 instruments a venue an hour) that comes to about 50 ms of CPU a venue an hour, so the port was accepted.
+
+The time goes to calls into =libtallow-rt= that gcc cannot inline across the archive:
+- =tlw_contract_begin= and =tlw_contract_end= on every recursive step of the sort;
+- =tlw_index= (a bounds-checked =xs[i]=) and =tlw_opt_i64_none=;
+- array growth on one-at-a-time pushes.
+
+Candidates, cheapest first:
+1. =static inline= index and contract-depth checks in tallow's runtime headers, which helps every kernel;
+2. a pre-sized array builder for the sorted copies;
+3. one up-front check in place of the per-step =requires= of the heap-sort helpers.
+
+The header of =src/kernels/vk_series.tlw= has the measurements to beat.
+
 ** Adding a kernel
 :PROPERTIES:
 :CUSTOM_ID: adding

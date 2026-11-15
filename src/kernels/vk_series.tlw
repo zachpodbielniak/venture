@@ -24,6 +24,29 @@
  * statistic computed in long double, which Tallow does not have, and a
  * double would move the boundary. The kernel takes the cheapest units
  * (take) and averages the ones the C kept (kept_mean).
+ *
+ * Performance, and where to look next. This kernel is the hottest path of
+ * the kernels and the one place the move cost speed: in a release build
+ * it measured 3-7x the C it replaced -- about 5.4-6 us per order book
+ * (summarise + percentile) against 0.75-1.4 us, and ~12 us against ~4 us
+ * per round of EWMA, median and deal price, over 200000 random inputs
+ * with bit-identical results. At the series store's volume (~10000
+ * instruments a venue an hour) that is ~50 ms of CPU a venue an hour, so
+ * it was accepted. The time is not the arithmetic; it is per-step calls
+ * into libtallow-rt that gcc cannot inline because they live in another
+ * archive:
+ *   - tlw_contract_begin / tlw_contract_end around every requires and
+ *     ensures, on each recursive step of sift, swap and bigger_child;
+ *   - tlw_index (bounds-checked xs[i]) and tlw_opt_i64_none;
+ *   - GArray growth (g_array_maybe_expand) when a result array is pushed
+ *     one element at a time.
+ * Candidates, cheapest first: static inline versions of tlw_index and
+ * the contract depth check in tallow's runtime headers (the generated C
+ * would then inline them under -O2); a pre-sized array (a tallow.list
+ * builder taking a capacity) for the copies median, p33 and deal_price
+ * sort; and moving the remaining per-step `requires` of the heap-sort
+ * helpers into one up-front check on the copy. Measure with the same
+ * benchmark before and after; the regression to beat is in this note.
  */
 module vk_series;
 

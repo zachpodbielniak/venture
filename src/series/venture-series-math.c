@@ -20,6 +20,12 @@
  * One statistic stays here: the market value's outlier test is computed in
  * long double (series_keep()), which Tallow does not have; a double would
  * move the boundary between a kept unit and an outlier.
+ *
+ * Speed: the kernel runs 3-7x slower than the C it replaced (microseconds
+ * per book, negligible at the store's volume). The causes and the
+ * inlining that could recover it are written up at the top of
+ * src/kernels/vk_series.tlw and in docs/kernels.org (vk_series); look
+ * there before reaching for C again.
  */
 
 #include "venture.h"
