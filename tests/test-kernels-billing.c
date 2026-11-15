@@ -125,6 +125,109 @@ test_kernels_depreciation_convene(void)
 	g_assert_cmpint(g_array_index(single, gint64, 0), ==, 101);
 }
 
+/* --- vk_billing ------------------------------------------------------------ */
+
+/* Stored intervals read back by number; anything unknown is a month. */
+static void
+test_kernels_billing_interval(void)
+{
+	g_assert_cmpint(venture_billing_interval_months(0), ==, 1);
+	g_assert_cmpint(venture_billing_interval_months(1), ==, 12);
+	g_assert_cmpint(venture_billing_interval_months(2), ==, 3);
+	g_assert_cmpint(venture_billing_interval_months(3), ==, 6);
+	g_assert_cmpint(venture_billing_interval_months(7), ==, 1);
+	g_assert_cmpint(venture_billing_interval_months(-1), ==, 1);
+	g_assert_cmpint(vk_billing_served(vk_billing_months_between(2025, 11, 2026, 11)), ==, 12);
+	g_assert_cmpint(vk_billing_served(vk_billing_months_between(2026, 1, 2026, 3)), ==, 1);
+}
+
+/*
+ * The closed-form share of the days left equals what it replaced: an even
+ * spread of the amount over every day, summed over the days not yet
+ * elapsed -- for every period length, every change day and both signs.
+ */
+static void
+test_kernels_billing_tail_share(void)
+{
+	static const gint64 deltas[] = { 3000, -3000, 1, -1, 99999, -100, 0 };
+	gint64 days;
+	gint64 elapsed;
+	guint k;
+
+	for (k = 0; k < G_N_ELEMENTS(deltas); k++)
+	{
+		for (days = 1; days <= 366; days += 5)
+		{
+			g_autoptr(VentureMoney) delta = venture_money_new(deltas[k], "USD", 2);
+			g_autoptr(GPtrArray) parts = venture_money_allocate_evenly(delta, (gsize)days, NULL);
+			gint64 expected = 0;
+			gint64 i;
+
+			g_assert_nonnull(parts);
+			for (elapsed = days - 1; elapsed >= 0; elapsed--)
+			{
+				expected = 0;
+				for (i = elapsed; i < days; i++)
+					expected += venture_money_get_amount(g_ptr_array_index(parts, (guint)i));
+				g_assert_true(vk_billing_inside(days, elapsed));
+				g_assert_cmpint(vk_billing_tail_share(deltas[k], days, elapsed), ==, expected);
+			}
+		}
+	}
+	g_assert_false(vk_billing_inside(31, 31));
+	g_assert_false(vk_billing_inside(367, 0));
+	g_assert_false(vk_billing_inside(31, -1));
+}
+
+/* A percent off rounds half to even; an amount off never goes below
+ * zero, at the finer of the two exponents. */
+static void
+test_kernels_billing_discount(void)
+{
+	g_autoptr(VkBillingDiscount) percent = vk_billing_discount_new_percent_off(50);
+	g_autoptr(VkBillingDiscount) amount = vk_billing_discount_new_amount_off(2500, 3);
+	g_autoptr(VkBillingDiscount) larger = vk_billing_discount_new_amount_off(2000, 2);
+	g_autoptr(VkBillingTaken) half = NULL;
+	g_autoptr(VkBillingTaken) less = NULL;
+	g_autoptr(VkBillingTaken) free = NULL;
+
+	half = vk_billing_take(999, 2, percent);
+	g_assert_nonnull(half);
+	g_assert_cmpint(half->tag, ==, VK_BILLING_TAKEN_NET);
+	g_assert_cmpint(half->u.net.amount, ==, 500);
+
+	less = vk_billing_take(1000, 2, amount);
+	g_assert_nonnull(less);
+	g_assert_cmpint(less->u.net.amount, ==, 7500);
+
+	free = vk_billing_take(1000, 2, larger);
+	g_assert_nonnull(free);
+	g_assert_cmpint(free->tag, ==, VK_BILLING_TAKEN_FREE);
+}
+
+/* The report's buckets and rates. */
+static void
+test_kernels_billing_reports(void)
+{
+	TlwOptI64 r;
+
+	g_assert_cmpint(vk_billing_movement(0, 100, 100, FALSE), ==, VK_BILLING_MOVEMENT_NEW);
+	g_assert_cmpint(vk_billing_movement(0, 100, 100, TRUE), ==, VK_BILLING_MOVEMENT_REACTIVATION);
+	g_assert_cmpint(vk_billing_movement(100, 0, -100, TRUE), ==, VK_BILLING_MOVEMENT_CHURN);
+	g_assert_cmpint(vk_billing_movement(100, 120, 20, TRUE), ==, VK_BILLING_MOVEMENT_EXPANSION);
+	g_assert_cmpint(vk_billing_movement(100, 80, -20, TRUE), ==, VK_BILLING_MOVEMENT_CONTRACTION);
+	g_assert_cmpint(vk_billing_movement(100, 100, 0, TRUE), ==, VK_BILLING_MOVEMENT_FLAT);
+	r = vk_billing_magnitude(G_MININT64);
+	g_assert_false(r.has);
+	r = vk_billing_rate_bp(1, 3);
+	g_assert_true(r.has);
+	g_assert_cmpint(r.val, ==, 3333);
+	g_assert_cmpint(vk_billing_retained(r.val), ==, 6667);
+	r = vk_billing_hundredths(5, 4);
+	g_assert_true(r.has);
+	g_assert_cmpint(r.val, ==, 125);
+}
+
 int
 main(
 	int	  argc,
@@ -135,6 +238,10 @@ main(
 	g_test_add_func("/kernels-billing/depreciation/schedule", test_kernels_depreciation_schedule);
 	g_test_add_func("/kernels-billing/depreciation/resume", test_kernels_depreciation_resume);
 	g_test_add_func("/kernels-billing/depreciation/convene", test_kernels_depreciation_convene);
+	g_test_add_func("/kernels-billing/billing/interval", test_kernels_billing_interval);
+	g_test_add_func("/kernels-billing/billing/tail-share", test_kernels_billing_tail_share);
+	g_test_add_func("/kernels-billing/billing/discount", test_kernels_billing_discount);
+	g_test_add_func("/kernels-billing/billing/reports", test_kernels_billing_reports);
 
 	return g_test_run();
 }

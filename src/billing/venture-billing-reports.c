@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include "billing/venture-billing-reports.h"
+#include <vk-kernels.h>
 
 static gint64
 id_field(VentureEntity *e, const gchar *field)
@@ -19,6 +20,36 @@ add(VentureMoney **total, const VentureMoney *amount, GError **error)
 		return FALSE;
 	venture_money_free(*total);
 	*total = next;
+	return TRUE;
+}
+
+/*
+ * A kernel's result as money in @like's currency and exponent, or the
+ * overflow refusal for its `none`.
+ */
+static VentureMoney *
+kernel_money(TlwOptI64 result, const VentureMoney *like, const gchar *what, GError **error)
+{
+	if (!result.has)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"%s overflows a 64-bit minor-unit amount", what);
+		return NULL;
+	}
+	return venture_money_new(result.val, venture_money_get_currency(like), venture_money_get_exponent(like));
+}
+
+/* A kernel's rate, or the overflow refusal for its `none`. */
+static gboolean
+kernel_rate(TlwOptI64 result, gint64 *out, GError **error)
+{
+	if (!result.has)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"A rate overflows a 64-bit integer");
+		return FALSE;
+	}
+	*out = result.val;
 	return TRUE;
 }
 
@@ -113,7 +144,7 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 		g_autoptr(VentureMoney) positive = NULL;
 		g_autoptr(GDateTime) at = NULL;
 		gint64 id = id_field(event, "subscription-id");
-		gint bucket = -1;
+		VkBillingMovement moved;
 		g_object_get(event, "from-mrr", &from, "to-mrr", &to, "at", &at, NULL);
 		if (from == NULL || to == NULL || g_strcmp0(venture_money_get_currency(to), currency(options)) != 0)
 			continue;
@@ -123,21 +154,18 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 			delta = venture_money_subtract(to, from, error);
 			if (delta == NULL)
 				return NULL;
-			if (venture_money_get_amount(from) == 0 && venture_money_get_amount(to) > 0)
-				bucket = g_hash_table_contains(seen, &id) ? 4 : 0;
-			else if (venture_money_get_amount(to) == 0 && venture_money_get_amount(from) > 0)
-				bucket = 3;
-			else if (venture_money_get_amount(delta) > 0)
-				bucket = 1;
-			else if (venture_money_get_amount(delta) < 0)
-				bucket = 2;
-			if (bucket >= 0)
+			/* vk_billing_movement names the bucket; Movement's variants are
+			 * in the order of keys[], Flat last and counted nowhere. */
+			moved = vk_billing_movement(venture_money_get_amount(from), venture_money_get_amount(to),
+				venture_money_get_amount(delta), g_hash_table_contains(seen, &id));
+			if (moved != VK_BILLING_MOVEMENT_FLAT)
 			{
-				VentureMoney *movement = g_ptr_array_index(movements, bucket);
-				positive = venture_money_multiply_rational(delta, venture_money_get_amount(delta) < 0 ? -1 : 1, 1, error);
+				VentureMoney *movement = g_ptr_array_index(movements, (guint)moved);
+				positive = kernel_money(vk_billing_magnitude(venture_money_get_amount(delta)), delta,
+					"An MRR movement", error);
 				if (positive == NULL || !add(&movement, positive, error))
 					return NULL;
-				g_ptr_array_index(movements, bucket) = movement;
+				g_ptr_array_index(movements, (guint)moved) = movement;
 			}
 		}
 		if (venture_money_get_amount(to) > 0)
@@ -178,7 +206,8 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 	{
 		g_autoptr(VentureEntity) plan = venture_database_get(venture_context_get_database(context), VENTURE_TYPE_PLAN, *(gint64 *)key, error);
 		g_autofree gchar *name = NULL;
-		g_autoptr(VentureMoney) annual = venture_money_multiply_rational(value, 12, 1, error);
+		g_autoptr(VentureMoney) annual = kernel_money(vk_billing_annual(venture_money_get_amount(value)), value,
+			"A plan's ARR", error);
 		if (plan == NULL || annual == NULL)
 			return NULL;
 		g_object_get(plan, "name", &name, NULL);
@@ -187,7 +216,7 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 		venture_report_result_set_money(result, "mrr", value);
 		venture_report_result_set_money(result, "arr", annual);
 	}
-	arr = venture_money_multiply_rational(total, 12, 1, error);
+	arr = kernel_money(vk_billing_annual(venture_money_get_amount(total)), total, "ARR", error);
 	if (arr == NULL)
 		return NULL;
 	venture_report_result_add_metric(result, venture_metric_new_money("mrr", "MRR", total));
@@ -208,7 +237,8 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 		venture_report_result_add_metric(result, venture_metric_new_count("customers", "Paying customers", customers));
 		if (customers > 0)
 		{
-			g_autoptr(VentureMoney) arpa = venture_money_multiply_rational(total, 1, customers, error);
+			g_autoptr(VentureMoney) arpa = kernel_money(vk_billing_per_account(venture_money_get_amount(total), customers),
+				total, "ARPA", error);
 			if (arpa == NULL)
 				return NULL;
 			venture_report_result_add_metric(result, venture_metric_new_money("arpa", "ARPA", arpa));
@@ -228,12 +258,11 @@ recurring(VentureContext *context, VentureDateRange *period, JsonObject *options
 			down += venture_money_get_amount(lost[i]);
 		if (down > 0)
 		{
-			g_autoptr(VentureMoney) numerator = venture_money_new(up, "XXX", 0);
-			g_autoptr(VentureMoney) hundredths = venture_money_multiply_rational(numerator, 100, down, error);
-			if (hundredths == NULL)
+			gint64 hundredths;
+			if (!kernel_rate(vk_billing_hundredths(up, down), &hundredths, error))
 				return NULL;
 			venture_report_result_add_metric(result, venture_metric_new_number("quick_ratio", "Quick ratio",
-				(gdouble)venture_money_get_amount(hundredths) / 100.0));
+				(gdouble)hundredths / 100.0));
 		}
 	}
 	venture_report_result_set_note(result, "MRR is contracted active or past_due recurring revenue immediately before the exclusive period end; trials, pauses and cancellations contribute zero. Annual terms are divided by 12 with half-even rounding; ARR is 12 times rounded MRR. Plan discounts are included: a period is counted at what its invoice charges, a percent or an amount off per period divided by its months, and returns to list price once the discount's periods are used up. Events freeze money at their effective date. New is the first positive MRR, reactivation a later return from zero, expansion/contraction changes between positive amounts, and churn a fall to zero (including pause). Movements are positive magnitudes within the period. Paying customers are companies whose combined MRR is positive at the endpoint; ARPA is MRR over them, half-even. Quick ratio is (new + expansion + reactivation) / (contraction + churn) within the period, to hundredths half-even, absent when nothing was lost. One organization and requested currency only; other currencies are excluded. This is neither cash nor recognized revenue.");
@@ -338,41 +367,39 @@ churn(VentureContext *context, VentureDateRange *period, JsonObject *options, GE
 	venture_report_result_add_metric(result, venture_metric_new_count("lost_logos", "Lost customers", lost_logos));
 	venture_report_result_add_metric(result, venture_metric_new_money("opening_mrr", "Opening MRR", initial));
 	venture_report_result_add_metric(result, venture_metric_new_money("lost_mrr", "Lost MRR", lost));
+	/* Rates are vk_billing_rate_bp: part over whole in basis points,
+	 * half to even. */
 	if (logos > 0)
 	{
-		g_autoptr(VentureMoney) numerator = venture_money_new(lost_logos, "XXX", 0);
-		g_autoptr(VentureMoney) rate = venture_money_multiply_rational(numerator, 10000, logos, error);
-		if (rate == NULL)
+		gint64 rate;
+		if (!kernel_rate(vk_billing_rate_bp(lost_logos, logos), &rate, error))
 			return NULL;
-		venture_report_result_add_metric(result, venture_metric_new_count("logo_churn_bps", "Logo churn (basis points)", venture_money_get_amount(rate)));
+		venture_report_result_add_metric(result, venture_metric_new_count("logo_churn_bps", "Logo churn (basis points)", rate));
 	}
 	if (venture_money_get_amount(initial) > 0)
 	{
-		g_autoptr(VentureMoney) rate = venture_money_multiply_rational(lost, 10000, venture_money_get_amount(initial), error);
-		if (rate == NULL)
+		gint64 rate;
+		if (!kernel_rate(vk_billing_rate_bp(venture_money_get_amount(lost), venture_money_get_amount(initial)), &rate, error))
 			return NULL;
-		venture_report_result_add_metric(result, venture_metric_new_count("revenue_churn_bps", "Revenue churn (basis points)", venture_money_get_amount(rate)));
+		venture_report_result_add_metric(result, venture_metric_new_count("revenue_churn_bps", "Revenue churn (basis points)", rate));
 		/* Gross retention is exactly what revenue churn did not take, so
 		 * it is derived from the same rounded figure and the two always
 		 * sum to 10,000. Net retention adds the cohort's expansion. */
 		venture_report_result_add_metric(result, venture_metric_new_count("grr_bps", "Gross revenue retention (basis points)",
-			10000 - venture_money_get_amount(rate)));
+			vk_billing_retained(rate)));
 		{
 			g_autoptr(VentureMoney) kept = venture_money_subtract(initial, lost, error);
 			g_autoptr(VentureMoney) net = NULL;
-			g_autoptr(VentureMoney) numerator = NULL;
-			g_autoptr(VentureMoney) nrr = NULL;
+			gint64 nrr;
 			if (kept == NULL)
 				return NULL;
 			net = venture_money_add(kept, gained, error);
 			if (net == NULL)
 				return NULL;
-			numerator = venture_money_new(venture_money_get_amount(net), "XXX", 0);
-			nrr = venture_money_multiply_rational(numerator, 10000, venture_money_get_amount(initial), error);
-			if (nrr == NULL)
+			if (!kernel_rate(vk_billing_rate_bp(venture_money_get_amount(net), venture_money_get_amount(initial)), &nrr, error))
 				return NULL;
 			venture_report_result_add_metric(result, venture_metric_new_count("nrr_bps", "Net revenue retention (basis points)",
-				venture_money_get_amount(nrr)));
+				nrr));
 		}
 	}
 	venture_report_result_add_metric(result, venture_metric_new_money("expansion_mrr", "Opening cohort expansion", gained));

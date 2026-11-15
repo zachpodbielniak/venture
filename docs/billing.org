@@ -94,10 +94,9 @@ configured in [[file:receivables.org][receivables]].
 
 * Proration
 
-Periods are half-open. Changes allocate the full-period price difference
-with =VentureMoney= over its calendar days, then sum only the remaining
-days. Remainder cents stay on their originally assigned days. Monthly
-boundaries retain their original day: January 31, February 28, March 31.
+Periods are half-open. Changes allocate the full-period price difference over its calendar days, then sum only the remaining days. Remainder cents stay on their originally assigned days. Monthly boundaries retain their original day: January 31, February 28, March 31.
+
+Days are calendar days: a period's length and how far into it a change falls are the differences of the dates' Julian day numbers, read in the period start's time zone. A period set in a zone with daylight saving is not short a day: March in New York lasts 30 days and 23 hours, and is still 31 days. (Counting 24-hour spans, as billing did before, made it 30 and dated a change in it one day early.) The spread and the sum of the remaining days are the =vk_billing= kernel's =tail_share=, in closed form: =(days - elapsed)= even shares, plus one unit of the remainder's sign for each remainder day not yet elapsed ([[file:kernels.org][Kernels]]).
 
 Worked example: two Starter seats at $30 per seat were billed $60 on
 January 1 for January 1 through February 1. A third seat is added January 17.
@@ -287,6 +286,7 @@ supplied); they never add currencies. Their notes carry these definitions:
   half-even. Worked through: opening Alpha $100 and Beta $50; Alpha grows to
   $150, Beta cancels, Gamma starts at $50. Revenue churn 33.33%, GRR 66.67%,
   NRR 100.00%, quick ratio (50 + 50) / 50 = 2.00, ARPA $200 / 2 = $100.
+- The arithmetic of these figures -- the movement buckets, ARR, ARPA, the quick ratio and the basis-point rates -- is the =vk_billing= kernel ([[file:kernels.org][Kernels]]); so are a price times its seats, the period's months, a discount, the credited period's tax and the next invoice's total.
 - =subscriptions_due=: the current operational renewal queue from the
   period endpoint through the next =days=, default 30, inclusive. It
   excludes scheduled cancellations and paused/past-due subscriptions.
