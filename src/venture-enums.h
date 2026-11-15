@@ -933,6 +933,8 @@ typedef enum
  * @VENTURE_PLUGIN_KIND_DECLARATIVE: a YAML definition with no code at all
  * @VENTURE_PLUGIN_KIND_EXEC: an external program run as a subprocess,
  *   speaking the JSON-lines protocol
+ * @VENTURE_PLUGIN_KIND_TALLOW: Tallow source run by the sandboxed suet
+ *   bytecode VM (src/plugin/venture-tallow-runtime.c)
  * @VENTURE_PLUGIN_KIND_OTHER: loaded by a runtime a plugin registered
  *
  * How a plugin was supplied. Which runtime loaded it is a separate string
@@ -946,7 +948,8 @@ typedef enum
 	VENTURE_PLUGIN_KIND_CRISPY,
 	VENTURE_PLUGIN_KIND_DECLARATIVE,
 	VENTURE_PLUGIN_KIND_EXEC,
-	VENTURE_PLUGIN_KIND_OTHER
+	VENTURE_PLUGIN_KIND_OTHER,
+	VENTURE_PLUGIN_KIND_TALLOW
 } VenturePluginKind;
 
 /**

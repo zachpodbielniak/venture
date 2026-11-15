@@ -267,6 +267,46 @@ test_invalid_import(Fixture *f, gconstpointer unused)
 	}
 }
 
+/*
+ * gross + employer_cost == net + liabilities is a statement about money,
+ * not about the digits each side happened to be written with. It used to
+ * compare the two sums' raw minor units, so a line whose liabilities were
+ * written to three places ("1400.000 USD") was refused although it
+ * balanced, and a line whose right side came to 540.000 USD was accepted
+ * against 5400.00 USD of cost because both are 540000 minor units at
+ * different exponents. Breaks if the check stops being exponent-aware.
+ */
+static void
+test_balance_exponents(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GError) wrong_error = NULL;
+	g_autoptr(JsonNode) payload = sample_run("EXPONENTS");
+	g_autoptr(JsonNode) wrong = sample_run("RAW-EQUAL");
+	JsonObject *line;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) bad = NULL;
+	(void)unused;
+
+	line = json_array_get_object_element(json_object_get_array_member(json_node_get_object(payload), "lines"), 0);
+	json_object_set_string_member(line, "liabilities", "1400.000 USD");
+	run = venture_payroll_service_import_json(venture_payroll_service_get(f->db),
+		f->org, json_node_get_object(payload), NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(run);
+
+	/* 5000.00 + 400.00 of cost against 400.000 + 140.000 paid out */
+	line = json_array_get_object_element(json_object_get_array_member(json_node_get_object(wrong), "lines"), 0);
+	json_object_set_string_member(line, "deductions", "4600.00 USD");
+	json_object_set_string_member(line, "net", "400.000 USD");
+	json_object_set_string_member(line, "liabilities", "140.000 USD");
+	bad = venture_payroll_service_import_json(venture_payroll_service_get(f->db),
+		f->org, json_node_get_object(wrong), NULL, &wrong_error);
+	g_assert_null(bad);
+	g_assert_error(wrong_error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(wrong_error->message, "net plus liabilities"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -277,6 +317,7 @@ main(int argc, char **argv)
 	g_test_add("/payroll/import-duplicate", Fixture, NULL, setup, test_import_and_duplicate, teardown);
 	g_test_add("/payroll/csv", Fixture, NULL, setup, test_csv_import, teardown);
 	g_test_add("/payroll/invalid-import", Fixture, NULL, setup, test_invalid_import, teardown);
+	g_test_add("/payroll/balance-exponents", Fixture, NULL, setup, test_balance_exponents, teardown);
 	g_test_add("/payroll/disburse-reverse", Fixture, NULL, setup, test_disburse_and_reverse, teardown);
 	g_test_add("/payroll/report", Fixture, NULL, setup, test_reconciliation_report, teardown);
 	g_test_add("/payroll/access", Fixture, NULL, setup, test_access_hides, teardown);

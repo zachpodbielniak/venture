@@ -1,0 +1,288 @@
+#+title: Kernels: the money, ledger and trading math in Tallow
+#+description: Why VENTURE's pure arithmetic is written in Tallow, how it is compiled natively and checked (contracts, units of measure, tallow verify, tallow fuzz), the style it is written in, the kernel catalogue and how to add a kernel
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-11-15]
+#+updated: [2026-11-15]
+#+version: 0.2.0
+
+* Kernels
+
+VENTURE's arithmetic -- rounding, money, allocation, rates, and the formulas built on them -- lives in =src/kernels/= as Tallow ([[file:../deps/tallow/README.org][deps/tallow]]), a language that renders to the gnu89 C you would have written by hand. The C that calls it is unchanged: =venture_money_add()= still takes two =VentureMoney= and a =GError=, and every test that passed against the hand-written C passes against the kernels. What changed is where the arithmetic is stated and how much of it is checked.
+
+- *Pure functions.* A kernel is a =pure fn=: it reads its arguments and returns a value, with no database, registry, clock or global. The checker rejects anything else (E0608), so "this function has no side effects" is a fact the compiler holds, not a comment.
+- *Contracts.* =requires= says what a kernel needs (a positive divisor, a ratio list that is not empty), =ensures= what it promises (a rounded quotient within one of the exact one, parts that sum back to the whole). They run on every call in every build.
+- *Units of measure.* An amount is an =i64<minor>=, a rate =i64<ppm>=, =i64<bp>= or =i64<pct>=, a duration =i64<day>=. Passing basis points where parts per million are expected, or adding days to money, is a compile error, not a factor of a hundred found in a report.
+- *Proof and fuzzing.* =tallow verify= proves the integer kernels' contracts with an SMT solver (no overflow, no division by zero, every =ensures=). =tallow fuzz= draws inputs from each =requires=, checks every =ensures=, and shrinks a failure to a minimal call.
+
+** Native vs interpreted
+:PROPERTIES:
+:CUSTOM_ID: native-vs-interpreted
+:END:
+
+Tallow can run two ways: rendered to C and compiled, or interpreted by =suet=, its bytecode VM. VENTURE uses both, for different things, and they do not mix:
+
+| What | How it runs | Why |
+|------+-------------+-----|
+| The kernels (=src/kernels/vk_*.tlw=) | rendered to C at build time, compiled by gcc at =-O2= with VENTURE's own warnings, linked into =libventure-core.a= and =libventure.a= | they are the hot path of every report and posting, and they are trusted code reviewed with the rest of VENTURE |
+| =.tlw= plugins | interpreted by suet inside the server, sandboxed: an instruction budget, a memory cap, no file, network, process or environment access unless granted | they are extensions, possibly written by someone else; see [[file:tallow-plugins.org][Tallow plugins]] |
+
+The kernels a plugin may call are the ones marked =/* @export */= in their source; =tools/venture-tallow-bindings.sh= turns those into the =venture_kernels= host module and one C host function each.
+
+A plugin that needs kernel math does not interpret a copy of it: the host module it imports declares the kernels as =extern fn= bound to the compiled =vk_*= functions, so a plugin's =multiply_ppm= is the same machine code the server's is. The kernel sources are never on the VM's search path. =make kernels-native-check= (part of =make test=) checks both directions: the =vk_*= symbols are defined in both archives, and the kernel object references nothing of the VM.
+
+Code that is not a plugin but should still be sandboxed -- a formula a user types into a record, say -- could run on the VM the same way later; that is a choice to make per feature, and none does today.
+
+** How the build uses them
+:PROPERTIES:
+:CUSTOM_ID: build
+:END:
+
+=deps/tallow= is a submodule built like every other dependency (=make deps=, or implicitly): one sub-make builds the runtime archive (=libtallow-rt-1.0.a=), the self-hosted compiler (bootstrapped with gcc from the C checked into the submodule, so nothing has to be installed) and the VM archive (=libtallow-suet-1.0.a=). The runtime is built with its optional features off (GMP, libdex, Lua, libgccjit), so it needs nothing but GLib and libm.
+
+The kernels are one Tallow program. The build writes a root module, =build/<type>/gen/kernels/vk.tlw=, that imports every =src/kernels/vk_*.tlw=, and renders it once to =vk-kernels.c= and =vk-kernels.h=. One file, because =tallow render= is whole-program: each render emits every module it imports, so rendering the kernels one by one would define the shared modules (=vk_units=, =vk_round=, =tallow.list=) once per file. The object is compiled once and archived into both libraries; =venturectl= links it like any other core object.
+
+A shim includes =<vk-kernels.h>= and calls =vk_<module>_<function>=. The generated types are plain GLib:
+
+| Tallow | C |
+|--------+---|
+| =i64=, =i64<minor>= (units are erased) | =gint64= |
+| =bool= | =gboolean= |
+| =?i64= | =TlwOptI64= (=.has=, =.val=) |
+| =[i64]= | =GArray *= of =gint64= |
+| =?[i64]= | a nullable =GArray *= the caller owns |
+| =type Mode = HalfEven \vert ...= | =VkRoundMode=, =VK_ROUND_MODE_HALF_EVEN= ... |
+
+The runtime is linked once per process. The server links it whole (=--whole-archive=, already exported with =--export-dynamic=) because the VM looks the runtime up with =dlsym=; =venturectl= links it as an ordinary archive.
+
+Build packages (Fedora): =libffi-devel= for the VM (=gobject-introspection-devel=, already required, provides =girepository-2.0=), and =z3= for =make kernels-verify= (without it the proof step is skipped, saying so). The image adds =libffi= at run time.
+
+** Checking the kernels
+:PROPERTIES:
+:CUSTOM_ID: checking
+:END:
+
+=make test= runs these beside the GTest binaries; each can run alone:
+
+| Target | Does |
+|--------+------|
+| =make kernels-test= | the =test "..." { }= blocks inside each kernel |
+| =make kernels-fuzz= | =tallow fuzz= on every kernel file with a contract; =KERNELS_SEED= (default =20261115=) makes a run reproducible, and a failure prints the =reproduce:= command |
+| =make kernels-verify= | =tallow verify= on every kernel file; fails on any obligation that does not hold, reports the rest as proved or skipped |
+| =make kernels-native-check= | the kernels are compiled code, not the VM |
+| =make test-one T=test-kernels= | the generated C API as the shims call it, and one regression case per bug the kernels fixed |
+
+What =tallow verify= covers today, and what it does not: it proves functions over integers and booleans -- every rounding rule, =pow10=, =common_exponent=, =order= -- and skips functions that take an enum (=Mode=), an array, or return an optional. That is why each kernel keeps its arithmetic core in small integer functions and lets the larger ones dispatch to them: the core is proved, and the dispatch and array code is fuzzed.
+
+** Style
+:PROPERTIES:
+:CUSTOM_ID: style
+:END:
+
+Kernels are written functionally. The rules:
+
+- every function is =pure fn=; no =var=, no =while= or =for=, no =inline c=;
+- =let= and =match= as an expression; early-return guards, never flag variables;
+- iteration is recursion with a =decreases= measure (a =requires= keeps the index in range so the measure stays non-negative), or a =tallow.list= combinator; an accumulator a recursion threads is an =own= parameter, which pure code may extend because the caller moved it in;
+- data is sum types and optionals (=?i64=), never sentinels such as =G_MININT64= for "none";
+- inputs are never changed: a kernel returns new values;
+- small total functions compose with =|>=.
+
+Two things the language does not allow shape the code: a lambda cannot capture a borrowed array (it would have to copy it), so array walks are recursive helpers rather than =L.map= with a captured table; and =x |> f(_)= with a hole is a closure, which pure code cannot call, so pipelines use the plain form =x |> f(a)= (=f(x, a)=).
+
+Before and after, the even split of an amount:
+
+#+begin_src c
+/* C: a qsort over slots, then a while loop handing out the remainder */
+while (0 != remainder) {
+	target = slots[i % n_ratios].index;
+	if (remainder > 0) { shares[target] += 1; remainder -= 1; }
+	else { shares[target] -= 1; remainder += 1; }
+	i++;
+}
+#+end_src
+
+#+begin_src tallow
+pure fn evenly(base: i64, leftover: i64, n: i64, i: i64, acc: own [i64]) -> own [i64]
+	requires n > 0 && i >= 0 && i <= n
+	decreases n - i
+= match i >= n {
+	true => acc,
+	false => {
+		acc.push(base + match i < magnitude(leftover) {
+			true => sign(leftover),
+			false => 0,
+		});
+		evenly(base, leftover, n, i + 1, acc)
+	},
+};
+#+end_src
+
+** Catalogue
+:PROPERTIES:
+:CUSTOM_ID: catalogue
+:END:
+
+*** vk_units
+The shared vocabulary: =minor= (money), =ppm=, =bp = 100 * ppm=, =pct = 10000 * ppm= (one proportion vocabulary at three scales), =milli= and =seat= (quantities), =day= and =month=. =PPM_ONE= is a million; =of_pct(n)= and =of_bp(n)= write a rate as parts per million; =sign(x)=. Currency is not a unit: it is a run-time fact, compared by the C shim before a kernel runs.
+
+*** vk_round
+Integer division with a stated rule. =Mode= is =HalfEven=, =HalfUp=, =Up= (away from zero), =Down= (truncate), =Ceiling=, =Floor=. =half_even=, =half_up=, =up=, =ceiling= and =floor= are proved: each result is the truncated quotient or one step from it, toward the side the rule names, and nothing overflows (the remainder is compared with =d - |r|=, never doubled). =div(n, d, mode)= dispatches; =mul_div(a, b, d, mode)= rounds =a * b / d= with the product exact in 128 bits (=tallow.math.mul_div= / =mul_mod=), so a scale by a ratio cannot overflow in the middle.
+
+This replaced four hand-written half-to-even routines (money, the series store, arbitrage, late fees), one of which negated =G_MININT64=.
+
+*** vk_money
+Amounts as =i64<minor>= at an exponent. =pow10=, =common_exponent=, =rescale= (gaining digits is exact or =none=, losing them rounds half to even), =add= / =subtract= (at the common exponent, =none= on overflow), =negate= (saturates at =G_MININT64=), =compare= (an operand too large to rescale is beyond the other), =multiply_int=, =multiply_rational= (a negative denominator folds into the numerator; one rounding over a 128-bit product), =multiply_ppm=, =multiply_bp=, =convert= (the exponent difference folded into the rate, one rounding), =allocate= (truncated shares, then the leftover one unit each to the largest ratios, ties by position; =ensures= the parts sum to the amount) and =allocate_evenly=.
+
+Shim: =src/boxed/venture-money.c=. Behaviour that changed: =venture_money_multiply_rational= no longer refuses a ratio whose 64-bit intermediate product overflows when the result fits; =venture_money_convert_at_rate= compares currency codes case-insensitively like every other money function.
+
+*** vk_percent
+A percent written as decimal text, read exactly into parts per million: =parse(text, limit_pct, allow_negative, allow_suffix)= returns a =Percent= -- =Rate { ppm }=, or why not: =Empty=, =Malformed=, =TooPrecise= (more than four places), =TooLarge=, =Negative=. Never through a double. Each caller states its own limits (late fees: 0 to 100 with an optional =%=; arbitrage: either sign up to a million percent) and maps the outcome to its own message. In C the result is a =VkPercentPercent *= with a =tag= (=VK_PERCENT_PERCENT_RATE= ...) and =u.rate.ppm=, freed with =vk_percent_percent_free= (=g_autoptr= works).
+
+*** vk_dates
+Calendar arithmetic on whole days. A date is an =i64<day>=: its Julian day number, numbered like =g_date_get_julian= (0001-01-01 is 1, 9999-12-31 is 3652059). =julian(y, m, d)= and =year_of= / =month_of= / =day_of= convert with Howard Hinnant's integer formulas, split into 400-year eras; all of them are proved, and =test-kernels-dates= checks them against GDate on every day. Also: =calendar_days(from, to)=; =day_after(base, days)=, =none= past either end of the calendar; =add_months(base, months)=, which holds the day at a shorter month's end the way =g_date_time_add_months= does; and =cycle_step(start, frequency, index)=, where =Frequency= is =Daily= | =Weekly= | =Monthly= | =Yearly= and 29 February is held at the 28th. The shim reads year, month and day in the zone the area documents, and turns a day number back into a GDateTime itself. Time of day and zones never reach a kernel.
+
+Shims: =src/latefees/venture-late-fee-service.c=, =src/dunning/venture-dunning-service.c=, =src/recurring/venture-recurring-service.c=. Recurring builds each cycle as =g_date_time_add_days(start, cycle_step - start)=, so the time of day and the daylight-saving choice are exactly what =g_date_time_add_months= / =_add_years= gave. What changed: dunning now reads every day in UTC, as its documentation says. It used to read an =as_of='s day in that timestamp's own zone and build the cutoff as UTC midnight.
+
+*** vk_latefees
+The arithmetic of a late-fee schedule.
+- =occurrences(day, every, times, grace)= gives a tier's chargeable days: from =day=, every =every= days, at most =times= (0 is no limit), never past day 365. Days inside the grace count toward =times= but are not charged.
+- =percent_of(amount, exponent, rate, Rounding)=, where =Rounding= is =HalfEven= | =Up= (away from zero) | =Down= | =Whole= (whole currency units, half to even).
+- =occurrence_amount(...)= cuts a fee to the room under the tier cap, then under the schedule's absolute cap, then under its percent-of-original cap. It never goes below 0.
+
+=room= and =cut= are proved free of overflow.
+
+Shim: =src/latefees/venture-late-fee-service.c=. A percent is read by =vk_percent_parse(text, 100, FALSE, TRUE)=. What changed:
+- =round: up= on a negative base now rounds away from zero; the C truncated toward zero.
+- A tier cap in another currency is no longer compared raw. The occurrence charges 0.
+
+*** vk_dunning
+Which reminder steps of a policy are due.
+- =next_step(offsets, recorded, top_offset)= returns the next step to send.
+- =eligible_day(offset, top_offset, catch_up)= returns the day a step becomes due. =catch_up= is a =?i64=, the adoption day after a catch-up decision. Before, that was a flag plus a =G_MININT= sentinel.
+- =pending(...)= returns the run of eligible steps.
+
+The proved core is =spaced=. Shim: =src/dunning/venture-dunning-service.c=.
+
+*** vk_depreciation
+A fixed asset's monthly charges. =Method= is =StraightLine= | =DecliningBalance=; =Convention= is =FullMonth= | =HalfYear=.
+- =schedule(cost, salvage, months, method)= returns the charges. Straight line gives the truncated even share each month and puts every leftover unit on the last. Declining balance charges =2 / months= of the carrying value, half to even, never more than is left, and the last month takes the rest. =ensures= the charges sum to cost - salvage and that none is negative.
+- =resume(...)= continues the same schedule part way through, for an opening import.
+- =convene(parts, convention)= moves the untaken half of month one to the last month.
+
+=level=, =last_level=, =take= and =kept_half= are proved. Shim: =schedule()= in =src/assets/venture-asset-service.c=. It replaced =split()= and the declining-balance loop that was written three times (book, tax, opening import). Results are unchanged.
+
+*** vk_billing
+Subscription and recurring-revenue arithmetic in =seat=, =month=, =day= and =bp=.
+- Periods: =Interval= (=Month= | =Year= | =Quarter= | =HalfYear=), =months=, =months_between=, =served=.
+- Prices: =price= (per seat or once), =over_period=, =monthly=.
+- Discounts: =take(amount, exponent, Discount)=, where =Discount= is =NoDiscount= | =PercentOff= | =AmountOff=. It returns =Taken= (=Net= | =Free=); an amount off never goes below zero.
+- Proration: =tail_share(delta, days, elapsed)=, the days left of an even spread in closed form, proved.
+- Tax and credit: =tax_share=, =gross_up=, =less_credit=.
+- Revenue movements: =Movement= (=New= | =Expansion= | =Contraction= | =Churn= | =Reactivation= | =Flat=), =movement=, =annual=, =per_account=, =hundredths= (the quick ratio), =rate_bp=, =retained=.
+
+Shims: =src/billing/venture-billing-service.c=, =venture-billing-reports.c=, =venture_billing_interval_months=. What changed: a period's length and a change's offset are counted in calendar days, so a period that spans a daylight-saving change is no longer a day short (=/billing/proration-dst=).
+
+*** vk_lines
+Quote and invoice-line parts. =Parts= is ={ discount, net, tax, total }=.
+- =rate_parts(subtotal, discount: i64<pct>, numerator, denominator)= rounds the discount, then the tax, half to even, once each. =ensures= discount + net == subtotal and net + tax == total.
+- =percentage_parts= does the same with a whole-percent tax.
+- =levy= is a tax code's exact rate.
+- =thousandths(halves)= turns a quantity into =i64<milli>= half away from zero (the rule stored totals already use).
+- =line_subtotal= is unit price × quantity / 1000, half to even.
+
+Shims: =venture_quote_rate_parts=, =venture_tax_code_levy=, =venture_invoice_line_get_amount=. What changed: a quantity whose thousandths do not fit in 64 bits, or that is not a number, is now refused with =VENTURE_ERROR_VALIDATION= instead of going through an undefined cast.
+
+*** vk_arbitrage
+Odds, and the figures an opportunity is judged by, as ratios (=f64=), with money in =i64<minor>=.
+
+- *Rounding to money.* =round_minor= rounds half to even on the double's exact fractional part, and returns =none= past 2^53. =scale= applies it to an amount times a ratio.
+- *Odds.* =american=, =fractional=, =implied_probability=, =overround=, =margin=, =is_surebet= and =no_vig=. Where odds meet money they are integers scaled by a million, and they round against the person: =scaled(odds, up)= rounds a payout down and a liability up.
+- *Opportunities.* =surebet= returns a =Surebet= sum (=Split { ... }=, or why not: =Inexact=, =NotOdds=, =TooLarge=, =Unsummable=). =back_lay= returns a =BackLay=. =effective_back_odds= and =effective_lay_odds= adjust odds for the venue.
+- *Time and return.* =expected_relists= returns =Relists=, =annualize= returns =Annual=, plus =roi= and =confidence=.
+
+Proved: =least= and =difference=; the double kernels are fuzzed.
+
+Shim: =src/arbitrage/venture-arbitrage-math.c=. What changed: =venture_arbitrage_roi= and a flip's ROI now divide at a common exponent instead of on raw minor units (=/kernels-trading/arbitrage/roi-exponent=, =flip-exponent=), and their currency checks are case-insensitive. The percent reader is =vk_percent_parse(text, 1000000, allow_negative, TRUE)=, which keeps the old reader's every edge.
+
+*** vk_fees
+The compute cores of the built-in fee models:
+
+- =share(amount, rate<ppm>)= takes a share, half to even.
+- =percent(...)= is the venue's cut, plus the fixed fee per unit times the units, plus the fixed fee per order. Each addition is made at the finer exponent. Then =min_fee= sets a floor. It returns a =Fee=: =Charged { fee, exponent }=, or the step that overflowed (=Cut=, =Units=, =Sum=).
+- =commission(amount, rate, selling)= charges only a positive selling amount.
+
+Shim: =src/arbitrage/venture-arbitrage-fees.c=. The registry, the JSON parameters and the currencies stay in C.
+
+*** vk_ledger
+The double-entry arithmetic, run once the database has been read. A line is =Line { amount, exponent, debit }=. Every running total keeps the exponent it reached, as adding =VentureMoney= does.
+
+- =check_journal(lines, start_exponent)= returns =Balanced { amount, exponent }=, or why not: =TooFewLines=, =Negative { line }=, =Unbalanced=, =TooLarge=.
+- =net= is debits minus credits, in posting order. A posting group's net and an account's balance are the same fold.
+- =clearing(net)= returns =Settled=, =Post { amount, debit }= (|net| on the opposite side) or =Unsettleable=.
+- =column(balance)= puts a balance in a trial balance's =Debit= or =Credit= column. =trial= totals the columns and returns =Even { ... }=, =Uneven= or =Overflowed=.
+- =Kind= and =debit_normal= give the normal side by account class. =normal_balance= is the balance on that side.
+- =pick_rate(rates, when)= chooses the exchange rate that applies, by a strict order (=rate_ahead=, proved antisymmetric).
+- =pay_line= checks gross + employer = net + liabilities, exponent-aware.
+
+In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/venture-posting-service.c=, =venture-trial-balance.c=, =venture-rate-table-policy.c=, =src/venture-enums.c=, =src/payroll/venture-payroll-service.c=, =src/budgets/venture-budget-service.c=. What changed:
+
+- Rate selection no longer rests on a comparator that called an undated row equal to every row. That comparator could let an older rate beat the newest.
+- A pay line's two sides are compared as money, not as raw minor units (=/payroll/balance-exponents=).
+
+*** vk_holdings
+=check_floor(events, start_exponent)= walks a time-sorted timeline of =Event { at, amount, exponent, before, after }= and judges each moment at its last movement. It returns =Clear=, =Short { ... }= (after the moment the holding is below zero and below where it was before) or =Overflow=. =deepens= is proved. Shim: =holdings_check_floor= in =src/ledger/venture-holdings.c=.
+
+*** vk_reconcile
+=relation(a, ea, b, eb)= returns =Equal=, =Near= (within 2%) or =Apart=. It is exact at any amount and exponent: the test is 49A <= 50B <= 51A, one scaled comparison over a 128-bit product. =distance= is calendar days. =score= is the table =Unique= 100, =Close= 70, =Similar= 40. =within_two_percent= and =days_apart= are proved. Token overlap stays in C, because it is Unicode folding. Shim: =src/reconciliation/venture-exact-matcher.c=.
+
+*** vk_budget
+=period(text)= reads ="YYYY"= or ="YYYY-MM"= into =Year=, =Month= or =Invalid=. =covers(line, budget, requested)= says whether a line covers a requested period; a year covers its months. An account's actual is =vk_ledger.normal_balance=. Shim: =src/budgets/venture-budget-service.c=. What changed:
+
+- An actual is now checked money at the balances' exponent. It used to be a raw, unchecked difference relabelled at the currency's exponent.
+- Balances in a currency other than the line's are refused (=/budgets/vs-actual-exponent=).
+
+*** vk_tax
+=best(rules, state, county, city)= returns the position of the most specific active =Rule= that matches; ties keep the earliest. =rank= and =replaces= are proved. Shim: =venture_sales_tax_service_resolve=.
+
+*** vk_inventory
+=unit_cost(cost, quantity)= is a movement's average unit cost, half to even, proved to lie between zero and the cost. Shim: =movement_unit= in =src/goods/venture-inventory-service.c=.
+
+*** vk_series
+The market-data arithmetic behind the series store. A book is two arrays, prices and quantities; =VENTURE_SERIES_NONE= is a =?i64= inside the kernel and becomes the sentinel again in C.
+
+Exact weighted means need no 128-bit accumulator. Each product is split by =tallow.math.mul_div= / =mul_mod= into a quotient and a remainder of the known divisor. The remainders are carried (=carries=, =rest=, both proved), and =vk_round.settle= rounds once, half to even. This replaced =series_wide_div_round= and its 64-bit fallback.
+
+The functions:
+- =normalise= (=Book=) and =summarise= (=Summary=);
+- the market value's =take= and =kept_mean=; the outlier test itself stays in C, in long double;
+- =percentile=, =median=, =p33= and =deal_price=, sorted by a heap sort on an owned copy;
+- =ewma= and =mean= (=Average=);
+- =bulk_cost= (=Fill=), =realisable=, =sale_estimate=, =heat= (=Heat=) and =learn_interval=.
+
+Proved: =share_ceil=, =share_floor=, =midpoint=, =is_jump=, =heat_cell=, =clamp=, =larger=, =smaller= and =ewma_weight=. Shim: =src/series/venture-series-math.c=. Its output matched the old C on 200000 random inputs.
+
+*Speed, and a lead for later.* This is the one kernel slower than the C it replaced: 3-7x in a release build. That is about 5.4-6 µs per order book against 0.75-1.4 µs, and about 12 µs against 4 µs per round of EWMA, median and deal price. At the store's volume (about 10000 instruments a venue an hour) that comes to about 50 ms of CPU a venue an hour, so the port was accepted.
+
+The time goes to calls into =libtallow-rt= that gcc cannot inline across the archive:
+- =tlw_contract_begin= and =tlw_contract_end= on every recursive step of the sort;
+- =tlw_index= (a bounds-checked =xs[i]=) and =tlw_opt_i64_none=;
+- array growth on one-at-a-time pushes.
+
+Candidates, cheapest first:
+1. =static inline= index and contract-depth checks in tallow's runtime headers, which helps every kernel;
+2. a pre-sized array builder for the sorted copies;
+3. one up-front check in place of the per-step =requires= of the heap-sort helpers.
+
+The header of =src/kernels/vk_series.tlw= has the measurements to beat.
+
+** Adding a kernel
+:PROPERTIES:
+:CUSTOM_ID: adding
+:END:
+
+1. Write =src/kernels/vk_<area>.tlw= with =module vk_<area>;=, the AGPL header, a comment saying what it computes and what C it replaces. Nothing else registers it: the generated root imports every =vk_*.tlw=.
+2. Keep the arithmetic in small =pure fn=s over integers with =requires= / =ensures=, so =tallow verify= proves them; put =test "..." { }= blocks at the end.
+3. Call it from the C that owns the data: unpack the record, check what only C can (currency codes, registry lookups), call =vk_<area>_<fn>=, turn =none= into a =GError=.
+4. Add the regression cases to =tests/test-kernels.c=, the entry to the catalogue above, and run =make DEBUG=1 kernels-check test-one T=test-kernels= plus the suites of the code you moved.
+5. If plugins should be able to call it, put =/* @export */= on the line right above its =pure fn= (the signature on one line, integer or boolean parameters, an integer, boolean or optional integer result). The build then generates its binding into =venture_kernels= ([[file:tallow-plugins.org][Tallow plugins]]). Helpers stay unmarked, which keeps them out of the plugin API without hiding them from =tallow verify= the way =@internal= would.

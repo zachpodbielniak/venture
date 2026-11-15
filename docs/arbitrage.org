@@ -525,6 +525,8 @@ A strategy also drops prices before they become candidates: a price older than =
 
 All of it is =venture-arbitrage-math.h=: pure, money in minor units, ratios as doubles, rounding half to even once where a ratio meets an amount (=venture_arbitrage_round_minor()=), and an amount past 2^53 minor units refused rather than rounded wrong. Where odds multiply money they do so as integers at the store's odds scale (a million), so 100 x 1.13 pays 113, not the 112 a double would floor to.
 
+The formulas are the Tallow kernel =src/kernels/vk_arbitrage.tlw= (a percent read from text is =vk_percent=), compiled natively ([[file:kernels.org][Kernels]]); =venture-arbitrage-math.c= reads odds from text, checks what a caller passed, builds the =VentureMoney= values and turns each kernel outcome into its message. The rounding to minor units is the kernel's own half-to-even on the double's exact fractional part, the same answer =nearbyint()= gives in the default rounding mode.
+
 *** Odds
 
 - Decimal odds d. American +A is 1 + A/100, -A is 1 + 100/A (a moneyline is at least 100 in magnitude); fractional a/b is 1 + a/b; "evens" (or "evs") is 2.0. Odds of one or less pay nothing and are refused.
@@ -560,7 +562,7 @@ For units bought at one venue and sold at another (or the same), in one currency
 - Net = units x sell price - sell fees - buy cost - buy fees - listing loss - transfer cost.
 - Capital = buy cost + buy fees + one deposit + transfer cost.
 - Transfer cost, when the lot moves (the buy and sell venues differ), is the buy venue's =transfer_cost= plus the sell venue's, each converted into the flip's currency; a lot sold where it was bought (=deal=) moves nowhere and costs nothing.
-- ROI = net / capital; nothing tied up is no ROI, not an infinite one.
+- ROI = net / capital, the two brought to the finer of their exponents first (a sale price in thousandths makes the net finer than the capital); nothing tied up is no ROI, not an infinite one. Every amount is in one currency, codes compared without regard to case.
 - Lock days = units / (sold per day x share) + transit days (both venues' =transfer_hours=, added, / 24, when the lot moves); unknown without a pace of sales.
 - ROI per day = ROI / lock days. Annualised = (1 + ROI)^(365 / lock days) - 1; a total loss stays -1, and a hold too short for the figure to be a number has none.
 - EV = P(fill) x net - (1 - P(fill)) x unwind loss, with P(fill) the sale rate and the unwind loss a deposit and the move back (in a scan; the =flip= calculator, which has no venues, counts only its =transfer=). With no sale rate there is no EV. A surebet or a back and lay is quoted on both sides now: its EV is its net.
@@ -597,6 +599,8 @@ A venue names a model in =fee_model= and gives its parameters in =fee_params= (Y
 | =wow_auction= | the Blizzard plugin | =cut_percent= (5), =duration_hours= (12, 24 or 48; 48 by default), =deposit_factor_percent= (the classic 15/30/60% of the vendor price by duration otherwise); the deposit is the instrument's =vendor_sell= attribute (copper) times the units, refundable, and absent while the item's details are unfetched; the amount must have four decimal places (=GOLD=). Buying is free. See [[file:examples/wow-auction-house-feed.org::*Fees: =wow_auction=][the Blizzard feed]] |
 
 Percents are read exactly (4.75% is 47500 parts per million, at most four decimal places); an amount with no currency is in the sale's, and one naming another currency is refused rather than converted. Booleans read =true=/=false=, =yes=/=no=, =on=/=off= or =1=/=0=.
+
+What =percent= and =commission= charge is the Tallow kernel =src/kernels/vk_fees.tlw= ([[file:kernels.org][Kernels]]): the cut (the sale times the rate in parts per million, half to even), then the fixed fee per unit times the units and the fixed fee per order, each added at the finer of the two exponents as =VentureMoney= adds, then the floor, which replaces a smaller fee at the floor's own exponent. A deposit is the same share of its basis. The registry, the reading of parameters and currencies and the messages stay in =venture-arbitrage-fees.c=.
 
 *Judged when written.* A venue's model and parameters are checked against the registry when either is written -- an unregistered model is refused naming the registered ones, a parameter the model does not take is refused by name (=cut_percnt= read as no cut is the fee nobody charged). A name kept from before is never judged again, so a venue saved under a plugin's model stays editable after the plugin is gone, and with the arbitrage module off nothing is judged at all: nothing loaded is not evidence that a name is wrong. The built-in models are always registered, so a name written while a plugin is not loaded is refused -- write it once the plugin is there. A scan at a venue whose model is missing blanks the row and names the model.
 

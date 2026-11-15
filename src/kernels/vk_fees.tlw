@@ -1,0 +1,134 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_fees.tlw - what a venue's built-in fee models charge.
+ *
+ * The compute cores of the `percent` and `commission` fee models in
+ * src/arbitrage/venture-arbitrage-fees.c. The C keeps the registry, the
+ * GObject and the reading of a venue's parameters (JSON, currencies, the
+ * deposit's basis); it hands the numbers here and turns each outcome into
+ * its message.
+ *
+ * Amounts arrive as minor units at their own exponents, as the parameters
+ * were written: a sale in cents, a fixed fee in whole units. They combine
+ * the way VentureMoney does (vk_money: at the finer exponent, exactly), so
+ * the fee comes back with the exponent it ended at.
+ */
+module vk_fees;
+
+import vk_units;
+import vk_money as Money;
+
+/* a share of an amount at a rate in parts per million, half to even */
+pure fn share(amount: i64<minor>, rate: i64<ppm>) -> ?i64<minor> = Money.multiply_ppm(amount, rate);
+
+/*
+ * What the percent model charged, or the step that did not fit 64 bits:
+ *   Cut    the venue's share of the sale
+ *   Units  the fixed fee per unit times the units
+ *   Sum    adding a fixed fee (at the common exponent)
+ */
+type Fee =
+	| Charged { fee: i64<minor>, exponent: i64 }
+	| Cut
+	| Units
+	| Sum;
+
+/*
+ * The percent model: the cut of the sale, then the fixed fee per unit times
+ * the units and the fixed fee per order on top, then the floor (`min_fee`
+ * replaces a smaller fee, at its own exponent). A fixed part that is none
+ * is not charged. Every exponent is 0 to 18.
+ */
+pure fn percent(amount: i64<minor>, exponent: i64, cut: i64<ppm>,
+		per_unit: ?i64, per_unit_exponent: i64, units: i64,
+		per_order: ?i64, per_order_exponent: i64,
+		min_fee: ?i64, min_fee_exponent: i64) -> own Fee
+	requires exponent >= 0 && exponent <= 18
+	requires per_unit_exponent >= 0 && per_unit_exponent <= 18
+	requires per_order_exponent >= 0 && per_order_exponent <= 18
+	requires min_fee_exponent >= 0 && min_fee_exponent <= 18
+= match share(amount, cut) {
+	none => Fee.Cut,
+	some fee => match per_unit {
+		none => with_order(fee, exponent, per_order, per_order_exponent, min_fee, min_fee_exponent),
+		some each => match Money.multiply_int(each as i64<minor>, units) {
+			none => Fee.Units,
+			some fixed => match Money.add(fee, exponent, fixed, per_unit_exponent) {
+				none => Fee.Sum,
+				some total => with_order(total, Money.common_exponent(exponent, per_unit_exponent),
+					per_order, per_order_exponent, min_fee, min_fee_exponent),
+			},
+		},
+	},
+};
+
+/* the fee so far plus the fixed fee per order, then the floor */
+pure fn with_order(fee: i64<minor>, exponent: i64, per_order: ?i64, per_order_exponent: i64,
+		min_fee: ?i64, min_fee_exponent: i64) -> own Fee
+	requires exponent >= 0 && exponent <= 18
+	requires per_order_exponent >= 0 && per_order_exponent <= 18
+	requires min_fee_exponent >= 0 && min_fee_exponent <= 18
+= match per_order {
+	none => floored(fee, exponent, min_fee, min_fee_exponent),
+	some fixed => match Money.add(fee, exponent, fixed as i64<minor>, per_order_exponent) {
+		none => Fee.Sum,
+		some total => floored(total, Money.common_exponent(exponent, per_order_exponent), min_fee, min_fee_exponent),
+	},
+};
+
+/* the fee, or the minimum when the fee is below it */
+pure fn floored(fee: i64<minor>, exponent: i64, min_fee: ?i64, min_fee_exponent: i64) -> own Fee
+	requires exponent >= 0 && exponent <= 18 && min_fee_exponent >= 0 && min_fee_exponent <= 18
+= match min_fee {
+	some least => match below(fee, exponent, least as i64<minor>, min_fee_exponent) {
+		true => Fee.Charged { fee = least as i64<minor>, exponent = min_fee_exponent },
+		false => Fee.Charged { fee, exponent },
+	},
+	none => Fee.Charged { fee, exponent },
+};
+
+/* a is below b, each at its own exponent; two amounts that cannot be
+ * brought to one exponent are not ordered (as venture_money_compare) */
+pure fn below(a: i64<minor>, ea: i64, b: i64<minor>, eb: i64) -> bool
+	requires ea >= 0 && ea <= 18 && eb >= 0 && eb <= 18
+{
+	let e = Money.common_exponent(ea, eb);
+	return match Money.rescale(a, ea, e) {
+		some x => match Money.rescale(b, eb, e) {
+			some y => x < y,
+			none => false,
+		},
+		none => false,
+	};
+}
+
+/*
+ * The commission model: an exchange keeps `rate` of net winnings, so only
+ * a positive amount on the selling side pays; anything else pays nothing.
+ */
+pure fn commission(amount: i64<minor>, rate: i64<ppm>, selling: bool) -> ?i64<minor> = match selling && amount > 0<minor> {
+	true => share(amount, rate),
+	false => 0<minor>,
+};
+
+/* the commission as the share of winnings the odds strategies apply */
+pure fn commission_share(rate: i64<ppm>) -> f64 = (rate as f64) / 1000000.0;
+
+test "percent" {
+	let cut = percent(10000<minor>, 2, of_pct(5), none, 0, 1, none, 0, none, 0);
+	assert(match cut { Charged { fee, exponent } => fee == 500<minor> && exponent == 2, _ => false });
+	let fixed = percent(10000<minor>, 2, of_pct(5), some 3, 0, 2, some 25, 2, none, 0);
+	assert(match fixed { Charged { fee, exponent } => fee == 1125<minor> && exponent == 2, _ => false });
+	let floor = percent(100<minor>, 2, of_pct(1), none, 0, 1, none, 0, some 50, 2);
+	assert(match floor { Charged { fee, .. } => fee == 50<minor>, _ => false });
+	let mixed = percent(100<minor>, 2, 0<ppm>, none, 0, 1, none, 0, some 5, 3);
+	assert(match mixed { Charged { fee, exponent } => fee == 5<minor> && exponent == 3, _ => false });
+	assert(percent(9223372036854775807<minor>, 2, of_pct(100), some 2, 0, 9223372036854775807, none, 0, none, 0) is Units);
+}
+
+test "commission" {
+	assert((commission(1000<minor>, of_pct(5), true) ?? 0<minor>) == 50<minor>);
+	assert((commission(-1000<minor>, of_pct(5), true) ?? 1<minor>) == 0<minor>);
+	assert((commission(1000<minor>, of_pct(5), false) ?? 1<minor>) == 0<minor>);
+	assert(commission_share(of_pct(5)) == 0.05);
+}

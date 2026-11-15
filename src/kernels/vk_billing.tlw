@@ -1,0 +1,349 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_billing.tlw - subscription billing and recurring-revenue arithmetic.
+ *
+ * Prices and seats, a period's months, a discount, the share of a change
+ * that falls on the days left in a period, the tax a credited period
+ * charged, a renewal's total, and the MRR, ARR, churn and retention
+ * figures the reports show. The records, the calendar and currency codes
+ * stay in C (src/billing/); these see amounts of one currency, months as
+ * `i64<month>`, days as `i64<day>` and rates as `i64<bp>`.
+ *
+ * Replaces the hand-written arithmetic in venture-billing-service.c
+ * (price_amount, served_months, over_period, remaining_share,
+ * discount_take, period_tax_share, the next invoice's total),
+ * venture-billing-reports.c (movements, ARR, ARPA, quick ratio, churn and
+ * retention) and venture_billing_interval_months.
+ */
+module vk_billing;
+
+import vk_units;
+import vk_round as R;
+import vk_money as Money;
+import tallow.math as M;
+
+/* ---- periods ---- */
+
+/* a price's billing interval, as stored (VENTURE_BILLING_INTERVAL_*: the
+ * values are appended, never reordered, so they read back by number) */
+type Interval = Month | Year | Quarter | HalfYear;
+
+/* a stored interval; anything unknown bills monthly, as it always has */
+pure fn interval_of(code: i64) -> Interval = match code {
+	1 => Interval.Year,
+	2 => Interval.Quarter,
+	3 => Interval.HalfYear,
+	_ => Interval.Month,
+};
+
+/* the whole calendar months an interval runs */
+pure fn months(interval: Interval) -> i64<month> = match interval {
+	Month => 1<month>,
+	Year => 12<month>,
+	Quarter => 3<month>,
+	HalfYear => 6<month>,
+};
+
+/* calendar months from one year/month to another */
+pure fn months_between(from_year: i64, from_month: i64, to_year: i64, to_month: i64) -> i64<month>
+	requires from_year >= 0 && from_year <= 10000 && to_year >= 0 && to_year <= 10000
+	requires from_month >= 1 && from_month <= 12 && to_month >= 1 && to_month <= 12
+	ensures result >= -120011<month> && result <= 120011<month>
+= ((to_year - from_year) * 12 + to_month - from_month) as i64<month>;
+
+/*
+ * The months the period being served runs: a whole interval (3, 6 or 12),
+ * anything else being a month. A price change does not change it, so
+ * every price is scaled to it and a monthly and a yearly price compare
+ * over the same days.
+ */
+pure fn served(span: i64<month>) -> i64<month>
+	ensures result == 1<month> || result == 3<month> || result == 6<month> || result == 12<month>
+= match span == 3<month> || span == 6<month> || span == 12<month> {
+	true => span,
+	false => 1<month>,
+};
+
+/* ---- prices ---- */
+
+/* what a price charges: per seat, or once whatever the seats; none on
+ * overflow */
+/* @export */
+pure fn price(amount: i64<minor>, seats: i64<seat>, per_seat: bool) -> ?i64<minor>
+	requires seats > 0<seat>
+= match per_seat {
+	true => Money.multiply_int(amount, seats as i64),
+	false => amount,
+};
+
+/* a price for `interval` months scaled to `span` months, half to even */
+/* @export */
+pure fn over_period(amount: i64<minor>, span: i64<month>, interval: i64<month>) -> ?i64<minor>
+	requires interval > 0<month>
+= Money.multiply_rational(amount, span as i64, interval as i64);
+
+/* a price for `interval` months as one month of it (MRR), half to even */
+/* @export */
+pure fn monthly(amount: i64<minor>, interval: i64<month>) -> ?i64<minor>
+	requires interval > 0<month>
+= Money.multiply_rational(amount, 1, interval as i64);
+
+/* ---- discounts ---- */
+
+/* a plan discount: a percent off, an amount off (at its own exponent), or
+ * neither */
+type Discount =
+	| NoDiscount
+	| PercentOff { pct: i64<pct> }
+	| AmountOff { off: i64<minor>, exponent: i64 };
+
+/* what is left to charge after a discount: an amount, or nothing at all
+ * (an amount off larger than the price makes the invoice free, never a
+ * credit) */
+type Taken =
+	| Net { amount: i64<minor> }
+	| Free;
+
+/*
+ * `amount` (at `exponent`) less `discount`. A percent off is taken half
+ * to even at the amount's exponent; an amount off is subtracted at the
+ * common exponent (Money.common_exponent) and a result below zero is
+ * Free. None on overflow.
+ */
+pure fn take(amount: i64<minor>, exponent: i64, discount: Discount) -> own ?Taken
+	requires exponent >= 0 && exponent <= 18
+= match discount {
+	NoDiscount => Taken.Net { amount = amount },
+	PercentOff { pct } => match Money.multiply_rational(amount, 100 - (pct as i64), 100) {
+		some net => Taken.Net { amount = net },
+		none => none,
+	},
+	AmountOff { off, exponent = off_exponent } => match off_exponent >= 0 && off_exponent <= 18 {
+		true => match Money.subtract(amount, exponent, off, off_exponent) {
+			some net => floored(net),
+			none => none,
+		},
+		false => none,
+	},
+};
+
+/* a difference that may not go below zero */
+pure fn floored(net: i64<minor>) -> own Taken = match net < 0<minor> {
+	true => Taken.Free,
+	false => Taken.Net { amount = net },
+};
+
+/* the amount a Taken leaves to charge (Free is zero), for tests and callers
+ * that only need the number */
+pure fn net_of(taken: Taken) -> i64<minor> = match taken {
+	Net { amount } => amount,
+	Free => 0<minor>,
+};
+
+/* ---- part periods ---- */
+
+/* a change date `elapsed` whole days into a period of `days` whole days
+ * falls inside it (a period is at most a leap year) */
+pure fn inside(days: i64<day>, elapsed: i64<day>) -> bool
+	= days > 0<day> && days <= 366<day> && elapsed >= 0<day> && elapsed < days;
+
+/*
+ * The part of `delta` that falls on the days from `elapsed` to the end of
+ * a `days`-day period: `delta` spread over every day as allocate_evenly
+ * spreads it (the leftover one unit each to the first days) and only the
+ * remaining days summed, so remainder units stay on the days they were
+ * first given to. A change and an immediate cancellation both go through
+ * here, which is what makes a cancellation's credit the exact mirror of a
+ * downgrade. In closed form: (days - elapsed) shares of delta / days, and
+ * one unit of the leftover's sign for each leftover day not yet elapsed.
+ */
+pure fn tail_share(delta: i64<minor>, days: i64<day>, elapsed: i64<day>) -> i64<minor>
+	requires days > 0<day> && days <= 366<day> && elapsed >= 0<day> && elapsed < days
+	ensures (delta >= 0<minor> && result >= 0<minor> && result <= delta) || (delta < 0<minor> && result <= 0<minor> && result >= delta)
+= spread(delta as i64, days as i64, elapsed as i64) as i64<minor>;
+
+pure fn spread(delta: i64, days: i64, elapsed: i64) -> i64
+	requires days > 0 && days <= 366 && elapsed >= 0 && elapsed < days
+	ensures (delta >= 0 && result >= 0 && result <= delta) || (delta < 0 && result <= 0 && result >= delta)
+= (days - elapsed) * (delta / days) + leftover_days(delta % days, elapsed);
+
+/* the leftover units (r, |r| < days) still on days not yet elapsed */
+pure fn leftover_days(r: i64, elapsed: i64) -> i64
+	requires r > -367 && r < 367 && elapsed >= 0
+	ensures (r >= 0 && result >= 0 && result <= r) || (r < 0 && result <= 0 && result >= r)
+= match r < 0 {
+	true => match -r > elapsed {
+		true => r + elapsed,
+		false => 0,
+	},
+	false => match r > elapsed {
+		true => r - elapsed,
+		false => 0,
+	},
+};
+
+/* ---- tax and totals ---- */
+
+/* an invoice line charged tax: both its frozen income and tax positive */
+pure fn charged(line_net: i64<minor>, line_tax: i64<minor>) -> bool
+	= line_net > 0<minor> && line_tax > 0<minor>;
+
+/* the tax on `net` at the share a period's line charged: its frozen tax
+ * (at the income's exponent) over its frozen income, half to even */
+pure fn tax_share(net: i64<minor>, line_net: i64<minor>, line_tax: i64<minor>) -> ?i64<minor>
+	requires line_net > 0<minor>
+= Money.multiply_rational(net, line_tax as i64, line_net as i64);
+
+/* `net` with its tax at numerator/denominator added: the tax half to even
+ * at net's exponent. None on overflow or a zero denominator. */
+/* @export */
+pure fn gross_up(net: i64<minor>, numerator: i64, denominator: i64) -> ?i64<minor>
+	= match Money.multiply_rational(net, numerator, denominator) {
+	some tax => match M.checked_add(net as i64, tax as i64) {
+		some total => total as i64<minor>,
+		none => none,
+	},
+	none => none,
+};
+
+/*
+ * A total (at its exponent) less a credit (at its own), at the common
+ * exponent; a credit larger than the charge leaves nothing to pay, never
+ * a negative invoice. None on overflow.
+ */
+pure fn less_credit(total: i64<minor>, total_exponent: i64, credit: i64<minor>, credit_exponent: i64) -> own ?Taken
+	requires total_exponent >= 0 && total_exponent <= 18 && credit_exponent >= 0 && credit_exponent <= 18
+= match Money.subtract(total, total_exponent, credit, credit_exponent) {
+	some owed => floored(owed),
+	none => none,
+};
+
+/* ---- recurring-revenue reports ---- */
+
+/* how a subscription's MRR moved, in the report's bucket order */
+type Movement = New | Expansion | Contraction | Churn | Reactivation | Flat;
+
+/*
+ * The bucket of one change from `from` to `to` MRR (`delta` is to - from
+ * at their common exponent); `seen` says the subscription had positive
+ * MRR before. The first positive MRR is new, a later return from zero a
+ * reactivation, a fall to zero churn, and changes between positive
+ * amounts expansion or contraction.
+ */
+pure fn movement(from: i64<minor>, to: i64<minor>, delta: i64<minor>, seen: bool) -> Movement
+	= match from == 0<minor> && to > 0<minor> {
+	true => match seen {
+		true => Movement.Reactivation,
+		false => Movement.New,
+	},
+	false => match to == 0<minor> && from > 0<minor> {
+		true => Movement.Churn,
+		false => match delta > 0<minor> {
+			true => Movement.Expansion,
+			false => match delta < 0<minor> {
+				true => Movement.Contraction,
+				false => Movement.Flat,
+			},
+		},
+	},
+};
+
+/* |delta|, none for the one amount that has no positive */
+pure fn magnitude(delta: i64<minor>) -> ?i64<minor> = match delta < 0<minor> {
+	true => M.checked_sub(0, delta as i64) |> Money.as_minor,
+	false => delta,
+};
+
+/* ARR: twelve times the (rounded) MRR */
+/* @export */
+pure fn annual(mrr: i64<minor>) -> ?i64<minor> = Money.multiply_int(mrr, 12);
+
+/* average revenue per paying account, half to even */
+/* @export */
+pure fn per_account(mrr: i64<minor>, accounts: i64) -> ?i64<minor>
+	requires accounts > 0
+= Money.multiply_rational(mrr, 1, accounts);
+
+/* gained over lost in hundredths, half to even (the quick ratio) */
+pure fn hundredths(gained: i64, lost: i64) -> ?i64
+	requires lost > 0
+= R.mul_div(gained, 100, lost, R.Mode.HalfEven);
+
+/* part over whole in basis points, half to even (churn and retention) */
+/* @export */
+pure fn rate_bp(part: i64, whole: i64) -> ?i64<bp>
+	requires whole > 0
+= match R.mul_div(part, 10000, whole, R.Mode.HalfEven) {
+	some bp => bp as i64<bp>,
+	none => none,
+};
+
+/* what a churn rate did not take: the two always sum to 10,000 */
+/* @export */
+pure fn retained(churn: i64<bp>) -> i64<bp>
+	requires churn >= -9223372036854765807<bp>
+	ensures result + churn == 10000<bp>
+= 10000<bp> - churn;
+
+test "periods" {
+	assert(months(interval_of(0)) == 1<month> && months(interval_of(1)) == 12<month>);
+	assert(months(interval_of(2)) == 3<month> && months(interval_of(3)) == 6<month>);
+	assert(months(interval_of(9)) == 1<month> && months(interval_of(-1)) == 1<month>);
+	assert(months_between(2025, 11, 2026, 2) == 3<month>);
+	assert(served(months_between(2026, 1, 2027, 1)) == 12<month>);
+	assert(served(2<month>) == 1<month> && served(6<month>) == 6<month>);
+}
+
+test "prices" {
+	assert((price(3000<minor>, 2<seat>, true) ?? 0<minor>) == 6000<minor>);
+	assert((price(3000<minor>, 2<seat>, false) ?? 0<minor>) == 3000<minor>);
+	assert(price(M.I64_MAX as i64<minor>, 2<seat>, true) == none);
+	assert((over_period(12000<minor>, 1<month>, 12<month>) ?? 0<minor>) == 1000<minor>);
+	assert((over_period(1000<minor>, 12<month>, 1<month>) ?? 0<minor>) == 12000<minor>);
+	assert((monthly(1000<minor>, 3<month>) ?? 0<minor>) == 333<minor>);
+	assert((monthly(1001<minor>, 6<month>) ?? 0<minor>) == 167<minor>);
+}
+
+test "discounts" {
+	assert(net_of(take(1000<minor>, 2, Discount.PercentOff { pct = 25<pct> }) ?? Taken.Free) == 750<minor>);
+	assert(net_of(take(999<minor>, 2, Discount.PercentOff { pct = 50<pct> }) ?? Taken.Free) == 500<minor>);
+	assert(net_of(take(1000<minor>, 2, Discount.AmountOff { off = 300<minor>, exponent = 2 }) ?? Taken.Free) == 700<minor>);
+	assert(net_of(take(1000<minor>, 2, Discount.AmountOff { off = 3000<minor>, exponent = 3 }) ?? Taken.Free) == 7000<minor>);
+	assert((take(1000<minor>, 2, Discount.AmountOff { off = 1500<minor>, exponent = 2 }) ?? Taken.Net { amount = 1<minor> }) is Free);
+	assert(net_of(take(1000<minor>, 2, Discount.NoDiscount) ?? Taken.Free) == 1000<minor>);
+}
+
+test "part periods" {
+	/* 100 over 30 days: ten days carry 4, twenty carry 3 */
+	assert(tail_share(100<minor>, 30<day>, 0<day>) == 100<minor>);
+	assert(tail_share(100<minor>, 30<day>, 15<day>) == 45<minor>);
+	assert(tail_share(100<minor>, 30<day>, 5<day>) == 80<minor>);
+	assert(tail_share(-100<minor>, 30<day>, 5<day>) == -80<minor>);
+	assert(tail_share(-100<minor>, 30<day>, 29<day>) == -3<minor>);
+	assert(inside(31<day>, 30<day>) && !inside(31<day>, 31<day>) && !inside(367<day>, 1<day>));
+}
+
+test "tax and totals" {
+	assert(charged(1000<minor>, 100<minor>) && !charged(1000<minor>, 0<minor>));
+	assert((tax_share(2500<minor>, 10000<minor>, 1000<minor>) ?? 0<minor>) == 250<minor>);
+	assert((gross_up(5000<minor>, 1, 10) ?? 0<minor>) == 5500<minor>);
+	assert(gross_up(5000<minor>, 1, 0) == none);
+	assert(net_of(less_credit(5500<minor>, 2, 2750<minor>, 2) ?? Taken.Free) == 2750<minor>);
+	assert((less_credit(100<minor>, 2, 2750<minor>, 2) ?? Taken.Net { amount = 1<minor> }) is Free);
+}
+
+test "reports" {
+	assert(movement(0<minor>, 100<minor>, 100<minor>, false) == Movement.New);
+	assert(movement(0<minor>, 100<minor>, 100<minor>, true) == Movement.Reactivation);
+	assert(movement(100<minor>, 0<minor>, -100<minor>, true) == Movement.Churn);
+	assert(movement(100<minor>, 150<minor>, 50<minor>, true) == Movement.Expansion);
+	assert(movement(100<minor>, 50<minor>, -50<minor>, true) == Movement.Contraction);
+	assert(movement(100<minor>, 100<minor>, 0<minor>, true) == Movement.Flat);
+	assert((magnitude(-50<minor>) ?? 0<minor>) == 50<minor>);
+	assert(magnitude(M.I64_MIN as i64<minor>) == none);
+	assert((annual(1000<minor>) ?? 0<minor>) == 12000<minor>);
+	assert((per_account(1000<minor>, 3) ?? 0<minor>) == 333<minor>);
+	assert((hundredths(3, 2) ?? 0) == 150);
+	assert((rate_bp(1, 3) ?? 0<bp>) == 3333<bp>);
+	assert(retained(3333<bp>) == 6667<bp>);
+}

@@ -98,7 +98,7 @@ A quote with =billing-mode=after_work= is billed once the work is done: acceptin
 The invoice number is =QUOTE-= followed by the quote number. Existing
 invoice-number conflicts are errors and roll back acceptance. Invoice lines
 now declare discount and tax percentages; existing lines default to zero.
-The ordinary invoice amount function applies the same money rounding.
+The ordinary invoice amount function applies the same money rounding. Quote and invoice-line parts come from the =vk_lines= kernel ([[file:kernels.org][Kernels]]): =rate_parts= rounds the discount and then the tax half to even once each, and its contract holds discount + net = subtotal and net + tax = total. An invoice line's quantity is stored as a number with up to three decimals and becomes thousandths rounded half away from zero (so 0.0005 is one thousandth), the rule stored totals were computed with; a quantity whose thousandths do not fit 64 bits, or that is not a number, is refused as invalid.
 Issuance uses settlement's configured accounts and fiscal-period guard.
 Quote validity is not a payment due date. The acceptance invoice is due
 thirty days after issue, the invoice composer's default terms, so it ages

@@ -1,0 +1,1199 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_series.tlw - the arithmetic behind market-data series.
+ *
+ * Replaces the formulas of src/series/venture-series-math.c: order-book
+ * tiers, the summary of a book, the TSM-style market value, percentiles,
+ * medians, the deal price, the 14-day EWMA, bulk cost, realisable profit,
+ * the sale estimate between two snapshots, the weekday-by-hour heat matrix
+ * and the learned update interval. The C keeps its API (the series store
+ * and the pages call it from worker threads) and converts at the edge:
+ * VENTURE_SERIES_NONE (G_MININT64) is `?i64` here, a tier array is two
+ * arrays, prices and quantities.
+ *
+ * Exact means without a 128-bit accumulator: a weighted mean
+ * sum(v_i w_i) / d with the divisor d known first is accumulated as a
+ * quotient and a remainder of d -- each product split by tallow.math's
+ * 128-bit mul_div / mul_mod, the remainders carried without ever adding
+ * past d -- and rounded half to even once at the end (vk_round.settle).
+ * The C summed into an unsigned __int128 and divided; the answer is the
+ * same integer, and the 64-bit fallback the C kept for compilers without
+ * __int128 (whose remainder * 2 could overflow) is gone.
+ *
+ * One part stays in C: the outlier test of the market value is a
+ * statistic computed in long double, which Tallow does not have, and a
+ * double would move the boundary. The kernel takes the cheapest units
+ * (take) and averages the ones the C kept (kept_mean).
+ *
+ * Performance, and where to look next. This kernel is the hottest path of
+ * the kernels and the one place the move cost speed: in a release build
+ * it measured 3-7x the C it replaced -- about 5.4-6 us per order book
+ * (summarise + percentile) against 0.75-1.4 us, and ~12 us against ~4 us
+ * per round of EWMA, median and deal price, over 200000 random inputs
+ * with bit-identical results. At the series store's volume (~10000
+ * instruments a venue an hour) that is ~50 ms of CPU a venue an hour, so
+ * it was accepted. The time is not the arithmetic; it is per-step calls
+ * into libtallow-rt that gcc cannot inline because they live in another
+ * archive:
+ *   - tlw_contract_begin / tlw_contract_end around every requires and
+ *     ensures, on each recursive step of sift, swap and bigger_child;
+ *   - tlw_index (bounds-checked xs[i]) and tlw_opt_i64_none;
+ *   - GArray growth (g_array_maybe_expand) when a result array is pushed
+ *     one element at a time.
+ * Candidates, cheapest first: static inline versions of tlw_index and
+ * the contract depth check in tallow's runtime headers (the generated C
+ * would then inline them under -O2); a pre-sized array (a tallow.list
+ * builder taking a capacity) for the copies median, p33 and deal_price
+ * sort; and moving the remaining per-step `requires` of the heap-sort
+ * helpers into one up-front check on the copy. Measure with the same
+ * benchmark before and after; the regression to beat is in this note.
+ */
+module vk_series;
+
+import vk_units;
+import vk_round as R;
+import tallow.math as M;
+
+/* days the EWMA weighs (VENTURE_SERIES_EWMA_DAYS) */
+let EWMA_DAYS = 14;
+
+/* venues quoting at or past which a deal price is the 33rd percentile
+ * instead of the median (VENTURE_SERIES_DEAL_MIN_VENUES) */
+let DEAL_MIN_VENUES = 15;
+
+/* the update interval assumed with nothing learned, and the most a
+ * learned one may be (VENTURE_SERIES_INTERVAL_DEFAULT, _CAP), seconds */
+let INTERVAL_DEFAULT = 3600;
+let INTERVAL_CAP = 7200;
+
+/* cells in the heat matrix: seven weekdays by 24 hours */
+let HEAT_CELLS = 168;
+
+/* ---- the integer core ---- */
+
+/*
+ * The EWMA weight of a day `days_ago` back, in millionths:
+ * round(1000000 x 0.5^(d / 2.1)), a half-life of 2.1 days. A table, so
+ * every machine and the documentation agree to the last digit.
+ */
+pure fn ewma_weight(days_ago: i64) -> i64
+	ensures result >= 0 && result <= 1000000
+= match days_ago {
+	0 => 1000000,
+	1 => 718873,
+	2 => 516779,
+	3 => 371499,
+	4 => 267060,
+	5 => 191983,
+	6 => 138011,
+	7 => 99213,
+	8 => 71321,
+	9 => 51271,
+	10 => 36857,
+	11 => 26496,
+	12 => 19047,
+	13 => 13692,
+	_ => 0,
+};
+
+/* ceil(units x percent / 100), without forming units x percent */
+pure fn share_ceil(units: i64, percent: i64) -> i64
+	requires units >= 0 && percent >= 1 && percent <= 100
+	ensures result >= 0 && result <= units
+{
+	let whole = (units / 100) * percent;
+	let part = (units % 100) * percent;
+	return whole + part / 100 + match part % 100 != 0 {
+		true => 1,
+		false => 0,
+	};
+}
+
+/* floor(units x percent / 100), without forming units x percent */
+pure fn share_floor(units: i64, percent: i64) -> i64
+	requires units >= 0 && percent >= 1 && percent <= 100
+	ensures result >= 0 && result <= units
+= (units / 100) * percent + ((units % 100) * percent) / 100;
+
+/*
+ * The mean of two values at least zero, half to even, without adding them
+ * (two values below 2^63 sum past it). Halving each and rounding the
+ * leftover halves alone would round 7.5 to 7: the leftovers decide.
+ */
+pure fn midpoint(low: i64, high: i64) -> i64
+	requires low >= 0 && high >= 0
+	ensures result >= low / 2 + high / 2 && result <= low / 2 + high / 2 + 1
+{
+	let q = low / 2 + high / 2;
+	let halves = low % 2 + high % 2;
+	return match halves {
+		2 => q + 1,
+		1 => match q % 2 == 0 {
+			true => q,
+			false => q + 1,
+		},
+		_ => q,
+	};
+}
+
+/* A jump is a price at least 20% above the one before: 5 (p - q) >= q,
+ * written so neither side can overflow */
+pure fn is_jump(previous: i64, price: i64) -> bool
+	requires previous >= 0 && price >= 0
+= match price <= previous {
+	true => false,
+	false => match price - previous > M.I64_MAX / 5 {
+		true => true,
+		false => (price - previous) * 5 >= previous,
+	},
+};
+
+/* whether a remainder r (of d) plus b (of d) carries a whole d */
+pure fn carries(r: i64, b: i64, d: i64) -> bool
+	requires d > 0 && r >= 0 && r < d && b >= 0 && b < d
+= b >= d - r;
+
+/* the remainder left of r + b once any whole d is carried */
+pure fn rest(r: i64, b: i64, d: i64) -> i64
+	requires d > 0 && r >= 0 && r < d && b >= 0 && b < d
+	ensures result >= 0 && result < d
+= match carries(r, b, d) {
+	true => b - (d - r),
+	false => r + b,
+};
+
+/* the weekday-by-hour cell of a local time (seconds since 1970-01-01, a
+ * Thursday): day * 24 + hour, Monday 0 */
+pure fn heat_cell(local: i64) -> i64
+	ensures result >= 0 && result < 168
+{
+	let q = local / 86400;
+	let r = local % 86400;
+	let days = match r < 0 {
+		true => q - 1,
+		false => q,
+	};
+	let seconds = match r < 0 {
+		true => r + 86400,
+		false => r,
+	};
+	return ((days % 7 + 7 + 3) % 7) * 24 + seconds / 3600;
+}
+
+/* n held to [lo, hi] */
+pure fn clamp(n: i64, lo: i64, hi: i64) -> i64
+	requires lo <= hi
+	ensures result >= lo && result <= hi
+= match n < lo {
+	true => lo,
+	false => match n > hi {
+		true => hi,
+		false => n,
+	},
+};
+
+/* n / d half to even, n at least zero and d at least one
+ * (venture_series_math_div_round) */
+pure fn div_round(n: i64, d: i64) -> i64
+	requires n >= 0 && d >= 1
+= R.div(n, d, R.Mode.HalfEven);
+
+/* the larger of two */
+pure fn larger(a: i64, b: i64) -> i64
+	ensures result >= a && result >= b && (result == a || result == b)
+= match b > a {
+	true => b,
+	false => a,
+};
+
+/* the smaller of two */
+pure fn smaller(a: i64, b: i64) -> i64
+	ensures result <= a && result <= b && (result == a || result == b)
+= match b < a {
+	true => b,
+	false => a,
+};
+
+/* ---- exact means ---- */
+
+/* the sum of weights, none when one is negative or the sum overflows */
+pure fn total(weights: [i64]) -> ?i64 = total_from(weights, 0, 0);
+
+@tailrec
+pure fn total_from(weights: [i64], i: i64, acc: i64) -> ?i64
+	requires i >= 0 && i <= weights.len() && acc >= 0
+	decreases weights.len() - i
+= match i >= weights.len() {
+	true => acc,
+	false => match weights[i] < 0 {
+		true => none,
+		false => match M.checked_add(acc, weights[i]) {
+			some next => return total_from(weights, i + 1, next),
+			none => none,
+		},
+	},
+};
+
+/*
+ * sum(values_i x weights_i) / d half to even, d the sum of the weights
+ * (positive). Exact for any values and weights at least zero: the sum is
+ * carried as a quotient q and a remainder r < d. None when a value or
+ * weight is negative or the mean does not fit 64 bits.
+ */
+pure fn exact_mean(values: [i64], weights: [i64], d: i64) -> ?i64
+	requires d > 0 && values.len() == weights.len()
+= mean_from(values, weights, d, 0, 0, 0);
+
+@tailrec
+pure fn mean_from(values: [i64], weights: [i64], d: i64, i: i64, q: i64, r: i64) -> ?i64
+	requires d > 0 && i >= 0 && i <= values.len() && values.len() == weights.len() && r >= 0 && r < d
+	decreases values.len() - i
+= match i >= values.len() {
+	true => R.settle(q, r, d, R.Mode.HalfEven),
+	false => match values[i] < 0 || weights[i] < 0 {
+		true => none,
+		false => match M.mul_div(values[i], weights[i], d) {
+			none => none,
+			some a => match M.mul_mod(values[i], weights[i], d) {
+				none => none,
+				some b => match M.checked_add(q, a + match carries(r, b, d) {
+					true => 1,
+					false => 0,
+				}) {
+					none => none,
+					some next => return mean_from(values, weights, d, i + 1, next, rest(r, b, d)),
+				},
+			},
+		},
+	},
+};
+
+/* the weighted mean, or none when there is no weight */
+pure fn weighted_mean(values: [i64], weights: [i64]) -> ?i64
+	requires values.len() == weights.len()
+= match total(weights) {
+	some d => match d > 0 {
+		true => exact_mean(values, weights, d),
+		false => none,
+	},
+	none => none,
+};
+
+/* ---- sorting ---- */
+
+/* xs[i] for a position a sort produced (always in range); 0 otherwise, so
+ * the walks below are total on any input */
+pure fn at(xs: [i64], i: i64) -> i64 = match i >= 0 && i < xs.len() {
+	true => xs[i],
+	false => 0,
+};
+
+/* the positions of keys in ascending order of key, ties by position:
+ * a merge sort, so a sorted copy never touches the input */
+pure fn order(keys: [i64]) -> own [i64] = order_range(keys, 0, keys.len());
+
+pure fn order_range(keys: [i64], lo: i64, hi: i64) -> own [i64]
+	requires lo >= 0 && lo <= hi && hi <= keys.len()
+	decreases hi - lo
+= match hi - lo {
+	0 => [],
+	1 => [lo],
+	_ => merge(keys, order_range(keys, lo, lo + (hi - lo) / 2), order_range(keys, lo + (hi - lo) / 2, hi), 0, 0, []),
+};
+
+@tailrec
+pure fn merge(keys: [i64], a: [i64], b: [i64], i: i64, j: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= a.len() && j >= 0 && j <= b.len()
+	decreases a.len() - i + b.len() - j
+{
+	if i >= a.len() && j >= b.len() {
+		return acc;
+	}
+	if j >= b.len() || (i < a.len() && at(keys, a[i]) <= at(keys, b[j])) {
+		acc.push(a[i]);
+		return merge(keys, a, b, i + 1, j, acc);
+	}
+	acc.push(b[j]);
+	return merge(keys, a, b, i, j + 1, acc);
+}
+
+/* xs sorted ascending: a copy, heap-sorted in place (the copy is ours) */
+pure fn sorted(xs: [i64]) -> own [i64] = sort_owned(copy(xs, 0, []));
+
+@tailrec
+pure fn copy(xs: [i64], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= xs.len()
+	decreases xs.len() - i
+{
+	if i >= xs.len() {
+		return acc;
+	}
+	acc.push(xs[i]);
+	return copy(xs, i + 1, acc);
+}
+
+/*
+ * An array we own sorted ascending: a heap sort, so no allocation and
+ * O(n log n) for any input. Integers have one sorted order, so the result
+ * is the qsort() the C used.
+ */
+pure fn sort_owned(xs: own [i64]) -> own [i64] {
+	let n = xs.len();
+	return unheap(heapify(xs, n / 2 - 1, n), n - 1);
+}
+
+/* every subtree from i down to the root made a max-heap */
+@tailrec
+pure fn heapify(xs: own [i64], i: i64, n: i64) -> own [i64]
+	requires n == xs.len() && i >= -1 && i < n
+	decreases i + 1
+{
+	if i < 0 {
+		return xs;
+	}
+	return heapify(sift(xs, i, n), i - 1, n);
+}
+
+/* the largest moved to the end, the heap shrunk by one, until one is left */
+@tailrec
+pure fn unheap(xs: own [i64], last: i64) -> own [i64]
+	requires last >= -1 && last < xs.len()
+	decreases last + 1
+{
+	if last < 1 {
+		return xs;
+	}
+	return unheap(sift(swap(xs, 0, last), 0, last), last - 1);
+}
+
+/* xs[i] sunk below any larger child within the first n */
+@tailrec
+pure fn sift(xs: own [i64], i: i64, n: i64) -> own [i64]
+	requires i >= 0 && i <= n && n <= xs.len()
+	decreases n - i
+{
+	let child = bigger_child(xs, 2 * i + 1, n);
+	if child >= n || child <= i || xs[child] <= xs[i] {
+		return xs;
+	}
+	return sift(swap(xs, i, child), child, n);
+}
+
+/* the larger of the children at left and left + 1 within the first n
+ * (the heap sort's inner step: no contract, the indexing is checked) */
+pure fn bigger_child(xs: [i64], left: i64, n: i64) -> i64 = match left + 1 < n && left >= 0 && xs[left + 1] > xs[left] {
+	true => left + 1,
+	false => left,
+};
+
+/* xs with positions i and j exchanged (indexing checked, so no contract
+ * on the sort's hottest step) */
+pure fn swap(xs: own [i64], i: i64, j: i64) -> own [i64] {
+	let t = xs[i];
+	xs[i] = xs[j];
+	xs[j] = t;
+	return xs;
+}
+
+/* the values that are there */
+pure fn present(values: [?i64]) -> own [i64] = present_from(values, 0, []);
+
+@tailrec
+pure fn present_from(values: [?i64], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= values.len()
+	decreases values.len() - i
+{
+	if i >= values.len() {
+		return acc;
+	}
+	match values[i] {
+		some v => acc.push(v),
+		none => {},
+	}
+	return present_from(values, i + 1, acc);
+}
+
+/* ---- tiers ---- */
+
+/*
+ * An order book made ready, or why not: Tiers are sorted by price with
+ * each run of one price folded into one tier.
+ */
+type Book =
+	| Tiers { prices: own [i64], quantities: own [i64] }
+	| NegativePrice { price: i64 }
+	| NoQuantity { quantity: i64 }
+	| Overflow;
+
+/* the first tier with a negative price or a quantity below one, in order
+ * (a price is judged before its quantity), or the tiers sorted and folded */
+pure fn normalise(prices: [i64], quantities: [i64]) -> own Book
+	requires prices.len() == quantities.len()
+= match first_bad(prices, quantities, 0) {
+	some i => match prices[i] < 0 {
+		true => Book.NegativePrice { price = prices[i] },
+		false => Book.NoQuantity { quantity = quantities[i] },
+	},
+	none => fold(order(prices), prices, quantities),
+};
+
+@tailrec
+pure fn first_bad(prices: [i64], quantities: [i64], i: i64) -> ?i64
+	requires i >= 0 && i <= prices.len() && prices.len() == quantities.len()
+	decreases prices.len() - i
+= match i >= prices.len() {
+	true => none,
+	false => match prices[i] < 0 || quantities[i] < 1 {
+		true => i,
+		false => return first_bad(prices, quantities, i + 1),
+	},
+};
+
+/* the sorted tiers with each run of one price folded into its first */
+pure fn fold(positions: [i64], prices: [i64], quantities: [i64]) -> own Book
+	requires prices.len() == quantities.len()
+	requires forall p in positions: 0 <= p && p < prices.len()
+= fold_from(positions, prices, quantities, 0, [], []);
+
+@tailrec
+pure fn fold_from(positions: [i64], prices: [i64], quantities: [i64], i: i64, out_prices: own [i64], out_quantities: own [i64]) -> own Book
+	requires i >= 0 && i <= positions.len() && out_prices.len() == out_quantities.len()
+	requires prices.len() == quantities.len()
+	decreases positions.len() - i
+{
+	if i >= positions.len() {
+		return Book.Tiers { prices = out_prices, quantities = out_quantities };
+	}
+	let price = at(prices, positions[i]);
+	let quantity = at(quantities, positions[i]);
+	let last = out_prices.len() - 1;
+	if last >= 0 && out_prices[last] == price {
+		return match M.checked_add(out_quantities[last], quantity) {
+			none => Book.Overflow,
+			some sum => {
+				out_quantities[last] = sum;
+				return fold_from(positions, prices, quantities, i + 1, out_prices, out_quantities);
+			},
+		};
+	}
+	out_prices.push(price);
+	out_quantities.push(quantity);
+	return fold_from(positions, prices, quantities, i + 1, out_prices, out_quantities);
+}
+
+/* the total units of a book, none on overflow */
+pure fn units(quantities: [i64]) -> ?i64 = units_from(quantities, 0, 0);
+
+@tailrec
+pure fn units_from(quantities: [i64], i: i64, acc: i64) -> ?i64
+	requires i >= 0 && i <= quantities.len()
+	decreases quantities.len() - i
+= match i >= quantities.len() {
+	true => acc,
+	false => match M.checked_add(acc, quantities[i]) {
+		some next => return units_from(quantities, i + 1, next),
+		none => none,
+	},
+};
+
+/* the price of the unit at 1-based rank of a sorted book; past the end,
+ * the last price; none for no tiers */
+pure fn unit_at(prices: [i64], quantities: [i64], rank: i64) -> ?i64
+	requires prices.len() == quantities.len()
+= unit_at_from(prices, quantities, rank, 0, 0);
+
+@tailrec
+pure fn unit_at_from(prices: [i64], quantities: [i64], rank: i64, i: i64, seen: i64) -> ?i64
+	requires i >= 0 && i <= prices.len() && prices.len() == quantities.len()
+	decreases prices.len() - i
+= match i >= prices.len() {
+	true => match prices.len() > 0 {
+		true => prices[prices.len() - 1],
+		false => none,
+	},
+	false => match rank - seen <= quantities[i] {
+		true => prices[i],
+		false => return unit_at_from(prices, quantities, rank, i + 1, seen + quantities[i]),
+	},
+};
+
+/* the price at `percent` (1 to 100) of the units, cheapest first */
+pure fn percentile(prices: [i64], quantities: [i64], percent: i64) -> ?i64
+	requires prices.len() == quantities.len() && percent >= 1 && percent <= 100
+= match units(quantities) {
+	some n => match n >= 1 {
+		true => unit_at(prices, quantities, larger(1, share_ceil(n, percent))),
+		false => none,
+	},
+	none => none,
+};
+
+/* the median unit of a book of n units (n known) */
+pure fn median_units(prices: [i64], quantities: [i64], n: i64) -> ?i64
+	requires prices.len() == quantities.len()
+= match n < 1 {
+	true => none,
+	false => match n % 2 == 1 {
+		true => unit_at(prices, quantities, n / 2 + 1),
+		false => match unit_at(prices, quantities, n / 2) {
+			some low => match unit_at(prices, quantities, n / 2 + 1) {
+				some high => midpoint_or_plain(low, high),
+				none => none,
+			},
+			none => none,
+		},
+	},
+};
+
+/* the midpoint of two prices; a negative one (an unnormalised book) takes
+ * the plain route */
+pure fn midpoint_or_plain(low: i64, high: i64) -> i64 = match low >= 0 && high >= 0 {
+	true => midpoint(low, high),
+	false => low + (high - low) / 2,
+};
+
+/* what a summary of a book holds; the stddev and the market value are
+ * computed beside it */
+type Summary =
+	| Stats { units: i64, mean: i64, min: i64, max: i64, median: ?i64, p15: ?i64 }
+	| Unitless
+	| TooMany
+	| TooValuable;
+
+/* the summary of a sorted, non-empty book */
+pure fn summarise(prices: [i64], quantities: [i64]) -> own Summary
+	requires prices.len() == quantities.len() && prices.len() >= 1
+= match units(quantities) {
+	none => Summary.TooMany,
+	some n => match n < 1 {
+		true => Summary.Unitless,
+		false => match exact_mean(prices, quantities, n) {
+			none => Summary.TooValuable,
+			some mean => Summary.Stats {
+				units = n,
+				mean,
+				min = prices[0],
+				max = prices[prices.len() - 1],
+				median = median_units(prices, quantities, n),
+				p15 = unit_at(prices, quantities, larger(1, share_ceil(n, 15))),
+			},
+		},
+	},
+};
+
+/*
+ * Steps 1 to 3 of the market value: the cheapest 15% of the units
+ * unconditionally, then on to 30% until a price jumps 20% over the one
+ * before. The quantity taken from each tier, cheapest first (a tier is
+ * checked for a jump only once the 15% is in hand).
+ */
+pure fn take(prices: [i64], quantities: [i64], n: i64) -> own [i64]
+	requires prices.len() == quantities.len() && n >= 1
+{
+	let least = larger(1, share_ceil(n, 15));
+	let most = larger(least, share_floor(n, 30));
+	return take_from(prices, quantities, least, most, 0, 0, none, []);
+}
+
+@tailrec
+pure fn take_from(prices: [i64], quantities: [i64], least: i64, most: i64, i: i64, count: i64, previous: ?i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= prices.len() && prices.len() == quantities.len()
+	decreases prices.len() - i
+{
+	if i >= prices.len() || stops(prices[i], least, most, count, previous) {
+		return acc;
+	}
+	let amount = smaller(quantities[i], most - count);
+	acc.push(amount);
+	return take_from(prices, quantities, least, most, i + 1, count + amount, prices[i], acc);
+}
+
+/* the taking stops at the 30% or, past the 15%, at a jump */
+pure fn stops(price: i64, least: i64, most: i64, count: i64, previous: ?i64) -> bool = match count >= least {
+	false => false,
+	true => match count >= most {
+		true => true,
+		false => match previous {
+			some p => p >= 0 && price >= 0 && is_jump(p, price),
+			none => false,
+		},
+	},
+};
+
+/*
+ * Step 5 of the market value: the exact mean of the units the outlier
+ * test kept (`keep`, one flag per tier taken), half to even. When rounding
+ * conspired to keep nothing, every unit taken counts instead.
+ */
+pure fn kept_mean(prices: [i64], taken: [i64], keep: [bool]) -> ?i64
+	requires taken.len() == keep.len() && taken.len() <= prices.len()
+{
+	let kept_prices = kept(prices, keep, 0, []);
+	let kept_taken = kept(taken, keep, 0, []);
+	return match total(kept_taken) {
+		some k => match k > 0 {
+			true => exact_mean(kept_prices, kept_taken, k),
+			false => weighted_mean(head(prices, taken.len(), 0, []), taken),
+		},
+		none => none,
+	};
+}
+
+/* xs where keep is true */
+@tailrec
+pure fn kept(xs: [i64], keep: [bool], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= keep.len() && keep.len() <= xs.len()
+	decreases keep.len() - i
+{
+	if i >= keep.len() {
+		return acc;
+	}
+	if keep[i] {
+		acc.push(xs[i]);
+	}
+	return kept(xs, keep, i + 1, acc);
+}
+
+/* the first n of xs */
+@tailrec
+pure fn head(xs: [i64], n: i64, i: i64, acc: own [i64]) -> own [i64]
+	requires n >= 0 && n <= xs.len() && i >= 0 && i <= n
+	decreases n - i
+{
+	if i >= n {
+		return acc;
+	}
+	acc.push(xs[i]);
+	return head(xs, n, i + 1, acc);
+}
+
+/* ---- plain values ---- */
+
+/* the median of the values that are there; two middles meet half to even */
+pure fn median(values: [?i64]) -> ?i64 = median_sorted(sort_owned(present(values)));
+
+pure fn median_sorted(xs: [i64]) -> ?i64 = match xs.len() {
+	0 => none,
+	_ => match xs.len() % 2 == 1 {
+		true => xs[xs.len() / 2],
+		false => midpoint_or_plain(xs[xs.len() / 2 - 1], xs[xs.len() / 2]),
+	},
+};
+
+/* the 33rd percentile of the values that are there (the lower third's top) */
+pure fn p33(values: [?i64]) -> ?i64 {
+	let xs = sort_owned(present(values));
+	return match xs.len() {
+		0 => none,
+		_ => xs[xs.len() / 3],
+	};
+}
+
+/* the deal price: the 33rd percentile with at least DEAL_MIN_VENUES quoting,
+ * the median below that */
+pure fn deal_price(values: [?i64]) -> ?i64 = match present_count(values, 0, 0) >= DEAL_MIN_VENUES {
+	true => p33(values),
+	false => median(values),
+};
+
+/* how many values are there */
+@tailrec
+pure fn present_count(values: [?i64], i: i64, acc: i64) -> i64
+	requires i >= 0 && i <= values.len() && acc >= 0
+	decreases values.len() - i
+= match i >= values.len() {
+	true => acc,
+	false => return present_count(values, i + 1, acc + match values[i] {
+		some _ => 1,
+		none => 0,
+	}),
+};
+
+/* a mean of values that may be missing, or why not */
+type Average =
+	| Value { value: i64 }
+	| Nothing
+	| Negative { value: i64 }
+	| TooLarge;
+
+/* the values that are there with their weights, refusing a negative one;
+ * `days` caps how many are read (EWMA_DAYS), and `weighted` takes each
+ * day's EWMA weight instead of one */
+type Weighed =
+	| Weights { values: own [i64], weights: own [i64] }
+	| Below { value: i64 };
+
+@tailrec
+pure fn weigh(values: [?i64], days: i64, weighted: bool, i: i64, vs: own [i64], ws: own [i64]) -> own Weighed
+	requires i >= 0 && i <= values.len() && days >= 0
+	decreases values.len() - i
+{
+	if i >= values.len() || i >= days {
+		return Weighed.Weights { values = vs, weights = ws };
+	}
+	return match values[i] {
+		none => return weigh(values, days, weighted, i + 1, vs, ws),
+		some v => match v < 0 {
+			true => Weighed.Below { value = v },
+			false => {
+				vs.push(v);
+				ws.push(match weighted {
+					true => ewma_weight(i),
+					false => 1,
+				});
+				return weigh(values, days, weighted, i + 1, vs, ws);
+			},
+		},
+	};
+}
+
+/* the mean of what weigh() found */
+pure fn average(w: Weighed) -> own Average = match w {
+	Below { value } => Average.Negative { value },
+	Weights { values, weights } => match total(weights) {
+		none => Average.TooLarge,
+		some d => match d > 0 {
+			false => Average.Nothing,
+			true => match exact_mean(values, weights, d) {
+				some v => Average.Value { value = v },
+				none => Average.TooLarge,
+			},
+		},
+	},
+};
+
+/* the 14-day EWMA: value i is i days back, weighted by ewma_weight(i) */
+pure fn ewma(values: [?i64]) -> own Average = average(weigh(values, EWMA_DAYS, true, 0, [], []));
+
+/* the plain mean of the values that are there, half to even */
+pure fn mean(values: [?i64]) -> own Average = average(weigh(values, values.len(), false, 0, [], []));
+
+/* ---- bulk cost and realisable profit ---- */
+
+/* buying `units` cheapest first from a sorted book */
+type Fill =
+	| Filled { filled: i64, cost: i64, worst: ?i64, average: ?i64, complete: bool }
+	| CostOverflow;
+
+pure fn bulk_cost(prices: [i64], quantities: [i64], units: i64) -> own Fill
+	requires prices.len() == quantities.len() && units >= 1
+= fill_from(prices, quantities, units, 0, 0, 0, none);
+
+@tailrec
+pure fn fill_from(prices: [i64], quantities: [i64], remaining: i64, i: i64, filled: i64, cost: i64, worst: ?i64) -> own Fill
+	requires i >= 0 && i <= prices.len() && prices.len() == quantities.len()
+	decreases prices.len() - i
+{
+	if i >= prices.len() || remaining <= 0 {
+		return Fill.Filled {
+			filled,
+			cost,
+			worst,
+			average = match filled > 0 && cost >= 0 {
+				true => div_round(cost, filled),
+				false => match filled > 0 {
+					true => 0,
+					false => none,
+				},
+			},
+			complete = remaining == 0,
+		};
+	}
+	let amount = smaller(quantities[i], remaining);
+	return match M.checked_mul(amount, prices[i]) {
+		none => Fill.CostOverflow,
+		some line => match M.checked_add(cost, line) {
+			none => Fill.CostOverflow,
+			some next => return fill_from(prices, quantities, remaining - amount, i + 1, filled + amount, next, prices[i]),
+		},
+	};
+}
+
+/* what buying the profitable part of a book and selling at net_price makes */
+type Realisable =
+	| Profit { units: i64, cost: i64, profit: i64, book_units: i64, capped: bool }
+	| BookOverflow
+	| ProfitOverflow;
+
+pure fn realisable(prices: [i64], quantities: [i64], net_price: i64, max_units: i64) -> own Realisable
+	requires prices.len() == quantities.len() && max_units >= 0
+= realise_from(prices, quantities, net_price, max_units, 0, 0, 0, 0, 0, false);
+
+@tailrec
+pure fn realise_from(prices: [i64], quantities: [i64], net_price: i64, max_units: i64, i: i64,
+		bought: i64, cost: i64, profit: i64, book_units: i64, capped: bool) -> own Realisable
+	requires i >= 0 && i <= prices.len() && prices.len() == quantities.len()
+	decreases prices.len() - i
+{
+	if i >= prices.len() || prices[i] >= net_price {
+		return Realisable.Profit { units = bought, cost, profit, book_units, capped };
+	}
+	return match M.checked_add(book_units, quantities[i]) {
+		none => Realisable.BookOverflow,
+		some offered => match smaller(quantities[i], max_units - bought) <= 0 {
+			true => return realise_from(prices, quantities, net_price, max_units, i + 1, bought, cost, profit, offered, true),
+			false => realise_tier(prices, quantities, net_price, max_units, i, bought, cost, profit, offered,
+				capped || smaller(quantities[i], max_units - bought) < quantities[i]),
+		},
+	};
+}
+
+/* one profitable tier bought: its cost and its margin, checked */
+pure fn realise_tier(prices: [i64], quantities: [i64], net_price: i64, max_units: i64, i: i64,
+		bought: i64, cost: i64, profit: i64, book_units: i64, capped: bool) -> own Realisable
+	requires i >= 0 && i < prices.len() && prices.len() == quantities.len()
+{
+	let amount = smaller(quantities[i], max_units - bought);
+	return match checked_line(cost, amount, prices[i]) {
+		none => Realisable.ProfitOverflow,
+		some next_cost => match checked_line(profit, amount, net_price - prices[i]) {
+			none => Realisable.ProfitOverflow,
+			some next_profit => realise_from(prices, quantities, net_price, max_units, i + 1,
+				bought + amount, next_cost, next_profit, book_units, capped),
+		},
+	};
+}
+
+/* acc + amount x price, none on overflow */
+pure fn checked_line(acc: i64, amount: i64, price: i64) -> ?i64 = match M.checked_mul(amount, price) {
+	some line => M.checked_add(acc, line),
+	none => none,
+};
+
+/* units expected to sell in `days` at `sold_per_day`, rounded down and
+ * held at G_MAXINT64; none for an unknown or negative pace or no days */
+pure fn expected_sales(sold_per_day: f64, days: f64) -> ?i64
+= match !M.is_finite(sold_per_day) || sold_per_day < 0.0 || !M.is_finite(days) || days <= 0.0 {
+	true => none,
+	false => match M.floor(sold_per_day * days) >= 9223372036854775808.0 {
+		true => M.I64_MAX,
+		false => M.floor(sold_per_day * days) as i64,
+	},
+};
+
+/* ---- the sale estimate ---- */
+
+/*
+ * Units sold and expired per instrument between two snapshots of
+ * listings, or why not. The arrays of Estimated are parallel and sorted
+ * by instrument.
+ */
+type Sales =
+	| Estimated { instruments: own [i64], sold_units: own [i64], sold_values: own [i64], expired_units: own [i64] }
+	| EarlierUnsorted
+	| LaterUnsorted
+	| SalesOverflow
+	| ExpiredOverflow;
+
+/*
+ * A merge over two id-sorted lists of listings (one pass, which matters
+ * at a hundred thousand listings per venue per hour): an earlier listing
+ * still there with less quantity sold the difference; one gone before it
+ * could have expired (it expires after `elapsed` minutes, or never: below
+ * zero) sold all of it; one gone after is expired.
+ */
+pure fn sale_estimate(ids: [u64], instruments: [i64], prices: [i64], quantities: [i64], expires: [i64],
+		current_ids: [u64], current_quantities: [i64], elapsed: i64) -> own Sales
+	requires ids.len() == instruments.len() && ids.len() == prices.len() && ids.len() == quantities.len() && ids.len() == expires.len()
+	requires current_ids.len() == current_quantities.len()
+= estimate_from(ids, instruments, prices, quantities, expires, current_ids, current_quantities, elapsed, 0, 0, [], {}, {}, {});
+
+@tailrec
+pure fn estimate_from(ids: [u64], instruments: [i64], prices: [i64], quantities: [i64], expires: [i64],
+		current_ids: [u64], current_quantities: [i64], elapsed: i64, p: i64, c: i64,
+		seen: own [i64], sold: own {i64: i64}, values: own {i64: i64}, expired: own {i64: i64}) -> own Sales
+	requires ids.len() == instruments.len() && ids.len() == prices.len() && ids.len() == quantities.len() && ids.len() == expires.len()
+	requires current_ids.len() == current_quantities.len() && p >= 0 && p <= ids.len() && c >= 0 && c <= current_ids.len()
+	decreases ids.len() - p
+{
+	if p >= ids.len() {
+		return estimated(seen, sold, values, expired);
+	}
+	if p > 0 && ids[p - 1] >= ids[p] {
+		return Sales.EarlierUnsorted;
+	}
+	return match skip(current_ids, c, ids[p]) {
+		none => Sales.LaterUnsorted,
+		some at => {
+			let instrument = instruments[p];
+			let listed = at < current_ids.len() && current_ids[at] == ids[p];
+			let partial = listed && current_quantities[at] < quantities[p];
+			let gone_sold = !listed && (expires[p] < 0 || expires[p] > elapsed);
+			if listed && !partial {
+				return estimate_from(ids, instruments, prices, quantities, expires, current_ids, current_quantities,
+					elapsed, p + 1, at, seen, sold, values, expired);
+			}
+			if !sold.has(instrument) {
+				seen.push(instrument);
+				sold[instrument] = 0;
+				values[instrument] = 0;
+				expired[instrument] = 0;
+			}
+			if partial || gone_sold {
+				let units_sold = match partial {
+					true => quantities[p] - current_quantities[at],
+					false => quantities[p],
+				};
+				return match checked_line(values[instrument] ?? 0, units_sold, prices[p]) {
+					none => Sales.SalesOverflow,
+					some v => match M.checked_add(sold[instrument] ?? 0, units_sold) {
+						none => Sales.SalesOverflow,
+						some u => {
+							values[instrument] = v;
+							sold[instrument] = u;
+							return estimate_from(ids, instruments, prices, quantities, expires, current_ids, current_quantities,
+								elapsed, p + 1, at, seen, sold, values, expired);
+						},
+					},
+				};
+			}
+			return match M.checked_add(expired[instrument] ?? 0, quantities[p]) {
+				none => Sales.ExpiredOverflow,
+				some e => {
+					expired[instrument] = e;
+					return estimate_from(ids, instruments, prices, quantities, expires, current_ids, current_quantities,
+						elapsed, p + 1, at, seen, sold, values, expired);
+				},
+			};
+		},
+	};
+}
+
+/* the later list advanced past every id below `id`, checking its order on
+ * the way; none when it is not sorted */
+@tailrec
+pure fn skip(current_ids: [u64], c: i64, id: u64) -> ?i64
+	requires c >= 0 && c <= current_ids.len()
+	decreases current_ids.len() - c
+= match c < current_ids.len() && current_ids[c] < id {
+	false => c,
+	true => match c > 0 && current_ids[c - 1] >= current_ids[c] {
+		true => none,
+		false => return skip(current_ids, c + 1, id),
+	},
+};
+
+/* the totals, by instrument ascending */
+pure fn estimated(seen: [i64], sold: {i64: i64}, values: {i64: i64}, expired: {i64: i64}) -> own Sales {
+	let instruments = sorted(seen);
+	let sold_units = lookup(sold, instruments, 0, []);
+	let sold_values = lookup(values, instruments, 0, []);
+	let expired_units = lookup(expired, instruments, 0, []);
+	return Sales.Estimated { instruments, sold_units, sold_values, expired_units };
+}
+
+@tailrec
+pure fn lookup(m: {i64: i64}, keys: [i64], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= keys.len()
+	decreases keys.len() - i
+{
+	if i >= keys.len() {
+		return acc;
+	}
+	acc.push(m[keys[i]] ?? 0);
+	return lookup(m, keys, i + 1, acc);
+}
+
+/* ---- the heat matrix ---- */
+
+/* the mean of the values in each weekday-by-hour cell (day * 24 + hour,
+ * Monday 0) and how many fell there, or why not */
+type Heat =
+	| Cells { means: own [i64], counts: own [i64] }
+	| NegativeValue { value: i64 }
+	| LocalOverflow;
+
+/* n zeros */
+@tailrec
+pure fn zeros(n: i64, acc: own [i64]) -> own [i64]
+	requires n >= 0 && acc.len() <= n
+	decreases n - acc.len()
+{
+	if acc.len() >= n {
+		return acc;
+	}
+	acc.push(0);
+	return zeros(n, acc);
+}
+
+/*
+ * Times are seconds since 1970 in UTC, read in a zone `zone_offset`
+ * seconds east; values that are not there are skipped. Every value is
+ * judged in order (a negative one, or a local time past the range, is the
+ * answer), placed in its cell, and then each cell's values are averaged
+ * exactly.
+ */
+pure fn heat(times: [i64], values: [?i64], zone_offset: i64) -> own Heat
+	requires times.len() == values.len()
+= place(times, values, zone_offset, 0, [], []);
+
+@tailrec
+pure fn place(times: [i64], values: [?i64], zone_offset: i64, i: i64, cells: own [i64], placed: own [i64]) -> own Heat
+	requires times.len() == values.len() && i >= 0 && i <= times.len() && cells.len() == placed.len()
+	decreases times.len() - i
+{
+	if i >= times.len() {
+		return cell_means(cells, placed);
+	}
+	return match values[i] {
+		none => return place(times, values, zone_offset, i + 1, cells, placed),
+		some v => match v < 0 {
+			true => Heat.NegativeValue { value = v },
+			false => match M.checked_add(times[i], zone_offset) {
+				none => Heat.LocalOverflow,
+				some local => {
+					cells.push(heat_cell(local));
+					placed.push(v);
+					return place(times, values, zone_offset, i + 1, cells, placed);
+				},
+			},
+		},
+	};
+}
+
+/* the cells' means and counts from the placed values, a cell's run at a
+ * time in cell order */
+pure fn cell_means(cells: [i64], placed: [i64]) -> own Heat
+	requires cells.len() == placed.len()
+	requires forall c in cells: 0 <= c && c < 168
+= runs(cells, placed, order(cells), 0, zeros(HEAT_CELLS, []), zeros(HEAT_CELLS, []));
+
+@tailrec
+pure fn runs(cells: [i64], placed: [i64], positions: [i64], i: i64, means: own [i64], counts: own [i64]) -> own Heat
+	requires cells.len() == placed.len() && i >= 0 && i <= positions.len()
+	requires means.len() == 168 && counts.len() == 168
+	decreases positions.len() - i
+{
+	if i >= positions.len() {
+		return Heat.Cells { means, counts };
+	}
+	let cell = clamp(at(cells, positions[i]), 0, 167);
+	let end = run_end(cells, positions, cell, i);
+	let run = gather(placed, positions, i, end, []);
+	means[cell] = weighted_mean(run, ones(end - i, [])) ?? 0;
+	counts[cell] = end - i;
+	return runs(cells, placed, positions, larger(end, i + 1), means, counts);
+}
+
+/* the first position at or after i whose cell is not `cell` */
+@tailrec
+pure fn run_end(cells: [i64], positions: [i64], cell: i64, i: i64) -> i64
+	requires i >= 0 && i <= positions.len()
+	ensures result >= i && result <= positions.len()
+	decreases positions.len() - i
+= match i < positions.len() && at(cells, positions[i]) == cell {
+	true => return run_end(cells, positions, cell, i + 1),
+	false => i,
+};
+
+/* the values at positions[from..to] */
+@tailrec
+pure fn gather(xs: [i64], positions: [i64], from: i64, to: i64, acc: own [i64]) -> own [i64]
+	requires from >= 0 && from <= to && to <= positions.len()
+	decreases to - from
+{
+	if from >= to {
+		return acc;
+	}
+	acc.push(at(xs, positions[from]));
+	return gather(xs, positions, from + 1, to, acc);
+}
+
+/* n ones */
+@tailrec
+pure fn ones(n: i64, acc: own [i64]) -> own [i64]
+	requires n >= 0 && acc.len() <= n
+	decreases n - acc.len()
+{
+	if acc.len() >= n {
+		return acc;
+	}
+	acc.push(1);
+	return ones(n, acc);
+}
+
+/* ---- the learned interval ---- */
+
+/*
+ * A source's update interval from the gaps between its snapshots: the
+ * median of the largest of each three consecutive positive gaps (one gap
+ * that ran long is not the interval; a run of them is), the largest with
+ * fewer than three, INTERVAL_DEFAULT with none; held to [1, INTERVAL_CAP].
+ */
+pure fn learn_interval(gaps: [i64]) -> i64 {
+	let usable = positive(gaps, 0, []);
+	return match usable.len() {
+		0 => INTERVAL_DEFAULT,
+		_ => clamp(match usable.len() < 3 {
+			true => largest(usable, 1, usable[0]),
+			false => median_sorted(sort_owned(window_maxima(usable, 0, []))) ?? INTERVAL_DEFAULT,
+		}, 1, INTERVAL_CAP),
+	};
+}
+
+@tailrec
+pure fn positive(gaps: [i64], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= gaps.len()
+	decreases gaps.len() - i
+{
+	if i >= gaps.len() {
+		return acc;
+	}
+	if gaps[i] > 0 {
+		acc.push(gaps[i]);
+	}
+	return positive(gaps, i + 1, acc);
+}
+
+@tailrec
+pure fn largest(xs: [i64], i: i64, acc: i64) -> i64
+	requires i >= 0 && i <= xs.len()
+	decreases xs.len() - i
+= match i >= xs.len() {
+	true => acc,
+	false => return largest(xs, i + 1, larger(acc, xs[i])),
+};
+
+@tailrec
+pure fn window_maxima(xs: [i64], i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= xs.len()
+	decreases xs.len() - i
+{
+	if i + 2 >= xs.len() {
+		return acc;
+	}
+	acc.push(larger(xs[i], larger(xs[i + 1], xs[i + 2])));
+	return window_maxima(xs, i + 1, acc);
+}
+
+test "integer core" {
+	assert(share_ceil(7, 15) == 2 && share_floor(7, 30) == 2);
+	assert(midpoint(7, 8) == 8 && midpoint(6, 9) == 8 && midpoint(M.I64_MAX, M.I64_MAX) == M.I64_MAX);
+	assert(is_jump(100, 120) && !is_jump(100, 119));
+	assert(heat_cell(0) == 3 * 24 && heat_cell(-1) == 2 * 24 + 23);
+	assert(ewma_weight(13) == 13692 && ewma_weight(14) == 0);
+}
+
+test "means" {
+	assert((weighted_mean([3, 4], [1, 1]) ?? 0) == 4);
+	assert((weighted_mean([M.I64_MAX, M.I64_MAX], [4611686018427387904, 4611686018427387903]) ?? 0) == M.I64_MAX);
+	assert(weighted_mean([1, 1], [M.I64_MAX, 1]) == none);
+	assert((weighted_mean([5, 6], [1, 1]) ?? 0) == 6);
+	assert(weighted_mean([1], [0]) == none);
+}
+
+test "sorting" {
+	let s = sorted([5, -1, 3, 3, 0]);
+	assert(s[0] == -1 && s[1] == 0 && s[2] == 3 && s[3] == 3 && s[4] == 5);
+	assert((median([some 4, none, some 1, some 9]) ?? 0) == 4);
+	assert((median([some 1, some 2]) ?? 0) == 2);
+	assert(median([none]) == none);
+}
+
+test "book" {
+	let b = normalise([30, 10, 30], [1, 2, 3]);
+	assert(match b { Tiers { prices, quantities } => prices.len() == 2 && prices[0] == 10 && quantities[1] == 4, _ => false });
+	assert(normalise([1, -2], [1, 1]) is NegativePrice);
+	assert((percentile([10, 20], [1, 1], 50) ?? 0) == 10);
+	assert(learn_interval([]) == 3600 && learn_interval([60, 0, 90]) == 90);
+}

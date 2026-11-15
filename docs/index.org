@@ -32,6 +32,8 @@ New to VENTURE? Two pages, in this order:
 - [[file:hosted-billing.org][Hosted enrollment and guarantee]] — saved payment authority, deferred first charge, the owner's plan switch from the next bill, attributed value and one-time account credit
 
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way
+- [[file:tallow-plugins.org][Tallow plugins]] — =.tlw= plugins on the sandboxed suet VM: =plugin_register()=, the =venture= and =venture_kernels= host modules, fee models and steps, grants and limits
+- [[file:kernels.org][Kernels]] — the money, ledger and trading math as pure Tallow: compiled natively, contracts, units of measure, proved with =tallow verify= and fuzzed; the catalogue and how to add one
 - [[file:quickstart.org][Quickstart]] — build it, run it, record your first sale
 - [[file:federation.org][Federation and offline sync]] — opt-in sharing, pinned hosts, separate federation URLs, local working copies and conflict-aware reconnects
 - [[file:configuration.org][Configuration]] — every setting, the layering order, and the compiled C configuration

@@ -2,6 +2,8 @@
 #include "venture.h"
 #include "venture-reconciliation-private.h"
 
+#include <vk-kernels.h>
+
 gpointer
 venture_reconciliation_dup_field(VentureEntity *entity, const gchar *name, GType type)
 {
@@ -44,19 +46,29 @@ same_scope(VentureEntity *transaction, VentureEntity *candidate)
 		venture_entity_get_id(transaction) == venture_entity_get_id(candidate)) &&
 		venture_entity_get_organization_id(transaction) == venture_entity_get_organization_id(candidate);
 }
-static gint
+/* The calendar day of @entity's date (in the date's own offset) as a
+ * Julian day number, or none when it has no date. */
+static TlwOptI64
+calendar_day(VentureEntity *entity)
+{
+	g_autoptr(GDateTime) when = venture_reconciliation_dup_field(entity, "date", G_TYPE_DATE_TIME);
+	TlwOptI64 day = { FALSE, 0 };
+	GDate date;
+	if (when == NULL)
+		return day;
+	g_date_clear(&date, 1);
+	g_date_set_dmy(&date, g_date_time_get_day_of_month(when), g_date_time_get_month(when), g_date_time_get_year(when));
+	day.has = TRUE;
+	day.val = (gint64)g_date_get_julian(&date);
+	return day;
+}
+
+/* Calendar days between the two dates, none when either is missing
+ * (vk_reconcile_distance). */
+static TlwOptI64
 date_distance(VentureEntity *a, VentureEntity *b)
 {
-	g_autoptr(GDateTime) ad = venture_reconciliation_dup_field(a, "date", G_TYPE_DATE_TIME);
-	g_autoptr(GDateTime) bd = venture_reconciliation_dup_field(b, "date", G_TYPE_DATE_TIME);
-	GDate ag, bg;
-	if (ad == NULL || bd == NULL)
-		return G_MAXINT;
-	g_date_clear(&ag, 1);
-	g_date_clear(&bg, 1);
-	g_date_set_dmy(&ag, g_date_time_get_day_of_month(ad), g_date_time_get_month(ad), g_date_time_get_year(ad));
-	g_date_set_dmy(&bg, g_date_time_get_day_of_month(bd), g_date_time_get_month(bd), g_date_time_get_year(bd));
-	return ABS(g_date_days_between(&ag, &bg));
+	return vk_reconcile_distance(calendar_day(a), calendar_day(b));
 }
 static gboolean
 overlap(VentureEntity *a, VentureEntity *b)
@@ -76,30 +88,17 @@ overlap(VentureEntity *a, VentureEntity *b)
 				return TRUE;
 	return FALSE;
 }
-/* Widen before subtracting or multiplying: even INT64_MIN is a valid input. */
-static gint
+/* Equal, within 2% of @a, or apart (vk_reconcile_relation, exact at any
+ * amount and exponent); apart when either is missing or the currencies
+ * differ. */
+static VkReconcileRelation
 amount_relation(const VentureMoney *a, const VentureMoney *b)
 {
-	__int128 av, bv, delta, base;
-	guint ae, be;
 	if (a == NULL || b == NULL ||
 		g_strcmp0(venture_money_get_currency(a), venture_money_get_currency(b)) != 0)
-		return 0;
-	av = venture_money_get_amount(a);
-	bv = venture_money_get_amount(b);
-	ae = venture_money_get_exponent(a);
-	be = venture_money_get_exponent(b);
-	/* Bound widening by the money type's supported precision. */
-	if (ae > VENTURE_MONEY_MAX_EXPONENT || be > VENTURE_MONEY_MAX_EXPONENT)
-		return 0;
-	while (ae < be) { av *= 10; ae++; }
-	while (be < ae) { bv *= 10; be++; }
-	if (av == bv)
-		return 2;
-	delta = av - bv;
-	if (delta < 0) delta = -delta;
-	base = av < 0 ? -av : av;
-	return delta * 100 <= base * 2 ? 1 : 0;
+		return VK_RECONCILE_RELATION_APART;
+	return vk_reconcile_relation(venture_money_get_amount(a), (gint64)venture_money_get_exponent(a),
+		venture_money_get_amount(b), (gint64)venture_money_get_exponent(b));
 }
 struct _VentureExactMatcher { GObject parent_instance; };
 static void exact_iface_init(VentureReconciliationMatcherInterface *iface);
@@ -134,7 +133,7 @@ exact_suggest(VentureReconciliationMatcher *self, VentureDatabase *db,
 		g_autoptr(VentureMoney) other = NULL;
 		if (!same_scope(transaction, candidate)) continue;
 		other = venture_reconciliation_dup_field(candidate, "amount", VENTURE_TYPE_MONEY);
-		if (amount_relation(amount, other) == 2 && date_distance(transaction, candidate) <= 3)
+		if (vk_reconcile_exact_near(amount_relation(amount, other), date_distance(transaction, candidate)))
 		{
 			gint64 id = venture_entity_get_id(candidate);
 			g_autofree gchar *key = id != 0 ? g_strdup_printf("%s:%" G_GINT64_FORMAT, G_OBJECT_TYPE_NAME(candidate), id)
@@ -150,22 +149,36 @@ exact_suggest(VentureReconciliationMatcher *self, VentureDatabase *db,
 	{
 		VentureEntity *candidate = g_ptr_array_index(candidates, i);
 		g_autoptr(VentureMoney) other = NULL;
-		gint relation, days, score = 0;
+		VkReconcileRelation relation;
+		VkReconcileScore score;
 		const gchar *why = NULL;
 		if (g_cancellable_set_error_if_cancelled(cancellable, error)) return NULL;
 		if (!same_scope(transaction, candidate)) continue;
 		other = venture_reconciliation_dup_field(candidate, "amount", VENTURE_TYPE_MONEY);
 		relation = amount_relation(amount, other);
-		days = date_distance(transaction, candidate);
-		if (relation == 2 && days <= 3 && unique == 1)
-		{ score = 100; why = "Unique equal amount within three calendar days"; }
-		else if (relation == 2 && days <= 10)
-		{ score = 70; why = "Equal amount within ten calendar days"; }
-		else if (relation != 0 && overlap(transaction, candidate))
-		{ score = 40; why = "Amount within two percent with description token overlap"; }
-		if (score != 0)
-			g_ptr_array_add(result, venture_match_suggestion_new(candidate, score, why,
-				relation == 2 ? VENTURE_MATCH_EXACT : VENTURE_MATCH_PARTIAL));
+		/* The score table is vk_reconcile_score; whether the descriptions
+		 * share a token is Unicode folding, GLib's, and asked only when
+		 * the amounts are related at all. */
+		score = vk_reconcile_score(relation, date_distance(transaction, candidate), (gint64)unique,
+			relation != VK_RECONCILE_RELATION_APART && overlap(transaction, candidate));
+		switch (score)
+		{
+		case VK_RECONCILE_SCORE_UNIQUE:
+			why = "Unique equal amount within three calendar days";
+			break;
+		case VK_RECONCILE_SCORE_CLOSE:
+			why = "Equal amount within ten calendar days";
+			break;
+		case VK_RECONCILE_SCORE_SIMILAR:
+			why = "Amount within two percent with description token overlap";
+			break;
+		case VK_RECONCILE_SCORE_NOTHING:
+		default:
+			break;
+		}
+		if (why != NULL)
+			g_ptr_array_add(result, venture_match_suggestion_new(candidate, (gint)vk_reconcile_points(score), why,
+				relation == VK_RECONCILE_RELATION_EQUAL ? VENTURE_MATCH_EXACT : VENTURE_MATCH_PARTIAL));
 	}
 	return g_steal_pointer(&result);
 }

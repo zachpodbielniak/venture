@@ -7,94 +7,33 @@
  * See venture-series-math.h for the contract and docs/market-data.org for
  * the formulas written out. Everything here is a pure function of its
  * arguments, which is what lets the store call it from a worker thread.
+ *
+ * The arithmetic is the Tallow kernel src/kernels/vk_series.tlw, compiled
+ * natively (docs/kernels.org). This file converts at the edge: a tier
+ * array becomes two arrays (prices, quantities), VENTURE_SERIES_NONE
+ * becomes an absent value and back, and each kernel outcome becomes the
+ * message it always was. Exact means need no 128-bit accumulator any more:
+ * the kernel carries a sum as a quotient and remainder of its known
+ * divisor, which is the same integer the unsigned __int128 gave (and has
+ * no 64-bit fallback whose remainder * 2 could overflow).
+ *
+ * One statistic stays here: the market value's outlier test is computed in
+ * long double (series_keep()), which Tallow does not have; a double would
+ * move the boundary between a kept unit and an outlier.
+ *
+ * Speed: the kernel runs 3-7x slower than the C it replaced (microseconds
+ * per book, negligible at the store's volume). The causes and the
+ * inlining that could recover it are written up at the top of
+ * src/kernels/vk_series.tlw and in docs/kernels.org (vk_series); look
+ * there before reaching for C again.
  */
 
 #include "venture.h"
 
+#include <vk-kernels.h>
+
 #include <math.h>
 #include <string.h>
-
-/* --- Wide accumulation --------------------------------------------------- */
-
-/*
- * A sum of price times quantity overflows 64 bits long before either
- * factor does: a 30 000-gold item (300 000 000 copper) times a commodity
- * stack of forty million units is already past it. Both target
- * architectures (x86_64 and aarch64) give GCC a 128-bit integer, which
- * holds the product of any two 63-bit values and the sum of billions of
- * them. Where it does not exist the same code runs on checked 64-bit
- * arithmetic and refuses what would not fit, rather than wrapping.
- */
-#ifdef __SIZEOF_INT128__
-typedef unsigned __int128 SeriesWide;
-#define SERIES_WIDE_MAX (~((SeriesWide)0))
-#else
-typedef guint64 SeriesWide;
-#define SERIES_WIDE_MAX (G_MAXUINT64)
-#endif
-
-/*
- * Adds a * b to @acc. Both factors are at least zero. Returns FALSE when
- * the accumulator would overflow.
- */
-static gboolean
-series_wide_add_product(
-	SeriesWide	*acc,
-	guint64		 a,
-	guint64		 b
-){
-#ifdef __SIZEOF_INT128__
-	SeriesWide product;
-
-	/* Two values below 2^64 multiply to below 2^128: never overflows. */
-	product = (SeriesWide)a * (SeriesWide)b;
-#else
-	guint64 product;
-
-	if (!g_uint64_checked_mul(&product, a, b))
-		return FALSE;
-#endif
-
-	if (*acc > SERIES_WIDE_MAX - product)
-		return FALSE;
-
-	*acc += product;
-	return TRUE;
-}
-
-/*
- * Divides @numerator by @denominator rounding half to even, and refuses a
- * quotient past the signed 64-bit range. The denominator is at least one.
- */
-static gboolean
-series_wide_div_round(
-	SeriesWide	 numerator,
-	guint64		 denominator,
-	gint64		*out
-){
-	SeriesWide quotient;
-	SeriesWide remainder;
-	SeriesWide twice;
-
-	quotient = numerator / (SeriesWide)denominator;
-	remainder = numerator % (SeriesWide)denominator;
-
-	/*
-	 * remainder < denominator <= 2^63, so twice the remainder still fits
-	 * even in the 64-bit fallback.
-	 */
-	twice = remainder * 2;
-
-	if ((twice > (SeriesWide)denominator) ||
-	    ((twice == (SeriesWide)denominator) && (1 == (quotient & 1))))
-		quotient++;
-
-	if (quotient > (SeriesWide)G_MAXINT64)
-		return FALSE;
-
-	*out = (gint64)quotient;
-	return TRUE;
-}
 
 static void
 series_set_overflow(
@@ -103,6 +42,64 @@ series_set_overflow(
 ){
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 	            "%s does not fit in a 64-bit integer", what);
+}
+
+/* --- Converting at the edge ---------------------------------------------- */
+
+/* The prices and the quantities of @n tiers, as the two arrays the kernel
+ * takes. */
+static void
+series_split(
+	const VentureSeriesTier	 *tiers,
+	gsize			  n_tiers,
+	GArray			**out_prices,
+	GArray			**out_quantities
+){
+	GArray *prices;
+	GArray *quantities;
+	gsize i;
+
+	prices = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_tiers);
+	quantities = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_tiers);
+
+	for (i = 0; i < n_tiers; i++)
+	{
+		g_array_append_val(prices, tiers[i].price);
+		g_array_append_val(quantities, tiers[i].quantity);
+	}
+
+	*out_prices = prices;
+	*out_quantities = quantities;
+}
+
+/* Values with VENTURE_SERIES_NONE as the kernel's absent values. */
+static GArray *
+series_optional(
+	const gint64	*values,
+	gsize		 n_values
+){
+	GArray *out;
+	gsize i;
+
+	out = g_array_sized_new(FALSE, FALSE, sizeof(TlwOptI64), (guint)n_values);
+
+	for (i = 0; i < n_values; i++)
+	{
+		TlwOptI64 value;
+
+		value.has = (VENTURE_SERIES_NONE != values[i]);
+		value.val = value.has ? values[i] : 0;
+		g_array_append_val(out, value);
+	}
+
+	return out;
+}
+
+/* A kernel's optional as the C API's value or VENTURE_SERIES_NONE. */
+static gint64
+series_or_none(TlwOptI64 value)
+{
+	return value.has ? value.val : VENTURE_SERIES_NONE;
 }
 
 /* --- Checked scalars ----------------------------------------------------- */
@@ -146,182 +143,69 @@ venture_series_math_div_round(
 	gint64	numerator,
 	gint64	denominator
 ){
-	gint64 out;
-
 	g_return_val_if_fail(numerator >= 0, 0);
 	g_return_val_if_fail(denominator >= 1, 0);
 
-	out = 0;
-
 	/* A quotient of non-negative 64-bit values always fits. */
-	(void)series_wide_div_round((SeriesWide)numerator, (guint64)denominator,
-	                            &out);
-	return out;
+	return vk_series_div_round(numerator, denominator);
 }
 
 /* --- Tiers --------------------------------------------------------------- */
-
-static gint
-series_tier_compare(
-	gconstpointer	a,
-	gconstpointer	b
-){
-	const VentureSeriesTier *left;
-	const VentureSeriesTier *right;
-
-	left = (const VentureSeriesTier *)a;
-	right = (const VentureSeriesTier *)b;
-
-	if (left->price < right->price)
-		return -1;
-	if (left->price > right->price)
-		return 1;
-	return 0;
-}
 
 gboolean
 venture_series_math_normalise_tiers(
 	GArray	 *tiers,
 	GError	**error
 ){
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
+	g_autoptr(VkSeriesBook) book = NULL;
 	VentureSeriesTier *data;
-	guint read;
-	guint write;
+	guint i;
 
 	g_return_val_if_fail(NULL != tiers, FALSE);
 	g_return_val_if_fail(sizeof(VentureSeriesTier) ==
 	                     g_array_get_element_size(tiers), FALSE);
 
+	/* vk_series_normalise: every tier judged in order, then sorted by
+	 * price with each run of one price folded into one tier. */
+	series_split((const VentureSeriesTier *)(gconstpointer)tiers->data, tiers->len,
+	             &prices, &quantities);
+	book = vk_series_normalise(prices, quantities);
+
+	switch (book->tag)
+	{
+	case VK_SERIES_BOOK_TIERS:
+		break;
+
+	case VK_SERIES_BOOK_NEGATIVE_PRICE:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A price of %" G_GINT64_FORMAT " is negative",
+		            book->u.negative_price.price);
+		return FALSE;
+
+	case VK_SERIES_BOOK_NO_QUANTITY:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A quantity of %" G_GINT64_FORMAT " is below one",
+		            book->u.no_quantity.quantity);
+		return FALSE;
+
+	case VK_SERIES_BOOK_OVERFLOW:
+	default:
+		series_set_overflow(error, "The quantity offered at one price");
+		return FALSE;
+	}
+
+	g_array_set_size(tiers, book->u.tiers.prices->len);
 	data = (VentureSeriesTier *)(gpointer)tiers->data;
 
-	for (read = 0; read < tiers->len; read++)
+	for (i = 0; i < tiers->len; i++)
 	{
-		if (data[read].price < 0)
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "A price of %" G_GINT64_FORMAT " is negative",
-			            data[read].price);
-			return FALSE;
-		}
-
-		if (data[read].quantity < 1)
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "A quantity of %" G_GINT64_FORMAT " is below one",
-			            data[read].quantity);
-			return FALSE;
-		}
+		data[i].price = g_array_index(book->u.tiers.prices, gint64, i);
+		data[i].quantity = g_array_index(book->u.tiers.quantities, gint64, i);
 	}
 
-	if (tiers->len < 2)
-		return TRUE;
-
-	g_array_sort(tiers, series_tier_compare);
-	data = (VentureSeriesTier *)(gpointer)tiers->data;
-
-	/* Fold each run of one price into its first tier. */
-	write = 0;
-
-	for (read = 1; read < tiers->len; read++)
-	{
-		if (data[read].price == data[write].price)
-		{
-			if (!venture_series_math_add(data[write].quantity,
-			                             data[read].quantity,
-			                             &data[write].quantity))
-			{
-				series_set_overflow(error, "The quantity offered at one price");
-				return FALSE;
-			}
-			continue;
-		}
-
-		write++;
-		data[write] = data[read];
-	}
-
-	g_array_set_size(tiers, write + 1);
 	return TRUE;
-}
-
-/*
- * The total units of a book, refusing an overflow.
- */
-static gboolean
-series_units(
-	const VentureSeriesTier	 *tiers,
-	gsize			  n_tiers,
-	gint64			 *out,
-	GError			**error
-){
-	gint64 units;
-	gsize i;
-
-	units = 0;
-
-	for (i = 0; i < n_tiers; i++)
-	{
-		if (!venture_series_math_add(units, tiers[i].quantity, &units))
-		{
-			series_set_overflow(error, "The total quantity");
-			return FALSE;
-		}
-	}
-
-	*out = units;
-	return TRUE;
-}
-
-/*
- * The price of the unit at 1-based @rank (1 .. units) of a sorted book.
- */
-static gint64
-series_unit_at(
-	const VentureSeriesTier	*tiers,
-	gsize			 n_tiers,
-	gint64			 rank
-){
-	gint64 seen;
-	gsize i;
-
-	seen = 0;
-
-	for (i = 0; i < n_tiers; i++)
-	{
-		/* rank - seen avoids adding past the range near the top. */
-		if (rank - seen <= tiers[i].quantity)
-			return tiers[i].price;
-
-		seen += tiers[i].quantity;
-	}
-
-	return (n_tiers > 0) ? tiers[n_tiers - 1].price : VENTURE_SERIES_NONE;
-}
-
-/*
- * ceil(units * percent / 100) and floor(units * percent / 100), computed
- * without forming units * percent (which can overflow for a large book).
- */
-static gint64
-series_share_ceil(
-	gint64	units,
-	guint	percent
-){
-	gint64 whole;
-	gint64 part;
-
-	whole = (units / 100) * (gint64)percent;
-	part = (units % 100) * (gint64)percent;
-
-	return whole + part / 100 + ((0 != part % 100) ? 1 : 0);
-}
-
-static gint64
-series_share_floor(
-	gint64	units,
-	guint	percent
-){
-	return (units / 100) * (gint64)percent + ((units % 100) * (gint64)percent) / 100;
 }
 
 gint64
@@ -330,224 +214,106 @@ venture_series_math_percentile(
 	gsize			 n_tiers,
 	guint			 percent
 ){
-	gint64 units;
-	gint64 rank;
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
 
 	g_return_val_if_fail((percent >= 1) && (percent <= 100), VENTURE_SERIES_NONE);
 
-	if ((0 == n_tiers) || !series_units(tiers, n_tiers, &units, NULL) ||
-	    (units < 1))
+	if ((0 == n_tiers) || (NULL == tiers))
 		return VENTURE_SERIES_NONE;
 
-	rank = series_share_ceil(units, percent);
+	series_split(tiers, n_tiers, &prices, &quantities);
 
-	if (rank < 1)
-		rank = 1;
-
-	return series_unit_at(tiers, n_tiers, rank);
+	return series_or_none(vk_series_percentile(prices, quantities, (gint64)percent));
 }
 
 /*
- * The mean of two non-negative values rounded half to even. Their sum
- * always fits the wide type -- two values below 2^63 sum below 2^64 --
- * where it would overflow a signed 64-bit one. The rounding has to see
- * the whole sum: halving each value first and rounding the leftover
- * halves rounds 7.5 to 7.
+ * Step 4 of the market value: which of the taken tiers are within 1.5
+ * standard deviations of the taken units' mean. These are statistics, not
+ * money -- they only decide which units are outliers -- and are computed in
+ * long double, which the kernel has no type for; the figure returned is
+ * the kernel's exact mean of the survivors.
  */
-static gint64
-series_midpoint(
-	gint64	low,
-	gint64	high
+static GArray *
+series_keep(
+	GArray	*prices,
+	GArray	*taken
 ){
-	gint64 out;
-
-	out = 0;
-	(void)series_wide_div_round((SeriesWide)low + (SeriesWide)high, 2, &out);
-	return out;
-}
-
-/*
- * The median unit of a book whose total is already known.
- */
-static gint64
-series_median_units(
-	const VentureSeriesTier	*tiers,
-	gsize			 n_tiers,
-	gint64			 units
-){
-	gint64 low;
-	gint64 high;
-
-	if (units < 1)
-		return VENTURE_SERIES_NONE;
-
-	if (1 == (units & 1))
-		return series_unit_at(tiers, n_tiers, units / 2 + 1);
-
-	low = series_unit_at(tiers, n_tiers, units / 2);
-	high = series_unit_at(tiers, n_tiers, units / 2 + 1);
-
-	return series_midpoint(low, high);
-}
-
-/*
- * A jump is a price at least 20% above the one before: 5 (p - q) >= q.
- * Written so neither side can overflow: when p - q is past a fifth of the
- * unsigned range it exceeds any q anyway.
- */
-static gboolean
-series_is_jump(
-	gint64	previous,
-	gint64	price
-){
-	guint64 rise;
-
-	if (price <= previous)
-		return FALSE;
-
-	rise = (guint64)price - (guint64)previous;
-
-	if (rise > G_MAXUINT64 / 5)
-		return TRUE;
-
-	return rise * 5 >= (guint64)previous;
-}
-
-/*
- * The market value over a book whose total is known. Shared by the public
- * function and the summary, so the two cannot disagree.
- */
-static gboolean
-series_market_value(
-	const VentureSeriesTier	 *tiers,
-	gsize			  n_tiers,
-	gint64			  units,
-	gint64			 *out,
-	GError			**error
-){
-	g_autofree VentureSeriesTier *taken = NULL;
-	gsize n_taken;
-	gint64 min_units;
-	gint64 max_units;
-	gint64 count;
-	gint64 previous;
+	GArray *keep;
 	long double mean;
 	long double variance;
 	long double spread;
-	SeriesWide sum;
-	gint64 kept;
-	gsize i;
+	gint64 count;
+	guint i;
 
-	*out = VENTURE_SERIES_NONE;
-
-	if ((0 == n_tiers) || (units < 1))
-		return TRUE;
-
-	/*
-	 * Steps 1 to 3: the cheapest 15% unconditionally, then on to 30%
-	 * until a jump. A tier is checked for a jump only once the 15% is in
-	 * hand, so a jump inside the first 15% cuts nothing.
-	 */
-	min_units = series_share_ceil(units, 15);
-	if (min_units < 1)
-		min_units = 1;
-
-	max_units = series_share_floor(units, 30);
-	if (max_units < min_units)
-		max_units = min_units;
-
-	taken = g_new0(VentureSeriesTier, n_tiers);
-	n_taken = 0;
 	count = 0;
-	previous = VENTURE_SERIES_NONE;
+	for (i = 0; i < taken->len; i++)
+		count += g_array_index(taken, gint64, i);
 
-	for (i = 0; i < n_tiers; i++)
-	{
-		gint64 take;
-
-		if (count >= min_units)
-		{
-			if (count >= max_units)
-				break;
-
-			if ((VENTURE_SERIES_NONE != previous) &&
-			    series_is_jump(previous, tiers[i].price))
-				break;
-		}
-
-		take = MIN(tiers[i].quantity, max_units - count);
-		taken[n_taken].price = tiers[i].price;
-		taken[n_taken].quantity = take;
-		n_taken++;
-		count += take;
-		previous = tiers[i].price;
-	}
-
-	/*
-	 * Step 4: the mean and spread of what was taken. These are
-	 * statistics, not money -- they only decide which units are outliers
-	 * -- so a long double is the right tool; the figure returned is
-	 * recomputed exactly from the survivors below.
-	 */
 	mean = 0.0L;
-	for (i = 0; i < n_taken; i++)
-		mean += (long double)taken[i].price * (long double)taken[i].quantity;
+	for (i = 0; i < taken->len; i++)
+		mean += (long double)g_array_index(prices, gint64, i) *
+		        (long double)g_array_index(taken, gint64, i);
 	mean /= (long double)count;
 
 	variance = 0.0L;
-	for (i = 0; i < n_taken; i++)
+	for (i = 0; i < taken->len; i++)
 	{
 		long double delta;
 
-		delta = (long double)taken[i].price - mean;
-		variance += delta * delta * (long double)taken[i].quantity;
+		delta = (long double)g_array_index(prices, gint64, i) - mean;
+		variance += delta * delta * (long double)g_array_index(taken, gint64, i);
 	}
 	variance /= (long double)count;
 	spread = 1.5L * sqrtl(variance);
 
-	/* Step 5: the exact mean of the units within 1.5 standard deviations. */
-	sum = 0;
-	kept = 0;
+	keep = g_array_sized_new(FALSE, FALSE, sizeof(gboolean), taken->len);
 
-	for (i = 0; i < n_taken; i++)
+	for (i = 0; i < taken->len; i++)
 	{
-		if (fabsl((long double)taken[i].price - mean) > spread)
-			continue;
+		gboolean kept;
 
-		if (!series_wide_add_product(&sum, (guint64)taken[i].price,
-		                             (guint64)taken[i].quantity))
-		{
-			series_set_overflow(error, "The market value's running total");
-			return FALSE;
-		}
-		kept += taken[i].quantity;
+		kept = !(fabsl((long double)g_array_index(prices, gint64, i) - mean) > spread);
+		g_array_append_val(keep, kept);
 	}
 
-	/*
-	 * A population always has a unit within one standard deviation of its
-	 * mean, so nothing survives only if rounding conspired; fall back to
-	 * everything taken rather than report no value.
-	 */
-	if (0 == kept)
-	{
-		sum = 0;
-		for (i = 0; i < n_taken; i++)
-		{
-			if (!series_wide_add_product(&sum, (guint64)taken[i].price,
-			                             (guint64)taken[i].quantity))
-			{
-				series_set_overflow(error, "The market value's running total");
-				return FALSE;
-			}
-		}
-		kept = count;
-	}
+	return keep;
+}
 
-	if (!series_wide_div_round(sum, (guint64)kept, out))
+/*
+ * The market value of a book whose total is known. Shared by the public
+ * function and the summary, so the two cannot disagree: the kernel takes
+ * the cheapest 15% to 30% (vk_series_take), this file finds the outliers,
+ * the kernel averages the rest exactly (vk_series_kept_mean).
+ */
+static gboolean
+series_market_value(
+	GArray		 *prices,
+	GArray		 *quantities,
+	gint64		  units,
+	gint64		 *out,
+	GError		**error
+){
+	g_autoptr(GArray) taken = NULL;
+	g_autoptr(GArray) keep = NULL;
+	TlwOptI64 value;
+
+	*out = VENTURE_SERIES_NONE;
+
+	if ((0 == prices->len) || (units < 1))
+		return TRUE;
+
+	taken = vk_series_take(prices, quantities, units);
+	keep = series_keep(prices, taken);
+	value = vk_series_kept_mean(prices, taken, keep);
+
+	if (!value.has)
 	{
 		series_set_overflow(error, "The market value");
 		return FALSE;
 	}
+
+	*out = value.val;
 
 	return TRUE;
 }
@@ -558,16 +324,24 @@ venture_series_math_market_value(
 	gsize			  n_tiers,
 	GError			**error
 ){
-	gint64 units;
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
+	TlwOptI64 units;
 	gint64 value;
 
 	if ((0 == n_tiers) || (NULL == tiers))
 		return VENTURE_SERIES_NONE;
 
-	if (!series_units(tiers, n_tiers, &units, error))
-		return VENTURE_SERIES_NONE;
+	series_split(tiers, n_tiers, &prices, &quantities);
+	units = vk_series_units(quantities);
 
-	if (!series_market_value(tiers, n_tiers, units, &value, error))
+	if (!units.has)
+	{
+		series_set_overflow(error, "The total quantity");
+		return VENTURE_SERIES_NONE;
+	}
+
+	if (!series_market_value(prices, quantities, units.val, &value, error))
 		return VENTURE_SERIES_NONE;
 
 	return value;
@@ -580,10 +354,12 @@ venture_series_math_summarise(
 	VentureSeriesSummary	 *out,
 	GError			**error
 ){
-	SeriesWide sum;
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
+	g_autoptr(VkSeriesSummary) summary = NULL;
 	long double mean;
 	long double variance;
-	gint64 units;
+	long double deviation;
 	gsize i;
 
 	g_return_val_if_fail(NULL != out, FALSE);
@@ -601,31 +377,33 @@ venture_series_math_summarise(
 	if ((0 == n_tiers) || (NULL == tiers))
 		return TRUE;
 
-	if (!series_units(tiers, n_tiers, &units, error))
-		return FALSE;
+	/* Units, the exact quantity-weighted mean, the ends, the median and
+	 * the 15th percentile (vk_series_summarise). */
+	series_split(tiers, n_tiers, &prices, &quantities);
+	summary = vk_series_summarise(prices, quantities);
 
-	if (units < 1)
+	switch (summary->tag)
+	{
+	case VK_SERIES_SUMMARY_STATS:
+		break;
+
+	case VK_SERIES_SUMMARY_UNITLESS:
 		return TRUE;
 
-	/* The exact quantity-weighted mean. */
-	sum = 0;
-	for (i = 0; i < n_tiers; i++)
-	{
-		if (!series_wide_add_product(&sum, (guint64)tiers[i].price,
-		                             (guint64)tiers[i].quantity))
-		{
-			series_set_overflow(error, "The book's total value");
-			return FALSE;
-		}
-	}
+	case VK_SERIES_SUMMARY_TOO_MANY:
+		series_set_overflow(error, "The total quantity");
+		return FALSE;
 
-	if (!series_wide_div_round(sum, (guint64)units, &out->mean))
-	{
-		series_set_overflow(error, "The mean price");
+	case VK_SERIES_SUMMARY_TOO_VALUABLE:
+	default:
+		series_set_overflow(error, "The book's total value");
 		return FALSE;
 	}
 
-	if (!series_market_value(tiers, n_tiers, units, &out->market_value, error))
+	out->mean = summary->u.stats.mean;
+
+	if (!series_market_value(prices, quantities, summary->u.stats.units,
+	                         &out->market_value, error))
 		return FALSE;
 
 	/*
@@ -641,104 +419,37 @@ venture_series_math_summarise(
 		delta = (long double)tiers[i].price - mean;
 		variance += delta * delta * (long double)tiers[i].quantity;
 	}
-	variance /= (long double)units;
+	variance /= (long double)summary->u.stats.units;
+	deviation = floorl(sqrtl(variance) + 0.5L);
+	out->stddev = (deviation >= (long double)G_MAXINT64) ? G_MAXINT64 : (gint64)deviation;
 
-	{
-		long double deviation;
-
-		deviation = floorl(sqrtl(variance) + 0.5L);
-		out->stddev = (deviation >= (long double)G_MAXINT64) ?
-		              G_MAXINT64 : (gint64)deviation;
-	}
-
-	out->units = units;
+	out->units = summary->u.stats.units;
 	out->tiers = (gint64)n_tiers;
-	out->min = tiers[0].price;
-	out->max = tiers[n_tiers - 1].price;
-	out->median = series_median_units(tiers, n_tiers, units);
-	out->p15 = series_unit_at(tiers, n_tiers,
-	                          MAX((gint64)1, series_share_ceil(units, 15)));
+	out->min = summary->u.stats.min_;
+	out->max = summary->u.stats.max_;
+	out->median = series_or_none(summary->u.stats.median);
+	out->p15 = series_or_none(summary->u.stats.p15);
 
 	return TRUE;
 }
 
 /* --- Plain values -------------------------------------------------------- */
 
-static gint
-series_int64_compare(
-	gconstpointer	a,
-	gconstpointer	b
-){
-	gint64 left;
-	gint64 right;
-
-	left = *(const gint64 *)a;
-	right = *(const gint64 *)b;
-
-	return (left < right) ? -1 : ((left > right) ? 1 : 0);
-}
-
-/*
- * A sorted copy of @values without the NONE entries.
- */
-static gint64 *
-series_sorted_present(
-	const gint64	*values,
-	gsize		 n_values,
-	gsize		*out_n
-){
-	gint64 *copy;
-	gsize n;
-	gsize i;
-
-	copy = g_new(gint64, MAX(n_values, (gsize)1));
-	n = 0;
-
-	for (i = 0; i < n_values; i++)
-	{
-		if (VENTURE_SERIES_NONE != values[i])
-			copy[n++] = values[i];
-	}
-
-	qsort(copy, n, sizeof(gint64), series_int64_compare);
-	*out_n = n;
-	return copy;
-}
-
 gint64
 venture_series_math_median(
 	const gint64	*values,
 	gsize		 n_values
 ){
-	g_autofree gint64 *sorted = NULL;
-	gint64 low;
-	gint64 high;
-	gsize n;
+	g_autoptr(GArray) present = NULL;
 
 	if ((0 == n_values) || (NULL == values))
 		return VENTURE_SERIES_NONE;
 
-	sorted = series_sorted_present(values, n_values, &n);
+	/* Two middles meet half to even; a negative one takes the plain
+	 * route (vk_series_median). */
+	present = series_optional(values, n_values);
 
-	if (0 == n)
-		return VENTURE_SERIES_NONE;
-
-	if (1 == (n & 1))
-		return sorted[n / 2];
-
-	low = sorted[n / 2 - 1];
-	high = sorted[n / 2];
-
-	/*
-	 * Halve each before adding so two values near the top of the range
-	 * cannot overflow. Prices are non-negative; a negative value (a gap,
-	 * a ratio someone passed) takes the plain route, which is exact for
-	 * anything that is not near the range's edge.
-	 */
-	if ((low >= 0) && (high >= 0))
-		return series_midpoint(low, high);
-
-	return low + (high - low) / 2;
+	return series_or_none(vk_series_median(present));
 }
 
 gint64
@@ -746,18 +457,14 @@ venture_series_math_p33(
 	const gint64	*values,
 	gsize		 n_values
 ){
-	g_autofree gint64 *sorted = NULL;
-	gsize n;
+	g_autoptr(GArray) present = NULL;
 
 	if ((0 == n_values) || (NULL == values))
 		return VENTURE_SERIES_NONE;
 
-	sorted = series_sorted_present(values, n_values, &n);
+	present = series_optional(values, n_values);
 
-	if (0 == n)
-		return VENTURE_SERIES_NONE;
-
-	return sorted[n / 3];
+	return series_or_none(vk_series_p33(present));
 }
 
 gint64
@@ -765,44 +472,53 @@ venture_series_math_deal_price(
 	const gint64	*values,
 	gsize		 n_values
 ){
-	gsize present;
-	gsize i;
+	g_autoptr(GArray) present = NULL;
 
 	if ((0 == n_values) || (NULL == values))
 		return VENTURE_SERIES_NONE;
 
-	present = 0;
-	for (i = 0; i < n_values; i++)
-	{
-		if (VENTURE_SERIES_NONE != values[i])
-			present++;
-	}
+	present = series_optional(values, n_values);
 
-	if (present >= VENTURE_SERIES_DEAL_MIN_VENUES)
-		return venture_series_math_p33(values, n_values);
-
-	return venture_series_math_median(values, n_values);
+	return series_or_none(vk_series_deal_price(present));
 }
 
 /* --- Averages over days -------------------------------------------------- */
 
-/*
- * round(1000000 * 0.5^(d / 2.1)) for d = 0 .. 13: a half-life of 2.1
- * days. Fixed rather than computed with pow() so every machine, and the
- * documentation, agree to the last digit.
- */
-static const guint32 series_ewma_weights[VENTURE_SERIES_EWMA_DAYS] = {
-	1000000, 718873, 516779, 371499, 267060, 191983, 138011,
-	99213, 71321, 51271, 36857, 26496, 19047, 13692
-};
-
 guint32
 venture_series_math_ewma_weight(guint days_ago)
 {
-	if (days_ago >= VENTURE_SERIES_EWMA_DAYS)
-		return 0;
+	/* round(1000000 x 0.5^(d / 2.1)), a fixed table (vk_series_ewma_weight) */
+	return (guint32)vk_series_ewma_weight((gint64)days_ago);
+}
 
-	return series_ewma_weights[days_ago];
+/* An average's value, VENTURE_SERIES_NONE with nothing to average, or the
+ * error: @what_negative names a negative value, @what_sum the sum. */
+static gint64
+series_average(
+	VkSeriesAverage	 *average,
+	const gchar	 *what_negative,
+	const gchar	 *what_sum,
+	GError		**error
+){
+	switch (average->tag)
+	{
+	case VK_SERIES_AVERAGE_VALUE:
+		return average->u.value.value;
+
+	case VK_SERIES_AVERAGE_NEGATIVE:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "%s of %" G_GINT64_FORMAT " is negative", what_negative,
+		            average->u.negative.value);
+		return VENTURE_SERIES_NONE;
+
+	case VK_SERIES_AVERAGE_TOO_LARGE:
+		series_set_overflow(error, what_sum);
+		return VENTURE_SERIES_NONE;
+
+	case VK_SERIES_AVERAGE_NOTHING:
+	default:
+		return VENTURE_SERIES_NONE;
+	}
 }
 
 gint64
@@ -811,52 +527,16 @@ venture_series_math_ewma(
 	gsize		  n_values,
 	GError		**error
 ){
-	SeriesWide sum;
-	guint64 weights;
-	gint64 out;
-	gsize i;
+	g_autoptr(GArray) present = NULL;
+	g_autoptr(VkSeriesAverage) average = NULL;
 
 	if ((0 == n_values) || (NULL == values))
 		return VENTURE_SERIES_NONE;
 
-	sum = 0;
-	weights = 0;
+	present = series_optional(values, n_values);
+	average = vk_series_ewma(present);
 
-	for (i = 0; (i < n_values) && (i < VENTURE_SERIES_EWMA_DAYS); i++)
-	{
-		guint32 weight;
-
-		if (VENTURE_SERIES_NONE == values[i])
-			continue;
-
-		if (values[i] < 0)
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "A daily value of %" G_GINT64_FORMAT " is negative",
-			            values[i]);
-			return VENTURE_SERIES_NONE;
-		}
-
-		weight = series_ewma_weights[i];
-
-		if (!series_wide_add_product(&sum, (guint64)values[i], weight))
-		{
-			series_set_overflow(error, "The weighted sum");
-			return VENTURE_SERIES_NONE;
-		}
-		weights += weight;
-	}
-
-	if (0 == weights)
-		return VENTURE_SERIES_NONE;
-
-	if (!series_wide_div_round(sum, weights, &out))
-	{
-		series_set_overflow(error, "The weighted mean");
-		return VENTURE_SERIES_NONE;
-	}
-
-	return out;
+	return series_average(average, "A daily value", "The weighted sum", error);
 }
 
 gint64
@@ -865,48 +545,16 @@ venture_series_math_mean(
 	gsize		  n_values,
 	GError		**error
 ){
-	SeriesWide sum;
-	guint64 count;
-	gint64 out;
-	gsize i;
+	g_autoptr(GArray) present = NULL;
+	g_autoptr(VkSeriesAverage) average = NULL;
 
 	if ((0 == n_values) || (NULL == values))
 		return VENTURE_SERIES_NONE;
 
-	sum = 0;
-	count = 0;
+	present = series_optional(values, n_values);
+	average = vk_series_mean(present);
 
-	for (i = 0; i < n_values; i++)
-	{
-		if (VENTURE_SERIES_NONE == values[i])
-			continue;
-
-		if (values[i] < 0)
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "A value of %" G_GINT64_FORMAT " is negative",
-			            values[i]);
-			return VENTURE_SERIES_NONE;
-		}
-
-		if (!series_wide_add_product(&sum, (guint64)values[i], 1))
-		{
-			series_set_overflow(error, "The sum");
-			return VENTURE_SERIES_NONE;
-		}
-		count++;
-	}
-
-	if (0 == count)
-		return VENTURE_SERIES_NONE;
-
-	if (!series_wide_div_round(sum, count, &out))
-	{
-		series_set_overflow(error, "The mean");
-		return VENTURE_SERIES_NONE;
-	}
-
-	return out;
+	return series_average(average, "A value", "The sum", error);
 }
 
 /* --- Bulk cost ----------------------------------------------------------- */
@@ -919,8 +567,9 @@ venture_series_math_bulk_cost(
 	VentureSeriesBulkCost	 *out,
 	GError			**error
 ){
-	gint64 remaining;
-	gsize i;
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
+	g_autoptr(VkSeriesFill) fill = NULL;
 
 	g_return_val_if_fail(NULL != out, FALSE);
 
@@ -936,31 +585,21 @@ venture_series_math_bulk_cost(
 		return FALSE;
 	}
 
-	remaining = units;
+	/* Cheapest first until the units are filled (vk_series_bulk_cost). */
+	series_split(tiers, (NULL != tiers) ? n_tiers : 0, &prices, &quantities);
+	fill = vk_series_bulk_cost(prices, quantities, units);
 
-	for (i = 0; (i < n_tiers) && (remaining > 0); i++)
+	if (VK_SERIES_FILL_FILLED != fill->tag)
 	{
-		gint64 take;
-		gint64 line;
-
-		take = MIN(tiers[i].quantity, remaining);
-
-		if (!venture_series_math_mul(take, tiers[i].price, &line) ||
-		    !venture_series_math_add(out->cost, line, &out->cost))
-		{
-			series_set_overflow(error, "The bulk cost");
-			return FALSE;
-		}
-
-		out->filled += take;
-		out->worst_price = tiers[i].price;
-		remaining -= take;
+		series_set_overflow(error, "The bulk cost");
+		return FALSE;
 	}
 
-	out->complete = (0 == remaining);
-
-	if (out->filled > 0)
-		out->average = venture_series_math_div_round(out->cost, out->filled);
+	out->filled = fill->u.filled.filled;
+	out->cost = fill->u.filled.cost;
+	out->worst_price = series_or_none(fill->u.filled.worst);
+	out->average = series_or_none(fill->u.filled.average);
+	out->complete = fill->u.filled.complete;
 
 	return TRUE;
 }
@@ -972,20 +611,8 @@ venture_series_math_expected_sales(
 	gdouble	sold_per_day,
 	gdouble	days
 ){
-	gdouble units;
-
-	if (isnan(sold_per_day) || !isfinite(sold_per_day) || (sold_per_day < 0.0) ||
-	    !isfinite(days) || (days <= 0.0))
-		return VENTURE_SERIES_NONE;
-
-	units = floor(sold_per_day * days);
-
-	/* 2^63 is the first double past G_MAXINT64; anything from it on is
-	 * held there rather than converted out of range. */
-	if (units >= 9223372036854775808.0)
-		return G_MAXINT64;
-
-	return (gint64)units;
+	/* floor(pace x days), held at G_MAXINT64 (vk_series_expected_sales) */
+	return series_or_none(vk_series_expected_sales(sold_per_day, days));
 }
 
 gboolean
@@ -997,7 +624,9 @@ venture_series_math_realisable(
 	VentureSeriesRealisable		 *out,
 	GError				**error
 ){
-	gsize i;
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
+	g_autoptr(VkSeriesRealisable) realised = NULL;
 
 	g_return_val_if_fail(NULL != out, FALSE);
 
@@ -1011,120 +640,35 @@ venture_series_math_realisable(
 	}
 
 	/* Sorted cheapest first, so the first tier that makes nothing ends
-	 * the profitable part of the book. */
-	for (i = 0; (i < n_tiers) && (tiers[i].price < net_price); i++)
+	 * the profitable part of the book (vk_series_realisable). */
+	series_split(tiers, (NULL != tiers) ? n_tiers : 0, &prices, &quantities);
+	realised = vk_series_realisable(prices, quantities, net_price, max_units);
+
+	switch (realised->tag)
 	{
-		gint64 take;
-		gint64 line;
-		gint64 margin;
+	case VK_SERIES_REALISABLE_PROFIT:
+		break;
 
-		if (!venture_series_math_add(out->book_units, tiers[i].quantity, &out->book_units))
-		{
-			series_set_overflow(error, "The units offered at a profit");
-			return FALSE;
-		}
+	case VK_SERIES_REALISABLE_BOOK_OVERFLOW:
+		series_set_overflow(error, "The units offered at a profit");
+		return FALSE;
 
-		take = MIN(tiers[i].quantity, max_units - out->units);
-
-		if (take <= 0)
-		{
-			out->capped = TRUE;
-			continue;
-		}
-
-		if (take < tiers[i].quantity)
-			out->capped = TRUE;
-
-		/* net_price > price >= 0, so the margin is positive and fits. */
-		margin = net_price - tiers[i].price;
-
-		if (!venture_series_math_mul(take, tiers[i].price, &line) ||
-		    !venture_series_math_add(out->cost, line, &out->cost) ||
-		    !venture_series_math_mul(take, margin, &line) ||
-		    !venture_series_math_add(out->profit, line, &out->profit))
-		{
-			series_set_overflow(error, "The realisable profit");
-			return FALSE;
-		}
-
-		out->units += take;
+	case VK_SERIES_REALISABLE_PROFIT_OVERFLOW:
+	default:
+		series_set_overflow(error, "The realisable profit");
+		return FALSE;
 	}
+
+	out->units = realised->u.profit.units;
+	out->cost = realised->u.profit.cost;
+	out->profit = realised->u.profit.profit;
+	out->book_units = realised->u.profit.book_units;
+	out->capped = realised->u.profit.capped;
 
 	return TRUE;
 }
 
 /* --- Sale estimate ------------------------------------------------------- */
-
-/*
- * Finds or adds the entry for @instrument. The index maps an instrument
- * to its position in @sales.
- */
-static VentureSeriesSale *
-series_sale_for(
-	GArray		*sales,
-	GHashTable	*index,
-	gint64		 instrument
-){
-	gpointer found;
-	VentureSeriesSale fresh;
-
-	if (g_hash_table_lookup_extended(index, &instrument, NULL, &found))
-		return &g_array_index(sales, VentureSeriesSale, GPOINTER_TO_UINT(found));
-
-	memset(&fresh, 0, sizeof(fresh));
-	fresh.instrument = instrument;
-	g_array_append_val(sales, fresh);
-	g_hash_table_insert(index, g_memdup2(&instrument, sizeof(gint64)),
-	                    GUINT_TO_POINTER(sales->len - 1));
-
-	return &g_array_index(sales, VentureSeriesSale, sales->len - 1);
-}
-
-static gint
-series_sale_compare(
-	gconstpointer	a,
-	gconstpointer	b
-){
-	const VentureSeriesSale *left;
-	const VentureSeriesSale *right;
-
-	left = (const VentureSeriesSale *)a;
-	right = (const VentureSeriesSale *)b;
-
-	if (left->instrument < right->instrument)
-		return -1;
-	if (left->instrument > right->instrument)
-		return 1;
-	return 0;
-}
-
-/*
- * Books @units at @price as sold for @instrument.
- */
-static gboolean
-series_book_sale(
-	GArray		 *sales,
-	GHashTable	 *index,
-	gint64		  instrument,
-	gint64		  price,
-	gint64		  units,
-	GError		**error
-){
-	VentureSeriesSale *sale;
-	gint64 value;
-
-	sale = series_sale_for(sales, index, instrument);
-
-	if (!venture_series_math_mul(price, units, &value) ||
-	    !venture_series_math_add(sale->sold_value, value, &sale->sold_value) ||
-	    !venture_series_math_add(sale->sold_units, units, &sale->sold_units))
-	{
-		series_set_overflow(error, "The estimated sales");
-		return FALSE;
-	}
-
-	return TRUE;
-}
 
 GArray *
 venture_series_math_sale_estimate(
@@ -1135,101 +679,93 @@ venture_series_math_sale_estimate(
 	gint64				  elapsed,
 	GError				**error
 ){
-	g_autoptr(GArray) sales = NULL;
-	g_autoptr(GHashTable) index = NULL;
-	gsize p;
-	gsize c;
+	g_autoptr(GArray) ids = NULL;
+	g_autoptr(GArray) instruments = NULL;
+	g_autoptr(GArray) prices = NULL;
+	g_autoptr(GArray) quantities = NULL;
+	g_autoptr(GArray) expires = NULL;
+	g_autoptr(GArray) current_ids = NULL;
+	g_autoptr(GArray) current_quantities = NULL;
+	g_autoptr(VkSeriesSales) estimate = NULL;
+	GArray *sales;
+	gsize i;
 
-	sales = g_array_new(FALSE, TRUE, sizeof(VentureSeriesSale));
-	index = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	/* The marks as the kernel's parallel arrays. */
+	ids = g_array_sized_new(FALSE, FALSE, sizeof(guint64), (guint)n_previous);
+	instruments = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_previous);
+	prices = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_previous);
+	quantities = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_previous);
+	expires = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_previous);
+	current_ids = g_array_sized_new(FALSE, FALSE, sizeof(guint64), (guint)n_current);
+	current_quantities = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_current);
 
-	p = 0;
-	c = 0;
-
-	/*
-	 * A merge over two id-sorted lists: one pass, no lookup table, which
-	 * matters at a hundred thousand listings per venue per hour.
-	 */
-	while (p < n_previous)
+	for (i = 0; i < n_previous; i++)
 	{
-		const VentureSeriesListingMark *old;
-
-		old = &previous[p];
-
-		if ((p > 0) && (previous[p - 1].id >= old->id))
-		{
-			g_set_error_literal(error, VENTURE_ERROR,
-			                    VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "The earlier listings are not sorted by id");
-			return NULL;
-		}
-
-		while ((c < n_current) && (current[c].id < old->id))
-		{
-			if ((c > 0) && (current[c - 1].id >= current[c].id))
-			{
-				g_set_error_literal(error, VENTURE_ERROR,
-				                    VENTURE_ERROR_INVALID_ARGUMENT,
-				                    "The later listings are not sorted by id");
-				return NULL;
-			}
-			c++;
-		}
-
-		if ((c < n_current) && (current[c].id == old->id))
-		{
-			/* Still listed: a smaller quantity is a partial sale. */
-			if (current[c].quantity < old->quantity)
-			{
-				if (!series_book_sale(sales, index, old->instrument, old->price,
-				                      old->quantity - current[c].quantity, error))
-					return NULL;
-			}
-		}
-		else if ((old->expires_in_min < 0) || (old->expires_in_min > elapsed))
-		{
-			/* Gone before it could have expired: sold. */
-			if (!series_book_sale(sales, index, old->instrument, old->price,
-			                      old->quantity, error))
-				return NULL;
-		}
-		else
-		{
-			VentureSeriesSale *sale;
-
-			sale = series_sale_for(sales, index, old->instrument);
-
-			if (!venture_series_math_add(sale->expired_units, old->quantity,
-			                             &sale->expired_units))
-			{
-				series_set_overflow(error, "The expired quantity");
-				return NULL;
-			}
-		}
-
-		p++;
+		g_array_append_val(ids, previous[i].id);
+		g_array_append_val(instruments, previous[i].instrument);
+		g_array_append_val(prices, previous[i].price);
+		g_array_append_val(quantities, previous[i].quantity);
+		g_array_append_val(expires, previous[i].expires_in_min);
 	}
 
-	g_array_sort(sales, series_sale_compare);
-	return g_steal_pointer(&sales);
+	for (i = 0; i < n_current; i++)
+	{
+		g_array_append_val(current_ids, current[i].id);
+		g_array_append_val(current_quantities, current[i].quantity);
+	}
+
+	/*
+	 * A merge over two id-sorted lists (vk_series_sale_estimate): one
+	 * pass, no lookup table, which matters at a hundred thousand
+	 * listings per venue per hour.
+	 */
+	estimate = vk_series_sale_estimate(ids, instruments, prices, quantities, expires,
+	                                   current_ids, current_quantities, elapsed);
+
+	switch (estimate->tag)
+	{
+	case VK_SERIES_SALES_ESTIMATED:
+		break;
+
+	case VK_SERIES_SALES_EARLIER_UNSORTED:
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The earlier listings are not sorted by id");
+		return NULL;
+
+	case VK_SERIES_SALES_LATER_UNSORTED:
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The later listings are not sorted by id");
+		return NULL;
+
+	case VK_SERIES_SALES_SALES_OVERFLOW:
+		series_set_overflow(error, "The estimated sales");
+		return NULL;
+
+	case VK_SERIES_SALES_EXPIRED_OVERFLOW:
+	default:
+		series_set_overflow(error, "The expired quantity");
+		return NULL;
+	}
+
+	sales = g_array_sized_new(FALSE, TRUE, sizeof(VentureSeriesSale),
+	                          estimate->u.estimated.instruments->len);
+
+	for (i = 0; i < estimate->u.estimated.instruments->len; i++)
+	{
+		VentureSeriesSale sale;
+
+		memset(&sale, 0, sizeof(sale));
+		sale.instrument = g_array_index(estimate->u.estimated.instruments, gint64, i);
+		sale.sold_units = g_array_index(estimate->u.estimated.sold_units, gint64, i);
+		sale.sold_value = g_array_index(estimate->u.estimated.sold_values, gint64, i);
+		sale.expired_units = g_array_index(estimate->u.estimated.expired_units, gint64, i);
+		g_array_append_val(sales, sale);
+	}
+
+	return sales;
 }
 
 /* --- Heat matrix --------------------------------------------------------- */
-
-static gint64
-series_floor_div(
-	gint64	a,
-	gint64	b
-){
-	gint64 q;
-
-	q = a / b;
-
-	if (((a % b) != 0) && ((a < 0) != (b < 0)))
-		q--;
-
-	return q;
-}
 
 gboolean
 venture_series_math_heat(
@@ -1240,69 +776,52 @@ venture_series_math_heat(
 	VentureSeriesHeat	 *out,
 	GError			**error
 ){
-	SeriesWide sums[7][24];
+	g_autoptr(GArray) time_array = NULL;
+	g_autoptr(GArray) present = NULL;
+	g_autoptr(VkSeriesHeat) heat = NULL;
 	guint day;
 	guint hour;
-	gsize i;
 
 	g_return_val_if_fail(NULL != out, FALSE);
 
-	memset(sums, 0, sizeof(sums));
 	memset(out->count, 0, sizeof(out->count));
 
-	for (i = 0; i < n; i++)
+	/* Each value placed in its weekday-by-hour cell (1 January 1970 was a
+	 * Thursday) and each cell averaged exactly (vk_series_heat). */
+	time_array = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n);
+	if (n > 0)
+		g_array_append_vals(time_array, times, (guint)n);
+	present = series_optional(values, n);
+	heat = vk_series_heat(time_array, present, zone_offset);
+
+	switch (heat->tag)
 	{
-		gint64 local;
-		gint64 days;
-		gint64 seconds;
+	case VK_SERIES_HEAT_CELLS:
+		break;
 
-		if (VENTURE_SERIES_NONE == values[i])
-			continue;
+	case VK_SERIES_HEAT_NEGATIVE_VALUE:
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A value of %" G_GINT64_FORMAT " is negative",
+		            heat->u.negative_value.value);
+		return FALSE;
 
-		if (values[i] < 0)
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "A value of %" G_GINT64_FORMAT " is negative",
-			            values[i]);
-			return FALSE;
-		}
-
-		if (!venture_series_math_add(times[i], zone_offset, &local))
-		{
-			series_set_overflow(error, "A local time");
-			return FALSE;
-		}
-
-		/* 1 January 1970 was a Thursday: index 3 with Monday as 0. */
-		days = series_floor_div(local, 86400);
-		seconds = local - days * 86400;
-		day = (guint)(((days % 7) + 7 + 3) % 7);
-		hour = (guint)(seconds / 3600);
-
-		if (!series_wide_add_product(&sums[day][hour], (guint64)values[i], 1))
-		{
-			series_set_overflow(error, "A heat-map cell");
-			return FALSE;
-		}
-		out->count[day][hour]++;
+	case VK_SERIES_HEAT_LOCAL_OVERFLOW:
+	default:
+		series_set_overflow(error, "A local time");
+		return FALSE;
 	}
 
 	for (day = 0; day < 7; day++)
 	{
 		for (hour = 0; hour < 24; hour++)
 		{
-			if (0 == out->count[day][hour])
-			{
-				out->value[day][hour] = VENTURE_SERIES_NONE;
-				continue;
-			}
+			guint cell;
 
-			if (!series_wide_div_round(sums[day][hour], out->count[day][hour],
-			                           &out->value[day][hour]))
-			{
-				series_set_overflow(error, "A heat-map cell");
-				return FALSE;
-			}
+			cell = day * 24 + hour;
+			out->count[day][hour] = (guint32)g_array_index(heat->u.cells.counts, gint64, cell);
+			out->value[day][hour] = (0 == out->count[day][hour])
+			                        ? VENTURE_SERIES_NONE
+			                        : g_array_index(heat->u.cells.means, gint64, cell);
 		}
 	}
 
@@ -1316,42 +835,15 @@ venture_series_math_learn_interval(
 	const gint64	*gaps,
 	gsize		 n_gaps
 ){
-	g_autofree gint64 *usable = NULL;
-	g_autofree gint64 *maxima = NULL;
-	gsize n;
-	gsize i;
-	gint64 interval;
+	g_autoptr(GArray) array = NULL;
 
 	if ((0 == n_gaps) || (NULL == gaps))
 		return VENTURE_SERIES_INTERVAL_DEFAULT;
 
-	usable = g_new(gint64, n_gaps);
-	n = 0;
+	/* The median of each three gaps' largest, held to [1, the cap]
+	 * (vk_series_learn_interval). */
+	array = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_gaps);
+	g_array_append_vals(array, gaps, (guint)n_gaps);
 
-	for (i = 0; i < n_gaps; i++)
-	{
-		if (gaps[i] > 0)
-			usable[n++] = gaps[i];
-	}
-
-	if (0 == n)
-		return VENTURE_SERIES_INTERVAL_DEFAULT;
-
-	if (n < 3)
-	{
-		interval = usable[0];
-		for (i = 1; i < n; i++)
-			interval = MAX(interval, usable[i]);
-	}
-	else
-	{
-		maxima = g_new(gint64, n - 2);
-
-		for (i = 0; i + 2 < n; i++)
-			maxima[i] = MAX(usable[i], MAX(usable[i + 1], usable[i + 2]));
-
-		interval = venture_series_math_median(maxima, n - 2);
-	}
-
-	return CLAMP(interval, (gint64)1, (gint64)VENTURE_SERIES_INTERVAL_CAP);
+	return vk_series_learn_interval(array);
 }

@@ -43,7 +43,7 @@ The market data path is where plugins matter most, and the one this page carries
 
 ** The short version
 
-- Every plugin is loaded by a *runtime*. Four ship: =native= (a =.so=), =crispy= (a =.c= compiled on demand), =declarative= (a =.yaml= venture type) and =exec= (a program run as a subprocess).
+- Every plugin is loaded by a *runtime*. Five ship: =native= (a =.so=), =crispy= (a =.c= compiled on demand), =declarative= (a =.yaml= venture type), =exec= (a program run as a subprocess) and =tallow= (a =.tlw= file run by Tallow's bytecode VM, sandboxed; see [[file:tallow-plugins.org][Tallow plugins]]).
 - A bare file in a plugin directory is loaded by the runtime that claims its extension, exactly as before runtimes existed.
 - A =*.plugin.yaml= *manifest* names a plugin, its runtime and its entry file, and can list what the plugin *provides*. A manifest is the only way to load an exec plugin.
 - A plugin may register a new runtime. A file nothing claims yet is held, and loads the moment a runtime for it is registered.
@@ -59,6 +59,7 @@ A runtime is a =VenturePluginRuntime= (=src/plugin/venture-plugin-runtime.h=): a
 | =crispy=      | =.c=            | C source compiled by crispy and cached by content hash        | =plugins.allow_crispy= (on)      |
 | =declarative= | =.yaml=, =.yml= | a declarative venture type                                    | =plugins.enabled=                |
 | =exec=        | none            | a program beside a manifest, spoken to in JSON lines          | =plugins.allow_exec= (off)       |
+| =tallow=      | =.tlw=          | Tallow source on the suet VM, one sandboxed VM per plugin     | =plugins.allow_tallow= (on)      |
 
 =native= and =crispy= share the entry point =venture_plugin_register(VentureContext *, GError **)= and the optional =venture_plugin_info()=. Their behaviour is unchanged from before runtimes existed; it moved behind the interface, nothing more.
 
@@ -467,16 +468,18 @@ What the loader promises, and what it does not:
 - *An exec program cannot hold the server.* One deadline, byte caps on both outputs, the whole process group killed on any early end, and a private main context so nothing else runs nested inside the call.
 - *It is not a sandbox.* An exec program runs as the server's user and can read whatever that user can, including the database file and =/proc= entries of the server process. The rules keep the server from *handing* it more than it asked for, which is a different promise from containing it. Treat a plugin directory with exec enabled as you would =~/bin=: only what you trust goes there.
 - *Native and crispy code is fully trusted.* It runs inside the server process with the full API; =plugins.allow_crispy= exists because crispy runs a compiler over whatever is in the directory.
+- *Tallow plugins are sandboxed.* A =.tlw= plugin runs on its own suet VM: no file, network, process or environment access unless =plugins.tallow_capabilities= grants it by name, no GIR, an instruction budget per call (=plugins.tallow_max_steps=) and a heap cap (=plugins.tallow_max_memory=). What it can do to the server is the =venture= host module's list: log, register an automation step or a fee model at load, read JSON parameters, and call VENTURE's compiled money kernels. A violated kernel contract or a panic is an error for that call; the server carries on. It is the one runtime whose plugins an operator can accept from someone they do not fully trust -- the VM confines the code; it does not make a wrong fee model right. [[file:tallow-plugins.org][Tallow plugins]] has the details.
 
 * The reference plugins
 
-Four plugins in the tree are both real connectors and the worked examples of the three ways to write a data source provider. Each is a complete, commented file to copy from; each has its own walk-through under =docs/examples/=.
+Five plugins are in the tree. Four are both real connectors and the worked examples of the three ways to write a data source provider, each with its own walk-through under =docs/examples/=; the fifth, =tiered-fees.tlw=, is the reference Tallow plugin, walked through in [[file:tallow-plugins.org][Tallow plugins]]. Each is a complete, commented file to copy from.
 
 | Plugin                         | Runtime          | Provides                                                                                     | Built                                   | Walk-through |
 |--------------------------------+------------------+----------------------------------------------------------------------------------------------+-----------------------------------------+--------------|
 | =plugins/blizzard-auctions/=   | native =.so=     | provider =blizzard_auctions=, fee model =wow_auction=, export =tsm=, actions =import_recipes= and =set_venue_fees= | into =$(OUTDIR)/plugins-optional/=      | [[file:examples/wow-auction-house-feed.org][World of Warcraft auction houses]] |
 | =plugins/scripts/odds-api.c=   | crispy (=.c=)    | provider =odds_api=                                                                          | never: compiled on demand by the server | [[file:examples/odds-api-feed.org][Bookmakers' odds]] |
 | =plugins/exec/supplier-csv/=   | exec (bash)      | provider =supplier_csv=                                                                      | never: a manifest and a script          | [[file:examples/dropship-supplier-feed.org][A dropshipping supplier]] |
+| =plugins/tallow/tiered-fees.tlw= | tallow (=.tlw=) | fee model =tiered_ppm=, automation step =margin_ppm=                                         | copied into =$(OUTDIR)/plugins-optional/= | [[file:tallow-plugins.org][Tallow plugins]] |
 | =plugins/exec/tsmctl/=         | exec (bash)      | provider =tsmctl=: runs =tsmctl export --format venture= (optional; push is the other way in) | never: a manifest and a script          | [[file:examples/wow-operations.org][A World of Warcraft gold business]] |
 
 ** Blizzard: a provider as a GObject, and four registries from one plugin

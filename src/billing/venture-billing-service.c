@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <vk-kernels.h>
 #include <string.h>
 
 struct _VentureBillingService
@@ -29,6 +30,37 @@ refuse(GError **error, VentureError code, const gchar *message)
 {
 	g_set_error(error, VENTURE_ERROR, code, "VentureBillingService: %s", message);
 	return FALSE;
+}
+
+/* A kernel's `none` from money arithmetic: the result does not fit. */
+static gpointer
+overflowed(GError **error, const gchar *what)
+{
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"%s overflows a 64-bit minor-unit amount", what);
+	return NULL;
+}
+
+/*
+ * Two amounts a kernel combines must be one currency: the kernels see
+ * minor units, not codes. The same refusal venture_money_add gives.
+ */
+static gboolean
+same_currency(const VentureMoney *a, const VentureMoney *b, GError **error)
+{
+	if (g_ascii_strcasecmp(venture_money_get_currency(a), venture_money_get_currency(b)) == 0)
+		return TRUE;
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"Cannot combine %s and %s: no exchange rate is available and guessing one would be wrong",
+		venture_money_get_currency(a), venture_money_get_currency(b));
+	return FALSE;
+}
+
+/* @amount (from a kernel) in @like's currency at @exponent */
+static VentureMoney *
+money_like(gint64 amount, const VentureMoney *like, guint8 exponent)
+{
+	return venture_money_new(amount, venture_money_get_currency(like), exponent);
 }
 
 static gint64
@@ -219,7 +251,13 @@ price_amount(VentureEntity *price, gint64 seats, GError **error)
 		refuse(error, VENTURE_ERROR_VALIDATION, "price amount, currency and positive seats must agree");
 		return NULL;
 	}
-	return venture_money_multiply_rational(amount, flag(price, "per-seat") ? seats : 1, 1, error);
+	/* vk_billing_price: per seat, or once whatever the seats */
+	{
+		TlwOptI64 charge = vk_billing_price(venture_money_get_amount(amount), seats, flag(price, "per-seat"));
+		if (!charge.has)
+			return overflowed(error, "A price times its seats");
+		return money_like(charge.val, amount, venture_money_get_exponent(amount));
+	}
 }
 
 static GDateTime *
@@ -276,16 +314,42 @@ price_available(VentureBillingService *self, VentureEntity *price, gint64 org, g
 static gint
 served_months(GDateTime *start, GDateTime *end)
 {
-	gint months = (g_date_time_get_year(end) - g_date_time_get_year(start)) * 12 +
-		g_date_time_get_month(end) - g_date_time_get_month(start);
-	return months == 3 || months == 6 || months == 12 ? months : 1;
+	return (gint)vk_billing_served(vk_billing_months_between(g_date_time_get_year(start),
+		g_date_time_get_month(start), g_date_time_get_year(end), g_date_time_get_month(end)));
 }
 
+/* @amount, a price for its interval, scaled to @period_months (half to even) */
 static VentureMoney *
 over_period(VentureEntity *price, const VentureMoney *amount, gint period_months, GError **error)
 {
-	return venture_money_multiply_rational(amount, period_months,
-		venture_billing_interval_months(choice(price, "interval")), error);
+	TlwOptI64 scaled = vk_billing_over_period(venture_money_get_amount(amount), period_months,
+		venture_billing_interval_months(choice(price, "interval")));
+	if (!scaled.has)
+		return overflowed(error, "Scaling a price to the period");
+	return money_like(scaled.val, amount, venture_money_get_exponent(amount));
+}
+
+/*
+ * Whole days from @from to @to as a calendar counts them: the difference
+ * of the Julian day numbers of their dates, both read in @from's time
+ * zone. Dividing the elapsed time by 24 hours instead loses a day across
+ * a daylight-saving change: a March period set in New York runs 30 days
+ * and 23 hours, which truncated to 30 days and spread a month's price
+ * over one day too few. A change is on the calendar day it is dated.
+ */
+static gint64
+whole_days(GDateTime *from, GDateTime *to)
+{
+	g_autoptr(GDateTime) local = g_date_time_to_timezone(to, g_date_time_get_timezone(from));
+	GDate a, b;
+	gint y, m, d;
+	g_date_clear(&a, 1);
+	g_date_clear(&b, 1);
+	g_date_time_get_ymd(from, &y, &m, &d);
+	g_date_set_dmy(&a, (GDateDay)d, (GDateMonth)m, (GDateYear)y);
+	g_date_time_get_ymd(local, &y, &m, &d);
+	g_date_set_dmy(&b, (GDateDay)d, (GDateMonth)m, (GDateYear)y);
+	return (gint64)g_date_get_julian(&b) - (gint64)g_date_get_julian(&a);
 }
 
 /*
@@ -299,28 +363,25 @@ static VentureMoney *
 remaining_share(const VentureMoney *delta, GDateTime *start, GDateTime *end, GDateTime *at,
 	gint64 *days_left, GError **error)
 {
-	g_autoptr(GPtrArray) parts = NULL;
+	g_autoptr(VentureMoney) zero = NULL;
+	g_autoptr(VentureMoney) share = NULL;
 	VentureMoney *total;
-	gint64 days = g_date_time_difference(end, start) / G_TIME_SPAN_DAY;
-	gint64 elapsed = g_date_time_difference(at, start) / G_TIME_SPAN_DAY;
-	gint64 i;
-	if (days <= 0 || days > 366 || elapsed < 0 || elapsed >= days)
+	gint64 days = whole_days(start, end);
+	gint64 elapsed = whole_days(start, at);
+	if (!vk_billing_inside(days, elapsed))
 	{
 		refuse(error, VENTURE_ERROR_VALIDATION, "change date must be inside the current period; renew first if due");
 		return NULL;
 	}
-	parts = venture_money_allocate_evenly(delta, (gsize)days, error);
-	if (parts == NULL)
+	/* vk_billing_tail_share sums the days left of an even spread in
+	 * closed form; added to the currency's zero, as the per-day sum was,
+	 * so the result has the exponent it always had. */
+	share = money_like(vk_billing_tail_share(venture_money_get_amount(delta), days, elapsed), delta,
+		venture_money_get_exponent(delta));
+	zero = venture_money_new_zero(venture_money_get_currency(delta));
+	total = venture_money_add(zero, share, error);
+	if (total == NULL)
 		return NULL;
-	total = venture_money_new_zero(venture_money_get_currency(delta));
-	for (i = elapsed; i < days; i++)
-	{
-		VentureMoney *next = venture_money_add(total, g_ptr_array_index(parts, (guint)i), error);
-		venture_money_free(total);
-		if (next == NULL)
-			return NULL;
-		total = next;
-	}
 	if (days_left != NULL)
 		*days_left = days - elapsed;
 	return total;
@@ -368,20 +429,30 @@ static VentureMoney *
 discount_take(VentureEntity *discount, const VentureMoney *amount, GError **error)
 {
 	g_autoptr(VentureMoney) off = NULL;
+	g_autoptr(VkBillingDiscount) terms = NULL;
+	g_autoptr(VkBillingTaken) taken = NULL;
 	gint64 percent = number(discount, "percent-off");
-	VentureMoney *result;
+	guint8 exponent = venture_money_get_exponent(amount);
 	g_object_get(discount, "amount-off", &off, NULL);
+	/* A percent wins over an amount, as it always has; an amount off is
+	 * subtracted at the finer of the two exponents. */
 	if (percent > 0)
-		return venture_money_multiply_rational(amount, 100 - percent, 100, error);
-	if (off == NULL)
-		return venture_money_copy(amount);
-	result = venture_money_subtract(amount, off, error);
-	if (result != NULL && venture_money_get_amount(result) < 0)
+		terms = vk_billing_discount_new_percent_off(percent);
+	else if (off != NULL)
 	{
-		venture_money_free(result);
-		result = venture_money_new_zero(venture_money_get_currency(amount));
+		if (!same_currency(amount, off, error))
+			return NULL;
+		terms = vk_billing_discount_new_amount_off(venture_money_get_amount(off), venture_money_get_exponent(off));
+		exponent = MAX(exponent, venture_money_get_exponent(off));
 	}
-	return result;
+	else
+		terms = vk_billing_discount_new_no_discount();
+	taken = vk_billing_take(venture_money_get_amount(amount), venture_money_get_exponent(amount), terms);
+	if (taken == NULL)
+		return overflowed(error, "Taking a discount off a price");
+	if (taken->tag == VK_BILLING_TAKEN_FREE)
+		return venture_money_new_zero(venture_money_get_currency(amount));
+	return money_like(taken->u.net.amount, amount, exponent);
 }
 
 /*
@@ -595,7 +666,13 @@ mrr(VentureBillingService *self, VentureEntity *sub, VentureEntity *price, gint6
 		g_clear_pointer(&total, venture_money_free);
 		total = discounted;
 	}
-	return venture_money_multiply_rational(total, 1, venture_billing_interval_months(choice(price, "interval")), error);
+	{
+		TlwOptI64 month = vk_billing_monthly(venture_money_get_amount(total),
+			venture_billing_interval_months(choice(price, "interval")));
+		if (!month.has)
+			return overflowed(error, "A month of a price");
+		return money_like(month.val, total, venture_money_get_exponent(total));
+	}
 }
 
 /*
@@ -806,16 +883,21 @@ period_tax_share(VentureBillingService *self, gint64 invoice, gint64 org, const 
 	if (line == NULL)
 		return FALSE;
 	g_object_get(line, "income-amount", &line_net, "tax-amount", &line_tax, "tax-jurisdiction-id", jurisdiction, NULL);
-	if (line_net != NULL && line_tax != NULL && venture_money_get_amount(line_net) > 0 &&
-		venture_money_get_amount(line_tax) > 0)
+	if (line_net != NULL && line_tax != NULL &&
+		vk_billing_charged(venture_money_get_amount(line_net), venture_money_get_amount(line_tax)))
 	{
 		g_autoptr(VentureMoney) scaled = venture_money_rescale(line_tax, venture_money_get_exponent(line_net), error);
+		TlwOptI64 share;
 		if (scaled == NULL)
 			return FALSE;
-		*tax = venture_money_multiply_rational(net, venture_money_get_amount(scaled),
-			venture_money_get_amount(line_net), error);
-		if (*tax == NULL)
+		share = vk_billing_tax_share(venture_money_get_amount(net), venture_money_get_amount(line_net),
+			venture_money_get_amount(scaled));
+		if (!share.has)
+		{
+			overflowed(error, "The tax on a credited period");
 			return FALSE;
+		}
+		*tax = money_like(share.val, net, venture_money_get_exponent(net));
 	}
 	return TRUE;
 }
@@ -1035,9 +1117,12 @@ grant(VentureBillingService *self, VentureCustomerSubscription *subscription, gb
 	}
 	if (month)
 	{
-		VentureMoney *share = venture_money_multiply_rational(charge, 1, venture_billing_interval_months(choice(price, "interval")), error);
-		if (share == NULL)
-			return NULL;
+		TlwOptI64 month_share = vk_billing_monthly(venture_money_get_amount(charge),
+			venture_billing_interval_months(choice(price, "interval")));
+		VentureMoney *share;
+		if (!month_share.has)
+			return overflowed(error, "A month of a price");
+		share = money_like(month_share.val, charge, venture_money_get_exponent(charge));
 		g_clear_pointer(&charge, venture_money_free);
 		charge = share;
 	}
@@ -1182,6 +1267,7 @@ preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org
 	g_autoptr(VentureMoney) amount = NULL;
 	g_autoptr(VentureMoney) discounted = NULL;
 	g_autoptr(VentureMoney) adjustment = NULL;
+	g_autoptr(VentureMoney) credit = NULL;
 	g_autofree gchar *label = NULL;
 	gint state = choice(sub, "status");
 	if (state > 2 || flag(sub, "cancel-at-period-end"))
@@ -1220,43 +1306,51 @@ preview_next_invoice(VentureBillingService *self, VentureEntity *sub, gint64 org
 	{
 		g_autoptr(VentureMoney) credit_tax = NULL;
 		gint64 jurisdiction = 0;
-		VentureMoney *gross = carried_credit(self, sub, adjustment, &credit_tax, &jurisdiction, error);
-
-		if (gross == NULL)
+		credit = carried_credit(self, sub, adjustment, &credit_tax, &jurisdiction, error);
+		if (credit == NULL)
 			return NULL;
-		g_clear_pointer(&adjustment, venture_money_free);
-		adjustment = venture_money_negate(gross);
-		venture_money_free(gross);
 	}
 	{
-		g_autoptr(VentureMoney) tax = NULL;
 		g_autoptr(GDateTime) renews = NULL;
 		VentureMoney *taxed;
+		TlwOptI64 gross;
 		gint64 numerator = 0, denominator = 100;
 
 		g_object_get(sub, "current-period-end", &renews, NULL);
 		if (!venture_billing_service_price_tax_rate(self, VENTURE_PLAN_PRICE(price), number(sub, "company-id"),
 			renews, &numerator, &denominator, error))
 			return NULL;
-		tax = venture_money_multiply_rational(discounted, numerator, denominator, error);
-		if (tax == NULL)
+		/* vk_billing_gross_up: the tax half to even at the charge's
+		 * exponent, added to it */
+		if (denominator == 0)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Monetary multiplier has a zero denominator");
 			return NULL;
-		taxed = venture_money_add(discounted, tax, error);
-		if (taxed == NULL)
-			return NULL;
+		}
+		gross = vk_billing_gross_up(venture_money_get_amount(discounted), numerator, denominator);
+		if (!gross.has)
+			return overflowed(error, "A charge with its tax");
+		taxed = money_like(gross.val, discounted, venture_money_get_exponent(discounted));
 		g_clear_pointer(&discounted, venture_money_free);
 		discounted = taxed;
 	}
-	if (adjustment != NULL && !venture_money_is_zero(adjustment))
+	if (credit != NULL && !venture_money_is_zero(credit))
 	{
-		VentureMoney *total = venture_money_add(discounted, adjustment, error);
-		if (total == NULL)
+		/* vk_billing_less_credit: never below zero, never a negative invoice */
+		g_autoptr(VkBillingTaken) owed = NULL;
+		VentureMoney *total;
+		if (!same_currency(discounted, credit, error))
 			return NULL;
-		if (venture_money_get_amount(total) < 0)
-		{
-			venture_money_free(total);
+		owed = vk_billing_less_credit(venture_money_get_amount(discounted), venture_money_get_exponent(discounted),
+			venture_money_get_amount(credit), venture_money_get_exponent(credit));
+		if (owed == NULL)
+			return overflowed(error, "A charge less its credit");
+		if (owed->tag == VK_BILLING_TAKEN_FREE)
 			total = venture_money_new_zero(venture_money_get_currency(discounted));
-		}
+		else
+			total = money_like(owed->u.net.amount, discounted,
+				MAX(venture_money_get_exponent(discounted), venture_money_get_exponent(credit)));
 		g_clear_pointer(&discounted, venture_money_free);
 		discounted = total;
 	}

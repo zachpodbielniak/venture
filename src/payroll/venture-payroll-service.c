@@ -2,6 +2,8 @@
 #include "venture.h"
 #include <string.h>
 
+#include <vk-kernels.h>
+
 struct _VenturePayrollService
 {
 	GObject parent_instance;
@@ -175,18 +177,39 @@ money_member(JsonObject *object, const gchar *name, const gchar *currency, GErro
 	return venture_money_from_string(text, currency, error);
 }
 
+/* Two amounts that are added must be in one currency, as adding
+ * VentureMoney values requires. */
+static gboolean
+same_currency(const VentureMoney *a, const VentureMoney *b, GError **error)
+{
+	if (0 == g_ascii_strcasecmp(a->currency, b->currency))
+		return TRUE;
+	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"Cannot combine %s and %s: no exchange rate is available "
+		"and guessing one would be wrong", a->currency, b->currency);
+	return FALSE;
+}
+
+/* gross + employer == net + liabilities, compared exponent-aware
+ * (vk_ledger_pay_line). Comparing the two sums' raw amounts called 100.00
+ * and 100.000 different pay, and could call two different amounts equal. */
 static gboolean
 line_balances(const VentureMoney *gross, const VentureMoney *employer, const VentureMoney *net,
 	const VentureMoney *liabilities, GError **error)
 {
-	g_autoptr(VentureMoney) cost = venture_money_add(gross, employer, error);
-	g_autoptr(VentureMoney) right = NULL;
-	if (cost == NULL)
+	VkLedgerPayLine check;
+
+	if (!same_currency(gross, employer, error) || !same_currency(net, liabilities, error))
 		return FALSE;
-	right = venture_money_add(net, liabilities, error);
-	if (right == NULL)
+	check = vk_ledger_pay_line(gross->amount, (gint64)gross->exponent, employer->amount, (gint64)employer->exponent,
+		net->amount, (gint64)net->exponent, liabilities->amount, (gint64)liabilities->exponent);
+	if (VK_LEDGER_PAY_LINE_OVERFLOWS == check)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Monetary addition overflows a 64-bit minor-unit amount");
 		return FALSE;
-	if (venture_money_get_amount(cost) != venture_money_get_amount(right))
+	}
+	if (VK_LEDGER_PAY_LINE_BALANCES != check)
 		return refuse(error, VENTURE_ERROR_VALIDATION, "gross plus employer_cost must equal net plus liabilities");
 	return TRUE;
 }

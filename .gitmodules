@@ -28,3 +28,6 @@
 [submodule "deps/libreventory"]
 	path = deps/libreventory
 	url = https://git.mcgoaty.com/ben/libreventory.git
+[submodule "deps/tallow"]
+	path = deps/tallow
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/tallow.git

@@ -1,0 +1,60 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_units.tlw - the units of measure every VENTURE kernel shares.
+ *
+ * Units are checked when the kernels compile and erased in the C they
+ * become (`i64<minor>` is a gint64), so they cost nothing at run time.
+ * What they buy is that a basis-point rate cannot be passed where parts
+ * per million are expected, a day count cannot be added to an amount, and
+ * a quantity in thousandths cannot be mistaken for whole units -- each of
+ * those is a compile error (E1101) instead of a silent factor of 100.
+ *
+ * Currency is NOT a unit: it is a run-time fact (a column of a record),
+ * so the C shim compares currency codes before it calls a kernel, and a
+ * kernel only ever sees amounts of one currency at a time.
+ */
+module vk_units;
+
+/* money: a count of minor units of one currency, at a stated exponent */
+unit minor;
+
+/* proportions: one vocabulary, three scales. `x.to<ppm>()` scales up
+ * exactly; going down is a division the caller rounds explicitly */
+unit ppm;
+unit bp = 100 * ppm;
+unit pct = 10000 * ppm;
+
+/* quantities: thousandths of a unit (invoice line quantities), seats */
+unit milli;
+unit seat;
+
+/* time: whole days (Julian day numbers when absolute) and months */
+unit day;
+unit month;
+
+/* parts per million in one whole: the denominator of every ppm rate */
+let PPM_ONE = 1000000;
+
+/* a ppm rate as written in tests and docs: of_pct(12) is 12% */
+/* @export */
+pure fn of_pct(n: i64) -> i64<ppm> = (n as i64<pct>).to<ppm>();
+
+/* basis points as parts per million */
+/* @export */
+pure fn of_bp(n: i64) -> i64<ppm> = (n as i64<bp>).to<ppm>();
+
+/* -1, 0 or 1 */
+/* @export */
+pure fn sign(x: i64) -> i64 = match x < 0 {
+	true => -1,
+	false => match x > 0 {
+		true => 1,
+		false => 0,
+	},
+};
+
+test "percent scales" {
+	assert(of_pct(12) == 120000<ppm>);
+	assert(of_bp(250) == 25000<ppm>);
+	assert(sign(-4) == -1 && sign(0) == 0 && sign(9) == 1);
+}

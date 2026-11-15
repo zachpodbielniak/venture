@@ -1,0 +1,199 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_round.tlw - integer division with a stated rounding rule.
+ *
+ * Every place VENTURE turns an exact ratio into whole minor units goes
+ * through here: rescaling to fewer decimals, rates, percentages, currency
+ * conversion, late fees, depreciation. Before this module the same
+ * half-to-even rule was written four times in C, with four different
+ * ways of avoiding overflow (one of them wrong at G_MININT64).
+ *
+ * The approach never computes 2 * remainder: with a positive divisor d
+ * and a remainder r (|r| < d), "more than half" is |r| > d - |r|, which
+ * cannot overflow. A remainder is non-zero only when d >= 2, so the
+ * truncated quotient is at most |n| / 2 and stepping it by one cannot
+ * overflow either; tallow verify proves both.
+ */
+module vk_round;
+
+import tallow.math as M;
+
+/*
+ * How a quotient that is not exact becomes whole:
+ *   HalfEven  to the nearest, a tie to the even neighbour (banker's)
+ *   HalfUp    to the nearest, a tie away from zero
+ *   Up        away from zero
+ *   Down      toward zero (truncate)
+ *   Ceiling   toward positive infinity
+ *   Floor     toward negative infinity
+ */
+type Mode = HalfEven | HalfUp | Up | Down | Ceiling | Floor;
+
+/*
+ * The integer core, one function per rule. Each is int-only so `tallow
+ * verify` proves it: the result is the truncated quotient or one step from
+ * it, and nothing overflows. `div` and `settle` dispatch on Mode (which
+ * verify does not model) and are covered by the fuzzer instead.
+ */
+
+/* the magnitude of a remainder r of a division by d > 0 (|r| < d) */
+pure fn magnitude(r: i64, d: i64) -> i64
+	requires d > 0 && r > -d && r < d
+	ensures result >= 0 && result < d
+= match r < 0 {
+	true => -r,
+	false => r,
+};
+
+/* the truncated quotient q stepped one unit away from zero when `up`,
+ * the direction taken from the remainder r */
+pure fn step(q: i64, r: i64, up: bool) -> i64
+	requires q >= -4611686018427387904 && q <= 4611686018427387904
+= match up && r != 0 {
+	true => match r < 0 {
+		true => q - 1,
+		false => q + 1,
+	},
+	false => q,
+};
+
+/* whether a remainder of magnitude m (0 <= m < d) is past half of d, or
+ * exactly half and the tie goes up (`tie_up`) */
+pure fn past_half(m: i64, d: i64, tie_up: bool) -> bool
+	requires d > 0 && m >= 0 && m < d
+= m > d - m || (m == d - m && tie_up);
+
+/* n / d to the nearest, ties to the even quotient (banker's rounding):
+ * the rule for money, because it does not bias a long run of roundings */
+/* @export */
+pure fn half_even(n: i64, d: i64) -> i64
+	requires d > 1
+	ensures result == n / d || result == n / d + 1 || result == n / d - 1
+{
+	let q = n / d;
+	let r = n % d;
+	return step(q, r, past_half(magnitude(r, d), d, q % 2 != 0));
+}
+
+/* n / d to the nearest, ties away from zero */
+/* @export */
+pure fn half_up(n: i64, d: i64) -> i64
+	requires d > 1
+	ensures result == n / d || result == n / d + 1 || result == n / d - 1
+{
+	let q = n / d;
+	let r = n % d;
+	return step(q, r, past_half(magnitude(r, d), d, true));
+}
+
+/* n / d away from zero */
+/* @export */
+pure fn up(n: i64, d: i64) -> i64
+	requires d > 1
+	ensures result == n / d || result == n / d + 1 || result == n / d - 1
+= step(n / d, n % d, true);
+
+/* n / d toward positive infinity */
+/* @export */
+pure fn ceiling(n: i64, d: i64) -> i64
+	requires d > 1
+	ensures result == n / d || result == n / d + 1
+= step(n / d, n % d, n % d > 0);
+
+/* n / d toward negative infinity */
+/* @export */
+pure fn floor(n: i64, d: i64) -> i64
+	requires d > 1
+	ensures result == n / d || result == n / d - 1
+= step(n / d, n % d, n % d < 0);
+
+/*
+ * n / d rounded by mode. The divisor is positive: a caller with a
+ * negative one negates both first. A divisor of 1 is exact.
+ */
+pure fn div(n: i64, d: i64, mode: Mode) -> i64
+	requires d > 0
+= match d == 1 {
+	true => n,
+	false => match mode {
+		HalfEven => half_even(n, d),
+		HalfUp => half_up(n, d),
+		Up => up(n, d),
+		Down => n / d,
+		Ceiling => ceiling(n, d),
+		Floor => floor(n, d),
+	},
+};
+
+/*
+ * Steps a truncated quotient q by the remainder r of the same division
+ * (r carries the exact value's sign). None when the step leaves the i64
+ * range, which only a 128-bit quotient (mul_div) can reach.
+ */
+pure fn settle(q: i64, r: i64, d: i64, mode: Mode) -> ?i64
+	requires d > 0 && r > -d && r < d
+= match r == 0 {
+	true => q,
+	false => match goes_up(mode, q, r, d) {
+		true => M.checked_add(q, match r < 0 { true => -1, false => 1 }),
+		false => q,
+	},
+};
+
+/* whether the rule for mode moves q (remainder r, non-zero) away from zero */
+pure fn goes_up(mode: Mode, q: i64, r: i64, d: i64) -> bool
+	requires d > 0 && r > -d && r < d && r != 0
+= match mode {
+	HalfEven => past_half(magnitude(r, d), d, q % 2 != 0),
+	HalfUp => past_half(magnitude(r, d), d, true),
+	Up => true,
+	Down => false,
+	Ceiling => r > 0,
+	Floor => r < 0,
+};
+
+/*
+ * a * b / d rounded by mode, with the product exact in 128 bits, so a
+ * scale-by-ratio never overflows in the middle. None when d is not
+ * positive or the rounded quotient does not fit an i64.
+ */
+pure fn mul_div(a: i64, b: i64, d: i64, mode: Mode) -> ?i64
+	requires d > 0
+= match M.mul_div(a, b, d) {
+	some q => match M.mul_mod(a, b, d) {
+		some r => settle(q, r, d, mode),
+		none => none,
+	},
+	none => none,
+};
+
+test "half even" {
+	assert(half_even(25, 10) == 2);
+	assert(half_even(35, 10) == 4);
+	assert(half_even(-25, 10) == -2);
+	assert(half_even(-35, 10) == -4);
+	assert(half_even(26, 10) == 3);
+	assert(half_even(-26, 10) == -3);
+	assert(half_even(7, 3) == 2);
+	/* the C this replaces overflowed here */
+	assert(half_even(M.I64_MIN, 10) == -922337203685477581);
+	assert(div(M.I64_MIN, 1, Mode.HalfEven) == M.I64_MIN);
+}
+
+test "modes" {
+	assert(div(-7, 2, Mode.Up) == -4);
+	assert(div(-7, 2, Mode.Down) == -3);
+	assert(div(-7, 2, Mode.Ceiling) == -3);
+	assert(div(-7, 2, Mode.Floor) == -4);
+	assert(div(7, 2, Mode.HalfUp) == 4);
+	assert(div(-7, 2, Mode.HalfUp) == -4);
+	assert(div(5, 2, Mode.HalfEven) == 2);
+}
+
+test "mul_div" {
+	assert((mul_div(M.I64_MAX, 3, 4, Mode.HalfEven) ?? 0) == 6917529027641081855);
+	assert((mul_div(M.I64_MAX, 2, 1, Mode.HalfEven) ?? 0) == 0);
+	assert((mul_div(1, 1, 2, Mode.HalfEven) ?? -1) == 0);
+	assert((mul_div(3, 1, 2, Mode.HalfEven) ?? -1) == 2);
+	assert((mul_div(-3, 1, 2, Mode.Up) ?? 0) == -2);
+}

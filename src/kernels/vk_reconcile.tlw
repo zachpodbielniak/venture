@@ -1,0 +1,176 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_reconcile.tlw - how closely a bank line and a candidate match.
+ *
+ * The exact matcher scores each candidate for a bank transaction from
+ * three facts: how the amounts relate (equal, or within 2%), how many
+ * calendar days apart the two are dated, and whether their descriptions
+ * share a word. This is that arithmetic and the score table:
+ *
+ *   equal amount, within 3 days, the only such candidate   100
+ *   equal amount, within 10 days                             70
+ *   amount within 2%, a shared description token             40
+ *
+ * It replaces amount_relation, date_distance and the scoring in
+ * src/reconciliation/venture-exact-matcher.c. C still reads the fields,
+ * compares currency codes, counts the unique candidates (by record
+ * identity) and decides whether two descriptions share a token: that is
+ * Unicode case folding and word breaking (g_str_tokenize_and_fold), which
+ * GLib does and Tallow should not re-implement.
+ */
+module vk_reconcile;
+
+import vk_units;
+import vk_money as Mo;
+import vk_round as R;
+
+/* how two amounts of one currency relate */
+type Relation = Apart | Near | Equal;
+
+/* the score a candidate earns */
+type Score = Nothing | Similar | Close | Unique;
+
+/* a match counts as near in time within this many calendar days ... */
+let NEAR_DAYS = 3;
+
+/* ... and as plausible within this many */
+let PLAUSIBLE_DAYS = 10;
+
+/* ---- amounts ---- */
+
+/*
+ * Whether x * m / n <= y, exactly, for m, n > 0: the product is exact in
+ * 128 bits (vk_round.mul_div, rounded up, so "<= y" of the integer y is
+ * exact), and a quotient beyond the i64 range is beyond y on x's side.
+ */
+pure fn scaled_at_most(x: i64, m: i64, n: i64, y: i64) -> bool
+	requires m > 0 && n > 0
+= match R.mul_div(x, m, n, R.Mode.Ceiling) {
+	some q => q <= y,
+	none => x < 0,
+};
+
+/*
+ * Whether b is within 2% of a (|a - b| * 100 <= |a| * 2), each at its own
+ * exponent, without bringing either to the common exponent (which can
+ * leave the i64 range): with A = a * 10^ka and B = b * 10^kb at the
+ * common exponent, the rule is 49A <= 50B <= 51A for A >= 0 and
+ * 51A <= 50B <= 49A for A < 0, and each side is one exact scaled
+ * comparison.
+ */
+pure fn within_two_percent(a: i64<minor>, ea: i64, b: i64<minor>, eb: i64) -> bool
+	requires ea >= 0 && ea <= 6 && eb >= 0 && eb <= 6
+{
+	let e = Mo.common_exponent(ea, eb);
+	let sa = Mo.pow10(e - ea);
+	let sb = Mo.pow10(e - eb);
+	return match a >= 0<minor> {
+		true => scaled_at_most(a as i64, 49 * sa, 50 * sb, b as i64) && scaled_at_most(b as i64, 50 * sb, 51 * sa, a as i64),
+		false => scaled_at_most(a as i64, 51 * sa, 50 * sb, b as i64) && scaled_at_most(b as i64, 50 * sb, 49 * sa, a as i64),
+	};
+}
+
+/*
+ * How amount a relates to amount b (one currency: C compares the codes
+ * first). Equal at the common exponent, Near within 2% of a, Apart
+ * otherwise -- and Apart for an exponent beyond what money carries.
+ */
+pure fn relation(a: i64<minor>, ea: i64, b: i64<minor>, eb: i64) -> Relation
+= match ea < 0 || ea > Mo.MAX_EXPONENT || eb < 0 || eb > Mo.MAX_EXPONENT {
+	true => Relation.Apart,
+	false => match Mo.compare(a, ea, b, eb) == 0 {
+		true => Relation.Equal,
+		false => match within_two_percent(a, ea, b, eb) {
+			true => Relation.Near,
+			false => Relation.Apart,
+		},
+	},
+};
+
+/* ---- dates ---- */
+
+/* calendar days between two dates given as day numbers; none when either
+ * is missing */
+pure fn distance(a: ?i64<day>, b: ?i64<day>) -> ?i64<day> = match a {
+	some x => match b {
+		some y => days_apart(x as i64, y as i64) as i64<day>,
+		none => none,
+	},
+	none => none,
+};
+
+/* |x - y| for day numbers (GDate Julian days fit 32 bits) */
+pure fn days_apart(x: i64, y: i64) -> i64
+	requires x >= 0 && x <= 4294967295 && y >= 0 && y <= 4294967295
+	ensures result >= 0
+= match x >= y {
+	true => x - y,
+	false => y - x,
+};
+
+/* whether a dated distance is at most `limit` days */
+pure fn within(days: ?i64<day>, limit: i64) -> bool = match days {
+	some d => d <= limit as i64<day>,
+	none => false,
+};
+
+/* ---- scoring ---- */
+
+/* an equal amount near in time: what makes a candidate count toward
+ * uniqueness */
+pure fn exact_near(r: Relation, days: ?i64<day>) -> bool = r == Relation.Equal && within(days, NEAR_DAYS);
+
+/*
+ * A candidate's score. `unique` is how many distinct candidates are
+ * exact_near; `overlap` whether the descriptions share a token (C).
+ */
+pure fn score(r: Relation, days: ?i64<day>, unique: i64, overlap: bool) -> Score
+= match exact_near(r, days) && unique == 1 {
+	true => Score.Unique,
+	false => match r == Relation.Equal && within(days, PLAUSIBLE_DAYS) {
+		true => Score.Close,
+		false => match r != Relation.Apart && overlap {
+			true => Score.Similar,
+			false => Score.Nothing,
+		},
+	},
+};
+
+/* the points a score is worth */
+pure fn points(s: Score) -> i64 = match s {
+	Unique => 100,
+	Close => 70,
+	Similar => 40,
+	Nothing => 0,
+};
+
+/* ---- tests ---- */
+
+test "relation" {
+	assert(relation(10000<minor>, 2, 10000<minor>, 2) == Relation.Equal);
+	assert(relation(10000<minor>, 2, 100000<minor>, 3) == Relation.Equal);
+	assert(relation(10000<minor>, 2, 10200<minor>, 2) == Relation.Near);
+	assert(relation(10000<minor>, 2, 9800<minor>, 2) == Relation.Near);
+	assert(relation(10000<minor>, 2, 10201<minor>, 2) == Relation.Apart);
+	assert(relation(10000<minor>, 2, 9799<minor>, 2) == Relation.Apart);
+	assert(relation(-10000<minor>, 2, -10200<minor>, 2) == Relation.Near);
+	assert(relation(-10000<minor>, 2, 10000<minor>, 2) == Relation.Apart);
+	assert(relation(0<minor>, 2, 1<minor>, 2) == Relation.Apart);
+	assert(relation(1<minor>, 7, 1<minor>, 7) == Relation.Apart);
+	/* beyond the range at the common exponent, still exact */
+	assert(relation(9223372036854775807<minor>, 0, 9223372036854775807<minor>, 6) == Relation.Apart);
+	assert(relation(9223372036854<minor>, 0, 9223372036854000000<minor>, 6) == Relation.Equal);
+	assert(relation(9300000000000<minor>, 0, 9223372036854775807<minor>, 6) == Relation.Near);
+}
+
+test "dates and scores" {
+	assert((distance(10<day>, 13<day>) ?? 0<day>) == 3<day>);
+	assert(distance(10<day>, none) == none);
+	assert(score(Relation.Equal, 3<day>, 1, false) == Score.Unique);
+	assert(score(Relation.Equal, 3<day>, 2, false) == Score.Close);
+	assert(score(Relation.Equal, 11<day>, 1, true) == Score.Similar);
+	assert(score(Relation.Equal, none, 1, false) == Score.Nothing);
+	assert(score(Relation.Near, 1<day>, 1, true) == Score.Similar);
+	assert(score(Relation.Near, 1<day>, 1, false) == Score.Nothing);
+	assert(points(Score.Unique) == 100 && points(Score.Close) == 70 && points(Score.Similar) == 40);
+}

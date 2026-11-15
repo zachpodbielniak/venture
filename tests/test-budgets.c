@@ -173,6 +173,68 @@ test_vs_actual(Fixture *f, gconstpointer data)
 	g_assert_cmpint(cell(result, "6900", "variance"), ==, -6000);
 }
 
+/* The actual cell as money, for comparing amounts written at different
+ * exponents. */
+static VentureMoney *
+cell_money(VentureReportResult *r, const gchar *key, const gchar *column)
+{
+	guint i;
+	for (i = 0; i < venture_report_result_get_row_count(r); i++)
+	{
+		const GValue *name = venture_report_result_get_cell(r, i, "key");
+		if (name != NULL && g_strcmp0(g_value_get_string(name), key) == 0)
+			return venture_money_copy(g_value_get_boxed(venture_report_result_get_cell(r, i, column)));
+	}
+	g_error("Missing budget row %s", key);
+	return NULL;
+}
+
+/*
+ * An actual whose ledger balance carries more places than the currency's
+ * own is still that amount. The actual used to be the raw difference of
+ * the balance's minor units, relabelled at the currency's exponent: 40.005
+ * USD spent (40005 at exponent 3) read as 400.05 USD. The normal-side
+ * balance is now a checked, exponent-aware kernel subtraction. Breaks if
+ * actual_for goes back to raw gint64 arithmetic.
+ */
+static void
+test_vs_actual_exponent(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) budget = VENTURE_ENTITY(venture_budget_new());
+	g_autoptr(VentureEntity) line = VENTURE_ENTITY(venture_budget_line_new());
+	g_autoptr(VentureMoney) planned = venture_money_new_for_currency(10000, "USD");
+	g_autoptr(VentureMoney) spent = venture_money_new(40005, "USD", 3);
+	g_autoptr(VentureMoney) actual = NULL;
+	g_autoptr(VentureJournal) header = venture_journal_new();
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GDateTime) date = g_date_time_new_from_iso8601("2026-08-10T00:00:00Z", NULL);
+	g_autoptr(VentureReportResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureJournalLine *journal_line;
+	(void)data;
+	g_object_set(budget, "organization-id", f->org, "name", "August plan", "period", "2026-08",
+		"currency", "USD", "status", "active", NULL);
+	save(f, budget);
+	g_object_set(line, "organization-id", f->org, "budget-id", venture_entity_get_id(budget),
+		"account-id", account(f, "6900"), "period", "2026-08", "amount", planned, NULL);
+	save(f, line);
+	g_object_set(header, "organization-id", f->org, "source-type", "organization",
+		"source-id", f->org, "occurred-at", date, "currency", "USD", NULL);
+	journal_line = venture_journal_line_new();
+	g_object_set(journal_line, "account-id", account(f, "6900"), "side", VENTURE_LEDGER_SIDE_DEBIT, "amount", spent, NULL);
+	g_ptr_array_add(lines, journal_line);
+	journal_line = venture_journal_line_new();
+	g_object_set(journal_line, "account-id", account(f, "1000"), "side", VENTURE_LEDGER_SIDE_CREDIT, "amount", spent, NULL);
+	g_ptr_array_add(lines, journal_line);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db), header, lines, NULL, NULL, &error);
+	g_assert_no_error(error);
+	result = venture_budget_service_vs_actual(venture_budget_service_get(f->db), f->org, "2026-08", NULL, &error);
+	g_assert_no_error(error);
+	actual = cell_money(result, "6900", "actual");
+	g_assert_true(venture_money_equal(actual, spent));
+}
+
 static void
 test_cash_forecast(Fixture *f, gconstpointer data)
 {
@@ -480,6 +542,7 @@ main(int argc, char **argv)
 	g_test_add("/budgets/envelope-validation", Fixture, NULL, setup, test_envelope_validation, teardown);
 	g_test_add("/budgets/envelope-inactive-overflow", Fixture, NULL, setup, test_envelope_inactive_overflow, teardown);
 	g_test_add("/budgets/vs-actual", Fixture, NULL, setup, test_vs_actual, teardown);
+	g_test_add("/budgets/vs-actual-exponent", Fixture, NULL, setup, test_vs_actual_exponent, teardown);
 	g_test_add("/budgets/cash-forecast", Fixture, NULL, setup, test_cash_forecast, teardown);
 	g_test_add("/budgets/module-off", Fixture, NULL, setup, test_module_off, teardown);
 	g_test_add("/budgets/dimension-actuals", Fixture, NULL, setup, test_dimension_actuals, teardown);

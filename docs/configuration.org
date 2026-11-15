@@ -233,7 +233,7 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *ai* — provider, model, policy, auto-approved tools, prompt extras, and
   the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
-- *plugins* — paths (also how an optional plugin is switched on; see below), crispy (=allow_crispy=, on), exec plugins (=allow_exec=, *off*: programs named by a =*.plugin.yaml= manifest, run as the server's user; see [[file:plugins.org][Plugins]]), declarative venture types, required plugins
+- *plugins* — paths (also how an optional plugin is switched on; see below), crispy (=allow_crispy=, on), exec plugins (=allow_exec=, *off*: programs named by a =*.plugin.yaml= manifest, run as the server's user; see [[file:plugins.org][Plugins]]), Tallow plugins (=allow_tallow=, on: =.tlw= files on the sandboxed VM, with =tallow_max_steps=, =tallow_max_memory=, =tallow_capabilities= and =tallow_std_dir=; see below), declarative venture types, required plugins
 - *ui* — look (=classic= or =industrial=, the two designs; the default
   until a person picks one with the switch in the sidebar), theme
   (=system=, =light=, =dark= or =mocha=, the Catppuccin palette; the
@@ -403,6 +403,20 @@ or, from a build tree, by adding it to =VENTURE_PLUGIN_PATH= (colon-separated): 
 =plugins.allow_exec= (=VENTURE_PLUGINS_ALLOW_EXEC=, =plugins-allow-exec= on the object) is *false* by default. With it off at startup a =*.plugin.yaml= manifest of =runtime: exec= fails to load ("is an exec plugin but plugins.allow_exec is off") -- skipped with a warning like any failing plugin, fatal if it is named in =plugins.required= -- so its providers and handlers do not exist. Switched off while the server runs, a plugin already loaded stays listed but its program is never started again: the switch is read at every run, frozen into each data source with the rest of its limits (a change refreezes every source), so the next run of its provider fails saying so and the next call of its automation handler is refused, with no restart.
 
 It is off because an exec plugin is a program in a plugin directory run as the server's user, and an install where anyone but the operator can write a plugin directory must not start running a program because a manifest appeared there. The argv, environment, path and output rules a run is held to are in [[file:security.org::*Exec plugins: a program run as the server][Security: exec plugins]] and [[file:plugins.org::*Exec plugins][Plugins: exec plugins]].
+
+** Tallow plugins: =plugins.allow_tallow= and its limits
+
+A =.tlw= plugin is Tallow source run by the suet bytecode VM inside the server, one VM per plugin ([[file:tallow-plugins.org][Tallow plugins]]). Unlike crispy and exec it is *on* by default, because the VM confines it: a plugin can compute, log, register automation steps and fee models at load, and call VENTURE's compiled money kernels -- nothing reaches files, sockets, programs or the environment unless granted.
+
+| Key | Default | Environment | What it does |
+|-----+---------+-------------+--------------|
+| =allow_tallow= | =true= | =VENTURE_PLUGINS_ALLOW_TALLOW= | load =.tlw= plugins at all; off, one fails to load saying so |
+| =tallow_max_steps= | =10000000= | =VENTURE_PLUGINS_TALLOW_MAX_STEPS= | VM instructions one call into a plugin may run (its =plugin_register()=, a fee, a step); past it the call fails with =limit reached= |
+| =tallow_max_memory= | =67108864= | =VENTURE_PLUGINS_TALLOW_MAX_MEMORY= | bytes a plugin's heap may grow to |
+| =tallow_capabilities= | =[]= | =VENTURE_PLUGINS_TALLOW_CAPABILITIES= | grants, one per entry, as =PLUGIN=CAPABILITY= in Tallow's spelling: =rates=fs.read:/srv/rates=, =rates=net.connect:443=, =rates=env:RATES_KEY=. =PLUGIN= is the file name without =.tlw=. A plugin's own =uses= declaration narrows what it is granted, never widens it |
+| =tallow_std_dir= | empty | =VENTURE_PLUGINS_TALLOW_STD_DIR= | the Tallow standard library the VM reads; empty means the copy installed under the data directory (=tallow-std=), else the build tree's |
+
+The limits and grants are read when a plugin loads: a change applies to the plugins loaded after it (a restart, for the ones loaded at startup).
 
 ** Market data: =feeds= and =series=
 

@@ -397,6 +397,11 @@ TEST_SRCS := $(wildcard tests/test-*.c)
 
 CORE_OBJS := $(patsubst src/%.c,$(OBJDIR)/core/%.o,$(CORE_SRCS))
 SERVER_OBJS := $(patsubst src/%.c,$(OBJDIR)/server/%.o,$(SERVER_SRCS))
+# The Tallow kernels: one generated object in both archives (rules.mk).
+# Its prerequisites are added after rules.mk, so the order-only lines
+# there that cover CORE_OBJS do not make it wait on itself.
+KERNELS_OBJ := $(OBJDIR)/kernels/vk-kernels.o
+KERNELS_HOST_OBJ := $(OBJDIR)/kernels/vk-host.o
 CLI_OBJS := $(patsubst src/%.c,$(OBJDIR)/core/%.o,$(CLI_SRCS))
 MAIN_OBJ := $(OBJDIR)/server/main.o
 TEST_OBJS := $(patsubst tests/%.c,$(OBJDIR)/tests/%.o,$(TEST_SRCS))
@@ -459,7 +464,7 @@ $(OUTDIR)/tests/test-plugin-blizzard: | $(OUTDIR)/plugins-optional/blizzard-auct
 #     by naming that directory in plugins.paths, and the test that drives
 #     it loads the .so by path.
 PLUGIN_OPTIONAL_DIRS := plugins/blizzard-auctions
-PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec $(PLUGIN_OPTIONAL_DIRS)
+PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec plugins/tallow $(PLUGIN_OPTIONAL_DIRS)
 PLUGIN_DIRS := $(filter-out $(PLUGIN_EXCLUDED_DIRS), \
                  $(patsubst %/,%,$(sort $(dir $(wildcard plugins/*/)))))
 PLUGIN_SOS := $(patsubst plugins/%,$(OUTDIR)/plugins/%.so,$(PLUGIN_DIRS))
@@ -514,7 +519,18 @@ venturectl: $(OUTDIR)/venturectl
 .PHONY: gir
 gir: $(OUTDIR)/$(GIR_FILE) $(OUTDIR)/$(TYPELIB_FILE)
 
-plugins: $(OUTDIR)/$(LIB_STATIC) $(PLUGIN_SOS) $(PLUGIN_OPTIONAL_SOS)
+# Tallow plugins (plugins/tallow/*.tlw) are source: "building" one copies it
+# beside the optional native plugins, where nothing loads it by default --
+# a test or an operator points a plugin path at it. They run on the
+# sandboxed VM (docs/tallow-plugins.org), never compiled.
+PLUGIN_TALLOW_SRCS := $(wildcard plugins/tallow/*.tlw)
+PLUGIN_TALLOW_OUT := $(patsubst plugins/tallow/%,$(OUTDIR)/plugins-optional/%,$(PLUGIN_TALLOW_SRCS))
+$(OUTDIR)/plugins-optional/%.tlw: plugins/tallow/%.tlw | $(OUTDIR)/plugins-optional
+	@echo "  CP      $@"
+	$(Q)cp $< $@
+$(OUTDIR)/tests/test-plugin-tallow: | $(PLUGIN_TALLOW_OUT)
+
+plugins: $(OUTDIR)/$(LIB_STATIC) $(PLUGIN_SOS) $(PLUGIN_OPTIONAL_SOS) $(PLUGIN_TALLOW_OUT)
 
 pod-modules: $(OUTDIR)/$(LIB_STATIC) $(POD_MODULE_SOS)
 
@@ -619,6 +635,60 @@ test: $(TEST_RESULTS)
 	rmdir "$$TMPDIR" 2>/dev/null || true; \
 	echo "All $$total test binaries passed"
 
+# ---------------------------------------------------------------------------
+# Kernel checks: the Tallow kernels prove and test themselves
+# ---------------------------------------------------------------------------
+#
+# kernels-test    the `test` blocks inside src/kernels/*.tlw
+# kernels-fuzz    contracts as tests: inputs drawn from each function's
+#                 `requires`, every `ensures` checked, failures shrunk to a
+#                 minimal call (KERNELS_SEED makes a run reproducible)
+# kernels-verify  `tallow verify` proves the integer kernels' contracts with
+#                 an SMT solver (z3 or cvc5); skipped, loudly, without one
+# kernels-native-check  the kernels are compiled code, never the VM: the
+#                 vk_* symbols are defined in both archives and the kernel
+#                 object references nothing of libtallow-suet
+#
+# `make test` runs all four beside the GTest binaries.
+KERNELS_SEED ?= 20261115
+TALLOW_TOOL := $(TALLOWC) -I $(KERNELS_DIR)
+
+.PHONY: kernels-check kernels-test kernels-fuzz kernels-verify kernels-native-check
+kernels-check: kernels-test kernels-fuzz kernels-verify kernels-native-check
+
+kernels-test: $(TALLOWC)
+	@echo "  TLWTEST $(KERNELS_DIR)"
+	$(Q)for f in $(KERNELS_SRCS); do \
+		$(TALLOW_TOOL) test $$f > $(OUTDIR)/kernels-test.log 2>&1 || { cat $(OUTDIR)/kernels-test.log; exit 1; }; \
+	done
+
+kernels-fuzz: $(TALLOWC)
+	@echo "  FUZZ    $(KERNELS_DIR) (seed $(KERNELS_SEED))"
+	$(Q)for f in $(KERNELS_SRCS); do \
+		grep -qE '^\s*(requires|ensures|decreases)' $$f || continue; \
+		$(TALLOW_TOOL) fuzz --seed $(KERNELS_SEED) $$f > $(OUTDIR)/kernels-fuzz.log 2>&1 || { cat $(OUTDIR)/kernels-fuzz.log; exit 1; }; \
+	done
+
+kernels-verify: $(TALLOWC)
+	$(Q)if ! command -v z3 >/dev/null 2>&1 && ! command -v cvc5 >/dev/null 2>&1; then \
+		echo "  VERIFY  skipped: no z3 or cvc5 on PATH (Fedora: z3)"; exit 0; \
+	fi; \
+	echo "  VERIFY  $(KERNELS_DIR)"; \
+	for f in $(KERNELS_SRCS); do \
+		$(TALLOW_TOOL) verify $$f > $(OUTDIR)/kernels-verify.log 2>&1 || { cat $(OUTDIR)/kernels-verify.log; exit 1; }; \
+	done
+
+kernels-native-check: $(OUTDIR)/$(LIB_CORE_STATIC) $(OUTDIR)/$(LIB_STATIC)
+	@echo "  NATIVE  vk_* kernels"
+	$(Q)for a in $(OUTDIR)/$(LIB_CORE_STATIC) $(OUTDIR)/$(LIB_STATIC); do \
+		nm $$a 2>/dev/null | grep -q ' T vk_money_add$$' || { echo "kernels missing from $$a"; exit 1; }; \
+	done
+	$(Q)if nm -u $(KERNELS_OBJ) | grep -q 'tallow_suet_'; then \
+		echo "the kernel object references the suet VM: kernels must be compiled code"; exit 1; \
+	fi
+
+test: kernels-check
+
 # Run one test binary verbosely: make test-one T=test-money
 .PHONY: test-one
 test-one:
@@ -654,7 +724,7 @@ check-deps:
 	@echo ""
 	@echo "Checking vendored dependencies..."
 	@for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
-	          $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR); do \
+	          $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(TALLOW_DIR); do \
 		if [ -f "$$d/Makefile" ]; then \
 			printf "  %-20s OK\n" "$$(basename $$d)"; \
 		else \
@@ -805,6 +875,7 @@ endif
 deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 deps: $(OIDC_GLIB_LIB)
 deps: $(LIBREVENTORY_LIB)
+deps: $(TALLOW_RT_LIB) $(TALLOW_SUET_LIB) $(TALLOWC)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl

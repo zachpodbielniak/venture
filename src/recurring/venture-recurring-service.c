@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <vk-kernels.h>
 #include <string.h>
 
 struct _VentureRecurringService
@@ -141,19 +142,42 @@ schedule_start(VentureEntity *schedule)
 	return start != NULL && zone != NULL ? g_date_time_to_timezone(start, zone) : NULL;
 }
 
+/*
+ * The occurrence @index cycles after @start: the day comes from
+ * vk_dates_cycle_step (days, weeks, or months and years held at a shorter
+ * month's end), read from @start's calendar day in the schedule's own zone;
+ * the time of day is @start's, kept across a daylight-saving change by
+ * g_date_time_add_days exactly as the month and year steps keep it.
+ */
 static GDateTime *
 cycle_date(GDateTime *start, gint frequency, gint64 index)
 {
+	VkDatesFrequency step;
+	gint64 first;
+	TlwOptI64 day;
 	/* Date APIs take gint offsets; reject wraparound before multiplication. */
 	if (start == NULL || index < 0 || index > G_MAXINT / 7)
 		return NULL;
-	if (frequency == 1)
-		return g_date_time_add_days(start, 7 * (gint)index);
-	if (frequency == 2)
-		return g_date_time_add_days(start, (gint)index);
-	if (frequency == 3)
-		return g_date_time_add_years(start, (gint)index);
-	return g_date_time_add_months(start, (gint)index);
+	switch (frequency)
+	{
+	case 1:
+		step = VK_DATES_FREQUENCY_WEEKLY;
+		break;
+	case 2:
+		step = VK_DATES_FREQUENCY_DAILY;
+		break;
+	case 3:
+		step = VK_DATES_FREQUENCY_YEARLY;
+		break;
+	default:
+		step = VK_DATES_FREQUENCY_MONTHLY;
+		break;
+	}
+	first = vk_dates_julian(g_date_time_get_year(start), g_date_time_get_month(start), g_date_time_get_day_of_month(start));
+	day = vk_dates_cycle_step(first, step, index);
+	if (!day.has)
+		return NULL;
+	return g_date_time_add_days(start, (gint)(day.val - first));
 }
 
 static VentureEntity *

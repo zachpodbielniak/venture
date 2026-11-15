@@ -1,6 +1,8 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+
+#include <vk-kernels.h>
 #include "goods/venture-stock-engine.h"
 #include <string.h>
 
@@ -239,8 +241,14 @@ movement_unit(GPtrArray *costs, gint64 quantity, VentureMoney **out_unit, gchar 
 		return TRUE;
 	if (costs->len == 1)
 	{
-		*out_unit = venture_money_multiply_rational(g_ptr_array_index(costs, 0), 1, quantity, error);
-		return *out_unit != NULL;
+		const VentureMoney *cost = g_ptr_array_index(costs, 0);
+
+		/* The cost over the quantity, half to even, in the cost's own
+		 * currency and exponent (vk_inventory_unit_cost); it cannot
+		 * overflow, so there is nothing to refuse. */
+		(void)error;
+		*out_unit = venture_money_new(vk_inventory_unit_cost(cost->amount, quantity), cost->currency, cost->exponent);
+		return TRUE;
 	}
 	{
 		g_autoptr(GString) notes = g_string_new("Cost ");

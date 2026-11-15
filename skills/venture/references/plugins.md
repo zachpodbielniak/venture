@@ -15,7 +15,7 @@ curl -s -H "Authorization: Bearer $VENTURE_TOKEN" "$VENTURE_SERVER/api/v1/ventur
 ```
 
 `plugins list` shows each loaded plugin's `name`, `kind`, `runtime`
-(`native`, `crispy`, `exec`, `declarative` for a venture-type YAML) and
+(`native`, `crispy`, `exec`, `tallow`, `declarative` for a venture-type YAML) and
 `provides` (`data_source_provider`, `automation_handler`, ...). "No plugins
 are loaded." is an answer, not an error; `plugins` takes no other word than
 `list` (exit 2). A provider an exec plugin registers is an ordinary
@@ -24,7 +24,7 @@ are loaded." is an answer, not an error; `plugins` takes no other word than
 `--no-plugins` and `modules.plugins: false` load none (then no venture
 types are registered and any `venture_type` is accepted).
 
-## Five ways in, in increasing power
+## Six ways in, in increasing power
 
 1. **A declarative venture type** -- a YAML file in
    `plugins.venture_type_paths` (shipped in `data/venture-types/`): `name`,
@@ -44,10 +44,20 @@ types are registered and any `venture_type` is accepted).
    settings and secrets on stdin only (never argv or environment), secret
    values redacted from everything handed back, and the manifest `timeout`.
    Money in the protocol is a decimal string.
-4. **A crispy `.c` script** -- compiled on demand by crispy and cached by
+4. **A Tallow `.tlw` plugin** -- run by Tallow's suet bytecode VM inside the
+   server, **sandboxed** (on by default, `plugins.allow_tallow`): no file,
+   network, process or environment access unless
+   `plugins.tallow_capabilities` grants it as `PLUGIN=CAPABILITY`, no GIR,
+   `plugins.tallow_max_steps` instructions per call and
+   `plugins.tallow_max_memory` bytes. It defines `plugin_register()` and
+   registers automation steps and fee models through `import venture;`;
+   money math goes through `import venture_kernels as K;`, bound to the
+   server's compiled kernels (never interpreted). `plugins/tallow/
+   tiered-fees.tlw` is the reference; `docs/tallow-plugins.org` the guide.
+5. **A crispy `.c` script** -- compiled on demand by crispy and cached by
    content hash (`plugins.allow_crispy`, on by default); `plugins/scripts/
    odds-api.c` is the reference.
-5. **A native `.so`** -- `venture_plugin_register()` on the context;
+6. **A native `.so`** -- `venture_plugin_register()` on the context;
    `plugins/blizzard-auctions/` (optional, in `plugins-optional`, enabled by
    adding that directory to `plugins.paths`) is the reference.
 
@@ -114,6 +124,7 @@ that is what the design exists to avoid.
 | `odds-api` | crispy | `odds_api` provider (bookmakers' odds; key in the query string, redacted) |
 | `supplier-csv` | exec | `supplier_csv` provider (a CSV in its own directory) |
 | `tsmctl` | exec | `tsmctl` provider running `tsmctl export --format venture` |
+| `tiered-fees` | tallow, optional | `tiered_ppm` fee model, `margin_ppm` automation step |
 
 Worked examples: `docs/examples/wow-auction-house-feed.org`,
 `odds-api-feed.org`, `dropship-supplier-feed.org`, `wow-operations.org`.

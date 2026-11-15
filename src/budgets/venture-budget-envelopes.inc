@@ -136,14 +136,16 @@ venture_budget_service_envelopes(VentureBudgetService *self, gint64 organization
 			if (prior == NULL) return NULL;
 			allocated = venture_money_multiply_int(planned, months, error);
 			if (allocated == NULL) return NULL;
-			spent = venture_money_new_for_currency(actual_for(prior, account_id, VENTURE_ACCOUNT_KIND_EXPENSE), currency);
+			spent = actual_for(prior, account_id, VENTURE_ACCOUNT_KIND_EXPENSE, currency, error);
+			if (spent == NULL) return NULL;
 			g_clear_pointer(&carried, venture_money_free);
 			carried = venture_money_subtract(allocated, spent, error);
 			if (carried == NULL) return NULL;
 		}
 		available = venture_money_add(planned, carried, error);
 		if (available == NULL) return NULL;
-		actual = venture_money_new_for_currency(actual_for(current, account_id, VENTURE_ACCOUNT_KIND_EXPENSE), currency);
+		actual = actual_for(current, account_id, VENTURE_ACCOUNT_KIND_EXPENSE, currency, error);
+		if (actual == NULL) return NULL;
 		left = venture_money_subtract(available, actual, error);
 		if (left == NULL) return NULL;
 		next = venture_money_add(total, left, error);

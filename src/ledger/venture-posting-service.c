@@ -5,6 +5,8 @@
 #include "venture.h"
 #include "ledger/venture-ledger-private.h"
 
+#include <vk-kernels.h>
+
 #include <string.h>
 
 struct _VenturePostingService
@@ -691,12 +693,80 @@ validate_header(VenturePostingService *self, VentureDatabase *db,
 	return TRUE;
 }
 
+/* The lines a ledger kernel folds (vk_ledger), in posting order. */
+static GPtrArray *
+kernel_lines_new(void)
+{
+	return g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_line_free);
+}
+
+/* The error a fold that left the 64-bit range reports, worded as the
+ * VentureMoney addition it replaced worded it. */
+static void
+set_overflow_error(GError **error)
+{
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		"Monetary addition overflows a 64-bit minor-unit amount");
+}
+
+static void
+kernel_lines_add(GPtrArray *lines, const VentureMoney *amount, gboolean debit)
+{
+	g_ptr_array_add(lines, vk_ledger_line_new(amount->amount, (gint64)amount->exponent, debit));
+}
+
+/* Adds @amount to @lines for a total kept in @currency, refusing another
+ * currency (or no amount) as adding VentureMoney values refused it: a
+ * kernel sees amounts of one currency only. */
+static gboolean
+kernel_lines_add_checked(GPtrArray *lines, const gchar *currency, const VentureMoney *amount,
+	gboolean debit, GError **error)
+{
+	if (NULL == amount)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A ledger line has no amount");
+		return FALSE;
+	}
+	if (0 != g_ascii_strcasecmp(currency, amount->currency))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Cannot combine %s and %s: no exchange rate is available "
+			"and guessing one would be wrong", currency, amount->currency);
+		return FALSE;
+	}
+	kernel_lines_add(lines, amount, debit);
+	return TRUE;
+}
+
+/* A fold's total as money in @currency at the exponent it reached, or the
+ * overflow error. */
+static VentureMoney *
+kernel_total_money(VkLedgerTotal *total, const gchar *currency, GError **error)
+{
+	if (VK_LEDGER_TOTAL_SUM != total->tag)
+	{
+		set_overflow_error(error);
+		return NULL;
+	}
+	return venture_money_new(total->u.sum.amount, currency, (guint8)total->u.sum.exponent);
+}
+
+/* The exponent a fold starts from: a zero of @currency, as the running
+ * VentureMoney sums the kernels replaced started from. */
+static gint64
+start_exponent(const gchar *currency)
+{
+	g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
+
+	return NULL != zero ? (gint64)zero->exponent : 0;
+}
+
 static gboolean
 value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 	VentureExchangePolicy *policy, gboolean reversing, GError **error)
 {
-	g_autoptr(VentureMoney) debits = NULL;
-	g_autoptr(VentureMoney) credits = NULL;
+	g_autoptr(GPtrArray) valued_lines = NULL;
+	g_autoptr(VkLedgerJournal) check = NULL;
 	g_autofree gchar *currency = NULL;
 	g_autoptr(GDateTime) when = NULL;
 	gint64 org = venture_entity_get_organization_id(VENTURE_ENTITY(journal));
@@ -704,7 +774,7 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 	gboolean converted = FALSE;
 	guint i;
 
-	if (rows->len < 2)
+	if (!vk_ledger_enough_lines((gint64)rows->len))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A journal needs at least two lines");
 		return FALSE;
@@ -719,20 +789,17 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 			"%s is a memo currency: it is tracked as quantities and never posted to the ledger", currency);
 		return FALSE;
 	}
-	debits = venture_money_new_zero(currency);
-	credits = venture_money_new_zero(currency);
+	valued_lines = kernel_lines_new();
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		g_autoptr(VentureEntity) acct = NULL;
 		g_autoptr(VentureMoney) amount = NULL;
 		g_autoptr(VentureMoney) valued = NULL;
-		g_autoptr(VentureMoney) total = NULL;
 		VentureLedgerSide side;
 		gint64 account_id;
 		gint64 line_org;
 		gboolean active;
-		VentureMoney **sum;
 
 		if (!VENTURE_IS_JOURNAL_LINE(row))
 		{
@@ -806,18 +873,32 @@ value_lines(VentureDatabase *db, VentureJournal *journal, GPtrArray *rows,
 				"The exchange policy must return nonnegative money in the book currency");
 			return FALSE;
 		}
-		sum = (side == VENTURE_LEDGER_SIDE_DEBIT) ? &debits : &credits;
-		total = venture_money_add(*sum, valued, error);
-		if (NULL == total)
-			return FALSE;
-		g_clear_pointer(sum, venture_money_free);
-		*sum = g_steal_pointer(&total);
+		kernel_lines_add(valued_lines, valued, side == VENTURE_LEDGER_SIDE_DEBIT);
 		g_object_set(row, "book-amount", valued, "organization-id", org, NULL);
 	}
-	if (!venture_money_equal(debits, credits))
+	/* Double entry itself is vk_ledger_check_journal: enough lines, none
+	 * negative, and the valued debits equal to the valued credits at
+	 * their common exponent. The checks above already refused the first
+	 * two with their own words; the kernel states the whole rule. */
+	check = vk_ledger_check_journal(valued_lines, start_exponent(currency));
+	switch (check->tag)
 	{
+	case VK_LEDGER_JOURNAL_BALANCED:
+		break;
+	case VK_LEDGER_JOURNAL_TOO_LARGE:
+		set_overflow_error(error);
+		return FALSE;
+	case VK_LEDGER_JOURNAL_UNBALANCED:
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE,
 			"The journal's valued debits and credits do not balance");
+		return FALSE;
+	case VK_LEDGER_JOURNAL_TOO_FEW_LINES:
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "A journal needs at least two lines");
+		return FALSE;
+	case VK_LEDGER_JOURNAL_NEGATIVE:
+	default:
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Lines require nonnegative money, a debit/credit side and the journal's legal entity");
 		return FALSE;
 	}
 	/* Only a policy that valued something is evidence: the rate-table
@@ -1198,7 +1279,10 @@ venture_posting_service_account_balance(VenturePostingService *self, gint64 acco
 	g_autoptr(VentureDatabase) db = g_weak_ref_get(&self->database);
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_JOURNAL);
 	g_autoptr(GPtrArray) journals = NULL;
-	g_autoptr(VentureMoney) balance = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	g_autoptr(VentureMoney) zero = NULL;
+	g_autoptr(VkLedgerTotal) total = NULL;
+	VentureMoney *balance;
 	guint i;
 
 	if (!ledger_enabled(error) || NULL == db)
@@ -1216,7 +1300,8 @@ venture_posting_service_account_balance(VenturePostingService *self, gint64 acco
 	journals = venture_database_find(db, query, error);
 	if (NULL == journals)
 		goto fail;
-	balance = venture_money_new_zero(currency);
+	zero = venture_money_new_zero(currency);
+	lines = kernel_lines_new();
 	for (i = 0; i < journals->len; i++)
 	{
 		VentureEntity *journal = g_ptr_array_index(journals, i);
@@ -1239,22 +1324,26 @@ venture_posting_service_account_balance(VenturePostingService *self, gint64 acco
 			gint64 acct;
 			VentureLedgerSide side;
 			g_autoptr(VentureMoney) amount = NULL;
-			g_autoptr(VentureMoney) total = NULL;
 
 			g_object_get(row, "account-id", &acct, "side", &side, "book-amount", &amount, NULL);
 			if (acct != account_id)
 				continue;
-			total = side == VENTURE_LEDGER_SIDE_DEBIT ? venture_money_add(balance, amount, error) :
-				venture_money_subtract(balance, amount, error);
-			if (NULL == total)
+			if (!kernel_lines_add_checked(lines, zero->currency, amount, side == VENTURE_LEDGER_SIDE_DEBIT, error))
 				goto fail;
-			g_clear_pointer(&balance, venture_money_free);
-			balance = g_steal_pointer(&total);
 		}
 	}
+	/* The balance is the lines' signed sum in posting order: a debit adds,
+	 * a credit subtracts (vk_ledger_net). */
+	total = vk_ledger_net(lines, (gint64)zero->exponent);
+	balance = kernel_total_money(total, zero->currency, error);
+	if (NULL == balance)
+		goto fail;
 	if (!venture_database_commit(db, error))
+	{
+		venture_money_free(balance);
 		return NULL;
-	return g_steal_pointer(&balance);
+	}
+	return balance;
 fail:
 	venture_database_rollback(db);
 	return NULL;
@@ -1489,18 +1578,21 @@ clearing_account(VentureDatabase *db, gint64 org, GDateTime *when, GError **erro
 	return venture_entity_get_id(VENTURE_ENTITY(created));
 }
 
-/* Debits minus credits of @group, valued in its journal's currency. */
+/* Debits minus credits of @group, valued in its journal's currency. The
+ * valuation is C's (it may ask the exchange policy); the net is
+ * vk_ledger_net. */
 static VentureMoney *
 group_net(PostingGroup *group, VentureExchangePolicy *policy, GDateTime *when, GError **error)
 {
-	g_autoptr(VentureMoney) net = venture_money_new_zero(group->currency);
+	g_autoptr(VentureMoney) zero = venture_money_new_zero(group->currency);
+	g_autoptr(GPtrArray) lines = kernel_lines_new();
+	g_autoptr(VkLedgerTotal) total = NULL;
 	guint i;
 
 	for (i = 0; i < group->lines->len; i++)
 	{
 		g_autoptr(VentureMoney) amount = NULL;
 		g_autoptr(VentureMoney) valued = NULL;
-		g_autoptr(VentureMoney) next = NULL;
 		VentureLedgerSide side;
 
 		g_object_get(g_ptr_array_index(group->lines, i), "amount", &amount, "side", &side, NULL);
@@ -1508,14 +1600,11 @@ group_net(PostingGroup *group, VentureExchangePolicy *policy, GDateTime *when, G
 			venture_exchange_policy_convert(policy, amount, group->currency, when, error);
 		if (NULL == valued)
 			return NULL;
-		next = VENTURE_LEDGER_SIDE_DEBIT == side ? venture_money_add(net, valued, error) :
-			venture_money_subtract(net, valued, error);
-		if (NULL == next)
+		if (!kernel_lines_add_checked(lines, zero->currency, valued, VENTURE_LEDGER_SIDE_DEBIT == side, error))
 			return NULL;
-		g_clear_pointer(&net, venture_money_free);
-		net = g_steal_pointer(&next);
 	}
-	return g_steal_pointer(&net);
+	total = vk_ledger_net(lines, (gint64)zero->exponent);
+	return kernel_total_money(total, zero->currency, error);
 }
 
 /* Sorts @lines into the journals the rule above makes. Nothing is written
@@ -1603,6 +1692,7 @@ plan_by_currency(VenturePostingService *self, VentureDatabase *db, VentureJourna
 		PostingGroup *group = g_ptr_array_index(groups, i);
 		g_autoptr(VentureMoney) net = NULL;
 		g_autoptr(VentureMoney) magnitude = NULL;
+		g_autoptr(VkLedgerClearing) settle = NULL;
 		VentureJournalLine *line;
 
 		/* One journal balances on its own or not at all: only a document
@@ -1612,7 +1702,10 @@ plan_by_currency(VenturePostingService *self, VentureDatabase *db, VentureJourna
 		net = group_net(group, policy, when, error);
 		if (NULL == net)
 			return NULL;
-		if (venture_money_is_zero(net))
+		/* The line that settles the net: |net| on the opposite side
+		 * (vk_ledger_clearing), so every group nets to zero. */
+		settle = vk_ledger_clearing(net->amount);
+		if (VK_LEDGER_CLEARING_SETTLED == settle->tag)
 			continue;
 		if (groups->len < 2)
 		{
@@ -1621,7 +1714,7 @@ plan_by_currency(VenturePostingService *self, VentureDatabase *db, VentureJourna
 				memo, group->currency);
 			return NULL;
 		}
-		if (net->amount == G_MININT64)
+		if (VK_LEDGER_CLEARING_POST != settle->tag)
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Amount magnitude overflows");
 			return NULL;
@@ -1632,10 +1725,10 @@ plan_by_currency(VenturePostingService *self, VentureDatabase *db, VentureJourna
 			if (0 == clearing)
 				return NULL;
 		}
-		magnitude = venture_money_abs(net);
+		magnitude = venture_money_new(settle->u.post.amount, net->currency, net->exponent);
 		line = venture_journal_line_new();
 		g_object_set(line, "account-id", clearing, "amount", magnitude, "organization-id", org,
-			"side", venture_money_is_negative(net) ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
+			"side", settle->u.post.debit ? VENTURE_LEDGER_SIDE_DEBIT : VENTURE_LEDGER_SIDE_CREDIT,
 			"memo", "Currency clearing", NULL);
 		g_ptr_array_add(group->lines, line);
 	}

@@ -1628,6 +1628,36 @@ money_field(VentureEntity *e, const gchar *name)
 	return value != NULL ? venture_money_get_amount(value) : 0;
 }
 
+/*
+ * A period set in a daylight-saving zone is counted in calendar days.
+ * March in New York runs 30 days and 23 hours: counting 24-hour spans made
+ * it 30 days, spread a month's price over one day too few and dated a
+ * change a day early, so one more seat from the 17th was charged $15.00
+ * instead of the 15 days' $14.48 the calendar gives.
+ */
+static void
+test_proration_dst(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GTimeZone) zone = g_time_zone_new_identifier("America/New_York");
+	g_autoptr(GDateTime) march = NULL;
+	g_autoptr(VentureEntity) a = record(f, "billing_request");
+	g_autoptr(VentureEntity) change = NULL;
+	gint64 id;
+
+	(void)data;
+	g_assert_nonnull(zone);
+	march = g_date_time_new(zone, 2026, 3, 1, 0, 0, 0.0);
+	g_object_set(a, "action", "start", "at", march, "company-id", f->company,
+		"plan-price-id", f->price, "seats", (gint64)2, NULL);
+	save(f, a);
+	id = integer(a, "subscription-id");
+	change = request(f, "change-seats", id, "2026-03-17");
+	g_object_set(change, "seats", (gint64)3, NULL);
+	save(f, change);
+	/* $30 over 31 days: 97 cents for 24 days, then 96; 15 days left. */
+	g_assert_cmpint(money_field(change, "proration-amount"), ==, 1448);
+}
+
 static VentureEntity *
 last_of(Fixture *f, const gchar *name)
 {
@@ -2243,6 +2273,7 @@ main(int argc, char **argv)
 	g_test_add("/billing/discounted-proration", Fixture, NULL, setup, test_discounted_proration, teardown);
 	g_test_add("/billing/discounted-proration-expiry", Fixture, GINT_TO_POINTER(1), setup, test_discounted_proration, teardown);
 	g_test_add("/billing/seats-proration", Fixture, NULL, setup, test_seats_proration, teardown);
+	g_test_add("/billing/proration-dst", Fixture, NULL, setup, test_proration_dst, teardown);
 	g_test_add("/billing/dunning-sequence", Fixture, NULL, setup, test_dunning_sequence, teardown);
 	g_test_add("/billing/dunning", Fixture, NULL, setup, test_dunning, teardown);
 	g_test_add("/billing/rollback", Fixture, NULL, setup, test_rollback, teardown);
