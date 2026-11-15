@@ -108,10 +108,12 @@ pure fn widen(fraction: i64, places: i64) -> i64
  * Reads `text` as a percent. `limit_pct` is the largest magnitude allowed,
  * in whole percent; `allow_negative` admits a leading '-' (a '+' is always
  * fine); `allow_suffix` admits a trailing '%'. Whitespace around the
- * number is ignored.
+ * number is ignored. The limit goes to 1000001 so a caller whose rule is
+ * "whole percent at most a million" can read up to 1000000.9999 and draw
+ * its own line (arbitrage does).
  */
 pure fn parse(text: str, limit_pct: i64, allow_negative: bool, allow_suffix: bool) -> own Percent
-	requires limit_pct >= 0 && limit_pct <= 1000000
+	requires limit_pct >= 0 && limit_pct <= 1000001
 {
 	let bs = text.bytes();
 	let start = skip_space(bs, 0);
@@ -128,7 +130,7 @@ pure fn parse(text: str, limit_pct: i64, allow_negative: bool, allow_suffix: boo
 
 /* the optional sign, then the number */
 pure fn signed(bs: [u8], start: i64, end: i64, limit_pct: i64, allow_negative: bool) -> own Percent
-	requires start >= 0 && start < end && end <= bs.len() && limit_pct >= 0 && limit_pct <= 1000000
+	requires start >= 0 && start < end && end <= bs.len() && limit_pct >= 0 && limit_pct <= 1000001
 {
 	let minus = bs[start] == 45;
 	let body = match minus || bs[start] == 43 {
@@ -143,7 +145,7 @@ pure fn signed(bs: [u8], start: i64, end: i64, limit_pct: i64, allow_negative: b
 
 /* whole digits, an optional point and up to four fraction digits */
 pure fn number(bs: [u8], body: i64, end: i64, limit_pct: i64, minus: bool) -> own Percent
-	requires body >= 0 && body <= end && end <= bs.len() && limit_pct >= 0 && limit_pct <= 1000000
+	requires body >= 0 && body <= end && end <= bs.len() && limit_pct >= 0 && limit_pct <= 1000001
 {
 	let (after_whole, whole) = digits(bs, body, end, 0, limit_pct);
 	let has_point = after_whole < end && bs[after_whole] == 46;
@@ -167,7 +169,7 @@ pure fn number(bs: [u8], body: i64, end: i64, limit_pct: i64, minus: bool) -> ow
 
 /* whole percent and ppm of a percent's fraction, checked against the limit */
 pure fn rate(whole: i64, part: i64, limit_pct: i64, minus: bool) -> own Percent
-	requires whole >= 0 && whole <= limit_pct + 1 && part >= 0 && part < 10000 && limit_pct >= 0 && limit_pct <= 1000000
+	requires whole >= 0 && whole <= limit_pct + 1 && part >= 0 && part < 10000 && limit_pct >= 0 && limit_pct <= 1000001
 {
 	let ppm = whole * 10000 + part;
 	return match ppm > limit_pct * 10000 {

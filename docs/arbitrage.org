@@ -525,6 +525,8 @@ A strategy also drops prices before they become candidates: a price older than =
 
 All of it is =venture-arbitrage-math.h=: pure, money in minor units, ratios as doubles, rounding half to even once where a ratio meets an amount (=venture_arbitrage_round_minor()=), and an amount past 2^53 minor units refused rather than rounded wrong. Where odds multiply money they do so as integers at the store's odds scale (a million), so 100 x 1.13 pays 113, not the 112 a double would floor to.
 
+The formulas are the Tallow kernel =src/kernels/vk_arbitrage.tlw= (a percent read from text is =vk_percent=), compiled natively ([[file:kernels.org][Kernels]]); =venture-arbitrage-math.c= reads odds from text, checks what a caller passed, builds the =VentureMoney= values and turns each kernel outcome into its message. The rounding to minor units is the kernel's own half-to-even on the double's exact fractional part, the same answer =nearbyint()= gives in the default rounding mode.
+
 *** Odds
 
 - Decimal odds d. American +A is 1 + A/100, -A is 1 + 100/A (a moneyline is at least 100 in magnitude); fractional a/b is 1 + a/b; "evens" (or "evs") is 2.0. Odds of one or less pay nothing and are refused.
@@ -560,7 +562,7 @@ For units bought at one venue and sold at another (or the same), in one currency
 - Net = units x sell price - sell fees - buy cost - buy fees - listing loss - transfer cost.
 - Capital = buy cost + buy fees + one deposit + transfer cost.
 - Transfer cost, when the lot moves (the buy and sell venues differ), is the buy venue's =transfer_cost= plus the sell venue's, each converted into the flip's currency; a lot sold where it was bought (=deal=) moves nowhere and costs nothing.
-- ROI = net / capital; nothing tied up is no ROI, not an infinite one.
+- ROI = net / capital, the two brought to the finer of their exponents first (a sale price in thousandths makes the net finer than the capital); nothing tied up is no ROI, not an infinite one. Every amount is in one currency, codes compared without regard to case.
 - Lock days = units / (sold per day x share) + transit days (both venues' =transfer_hours=, added, / 24, when the lot moves); unknown without a pace of sales.
 - ROI per day = ROI / lock days. Annualised = (1 + ROI)^(365 / lock days) - 1; a total loss stays -1, and a hold too short for the figure to be a number has none.
 - EV = P(fill) x net - (1 - P(fill)) x unwind loss, with P(fill) the sale rate and the unwind loss a deposit and the move back (in a scan; the =flip= calculator, which has no venues, counts only its =transfer=). With no sale rate there is no EV. A surebet or a back and lay is quoted on both sides now: its EV is its net.
