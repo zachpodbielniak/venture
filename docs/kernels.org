@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-11-15]
 #+updated: [2026-11-15]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * Kernels
 
@@ -213,6 +213,40 @@ The compute cores of the built-in fee models:
 - =commission(amount, rate, selling)= charges only a positive selling amount.
 
 Shim: =src/arbitrage/venture-arbitrage-fees.c=. The registry, the JSON parameters and the currencies stay in C.
+
+*** vk_ledger
+The double-entry arithmetic, run once the database has been read. A line is =Line { amount, exponent, debit }=. Every running total keeps the exponent it reached, as adding =VentureMoney= does.
+
+- =check_journal(lines, start_exponent)= returns =Balanced { amount, exponent }=, or why not: =TooFewLines=, =Negative { line }=, =Unbalanced=, =TooLarge=.
+- =net= is debits minus credits, in posting order. A posting group's net and an account's balance are the same fold.
+- =clearing(net)= returns =Settled=, =Post { amount, debit }= (|net| on the opposite side) or =Unsettleable=.
+- =column(balance)= puts a balance in a trial balance's =Debit= or =Credit= column. =trial= totals the columns and returns =Even { ... }=, =Uneven= or =Overflowed=.
+- =Kind= and =debit_normal= give the normal side by account class. =normal_balance= is the balance on that side.
+- =pick_rate(rates, when)= chooses the exchange rate that applies, by a strict order (=rate_ahead=, proved antisymmetric).
+- =pay_line= checks gross + employer = net + liabilities, exponent-aware.
+
+In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/venture-posting-service.c=, =venture-trial-balance.c=, =venture-rate-table-policy.c=, =src/venture-enums.c=, =src/payroll/venture-payroll-service.c=, =src/budgets/venture-budget-service.c=. What changed:
+
+- Rate selection no longer rests on a comparator that called an undated row equal to every row. That comparator could let an older rate beat the newest.
+- A pay line's two sides are compared as money, not as raw minor units (=/payroll/balance-exponents=).
+
+*** vk_holdings
+=check_floor(events, start_exponent)= walks a time-sorted timeline of =Event { at, amount, exponent, before, after }= and judges each moment at its last movement. It returns =Clear=, =Short { ... }= (after the moment the holding is below zero and below where it was before) or =Overflow=. =deepens= is proved. Shim: =holdings_check_floor= in =src/ledger/venture-holdings.c=.
+
+*** vk_reconcile
+=relation(a, ea, b, eb)= returns =Equal=, =Near= (within 2%) or =Apart=. It is exact at any amount and exponent: the test is 49A <= 50B <= 51A, one scaled comparison over a 128-bit product. =distance= is calendar days. =score= is the table =Unique= 100, =Close= 70, =Similar= 40. =within_two_percent= and =days_apart= are proved. Token overlap stays in C, because it is Unicode folding. Shim: =src/reconciliation/venture-exact-matcher.c=.
+
+*** vk_budget
+=period(text)= reads ="YYYY"= or ="YYYY-MM"= into =Year=, =Month= or =Invalid=. =covers(line, budget, requested)= says whether a line covers a requested period; a year covers its months. An account's actual is =vk_ledger.normal_balance=. Shim: =src/budgets/venture-budget-service.c=. What changed:
+
+- An actual is now checked money at the balances' exponent. It used to be a raw, unchecked difference relabelled at the currency's exponent.
+- Balances in a currency other than the line's are refused (=/budgets/vs-actual-exponent=).
+
+*** vk_tax
+=best(rules, state, county, city)= returns the position of the most specific active =Rule= that matches; ties keep the earliest. =rank= and =replaces= are proved. Shim: =venture_sales_tax_service_resolve=.
+
+*** vk_inventory
+=unit_cost(cost, quantity)= is a movement's average unit cost, half to even, proved to lie between zero and the cost. Shim: =movement_unit= in =src/goods/venture-inventory-service.c=.
 
 ** Adding a kernel
 :PROPERTIES:
