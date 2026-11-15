@@ -134,6 +134,9 @@ Amounts as =i64<minor>= at an exponent. =pow10=, =common_exponent=, =rescale= (g
 
 Shim: =src/boxed/venture-money.c=. Behaviour that changed: =venture_money_multiply_rational= no longer refuses a ratio whose 64-bit intermediate product overflows when the result fits; =venture_money_convert_at_rate= compares currency codes case-insensitively like every other money function.
 
+*** vk_percent
+A percent written as decimal text, read exactly into parts per million: =parse(text, limit_pct, allow_negative, allow_suffix)= returns a =Percent= -- =Rate { ppm }=, or why not: =Empty=, =Malformed=, =TooPrecise= (more than four places), =TooLarge=, =Negative=. Never through a double. Each caller states its own limits (late fees: 0 to 100 with an optional =%=; arbitrage: either sign up to a million percent) and maps the outcome to its own message. In C the result is a =VkPercentPercent *= with a =tag= (=VK_PERCENT_PERCENT_RATE= ...) and =u.rate.ppm=, freed with =vk_percent_percent_free= (=g_autoptr= works).
+
 ** Adding a kernel
 :PROPERTIES:
 :CUSTOM_ID: adding

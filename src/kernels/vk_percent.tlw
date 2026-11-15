@@ -1,0 +1,211 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_percent.tlw - a percent written as decimal text, read exactly.
+ *
+ * "12.5", "0.125", "-3", "7.5%": at most four places after the point,
+ * into parts per million (1% is 10000 ppm), never through a double -- 1.15
+ * is not a double, and a rate typed into a form must mean what it says.
+ *
+ * Two parsers in C did this with different limits, sign rules and
+ * messages (late fees: 0..100, a trailing %; arbitrage: either sign up to
+ * a million percent). This is the one reading; each caller states its
+ * limits and maps the outcome to its own message.
+ */
+module vk_percent;
+
+import vk_units;
+
+/* the most places after the point a percent may have: 0.0001% is 1 ppm */
+let MAX_PLACES = 4;
+
+/* what reading a percent produced */
+type Percent =
+	| Rate { ppm: i64<ppm> }
+	| Empty
+	| Malformed
+	| TooPrecise
+	| TooLarge
+	| Negative;
+
+/* an ASCII digit's value, or -1 */
+pure fn digit(b: u8) -> i64 = match b >= 48 && b <= 57 {
+	true => (b as i64) - 48,
+	false => -1,
+};
+
+/* ASCII whitespace */
+pure fn space(b: u8) -> bool = b == 32 || (b >= 9 && b <= 13);
+
+/* the first index at or after i that is not whitespace */
+pure fn skip_space(bs: [u8], i: i64) -> i64
+	requires i >= 0 && i <= bs.len()
+	ensures result >= i && result <= bs.len()
+	decreases bs.len() - i
+= match i < bs.len() && space(bs[i]) {
+	true => skip_space(bs, i + 1),
+	false => i,
+};
+
+/* the end of the text with trailing whitespace dropped */
+pure fn trim_end(bs: [u8], end: i64) -> i64
+	requires end >= 0 && end <= bs.len()
+	ensures result >= 0 && result <= end
+	decreases end
+= match end > 0 && space(bs[end - 1]) {
+	true => trim_end(bs, end - 1),
+	false => end,
+};
+
+/*
+ * Digits from i up to end, accumulated onto acc; the index of the first
+ * byte that is not a digit and the value, which stops growing once it
+ * passes `cap` (so it cannot overflow) and is then cap + 1.
+ */
+pure fn digits(bs: [u8], i: i64, end: i64, acc: i64, cap: i64) -> (i64, i64)
+	requires i >= 0 && i <= end && end <= bs.len() && acc >= 0 && acc <= cap + 1 && cap >= 0 && cap < 1000000000000
+	decreases end - i
+= match i < end && digit(bs[i]) >= 0 {
+	true => digits(bs, i + 1, end, grow(acc, digit(bs[i]), cap), cap),
+	false => (i, acc),
+};
+
+/* acc * 10 + d, held at cap + 1 once past cap */
+pure fn grow(acc: i64, d: i64, cap: i64) -> i64
+	requires acc >= 0 && acc <= cap + 1 && d >= 0 && d <= 9 && cap >= 0 && cap < 1000000000000
+	ensures result >= 0 && result <= cap + 1
+= match acc > cap {
+	true => cap + 1,
+	false => match acc * 10 + d > cap {
+		true => cap + 1,
+		false => acc * 10 + d,
+	},
+};
+
+/* 10^places: the bound on a fraction written with that many digits */
+pure fn span(places: i64) -> i64
+	requires places >= 0 && places <= 4
+= match places {
+	0 => 1,
+	1 => 10,
+	2 => 100,
+	3 => 1000,
+	_ => 10000,
+};
+
+/* a fraction of `places` digits as ten-thousandths of a percent (ppm) */
+pure fn widen(fraction: i64, places: i64) -> i64
+	requires places >= 0 && places <= 4 && fraction >= 0 && fraction < span(places)
+	ensures result >= 0 && result < 10000
+= match places {
+	0 => 0,
+	1 => fraction * 1000,
+	2 => fraction * 100,
+	3 => fraction * 10,
+	_ => fraction,
+};
+
+/*
+ * Reads `text` as a percent. `limit_pct` is the largest magnitude allowed,
+ * in whole percent; `allow_negative` admits a leading '-' (a '+' is always
+ * fine); `allow_suffix` admits a trailing '%'. Whitespace around the
+ * number is ignored.
+ */
+pure fn parse(text: str, limit_pct: i64, allow_negative: bool, allow_suffix: bool) -> own Percent
+	requires limit_pct >= 0 && limit_pct <= 1000000
+{
+	let bs = text.bytes();
+	let start = skip_space(bs, 0);
+	let trimmed = trim_end(bs, bs.len());
+	let end = match allow_suffix && trimmed > start && bs[trimmed - 1] == 37 {
+		true => trim_end(bs, trimmed - 1),
+		false => trimmed,
+	};
+	return match start >= end {
+		true => Percent.Empty,
+		false => signed(bs, start, end, limit_pct, allow_negative),
+	};
+}
+
+/* the optional sign, then the number */
+pure fn signed(bs: [u8], start: i64, end: i64, limit_pct: i64, allow_negative: bool) -> own Percent
+	requires start >= 0 && start < end && end <= bs.len() && limit_pct >= 0 && limit_pct <= 1000000
+{
+	let minus = bs[start] == 45;
+	let body = match minus || bs[start] == 43 {
+		true => start + 1,
+		false => start,
+	};
+	return match minus && !allow_negative {
+		true => Percent.Negative,
+		false => number(bs, body, end, limit_pct, minus),
+	};
+}
+
+/* whole digits, an optional point and up to four fraction digits */
+pure fn number(bs: [u8], body: i64, end: i64, limit_pct: i64, minus: bool) -> own Percent
+	requires body >= 0 && body <= end && end <= bs.len() && limit_pct >= 0 && limit_pct <= 1000000
+{
+	let (after_whole, whole) = digits(bs, body, end, 0, limit_pct);
+	let has_point = after_whole < end && bs[after_whole] == 46;
+	let frac_start = match has_point {
+		true => after_whole + 1,
+		false => after_whole,
+	};
+	let (after_frac, fraction) = digits(bs, frac_start, end, 0, 99999);
+	let places = after_frac - frac_start;
+	return match after_whole == body && places == 0 {
+		true => Percent.Malformed,
+		false => match after_frac != end {
+			true => Percent.Malformed,
+			false => match places > MAX_PLACES {
+				true => Percent.TooPrecise,
+				false => rate(whole, widen(fraction, places), limit_pct, minus),
+			},
+		},
+	};
+}
+
+/* whole percent and ppm of a percent's fraction, checked against the limit */
+pure fn rate(whole: i64, part: i64, limit_pct: i64, minus: bool) -> own Percent
+	requires whole >= 0 && whole <= limit_pct + 1 && part >= 0 && part < 10000 && limit_pct >= 0 && limit_pct <= 1000000
+{
+	let ppm = whole * 10000 + part;
+	return match ppm > limit_pct * 10000 {
+		true => Percent.TooLarge,
+		false => Percent.Rate { ppm = (match minus {
+			true => -ppm,
+			false => ppm,
+		}) as i64<ppm> },
+	};
+}
+
+/* the rate of a parsed percent, for tests and callers that only need it */
+pure fn ppm_of(p: Percent) -> ?i64<ppm> = match p {
+	Rate { ppm } => ppm,
+	_ => none,
+};
+
+test "late fee shapes" {
+	assert((ppm_of(parse("1.5", 100, false, true)) ?? 0<ppm>) == 15000<ppm>);
+	assert((ppm_of(parse(" 10% ", 100, false, true)) ?? 0<ppm>) == 100000<ppm>);
+	assert((ppm_of(parse("0.125", 100, false, true)) ?? 0<ppm>) == 1250<ppm>);
+	assert((ppm_of(parse("100", 100, false, true)) ?? 0<ppm>) == 1000000<ppm>);
+	assert((ppm_of(parse(".5", 100, false, true)) ?? 0<ppm>) == 5000<ppm>);
+	assert(parse("100.0001", 100, false, true) is TooLarge);
+	assert(parse("101", 100, false, true) is TooLarge);
+	assert(parse("1.23456", 100, false, true) is TooPrecise);
+	assert(parse("", 100, false, true) is Empty);
+	assert(parse("  ", 100, false, true) is Empty);
+	assert(parse("abc", 100, false, true) is Malformed);
+	assert(parse("1.5x", 100, false, true) is Malformed);
+	assert(parse(".", 100, false, true) is Malformed);
+	assert(parse("-1", 100, false, true) is Negative);
+	assert(parse("5%", 100, false, false) is Malformed);
+}
+
+test "arbitrage shapes" {
+	assert((ppm_of(parse("-2.5", 1000000, true, false)) ?? 0<ppm>) == -25000<ppm>);
+	assert((ppm_of(parse("+7", 1000000, true, false)) ?? 0<ppm>) == 70000<ppm>);
+	assert(parse("1000001", 1000000, true, false) is TooLarge);
+	assert(parse("99999999999999999999", 1000000, true, false) is TooLarge);
+}
