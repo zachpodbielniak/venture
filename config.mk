@@ -659,7 +659,7 @@ DEBIAN_DEPS += libdex-dev
 ARCH_DEPS += libdex
 
 # ---------------------------------------------------------------------------
-# Tallow: verified kernels (compiled natively) and the suet VM (plugins only)
+# Tallow: verified kernels (compiled natively) and the suet VM (plugins and formulas)
 # ---------------------------------------------------------------------------
 #
 # deps/tallow is a language that renders to gnu89 C. VENTURE uses it twice,
@@ -671,8 +671,9 @@ ARCH_DEPS += libdex
 #     unit at build time, which is
 #     compiled with gcc like any other source and linked into both
 #     libventure-core.a and libventure.a. They never run on the VM.
-#   - libtallow-suet-1.0.a is the bytecode VM. It runs `.tlw` plugins, and
-#     only plugins, sandboxed (src/plugin/venture-tallow-runtime.c).
+#   - libtallow-suet-1.0.a is the bytecode VM. It runs `.tlw` plugins and
+#     user formulas, sandboxed (src/plugin/venture-tallow-runtime.c,
+#     src/formula/venture-formula.c), and nothing of VENTURE's own.
 #
 # The runtime is built without its optional features (GMP, libdex, Lua,
 # libgccjit) so the static archive needs nothing but GLib and libm, and so

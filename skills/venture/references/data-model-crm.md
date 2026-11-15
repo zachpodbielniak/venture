@@ -48,7 +48,8 @@ attribution, territories, mail and calendars. Conventions are in
 `fields`, `honeypot`, `on_duplicate`), `lead_assignment_rule`,
 `lead_routing_rule` (`position`, `conditions`, `action`
 [assign_user|round_robin|assign_venture], `assign_to`, `team_id`),
-`lead_scoring_rule` (`conditions`, `points`), `lead_score_history`
+`lead_scoring_rule` (`conditions`, `points`, `expression` -- an i64 Tallow
+formula giving the points), `lead_score_history`
 (service-only). Reports `lead_sources`, `lead_response_time`,
 `leads_recycled_due`, `lead_routing`, `lead_scoring`.
 

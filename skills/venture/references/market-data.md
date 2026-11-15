@@ -199,6 +199,13 @@ and the others must be left empty or the save is refused:
   `threshold_number`; `spike` also needs `window_hours` (1-336);
   `entry_match` takes `pattern` (plain text, not a regex); `out_of_stock`,
   `back_in_stock`, `undercut` and `collect_ready` take none.
+- Any kind may add `expression`, a bool Tallow formula every candidate
+  must pass (`docs/formulas.org`): `r` is the would-be hit (`venue_key`,
+  `venue_name`, `instrument_key`, `observed` in minor units, `quantity`,
+  ...), e.g. `'expression=str_of(r, "venue_name").starts_with("Silver")
+  && i64_of(r, "quantity") >= 5'`. It is compiled on save (refused with its
+  line:column); one that fails at run time passes nothing and the
+  evaluation's notes say so.
 - `deal` is the Deals page's trade as an alert: the venue's cheapest unit,
   sold at the dearest other *fresh*, plausible venue of its group less the
   5% cut (the page's own `venture_marketdata_deal_sell_side()`). It takes

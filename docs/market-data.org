@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-03]
-#+updated: [2026-10-09]
+#+updated: [2026-11-15]
 #+version: 0.5.1
 
 * Market data
@@ -1045,7 +1045,10 @@ An =alert_rule= says what somebody wants to hear about the market data -- a pric
 | =window_hours= | =spike= only: 1 to 336 |
 | =cooldown_minutes= | quiet time after a hit about the same thing; a new rule starts at 60; 0 to 43200 |
 | =notify_username= | whose inbox a hit reaches; empty is whoever created the rule |
+| =expression= | optional, any kind: a Tallow formula yielding a =bool= that every candidate must pass to become a hit ([[file:formulas.org][Formulas]]) |
 | =notes=, =result= | free text; =result= is transient -- the =evaluate= action's answer, shown once and never stored |
+
+An =expression= is the last word on what the kind found: =r= is the candidate as the hit would record it -- =subject=, =venue_key=, =venue_name=, =instrument_key=, =instrument_name=, =observed_at=, and the kind's own members (=observed= and =observed_currency= in minor units, =reference=, =quantity=, =observed_number=, =spread=, =profit=, =title=, =account_key=, =expires_at=, ...) -- so =str_of(r, "venue_name").starts_with("Silver") && i64_of(r, "quantity") >= 5= narrows a =below= rule to some realms and real stock. A refused candidate is neither a hit nor counted. The formula is compiled when the rule is written (a mistake is refused with its line and column), frozen with the rule and evaluated on the store's thread; one that fails at run time (a panic, a limit) passes nothing, and the evaluation's notes say so.
 
 The save validator holds each kind to exactly the fields it reads, and refuses the ones it does not when they are set -- a price left on an =out_of_stock= rule would read as if it mattered. =basis= is an enum with no empty value, so a kind that does not read it ignores it. References are held to the rule's organization, and a venue in another data source than the one the rule is narrowed to is refused. A category reference is judged against the tree's =applies_to= as an instrument's would be: a rule names the category its instruments are filed under, and the class says so with the =VENTURE_CATEGORY_APPLIES_AS_QDATA= qdata rather than the validator listing it.
 

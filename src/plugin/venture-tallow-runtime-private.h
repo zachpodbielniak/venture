@@ -10,8 +10,9 @@
  * them (plugins.tallow_capabilities), an instruction budget per call and a
  * heap cap. Each plugin gets a VM of its own.
  *
- * Only plugins run on the VM. VENTURE's own Tallow -- the kernels in
- * src/kernels -- is compiled C; a plugin reaches it through the
+ * Plugins and user formulas (src/formula) run on the VM; VENTURE's own
+ * Tallow -- the kernels in src/kernels -- is compiled C, never
+ * interpreted. A plugin or a formula reaches it through the
  * `venture_kernels` host module, whose functions are bound to that compiled
  * code (tools/venture-tallow-bindings.sh), never to an interpreted copy.
  * docs/tallow-plugins.org is the guide.

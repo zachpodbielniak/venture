@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-28]
-#+updated: [2026-10-02]
+#+updated: [2026-11-15]
 #+version: 0.1.0
 
 * What a form is
@@ -240,8 +240,9 @@ values), =greater_than=, =less_than= and =is_empty= (no value needed). Compariso
 are case-sensitive. Numeric comparisons refuse non-numbers and non-finite
 values. A multiple-choice answer matches if any selected id matches;
 =not_equals= means none matches. By default all conditions must match;
-=any_condition=true= changes this to any. There is no expression or script
-language. Conditions can combine questions from earlier pages.
+=any_condition=true= changes this to any. Conditions can combine questions from earlier pages.
+
+When the closed vocabulary is not enough, a rule may carry an =expression= instead: a Tallow formula yielding a =bool=, compiled when the rule is saved and evaluated by the server on the sandboxed VM ([[file:formulas.org][Formulas]]). The =conditions= are then ignored (they may be =[]=). The formula reads the answers of the questions whose key it quotes -- =i64_of(r, "seats") > 10 && field_has(r, "plan", "team")= reads =seats= and =plan= -- and only those answers reach it. The same forward-only rules hold for those questions as for conditions (1–16, earlier than the target, no file uploads), and an expression rule may not read or target questions in a repeat group. Because the browser never runs a formula, a =show=, =hide= or =require= expression rule must read questions on an earlier page than its target; its outcome reaches the loader as a server-computed boolean. A formula that fails at run time (a panic, a limit) does not match. A diagnostic on save gives the line and column inside the expression.
 
 The =action= is =show=, =hide=, =require=, =jump= or =end=. =target_key= names a
 question for the first three, a later page-break key for =jump=, and is empty
@@ -274,7 +275,10 @@ server-validated POST.
 
 The schema exposes a =rules= array alongside =fields= and =pages=. Each entry
 contains =conditions=, =any=, =target=, zero-based =from_page=/=to_page= and
-=action= (0 show, 1 hide, 2 require, 3 jump, 4 end). These numbers are the stable
+=action= (0 show, 1 hide, 2 require, 3 jump, 4 end); an expression rule also
+carries =expression= and =reads= (the question keys it reads) and an empty
+=conditions=. In =data-vf-rules= an expression rule has neither, only
+=server: true= and its =matched= outcome. These numbers are the stable
 =VentureFormRuleAction= values. The loader's =data-vf-rules= additionally carries
 initial match results, and =data-vf-required-base= preserves a question's ordinary
 requirement. Host styles must honor =[hidden]= and should not re-enable disabled

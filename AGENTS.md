@@ -730,7 +730,7 @@ podomation resolves its whole dependency set in one `pkg-config` call, so one
 missing package empties the flags and the build fails on a missing `glib.h`.
 `oidc-glib` fails the same way without `libjose-devel` and `jansson-devel`.
 
-## Tallow: compiled kernels, interpreted plugins
+## Tallow: compiled kernels, interpreted plugins and formulas
 
 `deps/tallow` is used twice, and the two never mix:
 
@@ -752,6 +752,20 @@ missing package empties the flags and the build fails on a missing `glib.h`.
   They reach kernel math only through `venture_kernels`, host functions
   bound to the compiled `vk_*` code, generated from `/* @export */` kernels.
   Never put `src/kernels` on a VM's search path.
+- **User formulas** (`docs/formulas.org`) are the other interpreted code: one
+  Tallow expression in the `expression` field of a `form_rule` (bool),
+  `alert_rule` (bool) or `lead_scoring_rule` (i64). They go through the one
+  evaluator, `src/formula/venture-formula.c` (private header, server-only):
+  `venture_formula_check()` in the record's save validator, then
+  `venture_formula_eval_bool()` / `_eval_int()` with the record as JSON `r`.
+  No capability can be granted; limits are `formulas.*` (gint64 settings).
+  A failed evaluation is the caller's "no match" / "no points", logged with
+  `g_message` (tests run with fatal warnings), never an error that stops the
+  surrounding work. A new place for formulas reuses the evaluator; never
+  build a second VM path, and never paste user text into Tallow anywhere
+  else -- the shape check and the wrapper are what keep it an expression.
+  New accessors go in `src/formula/venture-formula.tlw` (pure, `?T` for
+  "absent").
 
 ## Tests
 

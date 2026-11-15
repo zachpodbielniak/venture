@@ -49,8 +49,14 @@ edits, not responses. See `docs/forms.org` for same-row rules and limits.
 Use `describe form_rule` before editing conditional questions. A rule has
 `form_id`, `action=show|hide|require|jump|end`, `target_key`, and a `conditions`
 JSON array of `{field,operator,value}`. Conditions use a closed comparison
-vocabulary (see `docs/forms.org`), never expressions. Question targets must
-follow their sources; jumps only go forward. Publish freezes rules as well as
+vocabulary (see `docs/forms.org`). Instead of conditions a rule may carry an
+`expression`, a Tallow formula yielding a bool (`docs/formulas.org`), e.g.
+`'expression=i64_of(r, "seats") > 10 && field_has(r, "plan", "team")'` with
+`'conditions=[]'`: it reads only the questions whose key it quotes, those must
+be earlier and not in a repeat group, and a show/hide/require expression rule
+must read questions on an earlier page than its target (the server decides
+it). A formula that does not compile is refused with its line:column.
+Question targets must follow their sources; jumps only go forward. Publish freezes rules as well as
 questions. Hidden and skipped answers are discarded by the server.
 
 For multiple pages, insert a `form_field kind=page_break` between questions by

@@ -50,7 +50,12 @@ venturectl update lead 31 status=recycled unqualified_reason="Budget next year" 
 - Rules are ordinary records: `create lead_routing_rule position=N
   'conditions=source=web' action=assign_user|round_robin|assign_venture
   ...` and `create lead_scoring_rule 'conditions=...' points=N` (`describe
-  lead_routing_rule` for exact enums). A malformed condition or an action
+  lead_routing_rule` for exact enums). A scoring rule may compute its points
+  instead: `'expression=when(str_of(r, "country") == "US", 25) +
+  i64_of(r, "employees") / 100'` (a Tallow i64 formula over the lead, custom
+  attributes included; `docs/formulas.org`), added when its conditions hold;
+  a formula that does not compile is refused with its line:column, one that
+  fails at run time scores 0. A malformed condition or an action
   missing its target is refused at the create. `round_robin` needs the
   `orgaccess` module for teams. Never set `routing_rule_id` by hand, and
   never create a `lead_score_history` row: both are refused.
