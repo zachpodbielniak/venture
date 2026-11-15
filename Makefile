@@ -128,6 +128,7 @@ SERVER_ONLY_SRCS := \
 	$(wildcard src/ai/*.c) \
 	$(wildcard src/automation/*.c) \
 	$(wildcard src/plugin/*.c) \
+	$(wildcard src/formula/*.c) \
 	$(wildcard src/web/*.c) \
 	$(wildcard src/forge/*.c) \
 	$(wildcard src/kb/*.c)
