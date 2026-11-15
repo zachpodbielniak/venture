@@ -5,17 +5,7 @@
 #include "venture.h"
 #include "ledger/venture-ledger-private.h"
 
-static gboolean
-accumulate(VentureMoney **sum, const VentureMoney *amount, GError **error)
-{
-	VentureMoney *total = venture_money_add(*sum, amount, error);
-
-	if (NULL == total)
-		return FALSE;
-	venture_money_free(*sum);
-	*sum = total;
-	return TRUE;
-}
+#include <vk-kernels.h>
 
 /* The book currency first, then the rest by code. */
 static gint
@@ -123,10 +113,12 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 		/* Each currency balances on its own; the label says why it has a
 		 * section at all, by the posting service's rule. */
 		g_autofree gchar *label = venture_posting_service_book_label(service, org, currency, as_of, error);
-		g_autoptr(VentureMoney) debits = venture_money_new_zero(currency);
-		g_autoptr(VentureMoney) credits = venture_money_new_zero(currency);
+		g_autoptr(VentureMoney) debits = NULL;
+		g_autoptr(VentureMoney) credits = NULL;
 		g_autoptr(VentureMoney) zero = venture_money_new_zero(currency);
 		g_autoptr(VentureMoney) difference = NULL;
+		g_autoptr(GPtrArray) columns = g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_line_free);
+		g_autoptr(VkLedgerTrial) totals = NULL;
 		g_autofree gchar *debit_key = g_strdup_printf("debits_%s", currency);
 		g_autofree gchar *credit_key = g_strdup_printf("credits_%s", currency);
 		g_autofree gchar *difference_key = g_strdup_printf("difference_%s", currency);
@@ -141,23 +133,34 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 			g_autoptr(VentureMoney) balance = venture_posting_service_account_balance(
 				service, venture_entity_get_id(account), org, currency, as_of, error);
 			g_autoptr(VentureMoney) magnitude = NULL;
+			g_autoptr(VkLedgerColumn) column = NULL;
 			g_autofree gchar *code = NULL;
 			g_autofree gchar *name = NULL;
 			gboolean debit;
 
 			if (NULL == balance)
 				goto fail;
-			if (balance->amount == 0)
+			/* The sign of the balance picks the column, its magnitude
+			 * goes in it (vk_ledger_column). */
+			column = vk_ledger_column(balance->amount);
+			if (VK_LEDGER_COLUMN_SKIP == column->tag)
 				continue;
-			if (balance->amount == G_MININT64)
+			if (VK_LEDGER_COLUMN_UNREPRESENTABLE == column->tag)
 			{
 				g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE, "Trial balance magnitude overflows");
 				goto fail;
 			}
-			debit = balance->amount > 0;
-			magnitude = venture_money_abs(balance);
-			if (!accumulate(debit ? &debits : &credits, magnitude, error))
+			debit = VK_LEDGER_COLUMN_DEBIT == column->tag;
+			magnitude = venture_money_new(debit ? column->u.debit.amount : column->u.credit.amount,
+				balance->currency, balance->exponent);
+			if (0 != g_ascii_strcasecmp(zero->currency, magnitude->currency))
+			{
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+					"Cannot combine %s and %s: no exchange rate is available "
+					"and guessing one would be wrong", zero->currency, magnitude->currency);
 				goto fail;
+			}
+			g_ptr_array_add(columns, vk_ledger_line_new(magnitude->amount, (gint64)magnitude->exponent, debit));
 			g_object_get(account, "code", &code, "name", &name, NULL);
 			venture_report_result_begin_row(result);
 			venture_report_result_set_text(result, "code", code);
@@ -167,14 +170,24 @@ trial_balance(VentureContext *context, VentureDateRange *period, JsonObject *opt
 			venture_report_result_set_money(result, "debit", debit ? magnitude : zero);
 			venture_report_result_set_money(result, "credit", debit ? zero : magnitude);
 		}
-		difference = venture_money_subtract(debits, credits, error);
-		if (NULL == difference)
+		/* Each column's total from zero, and debits minus credits, which
+		 * must be zero (vk_ledger_trial). */
+		totals = vk_ledger_trial(columns, (gint64)zero->exponent);
+		if (VK_LEDGER_TRIAL_OVERFLOWED == totals->tag)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Monetary addition overflows a 64-bit minor-unit amount");
 			goto fail;
-		if (difference->amount != 0)
+		}
+		if (VK_LEDGER_TRIAL_EVEN != totals->tag)
 		{
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_BALANCE, "The trial balance does not balance");
 			goto fail;
 		}
+		debits = venture_money_new(totals->u.even.debits, zero->currency, (guint8)totals->u.even.debit_exponent);
+		credits = venture_money_new(totals->u.even.credits, zero->currency, (guint8)totals->u.even.credit_exponent);
+		difference = venture_money_new(0, zero->currency,
+			(guint8)MAX(totals->u.even.debit_exponent, totals->u.even.credit_exponent));
 		venture_report_result_add_metric(result, venture_metric_new_money(debit_key, "Debits", debits));
 		venture_report_result_add_metric(result, venture_metric_new_money(credit_key, "Credits", credits));
 		venture_report_result_add_metric(result, venture_metric_new_money(difference_key, "Difference", difference));

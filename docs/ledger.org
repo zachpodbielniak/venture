@@ -128,7 +128,8 @@ The order is:
 1. Validate the draft and source; emit =date-postable= while the transaction
    is held. A period module connects here. Ledger itself defines no periods.
 2. Validate and value all lines, and require total debits to equal credits in
-   the book currency. Overflow is an error, never a wrapped balance.
+   the book currency. Overflow is an error, never a wrapped balance. The
+   arithmetic is the =vk_ledger= kernel ([[file:kernels.org][Kernels]]): =check_journal= takes the valued lines and says whether there are at least two, none negative, and the debits' total equals the credits' at their common exponent; the account lookups and valuation stay in C.
 3. Emit =posting=, =G_SIGNAL_RUN_LAST=, with detached snapshots of the header
    and valued lines. Snapshot edits do not change the posting.
 4. Persist the draft, its lines and projections, then mark the header posted.
@@ -321,7 +322,7 @@ stored; a reversal copies those valuations exactly without calling today's
 exchange policy.
 
 =exchange_rate= rows are the dated exact feed. =venture_rate_table_policy_new()=
-looks up the latest rate on or before the accounting date for that pair.
+looks up the latest rate on or before the accounting date for that pair: of the usable rows (not deleted, a positive numerator and denominator), the one with the latest =effective-at= no later than the date, ties to the earliest row (=vk_ledger_pick_rate=). Rows are put in one strict order -- dated before undated, later before earlier, then by position -- where the comparator it replaced called two rows equal whenever either had no date, which is not an order and could leave an older rate ahead of the newest.
 Missing pairs, including the inverse of a stored pair, are refused. When a
 policy is supplied, the journal's book currency is the organization's
 =default-currency=.
@@ -402,6 +403,8 @@ per book currency like any account's, so it is one clearing account per
 currency in effect: its GOLD balance is the gold given for tickets, its
 TICKET balance the tickets received for gold. A trial balance shows each
 currency's section balanced.
+
+The net of each journal's lines (debits minus credits, after valuation) is =vk_ledger_net=, and the clearing line is =vk_ledger_clearing=: nothing at zero, otherwise the net's magnitude on the opposite side, so every journal nets to zero; only the clearing account itself comes from the database.
 
 A single journal must still balance by itself: clearing never absorbs a
 one-currency imbalance. When memo lines were dropped and the one journal
@@ -730,7 +733,7 @@ by id. It includes deleted drafts so the source trail stays visible.
 
 =venture_posting_service_account_balance()= takes an account id, exact
 organization id, book currency and inclusive as-of timestamp. It returns
-debits minus credits as =VentureMoney=. It reads only posted evidence:
+debits minus credits as =VentureMoney= (=vk_ledger_net=: a debit adds, a credit subtracts, in posting order, at the finest exponent the lines carry). It reads only posted evidence:
 drafts, legacy standalone ledger entries, mutable account opening balances,
 sales and expenses are not inputs.
 
@@ -738,7 +741,7 @@ A reversed original remains posted evidence. Its amount is counted on the
 original date; the reversing journal contributes the opposite amount on its
 own date. Dropping a row simply because its current state is reversed would
 rewrite the past. For a normal-side display, use
-=venture_account_kind_is_debit_normal()= to choose the sign.
+=venture_account_kind_is_debit_normal()= to choose the sign (=vk_ledger_debit_normal=; =vk_ledger_normal_balance= gives the balance on that side from debits and credits, as budgets use it).
 
 =trial_balance= is registered with the ordinary report registry, so the web,
 API, AI, CLI and exports can render it. It reads balances through the same
@@ -746,7 +749,7 @@ query, from the beginning of history up to the period's exclusive end.
 =organization_id= selects one legal entity (the default organization when
 omitted). =currency= optionally selects one book currency. Otherwise it
 reports each currency separately, with debit, credit and zero-difference
-metrics for each; it never combines currencies or descendant companies.
+metrics for each; it never combines currencies or descendant companies. The sign of each account's balance picks its column and its magnitude goes in it (=vk_ledger_column=); each column is totalled and the two must be equal (=vk_ledger_trial=).
 
 * Compatibility and limits
 

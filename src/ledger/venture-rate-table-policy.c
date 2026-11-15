@@ -2,6 +2,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 
+#include <vk-kernels.h>
+
 struct _VentureRateTablePolicy
 {
 	GObject parent_instance;
@@ -40,19 +42,6 @@ rate_table_name(VentureExchangePolicy *self)
 	return "exchange_rate";
 }
 
-static gint
-compare_effective(gconstpointer a, gconstpointer b)
-{
-	g_autoptr(GDateTime) left = NULL;
-	g_autoptr(GDateTime) right = NULL;
-
-	g_object_get(*(VentureEntity *const *)a, "effective-at", &left, NULL);
-	g_object_get(*(VentureEntity *const *)b, "effective-at", &right, NULL);
-	if (left == NULL || right == NULL)
-		return 0;
-	return g_date_time_compare(right, left);
-}
-
 static VentureMoney *
 rate_table_convert(VentureExchangePolicy *policy, const VentureMoney *amount,
 	const gchar *currency, GDateTime *when, GError **error)
@@ -61,7 +50,9 @@ rate_table_convert(VentureExchangePolicy *policy, const VentureMoney *amount,
 	g_autoptr(VentureDatabase) database = g_weak_ref_get(&self->database);
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GPtrArray) rates = NULL;
 	g_autofree gchar *when_text = NULL;
+	TlwOptI64 chosen;
 	guint i;
 
 	if (database == NULL)
@@ -87,24 +78,34 @@ rate_table_convert(VentureExchangePolicy *policy, const VentureMoney *amount,
 	rows = venture_database_find(database, query, error);
 	if (rows == NULL)
 		return NULL;
-	g_ptr_array_sort(rows, compare_effective);
+	/* Which row applies is vk_ledger_pick_rate: the latest effective date
+	 * at or before @when among usable rows, ties to the earliest row. It
+	 * used to be a sort whose comparator called two rows equal whenever
+	 * either was undated -- not an order, so an undated row could leave an
+	 * older rate ahead of the newest one -- followed by a scan. */
+	rates = g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_rate_free);
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		g_autoptr(GDateTime) effective = NULL;
 		gint64 numerator = 0;
 		gint64 denominator = 0;
-		if (venture_entity_is_deleted(row))
-			continue;
+
 		g_object_get(row, "effective-at", &effective, "rate-numerator", &numerator,
 			"rate-denominator", &denominator, NULL);
-		if (effective == NULL || g_date_time_compare(effective, when) > 0)
-			continue;
-		if (numerator <= 0 || denominator <= 0)
-			continue;
-		{
-			return venture_money_convert_at_rate(amount, numerator, denominator, currency, error);
-		}
+		g_ptr_array_add(rates, vk_ledger_rate_new(
+			effective != NULL ? g_date_time_to_unix_usec(effective) : 0, effective != NULL,
+			!venture_entity_is_deleted(row) && numerator > 0 && denominator > 0));
+	}
+	chosen = vk_ledger_pick_rate(rates, g_date_time_to_unix_usec(when));
+	if (chosen.has)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, (guint)chosen.val);
+		gint64 numerator = 0;
+		gint64 denominator = 0;
+
+		g_object_get(row, "rate-numerator", &numerator, "rate-denominator", &denominator, NULL);
+		return venture_money_convert_at_rate(amount, numerator, denominator, currency, error);
 	}
 	when_text = g_date_time_format_iso8601(when);
 	g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,

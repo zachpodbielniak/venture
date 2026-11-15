@@ -9,7 +9,7 @@ approved JSON or CSV pay run is the input.
 
 =payroll_run= is unique by =run-key= inside an organization. Duplicate keys
 are refused. =payroll_line= stores gross, employer cost, deductions, net and
-liabilities. Gross plus employer cost must equal net plus liabilities.
+liabilities. Gross plus employer cost must equal net plus liabilities, as money: each side is summed at its common exponent and the two compared exponent-aware (=vk_ledger_pay_line=), so =1400.000 USD= of liabilities balances =1400.00 USD= of cost and 540.000 USD never passes for 5400.00 USD because both are 540000 minor units.
 
 A run that names no =currency= is in the organization's book currency, and
 a line's bare amount ("2000.00") is in the run's currency.

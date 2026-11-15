@@ -1,0 +1,415 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_ledger.tlw - the double-entry arithmetic of the accounting core.
+ *
+ * What the posting service, the trial balance, budgets and payroll
+ * compute once the database has been read: whether a journal balances,
+ * the net of a group of lines and the clearing line that settles it, an
+ * account's balance, which column of a trial balance a balance belongs
+ * in, an account's balance on its normal side, which recorded exchange
+ * rate applies on a day, and whether a pay line balances.
+ *
+ * It replaces the running VentureMoney sums in
+ * src/ledger/venture-posting-service.c (value_lines, group_net,
+ * plan_by_currency, venture_posting_service_account_balance),
+ * src/ledger/venture-trial-balance.c, the sort and scan in
+ * src/ledger/venture-rate-table-policy.c, actual_for in
+ * src/budgets/venture-budget-service.c, line_balances in
+ * src/payroll/venture-payroll-service.c and
+ * venture_account_kind_is_debit_normal.
+ *
+ * Lines arrive as an array of `Line` (an amount in minor units, its own
+ * exponent, and whether it is a debit). Each running total keeps the exponent it has reached, exactly as adding
+ * VentureMoney values did: a sum combines at the finer of its two
+ * exponents (vk_money), so nothing is rounded away by adding. Account
+ * lookups, valuation through an exchange policy, currency codes and every
+ * g_object_set stay in C; a kernel sees one currency at a time.
+ */
+module vk_ledger;
+
+import vk_units;
+import vk_money as Mo;
+import tallow.math as M;
+
+/* the fewest lines a journal may have: one debit and one credit */
+let MIN_LINES = 2;
+
+/* one valued journal line, or one account's balance in a trial balance */
+struct Line { amount: i64<minor>, exponent: i64, debit: bool }
+
+/* one recorded exchange rate as rate selection sees it: when it takes
+ * effect (unix microseconds, when `dated`), and whether it may be used at
+ * all (not deleted, a positive ratio: C decides) */
+struct Rate { effective: i64, dated: bool, usable: bool }
+
+/* the chart of accounts' five classes (VentureAccountKind) */
+type Kind = Asset | Liability | Equity | Income | Expense;
+
+/* a running total and the exponent it has reached, or why there is none */
+type Total = Sum { amount: i64<minor>, exponent: i64 } | Overflow;
+
+/* what checking a journal's valued lines found */
+type Journal =
+	| Balanced { amount: i64<minor>, exponent: i64 }
+	| TooFewLines
+	| Negative { line: i64 }
+	| Unbalanced
+	| TooLarge;
+
+/* the line that settles a group's net, if it needs one */
+type Clearing = Settled | Post { amount: i64<minor>, debit: bool } | Unsettleable;
+
+/* where one account's balance goes in a trial balance */
+type Column = Skip | Debit { amount: i64<minor> } | Credit { amount: i64<minor> } | Unrepresentable;
+
+/* one currency's trial balance totals */
+type Trial =
+	| Even { debits: i64<minor>, debit_exponent: i64, credits: i64<minor>, credit_exponent: i64 }
+	| Uneven
+	| Overflowed;
+
+/* what checking a pay line found */
+type PayLine = Balances | Differs | Overflows;
+
+/* ---- the integer core (proved by tallow verify) ---- */
+
+/* a journal has enough lines to be double entry */
+pure fn enough_lines(n: i64) -> bool = n >= MIN_LINES;
+
+/* an exponent a VentureMoney can carry, which every kernel below needs */
+pure fn exponent_ok(e: i64) -> bool = e >= 0 && e <= Mo.MAX_EXPONENT;
+
+/* |x| for a balance that has one */
+pure fn magnitude(x: i64) -> i64
+	requires x >= -9223372036854775807
+	ensures result >= 0 && (result == x || result == -x)
+= match x < 0 {
+	true => -x,
+	false => x,
+};
+
+/* a balance whose increases are debits is debits minus credits; one
+ * whose increases are credits is credits minus debits */
+pure fn debit_normal(kind: Kind) -> bool = match kind {
+	Asset => true,
+	Expense => true,
+	Liability => false,
+	Equity => false,
+	Income => false,
+};
+
+/*
+ * Whether row a (dated when `a_dated`, effective at `a`, at position ai)
+ * comes before row b in rate order: dated rows first, the later
+ * effective date first, then the earlier position. A strict total order:
+ * the comparator it replaces called two rows equal whenever either was
+ * undated, which is not an order at all, so the sort could leave an older
+ * rate ahead of the newest one.
+ */
+pure fn rate_ahead(a_dated: bool, a: i64, ai: i64, b_dated: bool, b: i64, bi: i64) -> bool
+	requires ai != bi
+	ensures !(result && rate_ahead(b_dated, b, bi, a_dated, a, ai))
+= match a_dated != b_dated {
+	true => a_dated,
+	false => match a_dated && a != b {
+		true => a > b,
+		false => ai < bi,
+	},
+};
+
+/* ---- folds over lines ---- */
+
+/* a running total (acc at exponent e) with one line added or, for a
+ * credit (`minus`), subtracted */
+pure fn step(acc: i64<minor>, e: i64, amount: i64<minor>, ae: i64, minus: bool) -> ?i64<minor>
+	requires e >= 0 && e <= 18 && ae >= 0 && ae <= 18
+= match minus {
+	true => Mo.subtract(acc, e, amount, ae),
+	false => Mo.add(acc, e, amount, ae),
+};
+
+/*
+ * The signed total of the lines from i on, onto acc at exponent e:
+ * debits added and credits subtracted, one line at a time, in order (an
+ * overflow is found where the running sum leaves the range, as it was).
+ * A line whose exponent no VentureMoney can carry is refused the same way.
+ */
+pure fn signed_from(lines: [Line], i: i64, acc: i64<minor>, e: i64) -> own Total
+	requires i >= 0 && i <= lines.len() && e >= 0 && e <= 18
+	decreases lines.len() - i
+= match i >= lines.len() {
+	true => Total.Sum { amount = acc, exponent = e },
+	false => match exponent_ok(lines[i].exponent) {
+		false => Total.Overflow,
+		true => match step(acc, e, lines[i].amount, lines[i].exponent, !lines[i].debit) {
+			some next => signed_from(lines, i + 1, next, Mo.common_exponent(e, lines[i].exponent)),
+			none => Total.Overflow,
+		},
+	},
+};
+
+/* the total of the lines from i on that sit on one side (`debit`), onto
+ * acc at exponent e */
+pure fn side_from(lines: [Line], debit: bool, i: i64, acc: i64<minor>, e: i64) -> own Total
+	requires i >= 0 && i <= lines.len() && e >= 0 && e <= 18
+	decreases lines.len() - i
+= match i >= lines.len() {
+	true => Total.Sum { amount = acc, exponent = e },
+	false => match lines[i].debit != debit {
+		true => side_from(lines, debit, i + 1, acc, e),
+		false => match exponent_ok(lines[i].exponent) {
+			false => Total.Overflow,
+			true => match Mo.add(acc, e, lines[i].amount, lines[i].exponent) {
+				some next => side_from(lines, debit, i + 1, next, Mo.common_exponent(e, lines[i].exponent)),
+				none => Total.Overflow,
+			},
+		},
+	},
+};
+
+/* the first line with a negative amount, if any */
+pure fn first_negative(lines: [Line], i: i64) -> ?i64
+	requires i >= 0 && i <= lines.len()
+	decreases lines.len() - i
+= match i >= lines.len() {
+	true => none,
+	false => match lines[i].amount < 0<minor> {
+		true => i,
+		false => first_negative(lines, i + 1),
+	},
+};
+
+/*
+ * Debits minus credits of a group of lines, starting from zero at
+ * `start_exponent` (the currency's own): the net of a posting group, and
+ * an account's balance, which is the same fold -- a debit adds and a
+ * credit subtracts.
+ */
+pure fn net(lines: [Line], start_exponent: i64) -> own Total
+	requires start_exponent >= 0 && start_exponent <= 18
+= signed_from(lines, 0, 0<minor>, start_exponent);
+
+/* the total of one side's lines, from zero at `start_exponent` */
+pure fn side_total(lines: [Line], debit: bool, start_exponent: i64) -> own Total
+	requires start_exponent >= 0 && start_exponent <= 18
+= side_from(lines, debit, 0, 0<minor>, start_exponent);
+
+/*
+ * A journal's valued lines checked as double entry: at least two lines,
+ * none negative, and the debits' total equal to the credits' (compared
+ * at their common exponent). Balanced carries the debits' total.
+ */
+pure fn check_journal(lines: [Line], start_exponent: i64) -> own Journal
+	requires start_exponent >= 0 && start_exponent <= 18
+= match enough_lines(lines.len()) {
+	false => Journal.TooFewLines,
+	true => match first_negative(lines, 0) {
+		some line => Journal.Negative { line },
+		none => sides_balance(side_total(lines, true, start_exponent), side_total(lines, false, start_exponent)),
+	},
+};
+
+/* two side totals compared */
+pure fn sides_balance(dr: Total, cr: Total) -> own Journal = match dr {
+	Sum { amount = d, exponent = de } => match cr {
+		Sum { amount = c, exponent = ce } => match exponent_ok(de) && exponent_ok(ce) && Mo.compare(d, de, c, ce) == 0 {
+			true => Journal.Balanced { amount = d, exponent = de },
+			false => Journal.Unbalanced,
+		},
+		Overflow => Journal.TooLarge,
+	},
+	Overflow => Journal.TooLarge,
+};
+
+/* ---- clearing, trial balance, normal balance ---- */
+
+/*
+ * The clearing line a group with net `net` needs to settle on its own:
+ * none at zero, otherwise |net| on the side opposite the net (a net debit
+ * is cleared by a credit). G_MININT64 has no magnitude.
+ */
+pure fn clearing(net: i64<minor>) -> own Clearing = match net == 0<minor> {
+	true => Clearing.Settled,
+	false => match net == M.I64_MIN as i64<minor> {
+		true => Clearing.Unsettleable,
+		false => Clearing.Post { amount = magnitude(net as i64) as i64<minor>, debit = net < 0<minor> },
+	},
+};
+
+/* the trial-balance column of an account's balance: a positive balance
+ * is a debit, a negative one a credit of its magnitude */
+pure fn column(balance: i64<minor>) -> own Column = match balance == 0<minor> {
+	true => Column.Skip,
+	false => match balance == M.I64_MIN as i64<minor> {
+		true => Column.Unrepresentable,
+		false => match balance > 0<minor> {
+			true => Column.Debit { amount = balance },
+			false => Column.Credit { amount = magnitude(balance as i64) as i64<minor> },
+		},
+	},
+};
+
+/*
+ * One currency's trial balance from the magnitudes its accounts put in
+ * each column: the two totals, each from zero at `start_exponent`, and
+ * whether they are equal (debits minus credits is zero).
+ */
+pure fn trial(lines: [Line], start_exponent: i64) -> own Trial
+	requires start_exponent >= 0 && start_exponent <= 18
+= trial_of(side_total(lines, true, start_exponent), side_total(lines, false, start_exponent));
+
+pure fn trial_of(dr: Total, cr: Total) -> own Trial = match dr {
+	Sum { amount = d, exponent = de } => match cr {
+		Sum { amount = c, exponent = ce } => match exponent_ok(de) && exponent_ok(ce) {
+			false => Trial.Overflowed,
+			true => match Mo.subtract(d, de, c, ce) {
+				some difference => match difference == 0<minor> {
+					true => Trial.Even { debits = d, debit_exponent = de, credits = c, credit_exponent = ce },
+					false => Trial.Uneven,
+				},
+				none => Trial.Overflowed,
+			},
+		},
+		Overflow => Trial.Overflowed,
+	},
+	Overflow => Trial.Overflowed,
+};
+
+/*
+ * An account's balance on its normal side from its debits and credits
+ * (each at its own exponent): debits minus credits for an asset or an
+ * expense, credits minus debits otherwise. The result is at the common
+ * exponent; none when it does not fit.
+ */
+pure fn normal_balance(kind: Kind, debits: i64<minor>, de: i64, credits: i64<minor>, ce: i64) -> ?i64<minor>
+	requires de >= 0 && de <= 18 && ce >= 0 && ce <= 18
+= match debit_normal(kind) {
+	true => Mo.subtract(debits, de, credits, ce),
+	false => Mo.subtract(credits, ce, debits, de),
+};
+
+/* ---- exchange rates ---- */
+
+/*
+ * The recorded rate that applies at `when`, as a position in the rows:
+ * among the usable rows (not deleted, a positive ratio, C decides) that
+ * are dated no later than `when`, the first in rate order -- the latest
+ * effective date, ties to the earliest row. None when no row applies.
+ */
+pure fn pick_rate(rates: [Rate], when: i64) -> ?i64 = pick_from(rates, when, 0, none);
+
+pure fn pick_from(rates: [Rate], when: i64, i: i64, best: ?i64) -> ?i64
+	requires i >= 0 && i <= rates.len() && (best ?? 0) >= 0 && (best ?? -1) < i
+	decreases rates.len() - i
+= match i >= rates.len() {
+	true => best,
+	false => match rates[i].usable && rates[i].dated && rates[i].effective <= when {
+		false => pick_from(rates, when, i + 1, best),
+		true => pick_from(rates, when, i + 1, match best {
+			some b => match rate_ahead(true, rates[i].effective, i, rates[b].dated, rates[b].effective, b) {
+				true => i,
+				false => b,
+			},
+			none => i,
+		}),
+	},
+};
+
+/* ---- payroll ---- */
+
+/*
+ * A pay line balances when what it cost (gross plus the employer's
+ * share) equals where it went (net pay plus liabilities withheld), each
+ * side summed at its own common exponent and the two compared
+ * exponent-aware: 100.00 and 100.000 are the same pay.
+ */
+pure fn pay_line(gross: i64<minor>, ge: i64, employer: i64<minor>, ee: i64,
+	net: i64<minor>, ne: i64, liabilities: i64<minor>, le: i64) -> own PayLine
+	requires ge >= 0 && ge <= 18 && ee >= 0 && ee <= 18 && ne >= 0 && ne <= 18 && le >= 0 && le <= 18
+= match Mo.add(gross, ge, employer, ee) {
+	some cost => match Mo.add(net, ne, liabilities, le) {
+		some paid => match Mo.compare(cost, Mo.common_exponent(ge, ee), paid, Mo.common_exponent(ne, le)) == 0 {
+			true => PayLine.Balances,
+			false => PayLine.Differs,
+		},
+		none => PayLine.Overflows,
+	},
+	none => PayLine.Overflows,
+};
+
+/* ---- tests ---- */
+
+pure fn sum_of(t: Total) -> i64 = match t {
+	Sum { amount, .. } => amount as i64,
+	Overflow => -1,
+};
+
+pure fn exponent_of(t: Total) -> i64 = match t {
+	Sum { exponent, .. } => exponent,
+	Overflow => -1,
+};
+
+pure fn line(amount: i64, exponent: i64, debit: bool) -> own Line = Line { amount = amount as i64<minor>, exponent, debit };
+
+pure fn rate(effective: i64, dated: bool, usable: bool) -> own Rate = Rate { effective, dated, usable };
+
+test "journal" {
+	assert(check_journal([line(1000, 2, true), line(600, 2, false), line(400, 2, false)], 2) is Balanced);
+	assert(check_journal([line(1000, 2, true), line(6000, 3, false), line(400, 2, false)], 2) is Balanced);
+	assert(check_journal([line(1000, 2, true), line(600, 2, false), line(401, 2, false)], 2) is Unbalanced);
+	assert(check_journal([line(1000, 2, true)], 2) is TooFewLines);
+	assert(check_journal([line(1000, 2, true), line(-1000, 2, false)], 2) is Negative);
+	assert(check_journal([line(M.I64_MAX, 2, true), line(M.I64_MAX, 2, true), line(1, 2, false)], 2) is TooLarge);
+	assert(check_journal([line(1, 7, true), line(1, 7, false)], 2) is TooLarge);
+}
+
+test "net and balance" {
+	let t = net([line(1000, 2, true), line(250, 2, false), line(5000, 3, true)], 2);
+	assert(sum_of(t) == 12500 && exponent_of(t) == 3);
+	assert(sum_of(net([line(1, 2, false), line(2, 2, false)], 2)) == -3);
+	assert(sum_of(net([], 0)) == 0);
+	assert(net([line(M.I64_MAX, 0, true), line(1, 0, true)], 0) is Overflow);
+	/* a credit then a debit stays in range: order is kept */
+	assert(sum_of(net([line(M.I64_MAX, 0, false), line(M.I64_MAX, 0, true)], 0)) == 0);
+}
+
+test "clearing and columns" {
+	assert(clearing(0<minor>) is Settled);
+	assert(clearing(M.I64_MIN as i64<minor>) is Unsettleable);
+	assert(match clearing(-250<minor>) { Post { amount, debit } => amount == 250<minor> && debit, _ => false });
+	assert(match clearing(250<minor>) { Post { amount, debit } => amount == 250<minor> && !debit, _ => false });
+	assert(column(0<minor>) is Skip);
+	assert(match column(-7<minor>) { Credit { amount } => amount == 7<minor>, _ => false });
+	assert(match column(7<minor>) { Debit { amount } => amount == 7<minor>, _ => false });
+	assert(column(M.I64_MIN as i64<minor>) is Unrepresentable);
+	assert(trial([line(500, 2, true), line(500, 2, false)], 2) is Even);
+	assert(trial([line(500, 2, true), line(5000, 3, false)], 2) is Even);
+	assert(trial([line(500, 2, true), line(400, 2, false)], 2) is Uneven);
+}
+
+test "normal balance" {
+	assert((normal_balance(Kind.Expense, 900<minor>, 2, 100<minor>, 2) ?? 0<minor>) == 800<minor>);
+	assert((normal_balance(Kind.Income, 100<minor>, 2, 900<minor>, 2) ?? 0<minor>) == 800<minor>);
+	assert((normal_balance(Kind.Liability, 100<minor>, 2, 9000<minor>, 3) ?? 0<minor>) == 8000<minor>);
+	assert(normal_balance(Kind.Asset, M.I64_MIN as i64<minor>, 0, 1<minor>, 0) == none);
+	assert(debit_normal(Kind.Asset) && !debit_normal(Kind.Equity));
+}
+
+test "rates" {
+	/* the newest dated row at or before when; undated rows never apply */
+	assert((pick_rate([rate(10, true, true), rate(0, false, true), rate(30, true, true)], 40) ?? -1) == 2);
+	assert((pick_rate([rate(10, true, true), rate(0, false, true), rate(30, true, true)], 20) ?? -1) == 0);
+	assert((pick_rate([rate(30, true, true), rate(30, true, true)], 40) ?? -1) == 0);
+	assert((pick_rate([rate(30, true, false), rate(10, true, true)], 40) ?? -1) == 1);
+	assert(pick_rate([rate(30, true, true)], 20) == none);
+	assert(rate_ahead(true, 1, 5, false, 9, 0));
+	assert(!rate_ahead(false, 9, 0, true, 1, 5));
+}
+
+test "pay line" {
+	assert(pay_line(10000<minor>, 2, 765<minor>, 2, 8000<minor>, 2, 2765<minor>, 2) is Balances);
+	/* the same money at different exponents: the raw amounts differ */
+	assert(pay_line(10000<minor>, 2, 765<minor>, 2, 80000<minor>, 3, 27650<minor>, 3) is Balances);
+	assert(pay_line(10000<minor>, 2, 765<minor>, 2, 8000<minor>, 2, 2764<minor>, 2) is Differs);
+	assert(pay_line(M.I64_MAX as i64<minor>, 0, 1<minor>, 0, 0<minor>, 0, 0<minor>, 0) is Overflows);
+}
