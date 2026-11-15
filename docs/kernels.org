@@ -1,0 +1,145 @@
+#+title: Kernels: the money, ledger and trading math in Tallow
+#+description: Why VENTURE's pure arithmetic is written in Tallow, how it is compiled natively and checked (contracts, units of measure, tallow verify, tallow fuzz), the style it is written in, the kernel catalogue and how to add a kernel
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-11-15]
+#+updated: [2026-11-15]
+#+version: 0.1.0
+
+* Kernels
+
+VENTURE's arithmetic -- rounding, money, allocation, rates, and the formulas built on them -- lives in =src/kernels/= as Tallow ([[file:../deps/tallow/README.org][deps/tallow]]), a language that renders to the gnu89 C you would have written by hand. The C that calls it is unchanged: =venture_money_add()= still takes two =VentureMoney= and a =GError=, and every test that passed against the hand-written C passes against the kernels. What changed is where the arithmetic is stated and how much of it is checked.
+
+- *Pure functions.* A kernel is a =pure fn=: it reads its arguments and returns a value, with no database, registry, clock or global. The checker rejects anything else (E0608), so "this function has no side effects" is a fact the compiler holds, not a comment.
+- *Contracts.* =requires= says what a kernel needs (a positive divisor, a ratio list that is not empty), =ensures= what it promises (a rounded quotient within one of the exact one, parts that sum back to the whole). They run on every call in every build.
+- *Units of measure.* An amount is an =i64<minor>=, a rate =i64<ppm>=, =i64<bp>= or =i64<pct>=, a duration =i64<day>=. Passing basis points where parts per million are expected, or adding days to money, is a compile error, not a factor of a hundred found in a report.
+- *Proof and fuzzing.* =tallow verify= proves the integer kernels' contracts with an SMT solver (no overflow, no division by zero, every =ensures=). =tallow fuzz= draws inputs from each =requires=, checks every =ensures=, and shrinks a failure to a minimal call.
+
+** Native vs interpreted
+:PROPERTIES:
+:CUSTOM_ID: native-vs-interpreted
+:END:
+
+Tallow can run two ways: rendered to C and compiled, or interpreted by =suet=, its bytecode VM. VENTURE uses both, for different things, and they do not mix:
+
+| What | How it runs | Why |
+|------+-------------+-----|
+| The kernels (=src/kernels/vk_*.tlw=) | rendered to C at build time, compiled by gcc at =-O2= with VENTURE's own warnings, linked into =libventure-core.a= and =libventure.a= | they are the hot path of every report and posting, and they are trusted code reviewed with the rest of VENTURE |
+| =.tlw= plugins | interpreted by suet inside the server, sandboxed: an instruction budget, a memory cap, no file, network, process or environment access unless granted | they are extensions, possibly written by someone else; see [[file:tallow-plugins.org][Tallow plugins]] |
+
+A plugin that needs kernel math does not interpret a copy of it: the host module it imports declares the kernels as =extern fn= bound to the compiled =vk_*= functions, so a plugin's =multiply_ppm= is the same machine code the server's is. The kernel sources are never on the VM's search path. =make kernels-native-check= (part of =make test=) checks both directions: the =vk_*= symbols are defined in both archives, and the kernel object references nothing of the VM.
+
+Code that is not a plugin but should still be sandboxed -- a formula a user types into a record, say -- could run on the VM the same way later; that is a choice to make per feature, and none does today.
+
+** How the build uses them
+:PROPERTIES:
+:CUSTOM_ID: build
+:END:
+
+=deps/tallow= is a submodule built like every other dependency (=make deps=, or implicitly): one sub-make builds the runtime archive (=libtallow-rt-1.0.a=), the self-hosted compiler (bootstrapped with gcc from the C checked into the submodule, so nothing has to be installed) and the VM archive (=libtallow-suet-1.0.a=). The runtime is built with its optional features off (GMP, libdex, Lua, libgccjit), so it needs nothing but GLib and libm.
+
+The kernels are one Tallow program. The build writes a root module, =build/<type>/gen/kernels/vk.tlw=, that imports every =src/kernels/vk_*.tlw=, and renders it once to =vk-kernels.c= and =vk-kernels.h=. One file, because =tallow render= is whole-program: each render emits every module it imports, so rendering the kernels one by one would define the shared modules (=vk_units=, =vk_round=, =tallow.list=) once per file. The object is compiled once and archived into both libraries; =venturectl= links it like any other core object.
+
+A shim includes =<vk-kernels.h>= and calls =vk_<module>_<function>=. The generated types are plain GLib:
+
+| Tallow | C |
+|--------+---|
+| =i64=, =i64<minor>= (units are erased) | =gint64= |
+| =bool= | =gboolean= |
+| =?i64= | =TlwOptI64= (=.has=, =.val=) |
+| =[i64]= | =GArray *= of =gint64= |
+| =?[i64]= | a nullable =GArray *= the caller owns |
+| =type Mode = HalfEven \vert ...= | =VkRoundMode=, =VK_ROUND_MODE_HALF_EVEN= ... |
+
+The runtime is linked once per process. The server links it whole (=--whole-archive=, already exported with =--export-dynamic=) because the VM looks the runtime up with =dlsym=; =venturectl= links it as an ordinary archive.
+
+Build packages (Fedora): =libffi-devel= for the VM (=gobject-introspection-devel=, already required, provides =girepository-2.0=), and =z3= for =make kernels-verify= (without it the proof step is skipped, saying so). The image adds =libffi= at run time.
+
+** Checking the kernels
+:PROPERTIES:
+:CUSTOM_ID: checking
+:END:
+
+=make test= runs these beside the GTest binaries; each can run alone:
+
+| Target | Does |
+|--------+------|
+| =make kernels-test= | the =test "..." { }= blocks inside each kernel |
+| =make kernels-fuzz= | =tallow fuzz= on every kernel file with a contract; =KERNELS_SEED= (default =20261115=) makes a run reproducible, and a failure prints the =reproduce:= command |
+| =make kernels-verify= | =tallow verify= on every kernel file; fails on any obligation that does not hold, reports the rest as proved or skipped |
+| =make kernels-native-check= | the kernels are compiled code, not the VM |
+| =make test-one T=test-kernels= | the generated C API as the shims call it, and one regression case per bug the kernels fixed |
+
+What =tallow verify= covers today, and what it does not: it proves functions over integers and booleans -- every rounding rule, =pow10=, =common_exponent=, =order= -- and skips functions that take an enum (=Mode=), an array, or return an optional. That is why each kernel keeps its arithmetic core in small integer functions and lets the larger ones dispatch to them: the core is proved, and the dispatch and array code is fuzzed.
+
+** Style
+:PROPERTIES:
+:CUSTOM_ID: style
+:END:
+
+Kernels are written functionally. The rules:
+
+- every function is =pure fn=; no =var=, no =while= or =for=, no =inline c=;
+- =let= and =match= as an expression; early-return guards, never flag variables;
+- iteration is recursion with a =decreases= measure (a =requires= keeps the index in range so the measure stays non-negative), or a =tallow.list= combinator; an accumulator a recursion threads is an =own= parameter, which pure code may extend because the caller moved it in;
+- data is sum types and optionals (=?i64=), never sentinels such as =G_MININT64= for "none";
+- inputs are never changed: a kernel returns new values;
+- small total functions compose with =|>=.
+
+Two things the language does not allow shape the code: a lambda cannot capture a borrowed array (it would have to copy it), so array walks are recursive helpers rather than =L.map= with a captured table; and =x |> f(_)= with a hole is a closure, which pure code cannot call, so pipelines use the plain form =x |> f(a)= (=f(x, a)=).
+
+Before and after, the even split of an amount:
+
+#+begin_src c
+/* C: a qsort over slots, then a while loop handing out the remainder */
+while (0 != remainder) {
+	target = slots[i % n_ratios].index;
+	if (remainder > 0) { shares[target] += 1; remainder -= 1; }
+	else { shares[target] -= 1; remainder += 1; }
+	i++;
+}
+#+end_src
+
+#+begin_src tallow
+pure fn evenly(base: i64, leftover: i64, n: i64, i: i64, acc: own [i64]) -> own [i64]
+	requires n > 0 && i >= 0 && i <= n
+	decreases n - i
+= match i >= n {
+	true => acc,
+	false => {
+		acc.push(base + match i < magnitude(leftover) {
+			true => sign(leftover),
+			false => 0,
+		});
+		evenly(base, leftover, n, i + 1, acc)
+	},
+};
+#+end_src
+
+** Catalogue
+:PROPERTIES:
+:CUSTOM_ID: catalogue
+:END:
+
+*** vk_units
+The shared vocabulary: =minor= (money), =ppm=, =bp = 100 * ppm=, =pct = 10000 * ppm= (one proportion vocabulary at three scales), =milli= and =seat= (quantities), =day= and =month=. =PPM_ONE= is a million; =of_pct(n)= and =of_bp(n)= write a rate as parts per million; =sign(x)=. Currency is not a unit: it is a run-time fact, compared by the C shim before a kernel runs.
+
+*** vk_round
+Integer division with a stated rule. =Mode= is =HalfEven=, =HalfUp=, =Up= (away from zero), =Down= (truncate), =Ceiling=, =Floor=. =half_even=, =half_up=, =up=, =ceiling= and =floor= are proved: each result is the truncated quotient or one step from it, toward the side the rule names, and nothing overflows (the remainder is compared with =d - |r|=, never doubled). =div(n, d, mode)= dispatches; =mul_div(a, b, d, mode)= rounds =a * b / d= with the product exact in 128 bits (=tallow.math.mul_div= / =mul_mod=), so a scale by a ratio cannot overflow in the middle.
+
+This replaced four hand-written half-to-even routines (money, the series store, arbitrage, late fees), one of which negated =G_MININT64=.
+
+*** vk_money
+Amounts as =i64<minor>= at an exponent. =pow10=, =common_exponent=, =rescale= (gaining digits is exact or =none=, losing them rounds half to even), =add= / =subtract= (at the common exponent, =none= on overflow), =negate= (saturates at =G_MININT64=), =compare= (an operand too large to rescale is beyond the other), =multiply_int=, =multiply_rational= (a negative denominator folds into the numerator; one rounding over a 128-bit product), =multiply_ppm=, =multiply_bp=, =convert= (the exponent difference folded into the rate, one rounding), =allocate= (truncated shares, then the leftover one unit each to the largest ratios, ties by position; =ensures= the parts sum to the amount) and =allocate_evenly=.
+
+Shim: =src/boxed/venture-money.c=. Behaviour that changed: =venture_money_multiply_rational= no longer refuses a ratio whose 64-bit intermediate product overflows when the result fits; =venture_money_convert_at_rate= compares currency codes case-insensitively like every other money function.
+
+** Adding a kernel
+:PROPERTIES:
+:CUSTOM_ID: adding
+:END:
+
+1. Write =src/kernels/vk_<area>.tlw= with =module vk_<area>;=, the AGPL header, a comment saying what it computes and what C it replaces. Nothing else registers it: the generated root imports every =vk_*.tlw=.
+2. Keep the arithmetic in small =pure fn=s over integers with =requires= / =ensures=, so =tallow verify= proves them; put =test "..." { }= blocks at the end.
+3. Call it from the C that owns the data: unpack the record, check what only C can (currency codes, registry lookups), call =vk_<area>_<fn>=, turn =none= into a =GError=.
+4. Add the regression cases to =tests/test-kernels.c=, the entry to the catalogue above, and run =make DEBUG=1 kernels-check test-one T=test-kernels= plus the suites of the code you moved.

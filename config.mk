@@ -657,3 +657,72 @@ ARCH_DEPS += jq gnupg
 FEDORA_DEPS += libdex-devel
 DEBIAN_DEPS += libdex-dev
 ARCH_DEPS += libdex
+
+# ---------------------------------------------------------------------------
+# Tallow: verified kernels (compiled natively) and the suet VM (plugins only)
+# ---------------------------------------------------------------------------
+#
+# deps/tallow is a language that renders to gnu89 C. VENTURE uses it twice,
+# and the two uses never meet:
+#
+#   - src/kernels/*.tlw are the pure money, ledger, billing and trading
+#     kernels. `tallow render` turns the whole kernel program (a generated
+#     root that imports every src/kernels/vk_*.tlw) into ONE translation
+#     unit at build time, which is
+#     compiled with gcc like any other source and linked into both
+#     libventure-core.a and libventure.a. They never run on the VM.
+#   - libtallow-suet-1.0.a is the bytecode VM. It runs `.tlw` plugins, and
+#     only plugins, sandboxed (src/plugin/venture-tallow-runtime.c).
+#
+# The runtime is built without its optional features (GMP, libdex, Lua,
+# libgccjit) so the static archive needs nothing but GLib and libm, and so
+# venturectl -- which links the kernels too -- stays as small as it was.
+# The suet VM resolves the runtime's functions with dlsym, so the server
+# links the runtime archive whole and exports it (--export-dynamic is
+# already on). That is one copy of the runtime per process, as tallow
+# requires (deps/tallow/docs/reference/runtime.org, "one runtime").
+TALLOW_DIR := $(DEPS_DIR)/tallow
+TALLOW_OUT := $(TALLOW_DIR)/build/$(BUILD_TYPE)
+TALLOWC := $(TALLOW_OUT)/tallow
+TALLOW_RT_LIB := $(TALLOW_OUT)/libtallow-rt-1.0.a
+TALLOW_SUET_LIB := $(TALLOW_OUT)/libtallow-suet-1.0.a
+TALLOW_SUBMAKE := HAVE_GMP=0 HAVE_DEX=0 LUA=none GCCJIT=0
+TALLOW_RT_LINK = -Wl,--whole-archive $(TALLOW_RT_LIB) -Wl,--no-whole-archive
+
+# The kernel program and where its generated C lands.
+KERNELS_DIR := src/kernels
+KERNELS_SRCS := $(sort $(wildcard $(KERNELS_DIR)/vk_*.tlw))
+KERNELS_GEN := $(OUTDIR)/gen/kernels
+KERNELS_ROOT := $(KERNELS_GEN)/vk.tlw
+KERNELS_C := $(KERNELS_GEN)/vk-kernels.c
+KERNELS_H := $(KERNELS_GEN)/vk-kernels.h
+
+CFLAGS_TALLOW_RT := -I$(TALLOW_DIR)/src/runtime -I$(TALLOW_OUT)/include -I$(KERNELS_GEN)
+CFLAGS_TALLOW_SUET := -I$(TALLOW_DIR)/src/libtallow-suet
+
+# Both trees see the runtime and the kernel header; only the server sees
+# the VM. TEST_CFLAGS and TEST_LDFLAGS expand CFLAGS and LDFLAGS, so the
+# tests inherit both without a line of their own (adding the whole-archive
+# runtime twice would define every symbol twice).
+CFLAGS_CORE += $(CFLAGS_TALLOW_RT)
+CFLAGS += $(CFLAGS_TALLOW_RT) $(CFLAGS_TALLOW_SUET)
+
+# venturectl: the runtime as an ordinary archive (it never loads the VM).
+VENDOR_LIBS_CLI += $(TALLOW_RT_LIB)
+LDFLAGS_CLI += $(shell $(PKG_CONFIG) --libs gmodule-2.0 2>/dev/null) -lm
+
+# The server: the VM archive with the other vendored libraries, the
+# runtime whole and last (LDFLAGS follows every archive on the link line).
+VENDOR_LIBS_SERVER += $(TALLOW_SUET_LIB)
+TALLOW_SUET_PKGS := libffi gmodule-2.0 girepository-2.0
+DEPS_SERVER += $(TALLOW_SUET_PKGS)
+LDFLAGS += $(TALLOW_RT_LINK) $(shell $(PKG_CONFIG) --libs $(TALLOW_SUET_PKGS) 2>/dev/null) -lm
+
+# The standard library the VM reads at run time. Tests and `just start`
+# use the tree's copy; an installed server uses the copy `make install`
+# puts under $(DATADIR) (VENTURE_TALLOW_STD_DIR overrides both).
+CFLAGS += -DVENTURE_TALLOW_DEV_STD_DIR=\"$(TALLOW_DIR)/std\"
+
+FEDORA_DEPS += libffi-devel z3
+DEBIAN_DEPS += libffi-dev z3
+ARCH_DEPS += libffi z3

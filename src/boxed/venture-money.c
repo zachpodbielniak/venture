@@ -18,6 +18,12 @@
 
 #include "venture.h"
 
+/* The arithmetic itself lives in the Tallow kernels (src/kernels/vk_money.tlw,
+ * vk_round.tlw), compiled natively into this library; the functions below
+ * check currencies, read the registry and turn a kernel's `none` into a
+ * GError. docs/kernels.org describes the split. */
+#include <vk-kernels.h>
+
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -134,79 +140,10 @@ static GHashTable *venture_currency_registry = NULL;
 static gint64
 venture_money_pow10(guint8 exponent)
 {
-	static const gint64 powers[] = { 1, 10, 100, 1000, 10000, 100000, 1000000 };
-
-	G_STATIC_ASSERT(G_N_ELEMENTS(powers) == VENTURE_MONEY_MAX_EXPONENT + 1);
-
 	if (exponent > VENTURE_MONEY_MAX_EXPONENT)
 		exponent = VENTURE_MONEY_MAX_EXPONENT;
 
-	return powers[exponent];
-}
-
-/*
- * Integer division rounding half to even, also called banker's rounding.
- *
- * The naive alternative -- always rounding a half away from zero -- biases a
- * long series of roundings upward, which over a year of sales tax lines
- * shows up as real money. Half to even splits ties between rounding up and
- * rounding down, so the bias cancels.
- *
- * The tie is detected without computing 2*remainder, which could overflow:
- * an exact half is only possible when the divisor is even and the remainder
- * is exactly half of it.
- */
-static gint64
-venture_money_div_round_half_even(
-	gint64	numerator,
-	gint64	denominator
-){
-	gint64 quotient;
-	gint64 remainder;
-	gint64 abs_num;
-	gint64 abs_den;
-	gint64 half;
-	gboolean negative;
-	gboolean round_away;
-
-	g_assert(0 != denominator);
-
-	negative = ((numerator < 0) != (denominator < 0));
-
-	/* Work with magnitudes so the rounding decision does not have to
-	 * reason about the sign of a C integer division, which truncates
-	 * toward zero. G_MININT64 has no positive counterpart, so it is
-	 * handled by promoting through guint64 arithmetic. */
-	abs_num = (numerator < 0) ? -(numerator + 1) + 1 : numerator;
-	abs_den = (denominator < 0) ? -(denominator + 1) + 1 : denominator;
-
-	quotient = abs_num / abs_den;
-	remainder = abs_num % abs_den;
-
-	if (0 == remainder)
-		return negative ? -quotient : quotient;
-
-	half = abs_den / 2;
-
-	if (remainder > half)
-	{
-		/* Strictly more than half: always round away from zero. */
-		round_away = TRUE;
-	}
-	else if ((remainder == half) && (0 == (abs_den % 2)))
-	{
-		/* Exactly half: round to the even quotient. */
-		round_away = (0 != (quotient % 2));
-	}
-	else
-	{
-		round_away = FALSE;
-	}
-
-	if (round_away)
-		quotient += 1;
-
-	return negative ? -quotient : quotient;
+	return vk_money_pow10((gint64)exponent);
 }
 
 /*
@@ -221,36 +158,20 @@ venture_money_scale_amount(
 	gint64	 *out_amount,
 	GError	**error
 ){
-	gint64 factor;
-	gint64 scaled;
+	TlwOptI64 scaled;
 
-	if (from_exponent == to_exponent)
+	/* Gaining digits is exact and can overflow; losing them rounds half
+	 * to even (vk_money_rescale). */
+	scaled = vk_money_rescale(amount, (gint64)from_exponent, (gint64)to_exponent);
+	if (!scaled.has)
 	{
-		*out_amount = amount;
-		return TRUE;
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Rescaling %" G_GINT64_FORMAT " from exponent %u to %u overflows",
+		            amount, (guint)from_exponent, (guint)to_exponent);
+		return FALSE;
 	}
 
-	if (to_exponent > from_exponent)
-	{
-		/* Gaining precision is exact but can overflow. */
-		factor = venture_money_pow10((guint8)(to_exponent - from_exponent));
-
-		if (__builtin_mul_overflow(amount, factor, &scaled))
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "Rescaling %" G_GINT64_FORMAT " from exponent %u to %u overflows",
-			            amount, (guint)from_exponent, (guint)to_exponent);
-			return FALSE;
-		}
-
-		*out_amount = scaled;
-		return TRUE;
-	}
-
-	/* Losing precision: divide and round. */
-	factor = venture_money_pow10((guint8)(from_exponent - to_exponent));
-	*out_amount = venture_money_div_round_half_even(amount, factor);
-
+	*out_amount = scaled.val;
 	return TRUE;
 }
 
@@ -547,6 +468,7 @@ venture_money_add(
 	gint64 right;
 	gint64 total;
 	guint8 exponent;
+	TlwOptI64 sum;
 
 	g_return_val_if_fail(NULL != a, NULL);
 	g_return_val_if_fail(NULL != b, NULL);
@@ -554,7 +476,9 @@ venture_money_add(
 	if (!venture_money_align(a, b, &left, &right, &exponent, error))
 		return NULL;
 
-	if (__builtin_add_overflow(left, right, &total))
+	sum = vk_money_add(left, (gint64)exponent, right, (gint64)exponent);
+	total = sum.val;
+	if (!sum.has)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		                    "Monetary addition overflows a 64-bit minor-unit amount");
@@ -574,6 +498,7 @@ venture_money_subtract(
 	gint64 right;
 	gint64 difference;
 	guint8 exponent;
+	TlwOptI64 result;
 
 	g_return_val_if_fail(NULL != a, NULL);
 	g_return_val_if_fail(NULL != b, NULL);
@@ -581,7 +506,9 @@ venture_money_subtract(
 	if (!venture_money_align(a, b, &left, &right, &exponent, error))
 		return NULL;
 
-	if (__builtin_sub_overflow(left, right, &difference))
+	result = vk_money_subtract(left, (gint64)exponent, right, (gint64)exponent);
+	difference = result.val;
+	if (!result.has)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		                    "Monetary subtraction overflows a 64-bit minor-unit amount");
@@ -600,13 +527,10 @@ venture_money_negate(const VentureMoney *self)
 	 * a silent lie, but this value cannot arise from any real bookkeeping
 	 * figure, so warn and saturate rather than fail a void-returning API. */
 	if (G_MININT64 == self->amount)
-	{
 		g_warning("Negating the minimum representable monetary amount; "
 		          "saturating at the maximum");
-		return venture_money_new(G_MAXINT64, self->currency, self->exponent);
-	}
 
-	return venture_money_new(-self->amount, self->currency, self->exponent);
+	return venture_money_new(vk_money_negate(self->amount), self->currency, self->exponent);
 }
 
 VentureMoney *
@@ -626,11 +550,12 @@ venture_money_multiply_int(
 	gint64			  factor,
 	GError			**error
 ){
-	gint64 product;
+	TlwOptI64 product;
 
 	g_return_val_if_fail(NULL != self, NULL);
 
-	if (__builtin_mul_overflow(self->amount, factor, &product))
+	product = vk_money_multiply_int(self->amount, factor);
+	if (!product.has)
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
@@ -639,7 +564,7 @@ venture_money_multiply_int(
 		return NULL;
 	}
 
-	return venture_money_new(product, self->currency, self->exponent);
+	return venture_money_new(product.val, self->currency, self->exponent);
 }
 
 VentureMoney *
@@ -649,8 +574,7 @@ venture_money_multiply_rational(
 	gint64			  denominator,
 	GError			**error
 ){
-	gint64 product;
-	gint64 result;
+	TlwOptI64 result;
 
 	g_return_val_if_fail(NULL != self, NULL);
 
@@ -661,22 +585,20 @@ venture_money_multiply_rational(
 		return NULL;
 	}
 
-	/* Multiply first, then divide once. Doing it the other way round --
-	 * computing the ratio and then scaling -- would round twice and drift.
-	 * The intermediate product is the only place this can overflow, and a
-	 * genuine amount times a genuine rate never comes close. */
-	if (__builtin_mul_overflow(self->amount, numerator, &product))
+	/* Multiply first, then divide once: one rounding, half to even, over
+	 * a product exact in 128 bits (vk_money_multiply_rational), so only a
+	 * result that does not fit is refused. */
+	result = vk_money_multiply_rational(self->amount, numerator, denominator);
+	if (!result.has)
 	{
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT
-		            "/%" G_GINT64_FORMAT " overflows an intermediate value",
+		            "/%" G_GINT64_FORMAT " overflows a 64-bit minor-unit amount",
 		            self->amount, numerator, denominator);
 		return NULL;
 	}
 
-	result = venture_money_div_round_half_even(product, denominator);
-
-	return venture_money_new(result, self->currency, self->exponent);
+	return venture_money_new(result.val, self->currency, self->exponent);
 }
 
 VentureMoney *
@@ -685,18 +607,31 @@ venture_money_multiply_percent(
 	gint64			  percent_basis_points,
 	GError			**error
 ){
-	/* Basis points are hundredths of a percent, so the denominator is
-	 * 100 percent * 100 basis points. */
-	return venture_money_multiply_rational(self, percent_basis_points,
-	                                       10000, error);
+	TlwOptI64 result;
+
+	g_return_val_if_fail(NULL != self, NULL);
+
+	/* Basis points are hundredths of a percent (vk_money_multiply_bp). */
+	result = vk_money_multiply_bp(self->amount, percent_basis_points);
+	if (!result.has)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "Applying %" G_GINT64_FORMAT " basis points to %" G_GINT64_FORMAT
+		            " overflows a 64-bit minor-unit amount",
+		            percent_basis_points, self->amount);
+		return NULL;
+	}
+
+	return venture_money_new(result.val, self->currency, self->exponent);
 }
 
 VentureMoney *
 venture_money_convert_at_rate(const VentureMoney *self, gint64 numerator, gint64 denominator,
 	const gchar *currency, GError **error)
 {
-	__int128 product, divisor, quotient, remainder;
+	TlwOptI64 result;
 	guint8 dest_exp;
+
 	g_return_val_if_fail(NULL != self, NULL);
 	if (!venture_currency_is_valid(currency) || numerator <= 0 || denominator <= 0)
 	{
@@ -704,65 +639,40 @@ venture_money_convert_at_rate(const VentureMoney *self, gint64 numerator, gint64
 			"A conversion needs a valid destination currency and a positive rate");
 		return NULL;
 	}
-	if (g_strcmp0(self->currency, currency) == 0)
+	if (0 == g_ascii_strcasecmp(self->currency, currency))
 		return venture_money_copy(self);
 	dest_exp = venture_currency_get_exponent(currency);
-	/* Two 64-bit factors fit here. If scaling overflows this wider
-	 * intermediate, even division by the largest rate denominator cannot
-	 * bring the result back into the representable minor-unit range. */
-	product = (__int128)self->amount * numerator;
-	divisor = denominator;
-	if (dest_exp > self->exponent)
+	/* One rounding, half to even, over an exact 128-bit product, with the
+	 * exponent difference folded into the rate (vk_money_convert). */
+	result = vk_money_convert(self->amount, (gint64)self->exponent, numerator, denominator,
+		(gint64)dest_exp);
+	if (!result.has)
 	{
-		if (__builtin_mul_overflow(product,
-			(__int128)venture_money_pow10(dest_exp - self->exponent), &product))
-			goto overflow;
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Currency conversion exceeds the minor-unit range");
+		return NULL;
 	}
-	else
-		divisor *= venture_money_pow10(self->exponent - dest_exp);
-	quotient = product / divisor;
-	remainder = product % divisor;
-	if (remainder < 0)
-		remainder = -remainder;
-	if (remainder * 2 > divisor || (remainder * 2 == divisor && quotient % 2 != 0))
-		quotient += product < 0 ? -1 : 1;
-	if (quotient < G_MININT64 || quotient > G_MAXINT64)
-		goto overflow;
-	return venture_money_new((gint64)quotient, currency, dest_exp);
-overflow:
-	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		"Currency conversion exceeds the minor-unit range");
-	return NULL;
+	return venture_money_new(result.val, currency, dest_exp);
 }
 
 /*
- * Sort helper for the allocation remainder pass: orders indices by
- * descending ratio so that the largest shares absorb the leftover minor
- * units. Ties fall back to the original index, which keeps the result
- * deterministic -- important, because these amounts get written to a ledger
- * and must not change between runs.
+ * Wraps the minor-unit parts a kernel produced as amounts in the
+ * currency and exponent of the amount that was split.
  */
-typedef struct
-{
-	gsize	index;
-	gint64	ratio;
-} VentureAllocationSlot;
-
-static gint
-venture_allocation_slot_compare(
-	gconstpointer	a,
-	gconstpointer	b
+static GPtrArray *
+venture_money_parts_new(
+	const VentureMoney	*self,
+	GArray			*shares
 ){
-	const VentureAllocationSlot *slot_a = a;
-	const VentureAllocationSlot *slot_b = b;
+	g_autoptr(GPtrArray) parts = NULL;
+	guint i;
 
-	if (slot_a->ratio != slot_b->ratio)
-		return (slot_a->ratio > slot_b->ratio) ? -1 : 1;
+	parts = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
+	for (i = 0; i < shares->len; i++)
+		g_ptr_array_add(parts, venture_money_new(g_array_index(shares, gint64, i),
+		                                         self->currency, self->exponent));
 
-	if (slot_a->index != slot_b->index)
-		return (slot_a->index < slot_b->index) ? -1 : 1;
-
-	return 0;
+	return g_steal_pointer(&parts);
 }
 
 GPtrArray *
@@ -772,13 +682,8 @@ venture_money_allocate(
 	gsize			  n_ratios,
 	GError			**error
 ){
-	g_autoptr(GPtrArray) parts = NULL;
-	g_autofree gint64 *shares = NULL;
-	g_autofree VentureAllocationSlot *slots = NULL;
-	gint64 total_ratio;
-	gint64 allocated;
-	gint64 remainder;
-	gsize i;
+	g_autoptr(GArray) input = NULL;
+	g_autoptr(GArray) shares = NULL;
 
 	g_return_val_if_fail(NULL != self, NULL);
 	g_return_val_if_fail(NULL != ratios, NULL);
@@ -790,103 +695,22 @@ venture_money_allocate(
 		return NULL;
 	}
 
-	total_ratio = 0;
-
-	for (i = 0; i < n_ratios; i++)
-	{
-		if (ratios[i] < 0)
-		{
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "Allocation ratio %" G_GSIZE_FORMAT " is negative",
-			            i);
-			return NULL;
-		}
-
-		if (__builtin_add_overflow(total_ratio, ratios[i], &total_ratio))
-		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "Allocation ratios sum to more than a 64-bit integer");
-			return NULL;
-		}
-	}
-
-	if (0 == total_ratio)
+	/* The split is vk_money_allocate: truncated exact shares, then the
+	 * leftover minor units one each to the largest ratios, so the parts
+	 * sum back to the original exactly -- the property that matters when
+	 * the parts are about to become ledger lines. */
+	input = g_array_sized_new(FALSE, FALSE, sizeof(gint64), (guint)n_ratios);
+	g_array_append_vals(input, ratios, (guint)n_ratios);
+	shares = vk_money_allocate(self->amount, input);
+	if (NULL == shares)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "Allocation ratios sum to zero");
+		                    "Allocation ratios must be non-negative and sum to a "
+		                    "positive 64-bit integer");
 		return NULL;
 	}
 
-	shares = g_new0(gint64, n_ratios);
-	allocated = 0;
-
-	/* First pass: give each part the floor of its exact share. Truncating
-	 * toward zero here (rather than rounding) guarantees the sum of the
-	 * shares never exceeds the total, so the remainder is always
-	 * non-negative for a positive amount and can simply be handed out. */
-	for (i = 0; i < n_ratios; i++)
-	{
-		gint64 product;
-
-		if (__builtin_mul_overflow(self->amount, ratios[i], &product))
-		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			                    "Allocation overflows an intermediate value");
-			return NULL;
-		}
-
-		shares[i] = product / total_ratio;
-		allocated += shares[i];
-	}
-
-	remainder = self->amount - allocated;
-
-	/* Second pass: distribute the leftover minor units, one each, to the
-	 * largest ratios first. This is what makes the parts sum back to the
-	 * original exactly -- the property that matters when the parts are
-	 * about to become ledger lines. */
-	slots = g_new0(VentureAllocationSlot, n_ratios);
-
-	for (i = 0; i < n_ratios; i++)
-	{
-		slots[i].index = i;
-		slots[i].ratio = ratios[i];
-	}
-
-	qsort(slots, n_ratios, sizeof(VentureAllocationSlot),
-	      venture_allocation_slot_compare);
-
-	i = 0;
-
-	while (0 != remainder)
-	{
-		gsize target;
-
-		target = slots[i % n_ratios].index;
-
-		if (remainder > 0)
-		{
-			shares[target] += 1;
-			remainder -= 1;
-		}
-		else
-		{
-			shares[target] -= 1;
-			remainder += 1;
-		}
-
-		i++;
-	}
-
-	parts = g_ptr_array_new_with_free_func((GDestroyNotify)venture_money_free);
-
-	for (i = 0; i < n_ratios; i++)
-	{
-		g_ptr_array_add(parts, venture_money_new(shares[i], self->currency,
-		                                         self->exponent));
-	}
-
-	return g_steal_pointer(&parts);
+	return venture_money_parts_new(self, shares);
 }
 
 GPtrArray *
@@ -895,24 +719,22 @@ venture_money_allocate_evenly(
 	gsize			  n_parts,
 	GError			**error
 ){
-	g_autofree gint64 *ratios = NULL;
-	gsize i;
+	g_autoptr(GArray) shares = NULL;
 
 	g_return_val_if_fail(NULL != self, NULL);
 
-	if (0 == n_parts)
+	if ((0 == n_parts) || (n_parts > G_MAXINT32))
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		                    "Cannot allocate a monetary amount into zero parts");
 		return NULL;
 	}
 
-	ratios = g_new0(gint64, n_parts);
+	/* vk_money_allocate_evenly: the leftover units go to the first parts */
+	shares = vk_money_allocate_evenly(self->amount, (gint64)n_parts);
+	g_assert(NULL != shares);
 
-	for (i = 0; i < n_parts; i++)
-		ratios[i] = 1;
-
-	return venture_money_allocate(self, ratios, n_parts, error);
+	return venture_money_parts_new(self, shares);
 }
 
 VentureMoney *
