@@ -68,6 +68,7 @@ pure fn served(span: i64<month>) -> i64<month>
 
 /* what a price charges: per seat, or once whatever the seats; none on
  * overflow */
+/* @export */
 pure fn price(amount: i64<minor>, seats: i64<seat>, per_seat: bool) -> ?i64<minor>
 	requires seats > 0<seat>
 = match per_seat {
@@ -76,11 +77,13 @@ pure fn price(amount: i64<minor>, seats: i64<seat>, per_seat: bool) -> ?i64<mino
 };
 
 /* a price for `interval` months scaled to `span` months, half to even */
+/* @export */
 pure fn over_period(amount: i64<minor>, span: i64<month>, interval: i64<month>) -> ?i64<minor>
 	requires interval > 0<month>
 = Money.multiply_rational(amount, span as i64, interval as i64);
 
 /* a price for `interval` months as one month of it (MRR), half to even */
+/* @export */
 pure fn monthly(amount: i64<minor>, interval: i64<month>) -> ?i64<minor>
 	requires interval > 0<month>
 = Money.multiply_rational(amount, 1, interval as i64);
@@ -193,6 +196,7 @@ pure fn tax_share(net: i64<minor>, line_net: i64<minor>, line_tax: i64<minor>) -
 
 /* `net` with its tax at numerator/denominator added: the tax half to even
  * at net's exponent. None on overflow or a zero denominator. */
+/* @export */
 pure fn gross_up(net: i64<minor>, numerator: i64, denominator: i64) -> ?i64<minor>
 	= match Money.multiply_rational(net, numerator, denominator) {
 	some tax => match M.checked_add(net as i64, tax as i64) {
@@ -251,9 +255,11 @@ pure fn magnitude(delta: i64<minor>) -> ?i64<minor> = match delta < 0<minor> {
 };
 
 /* ARR: twelve times the (rounded) MRR */
+/* @export */
 pure fn annual(mrr: i64<minor>) -> ?i64<minor> = Money.multiply_int(mrr, 12);
 
 /* average revenue per paying account, half to even */
+/* @export */
 pure fn per_account(mrr: i64<minor>, accounts: i64) -> ?i64<minor>
 	requires accounts > 0
 = Money.multiply_rational(mrr, 1, accounts);
@@ -264,6 +270,7 @@ pure fn hundredths(gained: i64, lost: i64) -> ?i64
 = R.mul_div(gained, 100, lost, R.Mode.HalfEven);
 
 /* part over whole in basis points, half to even (churn and retention) */
+/* @export */
 pure fn rate_bp(part: i64, whole: i64) -> ?i64<bp>
 	requires whole > 0
 = match R.mul_div(part, 10000, whole, R.Mode.HalfEven) {
@@ -272,6 +279,7 @@ pure fn rate_bp(part: i64, whole: i64) -> ?i64<bp>
 };
 
 /* what a churn rate did not take: the two always sum to 10,000 */
+/* @export */
 pure fn retained(churn: i64<bp>) -> i64<bp>
 	requires churn >= -9223372036854765807<bp>
 	ensures result + churn == 10000<bp>

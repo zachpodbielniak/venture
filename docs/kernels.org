@@ -139,6 +139,60 @@ Shim: =src/boxed/venture-money.c=. Behaviour that changed: =venture_money_multip
 *** vk_percent
 A percent written as decimal text, read exactly into parts per million: =parse(text, limit_pct, allow_negative, allow_suffix)= returns a =Percent= -- =Rate { ppm }=, or why not: =Empty=, =Malformed=, =TooPrecise= (more than four places), =TooLarge=, =Negative=. Never through a double. Each caller states its own limits (late fees: 0 to 100 with an optional =%=; arbitrage: either sign up to a million percent) and maps the outcome to its own message. In C the result is a =VkPercentPercent *= with a =tag= (=VK_PERCENT_PERCENT_RATE= ...) and =u.rate.ppm=, freed with =vk_percent_percent_free= (=g_autoptr= works).
 
+*** vk_dates
+Calendar arithmetic on whole days. A date is an =i64<day>=: its Julian day number, numbered like =g_date_get_julian= (0001-01-01 is 1, 9999-12-31 is 3652059). =julian(y, m, d)= and =year_of= / =month_of= / =day_of= convert with Howard Hinnant's integer formulas, split into 400-year eras; all of them are proved, and =test-kernels-dates= checks them against GDate on every day. Also: =calendar_days(from, to)=; =day_after(base, days)=, =none= past either end of the calendar; =add_months(base, months)=, which holds the day at a shorter month's end the way =g_date_time_add_months= does; and =cycle_step(start, frequency, index)=, where =Frequency= is =Daily= | =Weekly= | =Monthly= | =Yearly= and 29 February is held at the 28th. The shim reads year, month and day in the zone the area documents, and turns a day number back into a GDateTime itself. Time of day and zones never reach a kernel.
+
+Shims: =src/latefees/venture-late-fee-service.c=, =src/dunning/venture-dunning-service.c=, =src/recurring/venture-recurring-service.c=. Recurring builds each cycle as =g_date_time_add_days(start, cycle_step - start)=, so the time of day and the daylight-saving choice are exactly what =g_date_time_add_months= / =_add_years= gave. What changed: dunning now reads every day in UTC, as its documentation says. It used to read an =as_of='s day in that timestamp's own zone and build the cutoff as UTC midnight.
+
+*** vk_latefees
+The arithmetic of a late-fee schedule.
+- =occurrences(day, every, times, grace)= gives a tier's chargeable days: from =day=, every =every= days, at most =times= (0 is no limit), never past day 365. Days inside the grace count toward =times= but are not charged.
+- =percent_of(amount, exponent, rate, Rounding)=, where =Rounding= is =HalfEven= | =Up= (away from zero) | =Down= | =Whole= (whole currency units, half to even).
+- =occurrence_amount(...)= cuts a fee to the room under the tier cap, then under the schedule's absolute cap, then under its percent-of-original cap. It never goes below 0.
+
+=room= and =cut= are proved free of overflow.
+
+Shim: =src/latefees/venture-late-fee-service.c=. A percent is read by =vk_percent_parse(text, 100, FALSE, TRUE)=. What changed:
+- =round: up= on a negative base now rounds away from zero; the C truncated toward zero.
+- A tier cap in another currency is no longer compared raw. The occurrence charges 0.
+
+*** vk_dunning
+Which reminder steps of a policy are due.
+- =next_step(offsets, recorded, top_offset)= returns the next step to send.
+- =eligible_day(offset, top_offset, catch_up)= returns the day a step becomes due. =catch_up= is a =?i64=, the adoption day after a catch-up decision. Before, that was a flag plus a =G_MININT= sentinel.
+- =pending(...)= returns the run of eligible steps.
+
+The proved core is =spaced=. Shim: =src/dunning/venture-dunning-service.c=.
+
+*** vk_depreciation
+A fixed asset's monthly charges. =Method= is =StraightLine= | =DecliningBalance=; =Convention= is =FullMonth= | =HalfYear=.
+- =schedule(cost, salvage, months, method)= returns the charges. Straight line gives the truncated even share each month and puts every leftover unit on the last. Declining balance charges =2 / months= of the carrying value, half to even, never more than is left, and the last month takes the rest. =ensures= the charges sum to cost - salvage and that none is negative.
+- =resume(...)= continues the same schedule part way through, for an opening import.
+- =convene(parts, convention)= moves the untaken half of month one to the last month.
+
+=level=, =last_level=, =take= and =kept_half= are proved. Shim: =schedule()= in =src/assets/venture-asset-service.c=. It replaced =split()= and the declining-balance loop that was written three times (book, tax, opening import). Results are unchanged.
+
+*** vk_billing
+Subscription and recurring-revenue arithmetic in =seat=, =month=, =day= and =bp=.
+- Periods: =Interval= (=Month= | =Year= | =Quarter= | =HalfYear=), =months=, =months_between=, =served=.
+- Prices: =price= (per seat or once), =over_period=, =monthly=.
+- Discounts: =take(amount, exponent, Discount)=, where =Discount= is =NoDiscount= | =PercentOff= | =AmountOff=. It returns =Taken= (=Net= | =Free=); an amount off never goes below zero.
+- Proration: =tail_share(delta, days, elapsed)=, the days left of an even spread in closed form, proved.
+- Tax and credit: =tax_share=, =gross_up=, =less_credit=.
+- Revenue movements: =Movement= (=New= | =Expansion= | =Contraction= | =Churn= | =Reactivation= | =Flat=), =movement=, =annual=, =per_account=, =hundredths= (the quick ratio), =rate_bp=, =retained=.
+
+Shims: =src/billing/venture-billing-service.c=, =venture-billing-reports.c=, =venture_billing_interval_months=. What changed: a period's length and a change's offset are counted in calendar days, so a period that spans a daylight-saving change is no longer a day short (=/billing/proration-dst=).
+
+*** vk_lines
+Quote and invoice-line parts. =Parts= is ={ discount, net, tax, total }=.
+- =rate_parts(subtotal, discount: i64<pct>, numerator, denominator)= rounds the discount, then the tax, half to even, once each. =ensures= discount + net == subtotal and net + tax == total.
+- =percentage_parts= does the same with a whole-percent tax.
+- =levy= is a tax code's exact rate.
+- =thousandths(halves)= turns a quantity into =i64<milli>= half away from zero (the rule stored totals already use).
+- =line_subtotal= is unit price × quantity / 1000, half to even.
+
+Shims: =venture_quote_rate_parts=, =venture_tax_code_levy=, =venture_invoice_line_get_amount=. What changed: a quantity whose thousandths do not fit in 64 bits, or that is not a number, is now refused with =VENTURE_ERROR_VALIDATION= instead of going through an undefined cast.
+
 ** Adding a kernel
 :PROPERTIES:
 :CUSTOM_ID: adding

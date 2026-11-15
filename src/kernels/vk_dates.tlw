@@ -91,6 +91,7 @@ pure fn year_start(ym: i64) -> i64
 = ym * 365 + ym / 4 - ym / 100 + ym / 400;
 
 /* the day number of y-m-d */
+/* @export */
 pure fn julian(y: i64, m: i64, d: i64) -> i64<day>
 	requires y >= 1 && y <= 9999 && m >= 1 && m <= 12 && d >= 1 && d <= 31
 	ensures result >= 1<day> && result <= 3652425<day>
@@ -135,6 +136,7 @@ pure fn civil_month(mp: i64) -> i64
 };
 
 /* the year of day number j: the March-year, plus one in January and February */
+/* @export */
 pure fn year_of(j: i64<day>) -> i64
 	requires j >= 1<day> && j <= 3652059<day>
 	ensures result >= 1 && result <= 9999
@@ -148,12 +150,14 @@ pure fn year_of(j: i64<day>) -> i64
 }
 
 /* the month (1..12) of day number j */
+/* @export */
 pure fn month_of(j: i64<day>) -> i64
 	requires j >= 1<day> && j <= 3652059<day>
 	ensures result >= 1 && result <= 12
 = civil_month(march_month(year_day(since_origin(j) % ERA_DAYS)));
 
 /* the day of the month of day number j */
+/* @export */
 pure fn day_of(j: i64<day>) -> i64
 	requires j >= 1<day> && j <= 3652059<day>
 	ensures result >= 1 && result <= 31
@@ -165,6 +169,7 @@ pure fn day_of(j: i64<day>) -> i64
 /* ---- arithmetic ---- */
 
 /* calendar days from `from` to `to`: positive when `to` is later */
+/* @export */
 pure fn calendar_days(from: i64<day>, to: i64<day>) -> i64<day>
 	requires from >= 1<day> && from <= 3652059<day> && to >= 1<day> && to <= 3652059<day>
 	ensures result == to - from
@@ -172,6 +177,7 @@ pure fn calendar_days(from: i64<day>, to: i64<day>) -> i64<day>
 
 /* the day `days` after `base` (before it when negative); none past either
  * end of the calendar */
+/* @export */
 pure fn day_after(base: i64<day>, days: i64<day>) -> ?i64<day>
 	requires base >= 1<day> && base <= 3652059<day> && days >= -4000000000000<day> && days <= 4000000000000<day>
 = match in_range((base + days) as i64) {
@@ -194,6 +200,7 @@ pure fn clamp_day(y: i64, m: i64, d: i64) -> i64
  * February, as g_date_time_add_months does. None past either end of the
  * calendar.
  */
+/* @export */
 pure fn add_months(base: i64<day>, months: i64<month>) -> ?i64<day>
 	requires base >= 1<day> && base <= 3652059<day> && months >= -4000000000<month> && months <= 4000000000<month>
 = shift_months(year_of(base), month_of(base), day_of(base), months as i64);
