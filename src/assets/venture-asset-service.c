@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <vk-kernels.h>
 
 static gboolean capitalize(VentureDatabase *db, VentureEntity *asset, GDateTime *date, const VentureActor *actor, GError **error);
 static gboolean deferral_settle(VentureDeferralService *service, VentureEntity *deferral, const VentureActor *actor, GError **error);
@@ -196,24 +197,75 @@ income_account(VentureDatabase *db, gint64 id, gboolean *income, GError **error)
 	return TRUE;
 }
 
-/* Preserve allocate_evenly's exact total, moving all residual cents into
- * the final installment as the register's monthly convention requires. */
+/*
+ * A depreciation or deferral schedule as money, from the kernel
+ * (src/kernels/vk_depreciation.tlw): @remaining of the basis charged over
+ * @left months of a @life-month useful life, @carrying being the book value
+ * the declining-balance rate (2 / @life) applies to. Straight line splits
+ * @remaining evenly with every leftover unit on the last month; declining
+ * balance takes twice the straight-line rate of what is on the books, half
+ * to even, never past what is left, the last month taking the rest. A
+ * half-year @convention then moves half the first month to the last.
+ *
+ * What only C can check is checked here: the amounts are aligned to one
+ * exponent (the charge is still rounded at @carrying's own exponent, the
+ * grain, as the C this replaced did) and the kernel's preconditions hold,
+ * so a bad record is refused instead of aborting on a contract.
+ */
 static GPtrArray *
-split(const VentureMoney *amount, guint months, GError **error)
+schedule(const VentureMoney *remaining, const VentureMoney *carrying, gint64 left, gint64 life,
+	gint method, gint convention, GError **error)
 {
-	GPtrArray *parts = venture_money_allocate_evenly(amount, months, error);
-	VentureMoney *last;
+	g_autoptr(VentureMoney) basis = NULL;
+	g_autoptr(VentureMoney) book = NULL;
+	g_autoptr(GArray) charges = NULL;
+	g_autoptr(GArray) convened = NULL;
+	GPtrArray *parts;
+	gint64 grain = 1;
+	guint8 exponent;
 	guint i;
-	if (parts == NULL)
+
+	/* Straight line never reads the book value: it stays at the basis's
+	 * own exponent. Declining balance works at the finer of the two. */
+	exponent = venture_money_get_exponent(remaining);
+	if (method == VENTURE_ASSET_METHOD_DECLINING_BALANCE && venture_money_get_exponent(carrying) > exponent)
+		exponent = venture_money_get_exponent(carrying);
+	basis = venture_money_rescale(remaining, exponent, error);
+	if (basis == NULL)
 		return NULL;
-	last = g_ptr_array_index(parts, months - 1);
-	for (i = 0; i + 1 < months; i++)
+	if (method == VENTURE_ASSET_METHOD_DECLINING_BALANCE)
 	{
-		VentureMoney *part = g_ptr_array_index(parts, i);
-		gint64 extra = part->amount - amount->amount / months;
-		part->amount -= extra;
-		last->amount += extra;
+		book = venture_money_rescale(carrying, exponent, error);
+		if (book == NULL)
+			return NULL;
+		grain = vk_money_pow10((gint64)exponent - (gint64)venture_money_get_exponent(carrying));
 	}
+	else
+		book = venture_money_copy(basis);
+	if (left < 1 || life < 1 || basis->amount < 0 || book->amount < basis->amount)
+	{
+		refuse(error, "A schedule needs whole months and a basis between zero and the book value");
+		return NULL;
+	}
+
+	/* The kernel: one schedule for every method, then the convention. */
+	charges = vk_depreciation_resume(basis->amount, book->amount, left, life, grain,
+		method == VENTURE_ASSET_METHOD_DECLINING_BALANCE ? VK_DEPRECIATION_METHOD_DECLINING_BALANCE :
+		VK_DEPRECIATION_METHOD_STRAIGHT_LINE);
+	if (charges != NULL)
+		convened = vk_depreciation_convene(charges, convention == VENTURE_ASSET_CONVENTION_HALF_YEAR ?
+			VK_DEPRECIATION_CONVENTION_HALF_YEAR : VK_DEPRECIATION_CONVENTION_FULL_MONTH);
+	if (convened == NULL)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"A depreciation charge overflows a 64-bit minor-unit amount");
+		return NULL;
+	}
+
+	/* Back to money, every month at the basis's currency and exponent. */
+	parts = g_ptr_array_new_full(convened->len, (GDestroyNotify)venture_money_free);
+	for (i = 0; i < convened->len; i++)
+		g_ptr_array_add(parts, venture_money_new(g_array_index(convened, gint64, i), basis->currency, exponent));
 	return parts;
 }
 
@@ -322,37 +374,9 @@ venture_asset_service_place_in_service_impl(VentureAssetService *self,
 		g_clear_pointer(&start, g_date_time_unref);
 		start = g_steal_pointer(&effective);
 	}
-	parts = split(base, (guint)months, error);
+	parts = schedule(base, cost, months, months, method, VENTURE_ASSET_CONVENTION_FULL_MONTH, error);
 	if (parts == NULL)
 		goto fail;
-	if (method == VENTURE_ASSET_METHOD_DECLINING_BALANCE)
-	{
-		g_autoptr(VentureMoney) remaining = venture_money_copy(base);
-		g_autoptr(VentureMoney) carrying = venture_money_copy(cost);
-		for (i = 0; i < parts->len; i++)
-		{
-			g_autoptr(VentureMoney) charge = venture_money_multiply_rational(carrying, 2, months, error);
-			g_autoptr(VentureMoney) next = NULL;
-			g_autoptr(VentureMoney) book = NULL;
-			if (charge == NULL)
-				goto fail;
-			if (i + 1 == parts->len || venture_money_compare(charge, remaining) > 0)
-			{
-				g_clear_pointer(&charge, venture_money_free);
-				charge = venture_money_copy(remaining);
-			}
-			next = venture_money_subtract(remaining, charge, error);
-			book = venture_money_subtract(carrying, charge, error);
-			if (next == NULL || book == NULL)
-				goto fail;
-			g_clear_pointer(&remaining, venture_money_free);
-			g_clear_pointer(&carrying, venture_money_free);
-			remaining = g_steal_pointer(&next);
-			carrying = g_steal_pointer(&book);
-			venture_money_free(g_ptr_array_index(parts, i));
-			g_ptr_array_index(parts, i) = g_steal_pointer(&charge);
-		}
-	}
 	if (!transition(G_OBJECT(self), current, "place", error) || !capitalize(db, current, start, actor, error))
 		goto fail;
 	for (i = 0; method != VENTURE_ASSET_METHOD_NONE && i < parts->len; i++)
@@ -373,46 +397,10 @@ venture_asset_service_place_in_service_impl(VentureAssetService *self,
 			"tax-convention", &tax_convention, NULL);
 		if (tax_months >= 1 && tax_months <= 1200 && tax_method != VENTURE_ASSET_METHOD_NONE)
 		{
-			g_autoptr(GPtrArray) tax_parts = split(base, (guint)tax_months, error);
+			g_autoptr(GPtrArray) tax_parts = schedule(base, cost, tax_months, tax_months, tax_method, tax_convention, error);
 			guint t;
 			if (tax_parts == NULL)
 				goto fail;
-			if (tax_method == VENTURE_ASSET_METHOD_DECLINING_BALANCE)
-			{
-				g_autoptr(VentureMoney) remaining = venture_money_copy(base);
-				g_autoptr(VentureMoney) carrying = venture_money_copy(cost);
-				for (t = 0; t < tax_parts->len; t++)
-				{
-					g_autoptr(VentureMoney) charge = venture_money_multiply_rational(carrying, 2, tax_months, error);
-					g_autoptr(VentureMoney) next = NULL;
-					g_autoptr(VentureMoney) book = NULL;
-					if (charge == NULL)
-						goto fail;
-					if (t + 1 == tax_parts->len || venture_money_compare(charge, remaining) > 0)
-					{
-						g_clear_pointer(&charge, venture_money_free);
-						charge = venture_money_copy(remaining);
-					}
-					next = venture_money_subtract(remaining, charge, error);
-					book = venture_money_subtract(carrying, charge, error);
-					if (next == NULL || book == NULL)
-						goto fail;
-					g_clear_pointer(&remaining, venture_money_free);
-					g_clear_pointer(&carrying, venture_money_free);
-					remaining = g_steal_pointer(&next);
-					carrying = g_steal_pointer(&book);
-					venture_money_free(g_ptr_array_index(tax_parts, t));
-					g_ptr_array_index(tax_parts, t) = g_steal_pointer(&charge);
-				}
-			}
-			if (tax_convention == VENTURE_ASSET_CONVENTION_HALF_YEAR && tax_parts->len > 1)
-			{
-				VentureMoney *first = g_ptr_array_index(tax_parts, 0);
-				VentureMoney *last = g_ptr_array_index(tax_parts, tax_parts->len - 1);
-				gint64 half = first->amount / 2;
-				last->amount += first->amount - half;
-				first->amount = half;
-			}
 			for (t = 0; t < tax_parts->len; t++)
 			{
 				g_autoptr(VentureEntity) row = VENTURE_ENTITY(venture_tax_depreciation_entry_new());
@@ -633,7 +621,8 @@ venture_deferral_service_schedule_impl(VentureDeferralService *service, VentureE
 		g_clear_pointer(&start, g_date_time_unref);
 		start = g_steal_pointer(&effective);
 	}
-	parts = split(total, (guint)months, error);
+	parts = schedule(total, total, months, months, VENTURE_ASSET_METHOD_STRAIGHT_LINE,
+		VENTURE_ASSET_CONVENTION_FULL_MONTH, error);
 	if (parts == NULL)
 		goto fail;
 	venture_entity_copy_properties_from(row, deferral, TRUE);
@@ -1636,37 +1625,9 @@ venture_asset_service_import_opening_impl(VentureAssetService *self, VentureEnti
 	left = months - elapsed;
 	if (left > 0 && method != VENTURE_ASSET_METHOD_NONE && remaining->amount > 0)
 	{
-		parts = split(remaining, (guint)left, error);
+		parts = schedule(remaining, book, left, months, method, VENTURE_ASSET_CONVENTION_FULL_MONTH, error);
 		if (parts == NULL)
 			goto fail;
-		if (method == VENTURE_ASSET_METHOD_DECLINING_BALANCE)
-		{
-			g_autoptr(VentureMoney) open = venture_money_copy(remaining);
-			g_autoptr(VentureMoney) carrying = venture_money_copy(book);
-			for (i = 0; i < parts->len; i++)
-			{
-				g_autoptr(VentureMoney) charge = venture_money_multiply_rational(carrying, 2, months, error);
-				g_autoptr(VentureMoney) next = NULL;
-				g_autoptr(VentureMoney) after = NULL;
-				if (charge == NULL)
-					goto fail;
-				if (i + 1 == parts->len || venture_money_compare(charge, open) > 0)
-				{
-					g_clear_pointer(&charge, venture_money_free);
-					charge = venture_money_copy(open);
-				}
-				next = venture_money_subtract(open, charge, error);
-				after = venture_money_subtract(carrying, charge, error);
-				if (next == NULL || after == NULL)
-					goto fail;
-				g_clear_pointer(&open, venture_money_free);
-				g_clear_pointer(&carrying, venture_money_free);
-				open = g_steal_pointer(&next);
-				carrying = g_steal_pointer(&after);
-				venture_money_free(g_ptr_array_index(parts, i));
-				g_ptr_array_index(parts, i) = g_steal_pointer(&charge);
-			}
-		}
 	}
 	if (!transition(G_OBJECT(self), current, "import-opening", error))
 		goto fail;

@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include <vk-kernels.h>
 #include <string.h>
 GType
 venture_billing_interval_get_type(void)
@@ -29,17 +30,9 @@ venture_billing_interval_get_type(void)
 gint
 venture_billing_interval_months(gint interval)
 {
-	switch (interval)
-	{
-	case 1:
-		return 12;
-	case 2:
-		return 3;
-	case 3:
-		return 6;
-	default:
-		return 1;
-	}
+	/* vk_billing_interval_of reads the stored value (anything unknown is
+	 * a month) and vk_billing_months says how many months it runs. */
+	return (gint)vk_billing_months(vk_billing_interval_of((gint64)interval));
 }
 
 const gchar *

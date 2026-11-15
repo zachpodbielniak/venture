@@ -1,0 +1,244 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_depreciation.tlw - a fixed asset's monthly depreciation schedule.
+ *
+ * What an asset costs less what it will fetch at the end (the basis) is
+ * charged over its useful life, one charge a month:
+ *
+ *   StraightLine      the basis split evenly, every leftover unit on the
+ *                     last month (the register's monthly convention);
+ *   DecliningBalance  twice the straight-line rate on what is still on the
+ *                     books, half to even, never more than is left to
+ *                     charge, and the last month takes whatever is left.
+ *
+ * Either way the charges sum to the basis exactly and none is negative.
+ *
+ * This replaces src/assets/venture-asset-service.c's split(), which
+ * patched allocate_evenly's parts in place, and the declining-balance
+ * loop written out three times (book and tax schedules at placing in
+ * service, and the resumed schedule of an opening import).
+ */
+module vk_depreciation;
+
+import vk_units;
+import vk_round as R;
+import tallow.math as M;
+import tallow.list as L;
+
+/* how the basis is spread over the months (VENTURE_ASSET_METHOD_*; the
+ * C shim never asks for a schedule of an asset that is not depreciated) */
+type Method = StraightLine | DecliningBalance;
+
+/* where the first month's charge falls (VENTURE_ASSET_CONVENTION_*):
+ * a full month, or half of it moved to the last month (half-year) */
+type Convention = FullMonth | HalfYear;
+
+/* ---- the integer core: proved by tallow verify ---- */
+
+/* every straight-line month but the last: the truncated even share */
+pure fn level(basis: i64, n: i64) -> i64
+	requires n > 0 && basis >= 0
+	ensures result >= 0 && result <= basis
+= basis / n;
+
+/* the last straight-line month: the even share plus every leftover unit */
+pure fn last_level(basis: i64, n: i64) -> i64
+	requires n > 0 && basis >= 0
+	ensures result >= 0 && result <= basis
+= basis / n + basis % n;
+
+/*
+ * One declining-balance month: the rate's charge, unless it is more than
+ * is left to charge or this is the last month, when it is what is left.
+ */
+pure fn take(computed: i64, remaining: i64, last: bool) -> i64
+	requires computed >= 0 && remaining >= 0
+	ensures result >= 0 && result <= remaining
+	ensures result == remaining || result == computed
+= match last || computed > remaining {
+	true => remaining,
+	false => computed,
+};
+
+/* the half of a first month's charge a half-year convention keeps */
+pure fn kept_half(first: i64) -> i64
+	requires first >= 0
+	ensures result >= 0 && result <= first && first - result >= 0
+= first / 2;
+
+/* ---- schedules ---- */
+
+/* basis split evenly over n months, the leftover on the last */
+pure fn straight(basis: i64, n: i64) -> own [i64]
+	requires n > 0 && basis >= 0
+	ensures result.len() == n && L.sum(result) == basis
+= straight_from(level(basis, n), last_level(basis, n), n, 0, []);
+
+pure fn straight_from(even: i64, last: i64, n: i64, i: i64, acc: own [i64]) -> own [i64]
+	requires n > 0 && i >= 0 && i <= n
+	decreases n - i
+= match i >= n {
+	true => acc,
+	false => {
+		acc.push(match i + 1 == n {
+			true => last,
+			false => even,
+		});
+		straight_from(even, last, n, i + 1, acc)
+	},
+};
+
+/*
+ * Twice the straight-line rate on the carrying amount, half to even, at
+ * the grain the carrying amount is held to: `grain` is 10^k when the
+ * carrying amount has k fewer decimals than the basis (the charge is
+ * rounded at the carrying amount's own exponent, as the C did). None
+ * when the charge does not fit an i64.
+ */
+pure fn rate_charge(carrying: i64, life: i64, grain: i64) -> ?i64
+	requires carrying >= 0 && life > 0 && grain > 0
+= match R.mul_div(carrying / grain, 2, life, R.Mode.HalfEven) {
+	some q => M.checked_mul(q, grain),
+	none => none,
+};
+
+/* `left` declining-balance months, each charge taken off both what is
+ * still to charge and what is still on the books */
+pure fn declining(remaining: i64, carrying: i64, life: i64, grain: i64, left: i64, acc: own [i64]) -> own ?[i64]
+	requires remaining >= 0 && carrying >= remaining && life > 0 && grain > 0 && left >= 0
+	decreases left
+= match left == 0 {
+	true => acc,
+	false => match rate_charge(carrying, life, grain) {
+		some computed => {
+			let charge = take(computed, remaining, left == 1);
+			acc.push(charge);
+			declining(remaining - charge, carrying - charge, life, grain, left - 1, acc)
+		},
+		none => none,
+	},
+};
+
+/*
+ * The charges of the `left` months still to come, when `remaining` of the
+ * basis is still to be charged and `carrying` is the book value (cost
+ * less what has been charged); `life` is the whole useful life in months,
+ * which fixes the declining-balance rate (2 / life). An asset placed in
+ * service starts with everything to come (`schedule`); an opening import
+ * resumes part way through. None when a charge overflows.
+ */
+pure fn resume(remaining: i64<minor>, carrying: i64<minor>, left: i64, life: i64, grain: i64, method: Method) -> own ?[i64]
+	requires remaining >= 0<minor> && carrying >= remaining && left > 0 && life > 0 && grain > 0
+	ensures match result {
+		some parts => parts.len() == left && L.sum(parts) == remaining as i64 && forall x in parts: x >= 0,
+		none => true,
+	}
+= match method {
+	StraightLine => straight(remaining as i64, left),
+	DecliningBalance => declining(remaining as i64, carrying as i64, life, grain, left, []),
+};
+
+/*
+ * An asset's whole schedule: cost less salvage charged over `months`.
+ * The charges sum to cost - salvage exactly and none is negative.
+ */
+pure fn schedule(cost: i64<minor>, salvage: i64<minor>, months: i64, method: Method) -> own ?[i64]
+	requires salvage >= 0<minor> && salvage <= cost && months > 0
+	ensures match result {
+		some parts => parts.len() == months && L.sum(parts) == (cost - salvage) as i64 && forall x in parts: x >= 0,
+		none => true,
+	}
+= resume(cost - salvage, cost, months, months, 1, method);
+
+/*
+ * A schedule under a convention. Half-year keeps half of the first
+ * month's charge (truncated) and moves the rest to the last month, so the
+ * total is unchanged; a one-month schedule has nowhere to move it. None
+ * when the last month would overflow.
+ */
+pure fn convene(parts: [i64], convention: Convention) -> own ?[i64]
+	requires forall x in parts: x >= 0
+	ensures match result {
+		some moved => moved.len() == parts.len() && L.sum(moved) == L.sum(parts),
+		none => true,
+	}
+= match convention {
+	FullMonth => copy_from(parts, 0, 0, 0, []),
+	HalfYear => match parts.len() > 1 {
+		true => match M.checked_add(parts[parts.len() - 1], parts[0] - kept_half(parts[0])) {
+			some last => copy_from(parts, kept_half(parts[0]), last, parts.len() - 1, []),
+			none => none,
+		},
+		false => copy_from(parts, 0, 0, 0, []),
+	},
+};
+
+/* parts copied, with slot 0 replaced by `first` and slot `at` (when it is
+ * not 0) by `last`; at == 0 copies unchanged */
+pure fn copy_from(parts: [i64], first: i64, last: i64, at: i64, acc: own [i64]) -> own [i64]
+	requires at >= 0 && at <= parts.len()
+= replaced(parts, first, last, at, 0, acc);
+
+pure fn replaced(parts: [i64], first: i64, last: i64, at: i64, i: i64, acc: own [i64]) -> own [i64]
+	requires at >= 0 && i >= 0 && i <= parts.len()
+	decreases parts.len() - i
+= match i >= parts.len() {
+	true => acc,
+	false => {
+		acc.push(match at > 0 && i == 0 {
+			true => first,
+			false => match at > 0 && i == at {
+				true => last,
+				false => parts[i],
+			},
+		});
+		replaced(parts, first, last, at, i + 1, acc)
+	},
+};
+
+test "straight line" {
+	let parts = schedule(1000<minor>, 0<minor>, 3, Method.StraightLine) ?? [];
+	assert(parts.len() == 3 && parts[0] == 333 && parts[1] == 333 && parts[2] == 334);
+	let even = schedule(1200<minor>, 0<minor>, 12, Method.StraightLine) ?? [];
+	assert(even.len() == 12 && even[0] == 100 && even[11] == 100);
+	let salvaged = schedule(1000<minor>, 100<minor>, 4, Method.StraightLine) ?? [];
+	assert(salvaged[0] == 225 && salvaged[3] == 225);
+	let small = schedule(5<minor>, 0<minor>, 12, Method.StraightLine) ?? [];
+	assert(small[0] == 0 && small[10] == 0 && small[11] == 5);
+	let none_left = schedule(500<minor>, 500<minor>, 3, Method.StraightLine) ?? [1];
+	assert(none_left.len() == 3 && L.sum(none_left) == 0);
+}
+
+test "declining balance" {
+	/* 1200 over 12 months: 200 a month on 1200, then on 1000 ... */
+	let parts = schedule(120000<minor>, 0<minor>, 12, Method.DecliningBalance) ?? [];
+	assert(parts.len() == 12);
+	assert(parts[0] == 20000 && parts[1] == 16667 && parts[2] == 13889);
+	assert(L.sum(parts) == 120000);
+	/* salvage: the charge stops at what is left to charge */
+	let salvaged = schedule(10000<minor>, 6000<minor>, 4, Method.DecliningBalance) ?? [];
+	assert(salvaged[0] == 4000 && salvaged[1] == 0 && salvaged[2] == 0 && salvaged[3] == 0);
+	/* one month is the whole basis */
+	let one = schedule(999<minor>, 0<minor>, 1, Method.DecliningBalance) ?? [];
+	assert(one.len() == 1 && one[0] == 999);
+}
+
+test "resume and grain" {
+	/* an opening import: 600 left of the basis, 800 on the books, 3 of 12 months */
+	let parts = resume(600<minor>, 800<minor>, 3, 12, 1, Method.DecliningBalance) ?? [];
+	assert(parts[0] == 133 && parts[1] == 111 && parts[2] == 356);
+	/* carrying held in cents against a basis in mills: the charge rounds in cents */
+	let coarse = resume(9995<minor>, 10000<minor>, 2, 4, 10, Method.DecliningBalance) ?? [];
+	assert(coarse[0] == 5000 && coarse[1] == 4995);
+}
+
+test "half-year convention" {
+	let moved = convene([100, 100, 100], Convention.HalfYear) ?? [];
+	assert(moved[0] == 50 && moved[1] == 100 && moved[2] == 150);
+	let odd = convene([101, 100], Convention.HalfYear) ?? [];
+	assert(odd[0] == 50 && odd[1] == 151);
+	let single = convene([101], Convention.HalfYear) ?? [];
+	assert(single.len() == 1 && single[0] == 101);
+	let same = convene([1, 2, 3], Convention.FullMonth) ?? [];
+	assert(same[0] == 1 && same[1] == 2 && same[2] == 3);
+}

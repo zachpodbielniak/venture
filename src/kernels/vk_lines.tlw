@@ -1,0 +1,127 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_lines.tlw - a quote's or an invoice line's discount, tax and total.
+ *
+ * A subtotal less a percent discount is the net; the net at a tax rate
+ * (an exact numerator over a denominator) is the tax; net plus tax is the
+ * total. Each rounding is half to even at the subtotal's exponent, once,
+ * and the parts always add up: discount + net == subtotal and
+ * net + tax == total, which the contracts state.
+ *
+ * An invoice line's subtotal is its unit price times its quantity, held
+ * in thousandths (`i64<milli>`) so 2.5 hours is exact; the quantity is
+ * stored as a double and becomes thousandths rounded half away from zero
+ * (HalfUp), the rule the stored totals were computed with.
+ *
+ * Replaces venture_quote_rate_parts / venture_quote_percentage_parts /
+ * venture_quote_apply_percentages (src/quotes/venture-quote-records.c),
+ * venture_tax_code_levy and venture_invoice_line_get_amount's arithmetic
+ * (src/model/venture-records.c).
+ */
+module vk_lines;
+
+import vk_units;
+import vk_round as R;
+import vk_money as Money;
+import tallow.math as M;
+
+/* a line's amounts, every one at the subtotal's exponent */
+struct Parts {
+	discount: i64<minor>,
+	net: i64<minor>,
+	tax: i64<minor>,
+	total: i64<minor>,
+}
+
+/* a percent discount from 0 to 100 and a tax rate that is a non-negative
+ * numerator over a positive denominator */
+pure fn valid(discount: i64<pct>, numerator: i64, denominator: i64) -> bool
+	= discount >= 0<pct> && discount <= 100<pct> && numerator >= 0 && denominator > 0;
+
+/*
+ * The parts of `subtotal` with `discount` percent off and tax at
+ * numerator/denominator on what is left. None when an amount overflows.
+ */
+pure fn rate_parts(subtotal: i64<minor>, discount: i64<pct>, numerator: i64, denominator: i64) -> own ?Parts
+	requires discount >= 0<pct> && discount <= 100<pct> && numerator >= 0 && denominator > 0
+	ensures match result {
+		some p => p.discount + p.net == subtotal && p.net + p.tax == p.total,
+		none => true,
+	}
+= match Money.multiply_rational(subtotal, discount as i64, 100) {
+	some taken => match M.checked_sub(subtotal as i64, taken as i64) {
+		some net => taxed(taken, net as i64<minor>, numerator, denominator),
+		none => none,
+	},
+	none => none,
+};
+
+/* the tax and total on a net, with the discount it came from */
+pure fn taxed(taken: i64<minor>, net: i64<minor>, numerator: i64, denominator: i64) -> own ?Parts
+	requires denominator > 0
+= match levy(net, numerator, denominator) {
+	some tax => match M.checked_add(net as i64, tax as i64) {
+		some total => Parts { discount = taken, net = net, tax = tax, total = total as i64<minor> },
+		none => none,
+	},
+	none => none,
+};
+
+/* the parts with a whole-percent tax rate */
+pure fn percentage_parts(subtotal: i64<minor>, discount: i64<pct>, tax: i64<pct>) -> own ?Parts
+	requires discount >= 0<pct> && discount <= 100<pct> && tax >= 0<pct> && tax <= 100<pct>
+= rate_parts(subtotal, discount, tax as i64, 100);
+
+/* the tax on `net` at numerator/denominator, half to even */
+pure fn levy(net: i64<minor>, numerator: i64, denominator: i64) -> ?i64<minor>
+	requires denominator > 0
+= Money.multiply_rational(net, numerator, denominator);
+
+/*
+ * A quantity in thousandths, rounded half away from zero, from twice the
+ * thousandths truncated toward zero (`halves`). The C shim computes the
+ * thousandths as a double (quantity * 1000) and truncates twice that: the
+ * odd unit says the fraction was at least a half, and HalfUp rounds it
+ * away from zero, exactly as adding 0.5 and truncating did.
+ */
+pure fn thousandths(halves: i64) -> i64<milli>
+	ensures (result as i64) == halves / 2 || (result as i64) == halves / 2 + 1 || (result as i64) == halves / 2 - 1
+= R.half_up(halves, 2) as i64<milli>;
+
+/* an invoice line's subtotal: unit price times quantity, half to even */
+pure fn line_subtotal(unit_price: i64<minor>, quantity: i64<milli>) -> ?i64<minor>
+	= Money.multiply_rational(unit_price, quantity as i64, 1000);
+
+/* the total of a set of parts, or 0, for tests */
+pure fn total_of(parts: ?Parts) -> i64<minor> = match parts {
+	some p => p.total,
+	none => 0<minor>,
+};
+
+test "quote parts" {
+	let p = rate_parts(10000<minor>, 10<pct>, 825, 10000) ?? Parts { discount = 0<minor>, net = 0<minor>, tax = 0<minor>, total = 0<minor> };
+	assert(p.discount == 1000<minor> && p.net == 9000<minor> && p.tax == 742<minor> && p.total == 9742<minor>);
+	/* half to even: 12.5 cents off 125 is 12 */
+	let q = percentage_parts(125<minor>, 10<pct>, 0<pct>) ?? Parts { discount = 0<minor>, net = 0<minor>, tax = 0<minor>, total = 0<minor> };
+	assert(q.discount == 12<minor> && q.net == 113<minor> && q.total == 113<minor>);
+	assert(total_of(percentage_parts(-1000<minor>, 50<pct>, 20<pct>)) == -600<minor>);
+	assert(rate_parts(M.I64_MAX as i64<minor>, 0<pct>, 1, 1) == none);
+	assert(valid(0<pct>, 0, 1) && !valid(101<pct>, 0, 1) && !valid(5<pct>, -1, 1) && !valid(5<pct>, 1, 0));
+}
+
+test "levy" {
+	assert((levy(1000<minor>, 1, 3) ?? 0<minor>) == 333<minor>);
+	assert((levy(1000<minor>, 0, 1) ?? 1<minor>) == 0<minor>);
+}
+
+test "quantities" {
+	/* 2.5 hours: 2500 thousandths; 0.0005 rounds away from zero */
+	assert(thousandths(5000) == 2500<milli>);
+	assert(thousandths(1) == 1<milli>);
+	assert(thousandths(-1) == -1<milli>);
+	assert(thousandths(0) == 0<milli>);
+	assert(thousandths(3) == 2<milli>);
+	assert(thousandths(-3) == -2<milli>);
+	assert((line_subtotal(1999<minor>, 2500<milli>) ?? 0<minor>) == 4998<minor>);
+	assert((line_subtotal(1000<minor>, 125<milli>) ?? 0<minor>) == 125<minor>);
+}
