@@ -6,6 +6,7 @@
 #include "venture-forms-private.h"
 #include <math.h>
 #include <string.h>
+#include <vk-kernels.h>
 
 #define FORMS_SCORE_POINTS_MAX 1000000
 #define FORMS_SCORE_RULES_MAX 128
@@ -277,12 +278,15 @@ quiz_selected(JsonNode *answer, const gchar *id)
 	return FALSE;
 }
 
+/* Adds @points onto @total in order (vk_forms.tally); a running sum that
+ * leaves the i64 range is refused, as it always was. */
 static gboolean
-quiz_add(gint64 *total, gint64 points, GError **error)
+quiz_tally(gint64 *total, GArray *points, GError **error)
 {
-	if ((points > 0 && *total > G_MAXINT64 - points) || (points < 0 && *total < G_MININT64 - points))
+	g_autoptr(VkFormsScore) score = vk_forms_tally(*total, points);
+	if (score->tag != VK_FORMS_SCORE_SCORED)
 	{ venture_set_error_validation(error, "Score", "the assessment exceeds the supported score range"); return FALSE; }
-	*total += points;
+	*total = score->u.scored.points;
 	return TRUE;
 }
 
@@ -293,51 +297,71 @@ venture_forms_quiz_apply(GPtrArray *fields, JsonObject *answers, VentureEntity *
 	gint64 total = 0;
 	guint i, j;
 	if (quiz == NULL || !json_object_get_boolean_member_with_default(quiz, "enabled", FALSE)) return TRUE;
+	/* The answers and the definition are read here; the arithmetic --
+	 * which ranges an answer falls in, the checked running score, the
+	 * band -- is vk_forms (src/kernels/vk_forms.tlw). */
 	for (i = 0; i < fields->len; i++)
 	{
 		VentureFormsField *field = g_ptr_array_index(fields, i);
 		JsonNode *answer = json_object_get_member(answers, field->key);
 		g_autoptr(JsonNode) root = NULL;
+		g_autoptr(GArray) points = NULL;
 		JsonObject *scoring;
 		if (answer == NULL || field->sensitive || field->group_boundary != VENTURE_FORMS_GROUP_NONE || venture_string_is_empty(field->scoring)) continue;
 		if (!venture_forms_quiz_field_valid(field, error)) return FALSE;
 		root = json_from_string(field->scoring, NULL); scoring = json_node_get_object(root);
+		points = g_array_new(FALSE, FALSE, sizeof(gint64));
 		if (json_object_has_member(scoring, "choices"))
 		{
 			JsonObjectIter iter;
 			const gchar *id;
-			JsonNode *points;
+			JsonNode *node;
 			json_object_iter_init(&iter, json_object_get_object_member(scoring, "choices"));
-			while (json_object_iter_next(&iter, &id, &points))
-				if (quiz_selected(answer, id) && !quiz_add(&total, json_node_get_int(points), error)) return FALSE;
+			while (json_object_iter_next(&iter, &id, &node))
+				if (quiz_selected(answer, id))
+				{
+					gint64 value = json_node_get_int(node);
+					g_array_append_val(points, value);
+				}
 		}
 		if (json_object_has_member(scoring, "ranges"))
 		{
 			gdouble value;
-			JsonArray *ranges = json_object_get_array_member(scoring, "ranges");
-			if (!quiz_number(answer, &value)) continue;
-			for (j = 0; j < json_array_get_length(ranges); j++)
+			JsonArray *array = json_object_get_array_member(scoring, "ranges");
+			if (quiz_number(answer, &value))
 			{
-				JsonObject *range = json_array_get_object_element(ranges, j);
-				if (value >= json_object_get_double_member(range, "min") && value <= json_object_get_double_member(range, "max") &&
-				    !quiz_add(&total, json_object_get_int_member(range, "points"), error)) return FALSE;
+				g_autoptr(GPtrArray) ranges = g_ptr_array_new_with_free_func((GDestroyNotify)vk_forms_range_free);
+				g_autoptr(GArray) earned = NULL;
+				for (j = 0; j < json_array_get_length(array); j++)
+				{
+					JsonObject *range = json_array_get_object_element(array, j);
+					g_ptr_array_add(ranges, vk_forms_range_new(json_object_get_double_member(range, "min"),
+						json_object_get_double_member(range, "max"), json_object_get_int_member(range, "points")));
+				}
+				earned = vk_forms_ranged(value, ranges);
+				g_array_append_vals(points, earned->data, earned->len);
 			}
 		}
+		if (!quiz_tally(&total, points, error)) return FALSE;
 	}
 	g_object_set(response, "scored", TRUE, "score", total, NULL);
 	{
 		JsonArray *bands = json_object_get_array_member(quiz, "bands");
+		g_autoptr(GPtrArray) bounds = g_ptr_array_new_with_free_func((GDestroyNotify)vk_forms_band_free);
+		TlwOptI64 found;
 		for (i = 0; i < json_array_get_length(bands); i++)
 		{
 			JsonObject *band = json_array_get_object_element(bands, i);
-			if (total >= json_object_get_int_member(band, "min") && total <= json_object_get_int_member(band, "max"))
-			{
-				g_autofree gchar *key = g_strdup_printf("result.%s.message", json_object_get_string_member(band, "key"));
-				g_object_set(response, "result-key", json_object_get_string_member(band, "key"),
-					"result-message", venture_forms_text(fields, key, json_object_get_string_member(band, "message")),
-					"result-url", json_object_get_string_member(band, "url"), NULL);
-				break;
-			}
+			g_ptr_array_add(bounds, vk_forms_band_new(json_object_get_int_member(band, "min"), json_object_get_int_member(band, "max")));
+		}
+		found = vk_forms_band(total, bounds);
+		if (found.has)
+		{
+			JsonObject *band = json_array_get_object_element(bands, (guint)found.val);
+			g_autofree gchar *key = g_strdup_printf("result.%s.message", json_object_get_string_member(band, "key"));
+			g_object_set(response, "result-key", json_object_get_string_member(band, "key"),
+				"result-message", venture_forms_text(fields, key, json_object_get_string_member(band, "message")),
+				"result-url", json_object_get_string_member(band, "url"), NULL);
 		}
 	}
 	return TRUE;
@@ -421,52 +445,42 @@ venture_forms_quiz_message(GPtrArray *fields, JsonObject *answers, VentureEntity
 	return g_string_free(g_steal_pointer(&message), FALSE);
 }
 
+/* Orders scored responses by form version, then score. */
 static gint
-quiz_bin_compare(gconstpointer left, gconstpointer right)
+quiz_reply_compare(gconstpointer left, gconstpointer right)
 {
-	const gchar *a = left, *b = right;
-	gint64 av = g_ascii_strtoll(a, NULL, 10), bv = g_ascii_strtoll(b, NULL, 10);
-	gint64 as = g_ascii_strtoll(strchr(a, ':') + 1, NULL, 10), bs = g_ascii_strtoll(strchr(b, ':') + 1, NULL, 10);
-	if (av != bv) return av < bv ? -1 : 1;
-	return as < bs ? -1 : (as > bs ? 1 : 0);
+	const VkFormsReply *a = *(VkFormsReply *const *)left, *b = *(VkFormsReply *const *)right;
+	if (a->version != b->version) return a->version < b->version ? -1 : 1;
+	return a->score < b->score ? -1 : (a->score > b->score ? 1 : 0);
 }
 
 /* Separate version distributions avoid pretending that two different grading
- * schemes have comparable scores merely because the question keys survived. */
+ * schemes have comparable scores merely because the question keys survived.
+ * The responses are sorted here; vk_forms.bins counts them. */
 void
 venture_forms_quiz_report(VentureReportResult *result, GPtrArray *responses)
 {
-	g_autoptr(GHashTable) bins = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-	g_autoptr(GHashTable) totals = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
-	GList *keys, *item;
+	g_autoptr(GPtrArray) replies = g_ptr_array_new_with_free_func((GDestroyNotify)vk_forms_reply_free);
+	g_autoptr(GPtrArray) bins = NULL;
 	guint i;
 	for (i = 0; i < responses->len; i++)
 	{
 		VentureEntity *response = g_ptr_array_index(responses, i);
-		gint64 version = venture_forms_get_int(response, "version-number");
-		gint64 *count, *total;
-		g_autofree gchar *key = NULL;
 		if (!venture_forms_get_bool(response, "scored")) continue;
-		key = g_strdup_printf("%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT, version, venture_forms_get_int(response, "score"));
-		count = g_hash_table_lookup(bins, key);
-		if (count == NULL) { count = g_new0(gint64, 1); g_hash_table_insert(bins, g_strdup(key), count); }
-		(*count)++;
-		total = g_hash_table_lookup(totals, &version);
-		if (total == NULL) { gint64 *id = g_new(gint64, 1); *id = version; total = g_new0(gint64, 1); g_hash_table_insert(totals, id, total); }
-		(*total)++;
+		g_ptr_array_add(replies, vk_forms_reply_new(venture_forms_get_int(response, "version-number"), venture_forms_get_int(response, "score")));
 	}
-	keys = g_list_sort(g_hash_table_get_keys(bins), quiz_bin_compare);
-	for (item = keys; item != NULL; item = item->next)
+	g_ptr_array_sort(replies, quiz_reply_compare);
+	bins = vk_forms_bins(replies);
+	for (i = 0; i < bins->len; i++)
 	{
-		g_auto(GStrv) parts = g_strsplit(item->data, ":", 2);
-		gint64 version = g_ascii_strtoll(parts[0], NULL, 10);
-		gint64 *count = g_hash_table_lookup(bins, item->data), *total = g_hash_table_lookup(totals, &version);
+		const VkFormsBin *bin = g_ptr_array_index(bins, i);
+		g_autofree gchar *version = g_strdup_printf("%" G_GINT64_FORMAT, bin->version);
+		g_autofree gchar *score = g_strdup_printf("%" G_GINT64_FORMAT, bin->score);
 		venture_report_result_begin_row(result);
 		venture_report_result_set_text(result, "question", "Assessment score");
-		venture_report_result_set_text(result, "versions", parts[0]);
-		venture_report_result_set_text(result, "answer", parts[1]);
-		venture_report_result_set_number(result, "count", (gdouble)*count);
-		venture_report_result_set_number(result, "share", (gdouble)*count / (gdouble)*total);
+		venture_report_result_set_text(result, "versions", version);
+		venture_report_result_set_text(result, "answer", score);
+		venture_report_result_set_number(result, "count", (gdouble)bin->count);
+		venture_report_result_set_number(result, "share", (gdouble)bin->count / (gdouble)bin->of);
 	}
-	g_list_free(keys);
 }

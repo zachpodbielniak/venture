@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture-forms-private.h"
-#include <math.h>
 #include <string.h>
+#include <vk-kernels.h>
 
 #define FORMS_PRICE_MAX 100
 #define FORMS_QUANTITY_MAX 1000000
@@ -197,13 +197,17 @@ static gboolean price_selected(JsonNode *answer, const gchar *id)
 }
 
 /* The caller supplies only validated visible answers. Money never passes
- * through a floating-point quantity: only bounded exact whole counts do. */
+ * through a floating-point quantity: only bounded exact whole counts do.
+ * The answers and lines are read here; the quantity, each line's amount
+ * and the order's total are vk_forms (src/kernels/vk_forms.tlw). */
 VentureMoney *venture_forms_price_total(GPtrArray *fields, JsonObject *answers, JsonArray **invoice_lines, GError **error)
 {
 	JsonObject *payment = venture_forms_payment(fields);
 	JsonArray *lines;
 	g_autoptr(JsonArray) computed = json_array_new();
-	g_autoptr(VentureMoney) total = NULL;
+	g_autoptr(GPtrArray) amounts = g_ptr_array_new_with_free_func((GDestroyNotify)vk_forms_line_free);
+	g_autoptr(VkFormsOrder) order = NULL;
+	g_autofree gchar *currency = NULL;
 	guint i;
 	if (payment == NULL || !json_object_get_boolean_member(payment, "enabled"))
 		return price_refuse(error, "payment is not enabled in this published version"), NULL;
@@ -212,27 +216,45 @@ VentureMoney *venture_forms_price_total(GPtrArray *fields, JsonObject *answers, 
 	{
 		JsonObject *line = json_array_get_object_element(lines, i), *output;
 		const gchar *choice = price_text(line, "choice_field"), *quantity_key = price_text(line, "quantity_field");
-		g_autoptr(VentureMoney) unit = NULL, amount = NULL, sum = NULL;
+		g_autoptr(VentureMoney) unit = NULL, amount = NULL;
 		gint64 quantity = 1;
+		TlwOptI64 product;
 		if (!venture_string_is_empty(choice) && !price_selected(json_object_get_member(answers, choice), price_text(line, "choice_id"))) continue;
 		if (!venture_string_is_empty(quantity_key))
 		{
 			JsonNode *node = json_object_get_member(answers, quantity_key);
-			gdouble number;
+			TlwOptI64 whole;
 			if (node == NULL) continue;
 			if (!JSON_NODE_HOLDS_VALUE(node) || (json_node_get_value_type(node) != G_TYPE_INT64 && json_node_get_value_type(node) != G_TYPE_DOUBLE))
 				return price_refuse(error, "quantity must be a whole number from 0 through 1000000"), NULL;
-			number = json_node_get_double(node);
-			if (!isfinite(number) || number < 0 || number > FORMS_QUANTITY_MAX || floor(number) != number)
+			whole = vk_forms_quantity(json_node_get_double(node));
+			if (!whole.has)
 				return price_refuse(error, "quantity must be a whole number from 0 through 1000000"), NULL;
-			quantity = (gint64)number;
+			quantity = whole.val;
 		}
 		if (quantity == 0) continue;
 		unit = venture_money_from_json(json_object_get_member(line, "unit_price"), NULL, error);
 		if (unit == NULL) return NULL;
-		amount = venture_money_multiply_int(unit, quantity, error); if (amount == NULL) return NULL;
-		sum = total != NULL ? venture_money_add(total, amount, error) : venture_money_copy(amount); if (sum == NULL) return NULL;
-		g_clear_pointer(&total, venture_money_free); total = g_steal_pointer(&sum);
+		/* One currency per order, as adding VentureMoney refused another;
+		 * the published definition already holds to one. */
+		if (currency == NULL) currency = g_strdup(venture_money_get_currency(unit));
+		else if (g_ascii_strcasecmp(currency, venture_money_get_currency(unit)) != 0)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "Cannot combine %s and %s: no exchange rate is available and guessing one would be wrong",
+			            currency, venture_money_get_currency(unit));
+			return NULL;
+		}
+		product = vk_forms_line_amount(venture_money_get_amount(unit), quantity);
+		if (!product.has)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "Multiplying %" G_GINT64_FORMAT " by %" G_GINT64_FORMAT " overflows a 64-bit minor-unit amount",
+			            venture_money_get_amount(unit), quantity);
+			return NULL;
+		}
+		amount = venture_money_new(product.val, venture_money_get_currency(unit), venture_money_get_exponent(unit));
+		g_ptr_array_add(amounts, vk_forms_line_new(product.val, (gint64)venture_money_get_exponent(unit)));
 		output = json_object_new();
 		json_object_set_string_member(output, "key", price_text(line, "key"));
 		json_object_set_string_member(output, "description", price_text(line, "name"));
@@ -240,9 +262,15 @@ VentureMoney *venture_forms_price_total(GPtrArray *fields, JsonObject *answers, 
 		json_object_set_int_member(output, "quantity", quantity);
 		json_object_set_member(output, "amount", venture_money_to_json(amount)); json_array_add_object_element(computed, output);
 	}
-	if (total == NULL || venture_money_get_amount(total) <= 0) return price_refuse(error, "choose an order with a positive total"), NULL;
+	order = vk_forms_order(amounts);
+	if (order->tag == VK_FORMS_ORDER_OVERFLOW)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT, "Monetary addition overflows a 64-bit minor-unit amount");
+		return NULL;
+	}
+	if (order->tag != VK_FORMS_ORDER_PAYABLE) return price_refuse(error, "choose an order with a positive total"), NULL;
 	if (invoice_lines != NULL) *invoice_lines = g_steal_pointer(&computed);
-	return g_steal_pointer(&total);
+	return venture_money_new(order->u.payable.amount, currency, (guint8)order->u.payable.exponent);
 }
 
 /* The nonce identifies one intake, unlike the shared second-resolution fill

@@ -16,6 +16,7 @@
 
 #include <string.h>
 #include <math.h>
+#include <vk-kernels.h>
 
 /* ==========================================================================
  * Results
@@ -3500,36 +3501,28 @@ venture_widget_total_for(
 }
 
 /*
- * One side of a progress comparison as a double: a number as it is, money
- * as minor units at @exponent (so every side is compared at one scale), a
- * missing side as 0. A ratio for display only -- the amounts themselves
- * are never carried as doubles.
+ * One side of a money progress comparison: its amount and exponent, a
+ * missing side as 0 (at exponent 0, which the common exponent absorbs).
+ * FALSE for a side that is a number where money is compared, which the
+ * widget's validation (both money or both numbers) rules out.
  */
 static gboolean
 venture_widget_progress_side(
 	const VentureAggregateTotal	*total,
-	gint				 exponent,
-	gdouble				*out_value
+	gint64				*out_amount,
+	gint64				*out_exponent
 ){
-	g_autoptr(VentureMoney) scaled = NULL;
-
-	*out_value = 0.0;
+	*out_amount = 0;
+	*out_exponent = 0;
 
 	if (NULL == total)
 		return TRUE;
 
 	if (NULL == total->money)
-	{
-		*out_value = total->number;
-		return TRUE;
-	}
-
-	scaled = venture_money_rescale(total->money, exponent, NULL);
-
-	if (NULL == scaled)
 		return FALSE;
 
-	*out_value = (gdouble)venture_money_get_amount(scaled);
+	*out_amount = venture_money_get_amount(total->money);
+	*out_exponent = (gint64)venture_money_get_exponent(total->money);
 
 	return TRUE;
 }
@@ -3542,6 +3535,11 @@ venture_widget_progress_side(
  * start), which is what makes a target below the start -- a weight to
  * lose, a backlog to burn down -- read as progress rather than as 106%
  * of the way to 80 kg.
+ *
+ * The arithmetic is vk_progress (src/kernels/vk_progress.tlw). Money is
+ * differenced exactly at the three amounts' common exponent
+ * (money_progress) and only the finished share becomes a double, for
+ * display; plain numbers are doubles already (number_percent).
  */
 static gboolean
 venture_widget_percent(
@@ -3550,25 +3548,53 @@ venture_widget_percent(
 	const VentureAggregateTotal	*start,
 	gdouble				*out_percent
 ){
-	gdouble value_number;
-	gdouble target_number;
-	gdouble start_number;
-	gint exponent;
+	g_autoptr(VkProgressProgress) progress = NULL;
+	gint64 value_amount;
+	gint64 value_exponent;
+	gint64 target_amount;
+	gint64 target_exponent;
+	gint64 start_amount;
+	gint64 start_exponent;
 
 	if (NULL == target)
 		return FALSE;
 
-	exponent = (NULL != target->money) ? venture_money_get_exponent(target->money) : 0;
+	/* --- Numbers: a ratio of doubles --- */
 
-	if (!venture_widget_progress_side(target, exponent, &target_number) ||
-	    !venture_widget_progress_side(value, exponent, &value_number) ||
-	    !venture_widget_progress_side(start, exponent, &start_number))
+	if (NULL == target->money)
+	{
+		TlwOptF64 percent;
+
+		if (((NULL != value) && (NULL != value->money)) ||
+		    ((NULL != start) && (NULL != start->money)))
+			return FALSE;
+
+		percent = vk_progress_number_percent((NULL != value) ? value->number : 0.0,
+		                                     target->number,
+		                                     (NULL != start) ? start->number : 0.0);
+		if (!percent.has)
+			return FALSE;
+
+		*out_percent = percent.val;
+		return TRUE;
+	}
+
+	/* --- Money: exact at the common exponent --- */
+
+	if (!venture_widget_progress_side(target, &target_amount, &target_exponent) ||
+	    !venture_widget_progress_side(value, &value_amount, &value_exponent) ||
+	    !venture_widget_progress_side(start, &start_amount, &start_exponent))
 		return FALSE;
 
-	if (target_number == start_number)
+	progress = vk_progress_money_progress(value_amount, value_exponent,
+	                                      target_amount, target_exponent,
+	                                      start_amount, start_exponent);
+
+	if (VK_PROGRESS_PROGRESS_RATIO != progress->tag)
 		return FALSE;
 
-	*out_percent = 100.0 * (value_number - start_number) / (target_number - start_number);
+	*out_percent = 100.0 * (gdouble)progress->u.ratio.covered /
+	               (gdouble)progress->u.ratio.distance;
 
 	return TRUE;
 }

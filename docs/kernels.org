@@ -276,6 +276,25 @@ Candidates, cheapest first:
 
 The header of =src/kernels/vk_series.tlw= has the measurements to beat.
 
+*** vk_progress
+How far a measure has come from a start toward a target, and when it gets there.
+- =fraction(start, current, target)= is a goal's covered share as a double (=venture_goals_fraction=), 0 for a goal with no distance.
+- =forecast(elapsed, start, current, target)= is a goal's straight-line forecast. =elapsed= is a =?i64<usec>= (a =GTimeSpan=; none without a creation date). The readings are doubles a person typed, so they are read exactly as integers: millionths of their unit, or the finest coarser scale that holds them (=reading=), or for a value past 2^53 even in whole units, through the fraction at 2^-52 (=by_fraction=). The answer is a =Forecast=: =Due { after }= (microseconds after =as_of=, half to even), or why not: =NoProgress=, =BeforeStart=, =TooSoon= (under a day), =TooFar= (past 36525 days, decided on the exact value).
+- =money_progress(value, ve, target, te, start, se)= returns a =Progress=: =Ratio { covered, distance }= at the three amounts' common exponent, or =Undefined= (start equals target) or =TooLarge=. =number_percent= is the same for plain numbers, which are doubles already.
+
+=along= and =left= are proved. Shims: =goals_progress_forecast= and =venture_goals_fraction= in =src/goals/=, which map each =Forecast= to the note's reason string and build the date with =g_date_time_add=; =venture_widget_percent= in =src/core/venture-dashboard.c=, which divides covered by distance as a double only for the JSON and the card. What changed:
+- A forecast was a double chain cut to whole microseconds; it is now exact (27% done in a day was 233599.99999999997 seconds to go, now 233600; =/kernels-progress/goals/forecast-exact=).
+- A progress widget rescaled the value and the start to the target's exponent before dividing, rounding a finer value; it now compares at the common exponent (1.005 of 10.00 was 10%, now 10.05%; =/kernels-progress/dashboard/money-exponent=). A difference that overflows 64 bits reads "no target" instead of a double's approximation.
+
+*** vk_forms
+A form's quiz score, result band and score report, and a paid form's order total. The C reads the published definition and the answers (JSON, choice ids, field lookups) and hands the kernel plain numbers.
+- Scoring: =ranged(value, ranges)= gives the points of every =Range { low, high, points }= a numeric answer falls in, bounds included. =tally(total, points)= adds a field's points (its selected choices', then its ranges') onto the running score in order. It returns a =Score=: =Scored { points }=, or =OutOfRange= as soon as a running sum leaves the i64 range.
+- =band(score, bands)= is the position of the first =Band { low, high }= holding the score.
+- =bins(replies)= counts scored =Reply { version, score }= values, sorted by the C, into one =Bin { version, score, count, of }= per pair; =of= is the version's total, the share's denominator.
+- Pricing: =quantity(number)= reads an answer as a whole count from 0 to a million. =line_amount= is unit price × quantity (=vk_money.multiply_int=). =order(lines)= totals the =Line { amount, exponent }= values at their common exponent (=vk_money.add=) and returns an =Order=: =Payable { amount, exponent }=, =Overflow= or =NotPositive= (no lines, or a total of zero or less).
+
+Everything is fuzzed; nothing is integer-only enough for =tallow verify=. Shims: =venture_forms_quiz_apply= and =venture_forms_quiz_report= in =src/forms/venture-forms-quiz.c=, =venture_forms_price_total= in =src/forms/venture-forms-pricing.c=, each keeping its error messages. Results are unchanged: the report's bins are sorted as pairs of integers instead of round-tripping through "version:score" strings, and the order total keeps the first line's currency code as adding =VentureMoney= did.
+
 ** Adding a kernel
 :PROPERTIES:
 :CUSTOM_ID: adding

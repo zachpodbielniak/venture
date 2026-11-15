@@ -1,0 +1,371 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_progress.tlw - how far a measure has come, and when it gets there.
+ *
+ * Two readers of the same idea, the share of the way from a start to a
+ * target that a value has covered:
+ *
+ *  - a goal's straight-line forecast (goal_progress): the goal covered
+ *    some of its distance between its creation and as_of, so at that pace
+ *    the rest takes elapsed x left / covered longer. The readings are
+ *    doubles a person typed (85.5 kg), so they are read exactly as
+ *    integers in millionths of their unit (or coarser, for a reading too
+ *    large for that), and the time is whole microseconds (GTimeSpan):
+ *    the forecast is one rounding of an exact rational, not a chain of
+ *    double operations. The answer is a Forecast, a sum, where the C had
+ *    a NULL and an out-reason string.
+ *  - a dashboard progress widget: value, target and start are aggregate
+ *    totals. Money is compared at the three amounts' common exponent,
+ *    exactly; the share comes back as covered over distance (a Progress)
+ *    and the C turns it into the percent it has always shown. Numbers
+ *    (not money) are doubles already and stay so (number_percent).
+ *
+ * Replaces goals_progress_forecast and venture_goals_fraction
+ * (src/goals/) and venture_widget_percent / venture_widget_progress_side
+ * (src/core/venture-dashboard.c).
+ */
+module vk_progress;
+
+import vk_units;
+import vk_round as R;
+import vk_money as Money;
+import tallow.math as M;
+
+/* time as GLib measures it: a GTimeSpan, whole microseconds */
+unit usec;
+
+/* a day in microseconds (G_TIME_SPAN_DAY) */
+let DAY = 86400000000;
+
+/* a pace measured over less than a day is no pace (GOALS_FORECAST_MIN_SECONDS) */
+let MIN_ELAPSED = 86400000000;
+
+/* a forecast further out than a century is no forecast (GOALS_FORECAST_MAX_DAYS
+ * of 36525 days, in microseconds) */
+let MAX_AHEAD = 3155760000000000;
+
+/* 2^53: past here a double no longer holds every integer */
+let EXACT_LIMIT: f64 = 9007199254740992.0;
+
+/* the finest scale a goal's reading is taken at: millionths of its unit */
+let FINEST = 6;
+
+/* ---- goals: the forecast ---- */
+
+/*
+ * When a goal reaches its target at the pace it has kept, or why there is
+ * no saying: Due is that many microseconds after as_of; NoProgress is no
+ * creation date or nothing covered; BeforeStart is an as_of before the
+ * goal was set; TooSoon is a pace measured over less than a day; TooFar
+ * is a century or more away.
+ */
+type Forecast =
+	| Due { after: i64<usec> }
+	| NoProgress
+	| BeforeStart
+	| TooSoon
+	| TooFar;
+
+/* a goal's covered share as covered over distance, both at one scale */
+struct Reading { covered: i64, distance: i64 }
+
+/*
+ * The share of the way from start to target that current has covered
+ * (venture_goals_fraction): past the target reads above one, behind the
+ * start below zero. A goal with no distance reads as no progress rather
+ * than a division by zero (the validator refuses one; a row written
+ * behind its back can still have it).
+ */
+pure fn fraction(start: f64, current: f64, target: f64) -> f64 = match target - start == 0.0 {
+	true => 0.0,
+	false => (current - start) / (target - start),
+};
+
+/* v scaled by 10^e and rounded to the nearest integer, or none when that
+ * is not a finite number a double holds exactly */
+pure fn scaled(v: f64, e: i64) -> ?i64
+	requires e >= 0 && e <= FINEST
+{
+	let s = M.round(v * (Money.pow10(e) as f64));
+	return match !M.is_finite(s) || M.fabs(s) > EXACT_LIMIT {
+		true => none,
+		false => s as i64,
+	};
+}
+
+/*
+ * start, current and target read at 10^e, the finest scale (from FINEST
+ * down) at which all three fit: millionths for anything a person types,
+ * whole units for a reading in the billions. None when not even whole
+ * units hold them (a reading past 2^53, or not a number).
+ */
+pure fn reading(start: f64, current: f64, target: f64, e: i64) -> own ?Reading
+	requires e >= 0 && e <= FINEST
+	decreases e
+= match scaled(start, e) {
+	some s => match scaled(current, e) {
+		some c => match scaled(target, e) {
+			some t => Reading { covered = c - s, distance = t - s },
+			none => coarser(start, current, target, e),
+		},
+		none => coarser(start, current, target, e),
+	},
+	none => coarser(start, current, target, e),
+};
+
+/* the next coarser scale's reading, or none below whole units */
+pure fn coarser(start: f64, current: f64, target: f64, e: i64) -> own ?Reading
+	requires e >= 0 && e <= FINEST
+	decreases e
+= match e == 0 {
+	true => none,
+	false => reading(start, current, target, e - 1),
+};
+
+/* covered as seen along a distance pointing up: a goal from 90 down to 80
+ * at 85 has covered 5 of 10. Readings are within 2^54, so this never
+ * overflows. */
+pure fn along(x: i64, distance: i64) -> i64
+	requires x >= -18014398509481984 && x <= 18014398509481984
+	ensures (distance < 0 && result == -x) || (distance >= 0 && result == x)
+= match distance < 0 {
+	true => -x,
+	false => x,
+};
+
+/* what is left of the distance once covered is done */
+pure fn left(covered: i64, distance: i64) -> i64
+	requires covered >= 0 && covered <= 18014398509481984 && distance >= 0 && distance <= 18014398509481984
+	ensures result == distance - covered
+= distance - covered;
+
+/* an exact time to go, rounded up, lies past the horizon: the exact value
+ * is past MAX_AHEAD exactly when its ceiling is */
+pure fn past_horizon(ceiling: i64<usec>) -> bool = ceiling > (MAX_AHEAD as i64<usec>);
+
+/* a pace measured over a day or more: as_of after the goal was set, and
+ * by at least MIN_ELAPSED */
+pure fn early(elapsed: i64<usec>) -> bool = elapsed < (MIN_ELAPSED as i64<usec>);
+
+/*
+ * The straight-line forecast from a reading: covered of distance done in
+ * elapsed, so elapsed x left / covered to go, half to even to the
+ * microsecond, with the century test made on the exact value. The checks
+ * run in the order the C made them, so each case keeps its reason.
+ */
+pure fn pace(elapsed: i64<usec>, r: Reading) -> own Forecast
+	requires r.covered >= -18014398509481984 && r.covered <= 18014398509481984
+	requires r.distance >= -18014398509481984 && r.distance <= 18014398509481984
+{
+	let covered = along(r.covered, r.distance);
+	let distance = along(r.distance, r.distance);
+	return match covered <= 0 || distance == 0 {
+		true => Forecast.NoProgress,
+		false => match elapsed <= 0<usec> {
+			true => Forecast.BeforeStart,
+			false => match early(elapsed) {
+				true => Forecast.TooSoon,
+				false => match covered >= distance {
+					true => Forecast.Due { after = 0<usec> },
+					false => ahead(elapsed as i64, left(covered, distance), covered),
+				},
+			},
+		},
+	};
+}
+
+/* elapsed x rest / covered as a Forecast: TooFar past the horizon (or
+ * past the i64 range, which is further still) */
+pure fn ahead(elapsed: i64, rest: i64, covered: i64) -> own Forecast
+	requires covered > 0
+= match R.mul_div(elapsed, rest, covered, R.Mode.Ceiling) {
+	none => Forecast.TooFar,
+	some ceiling => match past_horizon(ceiling as i64<usec>) {
+		true => Forecast.TooFar,
+		false => Forecast.Due { after = (R.mul_div(elapsed, rest, covered, R.Mode.HalfEven) ?? ceiling) as i64<usec> },
+	},
+};
+
+/* 2^52, the scale a fraction is read at when no reading scale holds the
+ * goal's values: a double's own precision */
+let FRACTION_SCALE = 4503599627370496;
+
+/*
+ * A goal too large to read exactly (a reading past 2^53 even in whole
+ * units) read through its fraction instead, at 2^-52: as close as the
+ * double itself. A positive share never rounds to nothing, and one short
+ * of the target never rounds to all of it. None for a fraction that is
+ * not a number (a reading of infinity), which no pace can come of.
+ */
+pure fn by_fraction(f: f64) -> own ?Reading = match !M.is_finite(f) {
+	true => none,
+	false => match f <= 0.0 {
+		true => Reading { covered = 0, distance = 1 },
+		false => match f >= 1.0 {
+			true => Reading { covered = 1, distance = 1 },
+			false => Reading { covered = inside(M.round(f * (FRACTION_SCALE as f64)) as i64), distance = FRACTION_SCALE },
+		},
+	},
+};
+
+/* a share's numerator kept strictly between none and all */
+pure fn inside(n: i64) -> i64 = match n < 1 {
+	true => 1,
+	false => match n > FRACTION_SCALE - 1 {
+		true => FRACTION_SCALE - 1,
+		false => n,
+	},
+};
+
+/*
+ * A goal's forecast: elapsed is as_of less the goal's creation (none when
+ * it has no creation date), the readings are its start, current value
+ * and target as stored. A share that is not a number is too far: the C
+ * found its pace infinite.
+ */
+pure fn forecast(elapsed: ?i64<usec>, start: f64, current: f64, target: f64) -> own Forecast = match elapsed {
+	none => Forecast.NoProgress,
+	some e => match reading(start, current, target, FINEST) {
+		some r => pace(e, r),
+		none => match by_fraction(fraction(start, current, target)) {
+			some r => pace(e, r),
+			none => Forecast.TooFar,
+		},
+	},
+};
+
+/* ---- dashboards: a progress widget ---- */
+
+/*
+ * How far a value is from a start toward a target: covered (value less
+ * start) over distance (target less start), both at one exponent; or why
+ * there is no share: Undefined when start and target are equal, TooLarge
+ * when an amount does not fit the common exponent or a difference
+ * overflows.
+ */
+type Progress =
+	| Ratio { covered: i64<minor>, distance: i64<minor> }
+	| Undefined
+	| TooLarge;
+
+/* an exponent a VentureMoney can carry */
+pure fn exponent_ok(e: i64) -> bool = e >= 0 && e <= Money.MAX_EXPONENT;
+
+/*
+ * The progress of money: value, target and start each at its own
+ * exponent (a missing side is 0, at any exponent), compared at the
+ * common one. Rescaling only gains digits there, so nothing is rounded.
+ */
+pure fn money_progress(value: i64<minor>, ve: i64, target: i64<minor>, te: i64, start: i64<minor>, se: i64) -> own Progress
+= match exponent_ok(ve) && exponent_ok(te) && exponent_ok(se) {
+	false => Progress.TooLarge,
+	true => at_exponent(value, ve, target, te, start, se, Money.common_exponent(Money.common_exponent(ve, te), se)),
+};
+
+/* the three sides moved to exponent e, then differenced */
+pure fn at_exponent(value: i64<minor>, ve: i64, target: i64<minor>, te: i64, start: i64<minor>, se: i64, e: i64) -> own Progress
+	requires ve >= 0 && ve <= 18 && te >= 0 && te <= 18 && se >= 0 && se <= 18 && e >= 0 && e <= 18
+= match Money.rescale(value, ve, e) {
+	none => Progress.TooLarge,
+	some v => match Money.rescale(target, te, e) {
+		none => Progress.TooLarge,
+		some t => match Money.rescale(start, se, e) {
+			none => Progress.TooLarge,
+			some s => differenced(v, t, s),
+		},
+	},
+};
+
+/* value and target less start, at one exponent */
+pure fn differenced(v: i64<minor>, t: i64<minor>, s: i64<minor>) -> own Progress = match t == s {
+	true => Progress.Undefined,
+	false => match M.checked_sub(v as i64, s as i64) {
+		none => Progress.TooLarge,
+		some covered => match M.checked_sub(t as i64, s as i64) {
+			none => Progress.TooLarge,
+			some distance => Progress.Ratio { covered = covered as i64<minor>, distance = distance as i64<minor> },
+		},
+	},
+};
+
+/* the progress of plain numbers, in percent; none when start and target
+ * are equal */
+pure fn number_percent(value: f64, target: f64, start: f64) -> ?f64 = match target == start {
+	true => none,
+	false => 100.0 * (value - start) / (target - start),
+};
+
+test "fraction" {
+	assert(fraction(1.0, 150.5, 300.0) == 149.5 / 299.0);
+	assert(fraction(90.0, 85.0, 80.0) == 0.5);
+	assert(fraction(5.0, 7.0, 5.0) == 0.0);
+}
+
+test "readings" {
+	let r = reading(90.0, 85.5, 80.0, FINEST) ?? Reading { covered = 0, distance = 0 };
+	assert(r.covered == -4500000 && r.distance == -10000000);
+	/* too large for millionths: read at hundredths, the finest scale that holds it */
+	let big = reading(0.0, 5000000000000.0, 10000000000000.0, FINEST) ?? Reading { covered = 0, distance = 0 };
+	assert(big.covered == 500000000000000 && big.distance == 1000000000000000);
+	assert(reading(0.0, 1.0e300, 2.0, FINEST) == none);
+}
+
+/* a forecast's time to go, for tests; -1 when it is not Due */
+pure fn due_after(f: Forecast) -> i64 = match f {
+	Due { after } => after as i64,
+	_ => -1,
+};
+
+/* a progress's covered and distance, for tests; 0 and 0 when it is no Ratio */
+pure fn covered_of(p: Progress) -> i64 = match p {
+	Ratio { covered, distance } => covered as i64,
+	_ => 0,
+};
+
+pure fn distance_of(p: Progress) -> i64 = match p {
+	Ratio { covered, distance } => distance as i64,
+	_ => 0,
+};
+
+pure fn usecs(n: i64) -> i64<usec> = n as i64<usec>;
+
+test "forecast" {
+	/* half way in ten days: ten more */
+	assert(due_after(forecast(usecs(10 * DAY), 0.0, 50.0, 100.0)) == 10 * DAY);
+	/* a weight goal down from 90 to 80, at 85 */
+	assert(due_after(forecast(usecs(10 * DAY), 90.0, 85.0, 80.0)) == 10 * DAY);
+	/* a third of the way: twice as long again, to the microsecond */
+	assert(due_after(forecast(usecs(3 * DAY), 0.0, 1.0, 3.0)) == 6 * DAY);
+	assert(forecast(none, 0.0, 50.0, 100.0) is NoProgress);
+	assert(forecast(usecs(10 * DAY), 0.0, 0.0, 100.0) is NoProgress);
+	assert(forecast(usecs(10 * DAY), 0.0, -1.0, 100.0) is NoProgress);
+	assert(forecast(usecs(0), 0.0, 50.0, 100.0) is BeforeStart);
+	assert(forecast(usecs(-1), 0.0, 50.0, 100.0) is BeforeStart);
+	assert(forecast(usecs(1), 0.0, 50.0, 100.0) is TooSoon);
+	assert(forecast(usecs(DAY - 1), 0.0, 50.0, 100.0) is TooSoon);
+	/* a millionth done in a day: about 2700 years */
+	assert(forecast(usecs(DAY), 0.0, 0.000001, 1.0) is TooFar);
+	/* exactly a century away is still a forecast; a microsecond more is not */
+	assert(due_after(forecast(usecs(36525 * DAY), 0.0, 1.0, 2.0)) == MAX_AHEAD);
+	assert(forecast(usecs(36525 * DAY + 1), 0.0, 1.0, 2.0) is TooFar);
+	/* past every reading scale: through the fraction */
+	assert(due_after(forecast(usecs(10 * DAY), 0.0, 1.0e300, 2.0e300)) == 10 * DAY);
+	assert(forecast(usecs(10 * DAY), 0.0, 1.0, 1.0e300) is TooFar);
+	assert(forecast(usecs(10 * DAY), 0.0, 1.0e308 * 10.0, 1.0e300) is TooFar);
+}
+
+test "money progress" {
+	let quarter = money_progress(2500<minor>, 2, 10000<minor>, 2, 0<minor>, 2);
+	assert(covered_of(quarter) == 2500 && distance_of(quarter) == 10000);
+	/* a value finer than the target is compared exactly, not rounded to it */
+	let fine = money_progress(2505<minor>, 3, 1000<minor>, 2, 0<minor>, 2);
+	assert(covered_of(fine) == 2505 && distance_of(fine) == 10000);
+	/* down from a start: 90 to 80 at 85 is half way */
+	let down = money_progress(85<minor>, 0, 80<minor>, 0, 90<minor>, 0);
+	assert(covered_of(down) == -5 && distance_of(down) == -10);
+	assert(money_progress(5<minor>, 0, 7<minor>, 0, 7<minor>, 0) is Undefined);
+	assert(money_progress(M.I64_MAX as i64<minor>, 0, 1<minor>, 2, 0<minor>, 0) is TooLarge);
+	assert(money_progress(1<minor>, 0, 1<minor>, 7, 0<minor>, 0) is TooLarge);
+	assert((number_percent(25.0, 100.0, 0.0) ?? 0.0) == 25.0);
+	assert(number_percent(25.0, 3.0, 3.0) == none);
+}
