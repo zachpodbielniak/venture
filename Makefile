@@ -294,7 +294,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/boxed/*.h) \
 	$(wildcard src/interfaces/*.h) \
 	$(wildcard src/model/*.h) \
-	$(wildcard src/receivables/*.h) \
+	$(filter-out %-private.h,$(wildcard src/receivables/*.h)) \
 	$(wildcard src/stripe/*.h) \
 	$(wildcard src/periods/*.h) \
 	$(filter-out %-print-style.h,$(wildcard src/quotes/*.h)) \

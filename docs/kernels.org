@@ -248,6 +248,21 @@ In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/ventu
 *** vk_inventory
 =unit_cost(cost, quantity)= is a movement's average unit cost, half to even, proved to lie between zero and the cost. Shim: =movement_unit= in =src/goods/venture-inventory-service.c=.
 
+*** vk_settlement
+The open balance of an invoice or a vendor bill. The shim hands over one array of =Record=: =Money { kind, amount, exponent, currency }=, or =Unset { kind }= for a record whose amount was never set. =Kind= is =Issue= | =LateFee= | =Void= | =Allocation= | =Refund=, in the order read: the document's events, then each allocation followed by its refunds. =currency= is a number the shim gives each code, comparing codes case-insensitively in C, so the kernel compares integers and never sees a code.
+
+=balance(records)= returns a =Balance=:
+- =NotIssued= when there is no issue. Nothing else is looked at.
+- Otherwise every issue, then every late fee, is added in order, whatever order the events came in. =Voided { exponent, first }= if any record voids the document.
+- Otherwise each allocation is subtracted and each refund added back: =Open { amount, exponent, currency, first }=. It is zero when paid and negative when overpaid.
+- A record the fold reaches but cannot count stops it: =Missing { at }=, =Mismatch { at, first }= or =Overflow { at }=. A record it never reaches is not refused, as the C never read it.
+
+The running total starts at the first record counted (its currency, zero at its exponent) and keeps the exponent it reaches, with each step being =vk_ledger.step=. =ensures agrees(records, result)=: an =Open= amount equals issued + late fees - allocated + refunded, with each class totalled on its own and compared at a common exponent, and the exponent is the finest any counted record has. Every function takes an array or returns a sum, so =tallow verify= skips them; the arithmetic it relies on is =vk_money='s, and the contract is fuzzed and checked on every call.
+
+=net_fitting(lines, start_exponent)= is =vk_ledger.net= that skips a line which would take the total out of range and carries on without it.
+
+Shims: =venture-settlement-private.h= (=VentureSettlementRecords=, in =src/receivables/venture-settlement-service.c=) builds the records, maps the result to =VentureMoney= or an error worded as adding =VentureMoney= worded it, and is called by =venture_settlement_service_invoice_balance=, =venture_settlement_service_invoice_balances= and =venture_payables_service_bill_balance= (a bill counts no late fees). Results and errors are unchanged, except an overflow while rescaling to a finer exponent is now reported as the addition or subtraction overflowing.
+
 *** vk_series
 The market-data arithmetic behind the series store. A book is two arrays, prices and quantities; =VENTURE_SERIES_NONE= is a =?i64= inside the kernel and becomes the sentinel again in C.
 

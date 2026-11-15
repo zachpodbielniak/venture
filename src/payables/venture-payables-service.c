@@ -1,6 +1,7 @@
 /* Copyright (C) 2026 Zach Podbielniak
  * SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+#include "receivables/venture-settlement-private.h"
 
 #include <string.h>
 
@@ -278,62 +279,41 @@ issue_event(VenturePayablesService *self, gint64 bill_id, GDateTime *cutoff, GEr
 	return NULL;
 }
 
+/* A bill's balance as of @as_of (NULL: all): the receivables fold
+ * (vk_settlement, venture-settlement-private.h) without late fees, its
+ * payments read only when it is open. */
 VentureMoney *
 venture_payables_service_bill_balance(VenturePayablesService *self,
 	gint64 bill_id, GDateTime *as_of, GError **error)
 {
 	g_autoptr(GPtrArray) events = NULL;
 	g_autoptr(GPtrArray) allocations = NULL;
-	g_autoptr(VentureMoney) total = NULL;
-	gboolean issued;
-	gboolean voided;
+	g_autoptr(VentureSettlementRecords) records = venture_settlement_records_new("VenturePayablesService");
+	g_autoptr(VentureMoney) issued = NULL;
+	gboolean open;
 	guint i;
 
 	events = find_rows(self, VENTURE_TYPE_VENDOR_BILL_EVENT, "bill-id", bill_id, as_of, error);
 	if (events == NULL)
 		return NULL;
-	issued = FALSE;
-	voided = FALSE;
-	for (i = 0; i < events->len; i++)
-	{
-		VentureEntity *event;
-		g_autofree gchar *state = NULL;
-
-		event = g_ptr_array_index(events, i);
-		g_object_get(event, "kind", &state, NULL);
-		if (g_strcmp0(state, "issue") == 0)
-		{
-			issued = TRUE;
-			if (!accumulate_record(&total, event, FALSE, error))
-				return NULL;
-		}
-		if (g_strcmp0(state, "void") == 0)
-			voided = TRUE;
-	}
-	if (!issued)
-		return venture_money_new_zero(NULL);
-	if (voided)
-		return venture_money_new(0, venture_money_get_currency(total), venture_money_get_exponent(total));
+	venture_settlement_records_add_events(records, events, FALSE);
+	issued = venture_settlement_records_balance(records, &open, error);
+	if (issued == NULL || !open)
+		return g_steal_pointer(&issued);
 	allocations = find_rows(self, VENTURE_TYPE_BILL_PAYMENT_ALLOCATION, "bill-id", bill_id, as_of, error);
 	if (allocations == NULL)
 		return NULL;
 	for (i = 0; i < allocations->len; i++)
 	{
-		VentureEntity *allocation;
+		VentureEntity *allocation = g_ptr_array_index(allocations, i);
 		g_autoptr(GPtrArray) refunds = NULL;
-		guint j;
 
-		allocation = g_ptr_array_index(allocations, i);
-		if (!accumulate_record(&total, allocation, TRUE, error))
-			return NULL;
 		refunds = find_rows(self, VENTURE_TYPE_BILL_REFUND, "allocation-id", venture_entity_get_id(allocation), as_of, error);
 		if (refunds == NULL)
 			return NULL;
-		for (j = 0; j < refunds->len; j++)
-			if (!accumulate_record(&total, g_ptr_array_index(refunds, j), FALSE, error))
-				return NULL;
+		venture_settlement_records_add_allocation(records, allocation, refunds);
 	}
-	return g_steal_pointer(&total);
+	return venture_settlement_records_balance(records, NULL, error);
 }
 
 static gboolean

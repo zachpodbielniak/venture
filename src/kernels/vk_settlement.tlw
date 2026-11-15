@@ -1,0 +1,366 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_settlement.tlw - the open balance of an invoice or a bill, and the
+ * plain running totals the money calendar and payroll keep.
+ *
+ * An invoice (receivables) and a vendor bill (payables) are settled the
+ * same way: the issue, plus any late fees added on top of it, less what
+ * was allocated to it, plus what was refunded of each allocation. A void
+ * leaves nothing open. This kernel is that fold, once the shim has read
+ * the records: it replaces invoice_issued_total, invoice_settled_total
+ * and the arithmetic of venture_settlement_service_invoice_balance(s) in
+ * src/receivables/venture-settlement-service.c, and of
+ * venture_payables_service_bill_balance in
+ * src/payables/venture-payables-service.c.
+ *
+ * The shim hands over one array of records: the document's events (its
+ * issue, late fees and void, in the order read), then each allocation
+ * followed by its refunds. A record carries its amount at its own
+ * exponent and a currency number: the shim numbers the currency codes,
+ * compared case-insensitively in C, so two records share a number
+ * exactly when VentureMoney would add them. The running total keeps the
+ * exponent it has reached, as adding VentureMoney values did (vk_ledger's
+ * step): nothing is rounded away by adding.
+ *
+ * Also here: net_fitting, the per-day running total of the money
+ * calendar, which skips an amount that would take the total out of range
+ * instead of failing (venture_money_calendar_nets).
+ */
+module vk_settlement;
+
+import vk_units;
+import vk_money as Mo;
+import vk_ledger as Le;
+import tallow.math as M;
+
+/* what a record does to an open balance */
+type Kind = Issue | LateFee | Void | Allocation | Refund;
+
+/*
+ * One record as the shim read it: its kind and its amount, at its own
+ * exponent, in the currency the shim numbered; or a record whose amount
+ * was never set (`Unset`), which the fold refuses only if it would count
+ * it.
+ */
+type Record =
+	| Unset { kind: Kind }
+	| Money { kind: Kind, amount: i64<minor>, exponent: i64, currency: i64 };
+
+/* which records one pass of the fold counts: the issue first, then the
+ * late fees on top of it, then the payments */
+type Pass = Issues | Fees | Payments;
+
+/*
+ * A document's balance, and the fold's state on the way to it.
+ *
+ * - NotIssued: nothing was issued (nothing is owed, in no currency).
+ * - Voided: issued and then voided; nothing is owed, in the currency of
+ *   record `first` at the exponent the issued total reached.
+ * - Open: what is owed (zero when paid, negative when overpaid), at the
+ *   exponent it reached, in the currency of record `first` (numbered
+ *   `currency`).
+ * - Missing: record `at` would count but has no amount.
+ * - Mismatch: record `at` is in another currency than record `first`.
+ * - Overflow: adding record `at` left the 64-bit range (or its exponent
+ *   is one no VentureMoney carries).
+ */
+type Balance =
+	| NotIssued
+	| Voided { exponent: i64, first: i64 }
+	| Open { amount: i64<minor>, exponent: i64, currency: i64, first: i64 }
+	| Missing { at: i64 }
+	| Mismatch { at: i64, first: i64 }
+	| Overflow { at: i64 };
+
+/* ---- records ---- */
+
+/* the kind of a record, whether or not it has an amount */
+pure fn kind_of(r: Record) -> Kind = match r {
+	Unset { kind } => kind,
+	Money { kind, .. } => kind,
+};
+
+/* whether a pass counts a record of this kind */
+pure fn counts(pass: Pass, kind: Kind) -> bool = match pass {
+	Issues => match kind { Issue => true, _ => false },
+	Fees => match kind { LateFee => true, _ => false },
+	Payments => match kind { Allocation => true, Refund => true, _ => false },
+};
+
+/* an allocation lowers the balance; everything else that counts raises it */
+pure fn lowers(kind: Kind) -> bool = match kind {
+	Allocation => true,
+	_ => false,
+};
+
+/* whether a record of kind `want` is among the records from i on */
+pure fn any_of(records: [Record], want: Kind, i: i64) -> bool
+	requires i >= 0 && i <= records.len()
+	decreases records.len() - i
+= match i >= records.len() {
+	true => false,
+	false => match kind_of(records[i]) == want {
+		true => true,
+		false => any_of(records, want, i + 1),
+	},
+};
+
+/* the fold stopped at a record it could not count */
+pure fn failed(state: Balance) -> bool = match state {
+	Missing { .. } => true,
+	Mismatch { .. } => true,
+	Overflow { .. } => true,
+	_ => false,
+};
+
+/* ---- the fold ---- */
+
+/*
+ * The running total (acc at exponent e, in currency c, opened by record
+ * `first`) with record `at` (amount at exponent ae, in currency rc)
+ * added, or subtracted when it `lowers` the balance.
+ */
+pure fn onto(acc: i64<minor>, e: i64, c: i64, first: i64, amount: i64<minor>, ae: i64, rc: i64, minus: bool, at: i64) -> own Balance
+	requires e >= 0 && e <= 18
+= match Le.exponent_ok(ae) {
+	false => Balance.Overflow { at },
+	true => match rc == c {
+		false => Balance.Mismatch { at, first },
+		true => match Le.step(acc, e, amount, ae, minus) {
+			some next => Balance.Open { amount = next, exponent = Mo.common_exponent(e, ae), currency = c, first },
+			none => Balance.Overflow { at },
+		},
+	},
+};
+
+/*
+ * The state after counting record `at`. The first record counted opens
+ * the total: zero at its own exponent and in its own currency, as the
+ * VentureMoney total the C kept began.
+ */
+pure fn take(state: Balance, r: Record, at: i64) -> own Balance = match r {
+	Unset { .. } => Balance.Missing { at },
+	Money { kind, amount, exponent, currency } => match state {
+		Open { amount = acc, exponent = e, currency = c, first } => match Le.exponent_ok(e) {
+			true => onto(acc, e, c, first, amount, exponent, currency, lowers(kind), at),
+			false => Balance.Overflow { at },
+		},
+		_ => match Le.exponent_ok(exponent) {
+			true => onto(0<minor>, exponent, currency, at, amount, exponent, currency, lowers(kind), at),
+			false => Balance.Overflow { at },
+		},
+	},
+};
+
+/* the state carried on unchanged */
+pure fn kept(state: Balance) -> own Balance = match state {
+	NotIssued => Balance.NotIssued,
+	Voided { exponent, first } => Balance.Voided { exponent, first },
+	Open { amount, exponent, currency, first } => Balance.Open { amount, exponent, currency, first },
+	Missing { at } => Balance.Missing { at },
+	Mismatch { at, first } => Balance.Mismatch { at, first },
+	Overflow { at } => Balance.Overflow { at },
+};
+
+/* one pass over the records from i on, in order, stopping at the first
+ * record that cannot be counted */
+pure fn fold(records: [Record], pass: Pass, i: i64, state: Balance) -> own Balance
+	requires i >= 0 && i <= records.len()
+	decreases records.len() - i
+= match i >= records.len() || failed(state) {
+	true => kept(state),
+	false => match counts(pass, kind_of(records[i])) {
+		true => fold(records, pass, i + 1, take(state, records[i], i)),
+		false => fold(records, pass, i + 1, state),
+	},
+};
+
+/* after the issue and the late fees: nothing open if voided, otherwise
+ * the payments counted against it */
+pure fn close(records: [Record], issued: Balance, voided: bool) -> own Balance = match issued {
+	Open { exponent, first, .. } => match voided {
+		true => Balance.Voided { exponent, first },
+		false => fold(records, Pass.Payments, 0, issued),
+	},
+	_ => kept(issued),
+};
+
+/*
+ * A document's balance from its records: NotIssued without an issue;
+ * otherwise the issues, then the late fees, are added in the order
+ * given; Voided if any record voids it; otherwise each allocation is
+ * subtracted and each refund added back, in the order given. A record
+ * the fold cannot count stops it (Missing, Mismatch, Overflow), records
+ * the fold never reaches are not looked at, as the C never read them.
+ *
+ * ensures: an Open balance is issued + late fees - allocated + refunded,
+ * each class totalled on its own and compared at a common exponent, at
+ * the finest exponent any counted record has.
+ */
+pure fn balance(records: [Record]) -> own Balance
+	ensures agrees(records, result)
+= match any_of(records, Kind.Issue, 0) {
+	false => Balance.NotIssued,
+	true => close(records, fold(records, Pass.Fees, 0, fold(records, Pass.Issues, 0, Balance.NotIssued)), any_of(records, Kind.Void, 0)),
+};
+
+/* ---- the contract, checked a second way ---- */
+
+/* the total of one kind's amounts from i on, onto acc at exponent e;
+ * Overflow also for a missing amount or an exponent out of range */
+pure fn class_from(records: [Record], want: Kind, i: i64, acc: i64<minor>, e: i64) -> own Le.Total
+	requires i >= 0 && i <= records.len() && e >= 0 && e <= 18
+	decreases records.len() - i
+= match i >= records.len() {
+	true => Le.Total.Sum { amount = acc, exponent = e },
+	false => match kind_of(records[i]) == want {
+		false => class_from(records, want, i + 1, acc, e),
+		true => match records[i] {
+			Unset { .. } => Le.Total.Overflow,
+			Money { amount, exponent, .. } => match Le.exponent_ok(exponent) {
+				false => Le.Total.Overflow,
+				true => match Mo.add(acc, e, amount, exponent) {
+					some next => class_from(records, want, i + 1, next, Mo.common_exponent(e, exponent)),
+					none => Le.Total.Overflow,
+				},
+			},
+		},
+	},
+};
+
+pure fn class_total(records: [Record], want: Kind) -> own Le.Total = class_from(records, want, 0, 0<minor>, 0);
+
+/* the finest exponent among the counted records of a pass from i on */
+pure fn finest(records: [Record], pass: Pass, i: i64, e: i64) -> i64
+	requires i >= 0 && i <= records.len()
+	decreases records.len() - i
+= match i >= records.len() {
+	true => e,
+	false => match records[i] {
+		Money { kind, exponent, .. } => match counts(pass, kind) {
+			true => finest(records, pass, i + 1, Mo.common_exponent(e, exponent)),
+			false => finest(records, pass, i + 1, e),
+		},
+		Unset { .. } => finest(records, pass, i + 1, e),
+	},
+};
+
+/* a + b for two totals, or none when either is not a sum or the sum
+ * does not fit */
+pure fn plus(a: Le.Total, b: Le.Total, minus: bool) -> own Le.Total = match a {
+	Sum { amount = x, exponent = ex } => match b {
+		Sum { amount = y, exponent = ey } => match Le.step(x, ex, y, ey, minus) {
+			some s => Le.Total.Sum { amount = s, exponent = Mo.common_exponent(ex, ey) },
+			none => Le.Total.Overflow,
+		},
+		Overflow => Le.Total.Overflow,
+	},
+	Overflow => Le.Total.Overflow,
+};
+
+/* issued + late fees - allocated + refunded, totalled by class */
+pure fn by_class(records: [Record]) -> own Le.Total
+	= plus(plus(plus(class_total(records, Kind.Issue), class_total(records, Kind.LateFee), false),
+		class_total(records, Kind.Allocation), true), class_total(records, Kind.Refund), false);
+
+/* whether `amount` at exponent e is the class-by-class total (true when
+ * that total does not fit: the running fold may still, in another order) */
+pure fn same_as(t: Le.Total, amount: i64<minor>, e: i64) -> bool = match t {
+	Sum { amount = x, exponent = ex } => Mo.compare(x, ex, amount, e) == 0,
+	Overflow => true,
+};
+
+/* what `balance` promises about its result */
+pure fn agrees(records: [Record], b: Balance) -> bool = match b {
+	Open { amount, exponent, .. } =>
+		same_as(by_class(records), amount, exponent)
+		&& exponent == finest(records, Pass.Payments, 0, finest(records, Pass.Fees, 0, finest(records, Pass.Issues, 0, 0))),
+	Voided { exponent, .. } =>
+		exponent == finest(records, Pass.Fees, 0, finest(records, Pass.Issues, 0, 0)) && any_of(records, Kind.Void, 0),
+	NotIssued => !any_of(records, Kind.Issue, 0),
+	_ => true,
+};
+
+/* ---- plain running totals ---- */
+
+/*
+ * Debits minus credits of `lines`, from zero at `start_exponent`, in
+ * order, where a line that would take the running total out of the
+ * 64-bit range (or whose exponent no VentureMoney carries) is skipped and
+ * the total carries on without it: the money calendar's per-day and
+ * per-week net, which shows what fits rather than failing the page.
+ */
+pure fn net_fitting(lines: [Le.Line], start_exponent: i64) -> own Le.Total
+	requires start_exponent >= 0 && start_exponent <= 18
+= fitting_from(lines, 0, 0<minor>, start_exponent);
+
+pure fn fitting_from(lines: [Le.Line], i: i64, acc: i64<minor>, e: i64) -> own Le.Total
+	requires i >= 0 && i <= lines.len() && e >= 0 && e <= 18
+	decreases lines.len() - i
+= match i >= lines.len() {
+	true => Le.Total.Sum { amount = acc, exponent = e },
+	false => match Le.exponent_ok(lines[i].exponent) {
+		false => fitting_from(lines, i + 1, acc, e),
+		true => match Le.step(acc, e, lines[i].amount, lines[i].exponent, !lines[i].debit) {
+			some next => fitting_from(lines, i + 1, next, Mo.common_exponent(e, lines[i].exponent)),
+			none => fitting_from(lines, i + 1, acc, e),
+		},
+	},
+};
+
+/* ---- tests ---- */
+
+pure fn money(kind: Kind, amount: i64, exponent: i64) -> own Record =
+	Record.Money { kind, amount = amount as i64<minor>, exponent, currency = 0 };
+
+pure fn open_amount(b: Balance) -> i64 = match b {
+	Open { amount, .. } => amount as i64,
+	_ => -1,
+};
+
+pure fn open_exponent(b: Balance) -> i64 = match b {
+	Open { exponent, .. } => exponent,
+	Voided { exponent, .. } => exponent,
+	_ => -1,
+};
+
+test "not issued" {
+	assert(balance([]) is NotIssued);
+	/* a late fee or a payment without an issue counts for nothing, and
+	 * an unset amount it never reaches is not refused */
+	assert(balance([money(Kind.LateFee, 500, 2), Record.Unset { kind = Kind.Allocation }]) is NotIssued);
+}
+
+test "open" {
+	let b = balance([money(Kind.Issue, 10000, 2), money(Kind.LateFee, 500, 2),
+		money(Kind.Allocation, 4000, 2), money(Kind.Refund, 1000, 2)]);
+	assert(open_amount(b) == 7500 && open_exponent(b) == 2);
+	/* late fees are added after every issue, whatever the order read */
+	let c = balance([money(Kind.LateFee, 5000, 3), money(Kind.Issue, 100, 2)]);
+	assert(open_amount(c) == 6000 && open_exponent(c) == 3);
+	/* paid in full, overpaid */
+	assert(open_amount(balance([money(Kind.Issue, 100, 2), money(Kind.Allocation, 1000, 3)])) == 0);
+	assert(open_amount(balance([money(Kind.Issue, 100, 2), money(Kind.Allocation, 150, 2)])) == -50);
+}
+
+test "voided" {
+	let b = balance([money(Kind.Issue, 100, 2), money(Kind.LateFee, 1, 3), Record.Unset { kind = Kind.Void },
+		Record.Unset { kind = Kind.Allocation }]);
+	assert((b is Voided) && open_exponent(b) == 3);
+}
+
+test "refused" {
+	assert(balance([Record.Unset { kind = Kind.Issue }]) is Missing);
+	assert(balance([money(Kind.Issue, 100, 2), Record.Money { kind = Kind.Allocation, amount = 1<minor>, exponent = 2, currency = 1 }]) is Mismatch);
+	assert(balance([money(Kind.Issue, M.I64_MAX, 0), money(Kind.LateFee, 1, 0)]) is Overflow);
+	assert(balance([money(Kind.Issue, 1, 9)]) is Overflow);
+	/* the running order is kept: a payment first brings the total back */
+	assert(balance([money(Kind.Issue, M.I64_MAX, 0), money(Kind.Allocation, 1, 0), money(Kind.Refund, 1, 0)]) is Open);
+}
+
+test "net fitting" {
+	let t = net_fitting([Le.line(M.I64_MAX, 0, true), Le.line(1, 0, true), Le.line(5, 0, false)], 0);
+	assert(Le.sum_of(t) == M.I64_MAX - 5 && Le.exponent_of(t) == 0);
+	let u = net_fitting([Le.line(100, 2, true), Le.line(5, 3, false), Le.line(1, 9, true)], 2);
+	assert(Le.sum_of(u) == 995 && Le.exponent_of(u) == 3);
+}
