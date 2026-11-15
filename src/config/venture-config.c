@@ -418,6 +418,25 @@ static const VentureConfigSetting venture_config_settings[] = {
 	 */
 	VC_BOOL("plugins-allow-exec", "plugins", "allow_exec", FALSE,
 	        "Run exec plugins: programs named by a *.plugin.yaml manifest"),
+	/*
+	 * On by default, unlike crispy and exec: a .tlw plugin runs on the
+	 * suet bytecode VM inside the server, sandboxed -- no files, network,
+	 * processes or environment unless tallow_capabilities grants them,
+	 * an instruction budget per call and a memory cap -- so a plugin
+	 * appearing in a plugin directory cannot do more than compute.
+	 */
+	VC_BOOL("plugins-allow-tallow", "plugins", "allow_tallow", TRUE,
+	        "Load .tlw plugins on the sandboxed Tallow VM"),
+	VC_INT ("plugins-tallow-max-steps", "plugins", "tallow_max_steps", 10000000,
+	        "VM instructions one call into a .tlw plugin may run"),
+	VC_INT ("plugins-tallow-max-memory", "plugins", "tallow_max_memory", 67108864,
+	        "Bytes a .tlw plugin's heap may grow to"),
+	VC_STRV("plugins-tallow-capabilities", "plugins", "tallow_capabilities",
+	        "Grants to .tlw plugins as NAME=CAPABILITY, e.g. "
+	        "fees=net.connect:443; none by default"),
+	VC_STR ("plugins-tallow-std-dir", "plugins", "tallow_std_dir", "",
+	        "Tallow standard library for .tlw plugins; empty means the "
+	        "one installed with VENTURE"),
 	VC_STRV("plugins-venture-type-paths", "plugins", "venture_type_paths",
 	        "Directories of declarative venture-type definitions"),
 	VC_STRV("plugins-required", "plugins", "required",

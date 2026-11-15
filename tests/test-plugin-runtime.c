@@ -317,12 +317,12 @@ test_runtime_builtins_registered(
 ){
 	g_auto(GStrv) names = NULL;
 	const gchar *const expected[] = {
-		"native", "crispy", "declarative", "exec", NULL
+		"native", "crispy", "declarative", "exec", "tallow", NULL
 	};
 
 	(void)user_data;
 
-	/* The four that ship, in order. A manager missing one would load
+	/* The five that ship, in order. A manager missing one would load
 	 * every bare file of that kind as "no runtime", quietly. */
 	names = venture_plugin_manager_list_runtimes(fixture->manager);
 	g_assert_true(g_strv_equal((const gchar *const *)names, expected));

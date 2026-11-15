@@ -339,6 +339,23 @@ plugins:
   # plugin directories. See docs/plugins.org.
   allow_exec: false
 
+  # Load .tlw plugins: Tallow run by the suet bytecode VM inside the
+  # server, sandboxed. A plugin can compute, register automation handlers
+  # and fee models, and call VENTURE's own (compiled) money kernels; it
+  # cannot read files, open sockets, start programs or read the
+  # environment unless tallow_capabilities grants it, and every call is
+  # bounded by tallow_max_steps instructions and tallow_max_memory bytes.
+  # See docs/tallow-plugins.org.
+  allow_tallow: true
+  tallow_max_steps: 10000000
+  tallow_max_memory: 67108864
+  # Grants, one per entry, as PLUGIN=CAPABILITY in Tallow's own spelling:
+  # fees=fs.read:/srv/rates, fees=net.connect:443, fees=env:RATES_KEY.
+  tallow_capabilities: []
+  # The Tallow standard library the VM reads; empty means the copy
+  # installed with VENTURE.
+  tallow_std_dir: ""
+
   # Directories scanned for YAML venture-type definitions. These add new
   # kinds of venture with their own fields, metrics and report columns
   # without any code at all.

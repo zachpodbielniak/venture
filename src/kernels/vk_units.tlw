@@ -36,12 +36,15 @@ unit month;
 let PPM_ONE = 1000000;
 
 /* a ppm rate as written in tests and docs: of_pct(12) is 12% */
+/* @export */
 pure fn of_pct(n: i64) -> i64<ppm> = (n as i64<pct>).to<ppm>();
 
 /* basis points as parts per million */
+/* @export */
 pure fn of_bp(n: i64) -> i64<ppm> = (n as i64<bp>).to<ppm>();
 
 /* -1, 0 or 1 */
+/* @export */
 pure fn sign(x: i64) -> i64 = match x < 0 {
 	true => -1,
 	false => match x > 0 {

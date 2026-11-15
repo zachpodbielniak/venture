@@ -401,6 +401,7 @@ SERVER_OBJS := $(patsubst src/%.c,$(OBJDIR)/server/%.o,$(SERVER_SRCS))
 # Its prerequisites are added after rules.mk, so the order-only lines
 # there that cover CORE_OBJS do not make it wait on itself.
 KERNELS_OBJ := $(OBJDIR)/kernels/vk-kernels.o
+KERNELS_HOST_OBJ := $(OBJDIR)/kernels/vk-host.o
 CLI_OBJS := $(patsubst src/%.c,$(OBJDIR)/core/%.o,$(CLI_SRCS))
 MAIN_OBJ := $(OBJDIR)/server/main.o
 TEST_OBJS := $(patsubst tests/%.c,$(OBJDIR)/tests/%.o,$(TEST_SRCS))
@@ -463,7 +464,7 @@ $(OUTDIR)/tests/test-plugin-blizzard: | $(OUTDIR)/plugins-optional/blizzard-auct
 #     by naming that directory in plugins.paths, and the test that drives
 #     it loads the .so by path.
 PLUGIN_OPTIONAL_DIRS := plugins/blizzard-auctions
-PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec $(PLUGIN_OPTIONAL_DIRS)
+PLUGIN_EXCLUDED_DIRS := plugins/scripts plugins/exec plugins/tallow $(PLUGIN_OPTIONAL_DIRS)
 PLUGIN_DIRS := $(filter-out $(PLUGIN_EXCLUDED_DIRS), \
                  $(patsubst %/,%,$(sort $(dir $(wildcard plugins/*/)))))
 PLUGIN_SOS := $(patsubst plugins/%,$(OUTDIR)/plugins/%.so,$(PLUGIN_DIRS))
@@ -518,7 +519,18 @@ venturectl: $(OUTDIR)/venturectl
 .PHONY: gir
 gir: $(OUTDIR)/$(GIR_FILE) $(OUTDIR)/$(TYPELIB_FILE)
 
-plugins: $(OUTDIR)/$(LIB_STATIC) $(PLUGIN_SOS) $(PLUGIN_OPTIONAL_SOS)
+# Tallow plugins (plugins/tallow/*.tlw) are source: "building" one copies it
+# beside the optional native plugins, where nothing loads it by default --
+# a test or an operator points a plugin path at it. They run on the
+# sandboxed VM (docs/tallow-plugins.org), never compiled.
+PLUGIN_TALLOW_SRCS := $(wildcard plugins/tallow/*.tlw)
+PLUGIN_TALLOW_OUT := $(patsubst plugins/tallow/%,$(OUTDIR)/plugins-optional/%,$(PLUGIN_TALLOW_SRCS))
+$(OUTDIR)/plugins-optional/%.tlw: plugins/tallow/%.tlw | $(OUTDIR)/plugins-optional
+	@echo "  CP      $@"
+	$(Q)cp $< $@
+$(OUTDIR)/tests/test-plugin-tallow: | $(PLUGIN_TALLOW_OUT)
+
+plugins: $(OUTDIR)/$(LIB_STATIC) $(PLUGIN_SOS) $(PLUGIN_OPTIONAL_SOS) $(PLUGIN_TALLOW_OUT)
 
 pod-modules: $(OUTDIR)/$(LIB_STATIC) $(POD_MODULE_SOS)
 

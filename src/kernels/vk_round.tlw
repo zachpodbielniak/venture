@@ -65,6 +65,7 @@ pure fn past_half(m: i64, d: i64, tie_up: bool) -> bool
 
 /* n / d to the nearest, ties to the even quotient (banker's rounding):
  * the rule for money, because it does not bias a long run of roundings */
+/* @export */
 pure fn half_even(n: i64, d: i64) -> i64
 	requires d > 1
 	ensures result == n / d || result == n / d + 1 || result == n / d - 1
@@ -75,6 +76,7 @@ pure fn half_even(n: i64, d: i64) -> i64
 }
 
 /* n / d to the nearest, ties away from zero */
+/* @export */
 pure fn half_up(n: i64, d: i64) -> i64
 	requires d > 1
 	ensures result == n / d || result == n / d + 1 || result == n / d - 1
@@ -85,18 +87,21 @@ pure fn half_up(n: i64, d: i64) -> i64
 }
 
 /* n / d away from zero */
+/* @export */
 pure fn up(n: i64, d: i64) -> i64
 	requires d > 1
 	ensures result == n / d || result == n / d + 1 || result == n / d - 1
 = step(n / d, n % d, true);
 
 /* n / d toward positive infinity */
+/* @export */
 pure fn ceiling(n: i64, d: i64) -> i64
 	requires d > 1
 	ensures result == n / d || result == n / d + 1
 = step(n / d, n % d, n % d > 0);
 
 /* n / d toward negative infinity */
+/* @export */
 pure fn floor(n: i64, d: i64) -> i64
 	requires d > 1
 	ensures result == n / d || result == n / d - 1

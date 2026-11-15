@@ -1,0 +1,145 @@
+#+title: Tallow plugins
+#+description: Writing VENTURE plugins in Tallow: the sandboxed suet VM, plugin_register(), the venture and venture_kernels host modules, fee models and automation steps, grants and limits, and why plugins call the compiled kernels instead of interpreting them
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-11-15]
+#+updated: [2026-11-15]
+#+version: 0.1.0
+
+* Tallow plugins
+
+A =.tlw= file in a plugin directory is a plugin written in [[file:../deps/tallow/README.org][Tallow]], run by =suet=, Tallow's bytecode VM, inside the server. It needs no compiler at run time and runs sandboxed: no file, network, process or environment access unless the operator grants it, no GObject Introspection, an instruction budget per call and a heap cap. It can register automation steps and fee models, and it does its money arithmetic with VENTURE's own compiled kernels.
+
+It is the runtime to reach for when the plugin is mostly a formula: a venue's fee schedule, a margin, a scoring rule. A plugin that needs the database, a record type or a web page is still a native =.so= ([[file:extending.org][Extending VENTURE]]).
+
+** Native vs interpreted
+:PROPERTIES:
+:CUSTOM_ID: native-vs-interpreted
+:END:
+
+Only plugins run on the VM. VENTURE's own Tallow -- the money, ledger, billing and trading kernels in =src/kernels/= ([[file:kernels.org][Kernels]]) -- is rendered to C at build time and compiled; it is the hot path of every posting and report, and it is trusted code reviewed with the rest of VENTURE. A plugin is an extension, possibly someone else's, so it gets the VM's confinement.
+
+The two meet in one place, and the direction matters: a plugin that wants the kernel math calls the compiled kernels. The =venture_kernels= module a plugin imports contains no Tallow code at all, only =extern fn= declarations bound to host functions that call the native =vk_*= functions. The kernel sources are not on the VM's search path, so =import vk_money;= in a plugin fails to compile: there is no way to end up running an interpreted copy that could drift from the server's arithmetic, or run slower. =make test= checks both halves (=test-plugin-tallow=: =kernels/not-interpretable=, =kernels/host-functions=; =make kernels-native-check=).
+
+Other sandboxed code -- a formula an operator types into a record, an alert rule -- could use the same VM later; none does today.
+
+** A plugin
+:PROPERTIES:
+:CUSTOM_ID: shape
+:END:
+
+=plugins/tallow/tiered-fees.tlw= is the reference, shortened here:
+
+#+begin_src tallow
+import venture;
+import venture_kernels as K;
+
+let PPM_ONE = 1000000;
+
+pure fn plugin_info() -> own str = "Tiered percentage fees and a margin step, in Tallow".dup();
+
+fn plugin_register() ! GError {
+	venture.register_fee_model("tiered_ppm",
+		"A rate of the trade up to a threshold, a second rate above it",
+		"tiered_fee", "tiered_validate")?;
+	venture.register_automation_handler("margin_ppm",
+		"The margin of a price over a cost, in parts per million of the price",
+		"margin")?;
+}
+
+pure fn tiered_fee(side: i64, amount: i64, exponent: i64, units: i64, params: str) -> ?i64
+	requires amount >= 0 && exponent >= 0 && units >= 1
+	ensures match result {
+		some fee => fee >= 0 && fee <= amount,
+		none => true,
+	}
+= match rate(params, "rate_ppm") {
+	some low => tiers(amount as i64<K.minor>, low,
+		rate(params, "rate_above_ppm") ?? low,
+		venture.json_i64(params, "above") ?? amount),
+	none => none,
+};
+#+end_src
+
+The rules:
+
+- =plugin_register()= is required. It runs once, at load, and the =venture.register_*= functions work only while it runs; a handler that tries to register later gets an error.
+- =plugin_info() -> own str= is optional: one line for the plugin listing.
+- Loading compiles and keeps the plugin; it runs nothing else. A module-level =let= is a constant, so there is no hidden initialisation.
+- The plugin's name is its file name without =.tlw=. Grants are given by that name.
+- Write it the way the kernels are written ([[file:kernels.org::#style][Style]]): =pure fn= wherever the checker allows -- a fee model is a function from a trade to a fee and nothing else -- =match= as an expression, optionals instead of sentinels, contracts on what you promise, units on amounts and rates. A violated contract in a plugin is a panic: an error for that call, never a wrong number.
+
+** The host modules
+:PROPERTIES:
+:CUSTOM_ID: host-modules
+:END:
+
+*** venture
+
+The plugin API, =src/plugin/venture-tallow-host.tlw=, embedded in the server:
+
+| Function | Does |
+|----------+------|
+| =log(level, message)= | one line in the server log, =venture-tallow= domain, prefixed with the plugin's name; =level= is =debug=, =info=, =message= or =warning= |
+| =register_automation_handler(name, description, function) ! GError= | a step rules call as =venture->NAME(...)=; =function= is the plugin's =fn F(params: str) -> own str ! GError= |
+| =register_fee_model(name, description, compute, validate) ! GError= | a fee model venues name; =compute= is =fn C(side: i64, amount: i64, exponent: i64, units: i64, params: str) -> ?i64=, =validate= is =fn V(params: str) -> own ?str= (or =""= for none) |
+| =json_str(json, key) -> own ?str= | a member of a JSON object as text |
+| =json_i64(json, key) -> ?i64= | a member as an integer |
+| =json_arg(json, index) -> own ?str= | a rule's positional argument (=params.args[index]=) |
+| =json_quote(text) -> own str= | text as a JSON string literal |
+
+A registered name is refused if it is taken, by a built-in or another plugin, like any registration.
+
+*Automation steps.* The step's parameters arrive as one JSON object, as an exec plugin gets them: a rule's positional arguments (strings) as ={"args": [...]}=, a dictionary as itself. The function returns JSON text, which becomes the step's result; =fail(...)= fails the step with that message.
+
+*Fee models.* =side= is 0 to sell, 1 to buy; =amount= is the gross amount in minor units at =exponent=, in the venue's currency; =params= is the venue's parameters as JSON. The function returns the fee in the same minor units, or =none= to refuse the trade ("priced nothing"). The validate function returns =none= to accept a venue's parameters or the reason they are refused; without one only an empty parameter set is accepted.
+
+*** venture_kernels
+
+The compiled kernels, generated from the kernel sources by =tools/venture-tallow-bindings.sh=: every kernel marked =/* @export */= whose parameters are integers or booleans and whose result is an integer, a boolean or an optional integer, as =<module>_<function>= -- =money_multiply_ppm=, =money_convert=, =round_half_even= and the rest -- with their units (=minor=, =ppm=, =bp=, =pct=, =milli=, =seat=, =day=, =month=) declared in the module, so =K.money_multiply_ppm(amount, rate)= type-checks units in the plugin exactly as in the kernel. The generated module is =build/<type>/gen/kernels/vk-host.tlw=.
+
+Each call runs the kernel's native code with a contract guard: a plugin passing something a kernel's =requires= forbids (=K.round_half_even(7, 0)=) gets an error naming the clause, and the server keeps running.
+
+** Grants and limits
+:PROPERTIES:
+:CUSTOM_ID: sandbox
+:END:
+
+| Setting | Default | Effect |
+|---------+---------+--------|
+| =plugins.allow_tallow= | =true= | load =.tlw= plugins at all |
+| =plugins.tallow_max_steps= | =10000000= | instructions per call; past it the call fails with =limit reached= |
+| =plugins.tallow_max_memory= | =67108864= | heap bytes per plugin |
+| =plugins.tallow_capabilities= | =[]= | =PLUGIN=CAPABILITY= grants, e.g. =rates=fs.read:/srv/rates= |
+| =plugins.tallow_std_dir= | empty | the Tallow standard library; empty means the installed copy |
+
+A capability is spelled as a Tallow =uses= entry: =fs:DIR=, =fs.read:DIR=, =fs.write:DIR=, =net=, =net.connect:PORT=, =net.bind:PORT=, =exec=, =exec:PATH=, =env=, =env:NAME=. A plugin that declares its own =uses= gets the intersection. A request outside what is granted reaches the plugin as an error value (a fallible call such as =read_file= returns =err=), so a plugin can handle it; unhandled, it fails the call.
+
+GObject Introspection is closed to plugins (=restrict-gir=), and the VM's =ffi= capability is never granted: the host modules are the only way out of the VM.
+
+What the sandbox does not do: it confines what the code can reach, not whether its arithmetic is right. A fee model can still charge the wrong fee; review a plugin's formulas as you would a venue's rate card.
+
+** Threads
+:PROPERTIES:
+:CUSTOM_ID: threads
+:END:
+
+Each plugin has one VM and a lock; a call into it (a fee, a step) takes the lock, so a plugin is safe to call from several threads and its calls run one at a time. A host function cannot call back into the VM that called it (the VM is busy), which is why =venture= has no "call another plugin" function.
+
+** Installing and testing
+:PROPERTIES:
+:CUSTOM_ID: install
+:END:
+
+Copy the file into a plugin directory (=plugins.paths=, =VENTURE_PLUGIN_PATH=) and restart; =venturectl plugins= lists it with kind =tallow=. The build copies =plugins/tallow/*.tlw= into =$(OUTDIR)/plugins-optional/=, which nothing loads by default.
+
+To type-check a plugin outside the server, point =tallow check= at the two host modules: =src/plugin/venture-tallow-host.tlw= copied as =venture.tlw= and =build/debug/gen/kernels/vk-host.tlw= as =venture_kernels.tlw= in one directory, then =deps/tallow/build/debug/tallow check -I DIR plugin.tlw=. Its behaviour is tested by loading it: =tests/test-plugin-tallow.c= loads the reference plugin, prices trades with it, runs its step, and checks the sandbox, the limits and the kernel guard.
+
+** How it is built
+:PROPERTIES:
+:CUSTOM_ID: build
+:END:
+
+=src/plugin/venture-tallow-runtime.c= registers the =tallow= runtime with the plugin manager, beside =native=, =crispy=, =declarative= and =exec=. For each plugin it makes a =TallowSuet= (=venture_tallow_vm_new()=): sandbox on, GIR restricted, the limits and grants from the configuration, the two host modules added and their functions bound; then it binds the plugin's own =log= and registration functions, loads the file, calls =plugin_info()= and =plugin_register()=. What is registered is a C trampoline in the ordinary registry holding a reference to the plugin, so the VM outlives anything that can still call it.
+
+The VM is =libtallow-suet-1.0.a=, linked statically like every vendored library, with the Tallow runtime linked whole and exported so the VM can find it ([[file:kernels.org::#build][Kernels: how the build uses them]]). The installed server reads the standard library from =$(DATADIR)/venture/tallow-std=, which =make install= fills.

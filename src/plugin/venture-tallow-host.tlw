@@ -1,0 +1,59 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * venture-tallow-host.tlw - the `venture` module a .tlw plugin imports.
+ *
+ * Embedded into the server and registered on every plugin's VM as a host
+ * module; each `extern fn` here is bound to a C function in
+ * src/plugin/venture-tallow-runtime.c. Being the host's own functions they
+ * pass the sandbox without a capability: what a plugin can do to the
+ * outside world is exactly this list, plus what the operator grants.
+ *
+ * Money and rate arithmetic is in `venture_kernels`, the compiled kernels.
+ */
+module venture;
+
+/* ---- the log ---- */
+
+/* writes one line to the server's log; level is "debug", "info",
+ * "message" or "warning" */
+extern fn log(level: str, message: str) = "venture_tlw_log";
+
+/* ---- registration: only inside plugin_register() ---- */
+
+/*
+ * An automation handler a rule calls as `venture->NAME(...)`. FUNCTION is
+ * this plugin's `fn FUNCTION(params: str) -> own str ! GError`: the step's
+ * parameters as a JSON object in (a rule's positional arguments arrive as
+ * `{"args": [...]}`, strings, as an exec plugin gets them; read one with
+ * json_arg), the step's result as JSON text out.
+ */
+extern fn register_automation_handler(name: str, description: str, function: str) ! GError
+	= "venture_tlw_register_automation_handler";
+
+/*
+ * A fee model a venue names. COMPUTE is this plugin's
+ * `fn COMPUTE(side: i64, amount: i64, exponent: i64, units: i64, params: str) -> ?i64`
+ * (side 0 sell, 1 buy; amount in minor units at exponent; the fee back in
+ * the same minor units, none to refuse). VALIDATE is
+ * `fn VALIDATE(params: str) -> own ?str`: none to accept the venue's
+ * parameters, else the reason they are refused.
+ */
+extern fn register_fee_model(name: str, description: str, compute: str, validate: str) ! GError
+	= "venture_tlw_register_fee_model";
+
+/* ---- JSON parameters, read without a JSON library ---- */
+
+/* a member of a JSON object as text: a string's value, a number or a
+ * boolean as written; none when it is absent, null or not a scalar */
+pure extern fn json_str(json: str, key: str) -> own ?str = "venture_tlw_json_str";
+
+/* a member of a JSON object as an integer; none when it is absent or
+ * not an integer */
+pure extern fn json_i64(json: str, key: str) -> ?i64 = "venture_tlw_json_i64";
+
+/* params.args[index] as text: a rule's positional argument; none when
+ * there is no such argument */
+pure extern fn json_arg(json: str, index: i64) -> own ?str = "venture_tlw_json_arg";
+
+/* text as a JSON string literal, quotes and escapes included */
+pure extern fn json_quote(text: str) -> own str = "venture_tlw_json_quote";

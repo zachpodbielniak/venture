@@ -714,10 +714,10 @@ Most CLI mistakes are a field name guessed rather than read.
 
 ## Dependencies
 
-Ten git submodules under `deps/`, all linked statically, all treated as the
+Eleven git submodules under `deps/`, all linked statically, all treated as the
 canonical copies: `yaml-glib`, `htmx-glib`, `ai-glib`, `orm-glib`,
 `podomation`, `crispy`, `mail-glib`, `stripe-glib`, `oidc-glib`,
-`libreventory`. Fixing a bug in
+`libreventory`, `tallow`. Fixing a bug in
 one and pushing it upstream is expected and has happened several times.
 `libreventory` (AGPL-3.0-only) is built as its core archive only, against
 our own orm-glib, yaml-glib and htmx-glib headers (`dep-libreventory`):
@@ -729,6 +729,29 @@ and `libgudev-devel` for podomation. That pair matters more than it looks:
 podomation resolves its whole dependency set in one `pkg-config` call, so one
 missing package empties the flags and the build fails on a missing `glib.h`.
 `oidc-glib` fails the same way without `libjose-devel` and `jansson-devel`.
+
+## Tallow: compiled kernels, interpreted plugins
+
+`deps/tallow` is used twice, and the two never mix:
+
+- **Kernels** (`src/kernels/vk_*.tlw`) are VENTURE's pure arithmetic —
+  rounding, money, rates, allocation, the formulas on top. They are rendered
+  to one C file at build time and compiled like our own code. They never
+  run on the VM. A C function that does arithmetic on behalf of a record is a
+  shim: it checks what only C can (currency codes, the registry, the
+  database), calls `vk_<module>_<fn>`, and turns `none` into a `GError`.
+  New arithmetic goes into a kernel, not into the shim.
+- **Kernels are functional**: `pure fn` only, no `var`/`while`/`for`,
+  recursion with `decreases` or `tallow.list`, sum types and optionals
+  instead of sentinels, contracts on what they need and promise, units on
+  amounts and rates. Keep the integer core in small int/bool functions so
+  `tallow verify` proves it. `docs/kernels.org` has the rules and the
+  catalogue; `make kernels-check` runs their tests, the fuzzer, the prover
+  and the native check.
+- **`.tlw` plugins** run on the suet VM, sandboxed (`docs/tallow-plugins.org`).
+  They reach kernel math only through `venture_kernels`, host functions
+  bound to the compiled `vk_*` code, generated from `/* @export */` kernels.
+  Never put `src/kernels` on a VM's search path.
 
 ## Tests
 

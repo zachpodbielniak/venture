@@ -10,6 +10,8 @@
 #include <string.h>
 #include <yaml-glib.h>
 
+#include "plugin/venture-tallow-runtime-private.h"
+
 struct _VenturePluginRecord
 {
 	gchar			*name;
@@ -244,7 +246,7 @@ VenturePluginManager *
 venture_plugin_manager_new(VentureContext *context)
 {
 	VenturePluginManager *self;
-	VenturePluginRuntime *builtins[4];
+	VenturePluginRuntime *builtins[5];
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -267,6 +269,7 @@ venture_plugin_manager_new(VentureContext *context)
 	builtins[1] = venture_plugin_runtime_crispy_new();
 	builtins[2] = venture_plugin_runtime_declarative_new();
 	builtins[3] = venture_plugin_runtime_exec_new();
+	builtins[4] = venture_plugin_runtime_tallow_new();
 
 	for (i = 0; i < G_N_ELEMENTS(builtins); i++)
 	{

@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Zach Podbielniak
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Two stages: a builder that compiles VENTURE and its six vendored
+# Two stages: a builder that compiles VENTURE and its vendored
 # dependencies from source, and a runtime that carries only what the server
 # needs to run. The builder's toolchain never reaches the final image.
 #
@@ -65,6 +65,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         gmime30-devel \
         gnutls-devel \
         libdex-devel \
+        libffi-devel \
         gstreamer1-devel \
         gstreamer1-plugins-base-devel \
         glibc-gconv-extra \
@@ -92,7 +93,7 @@ WORKDIR /build
 
 #
 # The dependencies are copied and built before the application source, so
-# editing src/ does not invalidate the layer that rebuilds six libraries.
+# editing src/ does not invalidate the layer that rebuilds the vendored libraries.
 # That turns an iteration from minutes into seconds.
 #
 COPY deps/ deps/
@@ -111,7 +112,8 @@ ENV DEBUG=0
 #
 ENV PREFIX=/usr
 
-RUN if [ ! -f deps/yaml-glib/Makefile ] || [ ! -f deps/oidc-glib/Makefile ]; then \
+RUN if [ ! -f deps/yaml-glib/Makefile ] || [ ! -f deps/oidc-glib/Makefile ] || \
+       [ ! -f deps/tallow/Makefile ]; then \
         echo "deps/ is empty -- run: git submodule update --init --recursive" >&2; \
         exit 1; \
     fi
@@ -129,9 +131,9 @@ COPY docs/ docs/
 COPY skills/ skills/
 COPY migrations/ migrations/
 COPY README.org Containerfile LICENSE ./
-# The two generators `make all` itself runs (rules.mk); the rest of tools/
+# The three generators `make all` itself runs (rules.mk); the rest of tools/
 # is the test suite's and is copied below.
-COPY tools/venture-models.sh tools/venture-migrations.sh tools/
+COPY tools/venture-models.sh tools/venture-migrations.sh tools/venture-tallow-bindings.sh tools/
 
 RUN if [ "${BUILD_TYPE}" = "debug" ]; then export DEBUG=1; fi; \
     make DEBUG=${DEBUG} PREFIX=${PREFIX} all plugins
@@ -180,7 +182,7 @@ LABEL org.opencontainers.image.title="VENTURE" \
       org.opencontainers.image.base.name="registry.fedoraproject.org/fedora:${FEDORA_VERSION}"
 
 #
-# Shared libraries only. VENTURE's own six dependencies are linked
+# Shared libraries only. VENTURE's own vendored dependencies are linked
 # statically, so nothing of them appears here.
 #
 # libpq is present even though the default is SQLite: the same image has to
@@ -221,6 +223,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         gmime30 \
         gnutls \
         libdex \
+        libffi \
         gstreamer1 \
         gstreamer1-plugins-base \
         glibc-gconv-extra \

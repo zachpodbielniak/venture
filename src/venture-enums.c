@@ -618,6 +618,7 @@ static const GEnumValue venture_plugin_kind_values[] = {
 	VE(VENTURE_PLUGIN_KIND_DECLARATIVE, "declarative"),
 	VE(VENTURE_PLUGIN_KIND_EXEC,        "exec"),
 	VE(VENTURE_PLUGIN_KIND_OTHER,       "other"),
+	VE(VENTURE_PLUGIN_KIND_TALLOW,      "tallow"),
 	VE_END
 };
 

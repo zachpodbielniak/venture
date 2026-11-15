@@ -27,6 +27,8 @@ Tallow can run two ways: rendered to C and compiled, or interpreted by =suet=, i
 | The kernels (=src/kernels/vk_*.tlw=) | rendered to C at build time, compiled by gcc at =-O2= with VENTURE's own warnings, linked into =libventure-core.a= and =libventure.a= | they are the hot path of every report and posting, and they are trusted code reviewed with the rest of VENTURE |
 | =.tlw= plugins | interpreted by suet inside the server, sandboxed: an instruction budget, a memory cap, no file, network, process or environment access unless granted | they are extensions, possibly written by someone else; see [[file:tallow-plugins.org][Tallow plugins]] |
 
+The kernels a plugin may call are the ones marked =/* @export */= in their source; =tools/venture-tallow-bindings.sh= turns those into the =venture_kernels= host module and one C host function each.
+
 A plugin that needs kernel math does not interpret a copy of it: the host module it imports declares the kernels as =extern fn= bound to the compiled =vk_*= functions, so a plugin's =multiply_ppm= is the same machine code the server's is. The kernel sources are never on the VM's search path. =make kernels-native-check= (part of =make test=) checks both directions: the =vk_*= symbols are defined in both archives, and the kernel object references nothing of the VM.
 
 Code that is not a plugin but should still be sandboxed -- a formula a user types into a record, say -- could run on the VM the same way later; that is a choice to make per feature, and none does today.
@@ -146,3 +148,4 @@ A percent written as decimal text, read exactly into parts per million: =parse(t
 2. Keep the arithmetic in small =pure fn=s over integers with =requires= / =ensures=, so =tallow verify= proves them; put =test "..." { }= blocks at the end.
 3. Call it from the C that owns the data: unpack the record, check what only C can (currency codes, registry lookups), call =vk_<area>_<fn>=, turn =none= into a =GError=.
 4. Add the regression cases to =tests/test-kernels.c=, the entry to the catalogue above, and run =make DEBUG=1 kernels-check test-one T=test-kernels= plus the suites of the code you moved.
+5. If plugins should be able to call it, put =/* @export */= on the line right above its =pure fn= (the signature on one line, integer or boolean parameters, an integer, boolean or optional integer result). The build then generates its binding into =venture_kernels= ([[file:tallow-plugins.org][Tallow plugins]]). Helpers stay unmarked, which keeps them out of the plugin API without hiding them from =tallow verify= the way =@internal= would.

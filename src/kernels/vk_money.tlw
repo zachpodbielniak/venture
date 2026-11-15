@@ -23,6 +23,7 @@ import tallow.list as L;
 let MAX_EXPONENT = 6;
 
 /* 10^e for the exponents money uses, as a table so verify sees the values */
+/* @export */
 pure fn pow10(e: i64) -> i64
 	requires e >= 0 && e <= 18
 	ensures result >= 1
@@ -60,6 +61,7 @@ pure fn common_exponent(ea: i64, eb: i64) -> i64
  * An amount moved from exponent `from` to exponent `to`. Gaining digits is
  * exact and can overflow (none); losing them rounds half to even.
  */
+/* @export */
 pure fn rescale(amount: i64<minor>, from: i64, to: i64) -> ?i64<minor>
 	requires from >= 0 && from <= 18 && to >= 0 && to <= 18
 = match to >= from {
@@ -71,11 +73,13 @@ pure fn rescale(amount: i64<minor>, from: i64, to: i64) -> ?i64<minor>
 };
 
 /* a + b, each at its own exponent, the sum at the common one */
+/* @export */
 pure fn add(a: i64<minor>, ea: i64, b: i64<minor>, eb: i64) -> ?i64<minor>
 	requires ea >= 0 && ea <= 18 && eb >= 0 && eb <= 18
 = combine(a, ea, b, eb, false);
 
 /* a - b, each at its own exponent, the difference at the common one */
+/* @export */
 pure fn subtract(a: i64<minor>, ea: i64, b: i64<minor>, eb: i64) -> ?i64<minor>
 	requires ea >= 0 && ea <= 18 && eb >= 0 && eb <= 18
 = combine(a, ea, b, eb, true);
@@ -104,6 +108,7 @@ pure fn as_minor(v: ?i64) -> ?i64<minor> = match v {
 };
 
 /* -a, saturating: G_MININT64 has no negation and no real amount reaches it */
+/* @export */
 pure fn negate(a: i64<minor>) -> i64<minor>
 	ensures a == M.I64_MIN as i64<minor> || result == -a
 = match a == M.I64_MIN as i64<minor> {
@@ -114,6 +119,7 @@ pure fn negate(a: i64<minor>) -> i64<minor>
 /* -1, 0 or 1 as a is below, equal to or above b, each at its own
  * exponent. When one side cannot be brought to the common exponent it is
  * beyond anything the other can be, so its sign decides. */
+/* @export */
 pure fn compare(a: i64<minor>, ea: i64, b: i64<minor>, eb: i64) -> i64
 	requires ea >= 0 && ea <= 18 && eb >= 0 && eb <= 18
 	ensures result >= -1 && result <= 1
@@ -140,6 +146,7 @@ pure fn order(x: i64<minor>, y: i64<minor>) -> i64
 };
 
 /* amount * factor */
+/* @export */
 pure fn multiply_int(amount: i64<minor>, factor: i64) -> ?i64<minor>
 	= M.checked_mul(amount as i64, factor) |> as_minor;
 
@@ -148,6 +155,7 @@ pure fn multiply_int(amount: i64<minor>, factor: i64) -> ?i64<minor>
  * product exact in 128 bits. A negative denominator is folded into the
  * numerator. None for a zero denominator or a result out of range.
  */
+/* @export */
 pure fn multiply_rational(amount: i64<minor>, numerator: i64, denominator: i64) -> ?i64<minor>
 	= match denominator == 0 || denominator == M.I64_MIN || numerator == M.I64_MIN {
 	true => none,
@@ -158,10 +166,12 @@ pure fn multiply_rational(amount: i64<minor>, numerator: i64, denominator: i64) 
 };
 
 /* amount at a rate in parts per million, half to even */
+/* @export */
 pure fn multiply_ppm(amount: i64<minor>, rate: i64<ppm>) -> ?i64<minor>
 	= R.mul_div(amount as i64, rate as i64, PPM_ONE, R.Mode.HalfEven) |> as_minor;
 
 /* amount at a rate in basis points (hundredths of a percent), half to even */
+/* @export */
 pure fn multiply_bp(amount: i64<minor>, rate: i64<bp>) -> ?i64<minor>
 	= R.mul_div(amount as i64, rate as i64, 10000, R.Mode.HalfEven) |> as_minor;
 
@@ -172,6 +182,7 @@ pure fn multiply_bp(amount: i64<minor>, rate: i64<bp>) -> ?i64<minor>
  * positive, when rescaling the rate itself overflows (a rate beyond any
  * real currency pair), or when the result is out of range.
  */
+/* @export */
 pure fn convert(amount: i64<minor>, from: i64, numerator: i64, denominator: i64, to: i64) -> ?i64<minor>
 	requires from >= 0 && from <= 18 && to >= 0 && to <= 18
 = match numerator <= 0 || denominator <= 0 {
