@@ -60,14 +60,11 @@ calendar coverage when their month is run.
 | =declining_balance= | Double-declining book rate =2 / useful_life_months= on remaining carrying value; cap at salvage and release the remaining depreciable amount in the final month |
 | =none= | No depreciation entries |
 
-All calculations use =VentureMoney=. Straight-line and deferral splits use
-=venture_money_allocate_evenly()= and redistribute its residual minor units
-to the final installment, preserving the exact original total. There is no
-floating-point money, currency conversion or daily proration.
+All calculations use exact minor units, in the =vk_depreciation= kernel ([[file:kernels.org][Kernels]]). =schedule(cost, salvage, months, method)= gives every month's charge: straight line is the truncated even share of cost less salvage each month with every leftover minor unit on the last month; declining balance charges =2 / useful_life_months= of the carrying value (cost less what has been charged), half to even, never more than is left to charge, and the last month takes whatever is left. The charges always sum to cost less salvage and none is negative: =tallow verify= proves the per-month rules, and the contract on the whole schedule is checked on every call and by the fuzzer. An opening import resumes the same schedule part way through (=resume=: what is left of the basis over the months left, at the rate of the whole life), and deferral splits use its straight line. When the cost is held at fewer decimals than the salvage, the declining-balance charge is still rounded at the cost's own decimals. There is no floating-point money, currency conversion or daily proration.
 
 Book and tax conventions are independent. =book-convention= and
 =tax-convention= are =full_month= (the historical schedule) or
-=half_year= (first installment halved, residual on the last month).
+=half_year= (first installment halved, truncated, and the rest moved to the last month; =vk_depreciation.convene=).
 =tax-useful-life-months= and =tax-method= build a =tax_depreciation_entry=
 schedule at placement. That schedule does not post to the book GL until
 =assets run-tax-period=, which writes journals with =tax-book= set.
