@@ -193,6 +193,27 @@ Quote and invoice-line parts. =Parts= is ={ discount, net, tax, total }=.
 
 Shims: =venture_quote_rate_parts=, =venture_tax_code_levy=, =venture_invoice_line_get_amount=. What changed: a quantity whose thousandths do not fit in 64 bits, or that is not a number, is now refused with =VENTURE_ERROR_VALIDATION= instead of going through an undefined cast.
 
+*** vk_arbitrage
+Odds, and the figures an opportunity is judged by, as ratios (=f64=), with money in =i64<minor>=.
+
+- *Rounding to money.* =round_minor= rounds half to even on the double's exact fractional part, and returns =none= past 2^53. =scale= applies it to an amount times a ratio.
+- *Odds.* =american=, =fractional=, =implied_probability=, =overround=, =margin=, =is_surebet= and =no_vig=. Where odds meet money they are integers scaled by a million, and they round against the person: =scaled(odds, up)= rounds a payout down and a liability up.
+- *Opportunities.* =surebet= returns a =Surebet= sum (=Split { ... }=, or why not: =Inexact=, =NotOdds=, =TooLarge=, =Unsummable=). =back_lay= returns a =BackLay=. =effective_back_odds= and =effective_lay_odds= adjust odds for the venue.
+- *Time and return.* =expected_relists= returns =Relists=, =annualize= returns =Annual=, plus =roi= and =confidence=.
+
+Proved: =least= and =difference=; the double kernels are fuzzed.
+
+Shim: =src/arbitrage/venture-arbitrage-math.c=. What changed: =venture_arbitrage_roi= and a flip's ROI now divide at a common exponent instead of on raw minor units (=/kernels-trading/arbitrage/roi-exponent=, =flip-exponent=), and their currency checks are case-insensitive. The percent reader is =vk_percent_parse(text, 1000000, allow_negative, TRUE)=, which keeps the old reader's every edge.
+
+*** vk_fees
+The compute cores of the built-in fee models:
+
+- =share(amount, rate<ppm>)= takes a share, half to even.
+- =percent(...)= is the venue's cut, plus the fixed fee per unit times the units, plus the fixed fee per order. Each addition is made at the finer exponent. Then =min_fee= sets a floor. It returns a =Fee=: =Charged { fee, exponent }=, or the step that overflowed (=Cut=, =Units=, =Sum=).
+- =commission(amount, rate, selling)= charges only a positive selling amount.
+
+Shim: =src/arbitrage/venture-arbitrage-fees.c=. The registry, the JSON parameters and the currencies stay in C.
+
 ** Adding a kernel
 :PROPERTIES:
 :CUSTOM_ID: adding
