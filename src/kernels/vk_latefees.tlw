@@ -1,0 +1,211 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_latefees.tlw - the arithmetic of a late-fee schedule.
+ *
+ * A tier charges on days late: its first day, then every N days, at most
+ * `times` occurrences, never past day 365 and never inside the schedule's
+ * grace days (occurrences). A percent tier charges a share of a base in
+ * parts per million, rounded by the tier's rule (percent_of). Whatever a
+ * tier would charge is then cut to the room left under the tier's cap,
+ * the schedule's absolute cap and its percent-of-original cap
+ * (occurrence_amount).
+ *
+ * The C shim (src/latefees/venture-late-fee-service.c) reads the records,
+ * checks currencies and builds the occurrence keys; these functions see
+ * minor units of one currency, day counts and rates.
+ *
+ * This replaces the hand-written C, which rounded "up" toward zero for a
+ * negative base (the rule says away from zero).
+ */
+module vk_latefees;
+
+import vk_units;
+import vk_round as R;
+import vk_money as V;
+import tallow.math as M;
+
+/* the last day late a tier may charge on (LF_MAX_DAY) */
+let MAX_DAY = 365;
+
+/* the largest i64, as a literal so tallow verify reads it */
+let I64_MAX = 9223372036854775807;
+
+/* how a percent fee becomes whole minor units */
+type Rounding = HalfEven | Up | Down | Whole;
+
+/* ---- occurrences ---- */
+
+/* acc with `day` added when it is past the grace days */
+pure fn keep(acc: own [i64], day: i64, grace: i64) -> own [i64] = match day > grace {
+	true => {
+		acc.push(day);
+		acc
+	},
+	false => acc,
+};
+
+/* whether a tier stepping `every` days from `day` has another day by 365 */
+pure fn steps_on(day: i64, every: i64) -> bool
+	requires day >= 1 && day <= MAX_DAY && every >= 0 && every <= MAX_DAY
+	ensures result == (every > 0 && day + every <= MAX_DAY)
+= every > 0 && day <= MAX_DAY - every;
+
+/*
+ * The days of a tier from `day` on, the n-th occurrence being the one at
+ * `day` (counted from 0): stops at `times` occurrences (0 is no limit) or
+ * before a step would pass day 365. Days inside the grace are counted
+ * toward `times` but not charged.
+ */
+pure fn walk(day: i64, every: i64, times: i64, grace: i64, n: i64, acc: own [i64]) -> own [i64]
+	requires day >= 1 && day <= MAX_DAY && every >= 0 && every <= MAX_DAY && times >= 0 && n >= 0
+	decreases MAX_DAY - day
+= match times > 0 && n >= times {
+	true => acc,
+	false => match steps_on(day, every) {
+		true => walk(day + every, every, times, grace, n + 1, keep(acc, day, grace)),
+		false => keep(acc, day, grace),
+	},
+};
+
+/* the chargeable days late of one tier, ascending */
+pure fn occurrences(day: i64, every: i64, times: i64, grace: i64) -> own [i64]
+	requires day >= 1 && day <= MAX_DAY && every >= 0 && every <= MAX_DAY && times >= 0
+= walk(day, every, times, grace, 0, []);
+
+/* ---- a percent of a base ---- */
+
+/*
+ * amount * rate / 1,000,000 by the rule, for an amount at `exponent`:
+ * HalfEven to the nearest minor unit, ties to even; Up away from zero;
+ * Down toward zero; Whole to the nearest whole currency unit (half to
+ * even), written back in minor units. None when the result does not fit,
+ * or (Up and Down, which multiply first) when amount * rate does not.
+ */
+pure fn percent_of(amount: i64<minor>, exponent: i64, rate: i64<ppm>, rule: Rounding) -> ?i64<minor>
+	requires exponent >= 0 && exponent <= 12 && rate >= 0<ppm> && rate <= 1000000<ppm>
+= match rule {
+	HalfEven => R.mul_div(amount as i64, rate as i64, PPM_ONE, R.Mode.HalfEven) |> V.as_minor,
+	Whole => whole(amount, V.pow10(exponent), rate),
+	Up => truncated(amount, rate, R.Mode.Up),
+	Down => truncated(amount, rate, R.Mode.Down),
+};
+
+/* the nearest whole unit of `unit` minor units, half to even */
+pure fn whole(amount: i64<minor>, unit: i64, rate: i64<ppm>) -> ?i64<minor>
+	requires unit >= 1 && unit <= 1000000000000
+= match R.mul_div(amount as i64, rate as i64, PPM_ONE * unit, R.Mode.HalfEven) {
+	some units => M.checked_mul(units, unit) |> V.as_minor,
+	none => none,
+};
+
+/* amount * rate in 64 bits, then divided by a million by the rule */
+pure fn truncated(amount: i64<minor>, rate: i64<ppm>, mode: R.Mode) -> ?i64<minor>
+= match M.checked_mul(amount as i64, rate as i64) {
+	some product => R.div(product, PPM_ONE, mode) as i64<minor>,
+	none => none,
+};
+
+/* ---- caps ---- */
+
+/* the room under `limit` once `used` is spent, never negative; saturates
+ * instead of overflowing when `used` is very negative */
+pure fn room(limit: i64, used: i64) -> i64
+	ensures result >= 0
+= match used >= limit {
+	true => 0,
+	false => match used >= 0 {
+		true => limit - used,
+		false => match limit > I64_MAX + used {
+			true => I64_MAX,
+			false => limit - used,
+		},
+	},
+};
+
+/* a fee cut to the room under a limit */
+pure fn cut(fee: i64, limit: i64, used: i64) -> i64
+	ensures result <= fee && (result == fee || result >= 0)
+{
+	let left = room(limit, used);
+	return match fee > left {
+		true => left,
+		false => fee,
+	};
+}
+
+/* a fee cut to the room under an optional limit */
+pure fn under(fee: i64<minor>, limit: ?i64<minor>, used: i64<minor>) -> i64<minor> = match limit {
+	some l => cut(fee as i64, l as i64, used as i64) as i64<minor>,
+	none => fee,
+};
+
+/* a percent of the original invoice as a limit; none when there is no
+ * such limit or it does not fit */
+pure fn percent_limit(original: i64<minor>, rate: ?i64<ppm>) -> ?i64<minor> = match rate {
+	some r => V.multiply_ppm(original, r),
+	none => none,
+};
+
+/* a fee that a cap cut below zero charges nothing */
+pure fn at_least_zero(fee: i64<minor>) -> i64<minor>
+	ensures result >= 0<minor>
+= match fee < 0<minor> {
+	true => 0<minor>,
+	false => fee,
+};
+
+/*
+ * What an occurrence charges: its raw amount cut to the room left under
+ * the tier's cap (after what the tier has committed), the schedule's
+ * absolute cap and its percent-of-original cap (after what the schedule
+ * has committed), in that order. 0 is a capped occurrence. A limit the
+ * schedule does not set is none.
+ */
+pure fn occurrence_amount(raw: i64<minor>, cap: ?i64<minor>, tier_committed: i64<minor>, max_total: ?i64<minor>,
+	max_rate: ?i64<ppm>, original: i64<minor>, committed: i64<minor>) -> i64<minor>
+	ensures result >= 0<minor> && result <= raw || raw < 0<minor>
+= raw |> under(cap, tier_committed) |> under(max_total, committed) |> under(percent_limit(original, max_rate), committed)
+	|> at_least_zero;
+
+test "occurrences" {
+	let once = occurrences(10, 0, 0, 0);
+	assert(once.len() == 1 && once[0] == 10);
+	let every = occurrences(30, 30, 0, 0);
+	assert(every.len() == 12 && every[0] == 30 && every[11] == 360);
+	let thrice = occurrences(5, 10, 3, 0);
+	assert(thrice.len() == 3 && thrice[2] == 25);
+	/* the grace swallows the first two but they still count toward times */
+	let graced = occurrences(5, 10, 3, 15);
+	assert(graced.len() == 1 && graced[0] == 25);
+	let last = occurrences(365, 1, 0, 0);
+	assert(last.len() == 1 && last[0] == 365);
+	let wide = occurrences(1, 365, 0, 0);
+	assert(wide.len() == 1);
+}
+
+test "percent of" {
+	assert((percent_of(10050<minor>, 2, 15000<ppm>, Rounding.HalfEven) ?? 0<minor>) == 151<minor>);
+	assert((percent_of(10050<minor>, 2, 15000<ppm>, Rounding.Up) ?? 0<minor>) == 151<minor>);
+	assert((percent_of(10050<minor>, 2, 15000<ppm>, Rounding.Down) ?? 0<minor>) == 150<minor>);
+	assert((percent_of(10050<minor>, 2, 15000<ppm>, Rounding.Whole) ?? 0<minor>) == 200<minor>);
+	assert((percent_of(10000<minor>, 2, 15000<ppm>, Rounding.Whole) ?? 0<minor>) == 200<minor>);
+	assert((percent_of(5000<minor>, 2, 10000<ppm>, Rounding.Whole) ?? 9<minor>) == 0<minor>);
+	assert((percent_of(15000<minor>, 2, 10000<ppm>, Rounding.Whole) ?? 9<minor>) == 200<minor>);
+	/* up is away from zero on a negative base; the C truncated it */
+	assert((percent_of(-10050<minor>, 2, 15000<ppm>, Rounding.Up) ?? 0<minor>) == -151<minor>);
+	assert((percent_of(-10050<minor>, 2, 15000<ppm>, Rounding.Down) ?? 0<minor>) == -150<minor>);
+	assert(percent_of(M.I64_MAX as i64<minor>, 2, 15000<ppm>, Rounding.Up) == none);
+	assert((percent_of(M.I64_MAX as i64<minor>, 2, 1000000<ppm>, Rounding.HalfEven) ?? 0<minor>) == M.I64_MAX as i64<minor>);
+}
+
+test "caps" {
+	assert(occurrence_amount(500<minor>, none, 0<minor>, none, none, 10000<minor>, 0<minor>) == 500<minor>);
+	assert(occurrence_amount(500<minor>, some 700<minor>, 400<minor>, none, none, 10000<minor>, 0<minor>) == 300<minor>);
+	assert(occurrence_amount(500<minor>, some 300<minor>, 400<minor>, none, none, 10000<minor>, 0<minor>) == 0<minor>);
+	assert(occurrence_amount(500<minor>, none, 0<minor>, some 1000<minor>, none, 10000<minor>, 800<minor>) == 200<minor>);
+	/* 5% of 100.00 is 5.00, 4.50 of it committed */
+	assert(occurrence_amount(500<minor>, none, 0<minor>, none, some 50000<ppm>, 10000<minor>, 450<minor>) == 50<minor>);
+	assert(occurrence_amount(-5<minor>, none, 0<minor>, none, none, 10000<minor>, 0<minor>) == 0<minor>);
+	assert(room(I64_MAX, -1) == I64_MAX);
+	assert(room(5, 9) == 0);
+}
