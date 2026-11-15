@@ -1,0 +1,97 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_tax.tlw - which sales tax rule applies to a customer's address.
+ *
+ * A tax rule names a state and, optionally, a county and a city. It
+ * matches a customer whose address has that state, and the same county
+ * and city wherever the rule names them; a part the rule leaves open
+ * matches anything. Of the matching active rules the most specific wins
+ * (state 1, plus 1 for a county named, plus 1 for a city named); ties keep
+ * the earliest rule, so the choice is deterministic and visible in the
+ * list.
+ *
+ * This is the search in venture_sales_tax_service_resolve
+ * (src/tax/venture-sales-tax-service.c). C reads the rules, normalises
+ * every code (trimmed, upper case, empty as none) and resolves the chosen
+ * rule's jurisdiction window by date.
+ */
+module vk_tax;
+
+/*
+ * A rule as the search sees it. An open county or city is the empty
+ * string: C's normalised codes are never empty, so "" cannot be a real
+ * code. The state is compared as it is.
+ */
+struct Rule { active: bool, state: str, county: str, city: str }
+
+/* one part of a rule against the customer's: open, or the same code */
+pure fn part_matches(rule_part: str, customer_part: str) -> bool = rule_part.len() == 0 || rule_part == customer_part;
+
+/* how specific a matching rule is: the state, plus one for each of the
+ * county and the city it names */
+pure fn rank(county_named: bool, city_named: bool) -> i64
+	ensures result >= 1 && result <= 3
+= 1 + match county_named {
+	true => 1,
+	false => 0,
+} + match city_named {
+	true => 1,
+	false => 0,
+};
+
+/* whether a match of specificity `found` replaces the one chosen so far
+ * (of specificity `top`): the first match, or a strictly more specific
+ * one -- ties keep the earlier rule */
+pure fn replaces(found: i64, has_chosen: bool, top: i64) -> bool
+	ensures result == (!has_chosen || found > top)
+= !has_chosen || found > top;
+
+/* how specific a rule is for this address, or none when it does not
+ * apply (inactive, another state, another county or city) */
+pure fn specificity(rule: Rule, state: str, county: str, city: str) -> ?i64 =
+	match rule.active && rule.state == state && part_matches(rule.county, county) && part_matches(rule.city, city) {
+		true => rank(rule.county.len() > 0, rule.city.len() > 0),
+		false => none,
+	};
+
+/*
+ * The position of the rule that applies to the address, or none. A
+ * customer without a county or city passes "" for it, which only an open
+ * part matches -- as a NULL customer part matched only a rule that left
+ * it open.
+ */
+pure fn best(rules: [Rule], state: str, county: str, city: str) -> ?i64 = best_from(rules, state, county, city, 0, none, 0);
+
+pure fn best_from(rules: [Rule], state: str, county: str, city: str, i: i64, chosen: ?i64, top: i64) -> ?i64
+	requires i >= 0 && i <= rules.len()
+	decreases rules.len() - i
+= match i >= rules.len() {
+	true => chosen,
+	false => match specificity(rules[i], state, county, city) {
+		some s => match replaces(s, chosen != none, top) {
+			true => best_from(rules, state, county, city, i + 1, i, s),
+			false => best_from(rules, state, county, city, i + 1, chosen, top),
+		},
+		none => best_from(rules, state, county, city, i + 1, chosen, top),
+	},
+};
+
+/* ---- tests ---- */
+
+pure fn rule(active: bool, state: str, county: str, city: str) -> own Rule =
+	Rule { active, state = state.dup(), county = county.dup(), city = city.dup() };
+
+test "most specific wins" {
+	let rules = [rule(true, "CA", "", ""), rule(true, "CA", "LOS ANGELES", ""), rule(true, "CA", "LOS ANGELES", "PASADENA")];
+	assert((best(rules, "CA", "LOS ANGELES", "PASADENA") ?? -1) == 2);
+	assert((best(rules, "CA", "LOS ANGELES", "BURBANK") ?? -1) == 1);
+	assert((best(rules, "CA", "ORANGE", "IRVINE") ?? -1) == 0);
+	assert(best(rules, "NV", "", "") == none);
+}
+
+test "ties, inactive rules and missing parts" {
+	let rules = [rule(false, "CA", "X", ""), rule(true, "CA", "X", ""), rule(true, "CA", "X", "")];
+	assert((best(rules, "CA", "X", "Y") ?? -1) == 1);
+	assert((best([rule(true, "CA", "X", "")], "CA", "", "") ?? -1) == -1);
+	assert((best([rule(true, "CA", "", "")], "CA", "", "") ?? -1) == 0);
+}

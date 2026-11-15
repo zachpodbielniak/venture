@@ -49,7 +49,7 @@ either empty or equal. Comparison trims and upper-cases both sides and does
 nothing else; there is no geocoding, no abbreviation table and no fuzzy
 match. A customer whose city is =NEW YORK CITY= does not match a rule for
 =NEW YORK=. Among matching rules the one naming the most parts wins, so a
-state-wide rule and a city rule coexist; the earliest rule wins a tie.
+state-wide rule and a city rule coexist; the earliest rule wins a tie. That search is the =vk_tax= kernel ([[file:kernels.org][Kernels]]): C reads and normalises the codes (a part left open is passed as the empty string, which no normalised code can be) and looks up the chosen rule's jurisdiction window.
 
 The rule names a jurisdiction row; issuance looks up that row's code and
 applies the window in force on the issue date. No window on that date

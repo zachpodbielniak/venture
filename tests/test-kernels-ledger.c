@@ -407,6 +407,31 @@ test_kernels_ledger_budget_covers(void)
 	g_assert_false(vk_budget_covers(NULL, NULL, "2026"));
 }
 
+/* --- vk_tax ---------------------------------------------------------------- */
+
+/* The most specific active rule; ties keep the earliest; an open part
+ * ("") matches anything, a missing customer part only an open one. */
+static void
+test_kernels_ledger_tax_best(void)
+{
+	g_autoptr(GPtrArray) rules = g_ptr_array_new_with_free_func((GDestroyNotify)vk_tax_rule_free);
+	TlwOptI64 chosen;
+
+	g_ptr_array_add(rules, vk_tax_rule_new(TRUE, g_strdup("CA"), g_strdup(""), g_strdup("")));
+	g_ptr_array_add(rules, vk_tax_rule_new(FALSE, g_strdup("CA"), g_strdup("LA"), g_strdup("PASADENA")));
+	g_ptr_array_add(rules, vk_tax_rule_new(TRUE, g_strdup("CA"), g_strdup("LA"), g_strdup("")));
+	g_ptr_array_add(rules, vk_tax_rule_new(TRUE, g_strdup("CA"), g_strdup("LA"), g_strdup("")));
+
+	chosen = vk_tax_best(rules, "CA", "LA", "PASADENA");
+	g_assert_true(chosen.has);
+	g_assert_cmpint(chosen.val, ==, 2);
+	chosen = vk_tax_best(rules, "CA", "", "");
+	g_assert_true(chosen.has);
+	g_assert_cmpint(chosen.val, ==, 0);
+	chosen = vk_tax_best(rules, "NV", "LA", "");
+	g_assert_false(chosen.has);
+}
+
 gint
 main(
 	gint	 argc,
@@ -425,6 +450,7 @@ main(
 	g_test_add_func("/kernels-ledger/reconcile/score", test_kernels_ledger_reconcile_score);
 	g_test_add_func("/kernels-ledger/budget/period", test_kernels_ledger_budget_period);
 	g_test_add_func("/kernels-ledger/budget/covers", test_kernels_ledger_budget_covers);
+	g_test_add_func("/kernels-ledger/tax/best", test_kernels_ledger_tax_best);
 
 	return g_test_run();
 }

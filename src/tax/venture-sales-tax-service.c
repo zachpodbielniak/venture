@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
+
+#include <vk-kernels.h>
 #include <string.h>
 #include <json-glib/json-glib.h>
 
@@ -153,17 +155,14 @@ window_at(VentureDatabase *db, gint64 organization_id, const gchar *code, GDateT
 	return NULL;
 }
 
-/* One part of a rule matches when the rule leaves it open or names the
- * customer's code exactly. */
-static gboolean
-part_matches(const gchar *rule_part, const gchar *customer_part, guint *specificity)
+/* A rule's code of @field, normalised, as the kernel reads it: "" for
+ * none (a normalised code is never empty). */
+static gchar *
+rule_code(VentureEntity *rule, const gchar *field)
 {
-	if (rule_part == NULL)
-		return TRUE;
-	if (g_strcmp0(rule_part, customer_part) != 0)
-		return FALSE;
-	(*specificity)++;
-	return TRUE;
+	g_autofree gchar *raw = string_of(rule, field);
+	gchar *code = normalise(raw);
+	return code != NULL ? code : g_strdup("");
 }
 
 VentureEntity *
@@ -179,9 +178,10 @@ venture_sales_tax_service_resolve(VentureSalesTaxService *self, VentureEntity *c
 	g_autofree gchar *raw_county = NULL;
 	g_autofree gchar *raw_city = NULL;
 	g_autoptr(VentureEntity) named = NULL;
+	g_autoptr(GPtrArray) candidates = NULL;
 	g_autofree gchar *code = NULL;
 	VentureEntity *best = NULL;
-	guint best_specificity = 0;
+	TlwOptI64 chosen;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_SALES_TAX_SERVICE(self), NULL);
@@ -202,35 +202,25 @@ venture_sales_tax_service_resolve(VentureSalesTaxService *self, VentureEntity *c
 	rules = find_all(db, VENTURE_TYPE_TAX_RULE, venture_entity_get_organization_id(customer), NULL, NULL, error);
 	if (rules == NULL)
 		return NULL;
+	candidates = g_ptr_array_new_with_free_func((GDestroyNotify)vk_tax_rule_free);
 	for (i = 0; i < rules->len; i++)
 	{
 		VentureEntity *rule = g_ptr_array_index(rules, i);
-		g_autofree gchar *rule_state = normalise(string_of(rule, "state"));
-		g_autofree gchar *rule_county = normalise(string_of(rule, "county"));
-		g_autofree gchar *rule_city = normalise(string_of(rule, "city"));
 		gboolean active = FALSE;
-		guint specificity = 0;
 		/* A rule the operator switched off must stop levying. Charging tax
 		 * from an inactive rule is money taken from a customer and remitted
 		 * to a jurisdiction on the strength of a row nobody meant to use. */
 		g_object_get(rule, "active", &active, NULL);
-		if (!active)
-			continue;
-		if (g_strcmp0(rule_state, state) != 0)
-			continue;
-		specificity = 1;
-		if (!part_matches(rule_county, county, &specificity) ||
-			!part_matches(rule_city, city, &specificity))
-			continue;
-		/* Ties keep the earliest rule: deterministic and visible in the list. */
-		if (best == NULL || specificity > best_specificity)
-		{
-			best = rule;
-			best_specificity = specificity;
-		}
+		g_ptr_array_add(candidates, vk_tax_rule_new(active, rule_code(rule, "state"),
+			rule_code(rule, "county"), rule_code(rule, "city")));
 	}
-	if (best == NULL)
+	/* The most specific active rule for the address; ties keep the
+	 * earliest rule, deterministic and visible in the list
+	 * (vk_tax_best). */
+	chosen = vk_tax_best(candidates, state, county != NULL ? county : "", city != NULL ? city : "");
+	if (!chosen.has)
 		return NULL;
+	best = g_ptr_array_index(rules, (guint)chosen.val);
 	/* A rule left pointing at a removed window selects nothing. */
 	named = venture_database_get(db, VENTURE_TYPE_TAX_JURISDICTION, id_of(best, "jurisdiction-id"), error);
 	if (named == NULL)
