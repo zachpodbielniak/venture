@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include <string.h>
-#include <stdio.h>
+
+#include <vk-kernels.h>
 
 struct _VentureBudgetService
 {
@@ -80,37 +81,29 @@ venture_budget_check_write(VentureDatabase *database, VentureEntity *record,
 	return removal || !VENTURE_IS_BUDGET_LINE(record) || envelope_check(database, record, error);
 }
 
+/* The UTC range of a budget period; reading "YYYY" or "YYYY-MM" is
+ * vk_budget_period. */
 static VentureDateRange *
 period_range(const gchar *period, GError **error)
 {
-	gint year = 0, month = 0;
 	g_autoptr(GDateTime) start = NULL;
 	g_autoptr(GDateTime) end = NULL;
-	gsize i, length = period != NULL ? strlen(period) : 0;
-	gboolean valid = length == 4 || length == 7;
-	for (i = 0; valid && i < length; i++)
-		valid = i == 4 ? period[i] == '-' : g_ascii_isdigit(period[i]);
-	if (!valid || sscanf(period, "%d-%d", &year, &month) < 1 || year < 1 || year > 9998)
+	g_autoptr(VkBudgetPeriod) read = vk_budget_period(period != NULL ? period : "");
+	switch (read->tag)
 	{
+	case VK_BUDGET_PERIOD_YEAR:
+		start = g_date_time_new_utc((gint)read->u.year.year, 1, 1, 0, 0, 0);
+		end = g_date_time_new_utc((gint)read->u.year.year + 1, 1, 1, 0, 0, 0);
+		break;
+	case VK_BUDGET_PERIOD_MONTH:
+		start = g_date_time_new_utc((gint)read->u.month.year, (gint)read->u.month.month, 1, 0, 0, 0);
+		end = start != NULL ? g_date_time_add_months(start, 1) : NULL;
+		break;
+	case VK_BUDGET_PERIOD_INVALID:
+	default:
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 			"A budget period must be YYYY or YYYY-MM");
 		return NULL;
-	}
-	if (strchr(period, '-') == NULL)
-	{
-		start = g_date_time_new_utc(year, 1, 1, 0, 0, 0);
-		end = g_date_time_new_utc(year + 1, 1, 1, 0, 0, 0);
-	}
-	else
-	{
-		if (month < 1 || month > 12)
-		{
-			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-				"A budget period must be YYYY or YYYY-MM");
-			return NULL;
-		}
-		start = g_date_time_new_utc(year, month, 1, 0, 0, 0);
-		end = g_date_time_add_months(start, 1);
 	}
 	if (start == NULL || end == NULL)
 	{
@@ -120,17 +113,48 @@ period_range(const gchar *period, GError **error)
 	return venture_date_range_new(start, end);
 }
 
+/* Whether a line (its own period, else its budget's) covers @requested
+ * (vk_budget_covers). */
 static gboolean
 covers(const gchar *line_period, const gchar *budget_period, const gchar *requested)
 {
-	const gchar *effective = (line_period != NULL && line_period[0] != '\0') ? line_period : budget_period;
-	return effective != NULL && (g_str_equal(effective, requested) ||
-		(strlen(requested) == 7 && g_str_has_prefix(effective, requested)) ||
-		(strlen(effective) == 4 && g_str_has_prefix(requested, effective)));
+	return vk_budget_covers(line_period, budget_period, requested);
 }
 
-static gint64
-actual_for(VentureReportResult *balances, gint64 account_id, VentureAccountKind kind)
+/* The kernel's name for an account kind; an unknown kind reads as the
+ * debit-normal default the sign rule always gave it. */
+static VkLedgerKind
+ledger_kind(VentureAccountKind kind)
+{
+	switch (kind)
+	{
+	case VENTURE_ACCOUNT_KIND_ASSET:
+		return VK_LEDGER_KIND_ASSET;
+	case VENTURE_ACCOUNT_KIND_LIABILITY:
+		return VK_LEDGER_KIND_LIABILITY;
+	case VENTURE_ACCOUNT_KIND_EQUITY:
+		return VK_LEDGER_KIND_EQUITY;
+	case VENTURE_ACCOUNT_KIND_INCOME:
+		return VK_LEDGER_KIND_INCOME;
+	case VENTURE_ACCOUNT_KIND_EXPENSE:
+	default:
+		return VK_LEDGER_KIND_EXPENSE;
+	}
+}
+
+/*
+ * What @account_id did in @balances, on its normal side, as money in
+ * @currency: debits less credits for an asset or expense, credits less
+ * debits otherwise (vk_ledger_normal_balance, checked and at the two
+ * amounts' common exponent). Zero when the account has no row. It used
+ * to subtract the raw amounts unchecked -- a wrapped gint64 at the
+ * extremes, and minor units read at whatever exponent @currency has --
+ * and to relabel the result with @currency whatever currency the balances
+ * were in; another currency is now refused.
+ */
+static VentureMoney *
+actual_for(VentureReportResult *balances, gint64 account_id, VentureAccountKind kind,
+	const gchar *currency, GError **error)
 {
 	g_autofree gchar *wanted = g_strdup_printf("%" G_GINT64_FORMAT, account_id);
 	guint i;
@@ -141,21 +165,35 @@ actual_for(VentureReportResult *balances, gint64 account_id, VentureAccountKind 
 		const GValue *credits;
 		const VentureMoney *debit_money;
 		const VentureMoney *credit_money;
+		TlwOptI64 actual;
 		if (id == NULL || g_strcmp0(g_value_get_string(id), wanted) != 0)
 			continue;
 		debits = venture_report_result_get_cell(balances, i, "debits");
 		credits = venture_report_result_get_cell(balances, i, "credits");
 		if (debits == NULL || credits == NULL)
-			return 0;
+			break;
 		debit_money = g_value_get_boxed(debits);
 		credit_money = g_value_get_boxed(credits);
-		if (kind == VENTURE_ACCOUNT_KIND_INCOME)
-			return credit_money->amount - debit_money->amount;
-		if (kind == VENTURE_ACCOUNT_KIND_LIABILITY || kind == VENTURE_ACCOUNT_KIND_EQUITY)
-			return credit_money->amount - debit_money->amount;
-		return debit_money->amount - credit_money->amount;
+		if (g_ascii_strcasecmp(debit_money->currency, currency) != 0 ||
+			g_ascii_strcasecmp(credit_money->currency, currency) != 0)
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"The ledger's balances for account #%" G_GINT64_FORMAT " are in %s, not %s: "
+				"a budget compares one currency", account_id, debit_money->currency, currency);
+			return NULL;
+		}
+		actual = vk_ledger_normal_balance(ledger_kind(kind), debit_money->amount, (gint64)debit_money->exponent,
+			credit_money->amount, (gint64)credit_money->exponent);
+		if (!actual.has)
+		{
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Monetary subtraction overflows a 64-bit minor-unit amount");
+			return NULL;
+		}
+		return venture_money_new(actual.val, currency,
+			MAX(debit_money->exponent, credit_money->exponent));
 	}
-	return 0;
+	return venture_money_new_for_currency(0, currency);
 }
 
 static gint64
@@ -320,8 +358,10 @@ venture_budget_service_vs_actual(VentureBudgetService *self, gint64 organization
 				return NULL;
 			g_hash_table_insert(cached, g_strdup(scope), balances);
 		}
-		actual = venture_money_new_for_currency(actual_for(balances, account_id, kind),
-			planned != NULL ? planned->currency : book_currency);
+		actual = actual_for(balances, account_id, kind,
+			planned != NULL ? planned->currency : book_currency, error);
+		if (actual == NULL)
+			return NULL;
 		variance = venture_money_subtract(actual, planned, error);
 		if (variance == NULL)
 			return NULL;
@@ -397,18 +437,25 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 		VentureEntity *line = g_ptr_array_index(lines, i);
 		g_autoptr(VentureEntity) account = NULL;
 		g_autoptr(VentureMoney) planned = NULL;
+		g_autoptr(VentureMoney) actual = NULL;
+		g_autoptr(VentureMoney) part = NULL;
 		gint64 account_id = 0;
 		gint kind;
-		gint64 remaining;
 		g_object_get(line, "account-id", &account_id, "amount", &planned, NULL);
 		account = venture_database_get(self->database, VENTURE_TYPE_ACCOUNT, account_id, error);
 		if (account == NULL)
 			return NULL;
 		g_object_get(account, "kind", &kind, NULL);
-		remaining = planned->amount - actual_for(balances, account_id, kind);
+		/* What is left of the plan: checked and exponent-aware, where it
+		 * was a raw gint64 subtraction. */
+		actual = actual_for(balances, account_id, kind, planned->currency, error);
+		if (actual == NULL)
+			return NULL;
+		part = venture_money_subtract(planned, actual, error);
+		if (part == NULL)
+			return NULL;
 		if (kind == VENTURE_ACCOUNT_KIND_INCOME)
 		{
-			g_autoptr(VentureMoney) part = venture_money_new_for_currency(remaining, planned->currency);
 			g_autoptr(VentureMoney) next = venture_money_add(budget_in, part, error);
 			if (next == NULL)
 				return NULL;
@@ -417,7 +464,6 @@ venture_budget_service_cash_forecast(VentureBudgetService *self, gint64 organiza
 		}
 		else if (kind == VENTURE_ACCOUNT_KIND_EXPENSE)
 		{
-			g_autoptr(VentureMoney) part = venture_money_new_for_currency(remaining, planned->currency);
 			g_autoptr(VentureMoney) next = venture_money_add(budget_out, part, error);
 			if (next == NULL)
 				return NULL;

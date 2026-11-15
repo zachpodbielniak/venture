@@ -14,6 +14,8 @@
 
 #include "venture.h"
 
+#include <vk-kernels.h>
+
 #include <string.h>
 
 /*
@@ -1214,16 +1216,21 @@ venture_account_kind_is_debit_normal(VentureAccountKind kind)
 	/* Assets and expenses grow with debits. Liabilities, equity and
 	 * income grow with credits. This single fact is what lets the ledger
 	 * turn a signed amount into a correctly-sided entry without the
-	 * caller having to think in double-entry terms. */
+	 * caller having to think in double-entry terms. The rule itself is
+	 * vk_ledger_debit_normal; a kind outside the enumeration is not
+	 * debit-normal. */
 	switch (kind)
 	{
 	case VENTURE_ACCOUNT_KIND_ASSET:
-	case VENTURE_ACCOUNT_KIND_EXPENSE:
-		return TRUE;
-
+		return vk_ledger_debit_normal(VK_LEDGER_KIND_ASSET);
 	case VENTURE_ACCOUNT_KIND_LIABILITY:
+		return vk_ledger_debit_normal(VK_LEDGER_KIND_LIABILITY);
 	case VENTURE_ACCOUNT_KIND_EQUITY:
+		return vk_ledger_debit_normal(VK_LEDGER_KIND_EQUITY);
 	case VENTURE_ACCOUNT_KIND_INCOME:
+		return vk_ledger_debit_normal(VK_LEDGER_KIND_INCOME);
+	case VENTURE_ACCOUNT_KIND_EXPENSE:
+		return vk_ledger_debit_normal(VK_LEDGER_KIND_EXPENSE);
 	default:
 		return FALSE;
 	}

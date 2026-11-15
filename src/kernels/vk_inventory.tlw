@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_inventory.tlw - what a stock movement shows as its unit cost.
+ *
+ * A movement's transaction shows, for reading only, the average unit cost
+ * of what it moved: its whole cost over its quantity, rounded half to
+ * even once, in the cost's own currency and exponent. A movement whose
+ * cost is in several currencies has no one unit cost (C writes a note of
+ * each instead). The cost layers are what the books count either way.
+ *
+ * This is the arithmetic of movement_unit in
+ * src/goods/venture-inventory-service.c, which divided through
+ * venture_money_multiply_rational(cost, 1, quantity).
+ */
+module vk_inventory;
+
+import vk_units;
+import vk_round as R;
+
+/*
+ * cost / quantity, half to even (quantity in the movement's whole units,
+ * at least one). Never larger in magnitude than the cost, so it cannot
+ * overflow.
+ */
+pure fn unit_cost(cost: i64<minor>, quantity: i64) -> i64<minor>
+	requires quantity > 0
+	ensures (cost >= 0<minor> && result >= 0<minor> && result <= cost) || (cost < 0<minor> && result <= 0<minor> && result >= cost)
+= match quantity == 1 {
+	true => cost,
+	false => R.half_even(cost as i64, quantity) as i64<minor>,
+};
+
+test "unit cost" {
+	assert(unit_cost(1000<minor>, 1) == 1000<minor>);
+	assert(unit_cost(1000<minor>, 3) == 333<minor>);
+	assert(unit_cost(1000<minor>, 6) == 167<minor>);
+	assert(unit_cost(25<minor>, 10) == 2<minor>);
+	assert(unit_cost(35<minor>, 10) == 4<minor>);
+	assert(unit_cost(-35<minor>, 10) == -4<minor>);
+	assert(unit_cost(9223372036854775807<minor>, 2) == 4611686018427387904<minor>);
+}
