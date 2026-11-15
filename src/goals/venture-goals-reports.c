@@ -15,20 +15,9 @@
 
 #include "venture.h"
 
-#include <math.h>
 #include <string.h>
+#include <vk-kernels.h>
 #include "venture-savings-common.inc"
-
-/* A forecast further out than this is no forecast: a pace that would
- * take a century is "not at this pace", and a GDateTime cannot hold much
- * more anyway. */
-#define GOALS_FORECAST_MAX_DAYS (36525.0)
-
-/* A pace measured over less than this is no pace: a goal created a minute
- * ago with progress already recorded (the usual way one is entered) would
- * extend "half done in a minute" to "done in another minute" and forecast
- * today. A day is the smallest span a calendar-date forecast can mean. */
-#define GOALS_FORECAST_MIN_SECONDS (86400.0)
 
 /* Step ids are read in batches of this many, so an IN list stays well
  * under every backend's bound on bound parameters. */
@@ -408,54 +397,63 @@ goals_progress_row_compare(
 }
 
 /*
- * The straight-line forecast: the goal covered @fraction of its distance
- * between its creation and @as_of, so at that pace the rest takes
- * elapsed x (1 - fraction) / fraction longer. NULL -- no forecast -- when
- * there is no pace to extend (nothing covered, going backwards, or less
- * than GOALS_FORECAST_MIN_SECONDS to measure it over) or it lands past
- * GOALS_FORECAST_MAX_DAYS; @out_reason says which.
+ * The straight-line forecast (vk_progress.forecast): the goal covered
+ * part of its distance between its creation and @as_of, so at that pace
+ * the rest takes elapsed x left / covered longer. The kernel reads @start,
+ * @current and @target exactly as integers and works in whole
+ * microseconds; this turns its answer into a date or the reason there is
+ * none. NULL -- no forecast -- when there is no pace to extend (nothing
+ * covered, going backwards, or less than a day to measure it over) or it
+ * lands more than a century (36525 days) out; @out_reason says which.
  */
 static GDateTime *
 goals_progress_forecast(
 	GDateTime	 *created,
 	GDateTime	 *as_of,
-	gdouble		  fraction,
+	gdouble		  start,
+	gdouble		  current,
+	gdouble		  target,
 	const gchar	**out_reason
 ){
-	gdouble elapsed;
-	gdouble rest;
+	g_autoptr(VkProgressForecast) forecast = NULL;
+	TlwOptI64 elapsed;
 
 	*out_reason = NULL;
 
-	if ((NULL == created) || (fraction <= 0.0))
+	/* No creation date is no pace: the kernel reads it as NoProgress. */
+	elapsed.has = (NULL != created);
+	elapsed.val = (NULL != created) ? g_date_time_difference(as_of, created) : 0;
+
+	forecast = vk_progress_forecast(elapsed, start, current, target);
+
+	switch (forecast->tag)
 	{
+	case VK_PROGRESS_FORECAST_DUE:
+	{
+		GDateTime *due;
+
+		/* NULL past the end of the calendar GLib can hold. */
+		due = g_date_time_add(as_of, (GTimeSpan)forecast->u.due.after);
+		if (NULL == due)
+			*out_reason = "more than a century away at this pace";
+		return due;
+	}
+	case VK_PROGRESS_FORECAST_NO_PROGRESS:
 		*out_reason = "no progress yet to forecast from";
-		return NULL;
-	}
-
-	elapsed = (gdouble)g_date_time_difference(as_of, created) / (gdouble)G_TIME_SPAN_SECOND;
-
-	if (elapsed <= 0.0)
-	{
+		break;
+	case VK_PROGRESS_FORECAST_BEFORE_START:
 		*out_reason = "as_of is before the goal was set";
-		return NULL;
-	}
-
-	if (elapsed < GOALS_FORECAST_MIN_SECONDS)
-	{
+		break;
+	case VK_PROGRESS_FORECAST_TOO_SOON:
 		*out_reason = "too soon to forecast";
-		return NULL;
-	}
-
-	rest = elapsed * (1.0 - fraction) / fraction;
-
-	if (!isfinite(rest) || (rest / 86400.0 > GOALS_FORECAST_MAX_DAYS))
-	{
+		break;
+	case VK_PROGRESS_FORECAST_TOO_FAR:
+	default:
 		*out_reason = "more than a century away at this pace";
-		return NULL;
+		break;
 	}
 
-	return g_date_time_add_seconds(as_of, rest);
+	return NULL;
 }
 
 /* Writes one goal. */
@@ -559,7 +557,7 @@ goals_progress_write(
 
 		forecast = goals_progress_forecast(
 			venture_entity_get_created_at(VENTURE_ENTITY(row->goal)), as_of,
-			fraction, &reason);
+			start, current, target, &reason);
 
 		if (NULL == forecast)
 			goals_report_append(note, reason);

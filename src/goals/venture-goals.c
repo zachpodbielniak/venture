@@ -18,6 +18,7 @@
 #include "venture.h"
 
 #include <string.h>
+#include <vk-kernels.h>
 #include "venture-savings-common.inc"
 
 #define VENTURE_GOALS_STATE_KEY "venture-goals-installed"
@@ -26,23 +27,15 @@
  * Shared
  * ========================================================================== */
 
+/* The arithmetic is vk_progress.fraction (src/kernels/vk_progress.tlw),
+ * including a goal with no distance reading as 0. */
 gdouble
 venture_goals_fraction(
 	gdouble	start,
 	gdouble	current,
 	gdouble	target
 ){
-	gdouble distance;
-
-	distance = target - start;
-
-	/* The validator refuses a goal with no distance; a row written
-	 * behind its back reads as no progress rather than a division by
-	 * zero. */
-	if (0.0 == distance)
-		return 0.0;
-
-	return (current - start) / distance;
+	return vk_progress_fraction(start, current, target);
 }
 
 /* An integer property's value on @entity, 0 on a missing @entity. */
