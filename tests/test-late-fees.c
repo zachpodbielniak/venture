@@ -1463,6 +1463,39 @@ test_stage_approve_writes_nothing(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(balance(f, f->invoice), ==, 100000);
 }
 
+/* A percent is read by the vk_percent kernel with the late-fee limits, and
+ * every way it can be wrong keeps the message it had: a sign (either one)
+ * is not decimal text, more than four places and more than 100 are named. */
+static void
+test_percent_text(Fixture *f, gconstpointer unused)
+{
+	static const struct { const gchar *text; const gchar *message; } cases[] = {
+		{ "+5", "decimal text" },
+		{ "-1", "decimal text" },
+		{ "", "decimal text" },
+		{ "1.5x", "decimal text" },
+		{ ".", "decimal text" },
+		{ "1.23456", "four decimal places" },
+		{ "101", "cannot exceed 100" },
+		{ "100.0001", "cannot exceed 100" },
+	};
+	guint i;
+	(void)unused;
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(VentureEntity) row = record(f, "late_fee_schedule");
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *tiers = g_strdup_printf("[{\"day\":15,\"type\":\"percent_open\",\"percent\":\"%s\"}]", cases[i].text);
+		g_object_set(row, "name", "Bad", "tiers", tiers, NULL);
+		g_assert_false(venture_database_save(f->db, row, NULL, &error));
+		g_assert_nonnull(error);
+		g_assert_nonnull(strstr(error->message, cases[i].message));
+	}
+	/* What it accepts: a trailing %, spaces, a bare fraction, the limit. */
+	schedule(f, "Ok 1", "[{\"day\":15,\"type\":\"percent_open\",\"percent\":\" 7.5% \"}]", 0, "100", NULL);
+	schedule(f, "Ok 2", "[{\"day\":15,\"type\":\"percent_open\",\"percent\":\".125\"}]", 0, "5.", NULL);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1494,6 +1527,7 @@ main(int argc, char **argv)
 	ADD("/late-fees/tier-removed", test_tier_removed);
 	ADD("/late-fees/post-rule-approve-and-waive", test_post_rule_approve_and_waive);
 	ADD("/late-fees/stage-approve-writes-nothing", test_stage_approve_writes_nothing);
+	ADD("/late-fees/percent-text", test_percent_text);
 #undef ADD
 	return g_test_run();
 }

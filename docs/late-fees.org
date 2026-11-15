@@ -3,8 +3,8 @@
 #+authors: Ben Doty
 #+categories: projects docs
 #+created: [2026-10-19]
-#+updated: [2026-10-19]
-#+version: 0.6.0
+#+updated: [2026-11-15]
+#+version: 0.6.1
 
 * Late fees
 
@@ -55,7 +55,7 @@ invoice.
 | =type= | =flat= (=amount=), =percent_open= (of the open balance, fees excluded), =percent_original= (of the original invoice), =markup= (a percent added to everything outstanding, fees included, so it compounds) |
 | =percent= | Decimal *text* ("1.5", at most four places) or a JSON integer; a JSON fraction is refused, never read through a double |
 | =amount=, =cap= | Money with its currency, "25.00 USD"; =cap= is the most this tier charges on one invoice |
-| =round= | =half_even= (default), =up=, =down= or =whole= (whole currency units, half to even) |
+| =round= | =half_even= (default), =up= (away from zero), =down= (toward zero) or =whole= (whole currency units, half to even) |
 | =conditions= | All must hold: =balance_above=, =balance_below= (money), =customer_tags= (any of the customer's comma-separated tags; =customer_groups= is the same), =invoice_types=, =product_ids= (a service line on the invoice), =currency=, =min_prior_late= (other invoices of the customer due earlier and paid late or still overdue), =skip_if_promise= (a reminder pause, or a held, disputed or promised collection case) |
 
 A fee is computed in integer minor units, once, by the tier's rule, then cut
@@ -63,6 +63,8 @@ by the room left under the tier cap, the schedule's =max_total= and its
 =max_percent= of the original invoice. A fee a cap reduces to nothing is
 recorded =capped=. A flat amount or a cap in another currency is not charged:
 cross-currency is refused, never converted.
+
+The arithmetic is the Tallow kernel =vk_latefees= ([[file:kernels.org][Kernels]]): a tier's days (from =day=, every =every= days, at most =times=, never past 365, the grace days counted toward =times= but not charged), a percent of a base by the tier's rule, and the three caps in order. A percent is read by =vk_percent= (0 to 100, at most four places, an optional trailing =%=; a sign is refused) and calendar days by =vk_dates=. The service keeps what only it can check: currencies, the records and the keys. A tier cap is compared with a fee only in the fee's currency; a cap in another currency charges nothing rather than being compared raw.
 
 ** Identity and replays
 
@@ -212,6 +214,6 @@ skip_notice, bulk approve and skip, waive with reason, note, credit and audit
 trail, recurring and markup tiers, caps cut mid-schedule (tier, absolute,
 percent of original), every pause scope, condition combinations, a schedule
 change mid-invoice, the preview timeline with the issue's example schedule,
-rounding rules, currency refusal, settled and exempt invoices, the
+rounding rules, the percent text messages (=/late-fees/percent-text=), currency refusal, settled and exempt invoices, the
 statement, timelines and report, generic-writer and removal refusals, and the
 stageable actions. =test-auth= pins the pages' and routes' guards.

@@ -169,6 +169,25 @@ static void test_cadence(Fixture *f, gconstpointer unused)
 	g_object_get(g_ptr_array_index(events, 0), "delivery-status", &body, NULL);
 	g_assert_cmpstr(body, ==, "sent");
 }
+/* Offsets are calendar days in UTC, whatever zone the sweep's as-of carries.
+ * The day was read in the as-of's own zone while the cutoff and the due date
+ * were UTC: at 01:00 on 7 January in +09:00 (16:00 UTC on the 6th) the -3
+ * step went out a day early, and at 22:00 on 6 January in -05:00 (03:00 UTC
+ * on the 7th) it waited a day. */
+static void test_utc_days(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GTimeZone) east = g_time_zone_new_identifier("+09:00");
+	g_autoptr(GTimeZone) west = g_time_zone_new_identifier("-05:00");
+	g_autoptr(GDateTime) early = g_date_time_new(east, 2026, 1, 7, 1, 0, 0);
+	g_autoptr(GDateTime) late = g_date_time_new(west, 2026, 1, 6, 22, 0, 0);
+	g_autoptr(GError) error = NULL;
+	VentureDunningService *service = venture_dunning_service_get(f->db);
+	(void)unused;
+	g_assert_cmpint(venture_dunning_service_sweep(service, f->org, early, 100, NULL, &error), ==, 0);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_dunning_service_sweep(service, f->org, late, 100, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+}
 /* Payment after the first send must stop later emails and escalation. */
 static void test_settlement(Fixture *f, gconstpointer unused)
 {
@@ -1593,6 +1612,7 @@ int main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/dunning/policy", Fixture, NULL, setup, test_policy, teardown);
 	g_test_add("/dunning/cadence", Fixture, NULL, setup, test_cadence, teardown);
+	g_test_add("/dunning/utc-days", Fixture, NULL, setup, test_utc_days, teardown);
 	g_test_add("/dunning/settlement", Fixture, NULL, setup, test_settlement, teardown);
 	g_test_add("/dunning/optout", Fixture, NULL, setup, test_optout, teardown);
 	g_test_add("/dunning/escalation", Fixture, NULL, setup, test_escalation, teardown);

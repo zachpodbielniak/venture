@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include "latefees/venture-late-fee-private.h"
+#include <vk-kernels.h>
 #include <string.h>
 
 /*
@@ -111,26 +112,34 @@ enabled(GError **error)
 	return TRUE;
 }
 
+/* The day number (vk_dates) of @at's calendar day in UTC: offsets are
+ * calendar days in UTC, whatever zone a caller's timestamp carries. */
+static gint64
+day_number(GDateTime *at)
+{
+	g_autoptr(GDateTime) utc = g_date_time_to_utc(at);
+	return vk_dates_julian(g_date_time_get_year(utc), g_date_time_get_month(utc), g_date_time_get_day_of_month(utc));
+}
+
 /* Calendar days from @due to @day, so an offset of -3 is eligible from the
  * third calendar day before the due date and never earlier in that day. */
 static gint
 calendar_days(GDateTime *day, GDateTime *due)
 {
-	GDate a, b;
-	g_date_clear(&a, 1);
-	g_date_clear(&b, 1);
-	g_date_set_dmy(&a, (GDateDay)g_date_time_get_day_of_month(day), (GDateMonth)g_date_time_get_month(day), (GDateYear)g_date_time_get_year(day));
-	g_date_set_dmy(&b, (GDateDay)g_date_time_get_day_of_month(due), (GDateMonth)g_date_time_get_month(due), (GDateYear)g_date_time_get_year(due));
-	return g_date_days_between(&b, &a);
+	return (gint)vk_dates_calendar_days(day_number(due), day_number(day));
 }
 
-/* Midnight UTC of @base's calendar day plus @days: the day a step falls due. */
+/* Midnight UTC of @base's UTC calendar day plus @days: the day a step falls
+ * due. The day is read in UTC like calendar_days reads it, so the midnight
+ * built here is the start of the day that function counts from. NULL past
+ * the end of the calendar. */
 static GDateTime *
 day_after(GDateTime *base, gint64 days)
 {
-	g_autoptr(GDateTime) midnight = g_date_time_new_utc(g_date_time_get_year(base), g_date_time_get_month(base),
-		g_date_time_get_day_of_month(base), 0, 0, 0);
-	return g_date_time_add_days(midnight, (gint)days);
+	TlwOptI64 j = vk_dates_day_after(day_number(base), days);
+	if (!j.has)
+		return NULL;
+	return g_date_time_new_utc((gint)vk_dates_year_of(j.val), (gint)vk_dates_month_of(j.val), (gint)vk_dates_day_of(j.val), 0, 0, 0);
 }
 
 static gboolean
@@ -702,43 +711,62 @@ load_history(VentureDunningService *self, Dossier *d, GError **error)
 	return TRUE;
 }
 
+/* The policy's step offsets, in order, as the kernels take them. */
+static GArray *
+step_offsets(Dossier *d)
+{
+	GArray *offsets = g_array_new(FALSE, FALSE, sizeof(gint64));
+	guint i;
+	for (i = 0; d->steps != NULL && i < d->steps->len; i++)
+		g_array_append_val(offsets, g_array_index(d->steps, Step, i).offset);
+	return offsets;
+}
+
+/* The adoption day when the newest decision was a catch-up, else none. */
+static TlwOptI64
+catch_up_day(Dossier *d)
+{
+	TlwOptI64 day;
+	day.has = d->catch_up;
+	day.val = d->catch_up ? (gint64)d->adoption : 0;
+	return day;
+}
+
 /* The day, counted from the due date, from which step @index may act. After
  * a catch-up reminder the next step keeps the policy's spacing counted from
  * the adoption day, or catching up would be an email today and an escalation
- * tomorrow. */
+ * tomorrow (vk_dunning_eligible_day). */
 static gint64
 eligible_day(Dossier *d, guint index)
 {
-	gint64 offset = g_array_index(d->steps, Step, index).offset;
-	if (d->catch_up)
-		return MAX(offset, (gint64)d->adoption + (offset - d->top_offset));
-	return offset;
+	return vk_dunning_eligible_day(g_array_index(d->steps, Step, index).offset, d->top_offset, catch_up_day(d));
 }
 
 /* Every step at or below the highest recorded offset is done, whatever its
  * own row says: when the newest step failed and its transaction rolled back,
- * the older steps it superseded must not come due again behind it. */
+ * the older steps it superseded must not come due again behind it
+ * (vk_dunning_next_step). -1 when every step is done. */
 static gint
 next_step_index(Dossier *d)
 {
-	guint i;
-	for (i = 0; d->steps != NULL && i < d->steps->len; i++)
-		if (!d->recorded || g_array_index(d->steps, Step, i).offset > d->top_offset)
-			return (gint)i;
-	return -1;
+	g_autoptr(GArray) offsets = step_offsets(d);
+	TlwOptI64 next = vk_dunning_next_step(offsets, d->recorded, d->top_offset);
+	return next.has ? (gint)next.val : -1;
 }
 
+/* The indexes of the steps due today: from the next one, while each is
+ * eligible (vk_dunning_pending). */
 static GArray *
 pending_steps(Dossier *d)
 {
 	GArray *pending = g_array_new(FALSE, FALSE, sizeof(guint));
-	gint first = next_step_index(d);
+	g_autoptr(GArray) offsets = step_offsets(d);
+	g_autoptr(GArray) due = vk_dunning_pending(offsets, d->recorded, d->top_offset, catch_up_day(d), d->days);
 	guint i;
-	for (i = first < 0 ? d->steps->len : (guint)first; i < d->steps->len; i++)
+	for (i = 0; i < due->len; i++)
 	{
-		if (eligible_day(d, i) > d->days)
-			break;
-		g_array_append_val(pending, i);
+		guint index = (guint)g_array_index(due, gint64, i);
+		g_array_append_val(pending, index);
 	}
 	return pending;
 }

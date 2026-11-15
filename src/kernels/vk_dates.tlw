@@ -1,0 +1,279 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_dates.tlw - calendar arithmetic on whole days.
+ *
+ * A date is an `i64<day>`: its Julian day number in the proleptic
+ * Gregorian calendar, numbered like GLib's g_date_get_julian (0001-01-01
+ * is day 1, 9999-12-31 is day 3652059, the range GDate and GDateTime
+ * cover). The C shim reads the year, month and day of a GDateTime in the
+ * zone its caller decides (the record's own zone, or UTC where the area
+ * documents UTC), calls a kernel here, and turns a day number back into a
+ * GDateTime the same way. Time of day and zones never reach a kernel.
+ *
+ * This replaces three copies of a GDate-based day difference (late fees,
+ * dunning) and the day/month/year steps of recurring schedules.
+ *
+ * The conversion between a date and its day number is Howard Hinnant's
+ * days_from_civil / civil_from_days: integer only, no tables, no loops.
+ * Restricted to years 1..9999 every intermediate value is non-negative,
+ * so plain truncating division is floor division.
+ */
+module vk_dates;
+
+import vk_units;
+
+/* the first and last day numbers a GDate can hold */
+let FIRST_DAY = 1;
+let LAST_DAY = 3652059;
+
+/* the first and last years a GDateTime can hold */
+let FIRST_YEAR = 1;
+let LAST_YEAR = 9999;
+
+/* day numbers count from 0000-12-31; Hinnant's from 0000-03-01, 305 days earlier */
+let SHIFT = 305;
+
+/* the days in 400 Gregorian years: the calendar repeats with this period */
+let ERA_DAYS = 146097;
+
+/* the largest cycle index a recurring schedule may reach (G_MAXINT / 7) */
+let MAX_INDEX = 306783378;
+
+/* ---- the calendar ---- */
+
+/* whether a year has a 29 February */
+pure fn leap(y: i64) -> bool = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+
+/* the number of days in month m of year y */
+pure fn month_days(y: i64, m: i64) -> i64
+	requires m >= 1 && m <= 12
+	ensures result >= 28 && result <= 31
+= match m {
+	2 => match leap(y) {
+		true => 29,
+		false => 28,
+	},
+	4 => 30,
+	6 => 30,
+	9 => 30,
+	11 => 30,
+	_ => 31,
+};
+
+/* whether y-m-d names a day GDate can hold */
+pure fn valid(y: i64, m: i64, d: i64) -> bool
+= y >= FIRST_YEAR && y <= LAST_YEAR && m >= 1 && m <= 12 && d >= 1 && d <= month_days(y, m);
+
+/* whether a day number is one GDate can hold */
+pure fn in_range(j: i64) -> bool = j >= FIRST_DAY && j <= LAST_DAY;
+
+/* ---- date to day number ---- */
+
+/* the year counted from March (January and February belong to the year before) */
+pure fn march_year(y: i64, m: i64) -> i64
+	requires y >= 1 && y <= 9999 && m >= 1 && m <= 12
+	ensures result >= 0 && result <= 9999
+= match m <= 2 {
+	true => y - 1,
+	false => y,
+};
+
+/* the day of a year that starts on 1 March, 0-based */
+pure fn march_day(m: i64, d: i64) -> i64
+	requires m >= 1 && m <= 12 && d >= 1 && d <= 31
+	ensures result >= 0 && result <= 396
+= (153 * (match m > 2 { true => m - 3, false => m + 9 }) + 2) / 5 + d - 1;
+
+/* days from 0000-03-01 to the start of March-year ym */
+pure fn year_start(ym: i64) -> i64
+	requires ym >= 0 && ym <= 9999
+	ensures result >= 0 && result <= 3652425
+= ym * 365 + ym / 4 - ym / 100 + ym / 400;
+
+/* the day number of y-m-d */
+pure fn julian(y: i64, m: i64, d: i64) -> i64<day>
+	requires y >= 1 && y <= 9999 && m >= 1 && m <= 12 && d >= 1 && d <= 31
+	ensures result >= 1<day> && result <= 3652425<day>
+= (year_start(march_year(y, m)) + march_day(m, d) - SHIFT) as i64<day>;
+
+/* ---- day number to date ---- */
+
+/* days since 0000-03-01 */
+pure fn since_origin(j: i64<day>) -> i64
+	requires j >= 1<day> && j <= 3652059<day>
+	ensures result >= 306 && result <= 3652364
+= j as i64 + SHIFT;
+
+/* the year (0..399) within its 400-year era of the era's day `doe` */
+pure fn era_year(doe: i64) -> i64
+	requires doe >= 0 && doe < ERA_DAYS
+	ensures result >= 0 && result <= 399
+= (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+
+/* the 0-based day of its March-year of the era's day `doe` */
+pure fn year_day(doe: i64) -> i64
+	requires doe >= 0 && doe < ERA_DAYS
+	ensures result >= 0 && result <= 365
+{
+	let yoe = era_year(doe);
+	return doe - (365 * yoe + yoe / 4 - yoe / 100);
+}
+
+/* the month (March = 0) of a 0-based day of a March-year */
+pure fn march_month(doy: i64) -> i64
+	requires doy >= 0 && doy <= 365
+	ensures result >= 0 && result <= 11
+= (5 * doy + 2) / 153;
+
+/* month 1..12 from a March-based month 0..11 */
+pure fn civil_month(mp: i64) -> i64
+	requires mp >= 0 && mp <= 11
+	ensures result >= 1 && result <= 12
+= match mp < 10 {
+	true => mp + 3,
+	false => mp - 9,
+};
+
+/* the year of day number j: the March-year, plus one in January and February */
+pure fn year_of(j: i64<day>) -> i64
+	requires j >= 1<day> && j <= 3652059<day>
+	ensures result >= 1 && result <= 9999
+{
+	let z = since_origin(j);
+	let doe = z % ERA_DAYS;
+	return z / ERA_DAYS * 400 + era_year(doe) + match march_month(year_day(doe)) >= 10 {
+		true => 1,
+		false => 0,
+	};
+}
+
+/* the month (1..12) of day number j */
+pure fn month_of(j: i64<day>) -> i64
+	requires j >= 1<day> && j <= 3652059<day>
+	ensures result >= 1 && result <= 12
+= civil_month(march_month(year_day(since_origin(j) % ERA_DAYS)));
+
+/* the day of the month of day number j */
+pure fn day_of(j: i64<day>) -> i64
+	requires j >= 1<day> && j <= 3652059<day>
+	ensures result >= 1 && result <= 31
+{
+	let doy = year_day(since_origin(j) % ERA_DAYS);
+	return doy - (153 * march_month(doy) + 2) / 5 + 1;
+}
+
+/* ---- arithmetic ---- */
+
+/* calendar days from `from` to `to`: positive when `to` is later */
+pure fn calendar_days(from: i64<day>, to: i64<day>) -> i64<day>
+	requires from >= 1<day> && from <= 3652059<day> && to >= 1<day> && to <= 3652059<day>
+	ensures result == to - from
+= to - from;
+
+/* the day `days` after `base` (before it when negative); none past either
+ * end of the calendar */
+pure fn day_after(base: i64<day>, days: i64<day>) -> ?i64<day>
+	requires base >= 1<day> && base <= 3652059<day> && days >= -4000000000000<day> && days <= 4000000000000<day>
+= match in_range((base + days) as i64) {
+	true => base + days,
+	false => none,
+};
+
+/* a day of the month, held at the last day of a shorter month */
+pure fn clamp_day(y: i64, m: i64, d: i64) -> i64
+	requires m >= 1 && m <= 12 && d >= 1
+	ensures result >= 1 && result <= d && result <= 31
+= match d > month_days(y, m) {
+	true => month_days(y, m),
+	false => d,
+};
+
+/*
+ * The same day of the month `months` later (earlier when negative), held
+ * at the end of a shorter month: 31 January plus one month is 28 or 29
+ * February, as g_date_time_add_months does. None past either end of the
+ * calendar.
+ */
+pure fn add_months(base: i64<day>, months: i64<month>) -> ?i64<day>
+	requires base >= 1<day> && base <= 3652059<day> && months >= -4000000000<month> && months <= 4000000000<month>
+= shift_months(year_of(base), month_of(base), day_of(base), months as i64);
+
+/* y-m-d moved by a count of months: the month index is y * 12 + m - 1 */
+pure fn shift_months(y: i64, m: i64, d: i64, months: i64) -> ?i64<day>
+	requires y >= 1 && y <= 9999 && m >= 1 && m <= 12 && d >= 1 && d <= 31 && months >= -4000000000 && months <= 4000000000
+{
+	let index = y * 12 + m - 1 + months;
+	let ny = index / 12;
+	let nm = index % 12 + 1;
+	return match index >= 12 && ny <= LAST_YEAR {
+		true => julian(ny, nm, clamp_day(ny, nm, d)),
+		false => none,
+	};
+}
+
+/* how a recurring schedule steps from one cycle to the next */
+type Frequency = Daily | Weekly | Monthly | Yearly;
+
+/*
+ * The day of cycle `index` of a schedule that starts on `start`: the
+ * start plus index days, weeks, months (held at a shorter month's end) or
+ * years (29 February held at the 28th). None past the end of the
+ * calendar.
+ */
+pure fn cycle_step(start: i64<day>, frequency: Frequency, index: i64) -> ?i64<day>
+	requires start >= 1<day> && start <= 3652059<day> && index >= 0 && index <= MAX_INDEX
+= match frequency {
+	Daily => day_after(start, index as i64<day>),
+	Weekly => day_after(start, (7 * index) as i64<day>),
+	Monthly => add_months(start, index as i64<month>),
+	Yearly => add_months(start, (12 * index) as i64<month>),
+};
+
+/* a day number written back as y-m-d, for tests: y * 10000 + m * 100 + d */
+pure fn ymd(j: i64<day>) -> i64
+	requires j >= 1<day> && j <= 3652059<day>
+= year_of(j) * 10000 + month_of(j) * 100 + day_of(j);
+
+test "day numbers match GDate" {
+	assert(julian(1, 1, 1) == 1<day>);
+	assert(julian(9999, 12, 31) == 3652059<day>);
+	assert(julian(1970, 1, 1) == 719163<day>);
+	assert(julian(2000, 2, 29) == 730179<day>);
+	assert(julian(2026, 11, 15) == 739935<day>);
+	assert(ymd(1<day>) == 10101);
+	assert(ymd(3652059<day>) == 99991231);
+	assert(ymd(730179<day>) == 20000229);
+	assert(ymd(julian(2024, 3, 1)) == 20240301);
+	assert(ymd(julian(1900, 2, 28) + 1<day>) == 19000301);
+}
+
+test "differences and steps" {
+	assert(calendar_days(julian(2026, 1, 31), julian(2026, 3, 1)) == 29<day>);
+	assert(calendar_days(julian(2024, 1, 31), julian(2024, 3, 1)) == 30<day>);
+	assert(calendar_days(julian(2026, 3, 1), julian(2026, 1, 31)) == -29<day>);
+	assert((day_after(julian(2026, 12, 31), 1<day>) ?? 0<day>) == julian(2027, 1, 1));
+	assert(day_after(3652059<day>, 1<day>) == none);
+	assert(day_after(1<day>, -1<day>) == none);
+}
+
+test "months clamp to the month end" {
+	assert(ymd(add_months(julian(2026, 1, 31), 1<month>) ?? 1<day>) == 20260228);
+	assert(ymd(add_months(julian(2024, 1, 31), 1<month>) ?? 1<day>) == 20240229);
+	assert(ymd(add_months(julian(2026, 3, 31), -1<month>) ?? 1<day>) == 20260228);
+	assert(ymd(add_months(julian(2026, 11, 15), 14<month>) ?? 1<day>) == 20280115);
+	assert(ymd(add_months(julian(2024, 2, 29), 12<month>) ?? 1<day>) == 20250228);
+	assert(add_months(julian(9999, 12, 1), 1<month>) == none);
+	assert(add_months(julian(1, 1, 1), -1<month>) == none);
+}
+
+test "cycles" {
+	let start = julian(2026, 1, 31);
+	assert(ymd(cycle_step(start, Frequency.Daily, 1) ?? 1<day>) == 20260201);
+	assert(ymd(cycle_step(start, Frequency.Weekly, 2) ?? 1<day>) == 20260214);
+	assert(ymd(cycle_step(start, Frequency.Monthly, 1) ?? 1<day>) == 20260228);
+	assert(ymd(cycle_step(start, Frequency.Monthly, 2) ?? 1<day>) == 20260331);
+	assert(ymd(cycle_step(julian(2024, 2, 29), Frequency.Yearly, 1) ?? 1<day>) == 20250228);
+	assert(ymd(cycle_step(julian(2024, 2, 29), Frequency.Yearly, 4) ?? 1<day>) == 20280229);
+	assert(cycle_step(start, Frequency.Yearly, MAX_INDEX) == none);
+	assert(cycle_step(start, Frequency.Daily, MAX_INDEX) == none);
+}

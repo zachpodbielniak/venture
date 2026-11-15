@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include "latefees/venture-late-fee-private.h"
+#include <vk-kernels.h>
 #include <string.h>
 
 /*
@@ -15,6 +16,12 @@
  * Money is integer minor units throughout. A percent is parsed from its
  * decimal text into parts per million of the base (1.5% is 15000), so a
  * fee is base * ppm / 1,000,000, rounded once by the tier's rule.
+ *
+ * The arithmetic lives in the Tallow kernels, compiled natively into this
+ * library: src/kernels/vk_latefees.tlw (a tier's days, a percent of a
+ * base, the caps), vk_dates.tlw (calendar days) and vk_percent.tlw (a
+ * percent written as text). The functions below read the records, check
+ * what only C can (currencies, the database) and call them.
  */
 
 struct _VentureLateFeeService
@@ -29,7 +36,6 @@ G_DEFINE_FINAL_TYPE(VentureLateFeeService, venture_late_fee_service, G_TYPE_OBJE
 
 #define LF_MAX_TIERS (20)
 #define LF_MAX_DAY (365)
-#define LF_PPM (1000000)
 
 #define ST_SCHEDULED "scheduled"
 #define ST_AWAITING "awaiting_notice"
@@ -135,24 +141,29 @@ module_on(void)
 	return venture_entity_registry_lookup(venture_entity_registry_get_default(), "late_fee") != G_TYPE_INVALID;
 }
 
-/* Calendar days from @due to @day, in UTC like the dunning offsets. */
+/* The day number (vk_dates) of @at's calendar day, read in @at's own zone. */
+static gint64
+day_number(GDateTime *at)
+{
+	return vk_dates_julian(g_date_time_get_year(at), g_date_time_get_month(at), g_date_time_get_day_of_month(at));
+}
+
+/* Calendar days from @due to @day, each read in its own zone (vk_dates). */
 static gint
 calendar_days(GDateTime *day, GDateTime *due)
 {
-	GDate a, b;
-	g_date_clear(&a, 1);
-	g_date_clear(&b, 1);
-	g_date_set_dmy(&a, (GDateDay)g_date_time_get_day_of_month(day), (GDateMonth)g_date_time_get_month(day), (GDateYear)g_date_time_get_year(day));
-	g_date_set_dmy(&b, (GDateDay)g_date_time_get_day_of_month(due), (GDateMonth)g_date_time_get_month(due), (GDateYear)g_date_time_get_year(due));
-	return g_date_days_between(&b, &a);
+	return (gint)vk_dates_calendar_days(day_number(due), day_number(day));
 }
 
+/* Midnight UTC of @base's calendar day (read in its own zone) plus @days;
+ * NULL past the end of the calendar. */
 static GDateTime *
 day_after(GDateTime *base, gint64 days)
 {
-	g_autoptr(GDateTime) midnight = g_date_time_new_utc(g_date_time_get_year(base), g_date_time_get_month(base),
-		g_date_time_get_day_of_month(base), 0, 0, 0);
-	return g_date_time_add_days(midnight, (gint)days);
+	TlwOptI64 j = vk_dates_day_after(day_number(base), days);
+	if (!j.has)
+		return NULL;
+	return g_date_time_new_utc((gint)vk_dates_year_of(j.val), (gint)vk_dates_month_of(j.val), (gint)vk_dates_day_of(j.val), 0, 0, 0);
 }
 
 static gchar *
@@ -164,50 +175,38 @@ date_text(GDateTime *at)
 /* --- Parsing -------------------------------------------------------------- */
 
 /*
- * A percent as decimal text ("1.5", "10", "0.125"), at most four decimal
- * places, into parts per million. A JSON fraction is refused rather than
- * read through a double: 1.5 as a double is fine, 1.15 is not, and nobody
- * should have to know which.
+ * A percent as decimal text ("1.5", "10", "0.125", "7.5%"), at most four
+ * decimal places, from 0 to 100, into parts per million (vk_percent_parse).
+ * A JSON fraction is refused rather than read through a double: 1.5 as a
+ * double is fine, 1.15 is not, and nobody should have to know which. A
+ * sign is not part of a late-fee percent, so a leading '+' is refused here
+ * like a '-' (the kernel admits a '+' for every caller).
  */
 static gboolean
 parse_percent_text(const gchar *raw, gint64 *ppm, GError **error)
 {
-	g_autofree gchar *copy = NULL;
-	const gchar *p;
-	gint64 whole = 0, frac = 0;
-	gint decimals = 0;
-	gboolean digits = FALSE;
+	static const gchar *const malformed = "a percent is written as decimal text, for example \"1.5\"";
+	g_autoptr(VkPercentPercent) parsed = NULL;
 	if (raw == NULL)
 		return refuse(error, "a percent is required");
-	copy = g_strstrip(g_strdup(raw));
-	if (g_str_has_suffix(copy, "%"))
-		copy[strlen(copy) - 1] = '\0';
-	g_strstrip(copy);
-	for (p = copy; *p >= '0' && *p <= '9'; p++)
+	if (raw[strspn(raw, " \t\n\v\f\r")] == '+')
+		return refuse(error, malformed);
+	parsed = vk_percent_parse(raw, 100, FALSE, TRUE);
+	switch (parsed->tag)
 	{
-		whole = whole * 10 + (*p - '0');
-		digits = TRUE;
-		if (whole > 100)
-			return refuse(error, "a percent cannot exceed 100");
-	}
-	if (*p == '.')
-	{
-		for (p++; *p >= '0' && *p <= '9'; p++)
-		{
-			if (++decimals > 4)
-				return refuse(error, "a percent has at most four decimal places");
-			frac = frac * 10 + (*p - '0');
-			digits = TRUE;
-		}
-	}
-	if (!digits || *p != '\0')
-		return refuse(error, "a percent is written as decimal text, for example \"1.5\"");
-	while (decimals++ < 4)
-		frac *= 10;
-	*ppm = whole * 10000 + frac;
-	if (*ppm > LF_PPM)
+	case VK_PERCENT_PERCENT_RATE:
+		*ppm = parsed->u.rate.ppm;
+		return TRUE;
+	case VK_PERCENT_PERCENT_TOO_PRECISE:
+		return refuse(error, "a percent has at most four decimal places");
+	case VK_PERCENT_PERCENT_TOO_LARGE:
 		return refuse(error, "a percent cannot exceed 100");
-	return TRUE;
+	case VK_PERCENT_PERCENT_EMPTY:
+	case VK_PERCENT_PERCENT_MALFORMED:
+	case VK_PERCENT_PERCENT_NEGATIVE:
+	default:
+		return refuse(error, malformed);
+	}
 }
 
 static gboolean
@@ -482,35 +481,36 @@ parse_tiers(const gchar *json, GError **error)
 
 /* --- Money ---------------------------------------------------------------- */
 
-/* @base * @ppm / 1,000,000 by @rule, exactly; NULL on overflow. */
+/* @base * @ppm / 1,000,000 by @rule, exactly (vk_latefees_percent_of);
+ * NULL when the result, or for up and down the product, does not fit. */
 static VentureMoney *
 percent_of(const VentureMoney *base, gint64 ppm, RoundRule rule, GError **error)
 {
-	gint64 amount = venture_money_get_amount(base);
-	gint64 product, q, r;
-	if (rule == ROUND_HALF_EVEN)
-		return venture_money_multiply_rational(base, ppm, LF_PPM, error);
-	if (rule == ROUND_WHOLE)
+	VkLatefeesRounding mode;
+	TlwOptI64 fee;
+	switch (rule)
 	{
-		gint64 unit = 1;
-		guint8 e;
-		g_autoptr(VentureMoney) whole = NULL;
-		for (e = 0; e < venture_money_get_exponent(base); e++)
-			unit *= 10;
-		whole = venture_money_multiply_rational(base, ppm, (gint64)LF_PPM * unit, error);
-		return whole != NULL ? venture_money_multiply_int(whole, unit, error) : NULL;
+	case ROUND_UP:
+		mode = VK_LATEFEES_ROUNDING_UP;
+		break;
+	case ROUND_DOWN:
+		mode = VK_LATEFEES_ROUNDING_DOWN;
+		break;
+	case ROUND_WHOLE:
+		mode = VK_LATEFEES_ROUNDING_WHOLE;
+		break;
+	case ROUND_HALF_EVEN:
+	default:
+		mode = VK_LATEFEES_ROUNDING_HALF_EVEN;
+		break;
 	}
-	if (ppm != 0 && (amount > G_MAXINT64 / ppm || amount < -(G_MAXINT64 / ppm)))
+	fee = vk_latefees_percent_of(venture_money_get_amount(base), (gint64)venture_money_get_exponent(base), ppm, mode);
+	if (!fee.has)
 	{
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION, "Late fees: the amount is too large");
 		return NULL;
 	}
-	product = amount * ppm;
-	q = product / LF_PPM;
-	r = product % LF_PPM;
-	if (rule == ROUND_UP && r > 0)
-		q++;
-	return venture_money_new(q, venture_money_get_currency(base), venture_money_get_exponent(base));
+	return venture_money_new(fee.val, venture_money_get_currency(base), venture_money_get_exponent(base));
 }
 
 static VentureMoney *
@@ -1032,6 +1032,9 @@ occurrence_key(Case *c, const Tier *t, gint64 day)
 		venture_entity_get_id(c->schedule), t->day, t->every, fee_type_names[t->type], day);
 }
 
+/* Every tier's chargeable days (vk_latefees_occurrences: from its day,
+ * every N days, at most `times`, never past 365 or inside the grace),
+ * keyed and sorted by day, then tier position. */
 static GArray *
 occurrences(Case *c)
 {
@@ -1042,25 +1045,15 @@ occurrences(Case *c)
 	for (i = 0; c->tiers != NULL && i < c->tiers->len; i++)
 	{
 		const Tier *t = g_ptr_array_index(c->tiers, i);
-		gint64 day;
-		gint64 n = 0;
-		for (day = t->day; day <= LF_MAX_DAY;)
+		g_autoptr(GArray) days = vk_latefees_occurrences(t->day, t->every, t->times, grace);
+		guint j;
+		for (j = 0; j < days->len; j++)
 		{
 			Occurrence o;
-			if (t->times > 0 && n >= t->times)
-				break;
-			n++;
-			if (day > grace)
-			{
-				o.tier = t;
-				o.day = day;
-				o.key = occurrence_key(c, t, day);
-				g_array_append_val(out, o);
-			}
-			/* Stop before the add would pass 365 or wrap a huge step. */
-			if (t->every <= 0 || day > LF_MAX_DAY - t->every)
-				break;
-			day += t->every;
+			o.tier = t;
+			o.day = g_array_index(days, gint64, j);
+			o.key = occurrence_key(c, t, o.day);
+			g_array_append_val(out, o);
 		}
 	}
 	g_array_sort(out, occurrence_compare);
@@ -1217,7 +1210,8 @@ occurrence_amount(Case *c, Running *r, const Occurrence *o, gchar **basis, GErro
 	g_autoptr(VentureMoney) raw = NULL;
 	g_autoptr(VentureMoney) max_total = c->schedule != NULL ? money(c->schedule, "max-total") : NULL;
 	g_autofree gchar *max_percent = c->schedule != NULL ? text(c->schedule, "max-percent") : NULL;
-	gint64 fee;
+	TlwOptI64 cap, total, rate;
+	gint64 so_far = 0;
 	switch (t->type)
 	{
 	case FEE_FLAT:
@@ -1241,29 +1235,27 @@ occurrence_amount(Case *c, Running *r, const Occurrence *o, gchar **basis, GErro
 	}
 	if (raw == NULL)
 		return -1;
-	fee = minor_of(raw);
 	if (basis != NULL)
 		*basis = tier_basis(t);
-	if (t->cap != NULL)
-	{
-		gint64 so_far = 0;
-		if (!tier_total(r, c, t, &so_far, error))
-			return -1;
-		fee = MIN(fee, MAX(0, minor_of(t->cap) - so_far));
-	}
-	if (max_total != NULL && same_currency(max_total, c->original))
-		fee = MIN(fee, MAX(0, minor_of(max_total) - minor_of(r->committed)));
-	if (!venture_string_is_empty(max_percent))
-	{
-		gint64 ppm = 0;
-		if (parse_percent_text(max_percent, &ppm, NULL))
-		{
-			g_autoptr(VentureMoney) limit = venture_money_multiply_rational(c->original, ppm, LF_PPM, NULL);
-			if (limit != NULL)
-				fee = MIN(fee, MAX(0, minor_of(limit) - minor_of(r->committed)));
-		}
-	}
-	return MAX(fee, 0);
+	/* A tier cap in another currency cannot be compared with this fee, so
+	 * nothing is charged past it (condition_fails skips such a tier before
+	 * it gets here; this keeps the cap from ever being compared raw). */
+	if (t->cap != NULL && !same_currency(t->cap, c->original))
+		return 0;
+	/* The caps, in minor units of the invoice's currency. The tier's own
+	 * total is read only when it has a cap; a schedule cap in another
+	 * currency is not a limit on this invoice. */
+	cap.has = t->cap != NULL;
+	cap.val = cap.has ? minor_of(t->cap) : 0;
+	if (cap.has && !tier_total(r, c, t, &so_far, error))
+		return -1;
+	total.has = max_total != NULL && same_currency(max_total, c->original);
+	total.val = total.has ? minor_of(max_total) : 0;
+	rate.has = !venture_string_is_empty(max_percent) && parse_percent_text(max_percent, &rate.val, NULL);
+	if (!rate.has)
+		rate.val = 0;
+	/* vk_latefees_occurrence_amount: cut to the room under each, never below 0 */
+	return vk_latefees_occurrence_amount(minor_of(raw), cap, so_far, total, rate, minor_of(c->original), minor_of(r->committed));
 }
 
 static VentureMoney *

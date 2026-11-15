@@ -1,0 +1,123 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_dunning.tlw - which reminder steps of a dunning policy are due.
+ *
+ * A policy is a list of steps by offset: days from the due date, strictly
+ * increasing. Every step at or below the highest offset already recorded
+ * is done, whatever its own row says (next_step). A step is eligible from
+ * its offset, except after a catch-up -- a step that fell due before the
+ * policy was adopted, sent because it was the current one -- when the next
+ * steps keep the policy's spacing counted from the adoption day, or
+ * catching up would be an email today and an escalation tomorrow
+ * (eligible_day). The steps due on a given day late are the run of
+ * eligible steps from the next one (pending).
+ *
+ * The C shim (src/dunning/venture-dunning-service.c) reads the policy and
+ * its history, and hands these functions the offsets, the highest one
+ * recorded and, after a catch-up, the adoption day.
+ */
+module vk_dunning;
+
+import tallow.math as M;
+
+/* the larger of two days */
+pure fn later(a: i64, b: i64) -> i64
+	ensures result >= a && result >= b && (result == a || result == b)
+= match a >= b {
+	true => a,
+	false => b,
+};
+
+/* a day count within the range a policy and a due date allow (offsets
+ * are within 365 days, a due date within GDate's calendar) */
+pure fn small(x: i64) -> bool = x >= -100000000 && x <= 100000000;
+
+/* the spacing rule after a catch-up: the step keeps its distance from the
+ * caught-up step, counted from the adoption day, and is never earlier
+ * than its own offset */
+pure fn spaced(offset: i64, top_offset: i64, adoption: i64) -> i64
+	requires small(offset) && small(top_offset) && small(adoption)
+	ensures result >= offset && result >= adoption + offset - top_offset
+= later(offset, adoption + (offset - top_offset));
+
+/*
+ * The day, counted from the due date, from which the step at `offset`
+ * may act. `catch_up` is the adoption day when the newest decision was a
+ * catch-up, else none. Values no real policy reaches saturate instead of
+ * overflowing.
+ */
+pure fn eligible_day(offset: i64, top_offset: i64, catch_up: ?i64) -> i64 = match catch_up {
+	some adoption => match small(offset) && small(top_offset) && small(adoption) {
+		true => spaced(offset, top_offset, adoption),
+		false => later(offset, M.saturating_add(adoption, M.saturating_sub(offset, top_offset))),
+	},
+	none => offset,
+};
+
+/*
+ * The index of the next step to act: the first, when nothing is recorded,
+ * else the first whose offset is above the highest one recorded. None when
+ * every step is done.
+ */
+pure fn next_step(offsets: [i64], recorded: bool, top_offset: i64) -> ?i64 = first_after(offsets, recorded, top_offset, 0);
+
+pure fn first_after(offsets: [i64], recorded: bool, top_offset: i64, i: i64) -> ?i64
+	requires i >= 0 && i <= offsets.len()
+	decreases offsets.len() - i
+= match i >= offsets.len() {
+	true => none,
+	false => match !recorded || offsets[i] > top_offset {
+		true => i,
+		false => first_after(offsets, recorded, top_offset, i + 1),
+	},
+};
+
+/*
+ * The indexes of the steps due on day `days` late: from the next step, as
+ * long as each is eligible by then. Empty when none is.
+ */
+pure fn pending(offsets: [i64], recorded: bool, top_offset: i64, catch_up: ?i64, days: i64) -> own [i64]
+= match next_step(offsets, recorded, top_offset) {
+	some first => due_from(offsets, top_offset, catch_up, days, first, []),
+	none => [],
+};
+
+pure fn due_from(offsets: [i64], top_offset: i64, catch_up: ?i64, days: i64, i: i64, acc: own [i64]) -> own [i64]
+	requires i >= 0 && i <= offsets.len()
+	decreases offsets.len() - i
+= match i >= offsets.len() {
+	true => acc,
+	false => match eligible_day(offsets[i], top_offset, catch_up) > days {
+		true => acc,
+		false => {
+			acc.push(i);
+			due_from(offsets, top_offset, catch_up, days, i + 1, acc)
+		},
+	},
+};
+
+test "next step" {
+	assert((next_step([-3, 0, 7], false, 0) ?? -1) == 0);
+	assert((next_step([-3, 0, 7], true, 0) ?? -1) == 2);
+	assert(next_step([-3, 0, 7], true, 7) == none);
+	assert(next_step([], false, 0) == none);
+}
+
+test "eligible" {
+	assert(eligible_day(7, 0, none) == 7);
+	/* caught up at offset 7 on adoption day 20: the step at 14 waits until 27 */
+	assert(eligible_day(14, 7, some 20) == 27);
+	assert(eligible_day(14, 7, some 0) == 14);
+	assert(spaced(14, 7, 20) == 27);
+	assert(eligible_day(M.I64_MAX, M.I64_MIN, some 5) == M.I64_MAX);
+}
+
+test "pending" {
+	let due = pending([-3, 0, 7, 14], false, 0, none, 7);
+	assert(due.len() == 3 && due[0] == 0 && due[2] == 2);
+	let later_ones = pending([-3, 0, 7, 14], true, 0, none, 20);
+	assert(later_ones.len() == 2 && later_ones[0] == 2 && later_ones[1] == 3);
+	let waiting = pending([-3, 0, 7, 14], true, 7, some 20, 26);
+	assert(waiting.len() == 0);
+	assert(pending([-3, 0], true, 0, none, 100).len() == 0);
+}

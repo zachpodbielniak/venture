@@ -3,8 +3,8 @@
 #+authors: Ben Doty
 #+categories: projects docs
 #+created: [2026-09-17]
-#+updated: [2026-10-19]
-#+version: 0.6.0
+#+updated: [2026-11-15]
+#+version: 0.6.1
 
 * Dunning
 
@@ -31,6 +31,8 @@ at delivery (see [[*Stopping and cancelling][Stopping and cancelling]]).
 
 A negative offset is before the due date; =-3= becomes eligible on the third
 calendar day before it and never earlier. Offsets are calendar days in UTC.
+
+Offsets are counted in UTC whatever zone a sweep's =as_of= carries: the day of the =as_of=, the day of the due date, and the cutoff that bounds which invoices a sweep reads are all taken from the UTC calendar. (The day of the =as_of= used to be read in its own zone while the cutoff was built as UTC midnight, so a zoned =as_of= could send a step a day early or a day late.) The day arithmetic and the choice of steps -- the next step after the highest recorded offset, the spacing after a catch-up, the run of steps due today -- are the Tallow kernels =vk_dates= and =vk_dunning= ([[file:kernels.org][Kernels]]).
 The save validator refuses anything it would otherwise have to guess at:
 
 - =offset= must be a JSON integer, within 365 days either side of the due
@@ -501,7 +503,7 @@ cancellation (=/dunning/queue-superseded=, =/dunning/queue-balance=,
 =/dunning/queue-due-moved=, =/dunning/queue-stale=, =/dunning/pause=,
 =/dunning/module-off-queued=), retry, adoption catch-up, escalation owners
 and opt-out escalation, a failed latest step, collection cases, dry runs and
-the future =as_of= refusal, the worklist, the next-reminder timeline entry,
+the future =as_of= refusal, UTC days for a zoned =as_of= (=/dunning/utc-days=), the worklist, the next-reminder timeline entry,
 test sends, deleted-policy fallback, step validation, the report's period and
 attribution, and history that cannot be deleted. =test-automation= covers
 =venture->dunning_sweep=. No test sends mail.
