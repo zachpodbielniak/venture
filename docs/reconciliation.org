@@ -44,9 +44,9 @@ The built-in =exact= matcher reads =amount=, =date= and =description= from plain
 | 40 | Amount within 2% of the transaction and a shared description token |
 
 The rules are tried in that order. Token matching is case folded and uses
-whole words. The 2% test uses widened integer arithmetic, including for
-negative amounts and integer limits. Currency exponents are normalized
-without floating point. Missing amount or currency evidence never produces
+whole words. The 2% test is exact, including for
+negative amounts and integer limits, and never brings an amount to the common exponent (which can leave the 64-bit range): =b= is within 2% of =a= when =49A <= 50B <= 51A= (mirrored for a negative =a=), and each side is one comparison over a 128-bit product (=vk_round.mul_div=). Currency exponents are normalized
+without floating point. The relation, the calendar-day distance and the score table are the =vk_reconcile= kernel ([[file:kernels.org][Kernels]]); reading the fields, comparing currency codes, counting the unique candidates and the token overlap (Unicode case folding and word breaking, which GLib does) stay in C. Missing amount or currency evidence never produces
 a guess. =kind= is =exact= for equal amounts, =partial= for approximate
 amounts, or =none= for a zero-confidence AI suggestion.
 
