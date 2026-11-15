@@ -1,0 +1,147 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * vk_holdings.tlw - the floor under a holding: never below zero, never
+ * deeper than it was.
+ *
+ * A holding (a wallet, a till, a game character's purse) may not be taken
+ * below zero at any moment by a change, unless its account allows it. The
+ * change is judged on the running balance, not today's: a spend dated in
+ * March is refused when the holding was short in March. And it is judged
+ * as a change: a moment is refused only where the balance after the change
+ * is negative *and* lower than it was before, so a shortfall a reversal
+ * left in the past does not block an unrelated change that leaves it as it
+ * was. Movements at the same instant count together, so a document dated
+ * the same second as the takings it spends is judged against them.
+ *
+ * This replaces the arithmetic of holdings_check_floor in
+ * src/ledger/venture-holdings.c. C reads the holding's movements (posted
+ * journal lines and memo movements) from the database, adds the stored
+ * value being removed and the new value being added, sorts them by time
+ * and hands them here; the message naming the account stays in C.
+ */
+module vk_holdings;
+
+import vk_units;
+import vk_money as Mo;
+
+/*
+ * One movement on the holding's timeline: when (unix microseconds), how
+ * much at what exponent, and which balances it counts in -- `before` (the
+ * holding as it is) and `after` (the holding with the change). A stored
+ * movement counts in both; the value a change removes only before, the
+ * value it adds only after.
+ */
+struct Event { at: i64, amount: i64<minor>, exponent: i64, before: bool, after: bool }
+
+/* what walking the timeline found */
+type Floor =
+	| Clear
+	| Short { event: i64, before: i64<minor>, before_exponent: i64, after: i64<minor>, after_exponent: i64 }
+	| Overflow;
+
+/* an exponent a VentureMoney can carry */
+pure fn exponent_ok(e: i64) -> bool = e >= 0 && e <= Mo.MAX_EXPONENT;
+
+/* whether the event at i closes a moment: the last one, or the next one is later */
+pure fn moment_ends(ats: i64, next_exists: bool, next_at: i64) -> bool = !next_exists || next_at != ats;
+
+/* the floor rule at one moment: refused when the balance after is below
+ * zero and below the balance before (compared at their common exponent) */
+pure fn deepens(before: i64<minor>, be: i64, after: i64<minor>, ae: i64) -> bool
+	requires be >= 0 && be <= 18 && ae >= 0 && ae <= 18
+= after < 0<minor> && Mo.compare(after, ae, before, be) < 0;
+
+/* a running total with an event's amount added when it counts */
+pure fn count(acc: i64<minor>, e: i64, counts: bool, amount: i64<minor>, ae: i64) -> ?i64<minor>
+	requires e >= 0 && e <= 18 && ae >= 0 && ae <= 18
+= match counts {
+	true => Mo.add(acc, e, amount, ae),
+	false => acc,
+};
+
+/* the exponent a running total reaches */
+pure fn reach(e: i64, counts: bool, ae: i64) -> i64 = match counts {
+	true => Mo.common_exponent(e, ae),
+	false => e,
+};
+
+/*
+ * The timeline from event i on, with the two running balances so far
+ * (before at exponent be, after at exponent ae): the first moment the
+ * change deepens below zero, or Clear.
+ */
+pure fn walk(events: [Event], i: i64, before: i64<minor>, be: i64, after: i64<minor>, ae: i64) -> own Floor
+	requires i >= 0 && i <= events.len() && be >= 0 && be <= 18 && ae >= 0 && ae <= 18
+	decreases events.len() - i
+= match i >= events.len() {
+	true => Floor.Clear,
+	false => match exponent_ok(events[i].exponent) {
+		false => Floor.Overflow,
+		true => match count(before, be, events[i].before, events[i].amount, events[i].exponent) {
+			none => Floor.Overflow,
+			some b => match count(after, ae, events[i].after, events[i].amount, events[i].exponent) {
+				none => Floor.Overflow,
+				some a => judge(events, i, b, reach(be, events[i].before, events[i].exponent),
+					a, reach(ae, events[i].after, events[i].exponent)),
+			},
+		},
+	},
+};
+
+/* the balances after event i: judged when i ends a moment, then on */
+pure fn judge(events: [Event], i: i64, before: i64<minor>, be: i64, after: i64<minor>, ae: i64) -> own Floor
+	requires i >= 0 && i < events.len() && be >= 0 && be <= 18 && ae >= 0 && ae <= 18
+	decreases events.len() - i
+= match moment_ends(events[i].at, i + 1 < events.len(), match i + 1 < events.len() {
+	true => events[i + 1].at,
+	false => 0,
+}) && deepens(before, be, after, ae) {
+	true => Floor.Short { event = i, before, before_exponent = be, after, after_exponent = ae },
+	false => walk(events, i + 1, before, be, after, ae),
+};
+
+/*
+ * Whether a change keeps the holding off the floor. `events` is sorted by
+ * time (C sorts them, stably); both balances start at zero at
+ * `start_exponent`, the currency's own. Short names the event that closes
+ * the first refused moment and the two balances there.
+ */
+pure fn check_floor(events: [Event], start_exponent: i64) -> own Floor
+	requires start_exponent >= 0 && start_exponent <= 18 && (forall i in 1..events.len(): events[i - 1].at <= events[i].at)
+= walk(events, 0, 0<minor>, start_exponent, 0<minor>, start_exponent);
+
+/* ---- tests ---- */
+
+pure fn ev(at: i64, amount: i64, before: bool, after: bool) -> own Event =
+	Event { at, amount = amount as i64<minor>, exponent = 2, before, after };
+
+test "a spend within the holding" {
+	assert(check_floor([ev(1, 1000, true, true), ev(2, -400, false, true)], 2) is Clear);
+}
+
+test "a spend beyond the holding" {
+	let f = check_floor([ev(1, 1000, true, true), ev(2, -1500, false, true)], 2);
+	assert(match f { Short { event, before, after, .. } => event == 1 && before == 1000<minor> && after == -500<minor>, _ => false });
+}
+
+test "judged on the running balance" {
+	/* short in March although there is plenty by May */
+	assert(check_floor([ev(1, 100, true, true), ev(2, -500, false, true), ev(3, 10000, true, true)], 2) is Short);
+}
+
+test "same instant counts together" {
+	assert(check_floor([ev(5, -400, false, true), ev(5, 1000, true, true)], 2) is Clear);
+}
+
+test "a past shortfall left as it was" {
+	/* already -300 at 2; the change takes 100 at 4 only after takings at 3 */
+	assert(check_floor([ev(1, 100, true, true), ev(2, -400, true, true), ev(3, 1000, true, true), ev(4, -100, false, true)], 2) is Clear);
+	/* removing a positive movement deepens the old shortfall: refused */
+	assert(check_floor([ev(1, 100, true, true), ev(1, 50, true, false), ev(2, -400, true, true)], 2) is Short);
+}
+
+test "exponents and overflow" {
+	assert(check_floor([Event { at = 1, amount = 10000<minor>, exponent = 3, before = true, after = true }, ev(2, -1000, false, true)], 2) is Clear);
+	assert(check_floor([Event { at = 1, amount = 10000<minor>, exponent = 3, before = true, after = true }, ev(2, -1001, false, true)], 2) is Short);
+	assert(check_floor([ev(1, 9223372036854775807, true, true), ev(2, 1, true, true)], 2) is Overflow);
+}

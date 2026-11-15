@@ -616,6 +616,8 @@ that leaves it as it was, only one that deepens it. A weaker all-time rule
 was the first version and let a back-dated purchase spend what the
 character did not yet have.
 
+The walk itself is the =vk_holdings= kernel ([[file:kernels.org][Kernels]]): C reads the movements, adds the value a change removes (counted only in the balance before) and the value it adds (only after), sorts them by time and hands them to =vk_holdings_check_floor=, which keeps both running balances, judges each moment at its last movement and names the first moment refused; the message stays in C.
+
 - A memo movement is judged by the =holding_txn= save validator. Its
   stored value stops counting and the new one starts, each at its own
   date, so moving a spend earlier or an earning later is judged like a new

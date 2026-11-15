@@ -195,6 +195,57 @@ test_kernels_ledger_pay_line(void)
 		VK_LEDGER_PAY_LINE_OVERFLOWS);
 }
 
+/* --- vk_holdings ----------------------------------------------------------- */
+
+/* A movement as holdings_check_floor hands it over, at exponent 2. */
+static VkHoldingsEvent *
+floor_event(
+	gint64		at,
+	gint64		amount,
+	gboolean	before,
+	gboolean	after
+){
+	return vk_holdings_event_new(at, amount, 2, before, after);
+}
+
+/*
+ * The floor is judged on the running balance a moment at a time: a spend
+ * after takings at the same instant passes, a spend that takes the
+ * holding below zero is refused at the moment it does, and a shortfall
+ * the change leaves as it was is not the change's fault.
+ */
+static void
+test_kernels_ledger_holdings_floor(void)
+{
+	g_autoptr(GPtrArray) events = g_ptr_array_new_with_free_func((GDestroyNotify)vk_holdings_event_free);
+	g_autoptr(VkHoldingsFloor) same_instant = NULL;
+	g_autoptr(VkHoldingsFloor) short_ = NULL;
+	g_autoptr(VkHoldingsFloor) old_shortfall = NULL;
+
+	g_ptr_array_add(events, floor_event(5, -400, FALSE, TRUE));
+	g_ptr_array_add(events, floor_event(5, 1000, TRUE, TRUE));
+	same_instant = vk_holdings_check_floor(events, 2);
+	g_assert_cmpint(same_instant->tag, ==, VK_HOLDINGS_FLOOR_CLEAR);
+
+	g_ptr_array_set_size(events, 0);
+	g_ptr_array_add(events, floor_event(1, 1000, TRUE, TRUE));
+	g_ptr_array_add(events, floor_event(2, -1500, FALSE, TRUE));
+	g_ptr_array_add(events, floor_event(3, 10000, TRUE, TRUE));
+	short_ = vk_holdings_check_floor(events, 2);
+	g_assert_cmpint(short_->tag, ==, VK_HOLDINGS_FLOOR_SHORT);
+	g_assert_cmpint(short_->u.short_.event, ==, 1);
+	g_assert_cmpint(short_->u.short_.before, ==, 1000);
+	g_assert_cmpint(short_->u.short_.after, ==, -500);
+
+	g_ptr_array_set_size(events, 0);
+	g_ptr_array_add(events, floor_event(1, 100, TRUE, TRUE));
+	g_ptr_array_add(events, floor_event(2, -400, TRUE, TRUE));
+	g_ptr_array_add(events, floor_event(3, 1000, TRUE, TRUE));
+	g_ptr_array_add(events, floor_event(4, -100, FALSE, TRUE));
+	old_shortfall = vk_holdings_check_floor(events, 2);
+	g_assert_cmpint(old_shortfall->tag, ==, VK_HOLDINGS_FLOOR_CLEAR);
+}
+
 gint
 main(
 	gint	 argc,
@@ -208,6 +259,7 @@ main(
 	g_test_add_func("/kernels-ledger/ledger/normal", test_kernels_ledger_normal);
 	g_test_add_func("/kernels-ledger/ledger/rate-order", test_kernels_ledger_rate_order);
 	g_test_add_func("/kernels-ledger/ledger/pay-line", test_kernels_ledger_pay_line);
+	g_test_add_func("/kernels-ledger/holdings/floor", test_kernels_ledger_holdings_floor);
 
 	return g_test_run();
 }

@@ -21,6 +21,8 @@
 
 #include "venture.h"
 
+#include <vk-kernels.h>
+
 #include <string.h>
 
 #define VENTURE_HOLDINGS_STATE_KEY "venture-holdings-installed"
@@ -568,9 +570,13 @@ holdings_check_floor(
 ){
 	g_autoptr(GPtrArray) movements = NULL;
 	g_autoptr(GArray) events = NULL;
+	g_autoptr(GPtrArray) timeline = NULL;
+	g_autoptr(VkHoldingsFloor) floor = NULL;
+	g_autoptr(VentureMoney) zero = NULL;
 	g_autoptr(VentureMoney) before = NULL;
 	g_autoptr(VentureMoney) after = NULL;
 	g_autoptr(GDateTime) now = NULL;
+	HoldingsEvent *moment;
 	const gchar *currency;
 	gint64 organization_id;
 	gboolean allow;
@@ -638,51 +644,71 @@ holdings_check_floor(
 	}
 
 	g_array_sort(events, holdings_event_compare);
-	before = venture_money_new_zero(currency);
-	after = venture_money_new_zero(currency);
+	zero = venture_money_new_zero(currency);
+
+	/* The timeline as the kernel reads it, in the sorted order: each
+	 * movement in one currency (adding them used to refuse another), at
+	 * its instant, counted in the balance before the change, after it, or
+	 * both. */
+	timeline = g_ptr_array_new_with_free_func((GDestroyNotify)vk_holdings_event_free);
 
 	for (i = 0; i < events->len; i++)
 	{
-		HoldingsEvent *event;
+		moment = &g_array_index(events, HoldingsEvent, i);
 
-		event = &g_array_index(events, HoldingsEvent, i);
-
-		if ((HOLDINGS_EVENT_AFTER != event->side) &&
-		    !holdings_money_add(&before, event->amount, error))
-			return FALSE;
-
-		if ((HOLDINGS_EVENT_BEFORE != event->side) &&
-		    !holdings_money_add(&after, event->amount, error))
-			return FALSE;
-
-		/* A moment is the end of every movement at one instant. */
-		if ((i + 1 < events->len) &&
-		    (0 == g_date_time_compare(event->when,
-		                              g_array_index(events, HoldingsEvent, i + 1).when)))
-			continue;
-
-		if (venture_money_is_negative(after) && (venture_money_compare(after, before) < 0))
+		if (0 != g_ascii_strcasecmp(zero->currency, moment->amount->currency))
 		{
-			g_autofree gchar *name = NULL;
-			g_autofree gchar *has = NULL;
-			g_autofree gchar *wants = NULL;
-			g_autofree gchar *day = NULL;
-			g_autoptr(VentureMoney) taken = NULL;
-
-			name = holdings_account_name(database, account);
-			taken = venture_money_subtract(before, after, NULL);
-			has = venture_money_to_display_string(before, TRUE);
-			wants = (NULL != taken) ? venture_money_to_display_string(taken, TRUE)
-			                        : g_strdup("more");
-			day = venture_time_to_date_string(event->when, NULL);
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-			            "%s holds %s on %s and this takes %s, which would leave it below "
-			            "zero then. Record what came in first (dated no later), or tick "
-			            "Allow negative on account #%" G_GINT64_FORMAT " if it may be "
-			            "overdrawn", name, has, (NULL != day) ? day : "that day", wants,
-			            venture_entity_get_id(account));
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "Cannot combine %s and %s: no exchange rate is available "
+			            "and guessing one would be wrong",
+			            zero->currency, moment->amount->currency);
 			return FALSE;
 		}
+
+		g_ptr_array_add(timeline, vk_holdings_event_new(g_date_time_to_unix_usec(moment->when),
+		                                                 moment->amount->amount,
+		                                                 (gint64)moment->amount->exponent,
+		                                                 HOLDINGS_EVENT_AFTER != moment->side,
+		                                                 HOLDINGS_EVENT_BEFORE != moment->side));
+	}
+
+	/* The running balances, a moment at a time, and the floor rule at the
+	 * end of each moment (vk_holdings_check_floor). */
+	floor = vk_holdings_check_floor(timeline, (gint64)zero->exponent);
+
+	if (VK_HOLDINGS_FLOOR_OVERFLOW == floor->tag)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Monetary addition overflows a 64-bit minor-unit amount");
+		return FALSE;
+	}
+
+	if (VK_HOLDINGS_FLOOR_SHORT == floor->tag)
+	{
+		g_autofree gchar *name = NULL;
+		g_autofree gchar *has = NULL;
+		g_autofree gchar *wants = NULL;
+		g_autofree gchar *day = NULL;
+		g_autoptr(VentureMoney) taken = NULL;
+
+		moment = &g_array_index(events, HoldingsEvent, (guint)floor->u.short_.event);
+		before = venture_money_new(floor->u.short_.before, zero->currency,
+		                           (guint8)floor->u.short_.before_exponent);
+		after = venture_money_new(floor->u.short_.after, zero->currency,
+		                          (guint8)floor->u.short_.after_exponent);
+		name = holdings_account_name(database, account);
+		taken = venture_money_subtract(before, after, NULL);
+		has = venture_money_to_display_string(before, TRUE);
+		wants = (NULL != taken) ? venture_money_to_display_string(taken, TRUE)
+		                        : g_strdup("more");
+		day = venture_time_to_date_string(moment->when, NULL);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "%s holds %s on %s and this takes %s, which would leave it below "
+		            "zero then. Record what came in first (dated no later), or tick "
+		            "Allow negative on account #%" G_GINT64_FORMAT " if it may be "
+		            "overdrawn", name, has, (NULL != day) ? day : "that day", wants,
+		            venture_entity_get_id(account));
+		return FALSE;
 	}
 
 	return TRUE;
