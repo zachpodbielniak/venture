@@ -225,7 +225,11 @@ The double-entry arithmetic, run once the database has been read. A line is =Lin
 - =pick_rate(rates, when)= chooses the exchange rate that applies, by a strict order (=rate_ahead=, proved antisymmetric).
 - =pay_line= checks gross + employer = net + liabilities, exponent-aware.
 
-In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/venture-posting-service.c=, =venture-trial-balance.c=, =venture-rate-table-policy.c=, =src/venture-enums.c=, =src/payroll/venture-payroll-service.c=, =src/budgets/venture-budget-service.c=. What changed:
+In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/venture-posting-service.c=, =venture-trial-balance.c=, =venture-rate-table-policy.c=, =src/venture-enums.c=, =src/payroll/venture-payroll-service.c=, =src/budgets/venture-budget-service.c=.
+
+=net= over lines that are all debits is a plain sum of amounts, and the other running =VentureMoney= sums use it that way: payroll's run totals (=sum_field= in =src/payroll/venture-payroll-service.c=, from the first amount's exponent) and the money calendar's payroll run totals and a recurring schedule's template lines (=sum_onto= in =src/money-calendar/venture-money-calendar-sources.c=). The currency check stays in C, worded as =venture_money_add= words it.
+
+What changed:
 
 - Rate selection no longer rests on a comparator that called an undated row equal to every row. That comparator could let an older rate beat the newest.
 - A pay line's two sides are compared as money, not as raw minor units (=/payroll/balance-exponents=).
@@ -259,7 +263,7 @@ The open balance of an invoice or a vendor bill. The shim hands over one array o
 
 The running total starts at the first record counted (its currency, zero at its exponent) and keeps the exponent it reaches, with each step being =vk_ledger.step=. =ensures agrees(records, result)=: an =Open= amount equals issued + late fees - allocated + refunded, with each class totalled on its own and compared at a common exponent, and the exponent is the finest any counted record has. Every function takes an array or returns a sum, so =tallow verify= skips them; the arithmetic it relies on is =vk_money='s, and the contract is fuzzed and checked on every call.
 
-=net_fitting(lines, start_exponent)= is =vk_ledger.net= that skips a line which would take the total out of range and carries on without it.
+=net_fitting(lines, start_exponent)= is =vk_ledger.net= that skips a line which would take the total out of range and carries on without it. The money calendar's per-day and per-week nets (=venture_money_calendar_nets=) and the report's span totals (=venture_money_calendar_totals=, in =src/money-calendar/venture-money-calendar-expander.c=) are this fold, one per key. What changed: the report's span totals used to store the =NULL= a failed addition returned, so the next event restarted the total from its own amount, and a total that ended there was shown as zero. Now the amount that does not fit is left out, as the nets always did (=/kernels-settlement/money-calendar/totals=).
 
 Shims: =venture-settlement-private.h= (=VentureSettlementRecords=, in =src/receivables/venture-settlement-service.c=) builds the records, maps the result to =VentureMoney= or an error worded as adding =VentureMoney= worded it, and is called by =venture_settlement_service_invoice_balance=, =venture_settlement_service_invoice_balances= and =venture_payables_service_bill_balance= (a bill counts no late fees). Results and errors are unchanged, except an overflow while rescaling to a finer exponent is now reported as the addition or subtraction overflowing.
 

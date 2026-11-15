@@ -10,13 +10,15 @@
  * venture-settlement-private.h builds its records, and the shim itself
  * on records built in memory: currency numbering, the answer's currency
  * and exponent, and the errors worded as adding VentureMoney worded
- * them.
+ * them. Then net_fitting, the money calendar's running totals, with the
+ * regression case for the report's span totals.
  */
 
 #include <venture.h>
 #include <vk-kernels.h>
 
 #include "receivables/venture-settlement-private.h"
+#include "money-calendar/venture-money-calendar-private.h"
 
 /* --- the kernel ------------------------------------------------------------ */
 
@@ -270,6 +272,70 @@ test_kernels_settlement_shim_errors(void)
 	g_assert_cmpstr(error->message, ==, "Monetary subtraction overflows a 64-bit minor-unit amount");
 }
 
+/* --- net_fitting and the money calendar ------------------------------------ */
+
+/* A line that would leave the range is skipped; the rest carry on. */
+static void
+test_kernels_settlement_net_fitting(void)
+{
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_line_free);
+	g_autoptr(VkLedgerTotal) total = NULL;
+
+	g_ptr_array_add(lines, vk_ledger_line_new(G_MAXINT64 - 7, 2, TRUE));
+	g_ptr_array_add(lines, vk_ledger_line_new(10, 2, TRUE));
+	g_ptr_array_add(lines, vk_ledger_line_new(5, 2, TRUE));
+	g_ptr_array_add(lines, vk_ledger_line_new(3, 2, FALSE));
+	total = vk_settlement_net_fitting(lines, 2);
+	g_assert_cmpint(total->tag, ==, VK_LEDGER_TOTAL_SUM);
+	g_assert_cmpint(total->u.sum.amount, ==, G_MAXINT64 - 5);
+	g_assert_cmpint(total->u.sum.exponent, ==, 2);
+}
+
+static VentureMoneyCalendarEvent *
+calendar_event(
+	gint64		 amount,
+	const gchar	*direction
+){
+	g_autoptr(GDateTime) date = g_date_time_new_utc(2026, 1, 10, 0, 0, 0);
+	g_autoptr(VentureMoney) money = venture_money_new(amount, "USD", 2);
+
+	return venture_money_calendar_event_new("invoice", date, "test", money, direction, "invoice", 1);
+}
+
+/*
+ * Regression: the money calendar report's span totals put the NULL a
+ * failed venture_money_add() returned into the table, so the next event
+ * started the total again from its own amount: MAX-7, an overflowing 10,
+ * then 5 reported 0.05 in. Now the overflowing amount is left out, as the
+ * per-day nets always did, and the total is MAX-2.
+ */
+static void
+test_kernels_settlement_calendar_totals(void)
+{
+	g_autoptr(GPtrArray) events = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GHashTable) totals = NULL;
+	g_autoptr(GHashTable) nets = NULL;
+	const VentureMoney *in;
+	const VentureMoney *net;
+	const VentureMoney *day;
+
+	g_ptr_array_add(events, calendar_event(G_MAXINT64 - 7, "in"));
+	g_ptr_array_add(events, calendar_event(10, "in"));
+	g_ptr_array_add(events, calendar_event(5, "in"));
+	g_ptr_array_add(events, calendar_event(400, "out"));
+	totals = venture_money_calendar_totals(events);
+	nets = venture_money_calendar_nets(events, FALSE);
+
+	in = g_hash_table_lookup(totals, "in|USD");
+	net = g_hash_table_lookup(totals, "net|USD");
+	day = g_hash_table_lookup(nets, "2026-01-10|USD");
+	g_assert_nonnull(in);
+	g_assert_cmpint(venture_money_get_amount(in), ==, G_MAXINT64 - 2);
+	g_assert_cmpint(venture_money_get_amount(g_hash_table_lookup(totals, "out|USD")), ==, 400);
+	g_assert_cmpint(venture_money_get_amount(net), ==, G_MAXINT64 - 402);
+	g_assert_cmpint(venture_money_get_amount(day), ==, G_MAXINT64 - 402);
+}
+
 gint
 main(
 	gint	 argc,
@@ -283,6 +349,8 @@ main(
 	g_test_add_func("/kernels-settlement/shim/balance", test_kernels_settlement_shim_balance);
 	g_test_add_func("/kernels-settlement/shim/closed", test_kernels_settlement_shim_closed);
 	g_test_add_func("/kernels-settlement/shim/errors", test_kernels_settlement_shim_errors);
+	g_test_add_func("/kernels-settlement/net-fitting", test_kernels_settlement_net_fitting);
+	g_test_add_func("/kernels-settlement/money-calendar/totals", test_kernels_settlement_calendar_totals);
 
 	return g_test_run();
 }

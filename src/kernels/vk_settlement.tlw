@@ -24,7 +24,8 @@
  *
  * Also here: net_fitting, the per-day running total of the money
  * calendar, which skips an amount that would take the total out of range
- * instead of failing (venture_money_calendar_nets).
+ * instead of failing (venture_money_calendar_nets and the report's span
+ * totals, venture_money_calendar_totals).
  */
 module vk_settlement;
 

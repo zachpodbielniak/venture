@@ -518,27 +518,47 @@ load_lines(VenturePayrollService *self, gint64 run_id, gint64 org, GError **erro
 	return venture_database_find(self->database, query, error);
 }
 
+/* The total of @field over @lines, skipping lines without one, or %NULL
+ * in @total when none has one. The sum is vk_ledger_net over the amounts
+ * as debits, from the first amount's exponent, so it keeps the exponent
+ * it reaches as adding VentureMoney did; the currency check is C's. */
 static gboolean
 sum_field(GPtrArray *lines, const gchar *field, VentureMoney **total, GError **error)
 {
+	g_autoptr(GPtrArray) amounts = g_ptr_array_new_with_free_func((GDestroyNotify)vk_ledger_line_free);
+	g_autoptr(VentureMoney) first = NULL;
+	g_autoptr(VkLedgerTotal) sum = NULL;
 	guint i;
+
 	for (i = 0; i < lines->len; i++)
 	{
 		g_autoptr(VentureMoney) amount = NULL;
+
 		g_object_get(g_ptr_array_index(lines, i), field, &amount, NULL);
 		if (amount == NULL)
 			continue;
-		if (*total == NULL)
-			*total = g_steal_pointer(&amount);
-		else
+		if (first == NULL)
+			first = venture_money_copy(amount);
+		else if (g_ascii_strcasecmp(first->currency, amount->currency) != 0)
 		{
-			g_autoptr(VentureMoney) next = venture_money_add(*total, amount, error);
-			if (next == NULL)
-				return FALSE;
-			venture_money_free(*total);
-			*total = g_steal_pointer(&next);
+			/* worded as venture_money_add() words it */
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+				"Cannot combine %s and %s: no exchange rate is available "
+				"and guessing one would be wrong", first->currency, amount->currency);
+			return FALSE;
 		}
+		g_ptr_array_add(amounts, vk_ledger_line_new(amount->amount, (gint64)amount->exponent, TRUE));
 	}
+	if (first == NULL)
+		return TRUE;
+	sum = vk_ledger_net(amounts, (gint64)first->exponent);
+	if (sum->tag != VK_LEDGER_TOTAL_SUM)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			"Monetary addition overflows a 64-bit minor-unit amount");
+		return FALSE;
+	}
+	*total = venture_money_new(sum->u.sum.amount, first->currency, (guint8)sum->u.sum.exponent);
 	return TRUE;
 }
 
