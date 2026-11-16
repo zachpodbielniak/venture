@@ -3727,10 +3727,26 @@ test_auth_clawtilla_contract(
 			",\"branch\":\"clawtilla/task-1\",\"origin\":\"venture\"}",
 			ticket, repo);
 
+		g_autofree gchar *link_path = NULL;
+		gint64 link;
+
 		status = server_fixture_request(fixture, "POST",
 			"/api/v1/ticket_link", editor, json, &body, NULL);
 		contract_check("ticket-link-create", status, SOUP_STATUS_CREATED,
 		               body);
+		node = venture_json_parse(body, NULL);
+		link = json_object_get_int_member(json_node_get_object(node), "id");
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+
+		/* the pull request the agent opened, onto the link (0.10.5) */
+		link_path = g_strdup_printf("/api/v1/ticket_link/%" G_GINT64_FORMAT,
+		                            link);
+		status = server_fixture_request(fixture, "PATCH", link_path, editor,
+			"{\"pull_request_number\":12,"
+			"\"pull_request_url\":\"https://git.example.test/acme/site/pulls/12\"}",
+			&body, NULL);
+		contract_check("ticket-link-update", status, SOUP_STATUS_OK, body);
 		g_clear_pointer(&body, g_free);
 	}
 
@@ -3768,6 +3784,25 @@ test_auth_clawtilla_contract(
 	                                NULL);
 	contract_check("milestone", status, SOUP_STATUS_OK, body);
 	g_clear_pointer(&body, g_free);
+
+	/* a goal, as the context line reads it (0.10.5) */
+	{
+		g_autoptr(VentureEntity) goal = g_object_new(VENTURE_TYPE_GOAL,
+			"name", "Ship titles", "unit", "titles",
+			"start-value", 0.0, "current-value", 4.0, "target-value", 12.0,
+			NULL);
+		g_autofree gchar *goal_path = NULL;
+
+		venture_entity_set_organization_id(goal, home);
+		g_assert_true(venture_database_save(fixture->database, goal, NULL,
+		                                    NULL));
+		goal_path = g_strdup_printf("/api/v1/goal/%" G_GINT64_FORMAT,
+		                            venture_entity_get_id(goal));
+		status = server_fixture_request(fixture, "GET", goal_path, editor,
+		                                NULL, &body, NULL);
+		contract_check("goal", status, SOUP_STATUS_OK, body);
+		g_clear_pointer(&body, g_free);
+	}
 }
 
 /*

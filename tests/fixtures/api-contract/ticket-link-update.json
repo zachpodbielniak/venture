@@ -1,0 +1,21 @@
+{
+  "branch" : "string",
+  "created_at" : "string",
+  "deleted_at" : "null",
+  "display_name" : "string",
+  "id" : "int",
+  "issue_number" : "int",
+  "issue_url" : "null",
+  "last_delivery_id" : "null",
+  "organization_id" : "int",
+  "origin" : "string",
+  "pull_request_number" : "int",
+  "pull_request_url" : "string",
+  "repo_id" : "int",
+  "synced_at" : "null",
+  "ticket_id" : "int",
+  "type" : "string",
+  "updated_at" : "string",
+  "uuid" : "string",
+  "version" : "int"
+}
