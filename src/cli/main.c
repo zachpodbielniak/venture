@@ -4402,39 +4402,45 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 #include "orgaccess/venture-mfa-cli.inc"
 
 /*
- * --apply-writes, or --apply-writes=low-risk. A file-scope pair because
- * GOption's callback has nowhere else to put its answer; read once into
- * the CLI state after parsing.
+ * --apply-writes=low-risk, spelled the way people write it, is turned
+ * into the hidden --apply-writes-low-risk before GOption sees it.
+ *
+ * Not an optional-argument callback: GOption gives an optional argument
+ * the *next word* when it does not start with a dash, so
+ * `venturectl --apply-writes mcp` would read `mcp` as the level and
+ * refuse it -- breaking every command line written before the level
+ * existed.
  */
-static gboolean apply_writes_flag = FALSE;
-static gboolean apply_low_risk_flag = FALSE;
-
 static gboolean
-parse_apply_writes(
-	const gchar	 *option_name,
-	const gchar	 *value,
-	gpointer	  data,
-	GError		**error
+spell_apply_writes_low_risk(
+	gint	  argc,
+	gchar	**argv,
+	GError	**error
 ){
-	(void)option_name;
-	(void)data;
+	gint i;
 
-	if (NULL == value)
+	for (i = 1; i < argc; i++)
 	{
-		apply_writes_flag = TRUE;
-		return TRUE;
+		if (0 == g_strcmp0(argv[i], "--"))
+			return TRUE;
+
+		if (0 == g_strcmp0(argv[i], "--apply-writes=low-risk"))
+			argv[i] = (gchar *)"--apply-writes-low-risk";
+		else if (g_str_has_prefix(argv[i], "--apply-writes="))
+		{
+			/*
+			 * Refused: GOption would ignore a value on a plain flag
+			 * and read `--apply-writes=lowrisk` as --apply-writes --
+			 * a typo of the careful setting applying every write.
+			 */
+			g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+			            "--apply-writes takes no value, or =low-risk; "
+			            "not \"%s\"", argv[i] + strlen("--apply-writes="));
+			return FALSE;
+		}
 	}
 
-	if (0 == g_strcmp0(value, "low-risk"))
-	{
-		apply_low_risk_flag = TRUE;
-		return TRUE;
-	}
-
-	g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-	            "--apply-writes takes no value, or =low-risk; not \"%s\"",
-	            value);
-	return FALSE;
+	return TRUE;
 }
 
 int
@@ -4461,6 +4467,8 @@ main(
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
+	gboolean apply_writes = FALSE;
+	gboolean apply_low_risk = FALSE;
 	gboolean stage = FALSE;
 	g_autofree gchar *reconciliation_matcher = NULL;
 	gint reconciliation_threshold = 80;
@@ -4483,11 +4491,12 @@ main(
 		  "Output as table, json, yaml or csv", "FORMAT" },
 		{ "quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet,
 		  "Print only the data", NULL },
-		{ "apply-writes", 0, G_OPTION_FLAG_OPTIONAL_ARG, G_OPTION_ARG_CALLBACK,
-		  (gpointer)parse_apply_writes,
+		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
 		  "mcp only: let write tools apply instead of staging; "
-		  "=low-risk applies only what the server classes as low risk",
-		  "low-risk" },
+		  "--apply-writes=low-risk applies only what the server classes "
+		  "as low risk", NULL },
+		{ "apply-writes-low-risk", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,
+		  &apply_low_risk, "mcp only: --apply-writes=low-risk", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
 		  "create/update/delete/act/dunning sweep/dedupe/journal post/sequence enroll/"
 		  "lead convert/billing/arbitrage record|close|reopen|abandon|execute/"
@@ -4827,7 +4836,8 @@ main(
 		"Exit codes: 2 usage, 3 not found, 4 conflict, 5 auth, 6 unsupported,\n"
 		"7 network, 8 validation, 1 anything else.\n");
 
-	if (!g_option_context_parse(options, &argc, &argv, &error))
+	if (!spell_apply_writes_low_risk(argc, argv, &error) ||
+	    !g_option_context_parse(options, &argc, &argv, &error))
 	{
 		g_printerr("%s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -4917,8 +4927,10 @@ main(
 		}
 		cli.session_cookie = session_cookie;
 	}
-	cli.apply_writes = apply_writes_flag;
-	cli.apply_low_risk = apply_low_risk_flag;
+	/* Both given: the wider wins, as two flags each meaning "at least
+	 * this much" would. */
+	cli.apply_writes = apply_writes;
+	cli.apply_low_risk = apply_low_risk && !apply_writes;
 	cli.stage = stage;
 
 	/*
@@ -4926,7 +4938,7 @@ main(
 	 * --token: a flag that quietly does nothing on nine of ten commands
 	 * teaches that it did something.
 	 */
-	if ((apply_writes_flag || apply_low_risk_flag) &&
+	if ((apply_writes || apply_low_risk) &&
 	    (0 != g_strcmp0(args[0], "mcp")))
 	{
 		g_printerr("venturectl: --apply-writes only means something to "

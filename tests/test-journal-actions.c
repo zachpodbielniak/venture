@@ -410,6 +410,84 @@ test_mcp_stages(Fixture *fixture, gconstpointer data)
 	g_free(result.err);
 }
 
+/*
+ * --apply-writes=low-risk through the real stdio client: a ticket (low
+ * risk) is created at once, while deleting the draft journal (a delete,
+ * and money) waits in the confirmation queue.
+ *
+ * What breaks if this regresses: the spelling an operator writes either
+ * fails to start the server, or applies a write the setting exists to
+ * hold.
+ */
+static void
+test_mcp_low_risk(Fixture *fixture, gconstpointer data)
+{
+	gint64 id = draft(fixture, TRUE);
+	g_autofree gchar *input = g_strdup_printf(
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"venture_create\",\"arguments\":{\"type\":\"ticket\",\"values\":{\"title\":\"Low risk\"}}}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"venture_delete\",\"arguments\":{\"type\":\"journal\",\"id\":%" G_GINT64_FORMAT "}}}\n", id);
+	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) pending = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_TICKET);
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", fixture->url,
+		"--apply-writes=low-risk", "mcp", NULL };
+
+	(void)data;
+	g_subprocess_launcher_setenv(launcher, "VENTURE_TOKEN", "test-local-auth-disabled", TRUE);
+	child = g_subprocess_launcher_spawnv(launcher, args, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, input, NULL, cli_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_assert_true(g_subprocess_get_successful(child));
+
+	/* the ticket landed */
+	venture_query_set_limit(query, 0);
+	tickets = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(tickets->len, ==, 1);
+
+	/* the delete waits, and the journal is still there */
+	pending = venture_confirmation_store_list_pending(venture_context_get_confirmations(fixture->context));
+	g_assert_cmpuint(pending->len, ==, 1);
+	g_assert_cmpint(state(fixture, id), ==, VENTURE_JOURNAL_DRAFT);
+	g_assert_nonnull(strstr(result.err, "applied when low risk"));
+	g_free(result.out);
+	g_free(result.err);
+}
+
+/*
+ * A value other than low-risk is refused, not read as the bare flag:
+ * GOption would otherwise take `--apply-writes=lowrisk` as --apply-writes
+ * and apply everything.
+ */
+static void
+test_apply_writes_spelling(Fixture *fixture, gconstpointer data)
+{
+	g_autoptr(GSubprocessLauncher) launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE);
+	g_autoptr(GSubprocess) child = NULL;
+	g_autoptr(GError) error = NULL;
+	CliResult result = { FALSE, NULL, NULL, NULL };
+	const gchar *args[] = { VENTURE_TEST_BIN_DIR "/venturectl", "--server", fixture->url,
+		"--apply-writes=lowrisk", "mcp", NULL };
+
+	(void)data;
+	child = g_subprocess_launcher_spawnv(launcher, args, &error);
+	g_assert_no_error(error);
+	g_subprocess_communicate_utf8_async(child, NULL, NULL, cli_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	g_assert_false(g_subprocess_get_successful(child));
+	g_assert_nonnull(strstr(result.err, "or =low-risk"));
+	g_free(result.out);
+	g_free(result.err);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -428,5 +506,7 @@ main(int argc, char **argv)
 	g_test_add("/journal-actions/cli-stage", Fixture, GINT_TO_POINTER(3), fixture_set_up, test_cli, fixture_tear_down);
 	g_test_add("/journal-actions/tools", Fixture, NULL, fixture_set_up, test_tools, fixture_tear_down);
 	g_test_add("/journal-actions/mcp-always-stages", Fixture, NULL, fixture_set_up, test_mcp_stages, fixture_tear_down);
+	g_test_add("/journal-actions/mcp-low-risk", Fixture, NULL, fixture_set_up, test_mcp_low_risk, fixture_tear_down);
+	g_test_add("/journal-actions/apply-writes-spelling", Fixture, NULL, fixture_set_up, test_apply_writes_spelling, fixture_tear_down);
 	return g_test_run();
 }
