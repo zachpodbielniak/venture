@@ -3,6 +3,7 @@
 /* Routing rules, the round-robin rota and the scoring formula. The lead
  * service owns the transaction and the timeline; this file only evaluates. */
 #include "venture.h"
+#include "formula/venture-formula-private.h"
 #include <string.h>
 
 static gboolean
@@ -195,6 +196,13 @@ venture_lead_routing_validate_rule(VentureDatabase *database, VentureEntity *rul
 	g_autofree gchar *conditions = NULL;
 	g_object_get(rule, "conditions", &conditions, NULL);
 	if (!venture_lead_conditions_validate(conditions, error)) return FALSE;
+	if (VENTURE_IS_LEAD_SCORING_RULE(rule))
+	{
+		g_autofree gchar *expression = NULL;
+		g_object_get(rule, "expression", &expression, NULL);
+		if (!venture_string_is_empty(expression) &&
+		    !venture_formula_check(expression, VENTURE_FORMULA_KIND_INT, error)) return FALSE;
+	}
 	if (VENTURE_IS_LEAD_ROUTING_RULE(rule))
 	{
 		g_autofree gchar *assign_to = NULL;
@@ -340,12 +348,55 @@ venture_lead_routing_apply(VentureDatabase *database, VentureEntity *lead,
 	return TRUE;
 }
 
+/* The lead as a formula reads it: its fields as the API shows them (no
+ * sensitive one), and each custom attribute again at the top level where
+ * no field has its name -- as conditions find them. */
+static gchar *
+lead_formula_record(VentureEntity *lead)
+{
+	g_autoptr(JsonNode) node = venture_serializable_to_json(VENTURE_SERIALIZABLE(lead), FALSE);
+	JsonObject *object = json_node_get_object(node);
+	JsonObject *attributes = json_object_has_member(object, "attributes") ?
+		json_object_get_object_member(object, "attributes") : NULL;
+	g_autoptr(GList) names = attributes != NULL ? json_object_get_members(attributes) : NULL;
+	GList *iter;
+	for (iter = names; iter != NULL; iter = iter->next)
+		if (!json_object_has_member(object, iter->data))
+			json_object_set_member(object, iter->data, json_node_copy(json_object_get_member(attributes, iter->data)));
+	return json_to_string(node, FALSE);
+}
+
+/* A rule with an expression scores what the expression yields, and fires
+ * when that is not 0. One whose formula fails (a panic, a limit) scores
+ * nothing and says why in the log; the lead is still scored. */
+static gboolean
+rule_points(VentureEntity *rule, VentureEntity *lead, gchar **record, gint64 *points)
+{
+	g_autofree gchar *expression = NULL;
+	g_autoptr(GError) local_error = NULL;
+	g_object_get(rule, "expression", &expression, NULL);
+	if (venture_string_is_empty(expression))
+	{
+		g_object_get(rule, "points", points, NULL);
+		return TRUE;
+	}
+	if (*record == NULL) *record = lead_formula_record(lead);
+	if (!venture_formula_eval_int(expression, *record, points, &local_error))
+	{
+		g_message("leads: scoring rule %" G_GINT64_FORMAT "'s expression did not run, so it scores nothing: %s",
+			venture_entity_get_id(rule), local_error->message);
+		*points = 0;
+	}
+	return *points != 0;
+}
+
 gboolean
 venture_lead_scoring_compute(VentureDatabase *database, VentureEntity *lead,
 	gint64 *score, gchar **rule_ids, GError **error)
 {
 	g_autoptr(GPtrArray) rules = NULL;
 	g_autoptr(GString) fired = g_string_new("");
+	g_autofree gchar *record = NULL;
 	guint i;
 	*score = 0;
 	*rule_ids = NULL;
@@ -361,9 +412,9 @@ venture_lead_scoring_compute(VentureDatabase *database, VentureEntity *lead,
 		gint64 points = 0;
 		gboolean matched = FALSE;
 		if (!active(rule)) continue;
-		g_object_get(rule, "conditions", &conditions, "points", &points, NULL);
+		g_object_get(rule, "conditions", &conditions, NULL);
 		if (!venture_lead_conditions_match(database, lead, conditions, &matched, error)) return FALSE;
-		if (!matched) continue;
+		if (!matched || !rule_points(rule, lead, &record, &points)) continue;
 		*score += points;
 		g_string_append_printf(fired, "%s%" G_GINT64_FORMAT, fired->len > 0 ? "," : "", venture_entity_get_id(rule));
 	}

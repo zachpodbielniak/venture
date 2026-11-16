@@ -476,6 +476,61 @@ test_scoring(Fixture *f, gconstpointer data)
 	}
 }
 
+/* A scoring rule's expression gives its points from the lead -- fields
+ * and custom attributes alike -- when its conditions hold; it fires when
+ * the points are not 0, and a formula that fails scores nothing without
+ * stopping the others. A formula that does not compile is refused on save. */
+static void
+test_scoring_expression(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) sized = record(f, "lead_scoring_rule", "Sized");
+	g_autoptr(VentureEntity) idle = record(f, "lead_scoring_rule", "Idle");
+	g_autoptr(VentureEntity) broken = record(f, "lead_scoring_rule", "Broken");
+	g_autoptr(VentureEntity) bad = record(f, "lead_scoring_rule", "Bad");
+	g_autoptr(VentureEntity) inquiry = lead(f, "Inquiry", "web");
+	g_autoptr(VentureEntity) history = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *fired = NULL;
+	g_autofree gchar *expected = NULL;
+	gint64 score = -1;
+	(void)data;
+	g_object_set(sized, "active", TRUE, "conditions", "source=web", "points", (gint64)999,
+		"expression", "when(str_of(r, \"country\") == \"US\", 25) + i64_of(r, \"employees\") / 100", NULL);
+	save(f, sized);
+	g_object_set(idle, "active", TRUE, "expression", "when(has_field(r, \"never_set\"), 5)", NULL);
+	save(f, idle);
+	g_object_set(broken, "active", TRUE, "expression", "field_i64(r, \"never_set\").unwrap()", NULL);
+	save(f, broken);
+
+	/* refused on save: not a score, and a name nobody defined */
+	g_object_set(bad, "active", TRUE, "expression", "str_of(r, \"source\")", NULL);
+	g_assert_false(venture_database_save(f->db, bad, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "i64"));
+	g_clear_error(&error);
+	g_object_set(bad, "expression", "10 +\n zork", NULL);
+	g_assert_false(venture_database_save(f->db, bad, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "2:2"));
+	g_clear_error(&error);
+
+	venture_entity_set_attribute(inquiry, "country", "US");
+	venture_entity_set_attribute(inquiry, "employees", "1250");
+	save(f, inquiry);
+	g_object_get(inquiry, "score", &score, NULL);
+	g_assert_cmpint(score, ==, 37);
+	history = last_history(f, inquiry);
+	g_object_get(history, "rule-ids", &fired, NULL);
+	expected = g_strdup_printf("%" G_GINT64_FORMAT, venture_entity_get_id(sized));
+	g_assert_cmpstr(fired, ==, expected);
+
+	/* the conditions still gate the expression */
+	g_object_set(inquiry, "source", "email", NULL);
+	save(f, inquiry);
+	g_object_get(inquiry, "score", &score, NULL);
+	g_assert_cmpint(score, ==, 0);
+}
+
 /* A hand-typed score is kept and marked manual until rescored. */
 static void
 test_manual_override(Fixture *f, gconstpointer data)
@@ -769,6 +824,7 @@ main(int argc, char **argv)
 	g_test_add("/lead-routing/assign-venture", Fixture, NULL, setup, test_assign_venture, teardown);
 	g_test_add("/lead-routing/reroute", Fixture, NULL, setup, test_reroute, teardown);
 	g_test_add("/lead-routing/scoring", Fixture, NULL, setup, test_scoring, teardown);
+	g_test_add("/lead-routing/scoring-expression", Fixture, NULL, setup, test_scoring_expression, teardown);
 	g_test_add("/lead-routing/manual-override", Fixture, NULL, setup, test_manual_override, teardown);
 	g_test_add("/lead-routing/generic-refused", Fixture, NULL, setup, test_generic_refused, teardown);
 	g_test_add("/lead-routing/reports", Fixture, NULL, setup, test_reports, teardown);

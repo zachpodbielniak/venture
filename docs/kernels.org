@@ -26,12 +26,13 @@ Tallow can run two ways: rendered to C and compiled, or interpreted by =suet=, i
 |------+-------------+-----|
 | The kernels (=src/kernels/vk_*.tlw=) | rendered to C at build time, compiled by gcc at =-O2= with VENTURE's own warnings, linked into =libventure-core.a= and =libventure.a= | they are the hot path of every report and posting, and they are trusted code reviewed with the rest of VENTURE |
 | =.tlw= plugins | interpreted by suet inside the server, sandboxed: an instruction budget, a memory cap, no file, network, process or environment access unless granted | they are extensions, possibly written by someone else; see [[file:tallow-plugins.org][Tallow plugins]] |
+| User formulas (the =expression= of a form rule, an alert rule or a lead scoring rule) | interpreted by suet inside the server, one sandboxed VM per formula, cached: no capability can be granted, a tighter instruction budget and memory cap (=formulas.*=) | they are typed into records by people, so they get the least trust of all; see [[file:formulas.org][Formulas]] |
 
 The kernels a plugin may call are the ones marked =/* @export */= in their source; =tools/venture-tallow-bindings.sh= turns those into the =venture_kernels= host module and one C host function each.
 
-A plugin that needs kernel math does not interpret a copy of it: the host module it imports declares the kernels as =extern fn= bound to the compiled =vk_*= functions, so a plugin's =multiply_ppm= is the same machine code the server's is. The kernel sources are never on the VM's search path. =make kernels-native-check= (part of =make test=) checks both directions: the =vk_*= symbols are defined in both archives, and the kernel object references nothing of the VM.
+A plugin or a formula that needs kernel math does not interpret a copy of it: the host module it imports declares the kernels as =extern fn= bound to the compiled =vk_*= functions, so a plugin's =multiply_ppm= is the same machine code the server's is. The kernel sources are never on the VM's search path. =make kernels-native-check= (part of =make test=) checks both directions: the =vk_*= symbols are defined in both archives, and the kernel object references nothing of the VM.
 
-Code that is not a plugin but should still be sandboxed -- a formula a user types into a record, say -- could run on the VM the same way later; that is a choice to make per feature, and none does today.
+So the line is: kernels stay native, always; plugins and user formulas are interpreted, sandboxed, and call the kernels natively through =venture_kernels=. Another kind of user-supplied code would join the interpreted side the same way -- a choice to make per feature, with its own limits.
 
 ** How the build uses them
 :PROPERTIES:

@@ -22,6 +22,7 @@
 
 #include "venture.h"
 #include "marketdata/venture-marketdata-private.h"
+#include "formula/venture-formula-private.h"
 
 #include <math.h>
 #include <string.h>
@@ -239,6 +240,7 @@ alerts_validate_rule(
 	g_autofree gchar *group_key = NULL;
 	g_autofree gchar *pattern = NULL;
 	g_autofree gchar *notify = NULL;
+	g_autofree gchar *expression = NULL;
 	VentureAlertKind kind;
 	VentureMarketdataBasis basis;
 	gdouble number;
@@ -257,7 +259,13 @@ alerts_validate_rule(
 	             "cooldown-minutes", &cooldown, "group-key", &group_key,
 	             "notify-username", &notify, "watchlist-id", &watchlist,
 	             "instrument-id", &instrument, "category-id", &category, "venue-id", &venue,
-	             "data-source-id", &source, NULL);
+	             "data-source-id", &source, "expression", &expression, NULL);
+
+	/* A formula every would-be hit must pass, compiled now so a mistake
+	 * is told to whoever wrote it, at its line and column. */
+	if (!venture_string_is_empty(expression) &&
+	    !venture_formula_check(expression, VENTURE_FORMULA_KIND_BOOL, error))
+		return FALSE;
 
 	/* What it watches. */
 	if (alerts_kind_needs_scope(kind) && (watchlist <= 0) && (instrument <= 0) && (category <= 0))
@@ -654,6 +662,7 @@ typedef struct
 	gdouble			 number;
 	gchar			*pattern;		/* case-folded */
 	gint64			 window_hours;
+	gchar			*expression;		/* a formula each candidate must pass, or NULL */
 } AlertsRule;
 
 typedef struct
@@ -687,6 +696,7 @@ alerts_rule_free(gpointer data)
 	g_free(rule->venue_key);
 	g_free(rule->group_key);
 	g_free(rule->pattern);
+	g_free(rule->expression);
 	g_free(rule);
 }
 
@@ -852,6 +862,7 @@ alerts_freeze_rule(
 	g_autoptr(VentureMoney) threshold = NULL;
 	g_autofree gchar *group_key = NULL;
 	g_autofree gchar *pattern = NULL;
+	g_autofree gchar *expression = NULL;
 	AlertsRule *rule;
 	gint64 rule_source;
 	gint64 watchlist_id;
@@ -862,7 +873,7 @@ alerts_freeze_rule(
 	g_object_get(record, "data-source-id", &rule_source, "watchlist-id", &watchlist_id,
 	             "instrument-id", &instrument_id, "category-id", &category_id,
 	             "venue-id", &venue_id, "threshold", &threshold, "group-key", &group_key,
-	             "pattern", &pattern, NULL);
+	             "pattern", &pattern, "expression", &expression, NULL);
 
 	if ((rule_source > 0) && (rule_source != source_id))
 		return NULL;
@@ -883,6 +894,9 @@ alerts_freeze_rule(
 
 	if (!venture_string_is_empty(pattern))
 		rule->pattern = g_utf8_casefold(pattern, -1);
+
+	if (!venture_string_is_empty(expression))
+		rule->expression = g_steal_pointer(&expression);
 
 	if (!venture_string_is_empty(group_key))
 		rule->group_key = g_steal_pointer(&group_key);
@@ -1401,6 +1415,32 @@ alerts_sink_add(
 	JsonObject		*candidate
 ){
 	g_autofree gchar *key = NULL;
+
+	/* The rule's formula has the last word on every candidate, whatever
+	 * its kind: it reads the candidate as the hit would record it. One
+	 * that fails (a panic, a limit) passes nothing, and the run says so. */
+	if (NULL != rule->expression)
+	{
+		g_autoptr(GError) local_error = NULL;
+		gboolean passed;
+
+		passed = FALSE;
+		if (!venture_formula_eval_bool_object(rule->expression, candidate, &passed, &local_error))
+		{
+			g_autofree gchar *note = NULL;
+
+			note = g_strdup_printf("rule %" G_GINT64_FORMAT "'s expression did not run, so it "
+			                       "passed nothing: %s", rule->id, local_error->message);
+			g_message("alerts: %s", note);
+			alerts_sink_note(sink, note);
+		}
+
+		if (!passed)
+		{
+			json_object_unref(candidate);
+			return;
+		}
+	}
 
 	key = g_strdup_printf("%" G_GINT64_FORMAT "|%s", rule->id,
 	                      json_object_get_string_member(candidate, "subject"));

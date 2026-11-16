@@ -1130,6 +1130,62 @@ test_alerts_cooldown(
 }
 
 /*
+ * A rule's expression is the last word on every candidate: it reads the
+ * candidate as the hit would record it, a failing formula passes nothing
+ * and the evaluation says why, and a formula that does not compile is
+ * refused when the rule is written.
+ *
+ * What breaks if this regresses: a filter that silently passes everything
+ * when it panics, or a typo found only when no alert ever fires.
+ */
+static void
+test_alerts_expression(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) rule = NULL;
+	g_autoptr(VentureMoney) threshold = money_of("1.20 USD");
+	g_autoptr(JsonObject) plain = NULL;
+	g_autoptr(JsonObject) filtered = NULL;
+	g_autoptr(JsonObject) failing = NULL;
+	JsonArray *notes;
+
+	(void)user_data;
+
+	seed_store(fixture);
+	rule = rule_on(fixture, VENTURE_ALERT_KIND_BELOW, "ore");
+	g_object_set(rule, "threshold", threshold, NULL);
+	save(fixture, rule);
+	plain = evaluate(fixture, rule, FALSE);
+	g_assert_cmpint(report_int(plain, "candidates"), ==, 2);
+
+	/* only realm-b's offer passes */
+	g_object_set(rule, "expression",
+	             "str_of(r, \"venue_key\") == \"realm-b\" && i64_of(r, \"observed\") <= 110 &&\n"
+	             "str_of(r, \"instrument_name\") == \"Copper Ore\"", NULL);
+	save(fixture, rule);
+	filtered = evaluate(fixture, rule, FALSE);
+	g_assert_cmpint(report_int(filtered, "candidates"), ==, 1);
+	g_assert_true(report_has(filtered, "realm-b|ore"));
+	g_assert_false(report_has(filtered, "realm-a|ore"));
+
+	/* a formula that panics passes nothing, and the report says so */
+	g_object_set(rule, "expression", "field_i64(r, \"nothing\").unwrap() > 0", NULL);
+	save(fixture, rule);
+	failing = evaluate(fixture, rule, FALSE);
+	g_assert_cmpint(report_int(failing, "candidates"), ==, 0);
+	notes = json_object_get_array_member(failing, "notes");
+	g_assert_cmpuint(json_array_get_length(notes), >=, 1);
+	g_assert_nonnull(strstr(json_array_get_string_element(notes, 0), "expression did not run"));
+
+	/* refused on save, at the formula's own position */
+	g_object_set(rule, "expression", "str_of(r, \"venue_key\") ==\n zork", NULL);
+	save_refused(fixture, rule, "2:2");
+	g_object_set(rule, "expression", "i64_of(r, \"observed\")", NULL);
+	save_refused(fixture, rule, "bool");
+}
+
+/*
  * One evaluation writes at most VENTURE_ALERTS_MAX_HITS_PER_RUN hits and
  * says how many it left out; a category scope reaches instruments the
  * store files under it that nobody promoted.
@@ -2761,6 +2817,7 @@ main(
 	ADD("/alerts/accounts", test_alerts_accounts);
 	ADD("/alerts/cooldown", test_alerts_cooldown);
 	ADD("/alerts/cap", test_alerts_cap);
+	ADD("/alerts/expression", test_alerts_expression);
 	ADD("/alerts/delivery", test_alerts_delivery);
 	ADD("/alerts/any-realm", test_alerts_any_realm);
 	ADD("/alerts/deal", test_alerts_deal);

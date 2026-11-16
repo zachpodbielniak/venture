@@ -206,6 +206,14 @@ venturectl update lead 42 score=80            # marks score_manual
 venturectl leads rescore 42                   # clears it and recomputes
 #+end_src
 
+A rule may instead compute its points: its =expression= is a Tallow formula yielding an =i64=, compiled when the rule is saved and evaluated on the sandboxed VM ([[file:formulas.org][Formulas]]). When the rule's =conditions= hold (an empty =conditions= always holds) it adds what the formula yields, and =points= is unused; it fires, and is named in the history row, only when that is not 0. =r= is the lead without its sensitive fields, with each custom attribute also at the top level, so =when(str_of(r, "country") == "US", 25) + i64_of(r, "employees") / 100= reads a field and an attribute alike. A formula that fails at run time (a panic, a limit) scores nothing for that rule and is logged; the other rules still count.
+
+#+begin_src sh
+venturectl create lead_scoring_rule organization_id=1 name='Web, by size' active=true \
+  'conditions=source=web' \
+  'expression=when(str_of(r, "country") == "US", 25) + i64_of(r, "employees") / 100'
+#+end_src
+
 The formula is rule-based; there is no model training, behavioural
 tracking or external enrichment. The assistant may propose a score beside
 it, below; the rule score stays the lead's score until a person accepts one.

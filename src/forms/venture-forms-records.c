@@ -426,8 +426,12 @@ static const VentureFieldDecl venture_form_rule_fields[] = {
 	VENTURE_FIELD("position", "Order", "First matching navigation rule wins", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_ENUM("action", "Action", "What happens when the conditions match", venture_form_rule_action_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("target-key", "Target", "Question key, or page-break key for a jump; empty for end", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("conditions", "Conditions", "Array of field, operator and value objects; no expressions or scripts", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("any-condition", "Any condition", "Match any condition instead of requiring all", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("conditions", "Conditions", "Array of field, operator and value objects; ignored when an expression is set", VENTURE_FIELD_KIND_JSON, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("any-condition", "Any condition", "Match any condition instead of requiring all", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("expression", "Expression",
+	              "Optional Tallow formula used instead of the conditions: a bool over the earlier answers it names, "
+	              "e.g. i64_of(r, \"seats\") > 10 && field_has(r, \"plan\", \"team\"); questions on an earlier page than the target",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE)
 };
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureFormRule, venture_form_rule, venture_form_rule_fields,
 	venture_entity_class_set_labels(VENTURE_ENTITY_CLASS(klass), "Form rule", NULL);)

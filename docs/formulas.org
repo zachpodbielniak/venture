@@ -1,0 +1,149 @@
+#+title: Formulas
+#+description: User formulas: one Tallow expression on a form rule, an alert rule or a lead scoring rule, checked on save and evaluated on the sandboxed suet VM with no capabilities; syntax, accessors, examples, limits and configuration
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-11-15]
+#+updated: [2026-11-15]
+#+version: 0.1.0
+
+* Formulas
+
+A formula is one [[file:../deps/tallow/README.org][Tallow]] expression a person types into a record, where a fixed vocabulary of conditions is not enough. Three records take one, in a field called =expression=:
+
+| Record | The formula is | It reads (=r=) | When it is set |
+|--------+----------------+----------------+----------------|
+| =form_rule= | a =bool=: does the rule match | the answers to the earlier questions it names | used instead of =conditions= |
+| =alert_rule= | a =bool=: does this would-be hit pass | the candidate hit, as the hit would record it | applied to every candidate, after the rule's kind found it |
+| =lead_scoring_rule= | an =i64=: the points the rule adds | the lead | gives the points when the rule's =conditions= hold (=points= is then unused) |
+
+The formula is compiled when the record is saved: a mistake is refused there, with the compiler's diagnostic, never found later by an alert that silently never fires. It is evaluated on =suet=, Tallow's bytecode VM, inside the server, with the sandbox on and nothing granted -- the same VM =.tlw= plugins run on ([[file:tallow-plugins.org][Tallow plugins]]), with tighter limits and no host module but the accessors and the compiled kernels.
+
+* Syntax
+:PROPERTIES:
+:CUSTOM_ID: syntax
+:END:
+
+A formula is the body of a function the server writes around it:
+
+#+begin_src tallow
+import formula;
+import venture_kernels;
+pure fn venture_formula(r: str) -> bool {	/* i64 for a scoring rule */
+	return (
+YOUR FORMULA
+	);
+}
+#+end_src
+
+So it is exactly one expression: operators (=&& || ! == != < <= > >= + - * / %=), calls, method calls (=s.lower()=, =s.starts_with("x")=, =s.contains("x")=, =s.len()=), string literals with interpolation (="${a}-${b}"=), =match= as an expression, optionals (=x ?? default=, =x.is_some()=, =x == none=) and =/* comments */=. It may span several lines. A =match= arm may be a block (={ let x = ...; x > 1 }=), the one place a =;= may appear. It cannot declare anything: no =fn=, no =import=, no =let= outside a block, no =main=. Nothing it does can have an effect: the function is =pure=, so a call to anything impure (=print=, =read_file=, =getenv=, =run_command=) is refused when it compiles, and the sandbox would refuse it anyway.
+
+=r= is the record as JSON text. Read it with the accessors below; there is no JSON parser in a formula and none is needed.
+
+*Precedence.* =??= binds loosest of all operators, so =field_i64(r, "n") ?? 0 > 3= means =field_i64(r, "n") ?? (0 > 3)= and is refused (=expected i64, found bool=). Write =(field_i64(r, "n") ?? 0) > 3=, or use the =_of= accessors, which already have the default: =i64_of(r, "n") > 3=.
+
+* Accessors
+:PROPERTIES:
+:CUSTOM_ID: accessors
+:END:
+
+The =formula= module (=src/formula/venture-formula.tlw=) is imported unqualified. Every accessor takes a top-level member name. A member that is absent, =null=, or of another type reads as =none= (the =_of= forms: as the zero value), so a formula never fails because a record lacks a field.
+
+| Accessor | Gives |
+|----------+-------|
+| =field_str(r, name) -> own ?str= | a string's value; a number or a boolean as written; =none= for a list or an object |
+| =field_i64(r, name) -> ?i64= | a JSON integer, or a string that is one (form answers arrive as text) |
+| =field_f64(r, name) -> ?f64= | any JSON number, or a string that is one; never =NaN= or infinite |
+| =field_bool(r, name) -> ?bool= | =true= / =false=, or the strings ="true"= / ="false"= |
+| =has_field(r, name) -> bool= | present, not =null=, not an empty string, not an empty list |
+| =field_has(r, name, choice) -> bool= | the member is the string =choice=, or a list with =choice= among its strings (a multiple-choice answer) |
+| =str_of(r, name) -> own str= | =field_str=, or =""= |
+| =i64_of(r, name) -> i64= | =field_i64=, or =0= |
+| =f64_of(r, name) -> f64= | =field_f64=, or =0.0= |
+| =bool_of(r, name) -> bool= | =field_bool=, or =false= |
+| =when(cond, points) -> i64= | =points= when =cond= holds, else =0=: a condition as a score |
+
+The compiled kernels are there too, through =venture_kernels= ([[file:tallow-plugins.org::#host-modules][the same bindings plugins get]]): =billing_rate_bp(i64_of(r, "won"), i64_of(r, "total")).is_some()=. They run as native code with their contracts guarded; a violated =requires= is an error for that evaluation, not an abort.
+
+* Where formulas go
+:PROPERTIES:
+:CUSTOM_ID: places
+:END:
+
+** Form rules
+
+A form rule with an =expression= ignores its =conditions= (they may be =[]=). The questions it reads are the ones whose key it quotes -- ="seats"= in =i64_of(r, "seats")= -- and only their answers reach it, so a formula cannot peek at a later or a hidden answer any more than a condition can. The rules for conditions hold: 1–16 questions read, each earlier than the target, none a file upload; and an expression rule may not read or target questions in a repeat group (use conditions there). The browser never runs a formula, so the server decides: a =show=, =hide= or =require= rule must read questions on an earlier page than its target, and the loader keeps the server's outcome (=server: true= in =data-vf-rules=). =jump= and =end= are decided after the page is submitted, as always.
+
+#+begin_src sh
+venturectl create form_rule form_id=7 name='Team size' action=show target_key=team_name \
+  'conditions=[]' \
+  'expression=i64_of(r, "seats") > 10 && field_has(r, "plan", "team")'
+#+end_src
+
+Answers are strings (or lists of strings for multiple choice); =i64_of= and =f64_of= read numeric text, and =field_has= reads a choice. See [[file:forms.org::*Conditional questions and branching][Conditional questions and branching]].
+
+** Alert rules
+
+An alert rule's =expression= is the last word on every candidate its kind finds, whatever the kind. =r= is the candidate as the hit would record it: =rule_id=, =kind=, =subject=, =venue_key=, =venue_name=, =instrument_key=, =instrument_name=, =observed_at=, and per kind =observed= / =observed_currency= (minor units), =reference=, =quantity=, =observed_number=, =reference_number=, =spread=, =profit=, =other_venue_key=, =title=, =url=, =account_key=, =expires_at= and so on ([[file:market-data.org::*Alerts][Alerts]]). A candidate the formula refuses is not a hit and is not counted.
+
+#+begin_src sh
+venturectl create alert_rule name='Cheap ore, Silver realms only' kind=below \
+  instrument_id=12 threshold='1.20 USD' \
+  'expression=str_of(r, "venue_name").starts_with("Silver") && i64_of(r, "quantity") >= 5'
+#+end_src
+
+** Lead scoring rules
+
+A scoring rule with an =expression= scores what the formula yields when its =conditions= hold (an empty =conditions= always holds), and fires -- adds its id to the history row -- when that is not 0. =r= is the lead as the API shows it, without sensitive fields, and each custom attribute again at the top level where no field has its name, so =i64_of(r, "employees")= reads an attribute as =employees=employees= in a condition would.
+
+#+begin_src sh
+venturectl create lead_scoring_rule name='Web, by size' active=true 'conditions=source=web' \
+  'expression=when(str_of(r, "country") == "US", 25) + i64_of(r, "employees") / 100'
+#+end_src
+
+See [[file:leads.org::*Scoring formula][Scoring formula]].
+
+* When a formula fails
+:PROPERTIES:
+:CUSTOM_ID: failure
+:END:
+
+On save, a formula that does not compile is a validation error on =Expression= carrying the Tallow diagnostic with its line and column counted in the formula itself -- =2:3: error[E0301]: unknown name `zork`= -- or =end:= when the compiler only noticed at the end (an unclosed expression, a =bool= where an =i64= belongs). A formula that tries to leave the expression -- a =)= or =}= it did not open, a =;= outside a block, an unclosed string or comment, a heredoc, a backtick, =$(...)= -- is refused before the compiler sees it.
+
+At run time a formula can still panic (=.unwrap()= of =none=, a kernel contract) or run out of steps or memory. That is an error for that one evaluation, logged in the server log, never a crash, and it means:
+
+| Where | A failed evaluation |
+|-------+---------------------|
+| form rule | the rule does not match |
+| alert rule | the candidate is dropped; the evaluation's report notes the rule's failure |
+| lead scoring rule | the rule scores nothing; the other rules still count |
+
+* Limits and configuration
+:PROPERTIES:
+:CUSTOM_ID: config
+:END:
+
+| Setting | Default | Effect |
+|---------+---------+--------|
+| =formulas.allow= | =true= | accept and evaluate formulas; off, a record with an =expression= is refused on save and a stored one never matches |
+| =formulas.max_steps= | =100000= | VM instructions per evaluation; past it the evaluation fails with =limit reached: instructions= |
+| =formulas.max_memory= | =8388608= | heap bytes per evaluation; past it, =limit reached: memory= |
+| =formulas.cache_size= | =256= | compiled formulas kept, least recently used dropped first |
+
+Every formula runs with the sandbox on, no capability (there is no =formulas= equivalent of =plugins.tallow_capabilities=), GObject Introspection closed, and a call depth of 1000. The standard library is the plugins' (=plugins.tallow_std_dir=). The settings are read when the server starts; see [[file:configuration.org][Configuration]].
+
+* How it works
+:PROPERTIES:
+:CUSTOM_ID: internals
+:END:
+
+=src/formula/venture-formula.c= is the one evaluator the three records share (=src/formula/venture-formula-private.h=; server-only, the CLI never links the VM):
+
+1. *Shape.* A small lexer walks the text with a stack of what is open -- brackets, strings, =${...}= interpolations -- and refuses a closer that does not match, a =;= outside a block, and anything left open, so the text cannot close the wrapper and declare a function of its own. At most 4096 bytes, UTF-8.
+2. *Wrap and compile.* The text goes into the wrapper above, on its own lines starting at column 1, and a fresh =TallowSuet= compiles it: sandbox on, nothing granted, =restrict-gir=, the =formulas= limits, the =formula= module and =venture_kernels= as host modules. Diagnostics are moved from the wrapper's lines to the formula's, and the excerpts quoting the wrapper are dropped.
+3. *Second lock.* The compiled program must hold exactly one callable function, =venture_formula(str) -> bool= (or =i64=), not fallible.
+4. *Cache.* The VM is kept under the key (kind, exact text) in a bounded LRU, behind one mutex; a refusal is cached too. Checking at save time fills the cache, so the first evaluation does not compile again.
+5. *Evaluate.* An evaluation holds a reference to the entry (eviction cannot free it under the call) and calls the VM under the entry's own lock: a VM runs one call at a time, and the server's workers run in parallel.
+
+Kernels stay native: a formula, like a plugin, calls the compiled =vk_*= code through host functions, never an interpreted copy ([[file:kernels.org::#native-vs-interpreted][Native vs interpreted]]).
+
+Tests: =tests/test-formula.c= (compile and diagnostics, accessors, steps, memory, panic, escapes, the cache, threads), and the =expression= cases in =tests/test-forms.c=, =tests/test-alerts.c= and =tests/test-lead-routing.c=.

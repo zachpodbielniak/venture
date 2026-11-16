@@ -8,6 +8,7 @@
 #include "venture.h"
 #include <string.h>
 #include <errno.h>
+#include "formula/venture-formula-private.h"
 
 struct _VentureContext
 {
@@ -140,6 +141,9 @@ venture_context_new(
 		root = g_build_filename(state, "attachments", NULL);
 		g_object_set(self->mail_outbox, "attachment-root", root, NULL);
 	}
+
+	/* User formulas take their limits from this configuration. */
+	venture_formula_configure(config);
 
 	/* A payment answered with a receipt, once its transaction commits. */
 	venture_financial_documents_install_receipts(self);

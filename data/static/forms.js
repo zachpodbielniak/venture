@@ -113,7 +113,8 @@
 	}
 
 	/* Matches the server's closed condition vocabulary. Prior-page outcomes
-	 * are supplied as booleans, never as hidden copies of earlier answers. */
+	 * are supplied as booleans, never as hidden copies of earlier answers;
+	 * so is every expression rule's, which only the server evaluates. */
 	function wireRules(form) {
 		var rules = JSON.parse(form.getAttribute("data-vf-rules") || "[]");
 		var page = Number(form.getAttribute("data-vf-page") || 0);
@@ -127,7 +128,7 @@
 			return op === "greater_than" ? number > Number(wanted) : op === "less_than" && number < Number(wanted);
 		}
 		function match(rule, values) {
-			if (rule.from_page !== page) { return rule.matched; }
+			if (rule.server || rule.from_page !== page) { return rule.matched; }
 			var matches = rule.conditions.map(function (condition, index) {
 				if (!form.elements.namedItem(condition.field)) { return rule.condition_matches[index]; }
 				var answers = values.getAll(condition.field);

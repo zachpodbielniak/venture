@@ -17,11 +17,11 @@ It is the runtime to reach for when the plugin is mostly a formula: a venue's fe
 :CUSTOM_ID: native-vs-interpreted
 :END:
 
-Only plugins run on the VM. VENTURE's own Tallow -- the money, ledger, billing and trading kernels in =src/kernels/= ([[file:kernels.org][Kernels]]) -- is rendered to C at build time and compiled; it is the hot path of every posting and report, and it is trusted code reviewed with the rest of VENTURE. A plugin is an extension, possibly someone else's, so it gets the VM's confinement.
+Plugins and user formulas run on the VM; VENTURE's own code never does. VENTURE's own Tallow -- the money, ledger, billing and trading kernels in =src/kernels/= ([[file:kernels.org][Kernels]]) -- is rendered to C at build time and compiled; it is the hot path of every posting and report, and it is trusted code reviewed with the rest of VENTURE. A plugin is an extension, possibly someone else's, so it gets the VM's confinement.
 
 The two meet in one place, and the direction matters: a plugin that wants the kernel math calls the compiled kernels. The =venture_kernels= module a plugin imports contains no Tallow code at all, only =extern fn= declarations bound to host functions that call the native =vk_*= functions. The kernel sources are not on the VM's search path, so =import vk_money;= in a plugin fails to compile: there is no way to end up running an interpreted copy that could drift from the server's arithmetic, or run slower. =make test= checks both halves (=test-plugin-tallow=: =kernels/not-interpretable=, =kernels/host-functions=; =make kernels-native-check=).
 
-Other sandboxed code -- a formula an operator types into a record, an alert rule -- could use the same VM later; none does today.
+User formulas -- one Tallow expression on a form rule, an alert rule or a lead scoring rule -- run on the same VM, each compiled on its own sandboxed VM with no capability at all, tighter limits (=formulas.*=) and only the =formula= accessors and =venture_kernels= as host modules ([[file:formulas.org][Formulas]]).
 
 ** A plugin
 :PROPERTIES:

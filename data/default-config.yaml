@@ -365,6 +365,19 @@ plugins:
   # is best-effort and logs a warning.
   required: []
 
+formulas:
+  # User formulas: one Tallow expression stored on a form rule, an alert
+  # rule or a lead scoring rule (their `expression` field), checked when
+  # the record is saved and run on the suet VM with the sandbox on and
+  # nothing granted -- no files, network, programs or environment. Each
+  # evaluation is bounded by max_steps instructions and max_memory bytes;
+  # a formula that hits either counts as no match (no points). Compiled
+  # formulas are cached, at most cache_size of them. See docs/formulas.org.
+  allow: true
+  max_steps: 100000
+  max_memory: 8388608
+  cache_size: 256
+
 modules:
   # Every module VENTURE is made of can be switched off here, as one thing:
   # its record types disappear from the API, the UI, the schema, the AI

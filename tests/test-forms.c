@@ -1953,6 +1953,92 @@ test_rules(Fixture *f, gconstpointer data)
 	}
 }
 
+/* An expression rule reads only the earlier questions it names, is checked
+ * when saved, and is decided by the server: the browser gets its outcome. */
+static void
+test_expression_rules(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) form = make_form(f, "expression-form", VENTURE_FORM_LIVE);
+	g_autoptr(VentureEntity) show = NULL, end = NULL, bad = NULL, response = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) schema = NULL;
+	const gchar *large = "i64_of(r, \"seats\") > 10 && str_of(r, \"kind\") == \"business\"";
+	const gchar *const big[] = { "kind", "business", "seats", "25", "team", "Platform", NULL };
+	const gchar *const small[] = { "kind", "business", "seats", "3", "team", "Forged team", NULL };
+	const gchar *const skipped[] = { "kind", "skip", "seats", "40", "team", "Never asked", NULL };
+	(void)data;
+	add_field(f, form, "kind", "Kind", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 1);
+	add_field(f, form, "seats", "Seats", VENTURE_FORM_FIELD_SHORT_TEXT, TRUE, 2);
+	add_field(f, form, "team_page", "Team", VENTURE_FORM_FIELD_PAGE_BREAK, FALSE, 3);
+	add_field(f, form, "team", "Team name", VENTURE_FORM_FIELD_SHORT_TEXT, FALSE, 4);
+
+	/* conditions may be empty: the expression is used instead */
+	show = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "team", "[]");
+	g_object_set(show, "expression", large, NULL); save(f, show);
+	end = make_rule(f, form, VENTURE_FORM_RULE_END, "", "[]");
+	g_object_set(end, "expression", "str_of(r, \"kind\") == \"skip\"", NULL); save(f, end);
+
+	/* refused on save: a diagnostic at the formula's own position, the
+	 * same page as the target, nothing read, an escape, a later question */
+	bad = make_rule(f, form, VENTURE_FORM_RULE_SHOW, "team", "[]");
+	g_object_set(bad, "expression", "str_of(r, \"kind\") ==\n  zork", NULL); refuse(f, bad, "2:3");
+	g_object_set(bad, "expression", "true) } fn x() -> bool { return (str_of(r, \"kind\") == \"a\"", NULL); refuse(f, bad, "Expression");
+	g_object_set(bad, "expression", "str_of(r, \"nothing\") == \"a\"", NULL); refuse(f, bad, "Rule");
+	g_object_set(bad, "expression", "i64_of(r, \"seats\")", NULL); refuse(f, bad, "bool");
+	g_object_set(bad, "target-key", "seats", "expression", "str_of(r, \"kind\") == \"a\"", NULL); refuse(f, bad, "earlier page");
+	g_object_set(bad, "target-key", "kind", "expression", "str_of(r, \"seats\") == \"a\"", NULL); refuse(f, bad, "Rule");
+
+	g_object_unref(publish(f, form));
+	schema = venture_forms_schema(f->db, form, "/pub/form/expression-form", now, &error);
+	g_assert_no_error(error);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(schema), "rules")), ==, 2);
+
+	/* the rule's own answers decide; the hidden answer is discarded */
+	g_assert_cmpint(submit_pairs(f, form, big, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	{
+		g_autofree gchar *stored = venture_forms_get_string(response, "answers");
+		g_assert_nonnull(strstr(stored, "Platform"));
+	}
+	g_clear_object(&response);
+	g_assert_cmpint(submit_pairs(f, form, small, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	{
+		g_autofree gchar *stored = venture_forms_get_string(response, "answers");
+		g_autofree gchar *omitted = venture_forms_get_string(response, "not-shown");
+		g_assert_null(strstr(stored, "Forged"));
+		g_assert_nonnull(strstr(omitted, "team"));
+	}
+	g_clear_object(&response);
+	g_assert_cmpint(submit_pairs(f, form, skipped, NULL), ==, VENTURE_FORMS_ACCEPTED);
+	response = last_form_response(f);
+	{
+		g_autofree gchar *stored = venture_forms_get_string(response, "answers");
+		g_assert_null(strstr(stored, "Never asked"));
+	}
+
+	/* the matcher, directly: a broken formula is no match, never a crash */
+	{
+		g_autoptr(JsonObject) rule = json_object_new();
+		g_autoptr(JsonObject) values = json_object_new();
+		JsonArray *reads = json_array_new();
+		json_array_add_string_element(reads, "seats");
+		json_object_set_string_member(rule, "expression", "field_i64(r, \"seats\").unwrap() > 1");
+		json_object_set_array_member(rule, "reads", reads);
+		json_object_set_array_member(rule, "conditions", json_array_new());
+		json_object_set_boolean_member(rule, "any", FALSE);
+		json_object_set_string_member(values, "seats", "5");
+		json_object_set_string_member(values, "kind", "unread");
+		g_assert_true(venture_forms_rule_matches(rule, values));
+		json_object_remove_member(values, "seats");
+		g_assert_false(venture_forms_rule_matches(rule, values));
+		/* a question the rule does not name never reaches it */
+		json_object_set_string_member(rule, "expression", "has_field(r, \"kind\")");
+		g_assert_false(venture_forms_rule_matches(rule, values));
+	}
+}
+
 /* Enabling the email limit counts responses received before it was enabled,
  * and compares addresses without case. Refused responses trigger no follow-up. */
 static void
@@ -5534,6 +5620,7 @@ main(int argc, char **argv)
 	g_test_add("/forms/repeat-groups", Fixture, NULL, setup, test_repeat_groups, teardown);
 	g_test_add_func("/forms/rule-vocabulary", test_rule_vocabulary);
 	g_test_add("/forms/rules", Fixture, NULL, setup, test_rules, teardown);
+	g_test_add("/forms/rules/expression", Fixture, NULL, setup, test_expression_rules, teardown);
 	g_test_add("/forms/draft-version", Fixture, NULL, setup, test_draft_version, teardown);
 	g_test_add("/forms/draft-privacy", Fixture, NULL, setup, test_draft_privacy, teardown);
 	g_test_add("/forms/multi-page-retry", Fixture, "retry", setup, test_multi_page, teardown);

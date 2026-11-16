@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-04]
+#+updated: [2026-11-15]
 #+version: 0.6.0
 
 * Configuration
@@ -234,6 +234,7 @@ venture --generate-c-config > ~/.config/venture/config.c
   the confirmation queue (see below)
 - *automation* — the pods file, module paths, shutdown timeout
 - *plugins* — paths (also how an optional plugin is switched on; see below), crispy (=allow_crispy=, on), exec plugins (=allow_exec=, *off*: programs named by a =*.plugin.yaml= manifest, run as the server's user; see [[file:plugins.org][Plugins]]), Tallow plugins (=allow_tallow=, on: =.tlw= files on the sandboxed VM, with =tallow_max_steps=, =tallow_max_memory=, =tallow_capabilities= and =tallow_std_dir=; see below), declarative venture types, required plugins
+- *formulas* — user formulas (Tallow expressions on form, alert and lead scoring rules): =allow= (on), =max_steps=, =max_memory=, =cache_size=; see below and [[file:formulas.org][Formulas]]
 - *ui* — look (=classic= or =industrial=, the two designs; the default
   until a person picks one with the switch in the sidebar), theme
   (=system=, =light=, =dark= or =mocha=, the Catppuccin palette; the
@@ -417,6 +418,19 @@ A =.tlw= plugin is Tallow source run by the suet bytecode VM inside the server, 
 | =tallow_std_dir= | empty | =VENTURE_PLUGINS_TALLOW_STD_DIR= | the Tallow standard library the VM reads; empty means the copy installed under the data directory (=tallow-std=), else the build tree's |
 
 The limits and grants are read when a plugin loads: a change applies to the plugins loaded after it (a restart, for the ones loaded at startup).
+
+** User formulas: =formulas=
+
+A formula is one Tallow expression a person stores on a form rule, an alert rule or a lead scoring rule (their =expression= field), checked when the record is saved and evaluated on the suet VM with the sandbox on and nothing granted ([[file:formulas.org][Formulas]]). The section bounds every evaluation; there is no capability to grant, and =plugins.tallow_std_dir= names the standard library for formulas as for plugins.
+
+| Key | Default | Environment | What it does |
+|-----+---------+-------------+--------------|
+| =allow= | =true= | =VENTURE_FORMULAS_ALLOW= | accept and evaluate formulas at all; off, a record with an =expression= is refused on save and a stored one never matches (scores no points) |
+| =max_steps= | =100000= | =VENTURE_FORMULAS_MAX_STEPS= | VM instructions one evaluation may run; past it that evaluation fails with =limit reached= and counts as no match. 0 or less means the default: a formula is never unbounded |
+| =max_memory= | =8388608= | =VENTURE_FORMULAS_MAX_MEMORY= | bytes a formula's heap may grow to; 0 or less means the default |
+| =cache_size= | =256= | =VENTURE_FORMULAS_CACHE_SIZE= | compiled formulas kept in memory (1 to 65536), the least recently used dropped first; a dropped one is compiled again on its next use |
+
+The section is read when the server starts (when its context is made); a change applies after a restart, and empties the cache of compiled formulas.
 
 ** Market data: =feeds= and =series=
 

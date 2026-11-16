@@ -39,7 +39,11 @@ VENTURE_DEFINE_ENTITY(VentureLeadRoutingRule, venture_lead_routing_rule, lead_ro
 static const VentureFieldDecl lead_scoring_rule_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "e.g. Enterprise company size"),
 	VENTURE_FIELD("conditions", "Conditions", "field=value or field~pattern, one per line", VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("points", "Points", "Added to the score when the conditions hold; may be negative", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("points", "Points", "Added to the score when the conditions hold; may be negative; unused with an expression", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("expression", "Expression",
+	              "Optional Tallow formula giving the points (an i64) when the conditions hold, e.g. "
+	              "when(str_of(r, \"source\") == \"web\", 10) + i64_of(r, \"employees\") / 100",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED)
 };
 VENTURE_DEFINE_ENTITY(VentureLeadScoringRule, venture_lead_scoring_rule, lead_scoring_rule_fields)

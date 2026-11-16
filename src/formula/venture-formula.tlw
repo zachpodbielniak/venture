@@ -1,0 +1,77 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * venture-formula.tlw - the `formula` module every user formula imports.
+ *
+ * A formula is one Tallow expression a person stores in a record (a form
+ * rule, an alert rule, a lead scoring rule). The evaluator
+ * (src/formula/venture-formula.c) wraps it in a `pure fn` whose only
+ * parameter is `r`, the record as JSON text, and runs it on a suet VM with
+ * no capabilities. These are the accessors that expression reads `r`
+ * with; the `extern fn`s are bound to C in venture-formula.c, and being
+ * the host's own pure functions they need no grant.
+ *
+ * Every accessor takes a top-level member name. A member that is absent,
+ * null, or of another type reads as none (the `_of` forms: as the zero
+ * value), so a formula never fails because a record lacks a field.
+ */
+module formula;
+
+/* ---- accessors: none when the member is absent or of another type ---- */
+
+/* a member as text: a string's value, a number or a boolean as written;
+ * none for null, a list or an object */
+pure extern fn field_str(r: str, name: str) -> own ?str = "venture_formula_field_str";
+
+/* a member as an integer: a JSON integer, or a string holding one
+ * (form answers arrive as text) */
+pure extern fn field_i64(r: str, name: str) -> ?i64 = "venture_formula_field_i64";
+
+/* a member as a number: any JSON number, or a string holding one */
+pure extern fn field_f64(r: str, name: str) -> ?f64 = "venture_formula_field_f64";
+
+/* a member as a boolean: true or false, or the strings "true" and
+ * "false" */
+pure extern fn field_bool(r: str, name: str) -> ?bool = "venture_formula_field_bool";
+
+/* whether the member is present, non-null, and not an empty string or
+ * an empty list */
+pure extern fn has_field(r: str, name: str) -> bool = "venture_formula_has_field";
+
+/* whether the member is the string CHOICE, or a list with CHOICE among
+ * its strings (a multiple-choice answer) */
+pure extern fn field_has(r: str, name: str, choice: str) -> bool = "venture_formula_field_has";
+
+/* ---- the same, with a default instead of none ---- */
+
+/* field_str, or "" */
+pure fn str_of(r: str, name: str) -> own str {
+	return match field_str(r, name) {
+		some s => s.dup(),
+		none => "".dup(),
+	};
+}
+
+/* field_i64, or 0 */
+pure fn i64_of(r: str, name: str) -> i64 {
+	return field_i64(r, name) ?? 0;
+}
+
+/* field_f64, or 0.0 */
+pure fn f64_of(r: str, name: str) -> f64 {
+	return field_f64(r, name) ?? 0.0;
+}
+
+/* field_bool, or false */
+pure fn bool_of(r: str, name: str) -> bool {
+	return field_bool(r, name) ?? false;
+}
+
+/* ---- scores ---- */
+
+/* POINTS when COND holds, else 0: a condition as a score */
+pure fn when(cond: bool, points: i64) -> i64 {
+	return match cond {
+		true => points,
+		false => 0,
+	};
+}

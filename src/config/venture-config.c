@@ -437,6 +437,21 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR ("plugins-tallow-std-dir", "plugins", "tallow_std_dir", "",
 	        "Tallow standard library for .tlw plugins; empty means the "
 	        "one installed with VENTURE"),
+	/*
+	 * User formulas: one Tallow expression stored in a form rule, an
+	 * alert rule or a lead scoring rule, run on the suet VM with the
+	 * sandbox on and nothing granted. On by default for the same reason
+	 * as allow_tallow; the limits are per evaluation, far below a
+	 * plugin's, because a formula runs once per record it judges.
+	 */
+	VC_BOOL("formulas-allow", "formulas", "allow", TRUE,
+	        "Accept and evaluate Tallow formulas on form, alert and lead scoring rules"),
+	VC_INT ("formulas-max-steps", "formulas", "max_steps", 100000,
+	        "VM instructions one evaluation of a formula may run"),
+	VC_INT ("formulas-max-memory", "formulas", "max_memory", 8388608,
+	        "Bytes a formula's heap may grow to"),
+	VC_INT ("formulas-cache-size", "formulas", "cache_size", 256,
+	        "Compiled formulas kept in memory, least recently used dropped first"),
 	VC_STRV("plugins-venture-type-paths", "plugins", "venture_type_paths",
 	        "Directories of declarative venture-type definitions"),
 	VC_STRV("plugins-required", "plugins", "required",

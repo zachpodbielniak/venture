@@ -298,6 +298,10 @@ static const VentureFieldDecl venture_alert_rule_fields[] = {
 	VENTURE_FIELD("notify-username", "Tell",
 	              "Optional: whose inbox a hit reaches; empty is whoever created the rule",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("expression", "Expression",
+	              "Optional Tallow formula every would-be hit must also pass: a bool over the hit (r), e.g. "
+	              "i64_of(r, \"observed\") < 5000 && str_of(r, \"venue_name\").starts_with(\"Silver\")",
+	              VENTURE_FIELD_KIND_TEXT, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
 	VENTURE_FIELD("result", "Result", "What the last evaluation said; shown once, never stored",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT)

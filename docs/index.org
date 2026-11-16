@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-04]
+#+updated: [2026-11-15]
 #+version: 0.7.0
 
 * VENTURE
@@ -32,6 +32,7 @@ New to VENTURE? Two pages, in this order:
 - [[file:hosted-billing.org][Hosted enrollment and guarantee]] — saved payment authority, deferred first charge, the owner's plan switch from the next bill, attributed value and one-time account credit
 
 - [[file:architecture.org][Architecture]] — how the pieces fit, and why the design is shaped this way
+- [[file:formulas.org][Formulas]] — user formulas: one Tallow expression on a form rule, an alert rule or a lead scoring rule, checked on save and run on the sandboxed suet VM with no capabilities; accessors, examples, limits
 - [[file:tallow-plugins.org][Tallow plugins]] — =.tlw= plugins on the sandboxed suet VM: =plugin_register()=, the =venture= and =venture_kernels= host modules, fee models and steps, grants and limits
 - [[file:kernels.org][Kernels]] — the money, ledger and trading math as pure Tallow: compiled natively, contracts, units of measure, proved with =tallow verify= and fuzzed; the catalogue and how to add one
 - [[file:quickstart.org][Quickstart]] — build it, run it, record your first sale
