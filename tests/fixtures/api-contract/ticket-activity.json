@@ -1,0 +1,22 @@
+[
+  {
+    "action" : "string",
+    "actor" : "string",
+    "actor_kind" : "string",
+    "approved_by" : "null",
+    "changes" : {
+      "assignee" : {
+        "from" : "string",
+        "to" : "string"
+      },
+      "status" : {
+        "from" : "string",
+        "to" : "string"
+      }
+    },
+    "id" : "int",
+    "kind" : "string",
+    "when" : "string",
+    "when_relative" : "string"
+  }
+]
