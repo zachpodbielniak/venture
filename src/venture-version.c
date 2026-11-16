@@ -29,6 +29,7 @@ venture_build_features(void)
 		"whoami",
 		"external_ref",
 		"repo_resolve",
+		"webhook_changes",
 		NULL
 	};
 

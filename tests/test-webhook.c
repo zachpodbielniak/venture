@@ -394,6 +394,71 @@ test_webhook_delivers_signed(
 }
 
 /*
+ * An update says which fields changed -- by name, never by value.
+ *
+ * What breaks if this regresses: a receiver that mirrors records (an agent
+ * fleet watching the tickets it filed) cannot tell a status change it must
+ * act on from a worklog bumping the version, and fetches and compares the
+ * whole record on every delivery. And the other direction: a value in the
+ * body would copy business data out of the building that the webhook did
+ * not ask for (include_record is off here).
+ */
+static void
+test_webhook_update_names_changes(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	JsonObject *object;
+	JsonArray *changes;
+	gboolean saw_status = FALSE;
+	gboolean saw_title = FALSE;
+	guint i;
+
+	(void)user_data;
+
+	webhook = create_webhook(fixture, "ticket.*", NULL);
+	ticket = create_ticket(fixture, "Printer on fire");
+	settle(fixture, 1);
+
+	/* a create carries no list: the whole record is the change */
+	body = venture_json_parse(fixture->last_body, NULL);
+	g_assert_false(json_object_has_member(json_node_get_object(body),
+	                                      "changes"));
+	g_clear_pointer(&body, json_node_unref);
+
+	g_object_set(ticket, "title", "Printer still on fire", "status",
+	             VENTURE_TICKET_STATUS_IN_PROGRESS, NULL);
+	g_assert_true(venture_database_save(fixture->database, ticket, NULL,
+	                                    NULL));
+	settle(fixture, 2);
+
+	g_assert_cmpstr(fixture->last_event, ==, "ticket.updated");
+	body = venture_json_parse(fixture->last_body, NULL);
+	object = json_node_get_object(body);
+	changes = json_object_get_array_member(object, "changes");
+	g_assert_nonnull(changes);
+
+	for (i = 0; i < json_array_get_length(changes); i++)
+	{
+		const gchar *name = json_array_get_string_element(changes, i);
+
+		saw_status = saw_status || 0 == g_strcmp0(name, "status");
+		saw_title = saw_title || 0 == g_strcmp0(name, "title");
+	}
+	g_assert_true(saw_status);
+	g_assert_true(saw_title);
+
+	/*
+	 * Names only: the new status is nowhere in the body. (The title is,
+	 * as record.label always was -- the record's label, not the change.)
+	 */
+	g_assert_null(strstr(fixture->last_body, "in_progress"));
+}
+
+/*
  * A webhook asking for the record gets it, without sensitive fields, and
  * one subscribed to something else gets nothing at all.
  */
@@ -1405,6 +1470,7 @@ main(
 	    test_webhook_forge_carries_no_credential);
 	ADD("/webhook/delivers-signed", test_webhook_delivers_signed);
 	ADD("/webhook/scope-and-payload", test_webhook_scope_and_payload);
+	ADD("/webhook/update-names-changes", test_webhook_update_names_changes);
 	ADD("/webhook/failures-switch-it-off",
 	    test_webhook_failures_switch_it_off);
 	ADD("/webhook/test-and-secret", test_webhook_test_and_secret);

@@ -158,14 +158,15 @@ venture_webhook_record_path(
  */
 static gchar *
 venture_webhook_build_body(
-	VentureContext	*context,
-	VentureEntity	*webhook,
-	const gchar	*event,
-	const gchar	*delivery_id,
-	const gchar	*target_type,
-	gint64		 target_id,
-	const gchar	*target_label,
-	const gchar	*actor
+	VentureContext		*context,
+	VentureEntity		*webhook,
+	const gchar		*event,
+	const gchar		*delivery_id,
+	const gchar		*target_type,
+	gint64			 target_id,
+	const gchar		*target_label,
+	const gchar		*actor,
+	const gchar * const	*changes
 ){
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
@@ -229,6 +230,26 @@ venture_webhook_build_body(
 	}
 
 	json_builder_end_object(builder);
+
+	/*
+	 * On an update, which fields changed -- by name, never by value: the
+	 * audit diff the names come from holds the values, and a body posted
+	 * to somebody else's server carries record data only when the
+	 * webhook asked for it (include_record, below). A receiver that
+	 * mirrors records reads this to decide whether the change is one it
+	 * cares about, and fetches the record if it does. Absent on a create,
+	 * a delete or a restore, where the whole record is the change.
+	 */
+	if (NULL != changes)
+	{
+		guint c;
+
+		json_builder_set_member_name(builder, "changes");
+		json_builder_begin_array(builder);
+		for (c = 0; NULL != changes[c]; c++)
+			json_builder_add_string_value(builder, changes[c]);
+		json_builder_end_array(builder);
+	}
 
 	json_builder_set_member_name(builder, "data");
 
@@ -675,15 +696,16 @@ venture_webhook_push_message(
  */
 static SoupMessage *
 venture_webhook_build_message(
-	VentureContext	 *context,
-	VentureEntity	 *webhook,
-	const gchar	 *event,
-	const gchar	 *delivery_id,
-	const gchar	 *target_type,
-	gint64		  target_id,
-	const gchar	 *target_label,
-	const gchar	 *actor,
-	gchar		**out_body,
+	VentureContext		 *context,
+	VentureEntity		 *webhook,
+	const gchar		 *event,
+	const gchar		 *delivery_id,
+	const gchar		 *target_type,
+	gint64			  target_id,
+	const gchar		 *target_label,
+	const gchar		 *actor,
+	const gchar * const	 *changes,
+	gchar			**out_body,
 	gchar		**out_token,
 	GError		**error
 ){
@@ -711,7 +733,7 @@ venture_webhook_build_message(
 	else
 	{
 		body = venture_webhook_build_body(context, webhook, event, delivery_id, target_type, target_id,
-		                                  target_label, actor);
+		                                  target_label, actor, changes);
 		message = soup_message_new(SOUP_METHOD_POST, url);
 
 		if (NULL == message)
@@ -940,13 +962,14 @@ venture_webhook_sent(
  */
 static void
 venture_webhook_send(
-	VentureContext	*context,
-	VentureEntity	*webhook,
-	const gchar	*event,
-	const gchar	*target_type,
-	gint64		 target_id,
-	const gchar	*target_label,
-	const gchar	*actor
+	VentureContext		*context,
+	VentureEntity		*webhook,
+	const gchar		*event,
+	const gchar		*target_type,
+	gint64			 target_id,
+	const gchar		*target_label,
+	const gchar		*actor,
+	const gchar * const	*changes
 ){
 	VentureWebhookJob *job;
 	g_autofree gchar *url = NULL;
@@ -970,8 +993,8 @@ venture_webhook_send(
 	job->target_id = target_id;
 	job->target_label = g_strdup(target_label);
 	job->message = venture_webhook_build_message(context, webhook, event, job->delivery_id, target_type,
-	                                             target_id, target_label, actor, &job->body, &job->token,
-	                                             &error);
+	                                             target_id, target_label, actor, changes, &job->body,
+	                                             &job->token, &error);
 
 	if (NULL == job->message)
 	{
@@ -1027,6 +1050,7 @@ venture_webhook_on_audit(
 	g_autofree gchar *target_label = NULL;
 	g_autofree gchar *actor = NULL;
 	g_autofree gchar *event = NULL;
+	g_auto(GStrv) changes = NULL;
 	VentureAuditAction action;
 	gint64 target_id = 0;
 	guint i;
@@ -1061,6 +1085,35 @@ venture_webhook_on_audit(
 
 	webhooks = venture_webhook_active(context, venture_entity_get_organization_id(entry));
 
+	/*
+	 * An update's changed fields, by name, from the audit diff -- the one
+	 * record of what this save did, sensitive values already reduced to
+	 * "changed" there.
+	 */
+	if (VENTURE_AUDIT_ACTION_UPDATE == action)
+	{
+		g_autofree gchar *diff_text = NULL;
+		g_autoptr(JsonNode) diff = NULL;
+		g_autoptr(GStrvBuilder) names = g_strv_builder_new();
+
+		g_object_get(entry, "diff", &diff_text, NULL);
+		if (NULL != diff_text)
+			diff = venture_json_parse(diff_text, NULL);
+
+		if (NULL != diff && JSON_NODE_HOLDS_OBJECT(diff))
+		{
+			GList *members = json_object_get_members(
+				json_node_get_object(diff));
+			GList *l;
+
+			for (l = members; NULL != l; l = l->next)
+				g_strv_builder_add(names, l->data);
+			g_list_free(members);
+		}
+
+		changes = g_strv_builder_end(names);
+	}
+
 	for (i = 0; (NULL != webhooks) && (i < webhooks->len); i++)
 	{
 		VentureEntity *webhook;
@@ -1076,7 +1129,8 @@ venture_webhook_on_audit(
 			continue;
 
 		venture_webhook_send(context, webhook, event, target_type, target_id,
-		                     target_label, actor);
+		                     target_label, actor,
+		                     (const gchar * const *)changes);
 	}
 }
 
@@ -1299,8 +1353,8 @@ venture_webhook_test(
 	label = venture_entity_get_display_name(webhook);
 	delivery_id = g_uuid_string_random();
 	message = venture_webhook_build_message(context, webhook, "webhook.test", delivery_id, "webhook",
-	                                        venture_entity_get_id(webhook), label, NULL, &body, &token,
-	                                        error);
+	                                        venture_entity_get_id(webhook), label, NULL, NULL, &body,
+	                                        &token, error);
 
 	if (NULL == message)
 		return NULL;

@@ -142,6 +142,7 @@ falls back rather than guesses.
 | Name     | Since  | What it means                                  |
 |----------+--------+------------------------------------------------|
 | =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+| =webhook_changes= | 0.10.0 | an =*.updated= webhook body names the changed fields in =changes= ([[file:webhooks.org][Webhooks]]) |
 | =repo_resolve= | 0.10.0 | =GET /api/v1/forge_repo/resolve?url== ([[file:forge.org][Git forges]]) |
 | =external_ref= | 0.10.0 | =ticket.external_ref= and =ticket_comment.external_ref=, unique per organization ([[file:tickets.org][Tickets]]) |
 

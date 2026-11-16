@@ -57,7 +57,9 @@ Some types are quiet, whatever a webhook subscribes to: =webhook= and =webhook_d
 }
 #+end_src
 
-The envelope is always this shape, so a receiver routes on it without knowing VENTURE's types, and =delivery= is a fresh id it can deduplicate on. =data= is =null= unless the webhook has *Send the record* set, in which case it carries the whole record — never its sensitive fields, which are withheld from a body posted to somebody else's server for exactly the reason they are withheld from a response.
+The envelope is always this shape, so a receiver routes on it without knowing VENTURE's types, and =delivery= is a fresh id it can deduplicate on.
+
+An =*.updated= event also carries =changes= (since 0.10.0; the =webhook_changes= feature): the names of the fields the save changed, from the audit entry's diff -- =["status", "assignee"]= -- never their values. A receiver that mirrors records reads it to tell a change it must act on from one it can ignore (an SLA sweep or a worklog moving only bookkeeping fields), and fetches the record when it needs the values. A create, delete or restore has none: the whole record is the change. =data= is =null= unless the webhook has *Send the record* set, in which case it carries the whole record — never its sensitive fields, which are withheld from a body posted to somebody else's server for exactly the reason they are withheld from a response.
 
 * Signing
 
