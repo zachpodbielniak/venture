@@ -57,6 +57,16 @@ export VENTURE_TOKEN=vk_...                    # from POST /api/v1/tokens
 The token is read from the environment rather than a flag because a flag is
 visible in the process list. Keep it in =~/.bashrc-secrets=.
 
+=venturectl token mint= makes another through =POST /api/v1/tokens=. A
+bearer token may only do that if it is an administrator's, so this is an
+administrator's command; with =user=USERNAME= or =user_id=N= the token is
+minted *for* that account and carries its role and organization memberships
+rather than yours -- the way to give an agent a credential confined to the
+businesses its account belongs to. Unlike every other command it does not
+switch to JSON when piped: only the secret is printed on standard output, so
+it can be captured or piped into whatever stores it, and its id, owner and
+role go to standard error. =-f json= prints the whole answer.
+
 * Commands
 
 #+begin_src sh
@@ -65,6 +75,7 @@ venturectl describe TYPE                 # fields, references, enum choices
 venturectl restore TYPE ID               # undo a delete
 venturectl forge settings ID < body.json # encrypted credentials, JSON on stdin
 venturectl forge verify ID               # record which account the token is
+venturectl token mint [name=N] [user=U|user_id=N] [expires_in_days=N]  # a new API token; secret alone on stdout
 venturectl list TYPE [key=value ...]     # list records, filtered
 venturectl get TYPE ID                   # fetch one
 venturectl create TYPE field=value ...   # create; attributes.NAME=value fills the attribute bag

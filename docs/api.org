@@ -54,14 +54,44 @@ shown exactly once; only its hash is stored. Who may call it:
 - *A bearer token* may mint another only if it carries the global admin role
   or higher. Any other token is refused with 403: a token minting its own
   successor would outlive its revocation or expiry.
+- *A global owner or admin, for another account*: give =user_id= (a whole
+  number) or =username= (not both) and the token is that account's. It is
+  owned by them, carries *their* global role and a snapshot of *their*
+  memberships, so it reaches exactly the organizations they belong to. Only
+  the expiry follows the person minting: an administrator may still omit
+  =expires_in_days= for one that never expires, which is what lets an agent's
+  account confined to one business keep a credential without being re-minted
+  every 90 days. With no =name= it is called =api token for USERNAME=, and its
+  =description= records who minted it for whom. Refused: 403 below admin
+  (before the account is looked up, so the answer says nothing about which
+  names exist) or for an account whose role outranks the caller's (an admin
+  never gets an owner's credential); 404 for an unknown or deleted account;
+  422 for a deactivated one, a =user_id= that is not a positive whole number,
+  an empty =username=, or both at once. Naming yourself is your own token.
+  The answer adds =user_id= and =role= beside =id= and =token=, so a caller
+  can see it landed on the account it meant.
 
 Hosted host pinning, workspace lifecycle (a read-only or suspended workspace
 refuses) and the second-factor requirement apply here as on any other route.
 There is no API route for a member to list or revoke tokens; an administrator
 revokes at =/account/tokens=, and deactivating a user rejects all of theirs.
 
-There is no scope parameter: for a token that may do less, sign in as a user
-who may do less and mint it there.
+There is no scope parameter: a token may do less only by belonging to an
+account that may do less. Make that account (a global =editor= or =viewer=
+with memberships in only the organizations it should reach) and either sign
+in as it and mint there, or, as an administrator, mint for it with
+=user_id= or =username=:
+
+#+begin_src sh
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"name":"books-agent","username":"books-bot","expires_in_days":365}' \
+    "$VENTURE_SERVER/api/v1/tokens"
+# {"id": 9, "token": "vk_...", "user_id": 12, "role": "editor", "note": "..."}
+venturectl token mint name=books-agent user=books-bot expires_in_days=365
+#+end_src
+
+A membership granted after minting does not widen an existing token; mint a
+new one.
 
 =venturectl mcp= serves this API to an outside AI agent as an MCP server,
 taking its token from =VENTURE_TOKEN= and generating its tool surface from
