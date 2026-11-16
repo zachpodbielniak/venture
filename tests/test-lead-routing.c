@@ -512,6 +512,7 @@ test_scoring_expression(Fixture *f, gconstpointer data)
 	g_assert_false(venture_database_save(f->db, bad, NULL, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
 	g_assert_nonnull(strstr(error->message, "2:2"));
+	g_assert_true(g_str_has_prefix(error->message, "VentureLeadService: "));
 	g_clear_error(&error);
 
 	venture_entity_set_attribute(inquiry, "country", "US");

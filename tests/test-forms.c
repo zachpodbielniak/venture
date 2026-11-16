@@ -1988,11 +1988,32 @@ test_expression_rules(Fixture *f, gconstpointer data)
 	g_object_set(bad, "expression", "i64_of(r, \"seats\")", NULL); refuse(f, bad, "bool");
 	g_object_set(bad, "target-key", "seats", "expression", "str_of(r, \"kind\") == \"a\"", NULL); refuse(f, bad, "earlier page");
 	g_object_set(bad, "target-key", "kind", "expression", "str_of(r, \"seats\") == \"a\"", NULL); refuse(f, bad, "Rule");
+	/* the names come from accessor calls alone: a dynamic name is refused,
+	 * and so is a key that is not a question of the form */
+	g_object_set(bad, "target-key", "team", "expression", "str_of(r, \"ki\" + \"nd\") == \"a\"", NULL); refuse(f, bad, "quoted key");
+	g_object_set(bad, "expression", "str_of(r, \"kinds\") == \"a\"", NULL); refuse(f, bad, "not a question");
+	/* a key compared as a value or quoted in a comment is not read: the
+	 * target "team" appearing in both does not make the rule read itself */
+	g_object_set(bad, "expression", "str_of(r, \"kind\") == \"team\" /* not \"team\" */", NULL); save(f, bad);
+	g_assert_true(venture_database_delete(f->db, bad, NULL, &error));
+	g_assert_no_error(error);
 
 	g_object_unref(publish(f, form));
 	schema = venture_forms_schema(f->db, form, "/pub/form/expression-form", now, &error);
 	g_assert_no_error(error);
 	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(json_node_get_object(schema), "rules")), ==, 2);
+	/* the public schema says the server decides; the formula stays private */
+	{
+		JsonArray *rules = json_object_get_array_member(json_node_get_object(schema), "rules");
+		guint i;
+		for (i = 0; i < json_array_get_length(rules); i++)
+		{
+			JsonObject *rule = json_array_get_object_element(rules, i);
+			g_assert_false(json_object_has_member(rule, "expression"));
+			g_assert_false(json_object_has_member(rule, "reads"));
+			g_assert_true(json_object_get_boolean_member(rule, "server"));
+		}
+	}
 
 	/* the rule's own answers decide; the hidden answer is discarded */
 	g_assert_cmpint(submit_pairs(f, form, big, NULL), ==, VENTURE_FORMS_ACCEPTED);

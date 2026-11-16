@@ -200,8 +200,13 @@ venture_lead_routing_validate_rule(VentureDatabase *database, VentureEntity *rul
 	{
 		g_autofree gchar *expression = NULL;
 		g_object_get(rule, "expression", &expression, NULL);
+		/* worded like every other lead rule refusal */
 		if (!venture_string_is_empty(expression) &&
-		    !venture_formula_check(expression, VENTURE_FORMULA_KIND_INT, error)) return FALSE;
+		    !venture_formula_check(expression, VENTURE_FORMULA_KIND_INT, error))
+		{
+			g_prefix_error(error, "VentureLeadService: ");
+			return FALSE;
+		}
 	}
 	if (VENTURE_IS_LEAD_ROUTING_RULE(rule))
 	{

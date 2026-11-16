@@ -1071,6 +1071,272 @@ venture_formula_check(
 	return TRUE;
 }
 
+
+/* --- The fields a formula reads ---------------------------------------------- */
+
+/* the accessors of the `formula` module, which all take the field's name
+ * right after the record */
+static const gchar *const formula_accessors[] = {
+	"field_str", "field_i64", "field_f64", "field_bool", "has_field",
+	"field_has", "str_of", "i64_of", "f64_of", "bool_of", NULL
+};
+
+/* TRUE when C can continue an identifier */
+static gboolean
+formula_ident_char(gchar c)
+{
+	return g_ascii_isalnum(c) || ('_' == c);
+}
+
+/* P past white space and comments (the text has passed formula_check_shape,
+ * so every comment closes) */
+static const gchar *
+formula_skip_blank(const gchar *p)
+{
+	for (;;)
+	{
+		if (g_ascii_isspace(*p))
+			p++;
+		else if (('/' == p[0]) && ('*' == p[1]))
+			p = strstr(p + 2, "*/") + 2;
+		else
+			return p;
+	}
+}
+
+/*
+ * The end of one argument starting at P: the `,` or `)` that closes it at
+ * its own depth. Strings, their interpolations, brackets and comments are
+ * stepped over with a stack like formula_check_shape's. Returns NULL when
+ * the text ends first, which a checked formula never does.
+ */
+static const gchar *
+formula_argument_end(const gchar *p)
+{
+	g_autoptr(GString) open = NULL;
+
+	open = g_string_new(NULL);
+	while ('\0' != *p)
+	{
+		gchar top;
+
+		top = (open->len > 0) ? open->str[open->len - 1] : '\0';
+		if ('S' == top)
+		{
+			if (('\\' == *p) && ('\0' != p[1]))
+				p += 2;
+			else if ('"' == *p)
+			{
+				g_string_truncate(open, open->len - 1);
+				p++;
+			}
+			else if (('$' == *p) && ('{' == p[1]))
+			{
+				g_string_append_c(open, 'I');
+				p += 2;
+			}
+			else
+				p++;
+			continue;
+		}
+		if (('/' == p[0]) && ('*' == p[1]))
+		{
+			p = formula_skip_blank(p);
+			continue;
+		}
+		if ((0 == open->len) && ((',' == *p) || (')' == *p)))
+			return p;
+		switch (*p)
+		{
+		case '"':
+			g_string_append_c(open, 'S');
+			break;
+		case '(':
+		case '[':
+		case '{':
+			g_string_append_c(open, *p);
+			break;
+		case ')':
+		case ']':
+		case '}':
+			if (open->len > 0)
+				g_string_truncate(open, open->len - 1);
+			break;
+		default:
+			break;
+		}
+		p++;
+	}
+
+	return NULL;
+}
+
+/*
+ * The field name an accessor call names, when it is a plain string
+ * literal standing alone as its argument at P: `"seats"`, not `"se" + x`,
+ * not `"${k}"`, not a variable. Returns NULL for anything else.
+ */
+static gchar *
+formula_literal_argument(const gchar *p)
+{
+	const gchar *start;
+	const gchar *q;
+
+	p = formula_skip_blank(p);
+	if ('"' != *p)
+		return NULL;
+	start = p + 1;
+	for (q = start; ('"' != *q); q++)
+	{
+		if (('\0' == *q) || ('\\' == *q) || (('$' == *q) && ('{' == q[1])))
+			return NULL;
+	}
+	p = formula_skip_blank(q + 1);
+	if ((',' != *p) && (')' != *p))
+		return NULL;
+
+	return g_strndup(start, (gsize)(q - start));
+}
+
+/*
+ * Walks TEXT for every call to an accessor and takes the field it names:
+ * the argument after the record in `field_str(r, "seats")`, or the first
+ * one in the method form `r.field_str("seats")`. A name that is not a
+ * plain string literal sets *DYNAMIC. Strings are stepped over (only an
+ * interpolation inside one is code), and so are comments: a key quoted in
+ * a comment or compared as a value is not a field the formula reads.
+ */
+static void
+formula_collect_fields(
+	const gchar	*text,
+	GPtrArray	*fields,
+	gboolean	*dynamic
+){
+	g_autoptr(GString) open = NULL;
+	const gchar *p;
+
+	open = g_string_new(NULL);
+	p = text;
+	while ('\0' != *p)
+	{
+		gchar top;
+		const gchar *start;
+		g_autofree gchar *word = NULL;
+		const gchar *argument;
+		gchar *name;
+		gboolean method;
+
+		top = (open->len > 0) ? open->str[open->len - 1] : '\0';
+
+		/* string text is data: only its interpolations are code */
+		if ('S' == top)
+		{
+			if (('\\' == *p) && ('\0' != p[1]))
+				p += 2;
+			else if ('"' == *p)
+			{
+				g_string_truncate(open, open->len - 1);
+				p++;
+			}
+			else if (('$' == *p) && ('{' == p[1]))
+			{
+				g_string_append_c(open, 'I');
+				p += 2;
+			}
+			else
+				p++;
+			continue;
+		}
+		if (('/' == p[0]) && ('*' == p[1]))
+		{
+			p = formula_skip_blank(p);
+			continue;
+		}
+		if ('"' == *p)
+		{
+			g_string_append_c(open, 'S');
+			p++;
+			continue;
+		}
+		if ('{' == *p)
+		{
+			g_string_append_c(open, '{');
+			p++;
+			continue;
+		}
+		if ('}' == *p)
+		{
+			/* closes a block, or an interpolation back into its string */
+			if (open->len > 0)
+				g_string_truncate(open, open->len - 1);
+			p++;
+			continue;
+		}
+		if (!(g_ascii_isalpha(*p) || ('_' == *p)) ||
+		    ((p > text) && formula_ident_char(p[-1])))
+		{
+			p++;
+			continue;
+		}
+
+		/* an identifier: is it an accessor being called? */
+		start = p;
+		while (formula_ident_char(*p))
+			p++;
+		word = g_strndup(start, (gsize)(p - start));
+		if (!g_strv_contains(formula_accessors, word))
+			continue;
+		argument = formula_skip_blank(p);
+		if ('(' != *argument)
+			continue;
+		argument++;
+
+		/* the method form names the field first; the call form second */
+		method = (start > text) && ('.' == start[-1]);
+		if (!method)
+		{
+			argument = formula_argument_end(argument);
+			if ((NULL == argument) || (',' != *argument))
+			{
+				*dynamic = TRUE;
+				continue;
+			}
+			argument++;
+		}
+		name = formula_literal_argument(argument);
+		if (NULL == name)
+		{
+			*dynamic = TRUE;
+			continue;
+		}
+		if (g_ptr_array_find_with_equal_func(fields, name, g_str_equal, NULL))
+			g_free(name);
+		else
+			g_ptr_array_add(fields, name);
+	}
+}
+
+GPtrArray *
+venture_formula_fields(
+	const gchar	 *expression,
+	gboolean	 *dynamic,
+	GError		**error
+){
+	g_autoptr(GPtrArray) fields = NULL;
+	gboolean any_dynamic;
+
+	if (!formula_check_shape(expression, error))
+		return NULL;
+
+	fields = g_ptr_array_new_with_free_func(g_free);
+	any_dynamic = FALSE;
+	formula_collect_fields(expression, fields, &any_dynamic);
+	if (NULL != dynamic)
+		*dynamic = any_dynamic;
+
+	return (GPtrArray *)g_steal_pointer(&fields);
+}
+
 /* runs a formula on a record; RESULT is set to the formula's value */
 static gboolean
 formula_eval(

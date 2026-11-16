@@ -461,6 +461,58 @@ test_threads(void)
 	g_assert_cmpuint(venture_formula_compile_count() - compiles, <=, 2 * G_N_ELEMENTS(threads));
 }
 
+/* The fields a formula reads are the literal names its accessors are
+ * called with: a key compared as a value, quoted in a comment or written
+ * as plain string text is not one; an interpolation is code; a name built
+ * at run time makes the set unknowable. */
+static void
+test_fields(void)
+{
+	g_autoptr(GPtrArray) fields = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean dynamic;
+
+	dynamic = TRUE;
+	fields = venture_formula_fields(
+		"i64_of(r, \"seats\") > 10 && r.str_of(\"kind\") == \"plan\" /* field_str(r, \"comment\") */\n"
+		"&& \"${str_of(r, \"team\")}\".len() > 0 && \"field_str(r, \\\"text\\\")\" != \"\"\n"
+		"&& field_has(r, \"seats\", \"many\") && when(has_field(r, \"team\"), 1) > 0",
+		&dynamic, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(fields);
+	g_assert_false(dynamic);
+	g_assert_cmpuint(fields->len, ==, 3);
+	g_assert_cmpstr(g_ptr_array_index(fields, 0), ==, "seats");
+	g_assert_cmpstr(g_ptr_array_index(fields, 1), ==, "kind");
+	g_assert_cmpstr(g_ptr_array_index(fields, 2), ==, "team");
+	g_clear_pointer(&fields, g_ptr_array_unref);
+
+	/* a parenthesised name is not a plain literal: only a bare string counts */
+	dynamic = FALSE;
+	fields = venture_formula_fields("has_field(r, (\"nested\"))", &dynamic, &error);
+	g_assert_no_error(error);
+	g_assert_true(dynamic);
+	g_clear_pointer(&fields, g_ptr_array_unref);
+
+	dynamic = FALSE;
+	fields = venture_formula_fields("str_of(r, \"ki\" + \"nd\") == \"a\"", &dynamic, &error);
+	g_assert_no_error(error);
+	g_assert_true(dynamic);
+	g_assert_cmpuint(fields->len, ==, 0);
+	g_clear_pointer(&fields, g_ptr_array_unref);
+
+	dynamic = FALSE;
+	fields = venture_formula_fields("str_of(r, \"${1}\") == \"a\"", &dynamic, &error);
+	g_assert_no_error(error);
+	g_assert_true(dynamic);
+	g_clear_pointer(&fields, g_ptr_array_unref);
+
+	/* not shaped as a formula: refused like a save would be */
+	fields = venture_formula_fields("true) }", NULL, &error);
+	g_assert_null(fields);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+}
+
 int
 main(
 	int	 argc,
@@ -482,6 +534,7 @@ main(
 	g_test_add_func("/formula/cache/bound", test_cache_bound);
 	g_test_add_func("/formula/allow-off", test_allow_off);
 	g_test_add_func("/formula/threads", test_threads);
+	g_test_add_func("/formula/fields", test_fields);
 
 	return g_test_run();
 }

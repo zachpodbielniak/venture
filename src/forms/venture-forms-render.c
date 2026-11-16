@@ -604,6 +604,23 @@ venture_forms_render(VentureDatabase *database, VentureEntity *form,
 	return venture_forms_render_step(database, form, options, NULL, error);
 }
 
+/*
+ * What the public sees of a rule: an expression rule (docs/formulas.org)
+ * loses its formula and the keys it reads, and says instead that the
+ * server decides it. The formula is the form owner's logic; the browser
+ * never runs it and only needs the outcome.
+ */
+static void
+forms_rule_publish(JsonObject *rule)
+{
+	if (!json_object_has_member(rule, "expression"))
+		return;
+	json_object_remove_member(rule, "expression");
+	if (json_object_has_member(rule, "reads"))
+		json_object_remove_member(rule, "reads");
+	json_object_set_boolean_member(rule, "server", TRUE);
+}
+
 gchar *
 venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 	const VentureFormsRender *options, const VentureFormsStep *step, GError **error)
@@ -676,13 +693,7 @@ venture_forms_render_step(VentureDatabase *database, VentureEntity *form,
 			JsonNode *copy = json_from_string(rule_text, NULL);
 			json_object_set_boolean_member(json_node_get_object(copy), "matched",
 				venture_forms_rule_matches(json_node_get_object(copy), options->values));
-			/* The browser never runs a formula: it keeps the server's outcome. */
-			if (json_object_has_member(json_node_get_object(copy), "expression"))
-			{
-				json_object_remove_member(json_node_get_object(copy), "expression");
-				json_object_remove_member(json_node_get_object(copy), "reads");
-				json_object_set_boolean_member(json_node_get_object(copy), "server", TRUE);
-			}
+			forms_rule_publish(json_node_get_object(copy));
 			{
 				JsonArray *conditions = json_object_get_array_member(json_node_get_object(copy), "conditions");
 				JsonArray *matches = json_array_new();
@@ -1031,10 +1042,22 @@ venture_forms_schema_language(VentureDatabase *database, VentureEntity *form,
 	json_builder_end_array(builder);
 	if (fields->len > 0 && ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules != NULL)
 	{
-		g_autoptr(JsonNode) rules = json_node_new(JSON_NODE_ARRAY);
-		json_node_set_array(rules, ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules);
+		JsonArray *rules = ((VentureFormsField *)g_ptr_array_index(fields, 0))->rules;
+		guint rule;
+
+		/* The schema is public: an expression rule shows that the server
+		 * decides it, never the formula or the questions it reads. */
 		json_builder_set_member_name(builder, "rules");
-		json_builder_add_value(builder, json_node_copy(rules));
+		json_builder_begin_array(builder);
+		for (rule = 0; rule < json_array_get_length(rules); rule++)
+		{
+			JsonNode *copy = json_node_copy(json_array_get_element(rules, rule));
+
+			if (JSON_NODE_HOLDS_OBJECT(copy))
+				forms_rule_publish(json_node_get_object(copy));
+			json_builder_add_value(builder, copy);
+		}
+		json_builder_end_array(builder);
 	}
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
