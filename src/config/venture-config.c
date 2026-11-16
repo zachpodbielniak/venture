@@ -103,6 +103,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Answer the Model Context Protocol at POST /mcp for callers holding an API token"),
 	VC_BOOL("mcp-apply-writes", "mcp", "apply_writes", FALSE,
 	        "Let /mcp write tools apply changes instead of staging them for approval"),
+	VC_BOOL("mcp-apply-low-risk", "mcp", "apply_low_risk", FALSE,
+	        "With apply_writes off: apply low-risk /mcp writes directly and stage only the high-risk ones (money, people, access, deletes)"),
 
 	VC_STR ("database-uri", "database", "uri", "sqlite://venture.db",
 	        "Connection URI"),

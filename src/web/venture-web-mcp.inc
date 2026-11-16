@@ -48,6 +48,7 @@ typedef struct
 	gchar		*token;
 	GTlsCertificate	*certificate;
 	gboolean	 stage_writes;
+	gboolean	 apply_low_risk;
 	JsonNode	*message;
 	SoupSession	*session;
 } VentureWebMcpJob;
@@ -321,6 +322,7 @@ venture_web_mcp_run(
 
 	venture_mcp_server_set_transport(server, venture_web_mcp_transport, job, NULL);
 	venture_mcp_server_set_stage_writes(server, job->stage_writes);
+	venture_mcp_server_set_apply_low_risk(server, job->apply_low_risk);
 	venture_mcp_server_set_server_name(server, "venture");
 
 	/*
@@ -426,11 +428,13 @@ venture_web_mcp_post(
 	const gchar *body;
 	gboolean enabled = TRUE;
 	gboolean apply_writes = FALSE;
+	gboolean apply_low_risk = FALSE;
 
 	(void)params;
 
 	g_object_get(venture_context_get_config(self->context),
-	             "mcp-enabled", &enabled, "mcp-apply-writes", &apply_writes, NULL);
+	             "mcp-enabled", &enabled, "mcp-apply-writes", &apply_writes,
+	             "mcp-apply-low-risk", &apply_low_risk, NULL);
 
 	if (!enabled)
 		return htmx_response_not_found();
@@ -523,6 +527,7 @@ venture_web_mcp_post(
 	job->token = g_steal_pointer(&bearer);
 	job->host = g_strdup(soup_message_headers_get_one(headers, "Host"));
 	job->stage_writes = !apply_writes;
+	job->apply_low_risk = apply_low_risk;
 	job->message = g_steal_pointer(&message);
 
 	/* Appended, not replaced: behind a reverse proxy the chain already

@@ -51,6 +51,7 @@ typedef struct
 
 	/* `mcp` only: let its write tools apply rather than hold. */
 	gboolean		 apply_writes;
+	gboolean		 apply_low_risk;
 
 	/* Propose a write instead of making it. Create, update, delete and
 	 * act honour it, and passing it to anything else is refused. */
@@ -4274,6 +4275,7 @@ venture_cli_command_mcp(
 		return -1;
 
 	venture_mcp_server_set_stage_writes(server, !cli->apply_writes);
+	venture_mcp_server_set_apply_low_risk(server, cli->apply_low_risk);
 
 	if (!venture_mcp_server_load_catalog(server, error))
 		return -1;
@@ -4288,7 +4290,9 @@ venture_cli_command_mcp(
 		/* stderr, not stdout: stdout carries the protocol. */
 		g_printerr("venturectl mcp: %u record types, writes %s\n",
 		           g_strv_length(types),
-		           cli->apply_writes ? "applied" : "staged");
+		           cli->apply_writes ? "applied"
+		           : cli->apply_low_risk ? "applied when low risk, else staged"
+		           : "staged");
 	}
 
 	if (!venture_mcp_server_run(server, error))
@@ -4397,6 +4401,42 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 #include "report/venture-report-pack-cli.inc"
 #include "orgaccess/venture-mfa-cli.inc"
 
+/*
+ * --apply-writes, or --apply-writes=low-risk. A file-scope pair because
+ * GOption's callback has nowhere else to put its answer; read once into
+ * the CLI state after parsing.
+ */
+static gboolean apply_writes_flag = FALSE;
+static gboolean apply_low_risk_flag = FALSE;
+
+static gboolean
+parse_apply_writes(
+	const gchar	 *option_name,
+	const gchar	 *value,
+	gpointer	  data,
+	GError		**error
+){
+	(void)option_name;
+	(void)data;
+
+	if (NULL == value)
+	{
+		apply_writes_flag = TRUE;
+		return TRUE;
+	}
+
+	if (0 == g_strcmp0(value, "low-risk"))
+	{
+		apply_low_risk_flag = TRUE;
+		return TRUE;
+	}
+
+	g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+	            "--apply-writes takes no value, or =low-risk; not \"%s\"",
+	            value);
+	return FALSE;
+}
+
 int
 main(
 	int	  argc,
@@ -4406,7 +4446,7 @@ main(
 	g_autoptr(GError) error = NULL;
 	g_auto(GStrv) args = NULL;
 	VentureCli cli = { NULL, NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE, FALSE,
-	                   FALSE, FALSE, FALSE, FALSE };
+	                   FALSE, FALSE, FALSE, FALSE, FALSE };
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *session_file = NULL, *session_cookie = NULL;
@@ -4421,7 +4461,6 @@ main(
 	gboolean show_version = FALSE;
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
-	gboolean apply_writes = FALSE;
 	gboolean stage = FALSE;
 	g_autofree gchar *reconciliation_matcher = NULL;
 	gint reconciliation_threshold = 80;
@@ -4444,8 +4483,11 @@ main(
 		  "Output as table, json, yaml or csv", "FORMAT" },
 		{ "quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet,
 		  "Print only the data", NULL },
-		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
-		  "mcp only: let write tools apply instead of staging", NULL },
+		{ "apply-writes", 0, G_OPTION_FLAG_OPTIONAL_ARG, G_OPTION_ARG_CALLBACK,
+		  (gpointer)parse_apply_writes,
+		  "mcp only: let write tools apply instead of staging; "
+		  "=low-risk applies only what the server classes as low risk",
+		  "low-risk" },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
 		  "create/update/delete/act/dunning sweep/dedupe/journal post/sequence enroll/"
 		  "lead convert/billing/arbitrage record|close|reopen|abandon|execute/"
@@ -4721,7 +4763,7 @@ main(
 		"  dedupe merge ID survivor=N   fold the other record of a candidate into the survivor; --stage\n"
 		"  dedupe dismiss ID            close a candidate as not a duplicate\n"
 		"  user mfa reset USER      break glass: turn off a user's second factor (owner only, audited)\n"
-		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
+		"  mcp [--apply-writes[=low-risk]] serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"  support rollup --from DATE --to DATE [--sort [-]COLUMN] [min_tickets=N] [company=ID] [product=NAME] [group_by=product]\n"
 		"                               support cost and ticket volume per customer\n"
@@ -4875,7 +4917,8 @@ main(
 		}
 		cli.session_cookie = session_cookie;
 	}
-	cli.apply_writes = apply_writes;
+	cli.apply_writes = apply_writes_flag;
+	cli.apply_low_risk = apply_low_risk_flag;
 	cli.stage = stage;
 
 	/*
@@ -4883,7 +4926,8 @@ main(
 	 * --token: a flag that quietly does nothing on nine of ten commands
 	 * teaches that it did something.
 	 */
-	if (apply_writes && (0 != g_strcmp0(args[0], "mcp")))
+	if ((apply_writes_flag || apply_low_risk_flag) &&
+	    (0 != g_strcmp0(args[0], "mcp")))
 	{
 		g_printerr("venturectl: --apply-writes only means something to "
 		           "`venturectl mcp`, which holds its writes by default. "

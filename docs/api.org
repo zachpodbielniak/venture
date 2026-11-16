@@ -159,6 +159,7 @@ falls back rather than guesses.
 | Name     | Since  | What it means                                  |
 |----------+--------+------------------------------------------------|
 | =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+| =apply_writes_low_risk= | 0.10.0 | =/api/v1/schema= classes each type's =write_risk=, and =venturectl mcp --apply-writes=low-risk= / =mcp.apply_low_risk= apply only the low ones ([[file:mcp.org][venturectl mcp]]) |
 | =external_runs= | 0.10.0 | =POST= and =PATCH /api/v1/runs/external=, held to the agent budgets ([[file:forge.org][Git forges]]) |
 | =idempotency= | 0.10.0 | =Idempotency-Key= on record, link and worklog creates, as described above |
 | =webhook_changes= | 0.10.0 | an =*.updated= webhook body names the changed fields in =changes= ([[file:webhooks.org][Webhooks]]) |

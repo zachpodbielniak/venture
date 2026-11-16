@@ -32,6 +32,7 @@ venture_build_features(void)
 		"webhook_changes",
 		"idempotency",
 		"external_runs",
+		"apply_writes_low_risk",
 		NULL
 	};
 

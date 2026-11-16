@@ -96,6 +96,7 @@
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
+#include "model/venture-write-risk.h"
 #include "model/venture-integration-connection.h"
 #include "oidc/venture-oidc-records.h"
 #include "ai/venture-ai-organization-records.h"
