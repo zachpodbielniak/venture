@@ -30,6 +30,7 @@ venture_build_features(void)
 		"external_ref",
 		"repo_resolve",
 		"webhook_changes",
+		"idempotency",
 		NULL
 	};
 

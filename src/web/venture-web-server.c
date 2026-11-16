@@ -139,6 +139,17 @@ struct _VentureWebServer
 	GHashTable	*reveals;
 
 	/*
+	 * Answers to writes sent with an Idempotency-Key, keyed by
+	 * "<caller>|<key>" (VentureWebIdempotent), so a client that retries
+	 * after a timeout gets the first answer back instead of a second
+	 * record. Held 24 hours and at most VENTURE_WEB_IDEMPOTENCY_MAX; the
+	 * queue is insertion order, oldest first, for evicting. Main thread
+	 * only, like the reveals.
+	 */
+	GHashTable	*idempotent;
+	GQueue		*idempotent_order;
+
+	/*
 	 * Turns waiting to be streamed, keyed by a one-shot token.
 	 *
 	 * A streamed answer is two requests: the POST that stores the
@@ -209,6 +220,30 @@ static void venture_web_connector_append_actions(VentureWebServer *self, GString
 
 #include "venture-web-hosted-private.h"
 
+/* How long, and how many, answers are kept for a repeated key. */
+#define VENTURE_WEB_IDEMPOTENCY_SECONDS (24 * 60 * 60)
+#define VENTURE_WEB_IDEMPOTENCY_MAX (10000)
+#define VENTURE_WEB_IDEMPOTENCY_KEY_MAX (255)
+
+/* One kept answer: what the request was, and what it was told. */
+typedef struct
+{
+	gchar	*fingerprint;
+	guint	 status;
+	gchar	*content_type;
+	gchar	*body;
+	gint64	 expires;
+} VentureWebIdempotent;
+
+static void
+venture_web_idempotent_free(VentureWebIdempotent *kept)
+{
+	g_free(kept->fingerprint);
+	g_free(kept->content_type);
+	g_free(kept->body);
+	g_free(kept);
+}
+
 static void
 venture_web_server_finalize(GObject *object)
 {
@@ -230,6 +265,9 @@ venture_web_server_finalize(GObject *object)
 	g_clear_object(&self->classified_routes);
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
+	g_clear_pointer(&self->idempotent, g_hash_table_unref);
+	if (NULL != self->idempotent_order)
+		g_queue_free_full(g_steal_pointer(&self->idempotent_order), g_free);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 	g_clear_object(&self->lead_limiter);
 	g_clear_object(&self->form_client_limiter);
@@ -253,6 +291,9 @@ venture_web_server_init(VentureWebServer *self)
 {
 	self->reveals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                      (GDestroyNotify)venture_web_reveal_free);
+	self->idempotent = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		(GDestroyNotify)venture_web_idempotent_free);
+	self->idempotent_order = g_queue_new();
 	self->chat_turns = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 		(GDestroyNotify)venture_web_chat_turn_free);
 	self->get_patterns = g_ptr_array_new_with_free_func(g_free);
@@ -17783,6 +17824,201 @@ venture_web_api_health(
 	node = json_builder_get_root(builder);
 
 	return venture_web_json_response(node, 200);
+}
+
+/* --- Idempotency-Key ---------------------------------------------------- */
+
+typedef HtmxResponse *(*VentureWebHandler)(HtmxRequest *request,
+                                           GHashTable  *params,
+                                           gpointer     user_data);
+
+/*
+ * The request a key was first used for, as one digest: method, path with
+ * its query, and the exact body bytes. The same key with any of them
+ * different is a different request, and replaying the first answer to it
+ * would be a lie.
+ */
+static gchar *
+venture_web_request_fingerprint(HtmxRequest *request)
+{
+	g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
+	SoupServerMessage *message = htmx_request_get_message(request);
+	GUri *uri = soup_server_message_get_uri(message);
+	g_autofree gchar *target = g_uri_to_string_partial(uri,
+		G_URI_HIDE_USERINFO | G_URI_HIDE_FRAGMENT);
+	GBytes *body = htmx_request_get_body_bytes(request);
+
+	g_checksum_update(sum, (const guchar *)soup_server_message_get_method(
+		message), -1);
+	g_checksum_update(sum, (const guchar *)"\n", 1);
+	g_checksum_update(sum, (const guchar *)target, -1);
+	g_checksum_update(sum, (const guchar *)"\n", 1);
+	if (NULL != body)
+		g_checksum_update(sum, g_bytes_get_data(body, NULL),
+		                  (gssize)g_bytes_get_size(body));
+
+	return g_strdup(g_checksum_get_string(sum));
+}
+
+/* Drops kept answers past their 24 hours, oldest first. */
+static void
+venture_web_idempotent_expire(VentureWebServer *self, gint64 now)
+{
+	while (!g_queue_is_empty(self->idempotent_order))
+	{
+		const gchar *oldest = g_queue_peek_head(self->idempotent_order);
+		VentureWebIdempotent *kept = g_hash_table_lookup(self->idempotent,
+		                                                 oldest);
+
+		if (NULL != kept && kept->expires > now &&
+		    g_hash_table_size(self->idempotent) <= VENTURE_WEB_IDEMPOTENCY_MAX)
+			break;
+
+		g_hash_table_remove(self->idempotent, oldest);
+		g_free(g_queue_pop_head(self->idempotent_order));
+	}
+}
+
+/*
+ * A write sent with an Idempotency-Key header: its first successful answer
+ * is kept, and the same key with the same request gets that answer again
+ * -- status and body, marked Idempotent-Replayed -- rather than a second
+ * record. The case it exists for is a client whose POST timed out after
+ * the server had acted: it retries with the key it already used, and
+ * finds out what happened instead of doing it twice.
+ *
+ * - The key belongs to the caller (a token, or a user's session): two
+ *   callers' keys never meet.
+ * - The same key with a different method, path or body is refused (422):
+ *   the key was reused, and neither answer is the right one.
+ * - Only a 2xx answer is kept, a staged write's 202 included. A refusal
+ *   is not: the client fixes the request and may use the key again.
+ * - Kept for 24 hours, at most VENTURE_WEB_IDEMPOTENCY_MAX answers, in
+ *   this server process -- a restart forgets them, as it forgets the
+ *   one-time token reveals. A client that must survive that dedupes on a
+ *   field of its own (ticket.external_ref).
+ *
+ * No header, no change: the request goes straight to @inner.
+ */
+static HtmxResponse *
+venture_web_idempotent(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	GHashTable		*params,
+	VentureWebHandler	 inner
+){
+	SoupServerMessage *message = htmx_request_get_message(request);
+	const gchar *key = soup_message_headers_get_one(
+		soup_server_message_get_request_headers(message), "Idempotency-Key");
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autofree gchar *slot = NULL;
+	g_autofree gchar *fingerprint = NULL;
+	VentureWebIdempotent *kept;
+	HtmxResponse *response;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	guint status;
+
+	if (NULL == key)
+		return inner(request, params, self);
+
+	if ('\0' == *key || strlen(key) > VENTURE_WEB_IDEMPOTENCY_KEY_MAX ||
+	    !g_str_is_ascii(key))
+	{
+		g_autoptr(GError) error = g_error_new(VENTURE_ERROR,
+			VENTURE_ERROR_INVALID_ARGUMENT,
+			"Idempotency-Key: 1 to %d ASCII characters",
+			VENTURE_WEB_IDEMPOTENCY_KEY_MAX);
+
+		return venture_web_error_response(error);
+	}
+
+	/* Whose key: an unauthenticated request is answered by the handler. */
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (NULL == principal || !principal->authenticated)
+		return inner(request, params, self);
+
+	slot = (principal->token_id > 0)
+		? g_strdup_printf("t%" G_GINT64_FORMAT "|%s", principal->token_id, key)
+		: g_strdup_printf("u%" G_GINT64_FORMAT "|%s", principal->user_id, key);
+	fingerprint = venture_web_request_fingerprint(request);
+
+	venture_web_idempotent_expire(self, now);
+	kept = g_hash_table_lookup(self->idempotent, slot);
+
+	if (NULL != kept)
+	{
+		if (0 != g_strcmp0(kept->fingerprint, fingerprint))
+		{
+			g_autoptr(GError) error = g_error_new_literal(VENTURE_ERROR,
+				VENTURE_ERROR_VALIDATION,
+				"Idempotency-Key was already used for a different "
+				"request; use a new key for a new request");
+
+			return venture_web_error_response(error);
+		}
+
+		response = htmx_response_new_with_content(kept->body);
+		htmx_response_set_status(response, kept->status);
+		if (NULL != kept->content_type)
+			htmx_response_set_content_type(response, kept->content_type);
+		htmx_response_add_header(response, "Idempotent-Replayed", "true");
+
+		return response;
+	}
+
+	response = inner(request, params, self);
+	status = htmx_response_get_status(response);
+
+	if (status >= 200 && status < 300)
+	{
+		VentureWebIdempotent *fresh = g_new0(VentureWebIdempotent, 1);
+		const gchar *content = htmx_response_get_content(response);
+
+		fresh->fingerprint = g_steal_pointer(&fingerprint);
+		fresh->status = status;
+		fresh->content_type = g_strdup("application/json; charset=utf-8");
+		fresh->body = g_strdup(NULL != content ? content : "");
+		fresh->expires = now + VENTURE_WEB_IDEMPOTENCY_SECONDS;
+		g_hash_table_replace(self->idempotent, g_strdup(slot), fresh);
+		g_queue_push_tail(self->idempotent_order, g_strdup(slot));
+	}
+
+	return response;
+}
+
+static HtmxResponse *venture_web_api_ticket_worklog(HtmxRequest *request,
+                                                    GHashTable *params,
+                                                    gpointer user_data);
+
+static HtmxResponse *
+venture_web_api_create_idempotent(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_idempotent(user_data, request, params,
+	                              venture_web_api_create);
+}
+
+static HtmxResponse *
+venture_web_api_link_create_idempotent(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_idempotent(user_data, request, params,
+	                              venture_web_api_link_create);
+}
+
+static HtmxResponse *
+venture_web_api_ticket_worklog_idempotent(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_idempotent(user_data, request, params,
+	                              venture_web_api_ticket_worklog);
 }
 
 /* --- Which repository is this remote? ----------------------------------- */
@@ -36084,7 +36320,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/activity/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_activity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/sla", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_sla, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/macro", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_macro, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_worklog, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_worklog_idempotent, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sla/sweep", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sla_sweep, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprints, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprint, self);
@@ -36153,7 +36389,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/modules", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_modules, self);
 	/* Before /api/v1/:type/:id, or "links" would be read as a type. */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/links/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_links, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/links", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_link_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/links", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_link_create_idempotent, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/venture-types", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_venture_types, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/venture-types/:name", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_venture_types, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/automations", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_automations, self);
@@ -36323,7 +36559,7 @@ venture_web_server_new(
 	venture_jobs_web_register(self);
 	venture_customer_credits_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create_idempotent, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_PUT, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_update, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_PATCH, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_update, self);

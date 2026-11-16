@@ -4520,6 +4520,145 @@ test_auth_whoami(
 }
 
 /*
+ * POSTs @json to @path as @bearer with an optional Idempotency-Key;
+ * returns the status, the new record's id (when the body has one) and
+ * whether the answer was a replay.
+ */
+static guint
+auth_post_keyed(
+	ServerFixture	*fixture,
+	const gchar	*bearer,
+	const gchar	*path,
+	const gchar	*key,
+	const gchar	*json,
+	gint64		*out_id,
+	gboolean	*out_replayed
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = g_bytes_new(json, strlen(json));
+	g_autofree gchar *url = g_strdup_printf("http://127.0.0.1:%u%s",
+	                                        fixture->port, path);
+	g_autofree gchar *authorization = g_strconcat("Bearer ", bearer, NULL);
+	RequestResult outcome = { FALSE, NULL, NULL };
+	SoupMessageHeaders *headers;
+
+	message = soup_message_new(SOUP_METHOD_POST, url);
+	headers = soup_message_get_request_headers(message);
+	soup_message_headers_append(headers, "Authorization", authorization);
+	if (NULL != key)
+		soup_message_headers_append(headers, "Idempotency-Key", key);
+	soup_message_set_request_body_from_bytes(message, "application/json",
+	                                         bytes);
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(outcome.error);
+
+	if (NULL != out_id)
+	{
+		g_autoptr(JsonNode) node = venture_json_parse(
+			g_bytes_get_data(outcome.body, NULL), NULL);
+
+		*out_id = (NULL != node && JSON_NODE_HOLDS_OBJECT(node) &&
+		           json_object_has_member(json_node_get_object(node), "id"))
+			? json_object_get_int_member(json_node_get_object(node), "id")
+			: 0;
+	}
+
+	if (NULL != out_replayed)
+		*out_replayed = 0 == g_strcmp0(soup_message_headers_get_one(
+			soup_message_get_response_headers(message),
+			"Idempotent-Replayed"), "true");
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * Idempotency-Key on a create.
+ *
+ * What breaks if this regresses: a client whose POST timed out after the
+ * server had already saved -- an agent fleet mirroring a task over a slow
+ * link -- retries, and the install now holds two tickets for one piece of
+ * work, one of which nobody is tracking. With the key, the retry gets the
+ * first answer back. Reusing a key for a different request must be
+ * refused rather than answered with the wrong record, and one caller's
+ * key must never return another caller's answer.
+ */
+static void
+test_auth_idempotency_key(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *first_token = NULL;
+	g_autofree gchar *second_token = NULL;
+	gint64 first = 0;
+	gint64 again = 0;
+	gint64 other = 0;
+	gint64 plain_a = 0;
+	gint64 plain_b = 0;
+	gboolean replayed = TRUE;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                             VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+	first_token = server_fixture_mint_token(fixture, cookie,
+		"name=agent-one&expires_in_days=30", NULL);
+	second_token = server_fixture_mint_token(fixture, cookie,
+		"name=agent-two&expires_in_days=30", NULL);
+
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Fix the header\"}", &first, &replayed),
+		==, SOUP_STATUS_CREATED);
+	g_assert_cmpint(first, >, 0);
+	g_assert_false(replayed);
+
+	/* the retry: the same answer, not a second ticket */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Fix the header\"}", &again, &replayed),
+		==, SOUP_STATUS_CREATED);
+	g_assert_cmpint(again, ==, first);
+	g_assert_true(replayed);
+
+	/* the key reused for something else */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Something else\"}", NULL, NULL),
+		==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* another caller's key space is its own */
+	g_assert_cmpuint(auth_post_keyed(fixture, second_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Fix the header\"}", &other, &replayed),
+		==, SOUP_STATUS_CREATED);
+	g_assert_cmpint(other, !=, first);
+	g_assert_false(replayed);
+
+	/* no key: two requests, two records, as always */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		NULL, "{\"title\":\"Plain\"}", &plain_a, NULL), ==,
+		SOUP_STATUS_CREATED);
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		NULL, "{\"title\":\"Plain\"}", &plain_b, NULL), ==,
+		SOUP_STATUS_CREATED);
+	g_assert_cmpint(plain_a, !=, plain_b);
+
+	/* a refused create is not kept: fixed, the key works */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"bad-then-good", "{\"title\":\"\"}", NULL, NULL), !=,
+		SOUP_STATUS_CREATED);
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"bad-then-good", "{\"title\":\"Now named\"}", NULL, &replayed), ==,
+		SOUP_STATUS_CREATED);
+	g_assert_false(replayed);
+}
+
+/*
  * An editor opens the page for their own tokens. It used to be admin-only
  * because it listed every credential. "Never" stays an administrator's
  * option; posting it as an editor does not create a token.
@@ -8852,6 +8991,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/whoami", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_whoami,
+	           server_fixture_tear_down);
+	g_test_add("/auth/idempotency-key", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_idempotency_key,
 	           server_fixture_tear_down);
 	g_test_add("/auth/admin-mints-token-for-user", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_admin_mints_token_for_user,
