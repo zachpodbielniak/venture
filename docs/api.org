@@ -98,11 +98,57 @@ taking its token from =VENTURE_TOKEN= and generating its tool surface from
 =/api/v1/schema= so a plugin's record type is offered without any change.
 See [[file:mcp.org][venturectl mcp]]. The server answers the same tools itself at =POST /mcp= for a remote agent holding a token in an =Authorization: Bearer= header; see [[file:mcp.org::*Remote MCP over HTTPS: POST /mcp][Remote MCP over HTTPS]].
 
+** Who am I
+
+=GET /api/v1/whoami= (since 0.10.0) answers, for the credential presented,
+everything a client needs to recognise its own work -- above all a client
+holding one token per agent, which must tell its agent's change apart from
+another's:
+
+- =actor= -- the string every audit row, activity line, comment and webhook
+  body records for it: =API token #N= for a token, the username for a
+  session.
+- =role= -- the global role in force (a token is held to its user's
+  current role when that is lower).
+- =token_id= and =expires_at= (=null= for never) for a token; =0= for a
+  session.
+- =user= -- =id= and =username=, or =null= for a token with no user.
+- =memberships= -- the organizations this credential reaches, each
+  =organization_id=, =organization= (its name), =role= (the user's current
+  membership role) and, for a token, =minted_role= (the role in the
+  snapshot it was minted with). A token reaches an organization only where
+  both exist and both allow the action, so a membership granted after the
+  token was minted is not listed: mint a new token to reach it.
+
+Any authenticated caller may ask (viewer and up); anonymous is 401. Nothing
+here is more than the caller could learn by acting.
+
+#+begin_src sh
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" "$VENTURE_SERVER/api/v1/whoami"
+# {"actor":"API token #12","role":"editor","token_id":12,
+#  "expires_at":"2027-01-15T10:00:00Z","user":{"id":7,"username":"scout"},
+#  "memberships":[{"organization_id":1,"organization":"Acme","role":"owner",
+#                  "minted_role":"owner"}]}
+#+end_src
+
+** Features
+
+=GET /api/v1/health= lists =features=: what this build can do that a client
+may need to know before relying on it, by name (=venture_build_features()=).
+A name is added in the release that adds the ability and never removed; a
+client looks for the name it needs and, on a build that does not list it,
+falls back rather than guesses.
+
+| Name     | Since  | What it means                                  |
+|----------+--------+------------------------------------------------|
+| =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+
 * Endpoints
 
 | Method   | Path                                | Purpose                              |
 |----------+-------------------------------------+--------------------------------------|
-| =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state |
+| =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state, =features= |
+| =GET=    | =/api/v1/whoami=                    | the caller: actor, role, user, token, organizations |
 | =GET=    | =/metrics=                          | Prometheus text; off unless =metrics.access= allows the caller ([[file:configuration.org::*Metrics][Metrics]]) |
 | =GET=    | =/api/v1/schema=                    | every record type and its fields     |
 | =GET=    | =/api/v1/schema/:type=              | one record type                      |

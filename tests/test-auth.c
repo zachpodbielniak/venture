@@ -4270,6 +4270,115 @@ server_fixture_mint_token(
 }
 
 /*
+ * GET /api/v1/whoami: a client holding one token per agent learns, from
+ * the token alone, the actor string its writes are recorded under, the
+ * user and role behind it, its organizations and when it expires --
+ * without which "API token #12 changed this" cannot be told apart from
+ * another agent's change. Anonymous callers are refused, and the health
+ * route advertises the feature so a client can ask before relying on it.
+ */
+static void
+test_auth_whoami(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *health = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	JsonObject *root;
+	JsonArray *memberships;
+	gint64 user_id = 0;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "scout", "s-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &user_id);
+	server_fixture_set_organization_role(fixture, user_id,
+		VENTURE_ORGANIZATION_ROLE_OWNER);
+	cookie = server_fixture_login(fixture, "scout", "s-long-password");
+	secret = server_fixture_mint_token(fixture, cookie,
+		"name=scout-agent&expires_in_days=30", NULL);
+	g_assert_nonnull(secret);
+
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/whoami"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/whoami", NULL, secret, NULL, &body, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_true(json_parser_load_from_data(parser, body, -1, NULL));
+	root = json_node_get_object(json_parser_get_root(parser));
+
+	g_assert_true(g_str_has_prefix(json_object_get_string_member(root,
+		"actor"), "API token #"));
+	g_assert_cmpint(json_object_get_int_member(root, "token_id"), >, 0);
+	g_assert_cmpstr(json_object_get_string_member(root, "role"), ==,
+	                "editor");
+	g_assert_false(json_object_get_null_member(root, "expires_at"));
+	g_assert_cmpstr(json_object_get_string_member(
+		json_object_get_object_member(root, "user"), "username"), ==,
+		"scout");
+	g_assert_cmpint(json_object_get_int_member(
+		json_object_get_object_member(root, "user"), "id"), ==, user_id);
+
+	memberships = json_object_get_array_member(root, "memberships");
+	g_assert_cmpuint(json_array_get_length(memberships), ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(memberships, 0), "role"), ==, "owner");
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(memberships, 0), "minted_role"), ==,
+		"owner");
+
+	/*
+	 * A membership granted after the token was minted does not widen it,
+	 * and whoami says so by leaving it out: what is listed is what the
+	 * token reaches, not what its user does.
+	 */
+	{
+		g_autoptr(VentureEntity) org = g_object_new(VENTURE_TYPE_ORGANIZATION,
+			"name", "Later Co", NULL);
+		g_autoptr(VentureEntity) later = NULL;
+		g_autofree gchar *again = NULL;
+		g_autoptr(JsonParser) second = json_parser_new();
+
+		g_assert_true(venture_database_save(fixture->database, org, NULL,
+		                                    NULL));
+		later = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+			"user-id", user_id, "organization-id",
+			venture_entity_get_id(org), "role",
+			VENTURE_ORGANIZATION_ROLE_OWNER, "active", TRUE, NULL);
+		g_assert_true(venture_database_save(fixture->database, later, NULL,
+		                                    NULL));
+
+		g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+			"/api/v1/whoami", NULL, secret, NULL, &again, NULL),
+			==, SOUP_STATUS_OK);
+		g_assert_true(json_parser_load_from_data(second, again, -1, NULL));
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			json_node_get_object(json_parser_get_root(second)),
+			"memberships")), ==, 1);
+	}
+
+	/* the token's number is the actor string's number */
+	{
+		g_autofree gchar *expected = g_strdup_printf("API token #%"
+			G_GINT64_FORMAT, json_object_get_int_member(root, "token_id"));
+
+		g_assert_cmpstr(json_object_get_string_member(root, "actor"), ==,
+		                expected);
+	}
+
+	/* and the build says it has the route */
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/health", NULL, NULL, NULL, &health, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(health, "\"features\""));
+	g_assert_nonnull(strstr(health, "\"whoami\""));
+}
+
+/*
  * An editor opens the page for their own tokens. It used to be admin-only
  * because it listed every credential. "Never" stays an administrator's
  * option; posting it as an editor does not create a token.
@@ -8599,6 +8708,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/owner-mints-own-token", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_owner_mints_own_token,
+	           server_fixture_tear_down);
+	g_test_add("/auth/whoami", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_whoami,
 	           server_fixture_tear_down);
 	g_test_add("/auth/admin-mints-token-for-user", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_admin_mints_token_for_user,

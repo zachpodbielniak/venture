@@ -17754,6 +17754,23 @@ venture_web_api_health(
 	json_builder_add_boolean_value(builder, TRUE);
 
 	/*
+	 * Everything else a client may need to know before it relies on it,
+	 * by name: venture_build_features(). A list rather than a boolean
+	 * each, so a client asks for the name it needs and a build that has
+	 * never heard of it simply does not list it.
+	 */
+	json_builder_set_member_name(builder, "features");
+	json_builder_begin_array(builder);
+	{
+		const gchar * const *features = venture_build_features();
+		guint i;
+
+		for (i = 0; NULL != features[i]; i++)
+			json_builder_add_string_value(builder, features[i]);
+	}
+	json_builder_end_array(builder);
+
+	/*
 	 * And nothing beyond that. This route is the one deliberate
 	 * exception to the authentication rule -- a container healthcheck
 	 * runs before anybody has credentials -- so it may say what this
@@ -17766,6 +17783,205 @@ venture_web_api_health(
 	node = json_builder_get_root(builder);
 
 	return venture_web_json_response(node, 200);
+}
+
+/* --- Who am I ------------------------------------------------------------ */
+
+/*
+ * The caller, as this install sees it: the token, the user it acts for,
+ * the role in force, the organizations it may reach, when it expires,
+ * and the actor string every audit row, activity line and webhook body
+ * will carry for it.
+ *
+ * Asked by a client holding several tokens -- one per agent -- that must
+ * know which change was its own and which was somebody else's, and that
+ * would otherwise have to guess that "API token #12" is the agent called
+ * scout. Only the caller's own facts: nothing here a token could not
+ * already learn by acting.
+ */
+static HtmxResponse *
+venture_web_api_whoami(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDatabase *database;
+
+	(void)params;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                                     VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	database = venture_context_get_database(self->context);
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	json_builder_set_member_name(builder, "actor");
+	json_builder_add_string_value(builder,
+		NULL != principal->name ? principal->name : "");
+
+	json_builder_set_member_name(builder, "role");
+	json_builder_add_string_value(builder,
+		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)principal->role));
+
+	json_builder_set_member_name(builder, "token_id");
+	json_builder_add_int_value(builder, principal->token_id);
+
+	/*
+	 * Read as the install, not as the caller: a token's own row is owner
+	 * business on the tokens page, and the memberships of its user are
+	 * what decide what it may see -- reading them through the caller's
+	 * scope would hide the very rows that answer the question.
+	 */
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(
+			venture_database_get_access_policy(database), NULL);
+
+		if (principal->token_id > 0)
+		{
+			g_autoptr(VentureEntity) token = venture_database_get(database,
+				VENTURE_TYPE_API_TOKEN, principal->token_id, NULL);
+			g_autoptr(GDateTime) expires = NULL;
+
+			if (NULL != token)
+				g_object_get(token, "expires-at", &expires, NULL);
+
+			json_builder_set_member_name(builder, "expires_at");
+			if (NULL != expires)
+			{
+				g_autofree gchar *at = g_date_time_format_iso8601(expires);
+
+				json_builder_add_string_value(builder, at);
+			}
+			else
+				json_builder_add_null_value(builder);
+		}
+
+		json_builder_set_member_name(builder, "user");
+		if (principal->user_id > 0)
+		{
+			g_autoptr(VentureEntity) user = venture_database_get(database,
+				VENTURE_TYPE_USER, principal->user_id, NULL);
+			g_autofree gchar *username = NULL;
+
+			if (NULL != user)
+				g_object_get(user, "username", &username, NULL);
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "id");
+			json_builder_add_int_value(builder, principal->user_id);
+			json_builder_set_member_name(builder, "username");
+			json_builder_add_string_value(builder,
+				NULL != username ? username : "");
+			json_builder_end_object(builder);
+		}
+		else
+			json_builder_add_null_value(builder);
+
+		/*
+		 * The organizations this credential reaches, as the access
+		 * policy decides it: a token reaches an organization only where
+		 * its user is an active member *and* the snapshot taken when it
+		 * was minted names it, and both roles must allow an action -- so
+		 * both are reported. The snapshot itself is a sensitive field and
+		 * is never returned whole; only the role it holds for an
+		 * organization the caller can already reach.
+		 */
+		json_builder_set_member_name(builder, "memberships");
+		json_builder_begin_array(builder);
+		if (principal->user_id > 0)
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(
+				VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+			g_autoptr(GPtrArray) rows = NULL;
+			g_autoptr(JsonNode) snapshot = NULL;
+			guint i;
+
+			if (principal->token_id > 0)
+			{
+				g_autoptr(VentureEntity) token = venture_database_get(
+					database, VENTURE_TYPE_API_TOKEN, principal->token_id,
+					NULL);
+				g_autofree gchar *text = NULL;
+
+				if (NULL != token)
+					g_object_get(token, "membership-snapshot", &text, NULL);
+				if (NULL != text)
+					snapshot = venture_json_parse(text, NULL);
+			}
+
+			if (venture_query_add_filter_int(query, "user-id",
+			                                 VENTURE_FILTER_OP_EQ,
+			                                 principal->user_id, NULL))
+				rows = venture_database_find(database, query, NULL);
+
+			for (i = 0; NULL != rows && i < rows->len; i++)
+			{
+				VentureEntity *membership = g_ptr_array_index(rows, i);
+				gint64 organization = venture_entity_get_organization_id(
+					membership);
+				g_autoptr(VentureEntity) org = NULL;
+				gboolean active = FALSE;
+				gint role = 0;
+				gint minted = -1;
+
+				g_object_get(membership, "active", &active, "role", &role,
+				             NULL);
+
+				if (!active || venture_entity_is_deleted(membership))
+					continue;
+
+				/* A token reaches only what it was minted with. */
+				if (principal->token_id > 0)
+				{
+					g_autofree gchar *key = g_strdup_printf("%"
+						G_GINT64_FORMAT, organization);
+
+					if (NULL == snapshot || !JSON_NODE_HOLDS_OBJECT(snapshot) ||
+					    !json_object_has_member(json_node_get_object(snapshot),
+					                            key))
+						continue;
+
+					minted = (gint)json_object_get_int_member(
+						json_node_get_object(snapshot), key);
+				}
+
+				org = venture_database_get(database,
+					VENTURE_TYPE_ORGANIZATION, organization, NULL);
+
+				json_builder_begin_object(builder);
+				json_builder_set_member_name(builder, "organization_id");
+				json_builder_add_int_value(builder, organization);
+				json_builder_set_member_name(builder, "organization");
+				json_builder_add_string_value(builder, NULL != org
+					? venture_entity_get_display_name(org) : "");
+				json_builder_set_member_name(builder, "role");
+				json_builder_add_string_value(builder, venture_enum_to_nick(
+					VENTURE_TYPE_ORGANIZATION_ROLE, role));
+				if (minted >= 0)
+				{
+					json_builder_set_member_name(builder, "minted_role");
+					json_builder_add_string_value(builder,
+						venture_enum_to_nick(VENTURE_TYPE_ORGANIZATION_ROLE,
+						                     minted));
+				}
+				json_builder_end_object(builder);
+			}
+		}
+		json_builder_end_array(builder);
+	}
+
+	json_builder_end_object(builder);
+
+	return venture_web_json_response(json_builder_get_root(builder), 200);
 }
 
 /* --- Metrics ------------------------------------------------------------- */
@@ -35670,6 +35886,7 @@ venture_web_server_new(
 	/* API */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/business-events", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_business_events, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/whoami", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_whoami, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/metrics", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_metrics, self);
 	/* The Model Context Protocol for remote agents; see venture-web-mcp.inc. */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mcp", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mcp_post, self);

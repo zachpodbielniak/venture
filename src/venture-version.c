@@ -18,6 +18,21 @@ venture_get_version_string(void)
 	return VENTURE_VERSION_S;
 }
 
+const gchar * const *
+venture_build_features(void)
+{
+	/*
+	 * Append-only, and each name documented in docs/api.org under
+	 * "Features" in the change that adds it.
+	 */
+	static const gchar * const features[] = {
+		"whoami",
+		NULL
+	};
+
+	return features;
+}
+
 guint
 venture_get_version_major(void)
 {
