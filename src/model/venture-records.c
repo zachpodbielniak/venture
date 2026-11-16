@@ -1673,7 +1673,21 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	 * description. Appended for the same reason as issue-type.
 	 */
 	VENTURE_FIELD("until-at", "Until", "When the work ends; not before Due",
-	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
+	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * Where this ticket is mirrored from or to, in another system's
+	 * terms -- `clawtilla:<install>:<task>` for a task an agent fleet
+	 * mirrors here. Unique within the organization when set, deleted
+	 * rows included, so a client that retries a create after a timeout
+	 * finds the ticket it made rather than making a second one, and a
+	 * filter on it (`external_ref=...`) is the lookup. Empty for the
+	 * ordinary ticket. Appended for the same reason as issue-type.
+	 */
+	VENTURE_FIELD("external-ref", "External reference",
+	              "This ticket's id in another system, when it mirrors one",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicket, venture_ticket, venture_ticket_fields,
@@ -1705,7 +1719,18 @@ static const VentureFieldDecl venture_ticket_comment_fields[] = {
 	              "Not shown to whoever raised the ticket",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("occurred-at", "When", NULL, VENTURE_FIELD_KIND_DATETIME,
-	              VENTURE_COLUMN_FLAG_INDEXED)
+	              VENTURE_COLUMN_FLAG_INDEXED),
+	/*
+	 * The comment's id in the system it was mirrored from, as for a
+	 * ticket: unique within the organization when set, so a retried post
+	 * cannot land twice, and how the mirror knows a comment is its own
+	 * echo rather than a person's reply.
+	 */
+	VENTURE_FIELD("external-ref", "External reference",
+	              "This comment's id in another system, when it mirrors one",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureTicketComment, venture_ticket_comment, venture_ticket_comment_fields,

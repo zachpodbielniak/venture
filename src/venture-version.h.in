@@ -86,6 +86,22 @@ const gchar *
 venture_get_version_string(void);
 
 /**
+ * venture_build_features:
+ *
+ * What this build can do that a client may need to know before relying
+ * on it, by name, as `GET /api/v1/health` lists them under `features`.
+ * A name is added in the change that adds the ability and never removed:
+ * a client asks for the name it needs, and a build that has never heard
+ * of it does not list it, so the client falls back rather than guesses.
+ *
+ * Since: 0.10.0
+ *
+ * Returns: (transfer none) (array zero-terminated=1): the names
+ */
+const gchar * const *
+venture_build_features(void);
+
+/**
  * venture_get_version_major:
  *
  * Returns: the major version of the linked VENTURE library

@@ -3,11 +3,16 @@
 # Copyright (C) 2026 Zach Podbielniak
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# VENTURE has no webhook sender of its own and does not need one. The
-# venture module raises on_created, on_updated and on_deleted for every
-# record change from every surface -- web, API, CLI, AI -- and podomation's
-# webhook module POSTs. So "tell the agent when a deal closes" is a rule in
-# this file and no C in either project.
+# VENTURE has two ways to tell somebody a record changed. Its own webhooks
+# (Settings > Webhooks, docs/webhooks.org) are signed with an HMAC over the
+# body, retried by nobody, switched off after ten failures, and an update's
+# body names the fields that changed -- prefer them for anything that can
+# verify a signature, which clawtilla's `venture` trigger provider does.
+# This file is the other way: the venture automation module raises
+# on_created, on_updated and on_deleted for every record change from every
+# surface -- web, API, CLI, AI -- and podomation's webhook module POSTs, so
+# "tell the agent when a deal closes" is a rule here and no C in either
+# project. Use it for a receiver that can only take a capability URL.
 #
 # The worked case is clawtilla, whose generic trigger provider turns an
 # inbound POST into a message to an agent. Nothing here is clawtilla-

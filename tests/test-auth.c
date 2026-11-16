@@ -3237,6 +3237,256 @@ auth_assert_no_forge_secret(const gchar *body)
 	g_assert_null(strstr(body, "\"webhook_secret\""));
 }
 
+/* Saves a forge_repo @full_name on @forge in @organization. */
+static gint64
+auth_repo_create(
+	ServerFixture	*fixture,
+	gint64		 organization,
+	gint64		 forge,
+	const gchar	*full_name,
+	const gchar	*clone_url
+){
+	g_autoptr(VentureEntity) repo = g_object_new(VENTURE_TYPE_FORGE_REPO,
+		"name", full_name, "forge-id", forge, "clone-url", clone_url, NULL);
+
+	venture_entity_set_organization_id(repo, organization);
+	g_assert_true(venture_database_save(fixture->database, repo, NULL, NULL));
+
+	return venture_entity_get_id(repo);
+}
+
+/* GET /api/v1/forge_repo/resolve?url=@url as @cookie: status, and the id. */
+static guint
+auth_resolve(
+	ServerFixture	*fixture,
+	const gchar	*cookie,
+	const gchar	*url,
+	gint64		*out_id
+){
+	g_autofree gchar *escaped = g_uri_escape_string(url, NULL, FALSE);
+	g_autofree gchar *path = g_strdup_printf(
+		"/api/v1/forge_repo/resolve?url=%s", escaped);
+	g_autofree gchar *body = NULL;
+	guint status;
+
+	status = server_fixture_request(fixture, "GET", path, cookie, NULL, &body,
+	                                NULL);
+
+	if (SOUP_STATUS_OK == status && NULL != out_id)
+	{
+		g_autoptr(JsonNode) node = venture_json_parse(body, NULL);
+
+		*out_id = json_object_get_int_member(json_node_get_object(node), "id");
+	}
+
+	return status;
+}
+
+/*
+ * GET /api/v1/forge_repo/resolve: which repository a checkout's remote is.
+ *
+ * What breaks if this regresses: a client that only knows its checkout's
+ * remotes -- an agent fleet filing its work against the right repository
+ * -- cannot find it, or finds it only in the one spelling the forge's
+ * clone base produces, when a person's checkout has the HTTPS URL, an SSH
+ * one on another host and port, or the same name in different case. And
+ * the other direction: a repository the caller cannot see must answer
+ * exactly as missing does, or this would confirm that it exists.
+ */
+static void
+test_auth_forge_repo_resolve(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autoptr(VentureEntity) other = NULL;
+	static const gchar *const remotes[] = {
+		"git@git-ssh.example.test:acme/site.git",
+		"ssh://git@git-ssh.example.test:2222/acme/site.git",
+		"https://git.example.test/acme/site",
+		"https://git.example.test/Acme/Site.git/",
+		"http://user:pw@GIT.example.test/acme/site",
+		NULL
+	};
+	gint64 home;
+	gint64 forge;
+	gint64 site;
+	gint64 mirror;
+	gint64 found = 0;
+	gint64 editor_id = 0;
+	guint i;
+
+	(void)user_data;
+
+	home = venture_context_get_default_organization_id(fixture->context);
+	forge = auth_forge_create(fixture, home, "Our forge",
+	                          "https://git.example.test");
+	site = auth_repo_create(fixture, home, forge, "acme/site", NULL);
+	mirror = auth_repo_create(fixture, home, forge, "acme/tools",
+	                          "git@mirror.example.test:other/tools.git");
+
+	/* the same name in an organization the editor is not a member of */
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Elsewhere", "slug", "elsewhere", NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, NULL));
+	{
+		gint64 theirs = auth_forge_create(fixture,
+			venture_entity_get_id(other), "Their forge",
+			"https://git.elsewhere.test");
+
+		auth_repo_create(fixture, venture_entity_get_id(other), theirs,
+		                 "acme/secret", NULL);
+	}
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+
+	/* every spelling of the one repository finds it */
+	for (i = 0; NULL != remotes[i]; i++)
+	{
+		found = 0;
+		g_test_message("%s", remotes[i]);
+		g_assert_cmpuint(auth_resolve(fixture, editor, remotes[i], &found),
+		                 ==, SOUP_STATUS_OK);
+		g_assert_cmpint(found, ==, site);
+	}
+
+	/* a repository's own clone URL beats its forge's pattern */
+	g_assert_cmpuint(auth_resolve(fixture, editor,
+		"git@mirror.example.test:other/tools", &found), ==, SOUP_STATUS_OK);
+	g_assert_cmpint(found, ==, mirror);
+
+	/* not visible to this caller: the same 404 as no such repository */
+	g_assert_cmpuint(auth_resolve(fixture, editor,
+		"https://git.elsewhere.test/acme/secret", NULL), ==,
+		SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(auth_resolve(fixture, editor,
+		"https://git.example.test/acme/nothing", NULL), ==,
+		SOUP_STATUS_NOT_FOUND);
+
+	/* no repository named at all */
+	g_assert_cmpuint(auth_resolve(fixture, editor, "/srv/git/site", NULL), ==,
+	                 SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	g_assert_cmpuint(auth_resolve(fixture, editor, "", NULL), ==,
+	                 SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* nobody anonymous */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/api/v1/forge_repo/resolve?url=x"), ==, SOUP_STATUS_UNAUTHORIZED);
+}
+
+/*
+ * POST /api/v1/runs/external and PATCH .../:id over HTTP: an editor starts
+ * and reports an external run; a viewer may not; and the generic forge_run
+ * route still refuses every write, so these two calls stay the only door.
+ */
+static void
+test_auth_external_runs_routes(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *viewer = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	gint64 editor_id = 0;
+	gint64 run_id;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	server_fixture_create_member(fixture, "vera", "v-long-password",
+	                             VENTURE_USER_ROLE_VIEWER, NULL);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+	viewer = server_fixture_login(fixture, "vera", "v-long-password");
+
+	ticket = VENTURE_ENTITY(venture_ticket_new());
+	g_object_set(ticket, "title", "Mirrored", NULL);
+	venture_entity_set_organization_id(ticket,
+		venture_context_get_default_organization_id(fixture->context));
+	g_assert_true(venture_database_save(fixture->database, ticket, NULL, NULL));
+
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"model\":\"sonnet\"}",
+			venture_entity_get_id(ticket));
+
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/runs/external", viewer, json, NULL, NULL), ==,
+			SOUP_STATUS_FORBIDDEN);
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/runs/external", editor, json, &body, NULL), ==,
+			SOUP_STATUS_CREATED);
+	}
+
+	node = venture_json_parse(body, NULL);
+	run_id = json_object_get_int_member(json_node_get_object(node), "id");
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node),
+	                                              "runner"), ==, "external");
+
+	path = g_strdup_printf("/api/v1/runs/external/%" G_GINT64_FORMAT, run_id);
+	g_assert_cmpuint(server_fixture_request(fixture, "PATCH", path, editor,
+		"{\"state\":\"failed\",\"failure_reason\":\"tests broke\","
+		"\"cost\":\"0.05 USD\"}", NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "PATCH", path, editor,
+		"{\"turns\":2}", NULL, NULL), ==, SOUP_STATUS_CONFLICT);
+
+	/* the generic route is still no door */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge_run", editor, "{\"ticket_id\":1}", NULL, NULL), ==,
+		SOUP_STATUS_FORBIDDEN);
+}
+
+/*
+ * A create that names its own uuid keeps it, and a second create with the
+ * same uuid is "already exists" (409), not a second record or a 500.
+ *
+ * What breaks if this regresses: a client that mints the id up front -- so
+ * a retried create after a timeout can look its record up by it -- finds
+ * the server ignored it and made up another, or answers the retry with a
+ * server error instead of telling it the record is already there.
+ */
+static void
+test_auth_create_keeps_uuid(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	static const gchar uuid[] = "0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8";
+	g_autofree gchar *json = g_strdup_printf(
+		"{\"title\":\"Minted elsewhere\",\"uuid\":\"%s\"}", uuid);
+	gint64 editor_id = 0;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ticket", editor, json, &body, NULL), ==,
+		SOUP_STATUS_CREATED);
+	node = venture_json_parse(body, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node),
+	                                              "uuid"), ==, uuid);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ticket", editor, json, NULL, NULL), ==,
+		SOUP_STATUS_CONFLICT);
+}
+
 /*
  * Editors and viewers see their organization's forges; nobody but the owner
  * changes one or reaches its credentials.
@@ -4267,6 +4517,254 @@ server_fixture_mint_token(
 		*out_reveal_path = g_steal_pointer(&location);
 
 	return extract_revealed_token(page);
+}
+
+/*
+ * GET /api/v1/whoami: a client holding one token per agent learns, from
+ * the token alone, the actor string its writes are recorded under, the
+ * user and role behind it, its organizations and when it expires --
+ * without which "API token #12 changed this" cannot be told apart from
+ * another agent's change. Anonymous callers are refused, and the health
+ * route advertises the feature so a client can ask before relying on it.
+ */
+static void
+test_auth_whoami(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *health = NULL;
+	g_autoptr(JsonParser) parser = json_parser_new();
+	JsonObject *root;
+	JsonArray *memberships;
+	gint64 user_id = 0;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "scout", "s-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, &user_id);
+	server_fixture_set_organization_role(fixture, user_id,
+		VENTURE_ORGANIZATION_ROLE_OWNER);
+	cookie = server_fixture_login(fixture, "scout", "s-long-password");
+	secret = server_fixture_mint_token(fixture, cookie,
+		"name=scout-agent&expires_in_days=30", NULL);
+	g_assert_nonnull(secret);
+
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/whoami"),
+	                 ==, SOUP_STATUS_UNAUTHORIZED);
+
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/whoami", NULL, secret, NULL, &body, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_true(json_parser_load_from_data(parser, body, -1, NULL));
+	root = json_node_get_object(json_parser_get_root(parser));
+
+	g_assert_true(g_str_has_prefix(json_object_get_string_member(root,
+		"actor"), "API token #"));
+	g_assert_cmpint(json_object_get_int_member(root, "token_id"), >, 0);
+	g_assert_cmpstr(json_object_get_string_member(root, "role"), ==,
+	                "editor");
+	g_assert_false(json_object_get_null_member(root, "expires_at"));
+	g_assert_cmpstr(json_object_get_string_member(
+		json_object_get_object_member(root, "user"), "username"), ==,
+		"scout");
+	g_assert_cmpint(json_object_get_int_member(
+		json_object_get_object_member(root, "user"), "id"), ==, user_id);
+
+	memberships = json_object_get_array_member(root, "memberships");
+	g_assert_cmpuint(json_array_get_length(memberships), ==, 1);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(memberships, 0), "role"), ==, "owner");
+	g_assert_cmpstr(json_object_get_string_member(
+		json_array_get_object_element(memberships, 0), "minted_role"), ==,
+		"owner");
+
+	/*
+	 * A membership granted after the token was minted does not widen it,
+	 * and whoami says so by leaving it out: what is listed is what the
+	 * token reaches, not what its user does.
+	 */
+	{
+		g_autoptr(VentureEntity) org = g_object_new(VENTURE_TYPE_ORGANIZATION,
+			"name", "Later Co", NULL);
+		g_autoptr(VentureEntity) later = NULL;
+		g_autofree gchar *again = NULL;
+		g_autoptr(JsonParser) second = json_parser_new();
+
+		g_assert_true(venture_database_save(fixture->database, org, NULL,
+		                                    NULL));
+		later = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+			"user-id", user_id, "organization-id",
+			venture_entity_get_id(org), "role",
+			VENTURE_ORGANIZATION_ROLE_OWNER, "active", TRUE, NULL);
+		g_assert_true(venture_database_save(fixture->database, later, NULL,
+		                                    NULL));
+
+		g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+			"/api/v1/whoami", NULL, secret, NULL, &again, NULL),
+			==, SOUP_STATUS_OK);
+		g_assert_true(json_parser_load_from_data(second, again, -1, NULL));
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			json_node_get_object(json_parser_get_root(second)),
+			"memberships")), ==, 1);
+	}
+
+	/* the token's number is the actor string's number */
+	{
+		g_autofree gchar *expected = g_strdup_printf("API token #%"
+			G_GINT64_FORMAT, json_object_get_int_member(root, "token_id"));
+
+		g_assert_cmpstr(json_object_get_string_member(root, "actor"), ==,
+		                expected);
+	}
+
+	/* and the build says it has the route */
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/health", NULL, NULL, NULL, &health, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(health, "\"features\""));
+	g_assert_nonnull(strstr(health, "\"whoami\""));
+}
+
+/*
+ * POSTs @json to @path as @bearer with an optional Idempotency-Key;
+ * returns the status, the new record's id (when the body has one) and
+ * whether the answer was a replay.
+ */
+static guint
+auth_post_keyed(
+	ServerFixture	*fixture,
+	const gchar	*bearer,
+	const gchar	*path,
+	const gchar	*key,
+	const gchar	*json,
+	gint64		*out_id,
+	gboolean	*out_replayed
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = g_bytes_new(json, strlen(json));
+	g_autofree gchar *url = g_strdup_printf("http://127.0.0.1:%u%s",
+	                                        fixture->port, path);
+	g_autofree gchar *authorization = g_strconcat("Bearer ", bearer, NULL);
+	RequestResult outcome = { FALSE, NULL, NULL };
+	SoupMessageHeaders *headers;
+
+	message = soup_message_new(SOUP_METHOD_POST, url);
+	headers = soup_message_get_request_headers(message);
+	soup_message_headers_append(headers, "Authorization", authorization);
+	if (NULL != key)
+		soup_message_headers_append(headers, "Idempotency-Key", key);
+	soup_message_set_request_body_from_bytes(message, "application/json",
+	                                         bytes);
+
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(outcome.error);
+
+	if (NULL != out_id)
+	{
+		g_autoptr(JsonNode) node = venture_json_parse(
+			g_bytes_get_data(outcome.body, NULL), NULL);
+
+		*out_id = (NULL != node && JSON_NODE_HOLDS_OBJECT(node) &&
+		           json_object_has_member(json_node_get_object(node), "id"))
+			? json_object_get_int_member(json_node_get_object(node), "id")
+			: 0;
+	}
+
+	if (NULL != out_replayed)
+		*out_replayed = 0 == g_strcmp0(soup_message_headers_get_one(
+			soup_message_get_response_headers(message),
+			"Idempotent-Replayed"), "true");
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * Idempotency-Key on a create.
+ *
+ * What breaks if this regresses: a client whose POST timed out after the
+ * server had already saved -- an agent fleet mirroring a task over a slow
+ * link -- retries, and the install now holds two tickets for one piece of
+ * work, one of which nobody is tracking. With the key, the retry gets the
+ * first answer back. Reusing a key for a different request must be
+ * refused rather than answered with the wrong record, and one caller's
+ * key must never return another caller's answer.
+ */
+static void
+test_auth_idempotency_key(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *first_token = NULL;
+	g_autofree gchar *second_token = NULL;
+	gint64 first = 0;
+	gint64 again = 0;
+	gint64 other = 0;
+	gint64 plain_a = 0;
+	gint64 plain_b = 0;
+	gboolean replayed = TRUE;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                             VENTURE_USER_ROLE_ADMIN, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+	first_token = server_fixture_mint_token(fixture, cookie,
+		"name=agent-one&expires_in_days=30", NULL);
+	second_token = server_fixture_mint_token(fixture, cookie,
+		"name=agent-two&expires_in_days=30", NULL);
+
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Fix the header\"}", &first, &replayed),
+		==, SOUP_STATUS_CREATED);
+	g_assert_cmpint(first, >, 0);
+	g_assert_false(replayed);
+
+	/* the retry: the same answer, not a second ticket */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Fix the header\"}", &again, &replayed),
+		==, SOUP_STATUS_CREATED);
+	g_assert_cmpint(again, ==, first);
+	g_assert_true(replayed);
+
+	/* the key reused for something else */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Something else\"}", NULL, NULL),
+		==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* another caller's key space is its own */
+	g_assert_cmpuint(auth_post_keyed(fixture, second_token, "/api/v1/ticket",
+		"task-01m0k6", "{\"title\":\"Fix the header\"}", &other, &replayed),
+		==, SOUP_STATUS_CREATED);
+	g_assert_cmpint(other, !=, first);
+	g_assert_false(replayed);
+
+	/* no key: two requests, two records, as always */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		NULL, "{\"title\":\"Plain\"}", &plain_a, NULL), ==,
+		SOUP_STATUS_CREATED);
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		NULL, "{\"title\":\"Plain\"}", &plain_b, NULL), ==,
+		SOUP_STATUS_CREATED);
+	g_assert_cmpint(plain_a, !=, plain_b);
+
+	/* a refused create is not kept: fixed, the key works */
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"bad-then-good", "{\"title\":\"\"}", NULL, NULL), !=,
+		SOUP_STATUS_CREATED);
+	g_assert_cmpuint(auth_post_keyed(fixture, first_token, "/api/v1/ticket",
+		"bad-then-good", "{\"title\":\"Now named\"}", NULL, &replayed), ==,
+		SOUP_STATUS_CREATED);
+	g_assert_false(replayed);
 }
 
 /*
@@ -8600,6 +9098,12 @@ main(
 	g_test_add("/auth/owner-mints-own-token", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_owner_mints_own_token,
 	           server_fixture_tear_down);
+	g_test_add("/auth/whoami", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_whoami,
+	           server_fixture_tear_down);
+	g_test_add("/auth/idempotency-key", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_idempotency_key,
+	           server_fixture_tear_down);
 	g_test_add("/auth/admin-mints-token-for-user", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_admin_mints_token_for_user,
 	           server_fixture_tear_down);
@@ -8671,6 +9175,15 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-visible-to-members", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_forge_visible_to_members,
+	           server_fixture_tear_down);
+	g_test_add("/auth/create-keeps-uuid", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_create_keeps_uuid,
+	           server_fixture_tear_down);
+	g_test_add("/auth/external-runs-routes", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_external_runs_routes,
+	           server_fixture_tear_down);
+	g_test_add("/auth/forge-repo-resolve", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_forge_repo_resolve,
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-records-are-owner-only", ServerFixture, NULL,
 

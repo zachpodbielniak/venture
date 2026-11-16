@@ -98,11 +98,83 @@ taking its token from =VENTURE_TOKEN= and generating its tool surface from
 =/api/v1/schema= so a plugin's record type is offered without any change.
 See [[file:mcp.org][venturectl mcp]]. The server answers the same tools itself at =POST /mcp= for a remote agent holding a token in an =Authorization: Bearer= header; see [[file:mcp.org::*Remote MCP over HTTPS: POST /mcp][Remote MCP over HTTPS]].
 
+** Who am I
+
+=GET /api/v1/whoami= (since 0.10.0) answers, for the credential presented,
+everything a client needs to recognise its own work -- above all a client
+holding one token per agent, which must tell its agent's change apart from
+another's:
+
+- =actor= -- the string every audit row, activity line, comment and webhook
+  body records for it: =API token #N= for a token, the username for a
+  session.
+- =role= -- the global role in force (a token is held to its user's
+  current role when that is lower).
+- =token_id= and =expires_at= (=null= for never) for a token; =0= for a
+  session.
+- =user= -- =id= and =username=, or =null= for a token with no user.
+- =memberships= -- the organizations this credential reaches, each
+  =organization_id=, =organization= (its name), =role= (the user's current
+  membership role) and, for a token, =minted_role= (the role in the
+  snapshot it was minted with). A token reaches an organization only where
+  both exist and both allow the action, so a membership granted after the
+  token was minted is not listed: mint a new token to reach it.
+
+Any authenticated caller may ask (viewer and up); anonymous is 401. Nothing
+here is more than the caller could learn by acting.
+
+#+begin_src sh
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" "$VENTURE_SERVER/api/v1/whoami"
+# {"actor":"API token #12","role":"editor","token_id":12,
+#  "expires_at":"2027-01-15T10:00:00Z","user":{"id":7,"username":"scout"},
+#  "memberships":[{"organization_id":1,"organization":"Acme","role":"owner",
+#                  "minted_role":"owner"}]}
+#+end_src
+
+** Retrying a write: Idempotency-Key
+
+A client whose =POST= timed out cannot tell whether the server acted. Send an =Idempotency-Key= header (1 to 255 ASCII characters of your choosing, one per intended write) on =POST /api/v1/:type=, =POST /api/v1/links= or =POST /api/v1/tickets/:id/worklog= (since 0.10.0; the =idempotency= feature), and retry with the same key:
+
+- *The same key and the same request* -- method, path with its query, and the exact body bytes -- answers what the first one did, status and body, with =Idempotent-Replayed: true=, and writes nothing again.
+- *The same key with a different request* is refused with 422: the key was reused, and neither answer would be right. Use a new key for a new write.
+- *Only a success is kept* (any 2xx, a staged write's 202 included). A refused request is not, so a client that fixes it may send the same key again.
+- *A key is the caller's own*: a token's keys, or a session user's, never meet another caller's.
+- *Kept 24 hours, in this server process*, at most 10,000 at a time, oldest dropped first -- a restart forgets them. A client that must be safe across one dedupes on a field it owns as well, such as =ticket.external_ref= ([[file:tickets.org][Tickets]]), which refuses a second ticket with the same reference (409).
+- Without the header nothing changes.
+
+#+begin_src sh
+curl -s -X POST -H "Authorization: Bearer $VENTURE_TOKEN" -H "Content-Type: application/json" \
+	-H "Idempotency-Key: clawtilla-task-01m0k6-create" \
+	-d '{"title":"Fix the header"}' "$VENTURE_SERVER/api/v1/ticket"
+#+end_src
+
+** Features
+
+=GET /api/v1/health= lists =features=: what this build can do that a client
+may need to know before relying on it, by name (=venture_build_features()=).
+A name is added in the release that adds the ability and never removed; a
+client looks for the name it needs and, on a build that does not list it,
+falls back rather than guesses.
+
+| Name     | Since  | What it means                                  |
+|----------+--------+------------------------------------------------|
+| =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+| =apply_writes_low_risk= | 0.10.0 | =/api/v1/schema= classes each type's =write_risk=, and =venturectl mcp --apply-writes=low-risk= / =mcp.apply_low_risk= apply only the low ones ([[file:mcp.org][venturectl mcp]]) |
+| =external_runs= | 0.10.0 | =POST= and =PATCH /api/v1/runs/external=, held to the agent budgets ([[file:forge.org][Git forges]]) |
+| =idempotency= | 0.10.0 | =Idempotency-Key= on record, link and worklog creates, as described above |
+| =webhook_changes= | 0.10.0 | an =*.updated= webhook body names the changed fields in =changes= ([[file:webhooks.org][Webhooks]]) |
+| =repo_resolve= | 0.10.0 | =GET /api/v1/forge_repo/resolve?url== ([[file:forge.org][Git forges]]) |
+| =external_ref= | 0.10.0 | =ticket.external_ref= and =ticket_comment.external_ref=, unique per organization ([[file:tickets.org][Tickets]]) |
+
 * Endpoints
 
 | Method   | Path                                | Purpose                              |
 |----------+-------------------------------------+--------------------------------------|
-| =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state |
+| =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state, =features= |
+| =GET=    | =/api/v1/whoami=                    | the caller: actor, role, user, token, organizations |
+| =GET=    | =/api/v1/forge_repo/resolve?url== | the repository a git remote names ([[file:forge.org][Git forges]]) |
+| =POST=   | =/api/v1/runs/external=             | start a run done outside VENTURE ([[file:forge.org][Git forges]]) |
+| =PATCH=  | =/api/v1/runs/external/:id=         | report its progress or its end       |
 | =GET=    | =/metrics=                          | Prometheus text; off unless =metrics.access= allows the caller ([[file:configuration.org::*Metrics][Metrics]]) |
 | =GET=    | =/api/v1/schema=                    | every record type and its fields     |
 | =GET=    | =/api/v1/schema/:type=              | one record type                      |
@@ -430,6 +502,10 @@ text.
 * Bodies
 
 =PATCH= applies only the members present; anything omitted is left alone.
+A create may name the record's =uuid= itself, and it is kept: a client that
+mints the id up front can find its record again by it after a create that
+timed out. A second create with a =uuid= already taken is 409
+(=already_exists=), not a second record.
 Money accepts several forms — ~"12.34"~, ~"$12.34"~, ~"12.34 EUR"~, or the
 object form ~{"amount": 1234, "currency": "USD", "exponent": 2}~. Dates accept
 ISO 8601 or =YYYY-MM-DD=. Enumerations accept their nick in any case, with
@@ -467,7 +543,11 @@ One shape for every failure:
 | =unsupported=              |  501 | not in this build                    |
 
 A =409= from a write means someone else changed the record since you loaded
-it. Reload, reapply, retry — do not force it.
+it (=conflict=), or that a value which must be unique is already taken
+(=already_exists=) -- since 0.10.0 a save the database refuses for a unique
+index answers =already_exists= rather than a 500. For a stale version:
+reload, reapply, retry -- do not force it. For a taken value: find the record
+that holds it (a filter on that field) and use it.
 
 * Stripe payment actions
 

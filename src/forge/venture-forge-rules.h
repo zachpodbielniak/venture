@@ -193,6 +193,27 @@ venture_forge_repo_split(
 	gchar		**out_repo
 );
 
+/**
+ * venture_forge_canonical_remote:
+ * @url: a git remote in any form git accepts: scp-like
+ *   (`git@host:owner/repo.git`), `ssh://`, `https://`, `http://` or
+ *   `git://`
+ *
+ * The one spelling every remote of the same repository shares:
+ * `host/owner/repo`, with the host and path lower-cased (forges compare
+ * names without case), the user, password and port dropped, and a
+ * trailing `.git` and `/` removed. Ports are dropped on purpose -- an SSH
+ * remote on 2222 and the forge's HTTPS URL name the same repository -- and
+ * the path is what tells repositories apart.
+ *
+ * Since: 0.10.0
+ *
+ * Returns: (transfer full) (nullable): the key, or %NULL for a URL that
+ *   names no repository on a host
+ */
+gchar *
+venture_forge_canonical_remote(const gchar *url);
+
 G_END_DECLS
 
 #endif /* VENTURE_FORGE_RULES_H */

@@ -51,6 +51,7 @@ typedef struct
 
 	/* `mcp` only: let its write tools apply rather than hold. */
 	gboolean		 apply_writes;
+	gboolean		 apply_low_risk;
 
 	/* Propose a write instead of making it. Create, update, delete and
 	 * act honour it, and passing it to anything else is refused. */
@@ -4274,6 +4275,7 @@ venture_cli_command_mcp(
 		return -1;
 
 	venture_mcp_server_set_stage_writes(server, !cli->apply_writes);
+	venture_mcp_server_set_apply_low_risk(server, cli->apply_low_risk);
 
 	if (!venture_mcp_server_load_catalog(server, error))
 		return -1;
@@ -4288,7 +4290,9 @@ venture_cli_command_mcp(
 		/* stderr, not stdout: stdout carries the protocol. */
 		g_printerr("venturectl mcp: %u record types, writes %s\n",
 		           g_strv_length(types),
-		           cli->apply_writes ? "applied" : "staged");
+		           cli->apply_writes ? "applied"
+		           : cli->apply_low_risk ? "applied when low risk, else staged"
+		           : "staged");
 	}
 
 	if (!venture_mcp_server_run(server, error))
@@ -4397,6 +4401,48 @@ venture_cli_command_act(VentureCli *cli, gchar **args, GError **error)
 #include "report/venture-report-pack-cli.inc"
 #include "orgaccess/venture-mfa-cli.inc"
 
+/*
+ * --apply-writes=low-risk, spelled the way people write it, is turned
+ * into the hidden --apply-writes-low-risk before GOption sees it.
+ *
+ * Not an optional-argument callback: GOption gives an optional argument
+ * the *next word* when it does not start with a dash, so
+ * `venturectl --apply-writes mcp` would read `mcp` as the level and
+ * refuse it -- breaking every command line written before the level
+ * existed.
+ */
+static gboolean
+spell_apply_writes_low_risk(
+	gint	  argc,
+	gchar	**argv,
+	GError	**error
+){
+	gint i;
+
+	for (i = 1; i < argc; i++)
+	{
+		if (0 == g_strcmp0(argv[i], "--"))
+			return TRUE;
+
+		if (0 == g_strcmp0(argv[i], "--apply-writes=low-risk"))
+			argv[i] = (gchar *)"--apply-writes-low-risk";
+		else if (g_str_has_prefix(argv[i], "--apply-writes="))
+		{
+			/*
+			 * Refused: GOption would ignore a value on a plain flag
+			 * and read `--apply-writes=lowrisk` as --apply-writes --
+			 * a typo of the careful setting applying every write.
+			 */
+			g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+			            "--apply-writes takes no value, or =low-risk; "
+			            "not \"%s\"", argv[i] + strlen("--apply-writes="));
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 int
 main(
 	int	  argc,
@@ -4406,7 +4452,7 @@ main(
 	g_autoptr(GError) error = NULL;
 	g_auto(GStrv) args = NULL;
 	VentureCli cli = { NULL, NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE, FALSE,
-	                   FALSE, FALSE, FALSE, FALSE };
+	                   FALSE, FALSE, FALSE, FALSE, FALSE };
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
 	g_autofree gchar *session_file = NULL, *session_cookie = NULL;
@@ -4422,6 +4468,7 @@ main(
 	gboolean show_license = FALSE;
 	gboolean quiet = FALSE;
 	gboolean apply_writes = FALSE;
+	gboolean apply_low_risk = FALSE;
 	gboolean stage = FALSE;
 	g_autofree gchar *reconciliation_matcher = NULL;
 	gint reconciliation_threshold = 80;
@@ -4445,7 +4492,11 @@ main(
 		{ "quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet,
 		  "Print only the data", NULL },
 		{ "apply-writes", 0, 0, G_OPTION_ARG_NONE, &apply_writes,
-		  "mcp only: let write tools apply instead of staging", NULL },
+		  "mcp only: let write tools apply instead of staging; "
+		  "--apply-writes=low-risk applies only what the server classes "
+		  "as low risk", NULL },
+		{ "apply-writes-low-risk", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,
+		  &apply_low_risk, "mcp only: --apply-writes=low-risk", NULL },
 		{ "stage", 0, 0, G_OPTION_ARG_NONE, &stage,
 		  "create/update/delete/act/dunning sweep/dedupe/journal post/sequence enroll/"
 		  "lead convert/billing/arbitrage record|close|reopen|abandon|execute/"
@@ -4721,7 +4772,7 @@ main(
 		"  dedupe merge ID survivor=N   fold the other record of a candidate into the survivor; --stage\n"
 		"  dedupe dismiss ID            close a candidate as not a duplicate\n"
 		"  user mfa reset USER      break glass: turn off a user's second factor (owner only, audited)\n"
-		"  mcp [--apply-writes]         serve the API to an AI agent over\n"
+		"  mcp [--apply-writes[=low-risk]] serve the API to an AI agent over\n"
 		"                               stdio as an MCP server\n"
 		"  support rollup --from DATE --to DATE [--sort [-]COLUMN] [min_tickets=N] [company=ID] [product=NAME] [group_by=product]\n"
 		"                               support cost and ticket volume per customer\n"
@@ -4785,7 +4836,8 @@ main(
 		"Exit codes: 2 usage, 3 not found, 4 conflict, 5 auth, 6 unsupported,\n"
 		"7 network, 8 validation, 1 anything else.\n");
 
-	if (!g_option_context_parse(options, &argc, &argv, &error))
+	if (!spell_apply_writes_low_risk(argc, argv, &error) ||
+	    !g_option_context_parse(options, &argc, &argv, &error))
 	{
 		g_printerr("%s\n", error->message);
 		return venture_error_to_exit_code(VENTURE_ERROR_INVALID_ARGUMENT);
@@ -4875,7 +4927,10 @@ main(
 		}
 		cli.session_cookie = session_cookie;
 	}
+	/* Both given: the wider wins, as two flags each meaning "at least
+	 * this much" would. */
 	cli.apply_writes = apply_writes;
+	cli.apply_low_risk = apply_low_risk && !apply_writes;
 	cli.stage = stage;
 
 	/*
@@ -4883,7 +4938,8 @@ main(
 	 * --token: a flag that quietly does nothing on nine of ten commands
 	 * teaches that it did something.
 	 */
-	if (apply_writes && (0 != g_strcmp0(args[0], "mcp")))
+	if ((apply_writes || apply_low_risk) &&
+	    (0 != g_strcmp0(args[0], "mcp")))
 	{
 		g_printerr("venturectl: --apply-writes only means something to "
 		           "`venturectl mcp`, which holds its writes by default. "

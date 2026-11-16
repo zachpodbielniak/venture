@@ -273,6 +273,7 @@ VENTURE_DEFINE_ENUM_TYPE(venture_forge_kind_get_type,
 static const GEnumValue venture_forge_runner_values[] = {
 	VE(VENTURE_FORGE_RUNNER_AGENT, "agent"),
 	VE(VENTURE_FORGE_RUNNER_CLI,   "cli"),
+	VE(VENTURE_FORGE_RUNNER_EXTERNAL, "external"),
 	VE_END
 };
 

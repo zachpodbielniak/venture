@@ -96,6 +96,7 @@
 #include "receivables/venture-invoice-state-machine.h"
 #include "model/venture-venture-type.h"
 #include "model/venture-entity-registry.h"
+#include "model/venture-write-risk.h"
 #include "model/venture-integration-connection.h"
 #include "oidc/venture-oidc-records.h"
 #include "ai/venture-ai-organization-records.h"
@@ -328,6 +329,7 @@
 #include "forge/venture-forgejo-client.h"
 #include "forge/venture-forge-rules.h"
 #include "forge/venture-work-tools.h"
+#include "forge/venture-external-runs.h"
 #include "forge/venture-work-service.h"
 
 #include "web/venture-web-server.h"

@@ -117,9 +117,28 @@ venturectl create ticket title="Paint the porch" due_at=2026-11-02T14:00:00Z unt
 
 The calendar still places a ticket at =due_at= ([[file:planner.org][The planner]]).
 
+* A reference from another system
+
+A ticket that mirrors work kept somewhere else -- an agent fleet's task, another tracker's issue -- carries that system's id for it in =external_ref= (since 0.10.0), and so may a =ticket_comment=, for a comment the other system wrote. It is an ordinary string field, written by any writer and filtered like any other:
+
+#+begin_src sh
+curl -s -X POST -H "Authorization: Bearer $VENTURE_TOKEN" -H "Content-Type: application/json" \
+	-d '{"title":"Fix the header","external_ref":"clawtilla:host-a:task-01m0k6"}' \
+	"$VENTURE_SERVER/api/v1/ticket"
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
+	"$VENTURE_SERVER/api/v1/ticket?external_ref=clawtilla:host-a:task-01m0k6"
+#+end_src
+
+- *Unique within the organization, when set* (=VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION=), deleted rows included: a second ticket with the same reference in the same organization is refused with 409 (=VENTURE_ERROR_ALREADY_EXISTS=), so a client that retries a create after a timeout finds the ticket it made -- by filtering on the reference -- rather than making a second one. Two organizations may use the same reference.
+- *Empty is no reference.* The ordinary ticket has none, and any number of them coexist.
+- *A comment's is the same rule*, and is how a mirror tells its own comment (its reference) from a person's reply (none).
+- =GET /api/v1/health= lists the =external_ref= feature on a build that has the field.
+
 * Storage
 
 =goal_id= on =tickets= and =milestones= is an indexed integer column the field table declares; reconciliation adds it. Migration =000913_planning_goal_links= (SQLite and PostgreSQL) verifies the tickets column and backfills nothing: which goal a past ticket served is not knowable from the rows. It declares =-- requires-table: tickets=, so an install that never had tickets on records it and moves on.
+
+=external_ref= on =tickets= and on =ticket_comments= is an indexed string column the field table declares with =UNIQUE_ORGANIZATION=; reconciliation adds it and the organization-scoped unique index. Migrations =001074_ticket_external_ref= and =001075_ticket_comment_external_ref= (SQLite and PostgreSQL) verify the columns, guarded by =-- requires-table:=, and backfill nothing: no ticket made before mirrored anything.
 
 =until_at= on =tickets= is a datetime column the field table declares, not indexed. Migration =000998_ticket_until_at= (SQLite and PostgreSQL) verifies it and backfills nothing: an end time written into a description is a sentence, and reading a time out of it would be a guess.
 

@@ -186,6 +186,30 @@ Two switches decide direction:
 - *File issues upstream* — linking a ticket here opens a forge issue for it.
 - *Accept issues from upstream* — a webhook issue becomes a ticket.
 
+* Finding a repository from a remote
+
+A checkout knows its git remotes, not its =forge_repo= id. =GET /api/v1/forge_repo/resolve?url=<remote>= (since 0.10.0; the =repo_resolve= feature) answers the repository a remote names -- =id=, =name=, =forge_id=, =organization_id=, the =clone_url= VENTURE would clone from, and the =key= it matched on -- so a client filing work against the code it is in (an agent fleet mirroring its tasks) asks once rather than listing every forge and composing every clone URL itself.
+
+- *Any spelling matches.* Both the remote and each repository's URLs are reduced to one key, =host/owner/repo= (=venture_forge_canonical_remote()=): the host and path lower-cased, the user, password and port dropped, a trailing =.git= and =/= removed. A repository is compared on the URL it clones from (its own =clone_url=, else the forge's clone base, else its base URL) and on the URL a person browses (the base URL), so =git@git-ssh.example.com:acme/site.git=, =ssh://git@git-ssh.example.com:2222/acme/site.git= and =https://git.example.com/Acme/Site/= all find =acme/site= on a forge whose web host and SSH host differ.
+- *Only what the caller can see.* The lookup runs in the caller's own access scope: a repository in an organization the caller is not a member of answers 404, exactly as a repository that does not exist -- the route never confirms that an invisible one is there. Viewer and up; anonymous is 401.
+- *Refused:* a URL that names no repository on a host (a local path, a host alone) is 422.
+
+#+begin_src sh
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
+	"$VENTURE_SERVER/api/v1/forge_repo/resolve?url=git@git-ssh.example.com:acme/site.git"
+# {"id":3,"name":"acme/site","forge_id":1,"organization_id":1,
+#  "clone_url":"git@git-ssh.example.com:acme/site.git","key":"git-ssh.example.com/acme/site"}
+#+end_src
+
+* Runs done somewhere else
+
+VENTURE's own runners record every attempt at a ticket as a =forge_run=, and the agent budgets, the Runs page and the delivery report all read those records. Work done by an agent fleet outside VENTURE is recorded the same way, through two calls (since 0.10.0; the =external_runs= feature) -- the only way an outside runner writes a run, since generic writes to =forge_run= stay refused (a run record is evidence):
+
+- =POST /api/v1/runs/external= with =ticket_id= and, optionally, =provider=, =model=, =branch=, =prompt=: a run with runner =external= and state =running=. The agent budgets covering the ticket's repository are asked first, exactly as for an internal run: an exhausted hard-stop budget refuses with 409, naming it, and a budget crossing its warning line tells the owners once. 201 with the run.
+- =PATCH /api/v1/runs/external/:id= with any of =state= (=running=, =succeeded=, =failed=, =cancelled=), =branch=, =pull_request_number=, =provider=, =model=, =input_tokens=, =output_tokens=, =turns=, =cost=, =summary=, =failure_reason=, =log=. A finished state stamps =finished_at=, after which the run takes no more reports (409). =cost= is an amount *with its currency* -- ="0.42 USD"= -- and a bare number is refused, so it is never read in a default currency a budget cannot compare. Once a run has a cost the budgets are asked again, so a line it crossed is announced. One of VENTURE's own runs is refused here (403).
+
+Editor and up, on a ticket the caller can see. The run is then on the Runs page, in the delivery report and in every budget's spend, like any other.
+
 * Rules
 
 A rule answers: for this repository, and this kind of issue, what may happen without me?

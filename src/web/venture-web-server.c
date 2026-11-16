@@ -139,6 +139,17 @@ struct _VentureWebServer
 	GHashTable	*reveals;
 
 	/*
+	 * Answers to writes sent with an Idempotency-Key, keyed by
+	 * "<caller>|<key>" (VentureWebIdempotent), so a client that retries
+	 * after a timeout gets the first answer back instead of a second
+	 * record. Held 24 hours and at most VENTURE_WEB_IDEMPOTENCY_MAX; the
+	 * queue is insertion order, oldest first, for evicting. Main thread
+	 * only, like the reveals.
+	 */
+	GHashTable	*idempotent;
+	GQueue		*idempotent_order;
+
+	/*
 	 * Turns waiting to be streamed, keyed by a one-shot token.
 	 *
 	 * A streamed answer is two requests: the POST that stores the
@@ -209,6 +220,30 @@ static void venture_web_connector_append_actions(VentureWebServer *self, GString
 
 #include "venture-web-hosted-private.h"
 
+/* How long, and how many, answers are kept for a repeated key. */
+#define VENTURE_WEB_IDEMPOTENCY_SECONDS (24 * 60 * 60)
+#define VENTURE_WEB_IDEMPOTENCY_MAX (10000)
+#define VENTURE_WEB_IDEMPOTENCY_KEY_MAX (255)
+
+/* One kept answer: what the request was, and what it was told. */
+typedef struct
+{
+	gchar	*fingerprint;
+	guint	 status;
+	gchar	*content_type;
+	gchar	*body;
+	gint64	 expires;
+} VentureWebIdempotent;
+
+static void
+venture_web_idempotent_free(VentureWebIdempotent *kept)
+{
+	g_free(kept->fingerprint);
+	g_free(kept->content_type);
+	g_free(kept->body);
+	g_free(kept);
+}
+
 static void
 venture_web_server_finalize(GObject *object)
 {
@@ -230,6 +265,9 @@ venture_web_server_finalize(GObject *object)
 	g_clear_object(&self->classified_routes);
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->reveals, g_hash_table_unref);
+	g_clear_pointer(&self->idempotent, g_hash_table_unref);
+	if (NULL != self->idempotent_order)
+		g_queue_free_full(g_steal_pointer(&self->idempotent_order), g_free);
 	g_clear_pointer(&self->chat_turns, g_hash_table_unref);
 	g_clear_object(&self->lead_limiter);
 	g_clear_object(&self->form_client_limiter);
@@ -253,6 +291,9 @@ venture_web_server_init(VentureWebServer *self)
 {
 	self->reveals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                      (GDestroyNotify)venture_web_reveal_free);
+	self->idempotent = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+		(GDestroyNotify)venture_web_idempotent_free);
+	self->idempotent_order = g_queue_new();
 	self->chat_turns = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 		(GDestroyNotify)venture_web_chat_turn_free);
 	self->get_patterns = g_ptr_array_new_with_free_func(g_free);
@@ -17754,6 +17795,23 @@ venture_web_api_health(
 	json_builder_add_boolean_value(builder, TRUE);
 
 	/*
+	 * Everything else a client may need to know before it relies on it,
+	 * by name: venture_build_features(). A list rather than a boolean
+	 * each, so a client asks for the name it needs and a build that has
+	 * never heard of it simply does not list it.
+	 */
+	json_builder_set_member_name(builder, "features");
+	json_builder_begin_array(builder);
+	{
+		const gchar * const *features = venture_build_features();
+		guint i;
+
+		for (i = 0; NULL != features[i]; i++)
+			json_builder_add_string_value(builder, features[i]);
+	}
+	json_builder_end_array(builder);
+
+	/*
 	 * And nothing beyond that. This route is the one deliberate
 	 * exception to the authentication rule -- a container healthcheck
 	 * runs before anybody has credentials -- so it may say what this
@@ -17766,6 +17824,530 @@ venture_web_api_health(
 	node = json_builder_get_root(builder);
 
 	return venture_web_json_response(node, 200);
+}
+
+/* --- Idempotency-Key ---------------------------------------------------- */
+
+typedef HtmxResponse *(*VentureWebHandler)(HtmxRequest *request,
+                                           GHashTable  *params,
+                                           gpointer     user_data);
+
+/*
+ * The request a key was first used for, as one digest: method, path with
+ * its query, and the exact body bytes. The same key with any of them
+ * different is a different request, and replaying the first answer to it
+ * would be a lie.
+ */
+static gchar *
+venture_web_request_fingerprint(HtmxRequest *request)
+{
+	g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
+	SoupServerMessage *message = htmx_request_get_message(request);
+	GUri *uri = soup_server_message_get_uri(message);
+	g_autofree gchar *target = g_uri_to_string_partial(uri,
+		G_URI_HIDE_USERINFO | G_URI_HIDE_FRAGMENT);
+	GBytes *body = htmx_request_get_body_bytes(request);
+
+	g_checksum_update(sum, (const guchar *)soup_server_message_get_method(
+		message), -1);
+	g_checksum_update(sum, (const guchar *)"\n", 1);
+	g_checksum_update(sum, (const guchar *)target, -1);
+	g_checksum_update(sum, (const guchar *)"\n", 1);
+	if (NULL != body)
+		g_checksum_update(sum, g_bytes_get_data(body, NULL),
+		                  (gssize)g_bytes_get_size(body));
+
+	return g_strdup(g_checksum_get_string(sum));
+}
+
+/* Drops kept answers past their 24 hours, oldest first. */
+static void
+venture_web_idempotent_expire(VentureWebServer *self, gint64 now)
+{
+	while (!g_queue_is_empty(self->idempotent_order))
+	{
+		const gchar *oldest = g_queue_peek_head(self->idempotent_order);
+		VentureWebIdempotent *kept = g_hash_table_lookup(self->idempotent,
+		                                                 oldest);
+
+		if (NULL != kept && kept->expires > now &&
+		    g_hash_table_size(self->idempotent) <= VENTURE_WEB_IDEMPOTENCY_MAX)
+			break;
+
+		g_hash_table_remove(self->idempotent, oldest);
+		g_free(g_queue_pop_head(self->idempotent_order));
+	}
+}
+
+/*
+ * A write sent with an Idempotency-Key header: its first successful answer
+ * is kept, and the same key with the same request gets that answer again
+ * -- status and body, marked Idempotent-Replayed -- rather than a second
+ * record. The case it exists for is a client whose POST timed out after
+ * the server had acted: it retries with the key it already used, and
+ * finds out what happened instead of doing it twice.
+ *
+ * - The key belongs to the caller (a token, or a user's session): two
+ *   callers' keys never meet.
+ * - The same key with a different method, path or body is refused (422):
+ *   the key was reused, and neither answer is the right one.
+ * - Only a 2xx answer is kept, a staged write's 202 included. A refusal
+ *   is not: the client fixes the request and may use the key again.
+ * - Kept for 24 hours, at most VENTURE_WEB_IDEMPOTENCY_MAX answers, in
+ *   this server process -- a restart forgets them, as it forgets the
+ *   one-time token reveals. A client that must survive that dedupes on a
+ *   field of its own (ticket.external_ref).
+ *
+ * No header, no change: the request goes straight to @inner.
+ */
+static HtmxResponse *
+venture_web_idempotent(
+	VentureWebServer	*self,
+	HtmxRequest		*request,
+	GHashTable		*params,
+	VentureWebHandler	 inner
+){
+	SoupServerMessage *message = htmx_request_get_message(request);
+	const gchar *key = soup_message_headers_get_one(
+		soup_server_message_get_request_headers(message), "Idempotency-Key");
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autofree gchar *slot = NULL;
+	g_autofree gchar *fingerprint = NULL;
+	VentureWebIdempotent *kept;
+	HtmxResponse *response;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+	guint status;
+
+	if (NULL == key)
+		return inner(request, params, self);
+
+	if ('\0' == *key || strlen(key) > VENTURE_WEB_IDEMPOTENCY_KEY_MAX ||
+	    !g_str_is_ascii(key))
+	{
+		g_autoptr(GError) error = g_error_new(VENTURE_ERROR,
+			VENTURE_ERROR_INVALID_ARGUMENT,
+			"Idempotency-Key: 1 to %d ASCII characters",
+			VENTURE_WEB_IDEMPOTENCY_KEY_MAX);
+
+		return venture_web_error_response(error);
+	}
+
+	/* Whose key: an unauthenticated request is answered by the handler. */
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (NULL == principal || !principal->authenticated)
+		return inner(request, params, self);
+
+	slot = (principal->token_id > 0)
+		? g_strdup_printf("t%" G_GINT64_FORMAT "|%s", principal->token_id, key)
+		: g_strdup_printf("u%" G_GINT64_FORMAT "|%s", principal->user_id, key);
+	fingerprint = venture_web_request_fingerprint(request);
+
+	venture_web_idempotent_expire(self, now);
+	kept = g_hash_table_lookup(self->idempotent, slot);
+
+	if (NULL != kept)
+	{
+		if (0 != g_strcmp0(kept->fingerprint, fingerprint))
+		{
+			g_autoptr(GError) error = g_error_new_literal(VENTURE_ERROR,
+				VENTURE_ERROR_VALIDATION,
+				"Idempotency-Key was already used for a different "
+				"request; use a new key for a new request");
+
+			return venture_web_error_response(error);
+		}
+
+		response = htmx_response_new_with_content(kept->body);
+		htmx_response_set_status(response, kept->status);
+		if (NULL != kept->content_type)
+			htmx_response_set_content_type(response, kept->content_type);
+		htmx_response_add_header(response, "Idempotent-Replayed", "true");
+
+		return response;
+	}
+
+	response = inner(request, params, self);
+	status = htmx_response_get_status(response);
+
+	if (status >= 200 && status < 300)
+	{
+		VentureWebIdempotent *fresh = g_new0(VentureWebIdempotent, 1);
+		const gchar *content = htmx_response_get_content(response);
+
+		fresh->fingerprint = g_steal_pointer(&fingerprint);
+		fresh->status = status;
+		fresh->content_type = g_strdup("application/json; charset=utf-8");
+		fresh->body = g_strdup(NULL != content ? content : "");
+		fresh->expires = now + VENTURE_WEB_IDEMPOTENCY_SECONDS;
+		g_hash_table_replace(self->idempotent, g_strdup(slot), fresh);
+		g_queue_push_tail(self->idempotent_order, g_strdup(slot));
+	}
+
+	return response;
+}
+
+static HtmxResponse *venture_web_api_ticket_worklog(HtmxRequest *request,
+                                                    GHashTable *params,
+                                                    gpointer user_data);
+
+static HtmxResponse *
+venture_web_api_create_idempotent(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_idempotent(user_data, request, params,
+	                              venture_web_api_create);
+}
+
+static HtmxResponse *
+venture_web_api_link_create_idempotent(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_idempotent(user_data, request, params,
+	                              venture_web_api_link_create);
+}
+
+static HtmxResponse *
+venture_web_api_ticket_worklog_idempotent(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	return venture_web_idempotent(user_data, request, params,
+	                              venture_web_api_ticket_worklog);
+}
+
+/* --- Which repository is this remote? ----------------------------------- */
+
+/*
+ * GET /api/v1/forge_repo/resolve?url=: the forge_repo a git remote names.
+ *
+ * A checkout knows its remotes, not its forge_repo id; a client that
+ * wants to file work against the repository -- an agent fleet mirroring
+ * its tasks -- asks here rather than listing every forge and composing
+ * every clone URL itself. A remote matches a repository when their
+ * canonical keys agree (venture_forge_canonical_remote()), against both
+ * the URL git would clone from and the one a person would browse, so an
+ * SSH remote and an HTTPS one both find it.
+ *
+ * Read in the caller's own scope: a repository the caller cannot see is
+ * not found, exactly as GET /api/v1/forge_repo/:id would say, so this
+ * never confirms that an invisible repository exists.
+ */
+static HtmxResponse *
+venture_web_api_forge_repo_resolve(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) repos = NULL;
+	g_autofree gchar *wanted = NULL;
+	VentureDatabase *database;
+	const gchar *url;
+	guint i;
+
+	(void)params;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                                     VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	if (!venture_web_require_for_type(self, principal, VENTURE_TYPE_FORGE_REPO,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	url = htmx_request_get_query_param(request, "url");
+	wanted = venture_forge_canonical_remote(url);
+
+	if (NULL == wanted)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "url: give a git remote such as "
+		                    "git@host:owner/repo.git or "
+		                    "https://host/owner/repo");
+		return venture_web_error_response(g_steal_pointer(&error));
+	}
+
+	database = venture_context_get_database(self->context);
+	query = venture_query_new(VENTURE_TYPE_FORGE_REPO);
+	repos = venture_database_find(database, query, &error);
+
+	if (NULL == repos)
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	for (i = 0; i < repos->len; i++)
+	{
+		VentureEntity *repo = g_ptr_array_index(repos, i);
+		g_autoptr(VentureEntity) forge = NULL;
+		g_autofree gchar *full_name = NULL;
+		g_autofree gchar *repo_clone = NULL;
+		g_autofree gchar *base_url = NULL;
+		g_autofree gchar *clone_base = NULL;
+		g_autofree gchar *clone = NULL;
+		g_autofree gchar *web = NULL;
+		g_autofree gchar *clone_key = NULL;
+		g_autofree gchar *web_key = NULL;
+		gint64 forge_id = 0;
+
+		g_object_get(repo, "name", &full_name, "forge-id", &forge_id,
+		             "clone-url", &repo_clone, NULL);
+
+		if (forge_id > 0)
+			forge = venture_database_get(database, VENTURE_TYPE_FORGE,
+			                             forge_id, NULL);
+		if (NULL != forge)
+			g_object_get(forge, "base-url", &base_url, "clone-base-url",
+			             &clone_base, NULL);
+
+		clone = venture_forge_clone_url(repo_clone, clone_base, base_url,
+		                                full_name);
+		web = venture_forge_web_url(base_url, full_name, NULL);
+		clone_key = venture_forge_canonical_remote(clone);
+		web_key = venture_forge_canonical_remote(web);
+
+		if (0 != g_strcmp0(clone_key, wanted) &&
+		    0 != g_strcmp0(web_key, wanted))
+			continue;
+
+		{
+			g_autoptr(JsonBuilder) builder = json_builder_new();
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "id");
+			json_builder_add_int_value(builder, venture_entity_get_id(repo));
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder,
+				NULL != full_name ? full_name : "");
+			json_builder_set_member_name(builder, "forge_id");
+			json_builder_add_int_value(builder, forge_id);
+			json_builder_set_member_name(builder, "organization_id");
+			json_builder_add_int_value(builder,
+				venture_entity_get_organization_id(repo));
+			json_builder_set_member_name(builder, "clone_url");
+			json_builder_add_string_value(builder,
+				NULL != clone ? clone : "");
+			json_builder_set_member_name(builder, "key");
+			json_builder_add_string_value(builder, wanted);
+			json_builder_end_object(builder);
+
+			return venture_web_json_response(json_builder_get_root(builder),
+			                                 200);
+		}
+	}
+
+	g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+	            "No repository you can see matches %s", wanted);
+	return venture_web_error_response(g_steal_pointer(&error));
+}
+
+/* --- Who am I ------------------------------------------------------------ */
+
+/*
+ * The caller, as this install sees it: the token, the user it acts for,
+ * the role in force, the organizations it may reach, when it expires,
+ * and the actor string every audit row, activity line and webhook body
+ * will carry for it.
+ *
+ * Asked by a client holding several tokens -- one per agent -- that must
+ * know which change was its own and which was somebody else's, and that
+ * would otherwise have to guess that "API token #12" is the agent called
+ * scout. Only the caller's own facts: nothing here a token could not
+ * already learn by acting.
+ */
+static HtmxResponse *
+venture_web_api_whoami(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDatabase *database;
+
+	(void)params;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                                     VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	database = venture_context_get_database(self->context);
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	json_builder_set_member_name(builder, "actor");
+	json_builder_add_string_value(builder,
+		NULL != principal->name ? principal->name : "");
+
+	json_builder_set_member_name(builder, "role");
+	json_builder_add_string_value(builder,
+		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)principal->role));
+
+	json_builder_set_member_name(builder, "token_id");
+	json_builder_add_int_value(builder, principal->token_id);
+
+	/*
+	 * Read as the install, not as the caller: a token's own row is owner
+	 * business on the tokens page, and the memberships of its user are
+	 * what decide what it may see -- reading them through the caller's
+	 * scope would hide the very rows that answer the question.
+	 */
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(
+			venture_database_get_access_policy(database), NULL);
+
+		if (principal->token_id > 0)
+		{
+			g_autoptr(VentureEntity) token = venture_database_get(database,
+				VENTURE_TYPE_API_TOKEN, principal->token_id, NULL);
+			g_autoptr(GDateTime) expires = NULL;
+
+			if (NULL != token)
+				g_object_get(token, "expires-at", &expires, NULL);
+
+			json_builder_set_member_name(builder, "expires_at");
+			if (NULL != expires)
+			{
+				g_autofree gchar *at = g_date_time_format_iso8601(expires);
+
+				json_builder_add_string_value(builder, at);
+			}
+			else
+				json_builder_add_null_value(builder);
+		}
+
+		json_builder_set_member_name(builder, "user");
+		if (principal->user_id > 0)
+		{
+			g_autoptr(VentureEntity) user = venture_database_get(database,
+				VENTURE_TYPE_USER, principal->user_id, NULL);
+			g_autofree gchar *username = NULL;
+
+			if (NULL != user)
+				g_object_get(user, "username", &username, NULL);
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "id");
+			json_builder_add_int_value(builder, principal->user_id);
+			json_builder_set_member_name(builder, "username");
+			json_builder_add_string_value(builder,
+				NULL != username ? username : "");
+			json_builder_end_object(builder);
+		}
+		else
+			json_builder_add_null_value(builder);
+
+		/*
+		 * The organizations this credential reaches, as the access
+		 * policy decides it: a token reaches an organization only where
+		 * its user is an active member *and* the snapshot taken when it
+		 * was minted names it, and both roles must allow an action -- so
+		 * both are reported. The snapshot itself is a sensitive field and
+		 * is never returned whole; only the role it holds for an
+		 * organization the caller can already reach.
+		 */
+		json_builder_set_member_name(builder, "memberships");
+		json_builder_begin_array(builder);
+		if (principal->user_id > 0)
+		{
+			g_autoptr(VentureQuery) query = venture_query_new(
+				VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
+			g_autoptr(GPtrArray) rows = NULL;
+			g_autoptr(JsonNode) snapshot = NULL;
+			guint i;
+
+			if (principal->token_id > 0)
+			{
+				g_autoptr(VentureEntity) token = venture_database_get(
+					database, VENTURE_TYPE_API_TOKEN, principal->token_id,
+					NULL);
+				g_autofree gchar *text = NULL;
+
+				if (NULL != token)
+					g_object_get(token, "membership-snapshot", &text, NULL);
+				if (NULL != text)
+					snapshot = venture_json_parse(text, NULL);
+			}
+
+			if (venture_query_add_filter_int(query, "user-id",
+			                                 VENTURE_FILTER_OP_EQ,
+			                                 principal->user_id, NULL))
+				rows = venture_database_find(database, query, NULL);
+
+			for (i = 0; NULL != rows && i < rows->len; i++)
+			{
+				VentureEntity *membership = g_ptr_array_index(rows, i);
+				gint64 organization = venture_entity_get_organization_id(
+					membership);
+				g_autoptr(VentureEntity) org = NULL;
+				gboolean active = FALSE;
+				gint role = 0;
+				gint minted = -1;
+
+				g_object_get(membership, "active", &active, "role", &role,
+				             NULL);
+
+				if (!active || venture_entity_is_deleted(membership))
+					continue;
+
+				/* A token reaches only what it was minted with. */
+				if (principal->token_id > 0)
+				{
+					g_autofree gchar *key = g_strdup_printf("%"
+						G_GINT64_FORMAT, organization);
+
+					if (NULL == snapshot || !JSON_NODE_HOLDS_OBJECT(snapshot) ||
+					    !json_object_has_member(json_node_get_object(snapshot),
+					                            key))
+						continue;
+
+					minted = (gint)json_object_get_int_member(
+						json_node_get_object(snapshot), key);
+				}
+
+				org = venture_database_get(database,
+					VENTURE_TYPE_ORGANIZATION, organization, NULL);
+
+				json_builder_begin_object(builder);
+				json_builder_set_member_name(builder, "organization_id");
+				json_builder_add_int_value(builder, organization);
+				json_builder_set_member_name(builder, "organization");
+				json_builder_add_string_value(builder, NULL != org
+					? venture_entity_get_display_name(org) : "");
+				json_builder_set_member_name(builder, "role");
+				json_builder_add_string_value(builder, venture_enum_to_nick(
+					VENTURE_TYPE_ORGANIZATION_ROLE, role));
+				if (minted >= 0)
+				{
+					json_builder_set_member_name(builder, "minted_role");
+					json_builder_add_string_value(builder,
+						venture_enum_to_nick(VENTURE_TYPE_ORGANIZATION_ROLE,
+						                     minted));
+				}
+				json_builder_end_object(builder);
+			}
+		}
+		json_builder_end_array(builder);
+	}
+
+	json_builder_end_object(builder);
+
+	return venture_web_json_response(json_builder_get_root(builder), 200);
 }
 
 /* --- Metrics ------------------------------------------------------------- */
@@ -33566,6 +34148,97 @@ venture_web_ui_runs_table(
 }
 
 /*
+ * POST /api/v1/runs/external and PATCH /api/v1/runs/external/:id: coding
+ * work done outside VENTURE, recorded as a run (venture-external-runs.h).
+ * Editor, like starting a run on a ticket; the ticket and the run are read
+ * in the caller's scope, so neither can be reached from outside it.
+ */
+static HtmxResponse *
+venture_web_api_external_run(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	const gchar *id_text = g_hash_table_lookup(params, "id");
+	JsonObject *fields;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_require_module_api(self, "forge");
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	body = htmx_request_get_json(request, NULL);
+	fields = (NULL != body && JSON_NODE_HOLDS_OBJECT(body))
+		? json_node_get_object(body) : NULL;
+
+	if (NULL == fields)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "a JSON object body is required");
+		return venture_web_error_response(error);
+	}
+
+	/* PATCH: progress, or the end, of one external run. */
+	if (NULL != id_text)
+	{
+		record = venture_database_get(database, VENTURE_TYPE_FORGE_RUN,
+		                              g_ascii_strtoll(id_text, NULL, 10),
+		                              &error);
+
+		if (NULL == record ||
+		    !venture_external_run_report(self->context, record, fields,
+		                                 &actor, &error))
+			return venture_web_error_response(error);
+
+		return venture_web_json_response(venture_serializable_to_json(
+			VENTURE_SERIALIZABLE(record), FALSE), 200);
+	}
+
+	/* POST: a new one, on a ticket the caller can see. */
+	{
+		g_autoptr(VentureEntity) ticket = NULL;
+		gint64 ticket_id = json_object_has_member(fields, "ticket_id")
+			? json_object_get_int_member(fields, "ticket_id") : 0;
+
+		if (ticket_id <= 0)
+		{
+			g_set_error_literal(&error, VENTURE_ERROR,
+			                    VENTURE_ERROR_VALIDATION,
+			                    "ticket_id: the ticket this work is for");
+			return venture_web_error_response(error);
+		}
+
+		ticket = venture_database_get(database, VENTURE_TYPE_TICKET,
+		                              ticket_id, &error);
+		if (NULL == ticket)
+			return venture_web_error_response(error);
+
+		record = venture_external_run_start(self->context, ticket, fields,
+		                                    &actor, &error);
+		if (NULL == record)
+			return venture_web_error_response(error);
+
+		return venture_web_json_response(venture_serializable_to_json(
+			VENTURE_SERIALIZABLE(record), FALSE), 201);
+	}
+}
+
+/*
  * GET /api/v1/runs and GET /api/v1/budgets.
  */
 static HtmxResponse *
@@ -35670,6 +36343,8 @@ venture_web_server_new(
 	/* API */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/business-events", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_business_events, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/whoami", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_whoami, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/forge_repo/resolve", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_repo_resolve, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/metrics", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_metrics, self);
 	/* The Model Context Protocol for remote agents; see venture-web-mcp.inc. */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mcp", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mcp_post, self);
@@ -35736,12 +36411,14 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/activity/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_activity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/tickets/:id/sla", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_sla, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/macro", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_macro, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_worklog, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_ticket_worklog_idempotent, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/sla/sweep", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sla_sweep, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprints, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprint, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/incidents/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_incident_ticket, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/runs", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_runs, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/runs/external", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_external_run, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_PATCH, "/api/v1/runs/external/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_external_run, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/budgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_budgets, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/palette", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_palette, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/webhooks", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhooks, self);
@@ -35805,7 +36482,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/modules", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_modules, self);
 	/* Before /api/v1/:type/:id, or "links" would be read as a type. */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/links/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_links, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/links", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_link_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/links", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_link_create_idempotent, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/venture-types", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_venture_types, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/venture-types/:name", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_venture_types, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/automations", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_automations, self);
@@ -35975,7 +36652,7 @@ venture_web_server_new(
 	venture_jobs_web_register(self);
 	venture_customer_credits_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_list, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_create_idempotent, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_get, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_PUT, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_update, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_PATCH, "/api/v1/:type/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_SUPPORT, venture_web_api_update, self);

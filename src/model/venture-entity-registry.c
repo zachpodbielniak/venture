@@ -587,6 +587,16 @@ venture_entity_registry_describe(
 	json_builder_set_member_name(builder, "federation_access");
 	json_builder_add_int_value(builder, venture_entity_type_get_federation_access(G_OBJECT_TYPE(prototype)));
 
+	/*
+	 * Whether an agent running with --apply-writes=low-risk may write it
+	 * without approval (venture-write-risk.h): the server decides, and an
+	 * MCP client reads it here rather than keeping its own copy of the
+	 * rules.
+	 */
+	json_builder_set_member_name(builder, "write_risk");
+	json_builder_add_string_value(builder, venture_write_risk_nick(
+		venture_write_risk_for_type(G_OBJECT_TYPE(prototype))));
+
 	json_builder_set_member_name(builder, "fields");
 	json_builder_begin_array(builder);
 

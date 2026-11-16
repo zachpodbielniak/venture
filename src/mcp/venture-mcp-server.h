@@ -140,6 +140,25 @@ venture_mcp_server_set_stage_writes(
 );
 
 /**
+ * venture_mcp_server_set_apply_low_risk:
+ * @self: a #VentureMcpServer
+ * @apply_low_risk: whether a low-risk write is applied while staging is on
+ *
+ * The middle setting (`--apply-writes=low-risk`, since 0.10.0): with
+ * staging on, a write the server classes as low risk (its type's
+ * `write_risk` in /api/v1/schema; never a delete) is applied directly,
+ * and every other write is still staged. A type the server does not
+ * classify -- an older server -- is staged, so the setting can never
+ * apply more than the server agreed to. Writes that cannot be staged at
+ * all still need `--apply-writes`.
+ */
+void
+venture_mcp_server_set_apply_low_risk(
+	VentureMcpServer	*self,
+	gboolean		 apply_low_risk
+);
+
+/**
  * venture_mcp_server_get_stage_writes:
  * @self: a #VentureMcpServer
  *

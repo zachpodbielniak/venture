@@ -123,6 +123,21 @@ a promise.
 This is what an outside decision inbox polls. See [[file:api.org][Staging a
 write]] for the route, the conflict rules and how long a card waits.
 
+*** The middle setting: =--apply-writes=low-risk=
+
+Between staging everything and applying everything (since 0.10.0; the =apply_writes_low_risk= feature): =venturectl mcp --apply-writes=low-risk= -- or =mcp.apply_low_risk= for =POST /mcp= -- applies ordinary work directly and still stages every write a mistake in would be expensive or hard to undo. Which is which is decided by the server, in one place (=venture_write_risk_for_type()=), and published per type as =write_risk= (=low= or =high=) in =/api/v1/schema=, which the MCP server reads at startup; a type the schema does not class -- an older server -- is staged.
+
+| Still staged (high risk) | Why |
+|--------------------------+-----|
+| *every delete* | a removal is the change hardest to notice and undo |
+| every type the access policy treats as financial (the finance module and what requires it) | money |
+| every type with a money field -- invoices, payments, expenses, budgets, quotes, trades, and ordinary types that carry an amount, such as a contact's lifetime value or a goal's target | money; derived from the field table, so a new type with an amount is covered without anybody remembering |
+| users, organizations and memberships, teams, API tokens, sessions, sign-in and second-factor records, portal access, tenants | people and access |
+| forges and forge rules, webhooks, integration connections, mail, calendar, telephony and bank connections, federation, AI grants and configuration, plugin configuration, backups, accounting setup and posting profiles | credentials and wiring |
+| a mail message, text message, quote delivery, marketing send or sequence enrolment, a release, a deployment | outward and irreversible |
+
+Everything else applies directly: tickets, ticket comments, worklogs, links, knowledge-base articles, dashboards, research notes, milestones, sprints, comments, and the rest of the ordinary record types. Writes that cannot be staged at all -- building a whole dashboard, applying a macro, a bulk change, the factory's actions -- still need the full =--apply-writes=: the middle setting never applies anything that could not have waited in the queue.
+
 *** Against a server that cannot stage, it holds instead
 
 At startup the server reads =GET /api/v1/health= and looks for
@@ -258,6 +273,7 @@ Details that follow from that:
 |--------------------+---------+-------------------------------------------------------------------------|
 | =mcp.enabled=      | =true=  | answer at =/mcp=; =false= makes it a 404                                |
 | =mcp.apply_writes= | =false= | write tools apply instead of staging, like =venturectl mcp --apply-writes= |
+| =mcp.apply_low_risk= | =false= | with =apply_writes= off: apply low-risk writes and stage the rest, like =--apply-writes=low-risk= |
 
 Both are read on every request rather than frozen at startup. Writes stage by default for the reason given in [[*Writes are staged by default][Writes are staged by default]]: a hosted agent is no less able to hallucinate a tool call than a local one.
 

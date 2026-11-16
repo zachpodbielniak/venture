@@ -42,6 +42,14 @@ struct _VentureMcpServer
 	gchar			*server_name;
 
 	/*
+	 * --apply-writes=low-risk: apply what the server classes as low risk,
+	 * stage the rest. The classes come from /api/v1/schema (type name ->
+	 * "low"/"high"); a type absent from it is staged.
+	 */
+	gboolean		 apply_low_risk;
+	GHashTable		*write_risk;
+
+	/*
 	 * Whether the VENTURE server on the other end can stage a write.
 	 * Read from /api/v1/health at startup rather than assumed: `?stage=1`
 	 * against a build that predates staging is an unknown query parameter
@@ -74,6 +82,7 @@ venture_mcp_server_finalize(GObject *object)
 
 	g_clear_pointer(&self->base_url, g_free);
 	g_clear_pointer(&self->server_name, g_free);
+	g_clear_pointer(&self->write_risk, g_hash_table_unref);
 
 	/*
 	 * The token is wiped rather than merely freed. It is the one value in
@@ -107,6 +116,18 @@ venture_mcp_server_init(VentureMcpServer *self)
 	 * hallucinated tool call that rewrites an expense is a tax problem
 	 * rather than a UI annoyance. */
 	self->stage_writes = TRUE;
+	self->write_risk = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                         NULL);
+}
+
+void
+venture_mcp_server_set_apply_low_risk(
+	VentureMcpServer	*self,
+	gboolean		 apply_low_risk
+){
+	g_return_if_fail(VENTURE_IS_MCP_SERVER(self));
+
+	self->apply_low_risk = apply_low_risk;
 }
 
 /* --- Construction -------------------------------------------------------- */
@@ -493,6 +514,29 @@ venture_mcp_server_load_catalog(
 	self->server_stages = (NULL != health) && JSON_NODE_HOLDS_OBJECT(health) &&
 		json_object_get_boolean_member_with_default(
 			json_node_get_object(health), "staged_writes", FALSE);
+
+	/*
+	 * Which types the server classes as low risk, for
+	 * --apply-writes=low-risk. Kept as the server said it; a type missing
+	 * from the answer -- an older server -- is staged.
+	 */
+	g_hash_table_remove_all(self->write_risk);
+	if (JSON_NODE_HOLDS_ARRAY(schema))
+	{
+		JsonArray *types = json_node_get_array(schema);
+		guint t;
+
+		for (t = 0; t < json_array_get_length(types); t++)
+		{
+			JsonObject *type = json_array_get_object_element(types, t);
+			const gchar *name = venture_json_object_get_string(type, "name",
+			                                                   NULL);
+
+			if (NULL != name && 0 == g_strcmp0(venture_json_object_get_string(
+			        type, "write_risk", NULL), "low"))
+				g_hash_table_add(self->write_risk, g_strdup(name));
+		}
+	}
 
 	catalog = venture_mcp_catalog_new_from_schema(schema, error);
 
@@ -908,6 +952,45 @@ venture_mcp_tool_get(
 }
 
 /*
+ * Whether this one write is staged: always with staging on, except --
+ * under --apply-writes=low-risk -- a create or change of a type the
+ * server classed as low risk. The type is read off the path
+ * (/api/v1/<type>[/...]; /api/v1/links is a record_link). A delete is
+ * never low risk, and an unclassified type is staged.
+ */
+static gboolean
+venture_mcp_should_stage(
+	VentureMcpServer	*self,
+	const gchar		*method,
+	const gchar		*path
+){
+	g_autofree gchar *type = NULL;
+	const gchar *rest;
+	const gchar *end;
+
+	if (!self->stage_writes)
+		return FALSE;
+
+	if (!self->apply_low_risk ||
+	    0 == g_ascii_strcasecmp(method, "DELETE") ||
+	    !g_str_has_prefix(path, "/api/v1/"))
+		return TRUE;
+
+	rest = path + strlen("/api/v1/");
+	end = strpbrk(rest, "/?");
+	type = (NULL != end) ? g_strndup(rest, (gsize)(end - rest))
+	                     : g_strdup(rest);
+
+	if (0 == g_strcmp0(type, "links"))
+	{
+		g_free(type);
+		type = g_strdup("record_link");
+	}
+
+	return !g_hash_table_contains(self->write_risk, type);
+}
+
+/*
  * The path a write goes to, with `?stage=1` appended when the change is
  * being proposed rather than made.
  *
@@ -916,9 +999,10 @@ venture_mcp_tool_get(
 static gchar *
 venture_mcp_write_path(
 	VentureMcpServer	*self,
+	const gchar		*method,
 	const gchar		*path
 ){
-	if (self->stage_writes && self->server_stages)
+	if (venture_mcp_should_stage(self, method, path) && self->server_stages)
 		return g_strconcat(path, "?stage=1", NULL);
 
 	return g_strdup(path);
@@ -1034,11 +1118,12 @@ venture_mcp_write(
 ){
 	g_autofree gchar *target = NULL;
 	g_autoptr(JsonNode) node = NULL;
+	gboolean stage = venture_mcp_should_stage(self, method, path);
 
-	if (self->stage_writes && !self->server_stages)
+	if (stage && !self->server_stages)
 		return venture_mcp_held_text(method, path, values);
 
-	target = venture_mcp_write_path(self, path);
+	target = venture_mcp_write_path(self, method, path);
 	node = venture_mcp_server_request(self, method, target, values, error);
 
 	if (NULL == node)
@@ -1049,7 +1134,7 @@ venture_mcp_write(
 	 * ignored the parameter answers with the record it just wrote, and
 	 * reporting that as staged would be the one lie that matters here.
 	 */
-	if (self->stage_writes && JSON_NODE_HOLDS_OBJECT(node) &&
+	if (stage && JSON_NODE_HOLDS_OBJECT(node) &&
 	    json_object_get_boolean_member_with_default(json_node_get_object(node),
 	                                                "staged", FALSE))
 		return venture_mcp_staged_text(node);
@@ -2011,7 +2096,7 @@ venture_mcp_tool_desk(
 		json_builder_end_object(builder);
 		body = json_builder_get_root(builder);
 
-		write_path = venture_mcp_write_path(self, "/api/v1/worklog");
+		write_path = venture_mcp_write_path(self, "POST", "/api/v1/worklog");
 		node = venture_mcp_server_request(self, "POST", write_path, body,
 		                                  error);
 	}

@@ -1397,6 +1397,128 @@ test_staged_write_sends_nothing(void)
 }
 
 /*
+ * A server whose schema classes `venture` low risk and `sale` high, and
+ * leaves `expense` unclassified (as an older server would), with staging
+ * on and --apply-writes=low-risk.
+ */
+static VentureMcpServer *
+server_with_low_risk(MockTransport **out_mock)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) schema = fixture_schema("schema.json");
+	g_autofree gchar *text = NULL;
+	JsonArray *types = json_node_get_array(schema);
+	VentureMcpServer *server;
+	MockTransport *mock;
+	guint i;
+
+	for (i = 0; i < json_array_get_length(types); i++)
+	{
+		JsonObject *type = json_array_get_object_element(types, i);
+		const gchar *name = json_object_get_string_member(type, "name");
+
+		if (0 == g_strcmp0(name, "venture"))
+			json_object_set_string_member(type, "write_risk", "low");
+		else if (0 == g_strcmp0(name, "sale"))
+			json_object_set_string_member(type, "write_risk", "high");
+	}
+
+	text = venture_json_to_string(schema, FALSE);
+	server = venture_mcp_server_new("http://example.invalid", "test-token",
+	                                &error);
+	g_assert_no_error(error);
+	mock = mock_transport_new();
+	venture_mcp_server_set_transport(server, mock_transport_call, mock,
+	                                 mock_transport_free);
+	mock->health = g_strdup("{\"status\": \"ok\", \"staged_writes\": true}");
+	mock_transport_answer(mock, 200, "application/json", text);
+	g_assert_true(venture_mcp_server_load_catalog(server, &error));
+	g_assert_no_error(error);
+
+	venture_mcp_server_set_stage_writes(server, TRUE);
+	venture_mcp_server_set_apply_low_risk(server, TRUE);
+
+	*out_mock = mock;
+	return server;
+}
+
+/* One venture_create or venture_delete call on @type; the path it used. */
+static const gchar *
+low_risk_call(
+	VentureMcpServer	*server,
+	MockTransport		*mock,
+	const gchar		*tool,
+	const gchar		*type
+){
+	g_autoptr(JsonBuilder) builder = json_builder_new();
+	g_autoptr(JsonNode) request = NULL;
+	g_autoptr(JsonNode) response = NULL;
+
+	mock_transport_answer(mock, 201, "application/json", "{\"id\": 1}");
+
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "name");
+	json_builder_add_string_value(builder, tool);
+	json_builder_set_member_name(builder, "arguments");
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "type");
+	json_builder_add_string_value(builder, type);
+	if (0 == g_strcmp0(tool, "venture_delete"))
+	{
+		json_builder_set_member_name(builder, "id");
+		json_builder_add_int_value(builder, 1);
+	}
+	else
+	{
+		json_builder_set_member_name(builder, "values");
+		json_builder_begin_object(builder);
+		json_builder_set_member_name(builder, "name");
+		json_builder_add_string_value(builder, "x");
+		json_builder_end_object(builder);
+	}
+	json_builder_end_object(builder);
+	json_builder_end_object(builder);
+
+	request = rpc_request("tools/call", json_builder_get_root(builder));
+	response = venture_mcp_server_handle(server, request);
+
+	return mock->last_path;
+}
+
+/*
+ * --apply-writes=low-risk: a low-risk create goes straight through, a
+ * high-risk one is still staged, a delete is always staged, and a type the
+ * server did not classify is staged.
+ *
+ * What breaks if this regresses: either the middle setting applies a
+ * change to money or people that the operator meant a person to approve,
+ * or it stages the ordinary work it exists to let through -- and the
+ * agent that was meant to just get on with tickets waits on approvals.
+ */
+static void
+test_apply_low_risk_writes(void)
+{
+	g_autoptr(VentureMcpServer) server = NULL;
+	MockTransport *mock = NULL;
+
+	server = server_with_low_risk(&mock);
+
+	g_assert_cmpstr(low_risk_call(server, mock, "venture_create", "venture"),
+	                ==, "/api/v1/venture");
+	g_assert_cmpstr(low_risk_call(server, mock, "venture_create", "sale"),
+	                ==, "/api/v1/sale?stage=1");
+	g_assert_cmpstr(low_risk_call(server, mock, "venture_create", "expense"),
+	                ==, "/api/v1/expense?stage=1");
+	g_assert_cmpstr(low_risk_call(server, mock, "venture_delete", "venture"),
+	                ==, "/api/v1/venture/1?stage=1");
+
+	/* and without the setting, staging stages everything as before */
+	venture_mcp_server_set_apply_low_risk(server, FALSE);
+	g_assert_cmpstr(low_risk_call(server, mock, "venture_create", "venture"),
+	                ==, "/api/v1/venture?stage=1");
+}
+
+/*
  * Against a server that can stage, the write goes out with `?stage=1` and
  * the answer names the confirmation.
  *
@@ -1772,6 +1894,7 @@ main(
 ){
 	g_test_init(&argc, &argv, NULL);
 
+	g_test_add_func("/mcp/apply-low-risk-writes", test_apply_low_risk_writes);
 	g_test_add_func("/mcp/catalog/from-schema", test_catalog_from_schema);
 	g_test_add_func("/mcp/catalog/new-type-needs-no-code",
 	                test_catalog_new_type_needs_no_code);

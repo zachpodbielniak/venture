@@ -1713,6 +1713,52 @@ test_forge_clone_url_uses_the_clone_base(void)
 }
 
 /*
+ * Every spelling of a repository's remote comes to the same key.
+ *
+ * What breaks if this regresses: /api/v1/forge_repo/resolve finds a
+ * repository from one spelling of its remote and misses it from another --
+ * the SSH remote with a port, the HTTPS one with a trailing slash, the one
+ * typed with a capital -- and a client files work against nothing.
+ */
+static void
+test_forge_canonical_remote(void)
+{
+	static const struct
+	{
+		const gchar *url;
+		const gchar *key;
+	} cases[] = {
+		{ "git@gitlab.com:me/proj.git", "gitlab.com/me/proj" },
+		{ "https://gitlab.com/me/proj", "gitlab.com/me/proj" },
+		{ "https://gitlab.com/me/proj.git/", "gitlab.com/me/proj" },
+		{ "ssh://git@gitlab.com:22/me/proj.git", "gitlab.com/me/proj" },
+		{ "ssh://git@GitLab.COM/Me/Proj.git", "gitlab.com/me/proj" },
+		{ "http://user:secret@gitlab.com:8080/me/proj", "gitlab.com/me/proj" },
+		{ "git://gitlab.com/me/proj.git", "gitlab.com/me/proj" },
+		{ "git@host.example:~me/proj.git", "host.example/me/proj" },
+		{ "https://gitlab.com/group/sub/proj.git", "gitlab.com/group/sub/proj" },
+		{ "  https://gitlab.com/me/proj  ", "gitlab.com/me/proj" },
+		{ "https://gitlab.com", NULL },
+		{ "https://gitlab.com/", NULL },
+		{ "git@gitlab.com:", NULL },
+		{ "/srv/git/proj.git", NULL },
+		{ "file:///srv/git/proj.git", NULL },
+		{ "", NULL },
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autofree gchar *key = venture_forge_canonical_remote(cases[i].url);
+
+		g_test_message("%s", cases[i].url);
+		g_assert_cmpstr(key, ==, cases[i].key);
+	}
+
+	g_assert_null(venture_forge_canonical_remote(NULL));
+}
+
+/*
  * The scp-like form uses a colon, and a trailing separator does not double.
  *
  * What breaks if this regresses: git reads git@host/owner/repo.git as a path
@@ -1907,6 +1953,7 @@ main(
 	                test_forge_clone_url_uses_the_clone_base);
 	g_test_add_func("/forge/clone-url-separators",
 	                test_forge_clone_url_separators);
+	g_test_add_func("/forge/canonical-remote", test_forge_canonical_remote);
 	g_test_add_func("/forge/clone-url-refuses-without-a-base",
 	                test_forge_clone_url_refuses_without_a_base);
 
