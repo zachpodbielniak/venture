@@ -453,3 +453,111 @@ venture_forge_web_url(
 		                       owner_escaped, repo_escaped, branch_escaped);
 	}
 }
+
+/* Removes trailing slashes, one `.git`, then trailing slashes again. */
+static void
+canonical_strip_tail(GString *path)
+{
+	while (path->len > 0 && '/' == path->str[path->len - 1])
+		g_string_truncate(path, path->len - 1);
+
+	if (path->len > 4 && g_str_has_suffix(path->str, ".git"))
+		g_string_truncate(path, path->len - 4);
+
+	while (path->len > 0 && '/' == path->str[path->len - 1])
+		g_string_truncate(path, path->len - 1);
+}
+
+/* `host/path`, lower-cased; NULL when either half is empty. */
+static gchar *
+canonical_key(const gchar *host, gsize host_len, const gchar *path)
+{
+	g_autoptr(GString) key = NULL;
+
+	while ('/' == *path || '~' == *path)
+		path++;
+
+	if (0 == host_len || '\0' == *path)
+		return NULL;
+
+	key = g_string_new(NULL);
+	g_string_append_len(key, host, (gssize)host_len);
+	g_string_append_c(key, '/');
+	g_string_append(key, path);
+	canonical_strip_tail(key);
+
+	if (key->len <= host_len + 1)
+		return NULL;
+
+	return g_ascii_strdown(key->str, (gssize)key->len);
+}
+
+gchar *
+venture_forge_canonical_remote(const gchar *url)
+{
+	g_autofree gchar *trimmed = NULL;
+	const gchar *scheme_end;
+	const gchar *colon;
+	const gchar *slash;
+
+	if (NULL == url)
+		return NULL;
+
+	trimmed = g_strstrip(g_strdup(url));
+
+	if ('\0' == *trimmed)
+		return NULL;
+
+	scheme_end = strstr(trimmed, "://");
+
+	/* scheme://[user[:password]@]host[:port]/path */
+	if (NULL != scheme_end)
+	{
+		const gchar *authority = scheme_end + 3;
+		const gchar *path = strchr(authority, '/');
+		const gchar *host = authority;
+		const gchar *at;
+		const gchar *end;
+
+		if (NULL == path || g_str_has_prefix(trimmed, "file://"))
+			return NULL;
+
+		for (at = authority; at < path; at++)
+		{
+			if ('@' == *at)
+				host = at + 1;
+		}
+
+		if ('[' == *host)
+		{
+			end = memchr(host, ']', (gsize)(path - host));
+			end = (NULL != end) ? end + 1 : path;
+		}
+		else
+		{
+			end = memchr(host, ':', (gsize)(path - host));
+			if (NULL == end)
+				end = path;
+		}
+
+		return canonical_key(host, (gsize)(end - host), path);
+	}
+
+	/* scp-like [user@]host:path -- a colon before any slash */
+	colon = strchr(trimmed, ':');
+	slash = strchr(trimmed, '/');
+
+	if (NULL != colon && (NULL == slash || colon < slash))
+	{
+		const gchar *host = trimmed;
+		const gchar *at = memchr(trimmed, '@', (gsize)(colon - trimmed));
+
+		if (NULL != at)
+			host = at + 1;
+
+		return canonical_key(host, (gsize)(colon - host), colon + 1);
+	}
+
+	/* a local path names no repository on a host */
+	return NULL;
+}

@@ -142,6 +142,7 @@ falls back rather than guesses.
 | Name     | Since  | What it means                                  |
 |----------+--------+------------------------------------------------|
 | =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+| =repo_resolve= | 0.10.0 | =GET /api/v1/forge_repo/resolve?url== ([[file:forge.org][Git forges]]) |
 | =external_ref= | 0.10.0 | =ticket.external_ref= and =ticket_comment.external_ref=, unique per organization ([[file:tickets.org][Tickets]]) |
 
 * Endpoints
@@ -150,6 +151,7 @@ falls back rather than guesses.
 |----------+-------------------------------------+--------------------------------------|
 | =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state, =features= |
 | =GET=    | =/api/v1/whoami=                    | the caller: actor, role, user, token, organizations |
+| =GET=    | =/api/v1/forge_repo/resolve?url== | the repository a git remote names ([[file:forge.org][Git forges]]) |
 | =GET=    | =/metrics=                          | Prometheus text; off unless =metrics.access= allows the caller ([[file:configuration.org::*Metrics][Metrics]]) |
 | =GET=    | =/api/v1/schema=                    | every record type and its fields     |
 | =GET=    | =/api/v1/schema/:type=              | one record type                      |

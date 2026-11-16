@@ -3237,6 +3237,147 @@ auth_assert_no_forge_secret(const gchar *body)
 	g_assert_null(strstr(body, "\"webhook_secret\""));
 }
 
+/* Saves a forge_repo @full_name on @forge in @organization. */
+static gint64
+auth_repo_create(
+	ServerFixture	*fixture,
+	gint64		 organization,
+	gint64		 forge,
+	const gchar	*full_name,
+	const gchar	*clone_url
+){
+	g_autoptr(VentureEntity) repo = g_object_new(VENTURE_TYPE_FORGE_REPO,
+		"name", full_name, "forge-id", forge, "clone-url", clone_url, NULL);
+
+	venture_entity_set_organization_id(repo, organization);
+	g_assert_true(venture_database_save(fixture->database, repo, NULL, NULL));
+
+	return venture_entity_get_id(repo);
+}
+
+/* GET /api/v1/forge_repo/resolve?url=@url as @cookie: status, and the id. */
+static guint
+auth_resolve(
+	ServerFixture	*fixture,
+	const gchar	*cookie,
+	const gchar	*url,
+	gint64		*out_id
+){
+	g_autofree gchar *escaped = g_uri_escape_string(url, NULL, FALSE);
+	g_autofree gchar *path = g_strdup_printf(
+		"/api/v1/forge_repo/resolve?url=%s", escaped);
+	g_autofree gchar *body = NULL;
+	guint status;
+
+	status = server_fixture_request(fixture, "GET", path, cookie, NULL, &body,
+	                                NULL);
+
+	if (SOUP_STATUS_OK == status && NULL != out_id)
+	{
+		g_autoptr(JsonNode) node = venture_json_parse(body, NULL);
+
+		*out_id = json_object_get_int_member(json_node_get_object(node), "id");
+	}
+
+	return status;
+}
+
+/*
+ * GET /api/v1/forge_repo/resolve: which repository a checkout's remote is.
+ *
+ * What breaks if this regresses: a client that only knows its checkout's
+ * remotes -- an agent fleet filing its work against the right repository
+ * -- cannot find it, or finds it only in the one spelling the forge's
+ * clone base produces, when a person's checkout has the HTTPS URL, an SSH
+ * one on another host and port, or the same name in different case. And
+ * the other direction: a repository the caller cannot see must answer
+ * exactly as missing does, or this would confirm that it exists.
+ */
+static void
+test_auth_forge_repo_resolve(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autoptr(VentureEntity) other = NULL;
+	static const gchar *const remotes[] = {
+		"git@git-ssh.example.test:acme/site.git",
+		"ssh://git@git-ssh.example.test:2222/acme/site.git",
+		"https://git.example.test/acme/site",
+		"https://git.example.test/Acme/Site.git/",
+		"http://user:pw@GIT.example.test/acme/site",
+		NULL
+	};
+	gint64 home;
+	gint64 forge;
+	gint64 site;
+	gint64 mirror;
+	gint64 found = 0;
+	gint64 editor_id = 0;
+	guint i;
+
+	(void)user_data;
+
+	home = venture_context_get_default_organization_id(fixture->context);
+	forge = auth_forge_create(fixture, home, "Our forge",
+	                          "https://git.example.test");
+	site = auth_repo_create(fixture, home, forge, "acme/site", NULL);
+	mirror = auth_repo_create(fixture, home, forge, "acme/tools",
+	                          "git@mirror.example.test:other/tools.git");
+
+	/* the same name in an organization the editor is not a member of */
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Elsewhere", "slug", "elsewhere", NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, NULL));
+	{
+		gint64 theirs = auth_forge_create(fixture,
+			venture_entity_get_id(other), "Their forge",
+			"https://git.elsewhere.test");
+
+		auth_repo_create(fixture, venture_entity_get_id(other), theirs,
+		                 "acme/secret", NULL);
+	}
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+
+	/* every spelling of the one repository finds it */
+	for (i = 0; NULL != remotes[i]; i++)
+	{
+		found = 0;
+		g_test_message("%s", remotes[i]);
+		g_assert_cmpuint(auth_resolve(fixture, editor, remotes[i], &found),
+		                 ==, SOUP_STATUS_OK);
+		g_assert_cmpint(found, ==, site);
+	}
+
+	/* a repository's own clone URL beats its forge's pattern */
+	g_assert_cmpuint(auth_resolve(fixture, editor,
+		"git@mirror.example.test:other/tools", &found), ==, SOUP_STATUS_OK);
+	g_assert_cmpint(found, ==, mirror);
+
+	/* not visible to this caller: the same 404 as no such repository */
+	g_assert_cmpuint(auth_resolve(fixture, editor,
+		"https://git.elsewhere.test/acme/secret", NULL), ==,
+		SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(auth_resolve(fixture, editor,
+		"https://git.example.test/acme/nothing", NULL), ==,
+		SOUP_STATUS_NOT_FOUND);
+
+	/* no repository named at all */
+	g_assert_cmpuint(auth_resolve(fixture, editor, "/srv/git/site", NULL), ==,
+	                 SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	g_assert_cmpuint(auth_resolve(fixture, editor, "", NULL), ==,
+	                 SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* nobody anonymous */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/api/v1/forge_repo/resolve?url=x"), ==, SOUP_STATUS_UNAUTHORIZED);
+}
+
 /*
  * Editors and viewers see their organization's forges; nobody but the owner
  * changes one or reaches its credentials.
@@ -8783,6 +8924,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-visible-to-members", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_forge_visible_to_members,
+	           server_fixture_tear_down);
+	g_test_add("/auth/forge-repo-resolve", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_forge_repo_resolve,
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-records-are-owner-only", ServerFixture, NULL,
 

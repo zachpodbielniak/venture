@@ -17785,6 +17785,136 @@ venture_web_api_health(
 	return venture_web_json_response(node, 200);
 }
 
+/* --- Which repository is this remote? ----------------------------------- */
+
+/*
+ * GET /api/v1/forge_repo/resolve?url=: the forge_repo a git remote names.
+ *
+ * A checkout knows its remotes, not its forge_repo id; a client that
+ * wants to file work against the repository -- an agent fleet mirroring
+ * its tasks -- asks here rather than listing every forge and composing
+ * every clone URL itself. A remote matches a repository when their
+ * canonical keys agree (venture_forge_canonical_remote()), against both
+ * the URL git would clone from and the one a person would browse, so an
+ * SSH remote and an HTTPS one both find it.
+ *
+ * Read in the caller's own scope: a repository the caller cannot see is
+ * not found, exactly as GET /api/v1/forge_repo/:id would say, so this
+ * never confirms that an invisible repository exists.
+ */
+static HtmxResponse *
+venture_web_api_forge_repo_resolve(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) repos = NULL;
+	g_autofree gchar *wanted = NULL;
+	VentureDatabase *database;
+	const gchar *url;
+	guint i;
+
+	(void)params;
+
+	self = user_data;
+	principal = venture_auth_authenticate(self->auth, request);
+
+	if (!venture_web_hosted_auth_require(self, request, principal,
+	                                     VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	if (!venture_web_require_for_type(self, principal, VENTURE_TYPE_FORGE_REPO,
+	                                  VENTURE_USER_ROLE_VIEWER, &error))
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	url = htmx_request_get_query_param(request, "url");
+	wanted = venture_forge_canonical_remote(url);
+
+	if (NULL == wanted)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "url: give a git remote such as "
+		                    "git@host:owner/repo.git or "
+		                    "https://host/owner/repo");
+		return venture_web_error_response(g_steal_pointer(&error));
+	}
+
+	database = venture_context_get_database(self->context);
+	query = venture_query_new(VENTURE_TYPE_FORGE_REPO);
+	repos = venture_database_find(database, query, &error);
+
+	if (NULL == repos)
+		return venture_web_error_response(g_steal_pointer(&error));
+
+	for (i = 0; i < repos->len; i++)
+	{
+		VentureEntity *repo = g_ptr_array_index(repos, i);
+		g_autoptr(VentureEntity) forge = NULL;
+		g_autofree gchar *full_name = NULL;
+		g_autofree gchar *repo_clone = NULL;
+		g_autofree gchar *base_url = NULL;
+		g_autofree gchar *clone_base = NULL;
+		g_autofree gchar *clone = NULL;
+		g_autofree gchar *web = NULL;
+		g_autofree gchar *clone_key = NULL;
+		g_autofree gchar *web_key = NULL;
+		gint64 forge_id = 0;
+
+		g_object_get(repo, "name", &full_name, "forge-id", &forge_id,
+		             "clone-url", &repo_clone, NULL);
+
+		if (forge_id > 0)
+			forge = venture_database_get(database, VENTURE_TYPE_FORGE,
+			                             forge_id, NULL);
+		if (NULL != forge)
+			g_object_get(forge, "base-url", &base_url, "clone-base-url",
+			             &clone_base, NULL);
+
+		clone = venture_forge_clone_url(repo_clone, clone_base, base_url,
+		                                full_name);
+		web = venture_forge_web_url(base_url, full_name, NULL);
+		clone_key = venture_forge_canonical_remote(clone);
+		web_key = venture_forge_canonical_remote(web);
+
+		if (0 != g_strcmp0(clone_key, wanted) &&
+		    0 != g_strcmp0(web_key, wanted))
+			continue;
+
+		{
+			g_autoptr(JsonBuilder) builder = json_builder_new();
+
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "id");
+			json_builder_add_int_value(builder, venture_entity_get_id(repo));
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder,
+				NULL != full_name ? full_name : "");
+			json_builder_set_member_name(builder, "forge_id");
+			json_builder_add_int_value(builder, forge_id);
+			json_builder_set_member_name(builder, "organization_id");
+			json_builder_add_int_value(builder,
+				venture_entity_get_organization_id(repo));
+			json_builder_set_member_name(builder, "clone_url");
+			json_builder_add_string_value(builder,
+				NULL != clone ? clone : "");
+			json_builder_set_member_name(builder, "key");
+			json_builder_add_string_value(builder, wanted);
+			json_builder_end_object(builder);
+
+			return venture_web_json_response(json_builder_get_root(builder),
+			                                 200);
+		}
+	}
+
+	g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+	            "No repository you can see matches %s", wanted);
+	return venture_web_error_response(g_steal_pointer(&error));
+}
+
 /* --- Who am I ------------------------------------------------------------ */
 
 /*
@@ -35887,6 +36017,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/business-events", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_business_events, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/health", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_health, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/whoami", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_whoami, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/forge_repo/resolve", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_forge_repo_resolve, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/metrics", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_metrics, self);
 	/* The Model Context Protocol for remote agents; see venture-web-mcp.inc. */
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mcp", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mcp_post, self);
