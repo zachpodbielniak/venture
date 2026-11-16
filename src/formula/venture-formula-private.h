@@ -87,6 +87,29 @@ venture_formula_check(
 );
 
 /**
+ * venture_formula_fields:
+ * @expression: the formula's text
+ * @dynamic: (out) (optional): set when some accessor's field name is not
+ *   a plain string literal, so the fields read cannot all be known
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The fields @expression reads: the plain string literal each accessor
+ * of the `formula` module is called with, as in `field_str(r, "seats")`
+ * or `r.i64_of("seats")`, each once, in the order they first appear. A
+ * string compared as a value or quoted in a comment is not a field read.
+ * @expression must have the shape of a formula; it is not compiled.
+ *
+ * Returns: (transfer full) (element-type utf8): the field names, or
+ *   %NULL with @error set when @expression is not shaped as a formula
+ */
+GPtrArray *
+venture_formula_fields(
+	const gchar	 *expression,
+	gboolean	 *dynamic,
+	GError		**error
+);
+
+/**
  * venture_formula_eval_bool:
  * @expression: a condition formula
  * @record_json: the record as a JSON object, seen by the formula as `r`

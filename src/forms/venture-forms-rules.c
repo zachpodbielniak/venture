@@ -34,8 +34,9 @@ rule_field_index(GPtrArray *fields, const gchar *key, guint *page)
 }
 
 /* An expression rule: a Tallow formula (docs/formulas.org) over the answers
- * to the questions it names. The questions it reads are the ones whose key
- * it quotes ("kind"), and only their answers reach it, so it stays as
+ * to the questions it names. The questions it reads are the keys its
+ * accessors are called with (`field_str(r, "kind")`, from
+ * venture_formula_fields()), and only their answers reach it, so it stays as
  * closed as a condition list: earlier questions only, no files, no repeat
  * groups. The server decides it -- the browser never runs a formula -- so
  * a show, hide or require rule must read questions on an earlier page
@@ -46,6 +47,8 @@ rule_from_expression(VentureEntity *record, GPtrArray *fields, const gchar *expr
 	g_autofree gchar *target = venture_forms_get_string(record, "target-key");
 	g_autoptr(JsonObject) rule = json_object_new();
 	g_autoptr(JsonArray) read = json_array_new();
+	g_autoptr(GPtrArray) names = NULL;
+	gboolean dynamic = FALSE;
 	gint action;
 	gint target_index = -1;
 	guint target_page = 0, source_page = 0, i, page = 0;
@@ -60,13 +63,30 @@ rule_from_expression(VentureEntity *record, GPtrArray *fields, const gchar *expr
 		if (!venture_string_is_empty(destination->group_key)) goto grouped;
 	}
 	else if (!venture_string_is_empty(target)) goto invalid;
+
+	/* the questions it reads: each one named, by a plain quoted key */
+	names = venture_formula_fields(expression, &dynamic, error);
+	if (names == NULL) return NULL;
+	if (dynamic)
+	{
+		venture_set_error_validation(error, "Rule", "an expression names each question it reads "
+			"by its quoted key, as in field_str(r, \"kind\")");
+		return NULL;
+	}
+	for (i = 0; i < names->len; i++)
+	{
+		const gchar *name = g_ptr_array_index(names, i);
+		if (rule_field_index(fields, name, NULL) < 0)
+		{
+			venture_set_error_validation(error, "Rule", "an expression reads \"%s\", which is not a question of this form", name);
+			return NULL;
+		}
+	}
 	for (i = 0; i < fields->len; i++)
 	{
 		VentureFormsField *source = g_ptr_array_index(fields, i);
-		g_autofree gchar *quoted = NULL;
 		if (source->kind == VENTURE_FORM_FIELD_PAGE_BREAK) { page++; continue; }
-		quoted = g_strdup_printf("\"%s\"", source->key);
-		if (strstr(expression, quoted) == NULL) continue;
+		if (!g_ptr_array_find_with_equal_func(names, source->key, g_str_equal, NULL)) continue;
 		if (source->kind == VENTURE_FORM_FIELD_FILE) goto invalid;
 		if (!venture_string_is_empty(source->group_key)) goto grouped;
 		if (action != VENTURE_FORM_RULE_END && (gint)i >= target_index) goto invalid;

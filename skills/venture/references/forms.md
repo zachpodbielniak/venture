@@ -52,10 +52,12 @@ JSON array of `{field,operator,value}`. Conditions use a closed comparison
 vocabulary (see `docs/forms.org`). Instead of conditions a rule may carry an
 `expression`, a Tallow formula yielding a bool (`docs/formulas.org`), e.g.
 `'expression=i64_of(r, "seats") > 10 && field_has(r, "plan", "team")'` with
-`'conditions=[]'`: it reads only the questions whose key it quotes, those must
+`'conditions=[]'`: it reads only the questions its accessors name by a plain
+quoted key (`plan`, `seats`; not the value `"team"`), those must
 be earlier and not in a repeat group, and a show/hide/require expression rule
 must read questions on an earlier page than its target (the server decides
-it). A formula that does not compile is refused with its line:column.
+it). A formula that does not compile is refused with its line:column. The
+public schema shows such a rule as `server: true`, never its formula.
 Question targets must follow their sources; jumps only go forward. Publish freezes rules as well as
 questions. Hidden and skipped answers are discarded by the server.
 

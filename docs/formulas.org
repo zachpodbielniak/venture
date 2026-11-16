@@ -71,7 +71,7 @@ The compiled kernels are there too, through =venture_kernels= ([[file:tallow-plu
 
 ** Form rules
 
-A form rule with an =expression= ignores its =conditions= (they may be =[]=). The questions it reads are the ones whose key it quotes -- ="seats"= in =i64_of(r, "seats")= -- and only their answers reach it, so a formula cannot peek at a later or a hidden answer any more than a condition can. The rules for conditions hold: 1–16 questions read, each earlier than the target, none a file upload; and an expression rule may not read or target questions in a repeat group (use conditions there). The browser never runs a formula, so the server decides: a =show=, =hide= or =require= rule must read questions on an earlier page than its target, and the loader keeps the server's outcome (=server: true= in =data-vf-rules=). =jump= and =end= are decided after the page is submitted, as always.
+A form rule with an =expression= ignores its =conditions= (they may be =[]=). The questions it reads are the names its accessors are called with -- ="seats"= in =i64_of(r, "seats")= or =r.i64_of("seats")= -- and only their answers reach it. A string compared as a value (=str_of(r, "plan") == "team"=) or quoted in a comment is not a question read. Each name must be a plain string literal naming a question of the form: a name built at run time (=str_of(r, "ki" + "nd")=) or an unknown key is refused on save, so a formula cannot peek at a later or a hidden answer any more than a condition can. The rules for conditions hold: 1–16 questions read, each earlier than the target, none a file upload; and an expression rule may not read or target questions in a repeat group (use conditions there). The browser never runs a formula, so the server decides: a =show=, =hide= or =require= rule must read questions on an earlier page than its target, and the loader keeps the server's outcome (=server: true= in =data-vf-rules=). The formula is the form owner's: neither =data-vf-rules= nor the public schema (=/pub/form/TOKEN/schema=) carries the =expression= or the questions it reads, only =server: true=. =jump= and =end= are decided after the page is submitted, as always.
 
 #+begin_src sh
 venturectl create form_rule form_id=7 name='Team size' action=show target_key=team_name \
@@ -107,7 +107,7 @@ See [[file:leads.org::*Scoring formula][Scoring formula]].
 :CUSTOM_ID: failure
 :END:
 
-On save, a formula that does not compile is a validation error on =Expression= carrying the Tallow diagnostic with its line and column counted in the formula itself -- =2:3: error[E0301]: unknown name `zork`= -- or =end:= when the compiler only noticed at the end (an unclosed expression, a =bool= where an =i64= belongs). A formula that tries to leave the expression -- a =)= or =}= it did not open, a =;= outside a block, an unclosed string or comment, a heredoc, a backtick, =$(...)= -- is refused before the compiler sees it.
+On save, a formula that does not compile is a validation error on =Expression= (for a lead rule the message begins =VentureLeadService:= like every other lead rule refusal) carrying the Tallow diagnostic with its line and column counted in the formula itself -- =2:3: error[E0301]: unknown name `zork`= -- or =end:= when the compiler only noticed at the end (an unclosed expression, a =bool= where an =i64= belongs). A formula that tries to leave the expression -- a =)= or =}= it did not open, a =;= outside a block, an unclosed string or comment, a heredoc, a backtick, =$(...)= -- is refused before the compiler sees it.
 
 At run time a formula can still panic (=.unwrap()= of =none=, a kernel contract) or run out of steps or memory. That is an error for that one evaluation, logged in the server log, never a crash, and it means:
 
@@ -146,4 +146,4 @@ Every formula runs with the sandbox on, no capability (there is no =formulas= eq
 
 Kernels stay native: a formula, like a plugin, calls the compiled =vk_*= code through host functions, never an interpreted copy ([[file:kernels.org::#native-vs-interpreted][Native vs interpreted]]).
 
-Tests: =tests/test-formula.c= (compile and diagnostics, accessors, steps, memory, panic, escapes, the cache, threads), and the =expression= cases in =tests/test-forms.c=, =tests/test-alerts.c= and =tests/test-lead-routing.c=.
+Tests: =tests/test-formula.c= (compile and diagnostics, accessors, steps, memory, panic, escapes, the cache, threads, the fields a formula reads), and the =expression= cases in =tests/test-forms.c=, =tests/test-alerts.c= and =tests/test-lead-routing.c=.
