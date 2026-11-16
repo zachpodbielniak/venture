@@ -1,0 +1,55 @@
+#+title: Working with clawtilla
+#+description: VENTURE's side of connecting a clawtilla agent fleet: one account and token per agent, forges so remotes resolve, and what each 0.10.0 feature is for
+#+authors: Zach Podbielniak
+#+categories: projects docs integrations
+#+created: [2026-11-16]
+#+updated: [2026-11-16]
+#+version: 0.10.0
+
+* What this is
+
+clawtilla runs a fleet of AI agents. Each agent can hold its own VENTURE connection -- =venturectl mcp= with its own token -- and clawtilla can mirror the work its agents do into VENTURE tickets. This page is VENTURE's side of that: what to set up here, and which VENTURE feature each part of the integration leans on. clawtilla's side is its =docs/venture-setup.org=.
+
+Nothing here is clawtilla-specific in mechanism: every feature below is an ordinary, documented API any client may use.
+
+* One account, one membership, one token per agent
+
+Every agent is its own VENTURE user, so the audit trail, the activity on every record and every webhook body say *which* agent did a thing.
+
+1. *Create the user*: a global =editor= (or =viewer=, for an agent that only reads -- but a viewer's writes are staged for approval, which a mirroring agent must not be).
+2. *Add its organization memberships*: only the organizations it should reach, with the organization role it needs (=editor= for ordinary work).
+3. *Then mint its token*, as an administrator, for that account: =venturectl token mint name=scout-agent user=scout expires_in_days=365=. A token keeps the memberships it was minted with: mint *after* the memberships, and mint a new one when they change.
+4. Give the token to that one agent only (clawtilla's per-agent =token_file=).
+
+The agent's own token tells it who it is: =GET /api/v1/whoami= answers the actor string (=API token #N=) every audit row and webhook carries for it, its role, its user and the organizations it reaches ([[file:api.org::*Who am I][Who am I]]).
+
+* Forges and repositories, so remotes resolve
+
+clawtilla files a task's work against the repository it is in by asking =GET /api/v1/forge_repo/resolve?url=<remote>= ([[file:forge.org::*Finding a repository from a remote][Finding a repository from a remote]]). For that to answer:
+
+- a =forge= for each forge, with its =base_url= and -- when SSH is on another host -- its =clone_base_url= (an owner sets these; members can read them, never the credentials);
+- a =forge_repo= per repository, in the organization the work belongs to. An agent with an editor membership may add one itself.
+
+A remote resolves only to a repository the asking agent can see, so a repository in an organization the agent is not a member of is simply not found.
+
+* What each feature is for
+
+=GET /api/v1/health= lists =features=; clawtilla checks for each before relying on it and falls back otherwise ([[file:api.org::*Features][Features]]).
+
+| Feature | What clawtilla uses it for |
+|---------+----------------------------|
+| =whoami= | learning each agent's actor and user, to tell its own changes from another's |
+| =external_ref= | stamping each mirrored ticket and comment with its task or note id, so a retried create finds the ticket it made (409) and an echo of its own comment is recognised ([[file:tickets.org::*A reference from another system][A reference from another system]]) |
+| =idempotency= | =Idempotency-Key= on its creates, so a create that timed out is not made twice ([[file:api.org::*Retrying a write: Idempotency-Key][Idempotency-Key]]) |
+| =repo_resolve= | finding the repository a task's checkout came from |
+| =webhook_changes= | telling, from an =*.updated= webhook, whether a change touched a field it mirrors |
+| =external_runs= | recording each agent run as a run -- tokens, cost, model, branch, pull request -- so the agent budgets, the Runs page and the delivery report count the fleet's work, and a hard-stop budget refuses it ([[file:forge.org::*Runs done somewhere else][Runs done somewhere else]]) |
+| =apply_writes_low_risk= | the middle setting for an agent's own VENTURE tools: =venturectl mcp --apply-writes=low-risk= applies ordinary writes and stages money, people, access and deletes for approval ([[file:mcp.org::*The middle setting: =--apply-writes=low-risk=][The middle setting]]) |
+
+* Webhooks, to wake the mirror
+
+clawtilla does not rely on webhooks -- it polls -- but a webhook wakes it early. Point a signed webhook (Settings -> Webhooks, events =ticket.*= and =ticket_comment.*=) at clawtilla's =venture= trigger, with the webhook's secret given to that trigger ([[file:webhooks.org][Webhooks]]). The body names the record and, on an update, the fields that changed; clawtilla fetches the record with the agent's own token.
+
+* What the activity log shows
+
+Every change an agent makes through its token is recorded against =API token #N=, the number =whoami= reported for it; the token's page shows which user it belongs to. Changes the mirror makes for an agent are made with that agent's own token, so they read the same way.
