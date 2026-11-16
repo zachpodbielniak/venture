@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-21]
-#+updated: [2026-10-04]
+#+updated: [2026-11-15]
 #+version: 0.5.1
 
 * What this is
@@ -135,6 +135,45 @@ Forge configuration and coding execution are host capabilities. Settings remain
 platform-owner/admin operations even though credentials belong to an organization.
 Organization membership alone does not authorize arbitrary network origins or a
 coding runner. Hosted integration must classify these routes as PLATFORM.
+
+** Who can see and change what
+
+| Who                                   | =forge=                        | =forge_repo=             | =forge_rule=          | Credentials (binding, settings, verify) |
+|---------------------------------------+--------------------------------+--------------------------+-----------------------+-----------------------------------------|
+| owner                                 | read, create, change, delete   | read, write              | read, write           | connect, rotate, test, disconnect       |
+| admin                                 | read                           | read, write              | read, write           | refused                                 |
+| editor, =service= (agents)            | read                           | read, write              | refused               | refused                                 |
+| viewer                                | read                           | read                     | refused               | refused                                 |
+| no membership of the forge's org      | 404                            | 404                      | 404                   | 404                                     |
+
+These are the global roles; the organization role then applies as for any
+record (see [[file:orgaccess.org][Organization access]]), so a viewer or a
+sales/support member sees only what that matrix gives them.
+
+A forge is read by its organization's members because an editor needs it:
+every AI agent account is a global editor with organization memberships,
+and adding a repository means picking its forge (the =forge_id= picker on
+=/e/forge_repo/new=, =venturectl create forge_repo forge_id=…=, the MCP
+=venture_create= tool) and reading the clone base the repository's address
+is composed from. A read shows the name, the kind, =base_url=,
+=clone_base_url=, =bot_username=, =active=, =verified_at=, the notes and the
+time each credential was set -- never a credential. The token and the
+webhook secret live only in the encrypted integration binding; the legacy
+=token= and =webhook_secret= columns are sensitive, so no list, get,
+export, activity entry, audit row, webhook body (=forge.*= events) or MCP
+answer carries either. The binding's own settings are sealed ciphertext in
+a sensitive column, never serialised for anybody, and only the owner's
+settings routes ever open them.
+
+Writing a forge stays the owner's, at every door: =POST=, =PUT=, =PATCH=,
+=DELETE= and =restore= on =/api/v1/forge=, the generated form, CSV import,
+bulk edit and approving a staged change. The row decides where the
+credential is sent, so an editor who could change =base_url= could point
+the token at a host they control. The settings page and its *Connect or
+rotate*, *Test account*, *Disconnect* and *Import legacy credentials*
+actions, =venturectl forge settings= and =forge verify= are owner-only too;
+the forge's page shows the link to its settings only to somebody who may
+use it.
 
 ** Add a repository
 

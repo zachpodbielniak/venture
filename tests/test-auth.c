@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "venture-test-util.h"
+#include "venture-test-forge.h"
 
 typedef struct
 {
@@ -3099,15 +3100,16 @@ test_auth_health_stays_public(
 
 
 /*
- * A forge is owner-only, and a run record cannot be edited at all.
+ * A forge is written only by the owner, and a run record cannot be edited
+ * at all. Reading a forge is open to its organization's members; see
+ * test_auth_forge_visible_to_members() for what such a read shows.
  *
  * What breaks if this regresses -- and it is a credential-theft chain, not a
- * tidiness point: a forge row holds the access token and names the host that
- * token is sent to. venture_entity_serializable_from_json() has no sensitive
- * filter, so an editor who could PUT that row could rewrite base-url to a
- * host they control and collect this install's token on the next call. The
- * staged diff would show a bland URL change and the token itself as
- * "redacted", so nothing would look wrong. Owner-only is what closes it.
+ * tidiness point: a forge row names the host this install's forge
+ * credential is sent to. An editor who could PUT that row could rewrite
+ * base-url to a host they control and collect the token on the next call.
+ * The staged diff would show a bland URL change, so nothing would look
+ * wrong. Owner-only writes are what close it.
  *
  * A run record is refused writes for everybody, like the audit log: it is
  * what a runner did, and an editable one proves nothing.
@@ -3127,10 +3129,10 @@ test_auth_forge_records_are_owner_only(
 	editor = server_fixture_login(fixture, "eddie", "e-long-password");
 	g_assert_nonnull(editor);
 
-	/* An editor may not read a forge... */
+	/* An editor may read the forges of its organization... */
 	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/forge",
 	                                        editor, NULL, NULL, NULL),
-	                 ==, SOUP_STATUS_FORBIDDEN);
+	                 ==, SOUP_STATUS_OK);
 
 	/* ...and above all may not write one. */
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/forge",
@@ -3195,6 +3197,378 @@ test_auth_forge_records_are_owner_only(
 	                                        "/api/v1/forge_run", owner,
 	                                        "{\"ticket_id\":1}", NULL, NULL),
 	                 ==, SOUP_STATUS_FORBIDDEN);
+}
+
+/* What a forge's credentials are in the tests below: strings no response,
+ * page, export or audit row may ever contain. */
+#define AUTH_FORGE_TOKEN  "FORGE-TOKEN-MARKER-7f3a9c"
+#define AUTH_FORGE_SECRET "FORGE-SECRET-MARKER-0123456789abcdef0123"
+
+/* A forge filed under @organization, connected through the encrypted
+ * binding exactly as the settings page leaves it. */
+static gint64
+auth_forge_create(
+	ServerFixture	*fixture,
+	gint64		 organization,
+	const gchar	*name,
+	const gchar	*base_url
+){
+	g_autoptr(VentureEntity) forge = NULL;
+
+	forge = g_object_new(VENTURE_TYPE_FORGE, "name", name,
+		"kind", VENTURE_FORGE_KIND_FORGEJO, "base-url", base_url,
+		"clone-base-url", "git@git-ssh.example.test", "active", TRUE, NULL);
+	venture_entity_set_organization_id(forge, organization);
+	g_assert_true(venture_database_save(fixture->database, forge, NULL, NULL));
+	venture_test_forge_bind(fixture->database, forge, AUTH_FORGE_TOKEN,
+	                        AUTH_FORGE_SECRET);
+
+	return venture_entity_get_id(forge);
+}
+
+/* A body that carries no credential, by value or by member name. */
+static void
+auth_assert_no_forge_secret(const gchar *body)
+{
+	g_assert_nonnull(body);
+	g_assert_null(strstr(body, AUTH_FORGE_TOKEN));
+	g_assert_null(strstr(body, AUTH_FORGE_SECRET));
+	g_assert_null(strstr(body, "\"token\""));
+	g_assert_null(strstr(body, "\"webhook_secret\""));
+}
+
+/*
+ * Editors and viewers see their organization's forges; nobody but the owner
+ * changes one or reaches its credentials.
+ *
+ * What breaks if this regresses: every AI agent account is a global editor
+ * with organization memberships, and forge reads used to be owner-only, so an
+ * agent could neither pick a forge for a new forge_repo nor read the clone
+ * base a repository composes from -- the Build section was closed to the
+ * accounts that do most of the work in it. The other direction is the
+ * credential chain test_auth_forge_records_are_owner_only() describes:
+ * opening reads must not open writes, the restore door, the settings
+ * actions or the binding, and a read must carry no secret.
+ */
+static void
+test_auth_forge_visible_to_members(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *viewer = NULL;
+	g_autofree gchar *service = NULL;
+	g_autofree gchar *owner = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *form = NULL;
+	g_autoptr(VentureEntity) other = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	gint64 home;
+	gint64 ours;
+	gint64 theirs;
+	gint64 editor_id;
+	gint64 viewer_id;
+	gint64 service_id;
+	guint i;
+
+	(void)user_data;
+
+	home = venture_context_get_default_organization_id(fixture->context);
+	other = VENTURE_ENTITY(venture_organization_new());
+	g_object_set(other, "name", "Elsewhere", "slug", "elsewhere", NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL, NULL));
+
+	ours = auth_forge_create(fixture, home, "Our forge",
+	                         "https://git.example.test");
+	theirs = auth_forge_create(fixture, venture_entity_get_id(other),
+	                           "Their forge", "https://git.elsewhere.test");
+
+	/* An agent's shape: a global editor that edits in its organization. */
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	server_fixture_create_member(fixture, "vera", "v-long-password",
+	                             VENTURE_USER_ROLE_VIEWER, &viewer_id);
+	server_fixture_create_member(fixture, "robot", "r-long-password",
+	                             VENTURE_USER_ROLE_SERVICE, &service_id);
+	server_fixture_set_organization_role(fixture, service_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	server_fixture_create_member(fixture, "olive", "o-long-password",
+	                             VENTURE_USER_ROLE_OWNER, NULL);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+	viewer = server_fixture_login(fixture, "vera", "v-long-password");
+	service = server_fixture_login(fixture, "robot", "r-long-password");
+	owner = server_fixture_login(fixture, "olive", "o-long-password");
+	g_assert_nonnull(editor);
+	g_assert_nonnull(viewer);
+	g_assert_nonnull(service);
+	g_assert_nonnull(owner);
+
+	/* --- Reading: the list, one record, the pages and the export --- */
+	{
+		const gchar *readers[3];
+
+		readers[0] = editor;
+		readers[1] = viewer;
+		readers[2] = service;
+
+		for (i = 0; i < G_N_ELEMENTS(readers); i++)
+		{
+			g_clear_pointer(&body, g_free);
+			g_clear_pointer(&node, json_node_unref);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET",
+				"/api/v1/forge", readers[i], NULL, &body, NULL),
+				==, SOUP_STATUS_OK);
+			auth_assert_no_forge_secret(body);
+			node = venture_json_parse(body, NULL);
+			g_assert_nonnull(node);
+			/* Only this organization's forge, never the other's. */
+			g_assert_cmpint(json_object_get_int_member(
+				json_node_get_object(node), "total"), ==, 1);
+			g_assert_nonnull(strstr(body, "\"clone_base_url\""));
+			g_assert_null(strstr(body, "Their forge"));
+
+			g_clear_pointer(&path, g_free);
+			g_clear_pointer(&body, g_free);
+			path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT, ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				readers[i], NULL, &body, NULL), ==, SOUP_STATUS_OK);
+			auth_assert_no_forge_secret(body);
+			g_assert_nonnull(strstr(body, "git@git-ssh.example.test"));
+			g_assert_nonnull(strstr(body, "https://git.example.test"));
+
+			/* Outside the memberships it does not exist. */
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT, theirs);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				readers[i], NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT, theirs);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				readers[i], NULL, NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
+
+			g_clear_pointer(&body, g_free);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET",
+				"/e/forge", readers[i], NULL, &body, NULL),
+				==, SOUP_STATUS_OK);
+			auth_assert_no_forge_secret(body);
+			g_assert_nonnull(strstr(body, "Our forge"));
+			g_assert_null(strstr(body, "Their forge"));
+
+			/* The page, without the way to the owner's settings. */
+			g_clear_pointer(&path, g_free);
+			g_clear_pointer(&body, g_free);
+			path = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT, ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				readers[i], NULL, &body, NULL), ==, SOUP_STATUS_OK);
+			auth_assert_no_forge_secret(body);
+			g_assert_null(strstr(body, "Organization forge credentials"));
+
+			g_clear_pointer(&body, g_free);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET",
+				"/e/forge/export", readers[i], NULL, &body, NULL),
+				==, SOUP_STATUS_OK);
+			auth_assert_no_forge_secret(body);
+			g_assert_nonnull(strstr(body, "Our forge"));
+			g_assert_null(strstr(body, "Their forge"));
+
+			/* The record's history names no credential either. */
+			g_clear_pointer(&path, g_free);
+			g_clear_pointer(&body, g_free);
+			path = g_strdup_printf("/api/v1/activity/forge/%" G_GINT64_FORMAT,
+			                       ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				readers[i], NULL, &body, NULL), ==, SOUP_STATUS_OK);
+			auth_assert_no_forge_secret(body);
+
+			/* The encrypted binding gives up neither the credentials
+			 * nor their ciphertext, whatever the reader may list. */
+			g_clear_pointer(&body, g_free);
+			server_fixture_request(fixture, "GET",
+				"/api/v1/integration_connection", readers[i], NULL, &body,
+				NULL);
+			g_assert_null(strstr(body, AUTH_FORGE_TOKEN));
+			g_assert_null(strstr(body, AUTH_FORGE_SECRET));
+			g_assert_null(strstr(body, "sealed_settings"));
+		}
+	}
+
+	/* The owner still sees the settings link, and no secret either. */
+	g_clear_pointer(&path, g_free);
+	g_clear_pointer(&body, g_free);
+	path = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT, ours);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", path, owner, NULL,
+	                                        &body, NULL), ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "Organization forge credentials"));
+	auth_assert_no_forge_secret(body);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET",
+		"/api/v1/audit_entry?limit=500", owner, NULL, &body, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_null(strstr(body, AUTH_FORGE_TOKEN));
+	g_assert_null(strstr(body, AUTH_FORGE_SECRET));
+
+	/* --- Writing a forge, and everything about its credentials --- */
+	{
+		const gchar *writers[2];
+
+		writers[0] = editor;
+		writers[1] = service;
+
+		for (i = 0; i < G_N_ELEMENTS(writers); i++)
+		{
+			g_assert_cmpuint(server_fixture_json(fixture, "POST",
+				"/api/v1/forge", writers[i],
+				"{\"name\":\"mine\",\"base_url\":\"https://attacker.example\"}",
+				NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT, ours);
+			g_assert_cmpuint(server_fixture_json(fixture, "PUT", path,
+				writers[i], "{\"base_url\":\"https://attacker.example\"}",
+				NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_json(fixture, "PATCH", path,
+				writers[i], "{\"clone_base_url\":\"git@attacker.example\"}",
+				NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_request(fixture, "DELETE", path,
+				writers[i], NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+			/* Restoring is a write too; it used to ask only the read
+			 * role, which a readable forge would have let through. */
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT "/restore",
+			                       ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", path,
+				writers[i], "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+			/* The generated form and its save. */
+			g_assert_cmpuint(server_fixture_request(fixture, "GET",
+				"/e/forge/new", writers[i], NULL, NULL, NULL),
+				==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST",
+				"/e/forge", writers[i],
+				"name=mine&base_url=https%3A%2F%2Fattacker.example", NULL,
+				NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/e/forge/%" G_GINT64_FORMAT "/edit", ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				writers[i], NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+			/* Settings: page, Connect / Test account / Disconnect, and the
+			 * scriptable form venturectl forge settings uses. */
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/forges/%" G_GINT64_FORMAT "/settings", ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "GET", path,
+				writers[i], NULL, NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", path,
+				writers[i], "operation=configure", NULL, NULL),
+				==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", path,
+				writers[i], "operation=test", NULL, NULL),
+				==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", path,
+				writers[i], "operation=disconnect", NULL, NULL),
+				==, SOUP_STATUS_FORBIDDEN);
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT "/settings",
+			                       ours);
+			g_assert_cmpuint(server_fixture_json(fixture, "POST", path,
+				writers[i], "{\"operation\":\"test\",\"connection_id\":1,\"version\":1}",
+				NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_assert_cmpuint(server_fixture_json(fixture, "POST", path,
+				writers[i], "{\"operation\":\"disconnect\",\"connection_id\":1,\"version\":1}",
+				NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT "/verify",
+			                       ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", path,
+				writers[i], "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+			g_clear_pointer(&path, g_free);
+			path = g_strdup_printf("/forges/%" G_GINT64_FORMAT "/verify", ours);
+			g_assert_cmpuint(server_fixture_request(fixture, "POST", path,
+				writers[i], "", NULL, NULL), ==, SOUP_STATUS_FORBIDDEN);
+		}
+	}
+
+	/* --- A repository: editors write it, viewers do not --- */
+	form = g_strdup_printf("{\"name\":\"acme/api\",\"forge_id\":%" G_GINT64_FORMAT "}",
+	                       ours);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/forge_repo",
+	                                     editor, form, NULL),
+	                 ==, SOUP_STATUS_CREATED);
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("{\"name\":\"acme/cli\",\"forge_id\":%" G_GINT64_FORMAT "}",
+	                       ours);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/forge_repo",
+	                                     service, form, NULL),
+	                 ==, SOUP_STATUS_CREATED);
+
+	/* Nor may a repository be hung off a forge the caller cannot see. */
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("{\"name\":\"acme/stolen\",\"forge_id\":%" G_GINT64_FORMAT "}",
+	                       theirs);
+	g_assert_cmpuint(server_fixture_json(fixture, "POST", "/api/v1/forge_repo",
+	                                     editor, form, NULL),
+	                 !=, SOUP_STATUS_CREATED);
+
+	/* The form offers this organization's forge in its picker... */
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/forge_repo/new",
+	                                        editor, NULL, &body, NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "Our forge"));
+	g_assert_null(strstr(body, "Their forge"));
+
+	/* ...and its save makes the repository. */
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("name=acme%%2Fweb&forge_id=%" G_GINT64_FORMAT, ours);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/forge_repo",
+	                                        editor, form, NULL, NULL) / 100,
+	                 ==, 3);
+	g_assert_cmpint(server_fixture_count(fixture, "forge_repo", editor), ==, 3);
+
+	/* The repository's page composes its clone address from the forge. */
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/forge_repo",
+	                                        editor, NULL, &body, NULL),
+	                 ==, SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(body, "acme/web"));
+
+	/* A viewer reads repositories but writes none. */
+	g_assert_cmpint(server_fixture_count(fixture, "forge_repo", viewer), ==, 3);
+	{
+		g_autofree gchar *json = NULL;
+
+		json = g_strdup_printf("{\"name\":\"acme/view\",\"forge_id\":%"
+		                       G_GINT64_FORMAT "}", ours);
+		g_assert_cmpuint(server_fixture_json(fixture, "POST",
+			"/api/v1/forge_repo", viewer, json, NULL),
+			==, SOUP_STATUS_FORBIDDEN);
+	}
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/forge_repo",
+	                                        viewer, form, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/forge_repo/new",
+	                                        viewer, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpint(server_fixture_count(fixture, "forge_repo", editor), ==, 3);
+
+	/* A forge rule stays an administrator's, to read and to write. */
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/api/v1/forge_rule",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_request(fixture, "GET", "/e/forge_rule/new",
+	                                        editor, NULL, NULL, NULL),
+	                 ==, SOUP_STATUS_FORBIDDEN);
+
+	/* And the owner still writes the forge. */
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/forge/%" G_GINT64_FORMAT, ours);
+	g_assert_cmpuint(server_fixture_json(fixture, "PATCH", path, owner,
+	                                     "{\"notes\":\"the main forge\"}", NULL),
+	                 ==, SOUP_STATUS_OK);
 }
 
 /*
@@ -8294,6 +8668,9 @@ main(
 
 	g_test_add("/auth/currency-writes-are-admin-only", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_currency_writes_are_admin_only,
+	           server_fixture_tear_down);
+	g_test_add("/auth/forge-visible-to-members", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_forge_visible_to_members,
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-records-are-owner-only", ServerFixture, NULL,
 

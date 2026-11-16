@@ -313,7 +313,8 @@ curl -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
 #+end_src
 
 Approving needs the editor role, *and* the role that record type needs in its
-own right — a forge is owner-only on the direct route and is owner-only here.
+own right for a write — a forge is read by its organization's members but
+written only by the owner on the direct route, and is owner-only here.
 Without that, staging would launder the authorisation.
 
 It applies the staged object through the same repository call an ordinary

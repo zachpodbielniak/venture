@@ -137,7 +137,7 @@ curl -s -X POST -H "$H" "$B/api/v1/confirmations/ID/approve"  # or /reject
 - `?stage=y` (anything but a recognised value) is a 400, not "no". An older
   build without `staged_writes` in health *ignores* the parameter and
   applies the write -- check health first.
-- Approval needs the editor role *and* the type's own role (a forge stays
+- Approval needs the editor role *and* the type's own role (a forge's writes stay
   owner-only). It applies the staged object through the same save; if the
   record moved meanwhile it is 409 naming the fields and the card is
   dropped -- re-read and stage again. A change already made identically
