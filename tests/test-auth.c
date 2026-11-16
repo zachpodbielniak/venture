@@ -3446,6 +3446,48 @@ test_auth_external_runs_routes(
 }
 
 /*
+ * A create that names its own uuid keeps it, and a second create with the
+ * same uuid is "already exists" (409), not a second record or a 500.
+ *
+ * What breaks if this regresses: a client that mints the id up front -- so
+ * a retried create after a timeout can look its record up by it -- finds
+ * the server ignored it and made up another, or answers the retry with a
+ * server error instead of telling it the record is already there.
+ */
+static void
+test_auth_create_keeps_uuid(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	static const gchar uuid[] = "0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8";
+	g_autofree gchar *json = g_strdup_printf(
+		"{\"title\":\"Minted elsewhere\",\"uuid\":\"%s\"}", uuid);
+	gint64 editor_id = 0;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ticket", editor, json, &body, NULL), ==,
+		SOUP_STATUS_CREATED);
+	node = venture_json_parse(body, NULL);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node),
+	                                              "uuid"), ==, uuid);
+
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/ticket", editor, json, NULL, NULL), ==,
+		SOUP_STATUS_CONFLICT);
+}
+
+/*
  * Editors and viewers see their organization's forges; nobody but the owner
  * changes one or reaches its credentials.
  *
@@ -9133,6 +9175,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-visible-to-members", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_forge_visible_to_members,
+	           server_fixture_tear_down);
+	g_test_add("/auth/create-keeps-uuid", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_create_keeps_uuid,
 	           server_fixture_tear_down);
 	g_test_add("/auth/external-runs-routes", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_external_runs_routes,

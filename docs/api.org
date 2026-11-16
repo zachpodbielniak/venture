@@ -501,6 +501,10 @@ text.
 * Bodies
 
 =PATCH= applies only the members present; anything omitted is left alone.
+A create may name the record's =uuid= itself, and it is kept: a client that
+mints the id up front can find its record again by it after a create that
+timed out. A second create with a =uuid= already taken is 409
+(=already_exists=), not a second record.
 Money accepts several forms — ~"12.34"~, ~"$12.34"~, ~"12.34 EUR"~, or the
 object form ~{"amount": 1234, "currency": "USD", "exponent": 2}~. Dates accept
 ISO 8601 or =YYYY-MM-DD=. Enumerations accept their nick in any case, with
