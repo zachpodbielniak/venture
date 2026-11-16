@@ -142,6 +142,7 @@ falls back rather than guesses.
 | Name     | Since  | What it means                                  |
 |----------+--------+------------------------------------------------|
 | =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+| =external_ref= | 0.10.0 | =ticket.external_ref= and =ticket_comment.external_ref=, unique per organization ([[file:tickets.org][Tickets]]) |
 
 * Endpoints
 
@@ -513,7 +514,11 @@ One shape for every failure:
 | =unsupported=              |  501 | not in this build                    |
 
 A =409= from a write means someone else changed the record since you loaded
-it. Reload, reapply, retry — do not force it.
+it (=conflict=), or that a value which must be unique is already taken
+(=already_exists=) -- since 0.10.0 a save the database refuses for a unique
+index answers =already_exists= rather than a 500. For a stale version:
+reload, reapply, retry -- do not force it. For a taken value: find the record
+that holds it (a filter on that field) and use it.
 
 * Stripe payment actions
 

@@ -27,6 +27,7 @@ venture_build_features(void)
 	 */
 	static const gchar * const features[] = {
 		"whoami",
+		"external_ref",
 		NULL
 	};
 

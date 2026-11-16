@@ -1814,6 +1814,39 @@ venture_database_resolve_bare_money(VentureDatabase *self, VentureEntity *entity
 
 /* The generic writer is itself a business command: source hooks can generate
  * postings before the ordinary row save. Scope it before dispatching any hook. */
+/*
+ * A save the database refused for a unique index -- an identifier already
+ * used in the organization, an external reference already mirrored -- is
+ * "that already exists", not a database failure. The drivers report every
+ * refusal alike, so it is recognised by the two engines' own words and
+ * turned into VENTURE_ERROR_ALREADY_EXISTS, which a client reads as 409
+ * and may act on (find the existing record) instead of 500, which says
+ * the server is broken. The engine's text stays in the message.
+ */
+static void
+reclassify_unique_violation(VentureEntity *entity, GError **error)
+{
+	GError *refused;
+
+	if (NULL == error || NULL == *error)
+		return;
+
+	refused = *error;
+
+	if (refused->domain != VENTURE_ERROR ||
+	    refused->code != VENTURE_ERROR_DATABASE ||
+	    (NULL == strstr(refused->message, "UNIQUE constraint failed") &&
+	     NULL == strstr(refused->message,
+	                    "duplicate key value violates unique constraint")))
+		return;
+
+	*error = g_error_new(VENTURE_ERROR, VENTURE_ERROR_ALREADY_EXISTS,
+	                     "A %s with that value already exists (%s)",
+	                     venture_entity_get_entity_name(entity),
+	                     refused->message);
+	g_error_free(refused);
+}
+
 gboolean
 venture_database_save(VentureDatabase *self, VentureEntity *entity,
 	const VentureActor *actor, GError **error)
@@ -1869,7 +1902,10 @@ venture_database_save(VentureDatabase *self, VentureEntity *entity,
 		if (ok)
 			g_clear_error(&local);
 		else
+		{
+			reclassify_unique_violation(entity, &local);
 			g_propagate_error(error, local);
+		}
 		return ok;
 	}
 }
