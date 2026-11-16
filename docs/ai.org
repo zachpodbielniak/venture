@@ -294,7 +294,7 @@ Three things make that safe rather than reckless:
 
 - *Credentials cannot be written at all.* Sensitive fields are refused from any payload, so a token or webhook secret named in a tool call is ignored no matter who made the call. Setting one is a human in a browser, on the forge's own page.
 - *Changes are staged.* Under the default =confirm_writes= policy a person approves each one, which is exactly the review a change to where this install sends its token deserves.
-- *Approving respects the record's own role.* A forge is owner-only and a rule is admin-only on the REST API; approving a staged change to one requires the same. Without that, staging would launder the authorisation — an editor could ask for a change the API refuses them and then approve it.
+- *Approving respects the record's own role.* A forge is written only by the owner and a rule is admin-only on the REST API; approving a staged change to one requires the same. Without that, staging would launder the authorisation — an editor could ask for a change the API refuses them and then approve it.
 
 An install running =policy: autonomous= has given the second of those away, for every type. That is the setting to weigh, not the type list.
 

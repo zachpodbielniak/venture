@@ -1101,14 +1101,25 @@ venture_web_require_for_type(
 		needed = VENTURE_USER_ROLE_ADMIN;
 
 	/*
-	 * A forge record holds an access token and a webhook secret. The
-	 * sensitive flag keeps both out of every response, but the row is
-	 * still what decides where a credential is sent: an editor who could
-	 * change base-url could point this install's token at a host they
-	 * control, and the staged diff would show nothing but a URL changing.
-	 * Same reasoning as user and api_token.
+	 * A forge row decides where this install's forge credential is sent:
+	 * an editor who could change base-url could point the token at a host
+	 * they control, and the staged diff would show nothing but a URL
+	 * changing. So creating, changing, deleting or restoring one is the
+	 * owner's, like user and api_token.
+	 *
+	 * Reading one is not. The credentials live only in the encrypted
+	 * integration binding, which this row never carries, and the legacy
+	 * token and webhook-secret columns are sensitive, so a list, a get or
+	 * an export shows the name, the kind and the addresses and nothing
+	 * else. Those are exactly what an editor needs: picking the forge for
+	 * a forge_repo, reading the clone base a repository composes from.
+	 * Owner-only reads left every agent account -- a global editor --
+	 * unable to add a repository at all. Membership still scopes the
+	 * read: the access policy answers 404 outside the caller's
+	 * organizations, as for any record.
 	 */
-	if (VENTURE_TYPE_FORGE == entity_type)
+	if ((VENTURE_TYPE_FORGE == entity_type) &&
+	    (VENTURE_USER_ROLE_VIEWER != ordinary))
 		needed = VENTURE_USER_ROLE_OWNER;
 
 	/* Connector creation is organization-admin delegation; saved identity is
@@ -4290,8 +4301,10 @@ venture_web_api_create(
 	if (!venture_web_resolve_type(self, params, &entity_type, &error))
 		return venture_web_error_response(error);
 
+	/* The type's write role, not its read role: a forge or a currency is
+	 * read by anybody in its organization and written by fewer. */
 	if (!venture_web_require_for_type(self, principal, entity_type,
-	                                  VENTURE_USER_ROLE_VIEWER, &error))
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 
 	if (!venture_web_type_accepts_writes(entity_type, &error))
@@ -4331,8 +4344,10 @@ venture_web_api_update(
 	if (!venture_web_resolve_type(self, params, &entity_type, &error))
 		return venture_web_error_response(error);
 
+	/* The type's write role, not its read role: a forge or a currency is
+	 * read by anybody in its organization and written by fewer. */
 	if (!venture_web_require_for_type(self, principal, entity_type,
-	                                  VENTURE_USER_ROLE_VIEWER, &error))
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 
 	if (!venture_web_type_accepts_writes(entity_type, &error))
@@ -4399,8 +4414,10 @@ venture_web_api_delete(
 	if (!venture_web_resolve_type(self, params, &entity_type, &error))
 		return venture_web_error_response(error);
 
+	/* The type's write role, not its read role: a forge or a currency is
+	 * read by anybody in its organization and written by fewer. */
 	if (!venture_web_require_for_type(self, principal, entity_type,
-	                                  VENTURE_USER_ROLE_VIEWER, &error))
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 
 	if (!venture_web_type_accepts_writes(entity_type, &error))
@@ -12055,17 +12072,25 @@ venture_web_forge_find_link(
  * the generated save, so without this panel a forge could be created and
  * never given a token. What is shown is whether each secret is set and when,
  * never a value -- the whole point of the flag.
+ *
+ * Editors and viewers read a forge too, but the settings page is the
+ * owner's, so the way to it is offered only to somebody who may change the
+ * forge: a button that always answers 403 is not an action.
  */
 static void
 venture_web_append_forge_block(
 	VentureWebServer	*self,
+	VentureAuthPrincipal	*principal,
 	GString			*content,
 	VentureEntity		*record
 ){
 	gint64 id = venture_entity_get_id(record);
-	(void)self;
-	g_string_append_printf(content, "<p><a class=\"btn\" href=\"/forges/%" G_GINT64_FORMAT "/settings\">Organization forge credentials</a></p>", id);
 
+	if (!venture_web_require_for_type(self, principal, VENTURE_TYPE_FORGE,
+	                                  VENTURE_USER_ROLE_EDITOR, NULL))
+		return;
+
+	g_string_append_printf(content, "<p><a class=\"btn\" href=\"/forges/%" G_GINT64_FORMAT "/settings\">Organization forge credentials</a></p>", id);
 }
 
 /*
@@ -13765,7 +13790,7 @@ venture_web_ui_detail(
 
 	/* A forge's credentials, which the generated form cannot show. */
 	if (VENTURE_TYPE_FORGE == entity_type)
-		venture_web_append_forge_block(self, content, record);
+		venture_web_append_forge_block(self, principal, content, record);
 
 	/* A repository's address and its clone command, both composed from
 	 * the forge rather than stored, so neither can drift from it. */
@@ -25026,8 +25051,12 @@ venture_web_api_restore(
 	if (!venture_web_resolve_type(self, params, &entity_type, &error))
 		return venture_web_error_response(error);
 
+	/* A restore is a write, and asks the type's write role: a type that
+	 * any reader may see but only an owner may change (a forge) or an
+	 * administrator (a currency) must not come back for an editor. The
+	 * page's restore already asked this. */
 	if (!venture_web_require_for_type(self, principal, entity_type,
-	                                  VENTURE_USER_ROLE_VIEWER, &error))
+	                                  VENTURE_USER_ROLE_EDITOR, &error))
 		return venture_web_error_response(error);
 
 	/* A type that refuses writes refuses this one too: restoring an audit

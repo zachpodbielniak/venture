@@ -251,6 +251,16 @@ order the data flows.
 - **User and API-token records are owner-only everywhere**, via
   `venture_web_require_for_type()`. Creating a user is access management, not
   data entry.
+- **`venture_web_require_for_type()`'s `ordinary` is the read/write
+  switch, so every write door passes `VENTURE_USER_ROLE_EDITOR`.** A
+  forge is read by every member and written only by the owner (a currency:
+  read by all, written by an administrator), and the split is
+  `VENTURE_USER_ROLE_VIEWER != ordinary`. The REST create, update, delete
+  and restore handlers used to pass VIEWER after a blanket editor check;
+  that was harmless while forge reads were owner-only too, and would have
+  let an editor rewrite a forge's `base_url` the moment reads opened.
+  `/auth/forge-visible-to-members` pins both directions. A forge read never
+  carries a credential: those live only in the encrypted binding.
 - **Style inputs by exclusion, not enumeration.** Listing which `type=`
   values get themed is how the login form's username box ended up unstyled.
 - **Query-string names are either reserved or filters.** `search`, `order`,

@@ -101,8 +101,9 @@ HMAC-checked; a forge with no secret is refused).
   *enabled* rule that does nothing -- `trigger=manual outcome=none` (add
   `require_approval=true` to be sure): the search stops there. (There is no
   `ai_enabled` field any more; older notes that say "a rule with the AI
-  switched off" mean this.) `forge_rule` is admin-only; `forge` is
-  owner-only.
+  switched off" mean this.) `forge_rule` is admin-only; a `forge` is
+  read by every member (editors and agents pick it for a `forge_repo`) and
+  written, connected and rotated only by the owner.
 - **Coding runs are off until `forge.runs_enabled: true`.** Everything else
   (linking, issues both ways, builds) works without it. A CLI runner needs
   its command in `forge.cli_allowed_commands`.

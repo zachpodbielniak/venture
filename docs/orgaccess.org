@@ -124,6 +124,14 @@ owner, active team member, or a child of an assigned venture.
 | accountant        | empty/404            | 404                   | read/export only; writes refused naming the role | empty/404 |
 | no membership     | empty/404            | 404                   | empty/404                          | empty/404             |
 
+Some types ask a global role above the matrix to write but not to read.
+A =currency= is written by an administrator; a =forge= is written, and its
+credentials managed, only by the owner, while any member who may read the
+organization's records reads its forges (credentials never appear in a
+read). See [[file:forge.org][Git forges]] for the table. These checks are
+made on the type's write role at every write door: create, update, delete
+and restore over REST, the form, import, bulk edit and approval.
+
 Members can read their organization's row for the picker. Membership does
 not inherit through =parent_id=. Personal chat, watch and notification
 records declare a personal owner reference in their field table and keep

@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "venture-test-util.h"
+#include "venture-test-forge.h"
 
 typedef struct
 {
@@ -39,6 +40,7 @@ typedef struct
 	gchar		*last_title;
 	gchar		*last_priority;
 	gchar		*answer_body;	/* what the far end says; NULL for "ok" */
+	GString		*all_bodies;	/* every body received, in order */
 	guint		 answer_with;
 } Fixture;
 
@@ -78,6 +80,10 @@ endpoint_handler(
 		soup_message_headers_get_one(headers, "X-Venture-Event"));
 	g_free(fixture->last_body);
 	fixture->last_body = g_strndup(body->data, (gsize)body->length);
+	if (NULL == fixture->all_bodies)
+		fixture->all_bodies = g_string_new(NULL);
+	g_string_append_len(fixture->all_bodies, body->data, (gssize)body->length);
+	g_string_append_c(fixture->all_bodies, '\n');
 	g_free(fixture->last_path);
 	fixture->last_path = g_strdup(path);
 	g_free(fixture->last_gotify_key);
@@ -161,6 +167,8 @@ fixture_tear_down(
 	g_clear_pointer(&fixture->last_title, g_free);
 	g_clear_pointer(&fixture->last_priority, g_free);
 	g_clear_pointer(&fixture->answer_body, g_free);
+	if (NULL != fixture->all_bodies)
+		g_string_free(g_steal_pointer(&fixture->all_bodies), TRUE);
 
 	g_clear_object(&fixture->context);
 	g_clear_object(&fixture->database);
@@ -1318,6 +1326,66 @@ test_form_sensitive_delivery(Fixture *f, gconstpointer data)
 	}
 }
 
+/*
+ * A forge's events carry the forge and never its credentials.
+ *
+ * What breaks if this regresses: forge records are read by every member of
+ * their organization and a webhook subscribed to everything posts them to
+ * another host. The token and the webhook secret live only in the encrypted
+ * integration binding; a payload that grew either -- the record's own JSON,
+ * the binding's, an audit label -- would hand the forge credential to
+ * whoever runs the receiving end.
+ */
+static void
+test_webhook_forge_carries_no_credential(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar token[] = "FORGE-TOKEN-MARKER-7f3a9c";
+	static const gchar secret[] = "FORGE-SECRET-MARKER-0123456789abcdef0123";
+	g_autoptr(VentureEntity) webhook = NULL;
+	g_autoptr(VentureEntity) forge = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 delivered;
+
+	(void)user_data;
+
+	webhook = create_webhook(fixture, "*", "hook-secret");
+	g_object_set(webhook, "include-record", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, webhook, NULL,
+	                                    &error));
+	g_assert_no_error(error);
+
+	forge = g_object_new(VENTURE_TYPE_FORGE, "name", "Main forge",
+		"kind", VENTURE_FORGE_KIND_FORGEJO,
+		"base-url", "https://git.example.test",
+		"clone-base-url", "git@git-ssh.example.test", "active", TRUE, NULL);
+	file_under_default(fixture, forge);
+	g_assert_true(venture_database_save(fixture->database, forge, NULL,
+	                                    &error));
+	g_assert_no_error(error);
+	settle(fixture, 1);
+	g_assert_cmpuint(fixture->received, >=, 1);
+
+	/* Connected, then changed: forge.updated after the binding exists. */
+	venture_test_forge_bind(fixture->database, forge, token, secret);
+	delivered = count_of(fixture, VENTURE_TYPE_WEBHOOK_DELIVERY);
+	g_object_set(forge, "notes", "The main forge", NULL);
+	g_assert_true(venture_database_save(fixture->database, forge, NULL,
+	                                    &error));
+	g_assert_no_error(error);
+	settle(fixture, delivered + 1);
+
+	g_assert_nonnull(fixture->all_bodies);
+	g_assert_nonnull(strstr(fixture->all_bodies->str, "forge.created"));
+	g_assert_nonnull(strstr(fixture->all_bodies->str, "forge.updated"));
+	g_assert_nonnull(strstr(fixture->all_bodies->str, "git@git-ssh.example.test"));
+	g_assert_null(strstr(fixture->all_bodies->str, token));
+	g_assert_null(strstr(fixture->all_bodies->str, secret));
+	g_assert_null(strstr(fixture->all_bodies->str, "\"token\""));
+	g_assert_null(strstr(fixture->all_bodies->str, "\"webhook_secret\""));
+}
+
 int
 main(
 	int	 argc,
@@ -1333,6 +1401,8 @@ main(
 	g_test_add(path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
 	ADD("/webhook/form-sensitive-delivery", test_form_sensitive_delivery);
+	ADD("/webhook/forge-carries-no-credential",
+	    test_webhook_forge_carries_no_credential);
 	ADD("/webhook/delivers-signed", test_webhook_delivers_signed);
 	ADD("/webhook/scope-and-payload", test_webhook_scope_and_payload);
 	ADD("/webhook/failures-switch-it-off",

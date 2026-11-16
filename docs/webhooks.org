@@ -133,7 +133,7 @@ Pointing a webhook at your own install to see what a body looks like works, whic
 | a push's token        | =POST /api/v1/webhooks/:id/token=      | =webhook token ID < file= |
 | make or change one    | the generic routes on =webhook=        | =create/update webhook=  |
 
-Webhooks are owner-only everywhere — the page, the generic routes, the API — for the same reason a forge is: the row names the host this install's business data is posted to and holds the secret that signs it, and an editor who could change the URL could point every change in the books at a server they control, with the staged diff showing nothing but a URL moving.
+Webhooks are owner-only everywhere — the page, the generic routes, the API — for the same reason a forge's writes are: the row names the host this install's business data is posted to and holds the secret that signs it, and an editor who could change the URL could point every change in the books at a server they control, with the staged diff showing nothing but a URL moving.
 
 The assistant is not given webhooks at all. It has no tool that lists, makes or changes one, exactly as it has no way to read a forge's token.
 
