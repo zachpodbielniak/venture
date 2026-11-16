@@ -107,6 +107,8 @@ Every record's page ends with its activity: each audited change with who made it
 
 An =agent_budget= caps what the runs may cost: a repository or every repository, a window (monthly, weekly, all time), a limit, a warning line, and whether to hard-stop. The spend is never stored — it is summed from the runs' own =cost= at the moment of asking, so a run whose cost is corrected afterwards corrects the budget. Before a run starts, every budget covering its repository is checked: crossing the warning line or the limit for the first time in the window tells the owners and admins once, and an exhausted budget with a hard stop refuses the run with 409 naming the budget. A limit in a currency the runs are not charged in cannot be compared and refuses nothing; the page says so.
 
+*Runs done somewhere else count the same* (since 0.10.0).  An agent fleet working outside VENTURE -- clawtilla -- records each attempt at a ticket through =POST= and =PATCH /api/v1/runs/external= ([[file:forge.org::*Runs done somewhere else][Runs done somewhere else]]): runner =external=, its model, tokens, branch and cost.  Those runs are on =/runs= beside VENTURE's own, in its totals, in every budget's spend and in the delivery report; and an exhausted hard-stop budget refuses the fleet's run with the same 409, before it starts.
+
 * The delivery report
 
 The =delivery= report is DORA's four keys from the factory's own records, beside what the coding runs did and cost in the same period: runs, succeeded, failed, pull requests drafted, tokens, agent cost, cost per pull request. One row per environment. It needs an environment marked =production= to have anything to count.
