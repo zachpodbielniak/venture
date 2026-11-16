@@ -34200,6 +34200,11 @@ venture_web_api_external_run(
 		                              g_ascii_strtoll(id_text, NULL, 10),
 		                              &error);
 
+		/* Missing is not an error to the database; it is a 404 here. */
+		if (NULL == record && NULL == error)
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No such run: %s", id_text);
+
 		if (NULL == record ||
 		    !venture_external_run_report(self->context, record, fields,
 		                                 &actor, &error))
@@ -34225,6 +34230,11 @@ venture_web_api_external_run(
 
 		ticket = venture_database_get(database, VENTURE_TYPE_TICKET,
 		                              ticket_id, &error);
+
+		if (NULL == ticket && NULL == error)
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "No such ticket: %" G_GINT64_FORMAT, ticket_id);
+
 		if (NULL == ticket)
 			return venture_web_error_response(error);
 

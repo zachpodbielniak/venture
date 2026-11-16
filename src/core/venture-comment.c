@@ -666,6 +666,45 @@ comment_validate(
 	return TRUE;
 }
 
+/*
+ * A ticket comment says who wrote it (0.10.1).  Made through the API it
+ * used to say nobody, so a client mirroring tickets -- an agent fleet --
+ * could not tell a person's comment from its own agent's.  An empty
+ * author is filled from whoever the write is made as, on create only; an
+ * author the caller named is kept, which is how a mail import records
+ * the sender.
+ */
+static gboolean
+ticket_comment_validate(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	const VentureAuthPrincipal *actor;
+	g_autofree gchar *author = NULL;
+
+	(void)user_data;
+	(void)error;
+
+	if (NULL != previous)
+		return TRUE;
+
+	g_object_get(entity, "author", &author, NULL);
+
+	if (!venture_string_is_empty(author))
+		return TRUE;
+
+	actor = venture_access_policy_get_actor(
+		venture_database_get_access_policy(database));
+
+	if (NULL != actor && !venture_string_is_empty(actor->name))
+		g_object_set(entity, "author", actor->name, NULL);
+
+	return TRUE;
+}
+
 void
 venture_comment_install(VentureContext *context)
 {
@@ -688,8 +727,14 @@ venture_comment_install(VentureContext *context)
 	g_object_set_data(G_OBJECT(database), VENTURE_COMMENT_STATE_KEY, context);
 
 	if (first)
+	{
 		venture_database_add_save_validator(database, VENTURE_TYPE_COMMENT,
 		                                    comment_validate, NULL, NULL);
+		venture_database_add_save_validator(database,
+		                                    VENTURE_TYPE_TICKET_COMMENT,
+		                                    ticket_comment_validate, NULL,
+		                                    NULL);
+	}
 }
 
 /* --- Writing --------------------------------------------------------------- */

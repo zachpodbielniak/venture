@@ -138,6 +138,8 @@ curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
 
 =goal_id= on =tickets= and =milestones= is an indexed integer column the field table declares; reconciliation adds it. Migration =000913_planning_goal_links= (SQLite and PostgreSQL) verifies the tickets column and backfills nothing: which goal a past ticket served is not knowable from the rows. It declares =-- requires-table: tickets=, so an install that never had tickets on records it and moves on.
 
+A =ticket_comment= made through the API records who wrote it in =author= (since 0.10.1): =API token #N= for a token, the username for a session -- unless the caller named an author, which is kept (a mail import names the sender).
+
 =external_ref= on =tickets= and on =ticket_comments= is an indexed string column the field table declares with =UNIQUE_ORGANIZATION=; reconciliation adds it and the organization-scoped unique index. Migrations =001074_ticket_external_ref= and =001075_ticket_comment_external_ref= (SQLite and PostgreSQL) verify the columns, guarded by =-- requires-table:=, and backfill nothing: no ticket made before mirrored anything.
 
 =until_at= on =tickets= is a datetime column the field table declares, not indexed. Migration =000998_ticket_until_at= (SQLite and PostgreSQL) verifies it and backfills nothing: an end time written into a description is a sentence, and reading a time out of it would be a guess.
