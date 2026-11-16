@@ -159,6 +159,7 @@ falls back rather than guesses.
 | Name     | Since  | What it means                                  |
 |----------+--------+------------------------------------------------|
 | =whoami= | 0.10.0 | =GET /api/v1/whoami= answers, as described above |
+| =external_runs= | 0.10.0 | =POST= and =PATCH /api/v1/runs/external=, held to the agent budgets ([[file:forge.org][Git forges]]) |
 | =idempotency= | 0.10.0 | =Idempotency-Key= on record, link and worklog creates, as described above |
 | =webhook_changes= | 0.10.0 | an =*.updated= webhook body names the changed fields in =changes= ([[file:webhooks.org][Webhooks]]) |
 | =repo_resolve= | 0.10.0 | =GET /api/v1/forge_repo/resolve?url== ([[file:forge.org][Git forges]]) |
@@ -171,6 +172,8 @@ falls back rather than guesses.
 | =GET=    | =/api/v1/health=                    | liveness, version, backend, AI state, =features= |
 | =GET=    | =/api/v1/whoami=                    | the caller: actor, role, user, token, organizations |
 | =GET=    | =/api/v1/forge_repo/resolve?url== | the repository a git remote names ([[file:forge.org][Git forges]]) |
+| =POST=   | =/api/v1/runs/external=             | start a run done outside VENTURE ([[file:forge.org][Git forges]]) |
+| =PATCH=  | =/api/v1/runs/external/:id=         | report its progress or its end       |
 | =GET=    | =/metrics=                          | Prometheus text; off unless =metrics.access= allows the caller ([[file:configuration.org::*Metrics][Metrics]]) |
 | =GET=    | =/api/v1/schema=                    | every record type and its fields     |
 | =GET=    | =/api/v1/schema/:type=              | one record type                      |

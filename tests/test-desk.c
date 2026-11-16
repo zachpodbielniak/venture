@@ -1323,6 +1323,149 @@ create_run(
 	return venture_entity_get_id(VENTURE_ENTITY(run));
 }
 
+/* A JSON object from text, for the external run calls. */
+static JsonObject *
+fields_of(const gchar *json)
+{
+	g_autoptr(JsonNode) node = venture_json_parse(json, NULL);
+
+	g_assert_nonnull(node);
+	return json_object_ref(json_node_get_object(node));
+}
+
+/*
+ * An external run: started on a ticket, reported as it goes and when it
+ * ends, counted by the budgets like any run, and refused at a hard stop.
+ *
+ * What breaks if this regresses: work an agent fleet does outside VENTURE
+ * is invisible to the agent budgets -- the one place an ERP keeps what the
+ * models cost -- and a budget set to stop at its limit stops only VENTURE's
+ * own runners. And the run record stops being evidence if a finished run,
+ * or one of VENTURE's own, can be rewritten through these calls.
+ */
+static void
+test_desk_external_runs(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureAgentBudget) budget = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) run = NULL;
+	g_autoptr(VentureEntity) second = NULL;
+	g_autoptr(VentureMoney) limit = NULL;
+	g_autoptr(VentureMoney) cost = NULL;
+	g_autoptr(JsonObject) start = fields_of(
+		"{\"provider\":\"claude-code\",\"model\":\"sonnet\","
+		"\"branch\":\"clawtilla/01abc\"}");
+	g_autoptr(JsonObject) progress = fields_of(
+		"{\"input_tokens\":1200,\"output_tokens\":300,\"turns\":4}");
+	g_autoptr(JsonObject) finish = fields_of(
+		"{\"state\":\"succeeded\",\"cost\":\"1.10 USD\","
+		"\"pull_request_number\":7,\"summary\":\"fixed it\"}");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GDateTime) finished = NULL;
+	VentureForgeRunner runner = VENTURE_FORGE_RUNNER_AGENT;
+	VentureForgeRunState state = VENTURE_FORGE_RUN_STATE_QUEUED;
+	gint64 tokens = 0;
+	gint64 pr = 0;
+	gint64 admin;
+
+	(void)user_data;
+
+	admin = create_user(fixture, "admin", VENTURE_USER_ROLE_ADMIN);
+	ticket = create_ticket(fixture, "Agent work", NULL, NULL);
+	limit = venture_money_from_string("1.00", "USD", NULL);
+
+	budget = venture_agent_budget_new();
+	g_object_set(budget, "name", "Monthly agents", "limit", limit,
+	             "period", VENTURE_BUDGET_PERIOD_MONTHLY,
+	             "warn-percent", (gint64)50, "hard-stop", TRUE,
+	             "active", TRUE, NULL);
+	file_under_default(fixture, budget);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(budget), NULL, NULL));
+
+	/* started: an external run, running, with what it said */
+	run = venture_external_run_start(fixture->context, ticket, start, NULL,
+	                                 &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(run);
+	g_object_get(run, "runner", &runner, "state", &state, NULL);
+	g_assert_cmpint(runner, ==, VENTURE_FORGE_RUNNER_EXTERNAL);
+	g_assert_cmpint(state, ==, VENTURE_FORGE_RUN_STATE_RUNNING);
+
+	/* progress, then the end, with its cost */
+	g_assert_true(venture_external_run_report(fixture->context, run,
+	                                          progress, NULL, &error));
+	g_assert_true(venture_external_run_report(fixture->context, run, finish,
+	                                          NULL, &error));
+	g_assert_no_error(error);
+	g_object_get(run, "state", &state, "input-tokens", &tokens,
+	             "pull-request-number", &pr, "finished-at", &finished,
+	             "cost", &cost, NULL);
+	g_assert_cmpint(state, ==, VENTURE_FORGE_RUN_STATE_SUCCEEDED);
+	g_assert_cmpint(tokens, ==, 1200);
+	g_assert_cmpint(pr, ==, 7);
+	g_assert_nonnull(finished);
+	g_assert_nonnull(cost);
+
+	/* finished is finished */
+	g_assert_false(venture_external_run_report(fixture->context, run,
+	                                           progress, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_clear_error(&error);
+
+	/* its cost is in the budget: the line was announced, and the hard
+	 * stop now refuses the next external run as it would an internal one */
+	g_assert_cmpint(unread_of_kind(fixture, admin,
+	                               VENTURE_NOTIFICATION_KIND_BUDGET), >=, 1);
+	second = venture_external_run_start(fixture->context, ticket, start, NULL,
+	                                    &error);
+	g_assert_null(second);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT);
+	g_assert_nonnull(strstr(error->message, "Monthly agents"));
+	g_clear_error(&error);
+
+	/* one of VENTURE's own runs is not reported through this */
+	{
+		g_autoptr(VentureEntity) own = venture_database_get(fixture->database,
+			VENTURE_TYPE_FORGE_RUN, create_run(fixture,
+				venture_entity_get_id(ticket),
+				VENTURE_FORGE_RUN_STATE_RUNNING, "0.00"), NULL);
+
+		g_object_set(own, "finished-at", NULL, NULL);
+		g_assert_false(venture_external_run_report(fixture->context, own,
+		                                           progress, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED);
+		g_clear_error(&error);
+	}
+
+	/* a bad state, and a cost without its currency, are refused */
+	{
+		g_autoptr(VentureEntity) open = NULL;
+		g_autoptr(JsonObject) bad_state = fields_of("{\"state\":\"done\"}");
+		g_autoptr(JsonObject) bare_cost = fields_of("{\"cost\":\"0.10\"}");
+		g_autoptr(VentureEntity) fresh = venture_database_get(
+			fixture->database, VENTURE_TYPE_AGENT_BUDGET,
+			venture_entity_get_id(VENTURE_ENTITY(budget)), NULL);
+
+		g_object_set(fresh, "hard-stop", FALSE, NULL);
+		g_assert_true(venture_database_save(fixture->database, fresh, NULL,
+		                                    NULL));
+		open = venture_external_run_start(fixture->context, ticket, start,
+		                                  NULL, &error);
+		g_assert_no_error(error);
+		g_assert_false(venture_external_run_report(fixture->context, open,
+		                                           bad_state, NULL, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+		g_assert_false(venture_external_run_report(fixture->context, open,
+		                                           bare_cost, NULL, &error));
+		g_assert_nonnull(error);
+		g_clear_error(&error);
+	}
+}
+
 /*
  * A budget sums the runs' own cost for its window, warns the admins once
  * at the line, and with a hard stop refuses the next run once exhausted.
@@ -1642,6 +1785,7 @@ main(
 	ADD("/desk/activity-weaves-the-story", test_desk_activity_weaves_the_story);
 	ADD("/desk/budget-refuses-when-exhausted",
 	    test_desk_budget_refuses_when_exhausted);
+	ADD("/desk/external-runs", test_desk_external_runs);
 	ADD("/desk/incident-opens-its-fix", test_desk_incident_opens_its_fix);
 	ADD("/desk/delivery-report", test_desk_delivery_report);
 

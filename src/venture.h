@@ -328,6 +328,7 @@
 #include "forge/venture-forgejo-client.h"
 #include "forge/venture-forge-rules.h"
 #include "forge/venture-work-tools.h"
+#include "forge/venture-external-runs.h"
 #include "forge/venture-work-service.h"
 
 #include "web/venture-web-server.h"

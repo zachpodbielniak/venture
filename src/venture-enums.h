@@ -297,6 +297,9 @@ typedef enum
  * VentureForgeRunner:
  * @VENTURE_FORGE_RUNNER_AGENT: an agent inside this process
  * @VENTURE_FORGE_RUNNER_CLI: a coding CLI in a checkout
+ * @VENTURE_FORGE_RUNNER_EXTERNAL: work done outside VENTURE and reported
+ *   here (venture_external_run_start()); since 0.10.0. Appended, so the
+ *   values stored for the other two never change.
  *
  * What actually does the work.
  *
@@ -310,7 +313,8 @@ typedef enum
 typedef enum
 {
 	VENTURE_FORGE_RUNNER_AGENT = 0,
-	VENTURE_FORGE_RUNNER_CLI
+	VENTURE_FORGE_RUNNER_CLI,
+	VENTURE_FORGE_RUNNER_EXTERNAL
 } VentureForgeRunner;
 
 /**

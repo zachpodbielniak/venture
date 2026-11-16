@@ -201,6 +201,15 @@ curl -s -H "Authorization: Bearer $VENTURE_TOKEN" \
 #  "clone_url":"git@git-ssh.example.com:acme/site.git","key":"git-ssh.example.com/acme/site"}
 #+end_src
 
+* Runs done somewhere else
+
+VENTURE's own runners record every attempt at a ticket as a =forge_run=, and the agent budgets, the Runs page and the delivery report all read those records. Work done by an agent fleet outside VENTURE is recorded the same way, through two calls (since 0.10.0; the =external_runs= feature) -- the only way an outside runner writes a run, since generic writes to =forge_run= stay refused (a run record is evidence):
+
+- =POST /api/v1/runs/external= with =ticket_id= and, optionally, =provider=, =model=, =branch=, =prompt=: a run with runner =external= and state =running=. The agent budgets covering the ticket's repository are asked first, exactly as for an internal run: an exhausted hard-stop budget refuses with 409, naming it, and a budget crossing its warning line tells the owners once. 201 with the run.
+- =PATCH /api/v1/runs/external/:id= with any of =state= (=running=, =succeeded=, =failed=, =cancelled=), =branch=, =pull_request_number=, =provider=, =model=, =input_tokens=, =output_tokens=, =turns=, =cost=, =summary=, =failure_reason=, =log=. A finished state stamps =finished_at=, after which the run takes no more reports (409). =cost= is an amount *with its currency* -- ="0.42 USD"= -- and a bare number is refused, so it is never read in a default currency a budget cannot compare. Once a run has a cost the budgets are asked again, so a line it crossed is announced. One of VENTURE's own runs is refused here (403).
+
+Editor and up, on a ticket the caller can see. The run is then on the Runs page, in the delivery report and in every budget's spend, like any other.
+
 * Rules
 
 A rule answers: for this repository, and this kind of issue, what may happen without me?

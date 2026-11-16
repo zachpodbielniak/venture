@@ -3379,6 +3379,73 @@ test_auth_forge_repo_resolve(
 }
 
 /*
+ * POST /api/v1/runs/external and PATCH .../:id over HTTP: an editor starts
+ * and reports an external run; a viewer may not; and the generic forge_run
+ * route still refuses every write, so these two calls stay the only door.
+ */
+static void
+test_auth_external_runs_routes(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *viewer = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	gint64 editor_id = 0;
+	gint64 run_id;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	server_fixture_create_member(fixture, "vera", "v-long-password",
+	                             VENTURE_USER_ROLE_VIEWER, NULL);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+	viewer = server_fixture_login(fixture, "vera", "v-long-password");
+
+	ticket = VENTURE_ENTITY(venture_ticket_new());
+	g_object_set(ticket, "title", "Mirrored", NULL);
+	venture_entity_set_organization_id(ticket,
+		venture_context_get_default_organization_id(fixture->context));
+	g_assert_true(venture_database_save(fixture->database, ticket, NULL, NULL));
+
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"model\":\"sonnet\"}",
+			venture_entity_get_id(ticket));
+
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/runs/external", viewer, json, NULL, NULL), ==,
+			SOUP_STATUS_FORBIDDEN);
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/runs/external", editor, json, &body, NULL), ==,
+			SOUP_STATUS_CREATED);
+	}
+
+	node = venture_json_parse(body, NULL);
+	run_id = json_object_get_int_member(json_node_get_object(node), "id");
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node),
+	                                              "runner"), ==, "external");
+
+	path = g_strdup_printf("/api/v1/runs/external/%" G_GINT64_FORMAT, run_id);
+	g_assert_cmpuint(server_fixture_request(fixture, "PATCH", path, editor,
+		"{\"state\":\"failed\",\"failure_reason\":\"tests broke\","
+		"\"cost\":\"0.05 USD\"}", NULL, NULL), ==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_request(fixture, "PATCH", path, editor,
+		"{\"turns\":2}", NULL, NULL), ==, SOUP_STATUS_CONFLICT);
+
+	/* the generic route is still no door */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/forge_run", editor, "{\"ticket_id\":1}", NULL, NULL), ==,
+		SOUP_STATUS_FORBIDDEN);
+}
+
+/*
  * Editors and viewers see their organization's forges; nobody but the owner
  * changes one or reaches its credentials.
  *
@@ -9066,6 +9133,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-visible-to-members", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_forge_visible_to_members,
+	           server_fixture_tear_down);
+	g_test_add("/auth/external-runs-routes", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_external_runs_routes,
 	           server_fixture_tear_down);
 	g_test_add("/auth/forge-repo-resolve", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_forge_repo_resolve,

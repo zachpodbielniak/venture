@@ -34148,6 +34148,97 @@ venture_web_ui_runs_table(
 }
 
 /*
+ * POST /api/v1/runs/external and PATCH /api/v1/runs/external/:id: coding
+ * work done outside VENTURE, recorded as a run (venture-external-runs.h).
+ * Editor, like starting a run on a ticket; the ticket and the run are read
+ * in the caller's scope, so neither can be reached from outside it.
+ */
+static HtmxResponse *
+venture_web_api_external_run(
+	HtmxRequest	*request,
+	GHashTable	*params,
+	gpointer	 user_data
+){
+	VentureWebServer *self = user_data;
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureEntity) record = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	const gchar *id_text = g_hash_table_lookup(params, "id");
+	JsonObject *fields;
+	VentureActor actor;
+	HtmxResponse *gate;
+
+	gate = venture_web_require_module_api(self, "forge");
+	if (NULL != gate)
+		return gate;
+
+	gate = venture_web_api_require(self, request, VENTURE_USER_ROLE_EDITOR);
+	if (NULL != gate)
+		return gate;
+
+	principal = venture_auth_authenticate(self->auth, request);
+	venture_auth_to_actor(principal, &actor);
+
+	body = htmx_request_get_json(request, NULL);
+	fields = (NULL != body && JSON_NODE_HOLDS_OBJECT(body))
+		? json_node_get_object(body) : NULL;
+
+	if (NULL == fields)
+	{
+		g_set_error_literal(&error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "a JSON object body is required");
+		return venture_web_error_response(error);
+	}
+
+	/* PATCH: progress, or the end, of one external run. */
+	if (NULL != id_text)
+	{
+		record = venture_database_get(database, VENTURE_TYPE_FORGE_RUN,
+		                              g_ascii_strtoll(id_text, NULL, 10),
+		                              &error);
+
+		if (NULL == record ||
+		    !venture_external_run_report(self->context, record, fields,
+		                                 &actor, &error))
+			return venture_web_error_response(error);
+
+		return venture_web_json_response(venture_serializable_to_json(
+			VENTURE_SERIALIZABLE(record), FALSE), 200);
+	}
+
+	/* POST: a new one, on a ticket the caller can see. */
+	{
+		g_autoptr(VentureEntity) ticket = NULL;
+		gint64 ticket_id = json_object_has_member(fields, "ticket_id")
+			? json_object_get_int_member(fields, "ticket_id") : 0;
+
+		if (ticket_id <= 0)
+		{
+			g_set_error_literal(&error, VENTURE_ERROR,
+			                    VENTURE_ERROR_VALIDATION,
+			                    "ticket_id: the ticket this work is for");
+			return venture_web_error_response(error);
+		}
+
+		ticket = venture_database_get(database, VENTURE_TYPE_TICKET,
+		                              ticket_id, &error);
+		if (NULL == ticket)
+			return venture_web_error_response(error);
+
+		record = venture_external_run_start(self->context, ticket, fields,
+		                                    &actor, &error);
+		if (NULL == record)
+			return venture_web_error_response(error);
+
+		return venture_web_json_response(venture_serializable_to_json(
+			VENTURE_SERIALIZABLE(record), FALSE), 201);
+	}
+}
+
+/*
  * GET /api/v1/runs and GET /api/v1/budgets.
  */
 static HtmxResponse *
@@ -36326,6 +36417,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/sprints/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_sprint, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/incidents/:id/ticket", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_incident_ticket, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/runs", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_runs, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/runs/external", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_external_run, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_PATCH, "/api/v1/runs/external/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_external_run, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/budgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_budgets, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/palette", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_palette, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/webhooks", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_webhooks, self);
