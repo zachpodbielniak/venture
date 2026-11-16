@@ -3658,6 +3658,17 @@ test_auth_clawtilla_contract(
 	contract_check("forge-repo-resolve", status, SOUP_STATUS_OK, body);
 	g_clear_pointer(&body, g_free);
 
+	/* a project's pinned repository, read by id (0.10.6) */
+	{
+		g_autofree gchar *repo_path = g_strdup_printf(
+			"/api/v1/forge_repo/%" G_GINT64_FORMAT, repo);
+
+		status = server_fixture_request(fixture, "GET", repo_path, editor,
+		                                NULL, &body, NULL);
+		contract_check("forge-repo", status, SOUP_STATUS_OK, body);
+		g_clear_pointer(&body, g_free);
+	}
+
 	{
 		g_autofree gchar *json = g_strdup_printf(
 			"{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"Mirrored\","
@@ -3687,6 +3698,12 @@ test_auth_clawtilla_contract(
 		"{\"status\":\"in_progress\",\"assignee\":\"vera\",\"version\":1}",
 		&body, NULL);
 	contract_check("ticket-update", status, SOUP_STATUS_OK, body);
+	g_clear_pointer(&body, g_free);
+
+	/* re-read after a stale version (0.10.6) */
+	status = server_fixture_request(fixture, "GET", path, editor, NULL, &body,
+	                                NULL);
+	contract_check("ticket", status, SOUP_STATUS_OK, body);
 	g_clear_pointer(&body, g_free);
 
 	/* the timeline intake reads, to know who assigned it (0.10.4) */

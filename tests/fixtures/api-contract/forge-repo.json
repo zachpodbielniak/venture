@@ -1,0 +1,23 @@
+{
+  "accept_issues" : "bool",
+  "active" : "bool",
+  "branch_prefix" : "null",
+  "clone_url" : "null",
+  "created_at" : "string",
+  "default_branch" : "null",
+  "deleted_at" : "null",
+  "display_name" : "string",
+  "forge_id" : "int",
+  "id" : "int",
+  "name" : "string",
+  "notes" : "null",
+  "organization_id" : "int",
+  "product_id" : "int",
+  "push_issues" : "bool",
+  "type" : "string",
+  "updated_at" : "string",
+  "uuid" : "string",
+  "venture_id" : "int",
+  "version" : "int",
+  "workspace_path" : "null"
+}
