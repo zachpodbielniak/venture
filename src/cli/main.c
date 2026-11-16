@@ -37,6 +37,11 @@ typedef struct
 	VentureOutputFormat	 format;
 	gboolean		 quiet;
 
+	/* Whether -f was given. The default switches to JSON when stdout is
+	 * not a terminal, which is right for listings and wrong for `token
+	 * mint`, whose secret is exactly the thing somebody pipes. */
+	gboolean		 format_from_argv;
+
 	/* Whether --server and --token came from the command line rather than
 	 * the environment. `mcp` has to tell the difference: it refuses a
 	 * token in argv, and silently ignoring one somebody passed would be
@@ -3803,6 +3808,134 @@ venture_cli_command_factory_record(
 }
 
 /*
+ * venturectl token mint [name=NAME] [user=USERNAME | user_id=N]
+ *                       [expires_in_days=N]
+ *
+ * Mints an API token through POST /api/v1/tokens. With user= or user_id=
+ * an administrator mints it for that account: it carries that account's
+ * role and organization memberships, not the administrator's.
+ *
+ * The body is built typed rather than through venture_cli_values_from_args(),
+ * which sends every value as a string: the server refuses a string
+ * expires_in_days or user_id outright, so a number has to go out as one.
+ *
+ * Unless -f names a format, only the secret goes to standard output --
+ * piped or not, since being piped is the point -- so it can be captured or
+ * handed straight to whatever keeps it; who it belongs to and the once-only
+ * warning go to standard error. -f json (or yaml) prints the whole answer.
+ */
+static gint
+venture_cli_command_token(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	JsonObject *answer;
+	gint i;
+
+	if ((NULL == args[1]) || (0 != g_strcmp0(args[1], "mint")))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "usage: venturectl token mint [name=NAME] "
+		                    "[user=USERNAME | user_id=N] "
+		                    "[expires_in_days=N]");
+		return -1;
+	}
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+
+	for (i = 2; NULL != args[i]; i++)
+	{
+		g_auto(GStrv) parts = NULL;
+		const gchar *key;
+		const gchar *value;
+
+		parts = g_strsplit(args[i], "=", 2);
+
+		if ((NULL == parts[0]) || (NULL == parts[1]))
+		{
+			g_set_error(error, VENTURE_ERROR,
+			            VENTURE_ERROR_INVALID_ARGUMENT,
+			            "expected key=value, got '%s'", args[i]);
+			return -1;
+		}
+
+		key = parts[0];
+		value = parts[1];
+
+		/* The two numbers: checked here so a typo is refused before
+		 * anything is sent, rather than minting with no expiry. */
+		if ((0 == g_strcmp0(key, "user_id")) ||
+		    (0 == g_strcmp0(key, "expires_in_days")))
+		{
+			guint64 number = 0;
+
+			if (!g_ascii_string_to_unsigned(value, 10, 1, G_MAXINT32,
+			                                &number, NULL))
+			{
+				g_set_error(error, VENTURE_ERROR,
+				            VENTURE_ERROR_INVALID_ARGUMENT,
+				            "%s must be a positive whole number", key);
+				return -1;
+			}
+
+			json_builder_set_member_name(builder, key);
+			json_builder_add_int_value(builder, (gint64)number);
+		}
+		else if ((0 == g_strcmp0(key, "user")) ||
+		         (0 == g_strcmp0(key, "username")))
+		{
+			json_builder_set_member_name(builder, "username");
+			json_builder_add_string_value(builder, value);
+		}
+		else if (0 == g_strcmp0(key, "name"))
+		{
+			json_builder_set_member_name(builder, "name");
+			json_builder_add_string_value(builder, value);
+		}
+		else
+		{
+			g_set_error(error, VENTURE_ERROR,
+			            VENTURE_ERROR_INVALID_ARGUMENT,
+			            "unknown option '%s': token mint takes name, "
+			            "user, user_id and expires_in_days", key);
+			return -1;
+		}
+	}
+
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	node = venture_cli_request(cli, "POST", "/api/v1/tokens", body, error);
+
+	if (NULL == node)
+		return -1;
+
+	if ((cli->format_from_argv &&
+	     (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)) ||
+	    !JSON_NODE_HOLDS_OBJECT(node))
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	answer = json_node_get_object(node);
+	g_print("%s\n", venture_json_object_get_string(answer, "token", ""));
+	g_printerr("Token %" G_GINT64_FORMAT " for user %" G_GINT64_FORMAT
+	           " (%s). This is the only time it is shown.\n",
+	           venture_json_object_get_int(answer, "id", 0),
+	           venture_json_object_get_int(answer, "user_id", 0),
+	           venture_json_object_get_string(answer, "role", "?"));
+
+	return 0;
+}
+
+/*
  * venturectl webhooks | webhook test ID | webhook secret ID | webhook token ID
  *
  * A push webhook's token is read from standard input, never argv: argv is
@@ -4272,7 +4405,7 @@ main(
 	g_autoptr(GOptionContext) options = NULL;
 	g_autoptr(GError) error = NULL;
 	g_auto(GStrv) args = NULL;
-	VentureCli cli = { NULL, NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE,
+	VentureCli cli = { NULL, NULL, NULL, NULL, VENTURE_OUTPUT_FORMAT_TABLE, FALSE, FALSE,
 	                   FALSE, FALSE, FALSE, FALSE };
 	g_autofree gchar *server = NULL;
 	g_autofree gchar *token = NULL;
@@ -4565,6 +4698,9 @@ main(
 		"  webhook test ID              send a ping and wait for the answer\n"
 		"  webhook secret ID            generate a new signing secret\n"
 		"  webhook token ID             seal a gotify/ntfy token read from stdin\n"
+		"  token mint [name=N] [user=U|user_id=N] [expires_in_days=N]\n"
+		"                               mint an API token; an admin may\n"
+		"                               name another user to mint theirs\n"
 		"  act TYPE ID ACTION [key=value ...]  perform a discovered action; --stage\n"
 		"  health                       check the server is up\n"
 		"  billing start|change|cancel   manage customer subscription terms\n"
@@ -4633,6 +4769,7 @@ main(
 		"  venturectl -f csv report receivables > aging.csv\n"
 		"  venturectl forge settings 1 < protected-settings.json\n"
 		"  venturectl -f json list sale | jq '.records[].gross.formatted'\n"
+		"  venturectl token mint name=books-agent user=books-bot expires_in_days=365\n"
 		"  VENTURE_TOKEN=... venturectl mcp        # stdio MCP server\n"
 		"\n"
 		"Filters use field__operator=value. Operators: eq ne lt lte gt gte\n"
@@ -4801,6 +4938,7 @@ main(
 		}
 
 		cli.format = (VentureOutputFormat)value;
+		cli.format_from_argv = TRUE;
 	}
 
 	if (sequence_as_of != NULL && g_strcmp0(args[0], "billing") != 0 && g_strcmp0(args[0], "recurring") != 0 && g_strcmp0(args[0], "collections") != 0 && g_strcmp0(args[0], "money") != 0 && (g_strcmp0(args[0], "sequence") != 0 || g_strcmp0(args[1], "run") != 0))
@@ -4962,6 +5100,8 @@ main(
 	else if ((0 == g_strcmp0(args[0], "webhooks")) ||
 	         (0 == g_strcmp0(args[0], "webhook")))
 		result = venture_cli_command_webhooks(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "token"))
+		result = venture_cli_command_token(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "sequence"))
 		result = venture_cli_command_sequence(&cli, args, sequence_as_of, &error);
 	else if (0 == g_strcmp0(args[0], "post"))

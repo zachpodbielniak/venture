@@ -89,7 +89,11 @@ If `health` fails, stop and fix that: every other command fails the same
 way and less clearly. A token is minted at `/account/tokens` or `POST
 /api/v1/tokens` with a browser session ([api.md](references/api.md)).
 Below global `owner`/`admin` it expires within 90 days and the page lists
-only that user's tokens. A bearer token cannot mint another.
+only that user's tokens. A bearer token cannot mint another unless it is
+an admin's. An admin mints *for* another account with `venturectl token
+mint name=N user=USERNAME` (or `user_id`/`username` in the POST body, or
+*For user* on the page): the token carries that account's role and
+memberships, which is how an agent is confined to one organization.
 
 ## Skill baseline -- maintained
 

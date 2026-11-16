@@ -18,8 +18,12 @@ record rules every write obeys are in [records.md](records.md). Source:
   memberships; it acts as `API token #N`. Mint one at *Your account -> API
   tokens* (`/account/tokens`) while signed in, or with a session. The page
   lists only the caller's tokens unless the global role is `owner` or
-  `admin`. A bearer token cannot mint another token. Below those two roles
-  the token expires within 90 days:
+  `admin`. A bearer token cannot mint another token unless it is an
+  admin's. Below those two roles the token expires within 90 days. An
+  owner/admin may add `user_id` or `username` to mint for another account
+  (never one that outranks them): the token is then that account's role and
+  memberships, the answer adds `user_id` and `role`, and `venturectl token
+  mint name=N user=U` does the same:
 
 ```bash
 curl -s -c jar --data-urlencode username=owner --data-urlencode "password=$PW" "$B/login" -o /dev/null

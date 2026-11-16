@@ -500,8 +500,14 @@ venture_web_token_page_sees_all(const VentureAuthPrincipal *principal)
 /* Bounds an admin's explicit expiry so the date arithmetic cannot overflow. */
 #define VENTURE_WEB_ADMIN_TOKEN_MAX_DAYS 3650
 
-static gint64 mint_organization(VentureWebServer *self,
-                                const VentureAuthPrincipal *principal);
+static gint64 mint_organization(VentureWebServer *self, gint64 user_id);
+
+static gboolean venture_web_token_owner(VentureWebServer *self,
+                                        const VentureAuthPrincipal *principal,
+                                        gint64 user_id, const gchar *username,
+                                        gint64 *out_user_id,
+                                        VentureUserRole *out_role,
+                                        gchar **out_username, GError **error);
 
 static void
 venture_web_chat_append_starters(
@@ -16067,7 +16073,12 @@ venture_web_ui_tokens(
 		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)principal->role));
 
 	if (venture_web_token_page_sees_all(principal))
-		g_string_append(content, "</p>");
+		g_string_append(content,
+			" Or name another account under <em>For user</em>: the token "
+			"is then theirs, with their role and only the entities they "
+			"belong to, which is how an agent gets a credential confined "
+			"to one business. You cannot mint one for an account that "
+			"outranks you.</p>");
 	else
 		g_string_append(content,
 			" Yours expires within 90 days, and this list shows only "
@@ -16084,7 +16095,15 @@ venture_web_ui_tokens(
 		"<form method=\"post\" action=\"/account/tokens\" data-no-inline>"
 		"<label>Name"
 		"<input type=\"text\" name=\"name\" required maxlength=\"120\" "
-		"placeholder=\"laptop venturectl\"></label>"
+		"placeholder=\"laptop venturectl\"></label>");
+
+	if (venture_web_token_page_sees_all(principal))
+		g_string_append(content,
+			"<label>For user"
+			"<input type=\"text\" name=\"for_user\" maxlength=\"120\" "
+			"autocomplete=\"off\" placeholder=\"yourself\"></label>");
+
+	g_string_append(content,
 		"<label>Expires"
 		"<select name=\"expires_in_days\">");
 
@@ -16218,10 +16237,16 @@ venture_web_ui_tokens_create(
 	g_autofree gchar *secret = NULL;
 	g_autofree gchar *handle = NULL;
 	g_autofree gchar *location = NULL;
+	g_autofree gchar *for_username = NULL;
+	g_autofree gchar *for_trimmed = NULL;
+	g_autofree gchar *default_name = NULL;
 	VentureActor actor;
+	VentureUserRole role;
 	HtmxResponse *redirect;
 	const gchar *name;
 	const gchar *expires_in;
+	const gchar *for_user;
+	gint64 owner_id;
 
 	self = user_data;
 
@@ -16239,22 +16264,46 @@ venture_web_ui_tokens_create(
 
 	name = htmx_request_get_form_value(request, "name");
 	expires_in = htmx_request_get_form_value(request, "expires_in_days");
+	for_user = htmx_request_get_form_value(request, "for_user");
+
+	/* Blank is the caller's own token; a name is an administrator
+	 * minting for that account, judged as POST /api/v1/tokens judges it. */
+	for_trimmed = g_strstrip(g_strdup((NULL != for_user) ? for_user : ""));
+
+	if (!venture_web_token_owner(self, principal, 0,
+	                             ('\0' == *for_trimmed) ? NULL : for_trimmed,
+	                             &owner_id, &role, &for_username, &error))
+		return venture_web_redirect_to("/account/tokens?notice=failed");
+
+	if (NULL != for_username)
+		default_name = g_strdup_printf("api token for %s", for_username);
 
 	token = venture_api_token_new();
 	g_object_set(token, "name",
-	             venture_string_is_empty(name) ? "api token" : name,
-	             "role", principal->role, NULL);
+	             !venture_string_is_empty(name) ? name
+	             : ((NULL != default_name) ? default_name : "api token"),
+	             "role", role, NULL);
+
+	if (NULL != for_username)
+	{
+		g_autofree gchar *description = NULL;
+
+		description = g_strdup_printf("Minted by %s for %s",
+			(NULL != principal->name) ? principal->name : "an administrator",
+			for_username);
+		g_object_set(token, "description", description, NULL);
+	}
 
 	/*
 	 * Whose token this is. The API mint route did not record this, which
 	 * left a list of credentials nobody could be held to; a token that
 	 * outlives the person who made it is exactly the one worth finding.
 	 */
-	if (0 != principal->user_id)
-		g_object_set(token, "user-id", principal->user_id, NULL);
+	if (0 != owner_id)
+		g_object_set(token, "user-id", owner_id, NULL);
 
 	venture_entity_set_organization_id(VENTURE_ENTITY(token),
-		mint_organization(self, principal));
+		mint_organization(self, owner_id));
 
 	{
 		gboolean given = !venture_string_is_empty(expires_in);
@@ -22068,14 +22117,14 @@ venture_web_ui_chat(
 
 /*
  * The organization a minted token is filed under. The workspace's default
- * one when the caller belongs to it (or is not a user), else the first
- * organization the caller is an active member of: a business owner who is
+ * one when the token's owner belongs to it (or is not a user), else the
+ * first organization the owner is an active member of: a business owner who is
  * not in the default organization cannot reference it, and their token is
  * theirs, not the workspace's. Its authority still comes only from the
  * membership snapshot taken when it is saved.
  */
 static gint64
-mint_organization(VentureWebServer *self, const VentureAuthPrincipal *principal)
+mint_organization(VentureWebServer *self, gint64 user_id)
 {
 	gint64 fallback = venture_context_get_default_organization_id(self->context);
 	g_autoptr(VentureQuery) query = NULL;
@@ -22083,11 +22132,11 @@ mint_organization(VentureWebServer *self, const VentureAuthPrincipal *principal)
 	gint64 first = 0;
 	guint i;
 
-	if (0 == principal->user_id)
+	if (0 == user_id)
 		return fallback;
 	query = venture_query_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP);
 	venture_query_add_filter_int(query, "user-id", VENTURE_FILTER_OP_EQ,
-	                             principal->user_id, NULL);
+	                             user_id, NULL);
 	venture_query_add_filter_string(query, "active", VENTURE_FILTER_OP_EQ,
 	                                "true", NULL);
 	members = venture_database_find(venture_context_get_database(self->context),
@@ -22103,6 +22152,140 @@ mint_organization(VentureWebServer *self, const VentureAuthPrincipal *principal)
 			first = organization;
 	}
 	return (0 != first) ? first : fallback;
+}
+
+/*
+ * Whose token is being minted, and so what it may do.
+ *
+ * Nobody named, or the caller named themselves: the caller's own token,
+ * exactly as before. Anybody else: the token belongs to that user and
+ * carries that user's role, and the membership snapshot taken when it is
+ * saved (venture_orgaccess_validate) is theirs -- so an agent's token can
+ * be confined to the entities its account belongs to without anybody
+ * signing in as the agent.
+ *
+ * Only a global owner or administrator may mint for somebody else, and
+ * never for an account that outranks them: an administrator minting for an
+ * owner would be an administrator holding an owner's credential. The
+ * permission is judged before the user is looked up, so asking does not
+ * tell a non-administrator which usernames exist.
+ *
+ * @out_username is set only when the token is somebody else's, which is
+ * what the callers use to say so in its name and description.
+ */
+static gboolean
+venture_web_token_owner(
+	VentureWebServer		 *self,
+	const VentureAuthPrincipal	 *principal,
+	gint64				  user_id,
+	const gchar			 *username,
+	gint64				 *out_user_id,
+	VentureUserRole			 *out_role,
+	gchar				**out_username,
+	GError				**error
+){
+	g_autoptr(VentureEntity) user = NULL;
+	g_autofree gchar *name = NULL;
+	VentureAuthPrincipal minter;
+	VentureUserRole role;
+	gboolean active;
+	gboolean named;
+
+	*out_user_id = principal->user_id;
+	*out_role = principal->role;
+	*out_username = NULL;
+
+	named = (0 != user_id) || !venture_string_is_empty(username);
+
+	if ((0 != user_id) && !venture_string_is_empty(username))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "Name the user by user_id or by username, "
+		                    "not both");
+		return FALSE;
+	}
+
+	if (user_id < 0)
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		                    "user_id must be a positive whole number");
+		return FALSE;
+	}
+
+	/* The caller's own token: nothing to decide. */
+	if (!named || ((0 != user_id) && (user_id == principal->user_id)))
+		return TRUE;
+
+	/* Judged before the lookup, so the answer leaks nothing. */
+	if (!venture_web_token_page_sees_all(principal))
+	{
+		g_set_error_literal(error, VENTURE_ERROR,
+		                    VENTURE_ERROR_PERMISSION_DENIED,
+		                    "Minting a token for another user needs the "
+		                    "admin role");
+		return FALSE;
+	}
+
+	/* Looked up by id or by name; a deleted account is not an account. */
+	if (0 != user_id)
+	{
+		user = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_USER, user_id, NULL);
+	}
+	else
+	{
+		g_autoptr(VentureQuery) query = NULL;
+
+		query = venture_query_new(VENTURE_TYPE_USER);
+		venture_query_add_filter_string(query, "username",
+		                                VENTURE_FILTER_OP_EQ, username,
+		                                NULL);
+		user = venture_database_find_one(
+			venture_context_get_database(self->context), query, NULL);
+	}
+
+	if ((NULL == user) || venture_entity_is_deleted(user))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		                    "No such user");
+		return FALSE;
+	}
+
+	g_object_get(user, "username", &name, "role", &role, "active", &active,
+	             NULL);
+
+	/* A token for a deactivated account would be refused on its first
+	 * request (venture_orgaccess_limit_token); refusing it here says why. */
+	if (!active)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+		            "User %s is deactivated", name);
+		return FALSE;
+	}
+
+	/* The same comparison every route makes, with the target's role as
+	 * the minimum the caller must hold. */
+	minter = *principal;
+
+	if (!venture_auth_require(self->auth, &minter, role, NULL))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+		            "User %s holds the %s role, which outranks yours", name,
+		            venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
+		return FALSE;
+	}
+
+	/* Naming yourself by username is still your own token, with the
+	 * role this request authenticated as. */
+	if (venture_entity_get_id(user) == principal->user_id)
+		return TRUE;
+
+	*out_user_id = venture_entity_get_id(user);
+	*out_role = role;
+	*out_username = g_steal_pointer(&name);
+
+	return TRUE;
 }
 
 /*
@@ -22130,9 +22313,15 @@ venture_web_api_mint_token(
 	g_autoptr(GError) error = NULL;
 	VentureActor actor;
 	VentureUserRole minimum;
+	VentureUserRole role;
+	g_autofree gchar *for_username = NULL;
+	g_autofree gchar *default_name = NULL;
 	gint64 expires_in_days = 0;
+	gint64 user_id = 0;
+	gint64 owner_id = 0;
 	gboolean days_given = FALSE;
 	const gchar *name = NULL;
+	const gchar *username = NULL;
 
 	self = user_data;
 	principal = venture_auth_authenticate(self->auth, request);
@@ -22146,6 +22335,10 @@ venture_web_api_mint_token(
 	 *
 	 * A bearer token minting another stays an administrative act: that
 	 * would let a leaked token outlive its own revocation or expiry.
+	 *
+	 * A global owner or administrator may also name another account
+	 * (user_id or username): the token is then that account's, with its
+	 * role and its memberships. See venture_web_token_owner().
 	 */
 	minimum = (principal->authenticated && 0 == principal->token_id &&
 	           0 < principal->user_id)
@@ -22183,7 +22376,52 @@ venture_web_api_mint_token(
 			expires_in_days = json_node_get_int(days);
 			days_given = TRUE;
 		}
+
+		/*
+		 * Whose token: user_id or username, for an administrator
+		 * minting one for another account. Typed as strictly as the
+		 * expiry, because a user_id that silently read as 0 would mint
+		 * the administrator's own token instead.
+		 */
+		if (json_object_has_member(object, "user_id"))
+		{
+			JsonNode *id = json_object_get_member(object, "user_id");
+
+			if (!JSON_NODE_HOLDS_VALUE(id) ||
+			    G_TYPE_INT64 != json_node_get_value_type(id) ||
+			    json_node_get_int(id) < 1)
+			{
+				g_set_error_literal(&error, VENTURE_ERROR,
+				                    VENTURE_ERROR_VALIDATION,
+				                    "user_id must be a positive "
+				                    "whole number");
+				return venture_web_error_response(error);
+			}
+
+			user_id = json_node_get_int(id);
+		}
+
+		if (json_object_has_member(object, "username"))
+		{
+			JsonNode *who = json_object_get_member(object, "username");
+
+			if (!JSON_NODE_HOLDS_VALUE(who) ||
+			    G_TYPE_STRING != json_node_get_value_type(who) ||
+			    venture_string_is_empty(json_node_get_string(who)))
+			{
+				g_set_error_literal(&error, VENTURE_ERROR,
+				                    VENTURE_ERROR_VALIDATION,
+				                    "username must be a user's name");
+				return venture_web_error_response(error);
+			}
+
+			username = json_node_get_string(who);
+		}
 	}
+
+	if (!venture_web_token_owner(self, principal, user_id, username,
+	                             &owner_id, &role, &for_username, &error))
+		return venture_web_error_response(error);
 
 	/*
 	 * A token minted below the admin role expires: thirty days unless
@@ -22217,9 +22455,33 @@ venture_web_api_mint_token(
 		return venture_web_error_response(error);
 	}
 
+	/*
+	 * The expiry rules above follow the person minting, the authority
+	 * below follows the account the token is for. An administrator can
+	 * already mint a credential that never expires, so letting them give
+	 * a less privileged account one adds no reach; it is what keeps an
+	 * agent confined to one entity from needing a new token every ninety
+	 * days.
+	 */
+	if (NULL != for_username)
+		default_name = g_strdup_printf("api token for %s", for_username);
+
 	token = venture_api_token_new();
-	g_object_set(token, "name", (NULL != name) ? name : "api token",
-	             "role", principal->role, NULL);
+	g_object_set(token, "name",
+	             (NULL != name) ? name
+	                            : ((NULL != default_name) ? default_name
+	                                                      : "api token"),
+	             "role", role, NULL);
+
+	if (NULL != for_username)
+	{
+		g_autofree gchar *description = NULL;
+
+		description = g_strdup_printf("Minted by %s for %s",
+			(NULL != principal->name) ? principal->name : "an administrator",
+			for_username);
+		g_object_set(token, "description", description, NULL);
+	}
 
 	if (expires_in_days > 0)
 	{
@@ -22232,11 +22494,11 @@ venture_web_api_mint_token(
 
 	/* Whose token this is, so the list on /account/tokens can answer that
 	 * for a token minted here as well as for one minted in the browser. */
-	if (0 != principal->user_id)
-		g_object_set(token, "user-id", principal->user_id, NULL);
+	if (0 != owner_id)
+		g_object_set(token, "user-id", owner_id, NULL);
 
 	venture_entity_set_organization_id(VENTURE_ENTITY(token),
-		mint_organization(self, principal));
+		mint_organization(self, owner_id));
 
 	secret = venture_api_token_generate(token);
 
@@ -22262,6 +22524,15 @@ venture_web_api_mint_token(
 
 	json_builder_set_member_name(builder, "token");
 	json_builder_add_string_value(builder, secret);
+
+	/* Who it belongs to and what it carries, so a caller minting for
+	 * somebody else can see it landed on the account it meant. */
+	json_builder_set_member_name(builder, "user_id");
+	json_builder_add_int_value(builder, owner_id);
+
+	json_builder_set_member_name(builder, "role");
+	json_builder_add_string_value(builder,
+		venture_enum_to_nick(VENTURE_TYPE_USER_ROLE, (gint)role));
 
 	json_builder_set_member_name(builder, "note");
 	json_builder_add_string_value(builder,

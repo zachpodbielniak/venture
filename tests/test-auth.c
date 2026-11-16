@@ -4065,6 +4065,407 @@ test_auth_owner_mints_own_token(
 }
 
 /*
+ * POST /api/v1/tokens with a JSON body and either a session cookie or a
+ * bearer token. venturectl only ever has the second, so the on-behalf path
+ * has to be reachable from it.
+ */
+static guint
+server_fixture_mint_json(
+	ServerFixture	 *fixture,
+	const gchar	 *cookie,
+	const gchar	 *bearer,
+	const gchar	 *json,
+	gchar		**out_body
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autoptr(GBytes) bytes = NULL;
+	g_autofree gchar *url = NULL;
+	RequestResult outcome = { FALSE, NULL, NULL };
+
+	url = g_strdup_printf("http://127.0.0.1:%u/api/v1/tokens", fixture->port);
+	message = soup_message_new("POST", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+
+	if (NULL != cookie)
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Cookie", cookie);
+
+	if (NULL != bearer)
+	{
+		g_autofree gchar *value = g_strconcat("Bearer ", bearer, NULL);
+
+		soup_message_headers_append(
+			soup_message_get_request_headers(message), "Authorization",
+			value);
+	}
+
+	bytes = g_bytes_new(json, strlen(json));
+	soup_message_set_request_body_from_bytes(message, "application/json",
+	                                         bytes);
+	soup_session_send_and_read_async(fixture->session, message,
+	                                 G_PRIORITY_DEFAULT, NULL,
+	                                 server_fixture_request_done, &outcome);
+
+	while (!outcome.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	if (NULL != outcome.error)
+		g_error("POST /api/v1/tokens: %s", outcome.error->message);
+
+	if (NULL != out_body)
+		*out_body = g_strndup(g_bytes_get_data(outcome.body, NULL),
+		                      g_bytes_get_size(outcome.body));
+
+	g_clear_pointer(&outcome.body, g_bytes_unref);
+	g_clear_error(&outcome.error);
+
+	return soup_message_get_status(message);
+}
+
+/*
+ * An agent's account that belongs to one organization only, not the
+ * default one every other fixture user is put in. Returns its user id and,
+ * through @out_organization, the organization.
+ */
+static gint64
+server_fixture_create_confined(
+	ServerFixture	*fixture,
+	const gchar	*username,
+	VentureUserRole	 role,
+	gint64		*out_organization
+){
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(VentureEntity) member = NULL;
+	gint64 id = 0;
+
+	organization = g_object_new(VENTURE_TYPE_ORGANIZATION,
+		"name", "Side business", "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, organization,
+	                                    NULL, NULL));
+
+	server_fixture_create_user(fixture, username, "agent-long-password",
+	                           role, &id);
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"user-id", id,
+		"organization-id", venture_entity_get_id(organization),
+		"role", VENTURE_ORGANIZATION_ROLE_FINANCE, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(fixture->database, member, NULL,
+	                                    NULL));
+
+	if (NULL != out_organization)
+		*out_organization = venture_entity_get_id(organization);
+
+	return id;
+}
+
+/*
+ * An administrator mints a token for an agent's account without signing in
+ * as it. The token is the agent's in every respect that decides what it
+ * can do -- owner, role, the memberships captured at minting -- and only
+ * the expiry follows the administrator, so a confined agent need not be
+ * re-minted every ninety days.
+ */
+static void
+test_auth_admin_mints_token_for_user(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *admin_cookie = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *payload = NULL;
+	g_autofree gchar *snapshot = NULL;
+	g_autofree gchar *description = NULL;
+	g_autofree gchar *side_key = NULL;
+	g_autofree gchar *home_key = NULL;
+	g_autoptr(JsonNode) minted = NULL;
+	g_autoptr(JsonNode) members = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autoptr(GDateTime) expires_at = NULL;
+	VentureUserRole role = VENTURE_USER_ROLE_OWNER;
+	const gchar *secret;
+	gint64 admin_id = 0;
+	gint64 agent_id;
+	gint64 side = 0;
+	gint64 owner = 0;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, &admin_id);
+	agent_id = server_fixture_create_confined(fixture, "books-bot",
+	                                          VENTURE_USER_ROLE_EDITOR,
+	                                          &side);
+	admin_cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"name\":\"books\",\"username\":\"books-bot\","
+		"\"expires_in_days\":365}", &body), ==, SOUP_STATUS_CREATED);
+	minted = venture_json_parse(body, NULL);
+	g_assert_nonnull(minted);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(minted),
+		"user_id"), ==, agent_id);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_node_get_object(minted), "role"), ==, "editor");
+	secret = json_object_get_string_member(json_node_get_object(minted),
+	                                       "token");
+	g_assert_nonnull(secret);
+
+	/* What was stored: the agent's, down to the snapshot. */
+	stored = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN,
+		json_object_get_int_member(json_node_get_object(minted), "id"),
+		NULL);
+	g_assert_nonnull(stored);
+	g_object_get(stored, "user-id", &owner, "role", &role,
+	             "membership-snapshot", &snapshot,
+	             "description", &description, "expires-at", &expires_at,
+	             NULL);
+	g_assert_cmpint(owner, ==, agent_id);
+	g_assert_cmpint(role, ==, VENTURE_USER_ROLE_EDITOR);
+	g_assert_nonnull(expires_at);
+	g_assert_nonnull(strstr(description, "for books-bot"));
+
+	members = venture_json_parse(snapshot, NULL);
+	g_assert_nonnull(members);
+	side_key = g_strdup_printf("%" G_GINT64_FORMAT, side);
+	home_key = g_strdup_printf("%" G_GINT64_FORMAT,
+		venture_context_get_default_organization_id(fixture->context));
+	g_assert_true(json_object_has_member(json_node_get_object(members),
+	                                     side_key));
+	g_assert_false(json_object_has_member(json_node_get_object(members),
+	                                      home_key));
+
+	/* It works as a credential, and it is not an administrator's: it
+	 * cannot mint another, for anybody. */
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_OK);
+	payload = g_strdup_printf("{\"user_id\":%" G_GINT64_FORMAT "}",
+	                          agent_id);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, NULL, secret, payload,
+		NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+	/* By id, with no name or expiry: a default name that says whose it
+	 * is, and an administrator's "never". */
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&minted, json_node_unref);
+	g_clear_object(&stored);
+	g_clear_pointer(&description, g_free);
+	g_clear_pointer(&expires_at, g_date_time_unref);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		payload, &body), ==, SOUP_STATUS_CREATED);
+	minted = venture_json_parse(body, NULL);
+	stored = venture_database_get(fixture->database, VENTURE_TYPE_API_TOKEN,
+		json_object_get_int_member(json_node_get_object(minted), "id"),
+		NULL);
+	g_assert_nonnull(stored);
+	{
+		g_autofree gchar *name = NULL;
+
+		g_object_get(stored, "name", &name, "expires-at", &expires_at,
+		             NULL);
+		g_assert_cmpstr(name, ==, "api token for books-bot");
+		g_assert_null(expires_at);
+	}
+
+	/* Naming yourself is your own token, at your own role. */
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&minted, json_node_unref);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"username\":\"adam\"}", &body), ==, SOUP_STATUS_CREATED);
+	minted = venture_json_parse(body, NULL);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(minted),
+		"user_id"), ==, admin_id);
+	g_assert_cmpstr(json_object_get_string_member(
+		json_node_get_object(minted), "role"), ==, "admin");
+
+	/* An administrator's bearer token may do it too: that is the only
+	 * credential venturectl has. */
+	{
+		g_autofree gchar *admin_body = NULL;
+		g_autofree gchar *agent_body = NULL;
+		g_autoptr(JsonNode) admin_token = NULL;
+		g_autoptr(JsonNode) agent_token = NULL;
+
+		g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie,
+			NULL, "{\"name\":\"ops\"}", &admin_body),
+			==, SOUP_STATUS_CREATED);
+		admin_token = venture_json_parse(admin_body, NULL);
+		g_assert_cmpuint(server_fixture_mint_json(fixture, NULL,
+			json_object_get_string_member(
+				json_node_get_object(admin_token), "token"),
+			"{\"username\":\"books-bot\"}", &agent_body),
+			==, SOUP_STATUS_CREATED);
+		agent_token = venture_json_parse(agent_body, NULL);
+		g_assert_cmpint(json_object_get_int_member(
+			json_node_get_object(agent_token), "user_id"), ==, agent_id);
+	}
+}
+
+/*
+ * Every way minting for somebody else is refused, and that a person who
+ * may not do it learns nothing from asking -- not even whether the name
+ * exists.
+ */
+static void
+test_auth_mint_for_user_refusals(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *admin_cookie = NULL;
+	g_autofree gchar *editor_cookie = NULL;
+	g_autofree gchar *both = NULL;
+	g_autoptr(VentureEntity) retired = NULL;
+	gint64 agent_id;
+	gint64 retired_id = 0;
+	gint64 before;
+	gint64 after;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	server_fixture_create_member(fixture, "edna", "e-long-password",
+	                           VENTURE_USER_ROLE_EDITOR, NULL);
+	server_fixture_create_member(fixture, "olga", "o-long-password",
+	                           VENTURE_USER_ROLE_OWNER, NULL);
+	server_fixture_create_user(fixture, "retired", "r-long-password",
+	                           VENTURE_USER_ROLE_VIEWER, &retired_id);
+	agent_id = server_fixture_create_confined(fixture, "books-bot",
+	                                          VENTURE_USER_ROLE_EDITOR, NULL);
+
+	retired = venture_database_get(fixture->database, VENTURE_TYPE_USER,
+	                               retired_id, NULL);
+	g_object_set(retired, "active", FALSE, NULL);
+	g_assert_true(venture_database_save(fixture->database, retired, NULL,
+	                                    NULL));
+
+	admin_cookie = server_fixture_login(fixture, "adam", "a-long-password");
+	editor_cookie = server_fixture_login(fixture, "edna", "e-long-password");
+
+	/* Below admin: refused the same way whether the name exists or not. */
+	g_assert_cmpuint(server_fixture_mint_json(fixture, editor_cookie, NULL,
+		"{\"username\":\"books-bot\"}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, editor_cookie, NULL,
+		"{\"username\":\"nobody\"}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+	/* An administrator does not get an owner's credential. */
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"username\":\"olga\"}", NULL), ==, SOUP_STATUS_FORBIDDEN);
+
+	/* Unknown, deactivated, and malformed. */
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"username\":\"nobody\"}", NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"username\":\"retired\"}", NULL),
+		==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"user_id\":\"7\"}", NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"user_id\":0}", NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		"{\"username\":\"\"}", NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+	both = g_strdup_printf("{\"user_id\":%" G_GINT64_FORMAT
+	                       ",\"username\":\"books-bot\"}", agent_id);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, admin_cookie, NULL,
+		both, NULL), ==, SOUP_STATUS_UNPROCESSABLE_ENTITY);
+
+	/* The page: only an administrator is offered the field, and posting it
+	 * as an editor mints nothing at all. */
+	{
+		g_autofree gchar *editor_page = NULL;
+		g_autofree gchar *admin_page = NULL;
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) tokens = NULL;
+
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/account/tokens", editor_cookie, NULL, &editor_page, NULL),
+			==, SOUP_STATUS_OK);
+		g_assert_null(strstr(editor_page, "name=\"for_user\""));
+		g_assert_cmpuint(server_fixture_request(fixture, "GET",
+			"/account/tokens", admin_cookie, NULL, &admin_page, NULL),
+			==, SOUP_STATUS_OK);
+		g_assert_nonnull(strstr(admin_page, "name=\"for_user\""));
+
+		query = venture_query_new(VENTURE_TYPE_API_TOKEN);
+		tokens = venture_database_find(fixture->database, query, NULL);
+		before = (gint64)tokens->len;
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/account/tokens", editor_cookie,
+			"name=sneaky&for_user=books-bot&expires_in_days=30", NULL,
+			NULL), ==, SOUP_STATUS_FOUND);
+		g_clear_pointer(&tokens, g_ptr_array_unref);
+		tokens = venture_database_find(fixture->database, query, NULL);
+		after = (gint64)tokens->len;
+		g_assert_cmpint(after, ==, before);
+	}
+}
+
+/*
+ * The same thing from the browser: the For user field mints the agent's
+ * token, and what the reveal page prints works as that agent.
+ */
+static void
+test_auth_admin_mints_for_user_in_browser(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *secret = NULL;
+	g_autofree gchar *body = NULL;
+	gint64 agent_id;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "adam", "a-long-password",
+	                           VENTURE_USER_ROLE_ADMIN, NULL);
+	agent_id = server_fixture_create_confined(fixture, "books-bot",
+	                                          VENTURE_USER_ROLE_VIEWER, NULL);
+	cookie = server_fixture_login(fixture, "adam", "a-long-password");
+
+	secret = server_fixture_mint_token(fixture, cookie,
+		"name=books&for_user=+books-bot+&expires_in_days=0", NULL);
+	g_assert_nonnull(secret);
+
+	/* A viewer's token: it reads, and it is refused what an
+	 * administrator's would be allowed. */
+	g_assert_cmpuint(server_fixture_request_ex(fixture, "GET",
+		"/api/v1/venture", NULL, secret, NULL, NULL, NULL),
+		==, SOUP_STATUS_OK);
+	g_assert_cmpuint(server_fixture_mint_json(fixture, NULL, secret,
+		"{\"name\":\"escalate\"}", &body), ==, SOUP_STATUS_FORBIDDEN);
+
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) tokens = NULL;
+		gboolean found = FALSE;
+		guint i;
+
+		query = venture_query_new(VENTURE_TYPE_API_TOKEN);
+		tokens = venture_database_find(fixture->database, query, NULL);
+		g_assert_nonnull(tokens);
+
+		for (i = 0; i < tokens->len; i++)
+		{
+			g_autofree gchar *name = NULL;
+			gint64 owner = 0;
+			VentureUserRole role = VENTURE_USER_ROLE_OWNER;
+
+			g_object_get(g_ptr_array_index(tokens, i), "name", &name,
+			             "user-id", &owner, "role", &role, NULL);
+
+			if (0 != g_strcmp0(name, "books"))
+				continue;
+
+			found = TRUE;
+			g_assert_cmpint(owner, ==, agent_id);
+			g_assert_cmpint(role, ==, VENTURE_USER_ROLE_VIEWER);
+		}
+
+		g_assert_true(found);
+	}
+}
+
+/*
  * Anonymous requests are turned away at both verbs. The GET is covered by
  * the navigation sweep above; the POST is not in the sidebar and would
  * otherwise be an unauthenticated way to mint an owner credential.
@@ -7824,6 +8225,15 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/owner-mints-own-token", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_owner_mints_own_token,
+	           server_fixture_tear_down);
+	g_test_add("/auth/admin-mints-token-for-user", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_admin_mints_token_for_user,
+	           server_fixture_tear_down);
+	g_test_add("/auth/mint-for-user-refusals", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_mint_for_user_refusals,
+	           server_fixture_tear_down);
+	g_test_add("/auth/admin-mints-for-user-in-browser", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_admin_mints_for_user_in_browser,
 	           server_fixture_tear_down);
 	g_test_add("/auth/tokens-refuse-anonymous", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_tokens_refuse_anonymous,
