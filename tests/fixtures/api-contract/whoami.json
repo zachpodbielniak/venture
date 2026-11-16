@@ -1,0 +1,16 @@
+{
+  "actor" : "string",
+  "memberships" : [
+    {
+      "organization" : "string",
+      "organization_id" : "int",
+      "role" : "string"
+    }
+  ],
+  "role" : "string",
+  "token_id" : "int",
+  "user" : {
+    "id" : "int",
+    "username" : "string"
+  }
+}

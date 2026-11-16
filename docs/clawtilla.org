@@ -50,6 +50,10 @@ A remote resolves only to a repository the asking agent can see, so a repository
 
 clawtilla does not rely on webhooks -- it polls -- but a webhook wakes it early. Point a signed webhook (Settings -> Webhooks, events =ticket.*= and =ticket_comment.*=) at clawtilla's =venture= trigger, with the webhook's secret given to that trigger ([[file:webhooks.org][Webhooks]]). The body names the record and, on an update, the fields that changed; clawtilla fetches the record with the agent's own token.
 
+* The contract (since 0.10.2)
+
+Every answer clawtilla's mirror reads has its shape -- which keys, of which types -- recorded in =tests/fixtures/api-contract/=, and =/auth/clawtilla-contract= fails when an answer no longer matches.  A change that is meant is recorded again with =make contract-fixtures=; clawtilla keeps a copy in its =tests/fixtures/venture/= and checks its reader against it, and its =make check-venture-contract= diffs the two.  A field renamed under the mirror is then a failing test on one side or the other, not a fleet whose tickets quietly stop updating.
+
 * Who wrote a comment
 
 A ticket comment made through the API records its writer as its =author= (since 0.10.1): =API token #N= for a token, the username for a session.  An author the caller names is kept -- that is how a mail import records the sender.  clawtilla reads it to tell a person's comment from the assignee agent's own.

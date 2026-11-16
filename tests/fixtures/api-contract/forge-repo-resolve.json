@@ -1,0 +1,8 @@
+{
+  "clone_url" : "string",
+  "forge_id" : "int",
+  "id" : "int",
+  "key" : "string",
+  "name" : "string",
+  "organization_id" : "int"
+}

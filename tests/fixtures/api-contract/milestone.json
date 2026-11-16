@@ -1,0 +1,20 @@
+{
+  "completed_at" : "null",
+  "created_at" : "string",
+  "deleted_at" : "null",
+  "description" : "null",
+  "display_name" : "string",
+  "due_on" : "null",
+  "goal_id" : "int",
+  "id" : "int",
+  "name" : "string",
+  "notes" : "null",
+  "organization_id" : "int",
+  "product_id" : "int",
+  "status" : "string",
+  "type" : "string",
+  "updated_at" : "string",
+  "uuid" : "string",
+  "venture_id" : "int",
+  "version" : "int"
+}

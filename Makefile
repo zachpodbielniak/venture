@@ -692,6 +692,16 @@ test: kernels-check
 
 # Run one test binary verbosely: make test-one T=test-money
 .PHONY: test-one
+# The shapes of the answers clawtilla's task mirror reads, recorded again
+# (tests/fixtures/api-contract/). Only when the change is meant: the test
+# fails on any difference, and clawtilla keeps a copy.
+contract-fixtures:
+	$(MAKE) --no-print-directory $(OUTDIR)/tests/test-auth
+	@VENTURE_UPDATE_CONTRACT=1 \
+	 VENTURE_PLUGIN_PATH="$(abspath $(OUTDIR)/plugins)" \
+	 VENTURE_POD_MODULE_PATH="$(abspath $(OUTDIR)/pod-modules)" \
+	 $(OUTDIR)/tests/test-auth -p /auth/clawtilla-contract
+
 test-one:
 	@if [ -z "$(T)" ]; then echo "Usage: make test-one T=test-money"; exit 1; fi
 	$(MAKE) --no-print-directory $(OUTDIR)/tests/$(T)

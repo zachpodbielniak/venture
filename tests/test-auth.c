@@ -3485,6 +3485,279 @@ test_auth_external_runs_routes(
 	}
 }
 
+/* --- The clawtilla contract (0.10.2) ------------------------------------- */
+
+/*
+ * The shape of an answer: every value replaced by its type, members in
+ * name order, an array by the shape of its first element.  What a client
+ * relies on -- which keys, of which types -- without the ids and times
+ * that change on every run.
+ */
+static JsonNode *
+contract_string(const gchar *text)
+{
+	JsonNode *node = json_node_new(JSON_NODE_VALUE);
+
+	json_node_set_string(node, text);
+	return node;
+}
+
+static JsonNode *
+contract_shape(JsonNode *node)
+{
+	JsonNode *out;
+
+	if (NULL == node || JSON_NODE_HOLDS_NULL(node))
+		return contract_string("null");
+
+	if (JSON_NODE_HOLDS_OBJECT(node))
+	{
+		JsonObject *in = json_node_get_object(node);
+		JsonObject *shape = json_object_new();
+		GList *names = g_list_sort(json_object_get_members(in),
+		                           (GCompareFunc)g_strcmp0);
+		GList *l;
+
+		for (l = names; NULL != l; l = l->next)
+			json_object_set_member(shape, l->data,
+				contract_shape(json_object_get_member(in, l->data)));
+
+		g_list_free(names);
+		out = json_node_new(JSON_NODE_OBJECT);
+		json_node_take_object(out, shape);
+		return out;
+	}
+
+	if (JSON_NODE_HOLDS_ARRAY(node))
+	{
+		JsonArray *in = json_node_get_array(node);
+		JsonArray *shape = json_array_new();
+
+		if (json_array_get_length(in) > 0)
+			json_array_add_element(shape,
+				contract_shape(json_array_get_element(in, 0)));
+
+		out = json_node_new(JSON_NODE_ARRAY);
+		json_node_take_array(out, shape);
+		return out;
+	}
+
+	switch (json_node_get_value_type(node))
+	{
+	case G_TYPE_BOOLEAN:
+		return contract_string("bool");
+	case G_TYPE_INT64:
+		return contract_string("int");
+	case G_TYPE_DOUBLE:
+		return contract_string("double");
+	default:
+		return contract_string("string");
+	}
+}
+
+/*
+ * Checks @body's shape against tests/fixtures/api-contract/@name.json, or
+ * writes it there when VENTURE_UPDATE_CONTRACT is set.
+ */
+static void
+contract_check(
+	const gchar	*name,
+	guint		 status,
+	guint		 expected,
+	const gchar	*body
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(JsonNode) shape = NULL;
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *pretty = NULL;
+	g_autofree gchar *file = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *committed = NULL;
+
+	if (status != expected)
+		g_error("contract %s: answered %u, wanted %u: %s", name, status,
+		        expected, body != NULL ? body : "");
+
+	node = venture_json_parse(body, NULL);
+	g_assert_nonnull(node);
+	shape = contract_shape(node);
+	pretty = venture_json_to_string(shape, TRUE);
+	text = g_strconcat(pretty, "\n", NULL);
+
+	file = g_strconcat(name, ".json", NULL);
+	path = g_build_filename(VENTURE_TEST_FIXTURES, "api-contract", file, NULL);
+
+	if (NULL != g_getenv("VENTURE_UPDATE_CONTRACT"))
+	{
+		g_autofree gchar *dir = g_path_get_dirname(path);
+
+		g_assert_cmpint(g_mkdir_with_parents(dir, 0755), ==, 0);
+		g_assert_true(g_file_set_contents(path, text, -1, NULL));
+		return;
+	}
+
+	if (!g_file_get_contents(path, &committed, NULL, NULL) ||
+	    0 != g_strcmp0(committed, text))
+		g_error("contract %s: the answer's shape is not the one recorded "
+		        "in %s -- an agent fleet's mirror reads these. If the change "
+		        "is meant, run `make contract-fixtures`, and tell clawtilla "
+		        "(its tests/fixtures/venture copy). Now:\n%s", name, path,
+		        text);
+}
+
+/*
+ * Every answer an agent fleet's task mirror reads -- clawtilla's -- has
+ * the shape recorded in tests/fixtures/api-contract/.  clawtilla keeps a
+ * copy and checks its reader against it; `make check-venture-contract`
+ * over there diffs the two.
+ *
+ * What breaks if this regresses: a renamed or retyped field the mirror
+ * reads, shipped without anybody noticing it was a contract -- and a
+ * fleet whose tickets stop updating, or whose agents stop hearing
+ * comments, with nothing failing on either side.
+ */
+static void
+test_auth_clawtilla_contract(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *editor = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *path = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(VentureEntity) milestone = NULL;
+	gint64 home;
+	gint64 forge;
+	gint64 repo;
+	gint64 editor_id = 0;
+	gint64 ticket;
+	gint64 run;
+	guint status;
+
+	(void)user_data;
+
+	server_fixture_create_member(fixture, "agent", "a-long-password",
+	                             VENTURE_USER_ROLE_EDITOR, &editor_id);
+	server_fixture_set_organization_role(fixture, editor_id,
+	                                     VENTURE_ORGANIZATION_ROLE_EDITOR);
+	editor = server_fixture_login(fixture, "agent", "a-long-password");
+
+	home = venture_context_get_default_organization_id(fixture->context);
+	forge = auth_forge_create(fixture, home, "Our forge",
+	                          "https://git.example.test");
+	repo = auth_repo_create(fixture, home, forge, "acme/site", NULL);
+
+	status = server_fixture_request(fixture, "GET", "/api/v1/whoami", editor,
+	                                NULL, &body, NULL);
+	contract_check("whoami", status, SOUP_STATUS_OK, body);
+	g_clear_pointer(&body, g_free);
+
+	status = server_fixture_request(fixture, "GET",
+		"/api/v1/forge_repo/resolve?url=https%3A%2F%2Fgit.example.test%2Facme%2Fsite.git",
+		editor, NULL, &body, NULL);
+	contract_check("forge-repo-resolve", status, SOUP_STATUS_OK, body);
+	g_clear_pointer(&body, g_free);
+
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"Mirrored\","
+			"\"description\":\"d\",\"status\":\"todo\",\"assignee\":\"agent\","
+			"\"kind\":\"internal\",\"issue_type\":\"task\",\"repo_id\":%"
+			G_GINT64_FORMAT ",\"external_ref\":\"clawtilla:host:task-1\"}",
+			home, repo);
+
+		status = server_fixture_request(fixture, "POST", "/api/v1/ticket",
+		                                editor, json, &body, NULL);
+		contract_check("ticket-create", status, SOUP_STATUS_CREATED, body);
+		node = venture_json_parse(body, NULL);
+		ticket = json_object_get_int_member(json_node_get_object(node), "id");
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+	}
+
+	status = server_fixture_request(fixture, "GET",
+		"/api/v1/ticket?external_ref__like=clawtilla%3Ahost%3A%25"
+		"&updated_at__gte=2000-01-01T00%3A00%3A00Z&order=updated_at&limit=100",
+		editor, NULL, &body, NULL);
+	contract_check("ticket-list", status, SOUP_STATUS_OK, body);
+	g_clear_pointer(&body, g_free);
+
+	path = g_strdup_printf("/api/v1/ticket/%" G_GINT64_FORMAT, ticket);
+	status = server_fixture_request(fixture, "PATCH", path, editor,
+		"{\"status\":\"in_progress\",\"version\":1}", &body, NULL);
+	contract_check("ticket-update", status, SOUP_STATUS_OK, body);
+	g_clear_pointer(&body, g_free);
+
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"body\":\"why?\","
+			"\"internal\":true,\"external_ref\":\"clawtilla:host:note:1\"}",
+			ticket);
+		g_autofree gchar *list = g_strdup_printf(
+			"/api/v1/ticket_comment?ticket_id__in=%" G_GINT64_FORMAT
+			"&id__gt=0&order=id&limit=100", ticket);
+
+		status = server_fixture_request(fixture, "POST",
+			"/api/v1/ticket_comment", editor, json, &body, NULL);
+		contract_check("ticket-comment-create", status, SOUP_STATUS_CREATED,
+		               body);
+		g_clear_pointer(&body, g_free);
+
+		status = server_fixture_request(fixture, "GET", list, editor, NULL,
+		                                &body, NULL);
+		contract_check("ticket-comment-list", status, SOUP_STATUS_OK, body);
+		g_clear_pointer(&body, g_free);
+	}
+
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"repo_id\":%" G_GINT64_FORMAT
+			",\"branch\":\"clawtilla/task-1\",\"origin\":\"venture\"}",
+			ticket, repo);
+
+		status = server_fixture_request(fixture, "POST",
+			"/api/v1/ticket_link", editor, json, &body, NULL);
+		contract_check("ticket-link-create", status, SOUP_STATUS_CREATED,
+		               body);
+		g_clear_pointer(&body, g_free);
+	}
+
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"provider\":\"clawtilla\","
+			"\"branch\":\"clawtilla/task-1\"}", ticket);
+		g_autofree gchar *finish = NULL;
+
+		status = server_fixture_request(fixture, "POST",
+			"/api/v1/runs/external", editor, json, &body, NULL);
+		contract_check("run-start", status, SOUP_STATUS_CREATED, body);
+		node = venture_json_parse(body, NULL);
+		run = json_object_get_int_member(json_node_get_object(node), "id");
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+
+		finish = g_strdup_printf("/api/v1/runs/external/%" G_GINT64_FORMAT,
+		                         run);
+		status = server_fixture_request(fixture, "PATCH", finish, editor,
+			"{\"state\":\"succeeded\",\"cost\":\"0.420000 USD\","
+			"\"summary\":\"Fixed.\"}", &body, NULL);
+		contract_check("run-finish", status, SOUP_STATUS_OK, body);
+		g_clear_pointer(&body, g_free);
+	}
+
+	milestone = g_object_new(VENTURE_TYPE_MILESTONE, "name", "Beta", NULL);
+	venture_entity_set_organization_id(milestone, home);
+	g_assert_true(venture_database_save(fixture->database, milestone, NULL,
+	                                    NULL));
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/milestone/%" G_GINT64_FORMAT,
+	                       venture_entity_get_id(milestone));
+	status = server_fixture_request(fixture, "GET", path, editor, NULL, &body,
+	                                NULL);
+	contract_check("milestone", status, SOUP_STATUS_OK, body);
+	g_clear_pointer(&body, g_free);
+}
+
 /*
  * A create that names its own uuid keeps it, and a second create with the
  * same uuid is "already exists" (409), not a second record or a 500.
@@ -9218,6 +9491,9 @@ main(
 	           server_fixture_tear_down);
 	g_test_add("/auth/create-keeps-uuid", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_create_keeps_uuid,
+	           server_fixture_tear_down);
+	g_test_add("/auth/clawtilla-contract", ServerFixture, NULL,
+	           server_fixture_set_up, test_auth_clawtilla_contract,
 	           server_fixture_tear_down);
 	g_test_add("/auth/external-runs-routes", ServerFixture, NULL,
 	           server_fixture_set_up, test_auth_external_runs_routes,
