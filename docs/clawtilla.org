@@ -17,7 +17,7 @@ Nothing here is clawtilla-specific in mechanism: every feature below is an ordin
 Every agent is its own VENTURE user, so the audit trail, the activity on every record and every webhook body say *which* agent did a thing.
 
 1. *Create the user*: a global =editor= (or =viewer=, for an agent that only reads -- but a viewer's writes are staged for approval, which a mirroring agent must not be).
-2. *Add its organization memberships*: only the organizations it should reach, with the organization role it needs (=editor= for ordinary work).
+2. *Add its organization memberships*: only the organizations it should reach, with the organization role it needs (=editor= for ordinary work).  Made through the API, a membership must say ~"active": true~ -- an inactive one reaches nothing, and =whoami= then lists no organizations.
 3. *Then mint its token*, as an administrator, for that account: =venturectl token mint name=scout-agent user=scout expires_in_days=365=. A token keeps the memberships it was minted with: mint *after* the memberships, and mint a new one when they change.
 4. Give the token to that one agent only (clawtilla's per-agent =token_file=).
 
@@ -49,6 +49,10 @@ A remote resolves only to a repository the asking agent can see, so a repository
 * Webhooks, to wake the mirror
 
 clawtilla does not rely on webhooks -- it polls -- but a webhook wakes it early. Point a signed webhook (Settings -> Webhooks, events =ticket.*= and =ticket_comment.*=) at clawtilla's =venture= trigger, with the webhook's secret given to that trigger ([[file:webhooks.org][Webhooks]]). The body names the record and, on an update, the fields that changed; clawtilla fetches the record with the agent's own token.
+
+* Who wrote a comment
+
+A ticket comment made through the API records its writer as its =author= (since 0.10.1): =API token #N= for a token, the username for a session.  An author the caller names is kept -- that is how a mail import records the sender.  clawtilla reads it to tell a person's comment from the assignee agent's own.
 
 * What the activity log shows
 

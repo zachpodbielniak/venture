@@ -3443,6 +3443,46 @@ test_auth_external_runs_routes(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/api/v1/forge_run", editor, "{\"ticket_id\":1}", NULL, NULL), ==,
 		SOUP_STATUS_FORBIDDEN);
+
+	/* no such ticket, no such run: 404, not a 500 (0.10.1) */
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/api/v1/runs/external", editor, "{\"ticket_id\":999999}", NULL,
+		NULL), ==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "PATCH",
+		"/api/v1/runs/external/999999", editor, "{\"turns\":1}", NULL, NULL),
+		==, SOUP_STATUS_NOT_FOUND);
+
+	/*
+	 * A ticket comment made through the API says who wrote it (0.10.1);
+	 * an author the caller named is kept, as a mail import names one.
+	 */
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"body\":\"why?\"}",
+			venture_entity_get_id(ticket));
+		g_autofree gchar *named = g_strdup_printf(
+			"{\"ticket_id\":%" G_GINT64_FORMAT ",\"body\":\"hi\","
+			"\"author\":\"ann@example.com\"}", venture_entity_get_id(ticket));
+		g_autofree gchar *said = NULL;
+		g_autofree gchar *kept = NULL;
+		g_autoptr(JsonNode) a = NULL;
+		g_autoptr(JsonNode) b = NULL;
+
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/ticket_comment", editor, json, &said, NULL), ==,
+			SOUP_STATUS_CREATED);
+		a = venture_json_parse(said, NULL);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(a),
+		                                              "author"), ==, "agent");
+
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/ticket_comment", editor, named, &kept, NULL), ==,
+			SOUP_STATUS_CREATED);
+		b = venture_json_parse(kept, NULL);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(b),
+		                                              "author"), ==,
+		                "ann@example.com");
+	}
 }
 
 /*
