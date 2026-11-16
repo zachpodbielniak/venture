@@ -1,0 +1,23 @@
+{
+  "count" : "int",
+  "records" : [
+    {
+      "author" : "string",
+      "body" : "string",
+      "created_at" : "string",
+      "deleted_at" : "null",
+      "display_name" : "string",
+      "external_ref" : "string",
+      "id" : "int",
+      "internal" : "bool",
+      "occurred_at" : "null",
+      "organization_id" : "int",
+      "ticket_id" : "int",
+      "type" : "string",
+      "updated_at" : "string",
+      "uuid" : "string",
+      "version" : "int"
+    }
+  ],
+  "total" : "int"
+}
