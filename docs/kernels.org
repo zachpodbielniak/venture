@@ -226,7 +226,11 @@ The double-entry arithmetic, run once the database has been read. A line is =Lin
 - =pick_rate(rates, when)= chooses the exchange rate that applies, by a strict order (=rate_ahead=, proved antisymmetric).
 - =pay_line= checks gross + employer = net + liabilities, exponent-aware.
 
-In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/venture-posting-service.c=, =venture-trial-balance.c=, =venture-rate-table-policy.c=, =src/venture-enums.c=, =src/payroll/venture-payroll-service.c=, =src/budgets/venture-budget-service.c=. What changed:
+In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/venture-posting-service.c=, =venture-trial-balance.c=, =venture-rate-table-policy.c=, =src/venture-enums.c=, =src/payroll/venture-payroll-service.c=, =src/budgets/venture-budget-service.c=.
+
+=net= over lines that are all debits is a plain sum of amounts, and the other running =VentureMoney= sums use it that way: payroll's run totals (=sum_field= in =src/payroll/venture-payroll-service.c=, from the first amount's exponent) and the money calendar's payroll run totals and a recurring schedule's template lines (=sum_onto= in =src/money-calendar/venture-money-calendar-sources.c=). The currency check stays in C, worded as =venture_money_add= words it.
+
+What changed:
 
 - Rate selection no longer rests on a comparator that called an undated row equal to every row. That comparator could let an older rate beat the newest.
 - A pay line's two sides are compared as money, not as raw minor units (=/payroll/balance-exponents=).
@@ -248,6 +252,21 @@ In C a =[Line]= is a =GPtrArray *= of =VkLedgerLine *=. Shims: =src/ledger/ventu
 
 *** vk_inventory
 =unit_cost(cost, quantity)= is a movement's average unit cost, half to even, proved to lie between zero and the cost. Shim: =movement_unit= in =src/goods/venture-inventory-service.c=.
+
+*** vk_settlement
+The open balance of an invoice or a vendor bill. The shim hands over one array of =Record=: =Money { kind, amount, exponent, currency }=, or =Unset { kind }= for a record whose amount was never set. =Kind= is =Issue= | =LateFee= | =Void= | =Allocation= | =Refund=, in the order read: the document's events, then each allocation followed by its refunds. =currency= is a number the shim gives each code, comparing codes case-insensitively in C, so the kernel compares integers and never sees a code.
+
+=balance(records)= returns a =Balance=:
+- =NotIssued= when there is no issue. Nothing else is looked at.
+- Otherwise every issue, then every late fee, is added in order, whatever order the events came in. =Voided { exponent, first }= if any record voids the document.
+- Otherwise each allocation is subtracted and each refund added back: =Open { amount, exponent, currency, first }=. It is zero when paid and negative when overpaid.
+- A record the fold reaches but cannot count stops it: =Missing { at }=, =Mismatch { at, first }= or =Overflow { at }=. A record it never reaches is not refused, as the C never read it.
+
+The running total starts at the first record counted (its currency, zero at its exponent) and keeps the exponent it reaches, with each step being =vk_ledger.step=. =ensures agrees(records, result)=: an =Open= amount equals issued + late fees - allocated + refunded, with each class totalled on its own and compared at a common exponent, and the exponent is the finest any counted record has. Every function takes an array or returns a sum, so =tallow verify= skips them; the arithmetic it relies on is =vk_money='s, and the contract is fuzzed and checked on every call.
+
+=net_fitting(lines, start_exponent)= is =vk_ledger.net= that skips a line which would take the total out of range and carries on without it. The money calendar's per-day and per-week nets (=venture_money_calendar_nets=) and the report's span totals (=venture_money_calendar_totals=, in =src/money-calendar/venture-money-calendar-expander.c=) are this fold, one per key. What changed: the report's span totals used to store the =NULL= a failed addition returned, so the next event restarted the total from its own amount, and a total that ended there was shown as zero. Now the amount that does not fit is left out, as the nets always did (=/kernels-settlement/money-calendar/totals=).
+
+Shims: =venture-settlement-private.h= (=VentureSettlementRecords=, in =src/receivables/venture-settlement-service.c=) builds the records, maps the result to =VentureMoney= or an error worded as adding =VentureMoney= worded it, and is called by =venture_settlement_service_invoice_balance=, =venture_settlement_service_invoice_balances= and =venture_payables_service_bill_balance= (a bill counts no late fees). Results and errors are unchanged, except an overflow while rescaling to a finer exponent is now reported as the addition or subtraction overflowing.
 
 *** vk_series
 The market-data arithmetic behind the series store. A book is two arrays, prices and quantities; =VENTURE_SERIES_NONE= is a =?i64= inside the kernel and becomes the sentinel again in C.
@@ -276,6 +295,25 @@ Candidates, cheapest first:
 3. one up-front check in place of the per-step =requires= of the heap-sort helpers.
 
 The header of =src/kernels/vk_series.tlw= has the measurements to beat.
+
+*** vk_progress
+How far a measure has come from a start toward a target, and when it gets there.
+- =fraction(start, current, target)= is a goal's covered share as a double (=venture_goals_fraction=), 0 for a goal with no distance.
+- =forecast(elapsed, start, current, target)= is a goal's straight-line forecast. =elapsed= is a =?i64<usec>= (a =GTimeSpan=; none without a creation date). The readings are doubles a person typed, so they are read exactly as integers: millionths of their unit, or the finest coarser scale that holds them (=reading=), or for a value past 2^53 even in whole units, through the fraction at 2^-52 (=by_fraction=). The answer is a =Forecast=: =Due { after }= (microseconds after =as_of=, half to even), or why not: =NoProgress=, =BeforeStart=, =TooSoon= (under a day), =TooFar= (past 36525 days, decided on the exact value).
+- =money_progress(value, ve, target, te, start, se)= returns a =Progress=: =Ratio { covered, distance }= at the three amounts' common exponent, or =Undefined= (start equals target) or =TooLarge=. =number_percent= is the same for plain numbers, which are doubles already.
+
+=along= and =left= are proved. Shims: =goals_progress_forecast= and =venture_goals_fraction= in =src/goals/=, which map each =Forecast= to the note's reason string and build the date with =g_date_time_add=; =venture_widget_percent= in =src/core/venture-dashboard.c=, which divides covered by distance as a double only for the JSON and the card. What changed:
+- A forecast was a double chain cut to whole microseconds; it is now exact (27% done in a day was 233599.99999999997 seconds to go, now 233600; =/kernels-progress/goals/forecast-exact=).
+- A progress widget rescaled the value and the start to the target's exponent before dividing, rounding a finer value; it now compares at the common exponent (1.005 of 10.00 was 10%, now 10.05%; =/kernels-progress/dashboard/money-exponent=). A difference that overflows 64 bits reads "no target" instead of a double's approximation.
+
+*** vk_forms
+A form's quiz score, result band and score report, and a paid form's order total. The C reads the published definition and the answers (JSON, choice ids, field lookups) and hands the kernel plain numbers.
+- Scoring: =ranged(value, ranges)= gives the points of every =Range { low, high, points }= a numeric answer falls in, bounds included. =tally(total, points)= adds a field's points (its selected choices', then its ranges') onto the running score in order. It returns a =Score=: =Scored { points }=, or =OutOfRange= as soon as a running sum leaves the i64 range.
+- =band(score, bands)= is the position of the first =Band { low, high }= holding the score.
+- =bins(replies)= counts scored =Reply { version, score }= values, sorted by the C, into one =Bin { version, score, count, of }= per pair; =of= is the version's total, the share's denominator.
+- Pricing: =quantity(number)= reads an answer as a whole count from 0 to a million. =line_amount= is unit price × quantity (=vk_money.multiply_int=). =order(lines)= totals the =Line { amount, exponent }= values at their common exponent (=vk_money.add=) and returns an =Order=: =Payable { amount, exponent }=, =Overflow= or =NotPositive= (no lines, or a total of zero or less).
+
+Everything is fuzzed; nothing is integer-only enough for =tallow verify=. Shims: =venture_forms_quiz_apply= and =venture_forms_quiz_report= in =src/forms/venture-forms-quiz.c=, =venture_forms_price_total= in =src/forms/venture-forms-pricing.c=, each keeping its error messages. Results are unchanged: the report's bins are sorted as pairs of integers instead of round-tripping through "version:score" strings, and the order total keeps the first line's currency code as adding =VentureMoney= did.
 
 ** Adding a kernel
 :PROPERTIES:

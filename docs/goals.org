@@ -215,6 +215,8 @@ extend "half done in a minute" to "done today"), and one more than a
 century away at this pace. When it lands after
 =due_on= the note says so.
 
+The arithmetic is exact: the start, current and target values are read as integers in millionths of their unit (coarser only for values in the billions), the time since creation in whole microseconds, and the time still to go is one rounding of elapsed × left ÷ covered, to the microsecond. It is the =vk_progress= kernel (see [[file:kernels.org::#catalogue][Kernels]]).
+
 =as_of= moves the moment the pace is measured /to/. It does not read an
 old current value: the value is the one on the goal today, and nothing
 keeps its history (the audit log does, if you need it).
