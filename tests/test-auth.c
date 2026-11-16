@@ -3684,9 +3684,21 @@ test_auth_clawtilla_contract(
 
 	path = g_strdup_printf("/api/v1/ticket/%" G_GINT64_FORMAT, ticket);
 	status = server_fixture_request(fixture, "PATCH", path, editor,
-		"{\"status\":\"in_progress\",\"version\":1}", &body, NULL);
+		"{\"status\":\"in_progress\",\"assignee\":\"vera\",\"version\":1}",
+		&body, NULL);
 	contract_check("ticket-update", status, SOUP_STATUS_OK, body);
 	g_clear_pointer(&body, g_free);
+
+	/* the timeline intake reads, to know who assigned it (0.10.4) */
+	{
+		g_autofree gchar *activity = g_strdup_printf(
+			"/api/v1/activity/ticket/%" G_GINT64_FORMAT, ticket);
+
+		status = server_fixture_request(fixture, "GET", activity, editor,
+		                                NULL, &body, NULL);
+		contract_check("ticket-activity", status, SOUP_STATUS_OK, body);
+		g_clear_pointer(&body, g_free);
+	}
 
 	{
 		g_autofree gchar *json = g_strdup_printf(
