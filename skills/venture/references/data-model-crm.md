@@ -166,10 +166,14 @@ lookback/retention days; owner/admin only), `attribution_visitor`
   `mail_unmatched_sender` (`dismissed`).
 - calendar (requires activities, crm, leads): `calendar_account` (CalDAV;
   `private_owner_id` immutable), `calendar_event` (synced, read-only; `planner_event_id` on a pushed planner event's copy),
-  `booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
-  `timezone`, `availability` JSON, `horizon_days`, `capacity`, `resources`
-  JSON, `resource_selection`, `group_overflow`, `price` money and `price_unit`
-  visit/night/hour/day; serves `/book/<slug>`, `?format=service` for the price).
+  `booking_page` (`slug`, `owner` username, `owner_user_id`,
+  `duration_minutes`, `buffer_minutes`, `timezone`, `availability` JSON,
+  `horizon_days`, `capacity`, `resources` JSON, `resource_selection`,
+  `group_overflow`, `price` money and `price_unit` visit/night/hour/day;
+  serves `/book/<slug>`, `?format=service` for the price). `owner_user_id`
+  is an active member's account id. The save writes that member's username
+  into `owner`. Only the organization's owner or administrator may set it.
+  A later hand-typed `owner` sets it back to 0.
 
 ## Phone and text (`telephony` module; docs/telephony.org)
 

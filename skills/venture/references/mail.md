@@ -140,10 +140,16 @@ binding (`secret_env` unused; origins allowlisted in
 read-only imports without shared activity mirroring or export; ownership
 is immutable. Generic writes to `calendar_event` are refused.
 
-`booking_page` (`slug`, `owner`, `duration_minutes`, `buffer_minutes`,
+`booking_page` (`slug`, `owner` username, `owner_user_id`, `duration_minutes`, `buffer_minutes`,
 IANA `timezone`, `availability` JSON of weekday to `HH:MM-HH:MM` windows,
-`horizon_days`, `capacity`, `resources`, `price` and `price_unit`) is ordinary editor data and serves the public
-`/book/<slug>` page, which books a contact and a meeting. A nonempty
+`horizon_days`, `capacity`, `resources`, `price` and `price_unit`) serves the public
+`/book/<slug>` page, which books a contact and a meeting. `owner_user_id`
+names an active member of the page's organization; the save writes that
+member's username into `owner`. Only the organization's owner or
+administrator may set it, because a token that cannot read
+`/api/v1/user/:id` would otherwise learn usernames. A later hand-typed
+`owner` sets `owner_user_id` back to 0. The username in `owner` stays
+ordinary editor data. A nonempty
 `resources` list takes `group_size` (1 to 10000). `?format=service`
 reads the price; a nightly price needs `arrival_date` and `departure_date`
 and the reply carries the stay `estimate`. A booked or invoiced job on

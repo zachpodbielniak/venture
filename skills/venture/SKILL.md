@@ -102,6 +102,10 @@ an editor or agent lists and gets `forge` and picks one for a
 `forge_repo`; creating, changing, deleting or restoring a forge and every
 credential route stay owner-only (system.md, factory.md, troubleshooting.md).
 
+`booking_page.owner_user_id` (data-model-crm.md, mail.md, docs/calendar.org)
+added 2026-11-14: an organization owner's token names the page owner by
+account, because it cannot read `/api/v1/user/:id`. No verb or route changed.
+
 The token mint form posts natively (`data-no-inline`, 2026-11-13), so the
 one-time secret is shown again; troubleshooting.md has the symptom of an
 older server. No verb, route or answer changed.

@@ -127,7 +127,33 @@ windows written in that zone, for example
 {"mon": "09:00-12:00,13:00-17:00", "tue": "09:00-12:00", "fri": "13:00-16:00"}
 #+end_src
 
-and an optional =horizon_days= (14 when empty). The slug is unique within
+and an optional =horizon_days= (14 when empty).
+
+The owner is a username. A client that cannot read usernames can name the
+owner by account instead. Set =owner_user_id= to the =user_id= of an active
+member of the page's organization. The save writes that member's username
+into =owner=. Use this from an organization owner's or administrator's
+token: such a token reads =organization_membership= but not
+=/api/v1/user/:id=, which stays with the platform owner.
+
+Venture refuses =owner_user_id= from any other member (403). It refuses an
+account that is not an active member of the page's organization (422). The
+refusal does not show the username. When =owner= changes later and
+=owner_user_id= does not, the save sets =owner_user_id= to 0, because the
+account no longer owns the page. Find the owner's account, then make the
+page:
+
+#+begin_src sh
+curl -H "Authorization: Bearer $TOKEN" \
+  "$VENTURE/api/v1/organization_membership?organization_id=2&role=owner"
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"organization_id":2,"title":"Estimate","slug":"estimate",
+       "owner_user_id":2,"duration_minutes":30,"timezone":"UTC",
+       "availability":"{\"mon\":\"09:00-17:00\"}","active":true}' \
+  "$VENTURE/api/v1/booking_page"
+#+end_src
+
+The slug is unique within
 the organization; the public path carries no organization, so the first
 active page with that slug across the install answers — keep slugs distinct
 per install.

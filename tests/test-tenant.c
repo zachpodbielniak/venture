@@ -520,6 +520,209 @@ test_tenant_booking_browser(TenantFixture *f, gconstpointer data)
 	venture_test_remove_tree(state_dir);
 }
 
+/* One JSON API call as a bearer token on the hosted origin. */
+static guint
+tenant_api(SoupSession *session, VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *token, const gchar *json, JsonNode **out)
+{
+	g_autofree gchar *url = g_strconcat(venture_web_server_get_base_url(server), path, NULL);
+	g_autofree gchar *bearer = g_strconcat("Bearer ", token, NULL);
+	g_autoptr(SoupMessage) message = soup_message_new(method, url);
+	SoupMessageHeaders *headers = soup_message_get_request_headers(message);
+	TenantHttpResult result = { FALSE, NULL, NULL };
+	guint status;
+	soup_message_headers_replace(headers, "Host", "tenant.example.test");
+	soup_message_headers_replace(headers, "Authorization", bearer);
+	soup_message_headers_replace(headers, "Accept", "application/json");
+	if (json) {
+		g_autoptr(GBytes) bytes = g_bytes_new(json, strlen(json));
+		soup_message_set_request_body_from_bytes(message, "application/json", bytes);
+	}
+	soup_session_send_and_read_async(session, message, G_PRIORITY_DEFAULT, NULL, tenant_http_done, &result);
+	while (!result.done) g_main_context_iteration(NULL, TRUE);
+	g_assert_no_error(result.error);
+	status = soup_message_get_status(message);
+	if (out) {
+		gsize length = 0;
+		const gchar *bytes = g_bytes_get_data(result.body, &length);
+		g_autofree gchar *text = g_strndup(bytes, length);
+		*out = venture_json_parse(text, NULL);
+		if (*out == NULL || !JSON_NODE_HOLDS_OBJECT(*out) || status >= 300)
+			g_test_message("%s %s answered %u with: %s", method, path, status, text);
+	}
+	g_clear_pointer(&result.body, g_bytes_unref);
+	return status;
+}
+
+/* A user's own token, as /account/tokens mints it: the user's role, and the
+ * organization roles the user holds when it is minted. */
+static gchar *
+tenant_user_token(TenantFixture *f, gint64 user_id, const gchar *name, gint64 *token_id)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	gchar *secret;
+	g_object_set(token, "name", name, "user-id", user_id, "role", VENTURE_USER_ROLE_EDITOR, "active", TRUE, NULL);
+	secret = venture_api_token_generate(token);
+	g_assert_true(venture_database_save(f->database, VENTURE_ENTITY(token), NULL, &error)); g_assert_no_error(error);
+	if (token_id) *token_id = venture_entity_get_id(VENTURE_ENTITY(token));
+	return secret;
+}
+
+/* A business made the way Lightsite makes one: the trusted sign-up, run as
+ * a workspace administrator's service token. Returns the organization. */
+static gint64
+tenant_lightsite_business(TenantFixture *f, const VentureAuthPrincipal *service, const gchar *key,
+	const gchar *email, const gchar *business, gint64 *owner_id)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(venture_database_get_access_policy(f->database), service);
+	g_autoptr(JsonNode) signup = NULL;
+	gboolean created = FALSE;
+	signup = venture_tenant_service_lightsite_signup(f->service, key, email, "https://id.example.test", key,
+		business, "Alex", "Example", &created, &error);
+	g_assert_no_error(error); g_assert_nonnull(signup); g_assert_true(created);
+	*owner_id = json_object_get_int_member(json_node_get_object(signup), "user_id");
+	return json_object_get_int_member(json_node_get_object(signup), "organization_id");
+}
+
+static gchar *
+tenant_page_body(gint64 organization_id, const gchar *slug, gint64 owner_user_id)
+{
+	return g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"Estimate visit\","
+		"\"slug\":\"%s\",\"owner_user_id\":%" G_GINT64_FORMAT ",\"duration_minutes\":30,\"timezone\":\"UTC\","
+		"\"availability\":\"{\\\"mon\\\":\\\"09:00-17:00\\\"}\",\"active\":true}",
+		organization_id, slug, owner_user_id);
+}
+
+/*
+ * A booking page's owner is a username, and an organization owner's token
+ * cannot read a username: /api/v1/user/:id is the platform owner's. Lightsite
+ * makes the page with the business owner's own token, found the owner's
+ * membership, and could not name it, so every page it made was owned by the
+ * literal "owner" and the real owner's synced calendar never blocked a slot.
+ * The page takes owner_user_id instead and Venture writes the username. If
+ * this regresses, the page saves with an empty owner (the field is ignored)
+ * or a stranger learns a username: only the organization's owner or
+ * administrator may name an account, and only one of its own members.
+ */
+static void
+test_tenant_booking_owner_by_account(TenantFixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(SoupSession) session = soup_session_new();
+	g_autoptr(GInetAddress) loopback = g_inet_address_new_loopback(G_SOCKET_FAMILY_IPV4);
+	g_autofree gchar *bind_address = g_inet_address_to_string(loopback);
+	g_autofree gchar *state_dir = g_dir_make_tmp("venture-booking-owner-XXXXXX", &error);
+	g_autofree gchar *service_secret = NULL, *owner_token = NULL, *other_token = NULL, *crew_token = NULL;
+	g_autofree gchar *owner_username = NULL, *path = NULL, *body = NULL, *capability = NULL;
+	g_autoptr(VentureEntity) owner = NULL;
+	g_autoptr(VentureTenantInvitation) invitation = NULL;
+	g_autoptr(VentureUser) crew = NULL;
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(VentureQuery) pages = venture_query_new(VENTURE_TYPE_BOOKING_PAGE);
+	VentureAuthPrincipal service;
+	gint64 service_token = 0, business, owner_id = 0, other_business, other_owner_id = 0, crew_id;
+	JsonArray *records;
+	(void)data;
+	g_assert_no_error(error);
+	service_secret = tenant_user_token(f, f->administrator.user_id, "Lightsite service", &service_token);
+	service.user_id = f->administrator.user_id; service.token_id = service_token;
+	service.role = VENTURE_USER_ROLE_EDITOR; service.name = (gchar *)"Lightsite service";
+	service.authenticated = TRUE; service.provider_token = FALSE;
+	business = tenant_lightsite_business(f, &service, "fixture-roofing", "dana@roofing.test", "Fixture Roofing", &owner_id);
+	other_business = tenant_lightsite_business(f, &service, "fixture-plumbing", "sam@plumbing.test", "Fixture Plumbing", &other_owner_id);
+	owner = venture_database_get(f->database, VENTURE_TYPE_USER, owner_id, &error); g_assert_no_error(error);
+	g_object_get(owner, "username", &owner_username, NULL);
+	g_assert_false(venture_string_is_empty(owner_username));
+	g_assert_cmpstr(owner_username, !=, "owner");
+	/* A plain member of the same business: an editor, not its owner. */
+	{
+		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter(venture_database_get_access_policy(f->database), &f->administrator);
+		invitation = venture_tenant_service_invite(f->service, "member", business, VENTURE_ORGANIZATION_ROLE_EDITOR,
+			3600, "Roofing crew member", &error);
+		g_assert_no_error(error); g_assert_nonnull(invitation);
+	}
+	g_object_get(invitation, "capability", &capability, NULL);
+	crew = venture_tenant_service_accept_invitation(f->service, f->config, capability, "roofing-crew", "private-crew-password", &error);
+	g_assert_no_error(error); g_assert_nonnull(crew);
+	crew_id = venture_entity_get_id(VENTURE_ENTITY(crew));
+	owner_token = tenant_user_token(f, owner_id, "Roofing owner", NULL);
+	other_token = tenant_user_token(f, other_owner_id, "Plumbing owner", NULL);
+	crew_token = tenant_user_token(f, crew_id, "Roofing crew", NULL);
+
+	g_object_set(f->config, "state-dir", state_dir, "server-bind-address", bind_address, "server-port", (gint64)0, NULL);
+	context = venture_context_new(f->config, f->database);
+	server = venture_web_server_new(context, &error); g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error)); g_assert_no_error(error);
+	soup_session_set_timeout(session, 15);
+
+	/* The issue as reported: the owner's membership is readable, the
+	 * account behind it is not -- and must stay that way. */
+	path = g_strdup_printf("/api/v1/organization_membership?organization_id=%" G_GINT64_FORMAT "&role=owner", business);
+	g_assert_cmpuint(tenant_api(session, server, "GET", path, owner_token, NULL, &answer), ==, 200);
+	records = json_object_get_array_member(json_node_get_object(answer), "records");
+	g_assert_cmpuint(json_array_get_length(records), ==, 1);
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(records, 0), "user_id"), ==, owner_id);
+	g_clear_pointer(&answer, json_node_unref); g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/user/%" G_GINT64_FORMAT, owner_id);
+	g_assert_cmpuint(tenant_api(session, server, "GET", path, owner_token, NULL, NULL), ==, 403);
+	g_assert_cmpuint(tenant_api(session, server, "GET", path, crew_token, NULL, NULL), ==, 403);
+	g_assert_cmpuint(tenant_api(session, server, "GET", path, other_token, NULL, NULL), ==, 403);
+
+	/* The owner's token names the owner by account; Venture writes the
+	 * username the meetings and the busy time are keyed by. */
+	body = tenant_page_body(business, "estimate", owner_id);
+	g_assert_cmpuint(tenant_api(session, server, "POST", "/api/v1/booking_page", owner_token, body, &answer), ==, 201);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(answer), "owner"), ==, owner_username);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(answer), "owner_user_id"), ==, owner_id);
+	g_clear_pointer(&answer, json_node_unref); g_clear_pointer(&body, g_free);
+
+	/* A plain member may make pages but may not turn an account id into
+	 * a username. */
+	body = tenant_page_body(business, "crew-page", owner_id);
+	g_assert_cmpuint(tenant_api(session, server, "POST", "/api/v1/booking_page", crew_token, body, &answer), ==, 403);
+	{ g_autofree gchar *said = answer ? venture_json_to_string(answer, FALSE) : NULL; g_assert_null(said ? strstr(said, owner_username) : NULL); }
+	g_clear_pointer(&answer, json_node_unref); g_clear_pointer(&body, g_free);
+
+	/* Another business's owner cannot name an account outside its own
+	 * organization, in its own organization or in this one. */
+	body = tenant_page_body(other_business, "borrowed-owner", owner_id);
+	g_assert_cmpuint(tenant_api(session, server, "POST", "/api/v1/booking_page", other_token, body, &answer), ==, 422);
+	{ g_autofree gchar *said = answer ? venture_json_to_string(answer, FALSE) : NULL; g_assert_null(said ? strstr(said, owner_username) : NULL); }
+	g_clear_pointer(&answer, json_node_unref); g_clear_pointer(&body, g_free);
+	body = tenant_page_body(business, "foreign-page", owner_id);
+	g_assert_cmpuint(tenant_api(session, server, "POST", "/api/v1/booking_page", other_token, body, &answer), ==, 404);
+	{ g_autofree gchar *said = answer ? venture_json_to_string(answer, FALSE) : NULL; g_assert_null(said ? strstr(said, owner_username) : NULL); }
+	g_clear_pointer(&answer, json_node_unref); g_clear_pointer(&body, g_free);
+
+	/* Only the owner's page was made. Its owner typed by hand later is no
+	 * longer that account, so the id goes with it: the policy would
+	 * otherwise keep giving the old account the page. */
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(GPtrArray) made = venture_database_find(f->database, pages, &error);
+		g_autofree gchar *kept = NULL;
+		VentureEntity *page;
+		gint64 account = -1;
+		g_assert_no_error(error); g_assert_cmpuint(made->len, ==, 1);
+		page = g_ptr_array_index(made, 0);
+		g_object_set(page, "title", "Estimate visit (renamed)", NULL);
+		g_assert_true(venture_database_save(f->database, page, NULL, &error)); g_assert_no_error(error);
+		g_object_get(page, "owner", &kept, "owner-user-id", &account, NULL);
+		g_assert_cmpstr(kept, ==, owner_username); g_assert_cmpint(account, ==, owner_id);
+		g_clear_pointer(&kept, g_free);
+		g_object_set(page, "owner", "roofing-crew", NULL);
+		g_assert_true(venture_database_save(f->database, page, NULL, &error)); g_assert_no_error(error);
+		g_object_get(page, "owner", &kept, "owner-user-id", &account, NULL);
+		g_assert_cmpstr(kept, ==, "roofing-crew"); g_assert_cmpint(account, ==, 0);
+	}
+	venture_web_server_stop(server); g_clear_object(&server); g_clear_object(&context);
+	venture_test_remove_tree(state_dir);
+}
+
 static HtmxResponse *
 tenant_suspend_during_response(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -898,6 +1101,7 @@ main(int argc, char **argv)
 	g_test_add("/tenant/host-authority", TenantFixture, NULL, tenant_setup, test_tenant_host_authority, tenant_teardown);
 	g_test_add("/tenant/http", TenantFixture, NULL, tenant_setup, test_tenant_http, tenant_teardown);
 	g_test_add("/tenant/booking-browser-origin", TenantFixture, NULL, tenant_setup, test_tenant_booking_browser, tenant_teardown);
+	g_test_add("/tenant/booking-owner-by-account", TenantFixture, NULL, tenant_setup, test_tenant_booking_owner_by_account, tenant_teardown);
 	g_test_add("/tenant/http-admission", TenantFixture, NULL, tenant_setup, test_tenant_http_admission, tenant_teardown);
 	g_test_add("/tenant/http-nested-admission", TenantFixture, GINT_TO_POINTER(1), tenant_setup, test_tenant_http_admission, tenant_teardown);
 	g_test_add("/tenant/http-invalid-limits", TenantFixture, NULL, tenant_setup, test_tenant_http_invalid_limits, tenant_teardown);
