@@ -250,7 +250,7 @@ administration lock:
    one) and the organization =owner= membership through the same writer that
    invitation acceptance uses.
 4. The receipt (key, request hash, user, business, =linked=, issuer, subject,
-   administrator) is stored and a =tenant.lightsite_signup= (or
+   the trimmed first and last name, administrator) is stored and a =tenant.lightsite_signup= (or
    =tenant.lightsite_signup_link=) workspace event recorded. The ordinary
    audit entries name the writer as =API token #<id>=. Lightsite owns the
    welcome email: this explicit passwordless provisioning path queues no
@@ -289,6 +289,45 @@ sign-up does *not*: its snapshot predates the new organization, and a later
 grant never enlarges an existing token. Lightsite should treat the sign-up
 response itself, matched against its configured origin and workspace, as the
 validated reference for the binding it makes at sign-up time.
+
+** Reading the owner back
+
+=GET /api/v1/lightsite/owner?issuer=<url>&subject=<sub>= tells Lightsite which
+business its sign-up made for an identity-provider subject, so the daemon can
+show a person signed in through Keycloak their own business without keeping a
+copy of the account. Authority is exactly the sign-up's (see "Authority"
+above): a workspace administrator's write-capable bearer token, now and as
+minted; a session cookie, a missing or invalid token is 401, anything else
+the sign-up refuses is 403.
+
+Both parameters are required and URL-encoded, with the sign-up's rules
+(=issuer= an =https= URL without credentials, query or fragment; =subject=
+1-255 characters without controls); anything else is 422. They are matched
+exactly, case included, against the receipts' =issuer= and =subject=: never
+an email, never a provider claim, and whether or not the issuer is the
+workspace's trusted provider. If the same person signed up more than once,
+the earliest receipt answers.
+
+#+begin_src json
+{"organization_id":42,"business_name":"Example Co","first_name":"Renée","last_name":"García López","email":"renee@example.test"}
+#+end_src
+
+=first_name= and =last_name= are the names the sign-up was given, trimmed as
+the sign-up trims them and kept on its receipt. They are not split back out of
+the user's display name, and for a linked member, whose display name the
+sign-up leaves alone, they can differ from it. A receipt written before the
+receipt kept names answers both as =""=. =business_name= and =email= are read
+now from the business and the owner, so a later rename shows.
+
+| Result | Meaning |
+|--------+---------|
+| 200 | The business that sign-up made |
+| 401 | No bearer token, an invalid/expired token, or a session instead of a token |
+| 403 | Not the sign-up's authority (see above) |
+| 404 | No sign-up for this issuer and subject, or its business or owner is gone |
+| 422 | =issuer= or =subject= missing or breaking its rule |
+
+Every answer carries =Cache-Control: no-store=.
 
 ** The owner's own sign-in
 
@@ -368,7 +407,10 @@ body shape and bounds, required and trimmed owner names (including a joined
 Unicode display name, a conflict when either name changes, and an existing
 member whose display name stays put), rollback after a failed membership
 write followed by a successful retry, username derivation and the recovery
-path above. See
+path above. The =/lightsite-owner/= cases in the same file read the owner
+back: found for a created and a linked owner, the names as given in a table
+of plain, padded Unicode and multi-word names, 404 and 422 for unknown or
+malformed identities, and every authority refusal. See
 [[file:evidence/lightsite-signup.org][the evidence]].
 
 * Browser handoff for an enrolled owner

@@ -1907,7 +1907,7 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	}
 	receipt = g_object_new(VENTURE_TYPE_TENANT_SIGNUP, "idempotency-key", idempotency_key, "request-hash", hash,
 		"user-id", user_id, "business-id", organization_id, "linked", linked, "issuer", issuer, "subject", subject,
-		"actor-user-id", actor_id, NULL);
+		"actor-user-id", actor_id, "first-name", first, "last-name", last, NULL);
 	if (!grant_membership(self, user_id, username, member, VENTURE_TENANT_ROLE_MEMBER, organization_id,
 	        VENTURE_ORGANIZATION_ROLE_OWNER, &audit, error)) goto rollback;
 	schedule_token = signup_schedule_token(self, organization_id, user_id, &audit, error);
@@ -2180,3 +2180,4 @@ venture_tenant_service_link_identity(VentureTenantService *self, const gchar *to
 }
 
 #include "venture-tenant-owner-invitations.inc"
+#include "venture-tenant-lightsite-owner.inc"

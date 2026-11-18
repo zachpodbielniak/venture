@@ -117,6 +117,10 @@ static const VentureFieldDecl signup_fields[] = {
 	VENTURE_FIELD("issuer", "Issuer", "Identity provider realm asserted by the caller", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("subject", "Subject", "Provider subject asserted by the caller; not a sign-in link", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("actor-user-id", "Administrator", "Workspace administrator whose token asserted it", VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
+	/* The owner's names as given, trimmed: the user keeps only the joined
+	 * display name, and a linked member keeps their own. */
+	VENTURE_FIELD("first-name", "First name", "Given name submitted at sign-up", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("last-name", "Last name", "Family name submitted at sign-up", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 };
 VENTURE_DEFINE_ENTITY(VentureTenantSignup, venture_tenant_signup, signup_fields)
 

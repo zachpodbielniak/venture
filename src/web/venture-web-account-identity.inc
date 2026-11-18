@@ -134,6 +134,38 @@ venture_web_lightsite_schedule_token(HtmxRequest *request, GHashTable *params, g
 }
 
 static HtmxResponse *
+owner_finish(HtmxResponse *response)
+{
+	return account_request_finish(response, "Lightsite owner");
+}
+
+/* GET /api/v1/lightsite/owner?issuer=&subject=. The sign-up's authority:
+ * only a bearer token reaches the service; a browser session is refused as
+ * no service credential. */
+static HtmxResponse *
+venture_web_lightsite_owner(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *self = data;
+	VentureDatabase *database = venture_context_get_database(self->context);
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) result = NULL;
+	HtmxResponse *response = venture_web_api_require(self, request, VENTURE_USER_ROLE_VIEWER);
+	(void)params;
+	if (response) return owner_finish(response);
+	principal = venture_auth_authenticate(self->auth, request);
+	if (principal->token_id <= 0) {
+		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_UNAUTHENTICATED, "A service bearer token is required");
+		return owner_finish(venture_web_error_response(error));
+	}
+	scope = venture_access_policy_enter(venture_database_get_access_policy(database), principal);
+	result = venture_tenant_service_lightsite_owner(venture_tenant_service_get(database),
+		htmx_request_get_query_param(request, "issuer"), htmx_request_get_query_param(request, "subject"), &error);
+	return owner_finish(result ? venture_web_json_response(result, 200) : venture_web_error_response(error));
+}
+
+static HtmxResponse *
 identity_link_finish(HtmxResponse *response)
 {
 	return account_request_finish(response, "Identity link");
