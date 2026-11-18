@@ -283,6 +283,54 @@ test_tallow_sandbox_denies_files(
 	g_assert_nonnull(strstr(error->message, "denied"));
 }
 
+/* a plugin's own `extern fn` naming a tallow runtime symbol is a foreign C
+ * call, which the sandbox refuses: re-declared with an integer for the
+ * pointer, tlw_str_len would read any address in the server (tallow
+ * 0.35.5). The refusal fails the load instead of dereferencing 4096. */
+static void
+test_tallow_sandbox_denies_runtime_extern(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = NULL;
+
+	(void)user_data;
+
+	path = write_plugin(fixture, "peek.tlw",
+		"extern fn raw_len(p: i64) -> i64 = \"tlw_str_len\";\n"
+		"\n"
+		"fn plugin_register() {\n"
+		"\tprint(\"${raw_len(4096)}\");\n"
+		"}\n");
+	g_assert_false(venture_plugin_manager_load_file(fixture->manager, path, &error));
+	g_assert_nonnull(error);
+	g_assert_nonnull(strstr(error->message, "denied"));
+	g_assert_nonnull(strstr(error->message, "tlw_str_len"));
+	g_clear_error(&error);
+
+	/* granting ffi to a plugin by name does not open it: that grant is
+	 * ignored with a warning, so the call is still refused (a second file,
+	 * since the manager does not load a path twice) */
+	{
+		const gchar *grants[] = { "probe=ffi", NULL };
+		g_autofree gchar *probe = NULL;
+
+		probe = write_plugin(fixture, "probe.tlw",
+			"extern fn raw_len(p: i64) -> i64 = \"tlw_str_len\";\n"
+			"\n"
+			"fn plugin_register() {\n"
+			"\tprint(\"${raw_len(4096)}\");\n"
+			"}\n");
+		g_object_set(fixture->config, "plugins-tallow-capabilities", grants, NULL);
+		g_test_expect_message(G_LOG_DOMAIN, G_LOG_LEVEL_WARNING, "*ffi capability is never granted*");
+		g_assert_false(venture_plugin_manager_load_file(fixture->manager, probe, &error));
+		g_test_assert_expected_messages();
+		g_assert_nonnull(error);
+		g_assert_nonnull(strstr(error->message, "denied"));
+	}
+}
+
 /* a grant names a plugin and a capability; it opens that, for that plugin */
 static void
 test_tallow_grant_opens_one_directory(
@@ -595,6 +643,7 @@ main(
 	ADD("/plugin-tallow/reference/validate", test_tallow_reference_validate);
 	ADD("/plugin-tallow/reference/automation", test_tallow_reference_automation);
 	ADD("/plugin-tallow/sandbox/denies-files", test_tallow_sandbox_denies_files);
+	ADD("/plugin-tallow/sandbox/runtime-extern", test_tallow_sandbox_denies_runtime_extern);
 	ADD("/plugin-tallow/sandbox/grant", test_tallow_grant_opens_one_directory);
 	ADD("/plugin-tallow/sandbox/step-limit", test_tallow_step_limit);
 	ADD("/plugin-tallow/sandbox/switched-off", test_tallow_switched_off);

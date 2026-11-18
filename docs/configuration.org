@@ -414,7 +414,7 @@ A =.tlw= plugin is Tallow source run by the suet bytecode VM inside the server, 
 | =allow_tallow= | =true= | =VENTURE_PLUGINS_ALLOW_TALLOW= | load =.tlw= plugins at all; off, one fails to load saying so |
 | =tallow_max_steps= | =10000000= | =VENTURE_PLUGINS_TALLOW_MAX_STEPS= | VM instructions one call into a plugin may run (its =plugin_register()=, a fee, a step); past it the call fails with =limit reached= |
 | =tallow_max_memory= | =67108864= | =VENTURE_PLUGINS_TALLOW_MAX_MEMORY= | bytes a plugin's heap may grow to |
-| =tallow_capabilities= | =[]= | =VENTURE_PLUGINS_TALLOW_CAPABILITIES= | grants, one per entry, as =PLUGIN=CAPABILITY= in Tallow's spelling: =rates=fs.read:/srv/rates=, =rates=net.connect:443=, =rates=env:RATES_KEY=. =PLUGIN= is the file name without =.tlw=. A plugin's own =uses= declaration narrows what it is granted, never widens it |
+| =tallow_capabilities= | =[]= | =VENTURE_PLUGINS_TALLOW_CAPABILITIES= | grants, one per entry, as =PLUGIN=CAPABILITY= in Tallow's spelling: =rates=fs.read:/srv/rates=, =rates=net.connect:443=, =rates=env:RATES_KEY=. =PLUGIN= is the file name without =.tlw=. A plugin's own =uses= declaration narrows what it is granted, never widens it. =ffi= is never granted (an entry is ignored with a warning) |
 | =tallow_std_dir= | empty | =VENTURE_PLUGINS_TALLOW_STD_DIR= | the Tallow standard library the VM reads; empty means the copy installed under the data directory (=tallow-std=), else the build tree's |
 
 The limits and grants are read when a plugin loads: a change applies to the plugins loaded after it (a restart, for the ones loaded at startup).

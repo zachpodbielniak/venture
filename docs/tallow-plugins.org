@@ -115,7 +115,7 @@ Each call runs the kernel's native code with a contract guard: a plugin passing 
 
 A capability is spelled as a Tallow =uses= entry: =fs:DIR=, =fs.read:DIR=, =fs.write:DIR=, =net=, =net.connect:PORT=, =net.bind:PORT=, =exec=, =exec:PATH=, =env=, =env:NAME=. A plugin that declares its own =uses= gets the intersection. A request outside what is granted reaches the plugin as an error value (a fallible call such as =read_file= returns =err=), so a plugin can handle it; unhandled, it fails the call.
 
-GObject Introspection is closed to plugins (=restrict-gir=), and the VM's =ffi= capability is never granted: the host modules are the only way out of the VM.
+GObject Introspection is closed to plugins (=restrict-gir=), and the VM's =ffi= capability is never granted: the host modules are the only way out of the VM. A =NAME=ffi= entry in =plugins.tallow_capabilities= is ignored with a warning, because =ffi= would let a plugin call any C function in the server with types of its own choosing. Without it, a plugin's own =extern fn= is refused when called, including one that re-declares a Tallow runtime function such as =tlw_str_len= with an integer for a pointer; before Tallow 0.35.5 the sandbox let that through, which gave a plugin arbitrary memory reads and writes (=test-plugin-tallow=: =sandbox/runtime-extern=).
 
 What the sandbox does not do: it confines what the code can reach, not whether its arithmetic is right. A fee model can still charge the wrong fee; review a plugin's formulas as you would a venue's rate card.
 

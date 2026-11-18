@@ -765,6 +765,16 @@ venture_tallow_vm_new(
 		if (NULL == eq || (gsize)(eq - grants[i]) != strlen(plugin) ||
 		    0 != strncmp(grants[i], plugin, (gsize)(eq - grants[i])))
 			continue;
+		/* `ffi` lets a plugin call any C function in the server with
+		 * types of its choosing, which is no sandbox at all: the host
+		 * modules stay the only way out of the VM, whatever is granted */
+		if (0 == g_ascii_strncasecmp(eq + 1, "ffi", 3) &&
+		    ('\0' == eq[4] || ':' == eq[4]))
+		{
+			g_warning("plugins.tallow_capabilities: %s: the ffi capability is never "
+			          "granted to a Tallow plugin; ignoring it", grants[i]);
+			continue;
+		}
 		tallow_suet_allow_capability(vm, eq + 1);
 	}
 
