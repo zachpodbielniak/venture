@@ -26,8 +26,18 @@ venture_tenant_service_lightsite_owner(VentureTenantService *self,
 	JsonNode *node;
 	gint64 organization_id = 0, user_id = 0;
 	g_return_val_if_fail(VENTURE_IS_TENANT_SERVICE(self), NULL);
-	if (!signup_issuer_valid(issuer)) { signup_refuse(error, "issuer must be an https URL without credentials, query or fragment"); return NULL; }
-	if (!signup_text_valid(subject, 255)) { signup_refuse(error, "subject must be 1-255 characters without control characters"); return NULL; }
+	/* Own prefix: this is a read, and "Lightsite sign-up" would send an
+	 * operator looking at the wrong route. */
+	if (!signup_issuer_valid(issuer)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Lightsite owner: issuer must be an https URL without credentials, query or fragment");
+		return NULL;
+	}
+	if (!signup_text_valid(subject, 255)) {
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			"Lightsite owner: subject must be 1-255 characters without control characters");
+		return NULL;
+	}
 	if (!venture_tenant_service_check_trusted_service(self, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(self->database), NULL);
 	query = venture_query_new(VENTURE_TYPE_TENANT_SIGNUP);

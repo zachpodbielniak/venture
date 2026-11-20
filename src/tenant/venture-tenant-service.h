@@ -118,7 +118,10 @@ JsonNode *venture_tenant_service_lightsite_signup(VentureTenantService *self, co
  * Reads the business a Lightsite sign-up made for @issuer and @subject
  * (matched exactly; the earliest receipt if the person signed up more than
  * once), under the authority of venture_tenant_service_check_trusted_service().
- * No such receipt, or a business since removed, is %VENTURE_ERROR_NOT_FOUND.
+ * No such receipt, or a business or owner removed since, is
+ * %VENTURE_ERROR_NOT_FOUND. The earliest receipt answers when the same
+ * issuer and subject signed up more than once; a later one is not tried
+ * when that earliest business or owner is gone.
  *
  * Returns: (transfer full) (nullable): {organization_id, business_name,
  *   first_name, last_name, email}, or %NULL with @error

@@ -138,7 +138,9 @@ same commit and moves this baseline.
 
 Hosted browser sign-in for an enrolled owner is in the platform guide and
 the route index. Trusted sign-up requires `first_name` and `last_name`;
-the old five-member body is refused (operations.md). Events and the
+the old five-member body is refused (operations.md).
+`GET /api/v1/lightsite/owner?issuer=&subject=` reads that sign-up back for
+the same trusted token (operations.md, api-routes.md). Events and the
 unified calendar are the planner guide. Durable business outcomes and
 their replay route are in the automation guide. A lead email keeps its
 plus tag; matching uses a separate key (crm.md). Sequence email steps
@@ -422,6 +424,7 @@ ids, notes) in words.
 |---|---|---|
 | "Change the text quiet hours" (or any workflow default) | `venturectl settings set telephony.quiet-hours 20:00-07:00`; `settings list` names every key; one audit entry | [platform.md](references/platform.md) |
 | "Provision a Lightsite owner" | `POST /api/v1/lightsite/signups`: seven strings, including `first_name` and `last_name`; the old five-member body is 422 | [operations.md](references/operations.md) |
+| "Which business did this Lightsite sign-in get?" | `GET /api/v1/lightsite/owner?issuer=&subject=` with the trusted sign-up token; earliest receipt; no-store | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
 | "Bill a Lightsite business" | bind its plan through the operator's billing organization | [billing.md](references/billing.md) |

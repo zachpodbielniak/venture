@@ -158,6 +158,7 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | Route | Purpose | venturectl |
 |---|---|---|
 | `POST /lightsite/signups` | trusted workspace service creates or links a business owner idempotently | -- |
+| `GET /lightsite/owner?issuer=&subject=` | trusted workspace service reads the business that sign-up made for that provider subject (earliest receipt; names from the receipt; business name and email live; no-store) | -- |
 | `POST /account/identity-link` | signed-in local member links provider identity | -- |
 | `GET /account-authority` | explicit active memberships and bounded site permissions | -- |
 | `POST /lightsite/billing/subscriptions` | trusted idempotent business-to-plan binding | -- |

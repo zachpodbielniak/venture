@@ -306,7 +306,8 @@ Both parameters are required and URL-encoded, with the sign-up's rules
 exactly, case included, against the receipts' =issuer= and =subject=: never
 an email, never a provider claim, and whether or not the issuer is the
 workspace's trusted provider. If the same person signed up more than once,
-the earliest receipt answers.
+the earliest receipt answers, and a later one is not tried when that earliest
+business or owner is gone.
 
 #+begin_src json
 {"organization_id":42,"business_name":"Example Co","first_name":"Renée","last_name":"García López","email":"renee@example.test"}
