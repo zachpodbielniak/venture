@@ -917,6 +917,201 @@ test_no_venture_welcome(Fixture *f, gconstpointer data)
 	}
 }
 
+/* --- GET /api/v1/lightsite/owner: who signed up through this subject ---- */
+
+#define OWNER_READ "/api/v1/lightsite/owner"
+
+/* A sign-up with chosen names, built as JSON so any name survives quoting. */
+static JsonNode *
+signup_named(Fixture *f, const gchar *key, const gchar *email, const gchar *subject, const gchar *business,
+	const gchar *first, const gchar *last)
+{
+	g_autofree gchar *base = body_for(key, email, subject, business), *payload = NULL;
+	g_autoptr(JsonNode) request = venture_json_parse(base, NULL);
+	json_object_set_string_member(json_node_get_object(request), "first_name", first);
+	json_object_set_string_member(json_node_get_object(request), "last_name", last);
+	payload = venture_json_to_string(request, FALSE);
+	return signup(f, payload, 201);
+}
+
+/* The owner read. Every answer, refusals included, is uncacheable. */
+static JsonNode *
+owner_read(Fixture *f, const gchar *token, const gchar *host, const gchar *issuer, const gchar *subject, guint expected)
+{
+	g_autofree gchar *escaped_issuer = g_uri_escape_string(issuer, NULL, FALSE);
+	g_autofree gchar *escaped_subject = g_uri_escape_string(subject, NULL, FALSE);
+	g_autofree gchar *path = g_strdup_printf(OWNER_READ "?issuer=%s&subject=%s", escaped_issuer, escaped_subject);
+	g_autofree gchar *body = NULL;
+	g_autoptr(GError) error = NULL;
+	gboolean no_store = FALSE;
+	guint status = exchange(f, "GET", path, host, NULL, token, NULL, NULL, NULL, &body, &no_store);
+	JsonNode *node;
+	if (status != expected) g_test_message("unexpected %u for %s: %s", status, path, body);
+	g_assert_cmpuint(status, ==, expected);
+	g_assert_true(no_store);
+	node = venture_json_parse(body, &error);
+	g_assert_no_error(error); g_assert_nonnull(node);
+	return node;
+}
+
+/* After a sign-up the subject finds the business, its name and the owner's
+ * address: for a person Venture created and for a member it linked. */
+static void
+test_owner_found(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) olive = hosted_member(f, "olive", "Olive.Owner@Example.Test", f->home, VENTURE_ORGANIZATION_ROLE_VIEWER, TRUE);
+	static const struct { const gchar *subject, *email, *business, *expected_email; } rows[] = {
+		{ "kc-owner-new", "new.owner@example.test", "Example Co", "new.owner@example.test" },
+		{ "kc-owner-olive", "olive.owner@example.test", "Example Studio", "Olive.Owner@Example.Test" },
+	};
+	guint i;
+	(void)data;
+	for (i = 0; i < G_N_ELEMENTS(rows); i++) {
+		g_autofree gchar *key = g_strdup_printf("owner:found-%u", i);
+		g_autoptr(JsonNode) signed_up = signup_named(f, key, rows[i].email, rows[i].subject, rows[i].business, "Alex", "Example");
+		g_autoptr(JsonNode) owner = owner_read(f, f->admin_secret, NULL, ISSUER, rows[i].subject, 200);
+		JsonObject *object = json_node_get_object(owner);
+		g_assert_cmpuint(json_object_get_size(object), ==, 5);
+		g_assert_cmpint(json_object_get_int_member(object, "organization_id"), ==,
+			json_object_get_int_member(json_node_get_object(signed_up), "organization_id"));
+		g_assert_cmpstr(json_object_get_string_member(object, "business_name"), ==, rows[i].business);
+		g_assert_cmpstr(json_object_get_string_member(object, "email"), ==, rows[i].expected_email);
+	}
+	g_assert_cmpint(venture_entity_get_id(olive), >, 0);
+}
+
+/* The names come back as they were given at sign-up (trimmed, as the
+ * sign-up trims them), never re-split from the joined display name -- and
+ * for a linked member whose display name is something else entirely. */
+static void
+test_owner_names(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) olive = hosted_member(f, "olive", "olive@example.test", f->home, VENTURE_ORGANIZATION_ROLE_VIEWER, TRUE);
+	static const struct { const gchar *email, *first, *last, *want_first, *want_last; } rows[] = {
+		{ "alex@example.test", "Alex", "Example", "Alex", "Example" },
+		{ "renee@example.test", "  Ren\xc3\xa9" "e  ", "  Garc\xc3\xad" "a L\xc3\xb3" "pez  ", "Ren\xc3\xa9" "e", "Garc\xc3\xad" "a L\xc3\xb3" "pez" },
+		{ "mary@example.test", "Mary Ann", "de la Cruz", "Mary Ann", "de la Cruz" },
+		{ "olive@example.test", "Olive", "O'Brien-Smith", "Olive", "O'Brien-Smith" },
+	};
+	guint i;
+	(void)data;
+	for (i = 0; i < G_N_ELEMENTS(rows); i++) {
+		g_autofree gchar *key = g_strdup_printf("owner:names-%u", i), *subject = g_strdup_printf("kc-names-%u", i);
+		g_autoptr(JsonNode) signed_up = signup_named(f, key, rows[i].email, subject, "Named Co", rows[i].first, rows[i].last);
+		g_autoptr(JsonNode) owner = owner_read(f, f->admin_secret, NULL, ISSUER, subject, 200);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "first_name"), ==, rows[i].want_first);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "last_name"), ==, rows[i].want_last);
+	}
+	g_assert_cmpint(venture_entity_get_id(olive), >, 0);
+}
+
+/* No sign-up through this issuer and subject is 404; a request that does
+ * not name a valid issuer and subject is 422. */
+static void
+test_owner_not_found(Fixture *f, gconstpointer data)
+{
+	static const struct { const gchar *issuer, *subject; guint status; } rows[] = {
+		{ ISSUER, "kc-nobody", 404 },
+		{ ISSUER, "kc-owner-case", 200 },
+		{ ISSUER, "KC-OWNER-CASE", 404 },
+		{ "https://id.example.test/realms/other", "kc-owner-case", 404 },
+		{ "http://id.example.test/realms/lightsite", "kc-owner-case", 422 },
+		{ ISSUER, "", 422 },
+	};
+	g_autoptr(JsonNode) before = NULL, signed_up = NULL;
+	guint i;
+	(void)data;
+	before = owner_read(f, f->admin_secret, NULL, ISSUER, "kc-owner-case", 404);
+	signed_up = signup_named(f, "owner:case", "case@example.test", "kc-owner-case", "Case Co", "Alex", "Example");
+	for (i = 0; i < G_N_ELEMENTS(rows); i++) {
+		g_autoptr(JsonNode) answer = owner_read(f, f->admin_secret, NULL, rows[i].issuer, rows[i].subject, rows[i].status);
+		g_assert_nonnull(answer);
+	}
+}
+
+/* Exactly the sign-up's authority: a workspace administrator's own
+ * write-capable bearer token, now and as minted. */
+static void
+test_owner_authority(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) mo = hosted_member(f, "mo", "mo@example.test", f->home, VENTURE_ORGANIZATION_ROLE_OWNER, TRUE);
+	g_autofree gchar *member_secret = mint(f->db, venture_entity_get_id(mo), VENTURE_USER_ROLE_EDITOR);
+	g_autofree gchar *viewer_secret = mint(f->db, f->admin_id, VENTURE_USER_ROLE_VIEWER);
+	g_autofree gchar *cookie = NULL, *body = NULL, *path = NULL, *escaped = g_uri_escape_string(ISSUER, NULL, FALSE);
+	gboolean no_store = FALSE;
+	g_autoptr(JsonNode) signed_up = NULL;
+	static const guint expected[] = { 401, 401, 403, 403, 403 };
+	const gchar *tokens[G_N_ELEMENTS(expected)];
+	guint i;
+	(void)data;
+	tokens[0] = NULL; tokens[1] = "invalid"; tokens[2] = member_secret; tokens[3] = viewer_secret; tokens[4] = f->admin_secret;
+	signed_up = signup_named(f, "owner:authority", "authority@example.test", "kc-owner-authority", "Authority Ltd", "Alex", "Example");
+	for (i = 0; i < G_N_ELEMENTS(expected); i++) {
+		g_autoptr(JsonNode) answer = owner_read(f, tokens[i], i == 4 ? "wrong.example" : NULL, ISSUER, "kc-owner-authority", expected[i]);
+		g_assert_false(json_object_has_member(json_node_get_object(answer), "email"));
+	}
+	/* A browser session is not a service credential, and that refusal is
+	 * uncacheable too: a cached 401 is the wrong answer after a token mint. */
+	g_assert_cmpuint(login_status(f, "provisioner", "private-test-password", &cookie), ==, 302);
+	path = g_strdup_printf(OWNER_READ "?issuer=%s&subject=kc-owner-authority", escaped);
+	no_store = FALSE;
+	g_assert_cmpuint(exchange(f, "GET", path, NULL, cookie, NULL, NULL, NULL, NULL, &body, &no_store), ==, 401);
+	g_assert_true(no_store);
+}
+
+/* The business name and the email are read now, so a rename shows. The
+ * earliest receipt answers, and it keeps answering after a later sign-up;
+ * once that earliest business or its owner is gone the read is 404 and does
+ * not fall through to the later one. A receipt with no stored names (one
+ * written before the columns) answers both as empty. */
+static void
+test_owner_follows_records(Fixture *f, gconstpointer data)
+{
+	g_autoptr(JsonNode) first = NULL, second = NULL, owner = NULL, gone = NULL;
+	g_autofree gchar *rename = NULL, *remail = NULL, *drop_org = NULL, *drop_user = NULL, *blank_names = NULL;
+	JsonObject *object;
+	gint64 organization_id, user_id, later_id;
+	(void)data;
+	first = signup_named(f, "owner:live-1", "live@example.test", "kc-owner-live", "Live Co", "Alex", "Example");
+	object = json_node_get_object(first);
+	organization_id = json_object_get_int_member(object, "organization_id");
+	user_id = json_object_get_int_member(object, "user_id");
+	rename = g_strdup_printf("UPDATE organizations SET name='Live Co Renamed' WHERE id=%" G_GINT64_FORMAT, organization_id);
+	remail = g_strdup_printf("UPDATE users SET email='live.renamed@example.test' WHERE id=%" G_GINT64_FORMAT, user_id);
+	sql(f->db, rename);
+	sql(f->db, remail);
+	owner = owner_read(f, f->admin_secret, NULL, ISSUER, "kc-owner-live", 200);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "business_name"), ==, "Live Co Renamed");
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "email"), ==, "live.renamed@example.test");
+	/* A receipt from before the name columns: nothing is guessed from the
+	 * joined display name. */
+	blank_names = g_strdup_printf("UPDATE tenant_signups SET first_name=NULL, last_name=NULL WHERE business_id=%" G_GINT64_FORMAT, organization_id);
+	sql(f->db, blank_names);
+	g_clear_pointer(&owner, json_node_unref);
+	owner = owner_read(f, f->admin_secret, NULL, ISSUER, "kc-owner-live", 200);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "first_name"), ==, "");
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "last_name"), ==, "");
+	second = signup_named(f, "owner:live-2", "later@example.test", "kc-owner-live", "Later Co", "Blair", "Later");
+	later_id = json_object_get_int_member(json_node_get_object(second), "organization_id");
+	g_assert_cmpint(later_id, !=, organization_id);
+	g_clear_pointer(&owner, json_node_unref);
+	owner = owner_read(f, f->admin_secret, NULL, ISSUER, "kc-owner-live", 200);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(owner), "organization_id"), ==, organization_id);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(owner), "business_name"), ==, "Live Co Renamed");
+	drop_org = g_strdup_printf("UPDATE organizations SET deleted_at='2026-01-01T00:00:00Z' WHERE id=%" G_GINT64_FORMAT, organization_id);
+	sql(f->db, drop_org);
+	gone = owner_read(f, f->admin_secret, NULL, ISSUER, "kc-owner-live", 404);
+	g_assert_false(json_object_has_member(json_node_get_object(gone), "email"));
+	drop_user = g_strdup_printf(
+		"UPDATE organizations SET deleted_at=NULL WHERE id=%" G_GINT64_FORMAT
+		"; UPDATE users SET deleted_at='2026-01-01T00:00:00Z' WHERE id=%" G_GINT64_FORMAT,
+		organization_id, user_id);
+	sql(f->db, drop_user);
+	g_clear_pointer(&gone, json_node_unref);
+	gone = owner_read(f, f->admin_secret, NULL, ISSUER, "kc-owner-live", 404);
+	g_assert_false(json_object_has_member(json_node_get_object(gone), "organization_id"));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -935,5 +1130,10 @@ main(int argc, char **argv)
 	g_test_add("/lightsite-signup/rollback", Fixture, NULL, setup, test_rollback, teardown);
 	g_test_add("/lightsite-signup/usernames", Fixture, NULL, setup, test_usernames, teardown);
 	g_test_add("/lightsite-signup/passwordless-recovery", Fixture, NULL, setup, test_passwordless_recovery, teardown);
+	g_test_add("/lightsite-owner/found", Fixture, NULL, setup, test_owner_found, teardown);
+	g_test_add("/lightsite-owner/names", Fixture, NULL, setup, test_owner_names, teardown);
+	g_test_add("/lightsite-owner/not-found", Fixture, NULL, setup, test_owner_not_found, teardown);
+	g_test_add("/lightsite-owner/authority", Fixture, NULL, setup, test_owner_authority, teardown);
+	g_test_add("/lightsite-owner/follows-records", Fixture, NULL, setup, test_owner_follows_records, teardown);
 	return g_test_run();
 }

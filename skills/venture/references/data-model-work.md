@@ -155,8 +155,12 @@ minimal retained lane. See [automation.md](automation.md) for replay and retry.
 ## Hosted provisioning receipts
 
 `tenant_signup` retains the trusted sign-up request identity and its owner /
-organization result for replay. It is service-managed evidence; do not create
-or edit receipts through generic CRUD. See `docs/lightsite-accounts.org`.
+organization result for replay, plus the trimmed `first_name` and `last_name`
+the sign-up was given (empty on receipts written before those columns).
+`GET /api/v1/lightsite/owner` reads the earliest receipt for an issuer and
+subject; the business name and email come from the live records. It is
+service-managed evidence; do not create or edit receipts through generic
+CRUD. See `docs/lightsite-accounts.org`.
 
 `tenant_identity` binds a verified issuer/subject to a local workspace member.
 Trusted sign-up or authenticated account linking writes it; an email claim

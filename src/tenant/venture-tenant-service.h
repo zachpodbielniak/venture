@@ -109,6 +109,26 @@ JsonNode *venture_tenant_service_lightsite_signup(VentureTenantService *self, co
 	const gchar *first_name, const gchar *last_name,
 	gboolean *created, GError **error);
 /**
+ * venture_tenant_service_lightsite_owner:
+ * @self: the hosted tenant service
+ * @issuer: https URL of the identity realm, as sent at sign-up
+ * @subject: provider subject, as sent at sign-up
+ * @error: return location for a #GError
+ *
+ * Reads the business a Lightsite sign-up made for @issuer and @subject
+ * (matched exactly; the earliest receipt if the person signed up more than
+ * once), under the authority of venture_tenant_service_check_trusted_service().
+ * No such receipt, or a business or owner removed since, is
+ * %VENTURE_ERROR_NOT_FOUND. The earliest receipt answers when the same
+ * issuer and subject signed up more than once; a later one is not tried
+ * when that earliest business or owner is gone.
+ *
+ * Returns: (transfer full) (nullable): {organization_id, business_name,
+ *   first_name, last_name, email}, or %NULL with @error
+ */
+JsonNode *venture_tenant_service_lightsite_owner(VentureTenantService *self,
+	const gchar *issuer, const gchar *subject, GError **error);
+/**
  * venture_tenant_service_lightsite_schedule_token:
  * @self: the tenant service
  * @organization_id: the business from a Lightsite sign-up
