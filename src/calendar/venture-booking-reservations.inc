@@ -113,12 +113,14 @@ gchar *venture_booking_service_manage_url(VentureBookingService *self, VentureEn
 	return g_strdup_printf("%.*s/book/%s/manage/%s", (gint)(strlen(origin) - (g_str_has_suffix(origin, "/") ? 1 : 0)), origin, encoded, capability);
 }
 
+/* @business is set when the owner moved the booking: the letter says so
+ * instead of confirming it again. */
 static gboolean booking_mail(VentureBookingService *self, VentureEntity *reservation, VentureEntity *activity,
-	const gchar *email, const gchar *origin, GError **error)
+	const gchar *email, const gchar *origin, const gchar *business, GError **error)
 {
 	VentureMailOutbox *outbox = venture_database_get_mail_outbox(self->database);
 	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
-	g_autofree gchar *url = NULL, *body = NULL, *key = NULL, *when_text = NULL, *resource_text = NULL;
+	g_autofree gchar *url = NULL, *body = NULL, *key = NULL, *when_text = NULL, *resource_text = NULL, *subject = NULL;
 	g_autoptr(JsonArray) names = booking_names(reservation, "resource-names");
 	g_autoptr(GDateTime) when = NULL;
 	if (venture_string_is_empty(origin) || outbox == NULL || venture_entity_registry_lookup(venture_entity_registry_get_default(), "mail_message") == G_TYPE_INVALID) return TRUE;
@@ -126,13 +128,20 @@ static gboolean booking_mail(VentureBookingService *self, VentureEntity *reserva
 	if (url == NULL) return FALSE;
 	g_object_get(activity, "starts-at", &when, NULL); when_text = venture_time_to_string(when);
 	resource_text = booking_names_label(names);
-	body = g_strdup_printf("Your booking is confirmed for %s.\nResources: %s\nGroup size: %" G_GINT64_FORMAT
+	if (business != NULL) {
+		subject = g_strdup_printf("Your booking with %s moved", business);
+		body = g_strdup_printf("Your booking with %s moved to %s.\nResources: %s\nGroup size: %" G_GINT64_FORMAT
+			"\n\nUse this private link to cancel or choose another time:\n%s", business, when_text, resource_text,
+			MAX(booking_int(reservation, "group-size"), 1), url);
+	} else body = g_strdup_printf("Your booking is confirmed for %s.\nResources: %s\nGroup size: %" G_GINT64_FORMAT
 		"\n\nUse this private link to cancel or choose another time:\n%s", when_text, resource_text,
 		MAX(booking_int(reservation, "group-size"), 1), url);
 	key = g_strdup_printf("booking:%s:%" G_GINT64_FORMAT, venture_entity_get_uuid(reservation), booking_int(reservation, "generation"));
 	message = venture_mail_message_new();
 	g_object_set(message, "organization-id", venture_entity_get_organization_id(reservation), "to", email,
-		"subject", "Booking confirmation", "text-body", "A private booking confirmation was issued.", "private-text-body", body,
+		"subject", subject != NULL ? subject : "Booking confirmation",
+		"text-body", business != NULL ? "A private booking change notice was issued." : "A private booking confirmation was issued.",
+		"private-text-body", body,
 		"idempotency-key", key, "related-type", "booking_reservation", "related-id", venture_entity_get_id(reservation), NULL);
 	queued = venture_mail_outbox_enqueue(outbox, message, NULL, error);
 	return queued != NULL;
@@ -206,7 +215,7 @@ VentureEntity *venture_booking_service_confirm(VentureBookingService *self, Vent
 	page_clear(&shape);
 	if (!venture_database_save(self->database, activity, actor, error)) goto fail;
 	g_object_set(hold, "activity-id", venture_entity_get_id(activity), "state", "confirmed", "public-origin", base, NULL);
-	if (!reservation_write(self, hold, error) || !booking_mail(self, hold, activity, email, base, error)) goto fail;
+	if (!reservation_write(self, hold, error) || !booking_mail(self, hold, activity, email, base, NULL, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return g_steal_pointer(&activity);
 fail:
@@ -301,60 +310,122 @@ static void booking_replace_resources(VentureEntity *activity, const gchar *name
 	g_object_set(activity, "body", next, NULL);
 }
 
+/* The one reschedule, for the customer's link and the owner alike, under
+ * the caller's transaction: the start must be offered and free. The customer
+ * takes the page's current duration; @keep_length keeps the booked one. */
+static gboolean booking_reschedule(VentureBookingService *self, VentureEntity *page, VentureEntity *reservation,
+	VentureEntity *activity, const gchar *start, const gchar *resource, gboolean keep_length,
+	GDateTime *reference, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) fresh = NULL;
+	g_autoptr(GPtrArray) busy = NULL;
+	g_autoptr(JsonArray) old_names = NULL;
+	g_autoptr(GDateTime) when = NULL, ends = NULL, booked = NULL, booked_end = NULL;
+	g_autofree gchar *secret = NULL, *names = NULL;
+	gboolean ok;
+	Page shape;
+	fresh = booking_page_current(self, page, error); if (fresh == NULL) return FALSE;
+	when = venture_string_is_empty(start) ? NULL : venture_time_from_string(start, NULL);
+	if (when == NULL) return refuse(error, VENTURE_ERROR_VALIDATION, "Choose an offered time");
+	if (!page_read(fresh, &shape, error)) { page_clear(&shape); return FALSE; }
+	shape.ignore = venture_entity_get_id(reservation);
+	if (!booking_offered(self, fresh, &shape, when, reference, error)) { page_clear(&shape); return FALSE; }
+	if (keep_length) {
+		g_object_get(reservation, "starts-at", &booked, "ends-at", &booked_end, NULL);
+		if (booked == NULL || booked_end == NULL || g_date_time_difference(booked_end, booked) <= 0)
+		{ page_clear(&shape); return refuse(error, VENTURE_ERROR_CONFLICT, "The booking has no length to keep"); }
+		ends = g_date_time_add(when, g_date_time_difference(booked_end, booked));
+	} else ends = g_date_time_add_minutes(when, (gint)shape.duration);
+	old_names = booking_names(reservation, "resource-names");
+	if (g_strcmp0(shape.selection, "pick") == 0 && venture_string_is_empty(resource) &&
+	    old_names != NULL && json_array_get_length(old_names) > 0)
+		resource = json_array_get_string_element(old_names, 0);
+	busy = load_busy(self, venture_entity_get_organization_id(fresh), &shape, reference, error);
+	if (busy == NULL) { page_clear(&shape); return FALSE; }
+	names = booking_allocate(busy, when, ends, &shape, resource, MAX(booking_int(reservation, "group-size"), 1), error);
+	if (names == NULL) { page_clear(&shape); return FALSE; }
+	booking_replace_resources(activity, names);
+	g_object_set(activity, "owner", shape.owner, "starts-at", when, "ends-at", ends, "due-at", when,
+		"booking-resources", names, NULL);
+	secret = venture_generate_token(32);
+	g_object_set(reservation, "owner", shape.owner, "starts-at", when, "ends-at", ends, "secret", secret,
+		"resource-names", names, NULL);
+	page_clear(&shape);
+	ok = reservation_write(self, reservation, error) && venture_database_save(self->database, activity, actor, error);
+	return ok;
+}
+
+/* The letter to the customer after a reschedule, through the private link's mail. */
+static gboolean booking_notify_moved(VentureBookingService *self, VentureEntity *reservation,
+	VentureEntity *activity, const gchar *business, GError **error)
+{
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autofree gchar *email = NULL, *origin = NULL;
+	contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, booking_int(activity, "contact-id"), error);
+	if (contact == NULL) return FALSE;
+	email = booking_string(contact, "email"); origin = booking_string(reservation, "public-origin");
+	return booking_mail(self, reservation, activity, email, origin, business, error);
+}
+
 VentureEntity *venture_booking_service_manage_selected(VentureBookingService *self, VentureEntity *page,
 	const gchar *capability, const gchar *start, const gchar *resource,
 	GDateTime *now, const VentureActor *actor, GError **error)
 {
-	g_autoptr(VentureEntity) reservation = NULL, activity = NULL, fresh = NULL, contact = NULL;
-	g_autoptr(GPtrArray) busy = NULL;
-	g_autoptr(JsonArray) old_names = NULL;
-	g_autoptr(GDateTime) reference = now != NULL ? g_date_time_ref(now) : venture_time_now(), when = NULL, ends = NULL;
-	g_autofree gchar *secret = NULL, *origin = NULL, *email = NULL, *names = NULL;
-	gboolean cancel = start == NULL;
-	Page shape;
+	g_autoptr(VentureEntity) reservation = NULL, activity = NULL;
+	g_autoptr(GDateTime) reference = now != NULL ? g_date_time_ref(now) : venture_time_now();
 	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
 	if (self->database == NULL || !venture_database_begin(self->database, error)) return NULL;
 	reservation = venture_booking_service_lookup_capability(self, page, capability, reference, error);
 	if (reservation == NULL) goto fail;
 	activity = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, booking_int(reservation, "activity-id"), error);
 	if (activity == NULL) goto fail;
-	if (cancel)
+	if (start == NULL)
 	{
 		if (!booking_cancel_records(self, reservation, activity, actor, error)) goto fail;
 	}
-	else
-	{
-		fresh = booking_page_current(self, page, error); if (fresh == NULL) goto fail;
-		when = venture_time_from_string(start, NULL);
-		if (when == NULL) { refuse(error, VENTURE_ERROR_VALIDATION, "Choose an offered time"); goto fail; }
-		if (!page_read(fresh, &shape, error)) { page_clear(&shape); goto fail; }
-		shape.ignore = venture_entity_get_id(reservation);
-		if (!booking_offered(self, fresh, &shape, when, reference, error)) { page_clear(&shape); goto fail; }
-		ends = g_date_time_add_minutes(when, (gint)shape.duration);
-		old_names = booking_names(reservation, "resource-names");
-		if (g_strcmp0(shape.selection, "pick") == 0 && venture_string_is_empty(resource) &&
-		    old_names != NULL && json_array_get_length(old_names) > 0)
-			resource = json_array_get_string_element(old_names, 0);
-		busy = load_busy(self, venture_entity_get_organization_id(fresh), &shape, reference, error);
-		if (busy == NULL) { page_clear(&shape); goto fail; }
-		names = booking_allocate(busy, when, ends, &shape, resource, MAX(booking_int(reservation, "group-size"), 1), error);
-		if (names == NULL) { page_clear(&shape); goto fail; }
-		booking_replace_resources(activity, names);
-		g_object_set(activity, "owner", shape.owner, "starts-at", when, "ends-at", ends, "due-at", when,
-			"booking-resources", names, NULL);
-		secret = venture_generate_token(32);
-		g_object_set(reservation, "owner", shape.owner, "starts-at", when, "ends-at", ends, "secret", secret,
-			"resource-names", names, NULL);
-		page_clear(&shape);
-		if (!reservation_write(self, reservation, error) || !venture_database_save(self->database, activity, actor, error)) goto fail;
-	}
-	if (!cancel)
-	{
-		contact = venture_database_get(self->database, VENTURE_TYPE_CONTACT, booking_int(activity, "contact-id"), error);
-		if (contact == NULL) goto fail;
-		email = booking_string(contact, "email"); origin = booking_string(reservation, "public-origin");
-		if (!booking_mail(self, reservation, activity, email, origin, error)) goto fail;
-	}
+	else if (!booking_reschedule(self, page, reservation, activity, start, resource, FALSE, reference, actor, error) ||
+	         !booking_notify_moved(self, reservation, activity, NULL, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) return NULL;
+	return g_steal_pointer(&activity);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
+VentureEntity *venture_booking_service_move(VentureBookingService *self, gint64 organization_id,
+	gint64 activity_id, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) activity = NULL, reservation = NULL, page = NULL, business = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GDateTime) reference = now != NULL ? g_date_time_ref(now) : venture_time_now();
+	g_autoptr(GError) local = NULL;
+	g_autofree gchar *state = NULL, *name = NULL;
+	gint status = 0;
+	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
+	if (organization_id <= 0 || activity_id <= 0) return refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"), NULL;
+	if (self->database == NULL || venture_entity_registry_lookup(venture_entity_registry_get_default(), "booking_page") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"), NULL;
+	if (!venture_database_begin(self->database, error)) return NULL;
+	activity = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, activity_id, &local);
+	if (local != NULL) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
+	if (activity == NULL || venture_entity_is_deleted(activity) || venture_entity_get_organization_id(activity) != organization_id)
+	{ refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"); goto fail; }
+	query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, activity_id, NULL);
+	reservation = venture_database_find_one(self->database, query, &local);
+	if (local != NULL) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
+	if (reservation == NULL) { refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"); goto fail; }
+	state = booking_string(reservation, "state");
+	g_object_get(activity, "status", &status, NULL);
+	if (g_strcmp0(state, "confirmed") != 0 || status != VENTURE_ACTIVITY_STATUS_PLANNED)
+	{ refuse(error, VENTURE_ERROR_CONFLICT, "Only a confirmed booking can be moved"); goto fail; }
+	page = venture_database_get(self->database, VENTURE_TYPE_BOOKING_PAGE, booking_int(reservation, "page-id"), error);
+	if (page == NULL) { if (error == NULL || *error == NULL) refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"); goto fail; }
+	business = venture_database_get(self->database, VENTURE_TYPE_ORGANIZATION, organization_id, NULL);
+	if (business != NULL) g_object_get(business, "name", &name, NULL);
+	if (!booking_reschedule(self, page, reservation, activity, start, NULL, TRUE, reference, actor, error) ||
+	    !booking_notify_moved(self, reservation, activity, venture_string_is_empty(name) ? "your business" : name, error)) goto fail;
 	if (!venture_database_commit(self->database, error)) return NULL;
 	return g_steal_pointer(&activity);
 fail:

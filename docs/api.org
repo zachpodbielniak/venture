@@ -807,6 +807,17 @@ idempotently; =GET /api/v1/lightsite/billing/:organization_id= and
 customer, is on and owes. All three take the trusted-service authority of the
 sign-up and answer 404 while no billing organization is configured. See
 [[file:lightsite-billing.org][Lightsite billing]].
+
+=POST /api/v1/lightsite/bookings/:id/move= moves a confirmed booking when its
+business owner reschedules it, under the same trusted-service authority.
+=:id= is the booking's meeting; the body is exactly
+={"organization_id": N, "starts_at": "<ISO 8601>"}=, a start the booking page
+offers. It is the customer's reschedule reached by the owner: the booking
+keeps its booked length, its private link is renewed, and the customer is
+sent "Your booking with <business> moved" when the booking has a public
+origin. 200 answers ={"starts_at", "ends_at"}=; a booking of another business
+is 404, a taken slot or a booking that is not confirmed 409, and a bad body
+or time 422.
 * Receipt printing
 
 =GET /api/v1/printers= returns configured names, default flags and unknown

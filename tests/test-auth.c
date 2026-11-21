@@ -1175,6 +1175,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/organizations/1/stripe/connect", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/schedule-tokens/1/rotate", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/schedule-tokens/1/revoke", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/bookings/1/move", NULL, "{\"organization_id\":1,\"starts_at\":\"2030-01-01T09:00:00Z\"}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/marketing_consent/current"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/mail_accounts/1/connector", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),

@@ -163,6 +163,27 @@ VentureEntity *venture_booking_service_manage_selected(VentureBookingService *se
 	const gchar *capability, const gchar *start, const gchar *resource,
 	GDateTime *now, const VentureActor *actor, GError **error);
 /**
+ * venture_booking_service_move:
+ * @self: the service
+ * @organization_id: the business the booking must belong to
+ * @activity_id: the booked meeting
+ * @start: new offered ISO 8601 start
+ * @now: (nullable): reference clock
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND when no booking of that
+ *   business has this meeting, %VENTURE_ERROR_CONFLICT when the slot is not
+ *   free or the booking is not confirmed, %VENTURE_ERROR_VALIDATION for a bad time
+ *
+ * The owner's side of venture_booking_service_manage(): the same reschedule
+ * under the save lock, reached by the meeting instead of the customer's
+ * capability. The booking keeps its booked length, the capability rotates,
+ * and the customer is sent "Your booking with <business> moved" when the
+ * booking has a public origin.
+ * Returns: (transfer full) (nullable): the moved meeting
+ */
+VentureEntity *venture_booking_service_move(VentureBookingService *self, gint64 organization_id,
+	gint64 activity_id, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error);
+/**
  * venture_booking_service_release:
  * @self: the service
  * @reservation: saved hold

@@ -229,3 +229,12 @@ editor, `vk_`) is minted at Lightsite sign-up and may call only
 `POST /api/v1/lightsite/schedule-tokens/:id/rotate|revoke` needs the trusted
 admin bearer, returns a new secret once on rotate, and deactivates the
 previous tokens of that scope. See `docs/lightsite-schedule-token.org`.
+`POST /api/v1/lightsite/bookings/:id/move` is the same trusted admin bearer
+moving a confirmed booking when the business owner reschedules it: `:id` is
+the booking's meeting, the body exactly `{"organization_id": N, "starts_at":
+"<ISO 8601>"}`. The start must be one the booking page offers; the booking
+keeps its booked length, its private link is renewed, and the customer is
+sent "Your booking with <business> moved" when the booking has a public
+origin. 200 answers `{"starts_at", "ends_at"}`; a booking of another business
+is 404, a taken slot or a booking that is not confirmed 409, a bad body or
+time 422.
