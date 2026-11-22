@@ -88,7 +88,14 @@ static const VentureFieldDecl venture_organization_fields[] = {
 	VENTURE_FIELD("pnl-basis", "Profit and loss from", "ledger: the posted books (accrual, as the income statement); empty or records: sale and expense records", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("quote-discount-approval", "Require discount approval", NULL, VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("quote-max-line-discount-percent", "Maximum unapproved line discount", NULL, VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD("quote-discount-approver", "Discount approver role", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE)
+	VENTURE_FIELD("quote-discount-approver", "Discount approver role", NULL, VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	/* Leaving Lightsite (docs/api.org, the departure routes). Only the
+	 * trusted service moves these; see venture-lightsite-departure.h. */
+	VENTURE_FIELD_ENUM("departure-state", "Leaving state", "active, closing, closed or purged; set by Lightsite through Venture's rules",
+	                   venture_departure_state_get_type, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("left-at", "Left", "When the business closed", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("returned-at", "Came back", "When the business last came back", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("purged-at", "Deleted", "When the business was deleted for good", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE)
 };
 
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureOrganization, venture_organization, venture_organization_fields,

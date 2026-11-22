@@ -818,6 +818,29 @@ sent "Your booking with <business> moved" when the booking has a public
 origin. 200 answers ={"starts_at", "ends_at"}=; a booking of another business
 is 404, a taken slot or a booking that is not confirmed 409, and a bad body
 or time 422.
+
+=GET /api/v1/lightsite/departure/:org= reads a business's leaving state,
+under the same trusted-service authority; Venture keeps it on the
+organization and Lightsite only shows it. 200 answers
+={"organization_id": N, "state": "active", "left_at": null, "returned_at": null, "purged_at": null}=:
+=state= is =active= (the default), =closing=, =closed= or =purged=, and each
+time is ISO 8601 or null. An unknown organization is 404.
+=POST /api/v1/lightsite/departure/:org/:action= takes no body and answers the
+same object:
+- =leave=: =active= to =closing=; already =closing= is 200 and nothing
+  changes; =closed= or =purged= is 409.
+- =close=: =closing= to =closed=, =left_at= set to now; already =closed= is
+  200 and =left_at= does not move; =active= or =purged= is 409.
+- =return=: =closed= to =active=, =returned_at= set to now and =left_at=
+  kept; =active= or =closing= is 409; =purged=, or later than =left_at= plus
+  six calendar months, is 410.
+- =purge=: =closed= to =purged=, =purged_at= set to now; already =purged= is
+  200 and =purged_at= does not move; =active= or =closing= is 409.
+Any other action is 404. No token is 401; any token but the trusted
+service's, the business owner's own included, is 403. Lightsite calls
+=leave=, cancels the plan, takes the site offline and packs the files, then
+calls =close=; after a crash it calls =leave= again (200) and finishes the
+steps that did not.
 * Receipt printing
 
 =GET /api/v1/printers= returns configured names, default flags and unknown
