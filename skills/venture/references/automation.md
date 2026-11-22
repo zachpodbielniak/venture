@@ -159,7 +159,11 @@ audit notifications. The source transaction writes both event and delivery;
 failure rolls back the source. Events include payments/refunds, paid invoices,
 confirmed/cancelled bookings, new leads/subscribers, sent/accepted quotes and
 won deals. Bodies contain identities, type, time and source version, never the
-record or audit diff.
+record or audit diff. A pushed booking event (not the replay feed) also carries
+`booking`: `reservation_id`, `state`, `starts_at`/`ends_at` (ISO 8601 with the
+page zone's offset), `time_zone`, `service`, `customer` (`name`, `email`,
+`phone`) and `note`, read at delivery and covered by the signature;
+`reservation_id` equals the event's `source_id`.
 
 Organization owners/admins replay with
 `GET /api/v1/business-events?organization_id=N&after=0&limit=100`.

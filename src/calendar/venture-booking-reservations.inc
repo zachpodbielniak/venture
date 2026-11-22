@@ -147,6 +147,10 @@ static gboolean booking_mail(VentureBookingService *self, VentureEntity *reserva
 	return queued != NULL;
 }
 
+/* The meeting body is the one place the customer's own words are kept, and
+ * booking_hook_note() reads them back from it: change both together. */
+#define BOOKING_BODY_PREFIX "Booked through /book: "
+
 VentureEntity *venture_booking_service_confirm(VentureBookingService *self, VentureEntity *reservation,
 	const gchar *name, const gchar *email, const gchar *notes, const gchar *origin,
 	GDateTime *now, const VentureActor *actor, GError **error)
@@ -205,7 +209,7 @@ VentureEntity *venture_booking_service_confirm(VentureBookingService *self, Vent
 	subject = g_strdup_printf("%s with %s", venture_string_is_empty(shape.title) ? "Meeting" : shape.title, name);
 	resource_text = booking_names_label(names);
 	resources = booking_string(hold, "resource-names");
-	body = g_strdup_printf("Booked through /book: %s <%s>\nResources: %s\nGroup size: %" G_GINT64_FORMAT "%s%s",
+	body = g_strdup_printf(BOOKING_BODY_PREFIX "%s <%s>\nResources: %s\nGroup size: %" G_GINT64_FORMAT "%s%s",
 		name, normal, resource_text, MAX(booking_int(hold, "group-size"), 1),
 		venture_string_is_empty(notes) ? "" : "\n\n", venture_string_is_empty(notes) ? "" : notes);
 	activity = g_object_new(VENTURE_TYPE_ACTIVITY, "organization-id", org, "kind", VENTURE_ACTIVITY_KIND_MEETING, "owner", shape.owner,
@@ -558,4 +562,95 @@ void venture_booking_service_install(VentureDatabase *database)
 	venture_database_add_save_validator(database, VENTURE_TYPE_BOOKING_RESERVATION, booking_validate_reservation, NULL, NULL);
 	g_object_set_data(G_OBJECT(database), "venture-booking-installed", GINT_TO_POINTER(1));
 	booking_register_cancel(database);
+}
+
+/* The confirmation header has no blank line, so the customer's note is all
+ * that follows the first one. A meeting the owner rewrote keeps whatever
+ * they left there; one that no longer starts with the header has no note. */
+static gchar *booking_hook_note(VentureEntity *activity)
+{
+	g_autofree gchar *body = NULL;
+	const gchar *gap;
+	g_object_get(activity, "body", &body, NULL);
+	if (body == NULL || !g_str_has_prefix(body, BOOKING_BODY_PREFIX)) return NULL;
+	gap = strstr(body, "\n\n");
+	return gap != NULL && gap[2] != '\0' ? g_strdup(gap + 2) : NULL;
+}
+
+static void booking_hook_string(JsonBuilder *builder, const gchar *member, const gchar *value)
+{
+	json_builder_set_member_name(builder, member);
+	if (venture_string_is_empty(value)) json_builder_add_null_value(builder);
+	else json_builder_add_string_value(builder, value);
+}
+
+static void booking_hook_time(JsonBuilder *builder, const gchar *member, GDateTime *when, GTimeZone *zone)
+{
+	g_autoptr(GDateTime) local = when != NULL ? g_date_time_to_timezone(when, zone) : NULL;
+	g_autofree gchar *text = local != NULL ? g_date_time_format(local, "%Y-%m-%dT%H:%M:%S%:z") : NULL;
+	booking_hook_string(builder, member, text);
+}
+
+JsonNode *venture_booking_service_hook_details(VentureBookingService *self, gint64 reservation_id, GError **error)
+{
+	g_autoptr(VentureEntity) reservation = NULL, page = NULL, activity = NULL, contact = NULL;
+	g_autoptr(GDateTime) starts = NULL, ends = NULL;
+	g_autoptr(GTimeZone) zone = NULL;
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autofree gchar *state = NULL, *zone_name = NULL, *title = NULL, *note = NULL;
+	g_autofree gchar *name = NULL, *email = NULL, *phone = NULL;
+	gint64 contact_id = 0;
+	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
+	if (self->database == NULL)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"), NULL;
+	reservation = venture_database_get(self->database, VENTURE_TYPE_BOOKING_RESERVATION, reservation_id, error);
+	if (reservation == NULL)
+	{
+		if (error == NULL || *error == NULL) refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found");
+		return NULL;
+	}
+	g_object_get(reservation, "state", &state, "starts-at", &starts, "ends-at", &ends, NULL);
+	/* A removed page, meeting or contact leaves its values null: the
+	 * reservation alone still says when it was. A failed read is an error,
+	 * so the caller retries rather than sending a letter with holes in it. */
+	page = venture_database_get(self->database, VENTURE_TYPE_BOOKING_PAGE, booking_int(reservation, "page-id"), error);
+	if (page == NULL && error != NULL && *error != NULL) return NULL;
+	if (page != NULL && !venture_entity_is_deleted(page))
+		g_object_get(page, "timezone", &zone_name, "title", &title, NULL);
+	activity = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, booking_int(reservation, "activity-id"), error);
+	if (activity == NULL && error != NULL && *error != NULL) return NULL;
+	if (activity != NULL && !venture_entity_is_deleted(activity))
+	{
+		note = booking_hook_note(activity);
+		g_object_get(activity, "contact-id", &contact_id, NULL);
+		contact = contact_id > 0 ? venture_database_get(self->database, VENTURE_TYPE_CONTACT, contact_id, error) : NULL;
+		if (contact == NULL && error != NULL && *error != NULL) return NULL;
+		if (contact != NULL && !venture_entity_is_deleted(contact))
+			g_object_get(contact, "name", &name, "email", &email, "phone", &phone, NULL);
+	}
+	zone = !venture_string_is_empty(zone_name) ? g_time_zone_new_identifier(zone_name) : NULL;
+	if (zone == NULL)
+	{
+		/* An unknown zone is shown as UTC and named so, never mislabelled. */
+		g_free(zone_name);
+		zone_name = g_strdup("UTC");
+		zone = g_time_zone_new_utc();
+	}
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "reservation_id"); json_builder_add_int_value(builder, reservation_id);
+	booking_hook_string(builder, "state", state);
+	booking_hook_time(builder, "starts_at", starts, zone);
+	booking_hook_time(builder, "ends_at", ends, zone);
+	booking_hook_string(builder, "time_zone", zone_name);
+	booking_hook_string(builder, "service", title);
+	json_builder_set_member_name(builder, "customer");
+	json_builder_begin_object(builder);
+	booking_hook_string(builder, "name", name);
+	booking_hook_string(builder, "email", email);
+	booking_hook_string(builder, "phone", phone);
+	json_builder_end_object(builder);
+	booking_hook_string(builder, "note", note);
+	json_builder_end_object(builder);
+	return json_builder_get_root(builder);
 }

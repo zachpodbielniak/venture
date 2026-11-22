@@ -242,5 +242,26 @@ JsonNode *venture_booking_service_describe(VentureBookingService *self, VentureE
 gboolean venture_booking_service_estimate(VentureBookingService *self, VentureEntity *page, const gchar *arrival,
 	const gchar *departure, JsonNode **estimate, gchar **summary, GError **error);
 
+/**
+ * venture_booking_service_hook_details:
+ * @self: the service
+ * @reservation_id: a reservation of any state
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND for no such
+ *   reservation, or a database failure (a removed page, meeting or contact
+ *   only leaves its values null)
+ *
+ * What a letter about the booking needs, for a signed business-event hook:
+ * "reservation_id", "state", "starts_at" and "ends_at" (ISO 8601 with the
+ * offset of the page's zone), "time_zone", "service" (the page title),
+ * "customer" (an object of "name", "email" and "phone", from the meeting's
+ * contact) and "note" (what the customer wrote). "reservation_id" equals
+ * the event's "source_id". A value that is unknown or
+ * no longer readable is null. Read at delivery time, so a retry carries the
+ * booking as it is then. Never put it in the replay feed.
+ *
+ * Returns: (transfer full) (nullable): a JSON object
+ */
+JsonNode *venture_booking_service_hook_details(VentureBookingService *self, gint64 reservation_id, GError **error);
+
 G_END_DECLS
 #endif

@@ -203,6 +203,30 @@ transition, =X-Venture-Delivery= is the stable delivery UUID, and an optional
 =X-Venture-Signature= signs the exact body with HMAC-SHA256 as for ordinary
 webhooks. Redirects are not followed and response bodies are not retained.
 
+A booking event (=booking.created=, =booking.cancelled=) pushed to a hook also
+carries a =booking= object, so a receiver can write the owner and the customer
+a letter without reading the booking back:
+
+#+begin_src json
+"booking": {
+  "reservation_id": 1, "state": "confirmed",
+  "starts_at": "2026-09-21T09:00:00-05:00", "ends_at": "2026-09-21T09:30:00-05:00",
+  "time_zone": "America/Chicago", "service": "Example consultation",
+  "customer": {"name": "Example person", "email": "person@example.test",
+               "phone": "+1 555 0100"},
+  "note": "Please use the side door."
+}
+#+end_src
+
+Times are ISO 8601 with the offset of the booking page's zone, and the service
+is the page title. =reservation_id= equals the event's =source_id=. The
+customer's name, email and phone come from the meeting's
+contact, and the note is what the customer wrote when booking. A value that is
+unknown or no longer readable is =null=. The object is read at delivery, so a
+retry carries the booking as it is then: check =state= before sending a
+confirmation. The signature covers the whole body, this object included. Only
+the push carries it; the replay feed stays minimal.
+
 A bounded main-context sweep starts due deliveries every five seconds, outside
 business transactions. Only a 2xx response marks a delivery accepted. Transport
 errors, other statuses and invalid destination configuration retain the same
