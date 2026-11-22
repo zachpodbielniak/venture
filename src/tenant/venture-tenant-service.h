@@ -90,6 +90,8 @@ JsonNode *venture_tenant_service_account_identity(VentureTenantService *self,
  * @business_name: name of the organization to create
  * @first_name: required given name; surrounding ASCII whitespace is trimmed
  * @last_name: required family name; surrounding ASCII whitespace is trimmed
+ * @timezone: (nullable): IANA zone saved on the new organization, for
+ *   example America/New_York; %NULL leaves it blank (read as UTC)
  * @created: (out) (optional): %TRUE when this call wrote the sign-up
  * @error: return location for a #GError
  *
@@ -101,12 +103,15 @@ JsonNode *venture_tenant_service_account_identity(VentureTenantService *self,
  * Names are each 1-200 UTF-8 characters after trimming, without controls.
  * Their trimmed values form the new user's display name and are included in
  * the request hash. Linking an existing member never changes their name.
+ * A @timezone that GLib cannot resolve is refused before anything is
+ * written. It is not part of the request hash: a replay never changes the
+ * saved zone.
  *
  * Returns: (transfer full) (nullable): the account reference, or %NULL
  */
 JsonNode *venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar *idempotency_key,
 	const gchar *email, const gchar *issuer, const gchar *subject, const gchar *business_name,
-	const gchar *first_name, const gchar *last_name,
+	const gchar *first_name, const gchar *last_name, const gchar *timezone,
 	gboolean *created, GError **error);
 /**
  * venture_tenant_service_lightsite_owner:

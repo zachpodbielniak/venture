@@ -580,7 +580,7 @@ tenant_lightsite_business(TenantFixture *f, const VentureAuthPrincipal *service,
 	g_autoptr(JsonNode) signup = NULL;
 	gboolean created = FALSE;
 	signup = venture_tenant_service_lightsite_signup(f->service, key, email, "https://id.example.test", key,
-		business, "Alex", "Example", &created, &error);
+		business, "Alex", "Example", NULL, &created, &error);
 	g_assert_no_error(error); g_assert_nonnull(signup); g_assert_true(created);
 	*owner_id = json_object_get_int_member(json_node_get_object(signup), "user_id");
 	return json_object_get_int_member(json_node_get_object(signup), "organization_id");

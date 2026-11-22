@@ -1544,6 +1544,18 @@ signup_text_valid(const gchar *text, glong max_chars)
 	return visible;
 }
 
+/* The business time zone, checked the way every reader of it resolves it:
+ * GLib's own lookup. A name must start with a letter and never climb out of
+ * the zone database, so a file path is not looked up as a zone. */
+static gboolean
+signup_timezone_valid(const gchar *zone)
+{
+	g_autoptr(GTimeZone) resolved = NULL;
+	if (!signup_text_valid(zone, 255) || !g_ascii_isalpha(zone[0]) || g_strstr_len(zone, -1, "..")) return FALSE;
+	resolved = g_time_zone_new_identifier(zone);
+	return resolved != NULL;
+}
+
 static gboolean
 signup_key_valid(const gchar *key)
 {
@@ -1806,7 +1818,7 @@ signup_schedule_token(VentureTenantService *self, gint64 organization_id, gint64
 JsonNode *
 venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar *idempotency_key,
 	const gchar *email, const gchar *issuer, const gchar *subject, const gchar *business_name,
-	const gchar *first_name, const gchar *last_name,
+	const gchar *first_name, const gchar *last_name, const gchar *timezone,
 	gboolean *created, GError **error)
 {
 	const gchar *fields[7];
@@ -1833,6 +1845,7 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	if (!signup_text_valid(business_name, 200)) { signup_refuse(error, "business_name must be 1-200 characters without control characters"); return NULL; }
 	if (!signup_text_valid(first, 200)) { signup_refuse(error, "first_name must be 1-200 characters without control characters after trimming"); return NULL; }
 	if (!signup_text_valid(last, 200)) { signup_refuse(error, "last_name must be 1-200 characters without control characters after trimming"); return NULL; }
+	if (timezone && !signup_timezone_valid(timezone)) { signup_refuse(error, "timezone must be an IANA time zone name, for example America/New_York"); return NULL; }
 	/* The caller's word that the address is verified is trusted only from
 	 * a workspace administrator's own write-capable service token. */
 	if (!venture_tenant_service_check_trusted_service(self, &actor_id, error)) return NULL;
@@ -1845,6 +1858,9 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	audit.approved_by = NULL;
 	fields[0] = idempotency_key; fields[1] = email; fields[2] = issuer; fields[3] = subject; fields[4] = business_name;
 	fields[5] = first; fields[6] = last;
+	/* The zone is a setting, not part of who signed up: it stays out of the
+	 * hash, so a repeat carrying another zone (or none) replays the receipt
+	 * and leaves the saved zone alone, and receipts from before it still match. */
 	hash = signup_request_hash(fields, G_N_ELEMENTS(fields));
 	internal = venture_access_policy_enter(policy, NULL);
 	self->maintenance_depth++;
@@ -1887,6 +1903,7 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 		linked = TRUE;
 	}
 	organization = g_object_new(VENTURE_TYPE_ORGANIZATION, "name", business_name, "active", TRUE, NULL);
+	if (timezone) g_object_set(organization, "timezone", timezone, NULL);
 	if (!venture_database_save(self->database, organization, &audit, error)) goto rollback;
 	organization_id = venture_entity_get_id(organization);
 	/* The starter chart every new install gets, in this same transaction: a

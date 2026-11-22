@@ -49,9 +49,10 @@ venture_web_account_identity(HtmxRequest *request, GHashTable *params, gpointer 
 	return account_identity_finish(response);
 }
 
-/* POST /api/v1/lightsite/signups. A closed object of seven strings, at most
- * 4096 bytes; only a bearer token reaches the service, which decides the
- * authority. A browser session is refused as no service credential. */
+/* POST /api/v1/lightsite/signups. A closed object of seven strings, plus
+ * an optional eighth, "timezone", at most 4096 bytes; only a bearer token
+ * reaches the service, which decides the authority. A browser session is
+ * refused as no service credential. */
 static HtmxResponse *
 venture_web_lightsite_signup(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -64,6 +65,7 @@ venture_web_lightsite_signup(HtmxRequest *request, GHashTable *params, gpointer 
 	g_autoptr(JsonParser) parser = json_parser_new();
 	g_autoptr(JsonNode) result = NULL;
 	const gchar *values[G_N_ELEMENTS(members)];
+	const gchar *timezone = NULL;
 	GBytes *body = htmx_request_get_body_bytes(request);
 	const gchar *bytes = NULL;
 	JsonNode *root;
@@ -89,7 +91,13 @@ venture_web_lightsite_signup(HtmxRequest *request, GHashTable *params, gpointer 
 	if (!bytes || !length || memchr(bytes, '\0', length) || g_strstr_len(bytes, (gssize)length, "\\u0000") ||
 	    !json_parser_load_from_data(parser, bytes, (gssize)length, NULL)) goto malformed;
 	root = json_parser_get_root(parser);
-	if (!root || !JSON_NODE_HOLDS_OBJECT(root) || json_object_get_size(json_node_get_object(root)) != G_N_ELEMENTS(members))
+	if (!root || !JSON_NODE_HOLDS_OBJECT(root)) goto malformed;
+	if (json_object_has_member(json_node_get_object(root), "timezone")) {
+		JsonNode *member = json_object_get_member(json_node_get_object(root), "timezone");
+		if (!JSON_NODE_HOLDS_VALUE(member) || json_node_get_value_type(member) != G_TYPE_STRING) goto malformed;
+		timezone = json_node_get_string(member);
+	}
+	if (json_object_get_size(json_node_get_object(root)) != G_N_ELEMENTS(members) + (timezone ? 1 : 0))
 		goto malformed;
 	for (i = 0; i < G_N_ELEMENTS(members); i++) {
 		JsonNode *member = json_object_get_member(json_node_get_object(root), members[i]);
@@ -98,11 +106,11 @@ venture_web_lightsite_signup(HtmxRequest *request, GHashTable *params, gpointer 
 	}
 	scope = venture_access_policy_enter(venture_database_get_access_policy(database), principal);
 	result = venture_tenant_service_lightsite_signup(venture_tenant_service_get(database),
-		values[0], values[1], values[2], values[3], values[4], values[5], values[6], &created, &error);
+		values[0], values[1], values[2], values[3], values[4], values[5], values[6], timezone, &created, &error);
 	return signup_finish(result ? venture_web_json_response(result, created ? 201 : 200) : venture_web_error_response(error));
 malformed:
 	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
-		"Expected a JSON object of exactly idempotency_key, email, issuer, subject, business_name, first_name and last_name strings");
+		"Expected a JSON object of exactly idempotency_key, email, issuer, subject, business_name, first_name and last_name strings, and optionally a timezone string");
 	return signup_finish(venture_web_error_response(error));
 }
 

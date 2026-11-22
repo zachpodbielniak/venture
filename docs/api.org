@@ -800,6 +800,17 @@ organization ID and active lifecycle state; never grants token access to
 workspace administration. See [[file:lightsite-accounts.org][Lightsite account validation]] for refusals and
 consumer requirements.
 
+=POST /api/v1/lightsite/signups= finishes a Lightsite self sign-up under a
+workspace administrator's service token: it creates or links the owner and
+creates their business. The body is a closed object of the seven strings
+=idempotency_key=, =email=, =issuer=, =subject=, =business_name=,
+=first_name= and =last_name=, plus an optional eighth, =timezone=: an IANA
+zone name such as =America/New_York=, saved as the new business's time zone.
+A =timezone= GLib cannot resolve, or one that is not a string, is 422 and
+nothing is created; without it the zone stays blank, which Venture reads as
+UTC. A repeat of a finished sign-up replays its answer and never changes the
+saved zone. See [[file:lightsite-accounts.org][Lightsite accounts]], "Trusted-service self sign-up".
+
 =POST /api/v1/lightsite/billing/subscriptions= binds a Lightsite business to a
 plan in the configured billing organization (=lightsite.billing_organization_id=),
 idempotently; =GET /api/v1/lightsite/billing/:organization_id= and
