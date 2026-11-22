@@ -6,9 +6,12 @@
  * organization_id the business it must belong to.
  *
  * What breaks if these regress: an anonymous caller moves a booking; a move
- * stretches or shrinks the booking to the page's current duration; the
- * customer is not told; a booking of another business is moved; a move lands
- * on a taken slot or revives a cancelled booking; a bad body is accepted.
+ * stretches or shrinks the booking to the page's current duration; Venture
+ * mails the customer too, so they get two letters (the caller sends the
+ * letter, with the owner as the reply address); a booking of another
+ * business is moved; a move lands on a taken slot or revives a cancelled
+ * booking; a bad body is accepted. The customer's own reschedule through the
+ * private link still gets Venture's letter.
  */
 #include <venture.h>
 #include <libsoup/soup.h>
@@ -167,13 +170,14 @@ static gchar *move_body(gint64 organization, const gchar *start)
 	return g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"starts_at\":\"%s\"}", organization, start);
 }
 
+/* Mail queued for the business; @subject NULL counts every letter. */
 static gint64 letters(Fixture *f, const gchar *subject)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
 	gint64 count;
 	venture_query_set_organization(query, f->business);
-	venture_query_add_filter_string(query, "subject", VENTURE_FILTER_OP_EQ, subject, NULL);
+	if (subject) venture_query_add_filter_string(query, "subject", VENTURE_FILTER_OP_EQ, subject, NULL);
 	count = venture_database_count(f->db, query, &error);
 	g_assert_no_error(error);
 	return count;
@@ -195,7 +199,7 @@ static void test_unauthenticated(Fixture *f, gconstpointer unused)
 }
 
 /* The page's duration changes after the booking was made; the move keeps the
- * length the customer booked, and tells them. */
+ * length the customer booked, and queues no mail: the caller sends it. */
 static void test_moves_and_keeps_length(Fixture *f, gconstpointer unused)
 {
 	g_autofree gchar *start = slot(f, 4), *target = NULL;
@@ -205,6 +209,7 @@ static void test_moves_and_keeps_length(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) fresh = NULL;
 	g_autoptr(GDateTime) original = venture_time_from_string(start, NULL), wanted = NULL, moved = NULL, ends = NULL, stored = NULL, stored_end = NULL;
 	JsonObject *object;
+	gint64 queued;
 	guint i;
 	(void)unused;
 	g_object_set(f->page, "duration-minutes", (gint64)60, NULL);
@@ -215,7 +220,8 @@ static void test_moves_and_keeps_length(Fixture *f, gconstpointer unused)
 		g_autoptr(GDateTime) when = venture_time_from_string(candidate, NULL);
 		if (g_date_time_difference(when, original) >= 3 * G_TIME_SPAN_HOUR) target = g_steal_pointer(&candidate);
 	}
-	g_assert_cmpint(letters(f, "Your booking with " BUSINESS_NAME " moved"), ==, 0);
+	queued = letters(f, NULL);
+	g_assert_cmpint(queued, ==, 1);
 	body = move_body(f->business, target);
 	answer = post(f, path, body, TRUE, 200);
 	object = json_node_get_object(answer);
@@ -229,7 +235,30 @@ static void test_moves_and_keeps_length(Fixture *f, gconstpointer unused)
 	g_object_get(fresh, "starts-at", &stored, "ends-at", &stored_end, NULL);
 	g_assert_true(g_date_time_equal(stored, moved));
 	g_assert_true(g_date_time_equal(stored_end, ends));
-	g_assert_cmpint(letters(f, "Your booking with " BUSINESS_NAME " moved"), ==, 1);
+	g_assert_cmpint(letters(f, NULL), ==, queued);
+}
+
+/* The customer moving their own booking through the private link is told. */
+static void test_customer_reschedule_mails(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *start = slot(f, 4), *later = slot(f, 10), *url = NULL;
+	g_autoptr(VentureEntity) booked = book(f, start, "first@example.test");
+	g_autoptr(VentureEntity) reservation = NULL, moved = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GError) error = NULL;
+	gint64 queued;
+	(void)unused;
+	venture_query_set_organization(query, f->business);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(booked), NULL);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	url = venture_booking_service_manage_url(f->booking, reservation, ORIGIN, &error);
+	g_assert_no_error(error); g_assert_nonnull(url);
+	queued = letters(f, "Booking confirmation");
+	g_assert_cmpint(queued, ==, 1);
+	moved = venture_booking_service_manage_selected(f->booking, f->page, strrchr(url, '/') + 1, later, NULL, NULL, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(moved);
+	g_assert_cmpint(letters(f, "Booking confirmation"), ==, queued + 1);
 }
 
 static void test_wrong_organization(Fixture *f, gconstpointer unused)
@@ -245,7 +274,7 @@ static void test_wrong_organization(Fixture *f, gconstpointer unused)
 	wrong = move_body(venture_entity_get_id(other), later);
 	a = post(f, path, wrong, TRUE, 404);
 	b = post(f, missing, right, TRUE, 404);
-	g_assert_cmpint(letters(f, "Your booking with " BUSINESS_NAME " moved"), ==, 0);
+	g_assert_cmpint(letters(f, NULL), ==, 1);
 }
 
 static void test_conflict(Fixture *f, gconstpointer unused)
@@ -259,13 +288,16 @@ static void test_conflict(Fixture *f, gconstpointer unused)
 	g_autoptr(VentureEntity) cancelled = NULL;
 	g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);
 	g_autoptr(GError) error = NULL;
+	gint64 queued;
 	(void)unused;
 	a = post(f, path, onto, TRUE, 409);
+	g_assert_cmpint(letters(f, NULL), ==, 2);
 	cancelled = venture_action_registry_perform(venture_database_get_action_registry(f->db), "activity",
 		venture_entity_get_id(booked), "cancel_booking", params, NULL, VENTURE_USER_ROLE_EDITOR, &error);
 	g_assert_no_error(error); g_assert_nonnull(cancelled);
+	queued = letters(f, NULL);
 	b = post(f, path, elsewhere, TRUE, 409);
-	g_assert_cmpint(letters(f, "Your booking with " BUSINESS_NAME " moved"), ==, 0);
+	g_assert_cmpint(letters(f, NULL), ==, queued);
 }
 
 static void test_invalid(Fixture *f, gconstpointer unused)
@@ -288,7 +320,7 @@ static void test_invalid(Fixture *f, gconstpointer unused)
 	{
 		g_autoptr(JsonNode) answer = post(f, "/api/v1/lightsite/bookings/abc/move", good, TRUE, 422);
 	}
-	g_assert_cmpint(letters(f, "Your booking with " BUSINESS_NAME " moved"), ==, 0);
+	g_assert_cmpint(letters(f, NULL), ==, 1);
 }
 
 int main(int argc, char **argv)
@@ -296,6 +328,7 @@ int main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/lightsite-booking-move/unauthenticated", Fixture, NULL, setup, test_unauthenticated, teardown);
 	g_test_add("/lightsite-booking-move/moves-and-keeps-length", Fixture, NULL, setup, test_moves_and_keeps_length, teardown);
+	g_test_add("/lightsite-booking-move/customer-reschedule-mails", Fixture, NULL, setup, test_customer_reschedule_mails, teardown);
 	g_test_add("/lightsite-booking-move/wrong-organization", Fixture, NULL, setup, test_wrong_organization, teardown);
 	g_test_add("/lightsite-booking-move/conflict", Fixture, NULL, setup, test_conflict, teardown);
 	g_test_add("/lightsite-booking-move/invalid", Fixture, NULL, setup, test_invalid, teardown);

@@ -184,7 +184,7 @@ own subscriptions only), `/supplier/:token` (supplier portal),
 | `GET /lightsite/billing` | staff billing overview | -- |
 | `POST /lightsite/schedule-tokens/:id/rotate` | replace that business's `lightsite:schedule` token; secret once | -- |
 | `POST /lightsite/schedule-tokens/:id/revoke` | deactivate that business's schedule tokens | -- |
-| `POST /lightsite/bookings/:id/move` | trusted workspace service moves a confirmed booking (`:id` is its meeting) for the business owner: body `{"organization_id", "starts_at"}`, an offered start; keeps the booked length and queues the customer letter; 200 `{"starts_at", "ends_at"}`, 404 not that business's booking, 409 slot taken or not confirmed, 422 bad body or time | -- |
+| `POST /lightsite/bookings/:id/move` | trusted workspace service moves a confirmed booking (`:id` is its meeting) for the business owner: body `{"organization_id", "starts_at"}`, an offered start; keeps the booked length and queues no mail (the caller sends the letter); 200 `{"starts_at", "ends_at"}`, 404 not that business's booking, 409 slot taken or not confirmed, 422 bad body or time | -- |
 | `GET /marketing_consent/current` | current marketing permission for one address (viewer, no-store) | -- |
 
 Hosted browser authentication (not bearer API routes): `GET /auth/hosted/start`

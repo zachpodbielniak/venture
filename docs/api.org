@@ -813,9 +813,9 @@ business owner reschedules it, under the same trusted-service authority.
 =:id= is the booking's meeting; the body is exactly
 ={"organization_id": N, "starts_at": "<ISO 8601>"}=, a start the booking page
 offers. It is the customer's reschedule reached by the owner: the booking
-keeps its booked length, its private link is renewed, and the customer is
-sent "Your booking with <business> moved" when the booking has a public
-origin. 200 answers ={"starts_at", "ends_at"}=; a booking of another business
+keeps its booked length and its private link is renewed. Venture sends the
+customer no mail: the caller sends the letter, with the owner as the reply
+address. 200 answers ={"starts_at", "ends_at"}=; a booking of another business
 is 404, a taken slot or a booking that is not confirmed 409, and a bad body
 or time 422.
 

@@ -176,9 +176,9 @@ VentureEntity *venture_booking_service_manage_selected(VentureBookingService *se
  *
  * The owner's side of venture_booking_service_manage(): the same reschedule
  * under the save lock, reached by the meeting instead of the customer's
- * capability. The booking keeps its booked length, the capability rotates,
- * and the customer is sent "Your booking with <business> moved" when the
- * booking has a public origin.
+ * capability. The booking keeps its booked length and the capability
+ * rotates. No mail is queued: the caller sends the customer the letter,
+ * with the owner as the reply address.
  * Returns: (transfer full) (nullable): the moved meeting
  */
 VentureEntity *venture_booking_service_move(VentureBookingService *self, gint64 organization_id,
