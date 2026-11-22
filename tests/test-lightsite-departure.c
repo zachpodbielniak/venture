@@ -236,7 +236,7 @@ static void test_actions(Fixture *f, gconstpointer unused)
 /* 3. A repeat answers 200 and moves nothing. */
 static void test_repeats(Fixture *f, gconstpointer unused)
 {
-	g_autoptr(JsonNode) a = NULL, b = NULL, c = NULL, d = NULL, e = NULL, g = NULL;
+	g_autoptr(JsonNode) a = NULL, b = NULL, c = NULL, d = NULL, e = NULL, g = NULL, back = NULL, again = NULL;
 	(void)unused;
 	a = act(f, "leave", 200);
 	b = act(f, "leave", 200);
@@ -246,6 +246,15 @@ static void test_repeats(Fixture *f, gconstpointer unused)
 	d = act(f, "close", 200);
 	g_assert_true(json_node_equal(c, d));
 	g_assert_cmpstr(member(c, "left_at"), ==, member(d, "left_at"));
+	/* A return repeated after a crash: 200, and returned_at stays. */
+	back = act(f, "return", 200);
+	g_usleep(1100 * 1000);
+	again = act(f, "return", 200);
+	g_assert_true(json_node_equal(back, again));
+	g_assert_cmpstr(member(back, "returned_at"), ==, member(again, "returned_at"));
+	g_assert_cmpstr(member(back, "left_at"), ==, member(again, "left_at"));
+	json_node_unref(act(f, "leave", 200));
+	json_node_unref(act(f, "close", 200));
 	e = act(f, "purge", 200);
 	g_usleep(1100 * 1000);
 	g = act(f, "purge", 200);
@@ -260,6 +269,7 @@ static void test_wrong_state(Fixture *f, gconstpointer unused)
 	(void)unused;
 	before = read_state(f, 200);
 	json_node_unref(act(f, "close", 409));
+	/* Active and never left: nothing to come back from. */
 	json_node_unref(act(f, "return", 409));
 	json_node_unref(act(f, "purge", 409));
 	json_node_unref(request(f, "POST", "/api/v1/lightsite/departure/1/stay", f->service, 404));

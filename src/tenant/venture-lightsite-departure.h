@@ -51,6 +51,7 @@ gboolean venture_departure_action_from_string(const gchar *name, VentureDepartur
  * @state: the business's state now
  * @action: what Lightsite asks for
  * @left_at: (nullable): when the business closed
+ * @returned_at: (nullable): when the business last came back
  * @now: the time of the call
  * @next: (out): the state after the call; @state unless the outcome is
  *   %VENTURE_DEPARTURE_OUTCOME_CHANGED
@@ -58,12 +59,14 @@ gboolean venture_departure_action_from_string(const gchar *name, VentureDepartur
  * The whole leaving rule, with no storage: which move each action makes
  * from each state, and the window a closed business may come back in,
  * which ends six calendar months after @left_at (a later day of the
- * month than the target month has is its last day).
+ * month than the target month has is its last day). A return on an
+ * active business that already came back (@returned_at set) is a repeat;
+ * one that never left is the wrong state.
  *
  * Returns: the outcome
  */
 VentureDepartureOutcome venture_departure_decide(VentureDepartureState state, VentureDepartureAction action,
-	GDateTime *left_at, GDateTime *now, VentureDepartureState *next);
+	GDateTime *left_at, GDateTime *returned_at, GDateTime *now, VentureDepartureState *next);
 
 /**
  * venture_lightsite_departure_read:

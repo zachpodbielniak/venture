@@ -5,6 +5,7 @@
 
 typedef struct {
 	VentureDepartureState state;
+	gboolean returned;
 	VentureDepartureAction action;
 	VentureDepartureOutcome outcome;
 	VentureDepartureState next;
@@ -20,22 +21,26 @@ typedef struct {
 #define GONE VENTURE_DEPARTURE_OUTCOME_GONE
 
 static const Row table[] = {
-	{ A, VENTURE_DEPARTURE_ACTION_LEAVE, CHANGED, G },
-	{ G, VENTURE_DEPARTURE_ACTION_LEAVE, SAME, G },
-	{ C, VENTURE_DEPARTURE_ACTION_LEAVE, CONFLICT, C },
-	{ P, VENTURE_DEPARTURE_ACTION_LEAVE, CONFLICT, P },
-	{ A, VENTURE_DEPARTURE_ACTION_CLOSE, CONFLICT, A },
-	{ G, VENTURE_DEPARTURE_ACTION_CLOSE, CHANGED, C },
-	{ C, VENTURE_DEPARTURE_ACTION_CLOSE, SAME, C },
-	{ P, VENTURE_DEPARTURE_ACTION_CLOSE, CONFLICT, P },
-	{ A, VENTURE_DEPARTURE_ACTION_RETURN, CONFLICT, A },
-	{ G, VENTURE_DEPARTURE_ACTION_RETURN, CONFLICT, G },
-	{ C, VENTURE_DEPARTURE_ACTION_RETURN, CHANGED, A },
-	{ P, VENTURE_DEPARTURE_ACTION_RETURN, GONE, P },
-	{ A, VENTURE_DEPARTURE_ACTION_PURGE, CONFLICT, A },
-	{ G, VENTURE_DEPARTURE_ACTION_PURGE, CONFLICT, G },
-	{ C, VENTURE_DEPARTURE_ACTION_PURGE, CHANGED, P },
-	{ P, VENTURE_DEPARTURE_ACTION_PURGE, SAME, P },
+	{ A, FALSE, VENTURE_DEPARTURE_ACTION_LEAVE, CHANGED, G },
+	{ G, FALSE, VENTURE_DEPARTURE_ACTION_LEAVE, SAME, G },
+	{ C, FALSE, VENTURE_DEPARTURE_ACTION_LEAVE, CONFLICT, C },
+	{ P, FALSE, VENTURE_DEPARTURE_ACTION_LEAVE, CONFLICT, P },
+	{ A, FALSE, VENTURE_DEPARTURE_ACTION_CLOSE, CONFLICT, A },
+	{ G, FALSE, VENTURE_DEPARTURE_ACTION_CLOSE, CHANGED, C },
+	{ C, FALSE, VENTURE_DEPARTURE_ACTION_CLOSE, SAME, C },
+	{ P, FALSE, VENTURE_DEPARTURE_ACTION_CLOSE, CONFLICT, P },
+	{ A, FALSE, VENTURE_DEPARTURE_ACTION_RETURN, CONFLICT, A },
+	{ A, TRUE, VENTURE_DEPARTURE_ACTION_RETURN, SAME, A },
+	{ G, TRUE, VENTURE_DEPARTURE_ACTION_RETURN, CONFLICT, G },
+	{ C, TRUE, VENTURE_DEPARTURE_ACTION_RETURN, CHANGED, A },
+	{ P, TRUE, VENTURE_DEPARTURE_ACTION_RETURN, GONE, P },
+	{ G, FALSE, VENTURE_DEPARTURE_ACTION_RETURN, CONFLICT, G },
+	{ C, FALSE, VENTURE_DEPARTURE_ACTION_RETURN, CHANGED, A },
+	{ P, FALSE, VENTURE_DEPARTURE_ACTION_RETURN, GONE, P },
+	{ A, FALSE, VENTURE_DEPARTURE_ACTION_PURGE, CONFLICT, A },
+	{ G, FALSE, VENTURE_DEPARTURE_ACTION_PURGE, CONFLICT, G },
+	{ C, FALSE, VENTURE_DEPARTURE_ACTION_PURGE, CHANGED, P },
+	{ P, FALSE, VENTURE_DEPARTURE_ACTION_PURGE, SAME, P },
 };
 
 static GDateTime *
@@ -51,10 +56,11 @@ test_table(void)
 {
 	g_autoptr(GDateTime) left = at("2026-03-10T12:00:00Z");
 	g_autoptr(GDateTime) now = at("2026-04-01T12:00:00Z");
+	g_autoptr(GDateTime) returned = at("2026-03-20T12:00:00Z");
 	guint i;
 	for (i = 0; i < G_N_ELEMENTS(table); i++) {
 		VentureDepartureState next = (VentureDepartureState)-1;
-		VentureDepartureOutcome outcome = venture_departure_decide(table[i].state, table[i].action, left, now, &next);
+		VentureDepartureOutcome outcome = venture_departure_decide(table[i].state, table[i].action, left, table[i].returned ? returned : NULL, now, &next);
 		g_test_message("row %u", i);
 		g_assert_cmpint(outcome, ==, table[i].outcome);
 		g_assert_cmpint(next, ==, table[i].next);
@@ -71,15 +77,18 @@ test_six_months(void)
 	g_autoptr(GDateTime) february = at("2027-02-28T09:00:00Z");
 	g_autoptr(GDateTime) march = at("2027-03-01T09:00:00Z");
 	VentureDepartureState next;
-	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, left, last, &next), ==, CHANGED);
+	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, left, NULL, last, &next), ==, CHANGED);
 	g_assert_cmpint(next, ==, A);
-	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, left, late, &next), ==, GONE);
+	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, left, NULL, late, &next), ==, GONE);
 	g_assert_cmpint(next, ==, C);
 	/* Calendar months: August 31st plus six is the end of February. */
-	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, month_end, february, &next), ==, CHANGED);
-	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, month_end, march, &next), ==, GONE);
+	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, month_end, NULL, february, &next), ==, CHANGED);
+	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, month_end, NULL, march, &next), ==, GONE);
+	/* Already back: a repeat, however long after. */
+	g_assert_cmpint(venture_departure_decide(A, VENTURE_DEPARTURE_ACTION_RETURN, left, last, march, &next), ==, SAME);
+	g_assert_cmpint(next, ==, A);
 	/* A closed business with no closing time cannot be shown inside the window. */
-	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, NULL, last, &next), ==, GONE);
+	g_assert_cmpint(venture_departure_decide(C, VENTURE_DEPARTURE_ACTION_RETURN, NULL, NULL, last, &next), ==, GONE);
 }
 
 static void

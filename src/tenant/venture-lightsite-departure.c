@@ -37,7 +37,7 @@ within_window(GDateTime *left_at, GDateTime *now)
 
 VentureDepartureOutcome
 venture_departure_decide(VentureDepartureState state, VentureDepartureAction action,
-	GDateTime *left_at, GDateTime *now, VentureDepartureState *next)
+	GDateTime *left_at, GDateTime *returned_at, GDateTime *now, VentureDepartureState *next)
 {
 	VentureDepartureState from = state, to = state;
 	VentureDepartureOutcome outcome = VENTURE_DEPARTURE_OUTCOME_CONFLICT;
@@ -56,6 +56,8 @@ venture_departure_decide(VentureDepartureState state, VentureDepartureAction act
 			if (within_window(left_at, now)) { to = VENTURE_DEPARTURE_STATE_ACTIVE; outcome = VENTURE_DEPARTURE_OUTCOME_CHANGED; }
 			else outcome = VENTURE_DEPARTURE_OUTCOME_GONE;
 		}
+		/* Already came back: a repeat, as Lightsite sends after a crash. */
+		else if (from == VENTURE_DEPARTURE_STATE_ACTIVE && returned_at) outcome = VENTURE_DEPARTURE_OUTCOME_UNCHANGED;
 		break;
 	case VENTURE_DEPARTURE_ACTION_PURGE:
 		if (from == VENTURE_DEPARTURE_STATE_CLOSED) { to = VENTURE_DEPARTURE_STATE_PURGED; outcome = VENTURE_DEPARTURE_OUTCOME_CHANGED; }
@@ -136,7 +138,7 @@ venture_lightsite_departure_act(VentureDatabase *database, gint64 organization_i
 {
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureEntity) organization = NULL;
-	g_autoptr(GDateTime) now = venture_time_now(), left_at = NULL;
+	g_autoptr(GDateTime) now = venture_time_now(), left_at = NULL, returned_at = NULL;
 	VentureDepartureState state = VENTURE_DEPARTURE_STATE_ACTIVE, next;
 	VentureDepartureOutcome outcome;
 	JsonNode *answer = NULL;
@@ -149,8 +151,8 @@ venture_lightsite_departure_act(VentureDatabase *database, gint64 organization_i
 	if (!venture_database_begin(database, error)) return NULL;
 	organization = business(database, organization_id, error);
 	if (!organization) goto fail;
-	g_object_get(organization, "departure-state", &state, "left-at", &left_at, NULL);
-	outcome = venture_departure_decide(state, action, left_at, now, &next);
+	g_object_get(organization, "departure-state", &state, "left-at", &left_at, "returned-at", &returned_at, NULL);
+	outcome = venture_departure_decide(state, action, left_at, returned_at, now, &next);
 	if (outcome == VENTURE_DEPARTURE_OUTCOME_CONFLICT || outcome == VENTURE_DEPARTURE_OUTCOME_GONE) {
 		if (gone) *gone = outcome == VENTURE_DEPARTURE_OUTCOME_GONE;
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Cannot %s a business that is %s%s",

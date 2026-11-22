@@ -832,8 +832,9 @@ same object:
 - =close=: =closing= to =closed=, =left_at= set to now; already =closed= is
   200 and =left_at= does not move; =active= or =purged= is 409.
 - =return=: =closed= to =active=, =returned_at= set to now and =left_at=
-  kept; =active= or =closing= is 409; =purged=, or later than =left_at= plus
-  six calendar months, is 410.
+  kept; already back (=active= with =returned_at= set) is 200 and
+  =returned_at= does not move; =active= and never left, or =closing=, is 409;
+  =purged=, or later than =left_at= plus six calendar months, is 410.
 - =purge=: =closed= to =purged=, =purged_at= set to now; already =purged= is
   200 and =purged_at= does not move; =active= or =closing= is 409.
 Any other action is 404. No token is 401; any token but the trusted
