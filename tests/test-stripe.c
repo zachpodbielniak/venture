@@ -1295,6 +1295,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/binding-organizations", Fixture, NULL, set_up, test_binding_organizations, tear_down);
 	g_test_add("/stripe/binding-settings-ui", Fixture, "settings-ui", set_up, test_binding, tear_down);
 	g_test_add("/stripe/descriptor-suffix", Fixture, NULL, set_up, test_descriptor_suffix, tear_down);
+	g_test_add("/stripe/return-urls-alone", Fixture, NULL, set_up, test_return_urls_alone, tear_down);
 	g_test_add("/stripe/binding-migration", Fixture, NULL, set_up, test_binding_migration, tear_down);
 	g_test_add("/stripe/binding-rotation", Fixture, "rotation", set_up, test_binding, tear_down);
 	g_test_add("/stripe/binding-replacement", Fixture, "replacement", set_up, test_binding, tear_down);

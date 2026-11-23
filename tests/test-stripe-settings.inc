@@ -77,6 +77,83 @@ test_descriptor_suffix(Fixture *f, gconstpointer data)
 	}
 }
 
+/* The stored settings of @connection, for comparing what a save kept. */
+static JsonObject *
+stored_settings(Fixture *f, VentureIntegrationConnection *connection, JsonNode **node)
+{
+	g_autoptr(GError) error = NULL;
+	*node = venture_integration_service_resolve_version(venture_integration_service_get(f->database), f->organization_id,
+		venture_entity_get_id(VENTURE_ENTITY(connection)), venture_entity_get_version(VENTURE_ENTITY(connection)), FALSE, &error);
+	g_assert_no_error(error); g_assert_nonnull(*node);
+	return json_node_get_object(*node);
+}
+
+/* The form as the settings page posts it: every field, the keys empty. */
+static JsonNode *
+return_url_settings(const gchar *success, const gchar *cancel)
+{
+	static const gchar *const empty[] = { "secret_key", "publishable_key", "webhook_secret", "api_version", "environment", "statement_descriptor_suffix" };
+	JsonNode *node = json_node_new(JSON_NODE_OBJECT);
+	JsonObject *object = json_object_new();
+	guint i;
+	json_node_take_object(node, object);
+	json_object_set_boolean_member(object, "ach_enabled", FALSE);
+	for (i = 0; i < G_N_ELEMENTS(empty); i++) json_object_set_string_member(object, empty[i], "");
+	json_object_set_string_member(object, "success_url", success);
+	json_object_set_string_member(object, "cancel_url", cancel);
+	return node;
+}
+
+/* An owner changes where Stripe sends customers back without entering the
+ * keys again: the keys and every other setting stay as they were stored. */
+static void
+test_return_urls_alone(Fixture *f, gconstpointer data)
+{
+	static const gchar *const kept[] = { "secret_key", "publishable_key", "webhook_secret", "api_version", "environment", "statement_descriptor_suffix" };
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(JsonNode) settings = binding_settings("whsec_return_urls");
+	g_autoptr(JsonNode) urls = return_url_settings("https://app.example.test/home?card=back", "https://app.example.test/home?card=back");
+	g_autoptr(JsonNode) plain = return_url_settings("http://app.example.test/home?card=back", "https://app.example.test/home?card=back");
+	g_autoptr(GBytes) encryption_key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureIntegrationConnection) connection = NULL, saved = NULL, refused = NULL, current = NULL;
+	g_autoptr(JsonNode) before_node = NULL, after_node = NULL, last_node = NULL;
+	JsonObject *before, *after, *last;
+	guint i;
+	(void)data;
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->database), encryption_key, &error));
+	json_object_set_string_member(json_node_get_object(settings), "statement_descriptor_suffix", "LIGHTSITE");
+	json_object_set_boolean_member(json_node_get_object(settings), "ach_enabled", TRUE);
+	connection = venture_stripe_settings_configure(f->database, f->organization_id, settings,
+		0, 0, STRIPE_TRANSPORT(transport), NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(connection);
+	before = stored_settings(f, connection, &before_node);
+	saved = venture_stripe_settings_configure(f->database, f->organization_id, urls,
+		venture_entity_get_version(VENTURE_ENTITY(connection)), venture_entity_get_id(VENTURE_ENTITY(connection)),
+		STRIPE_TRANSPORT(transport), NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(saved);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(saved)), ==, venture_entity_get_id(VENTURE_ENTITY(connection)));
+	after = stored_settings(f, saved, &after_node);
+	for (i = 0; i < G_N_ELEMENTS(kept); i++)
+		g_assert_cmpstr(json_object_get_string_member(after, kept[i]), ==, json_object_get_string_member(before, kept[i]));
+	g_assert_cmpstr(json_object_get_string_member(after, "secret_key"), ==, "sk_test_fixture_only");
+	g_assert_true(json_object_get_boolean_member(after, "ach_enabled"));
+	g_assert_cmpstr(json_object_get_string_member(after, "success_url"), ==, "https://app.example.test/home?card=back");
+	g_assert_cmpstr(json_object_get_string_member(after, "cancel_url"), ==, "https://app.example.test/home?card=back");
+	/* A plain-HTTP return address is refused and nothing changes. */
+	refused = venture_stripe_settings_configure(f->database, f->organization_id, plain,
+		venture_entity_get_version(VENTURE_ENTITY(saved)), venture_entity_get_id(VENTURE_ENTITY(saved)),
+		STRIPE_TRANSPORT(transport), NULL, &error);
+	g_assert_null(refused); g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+	current = venture_integration_service_find(venture_integration_service_get(f->database), f->organization_id, "stripe", &error);
+	g_assert_no_error(error); g_assert_nonnull(current);
+	g_assert_cmpint(venture_entity_get_version(VENTURE_ENTITY(current)), ==, venture_entity_get_version(VENTURE_ENTITY(saved)));
+	last = stored_settings(f, current, &last_node);
+	g_assert_cmpstr(json_object_get_string_member(last, "success_url"), ==, "https://app.example.test/home?card=back");
+	g_assert_cmpstr(json_object_get_string_member(last, "secret_key"), ==, "sk_test_fixture_only");
+}
+
 static gboolean
 binding_event(VentureStripeService *service, const gchar *id, const gchar *secret,
 	gboolean live, const gchar *account, GError **error)

@@ -236,6 +236,51 @@ venture_stripe_service_for_organization(VentureDatabase *database, gint64 organi
 		venture_entity_get_id(VENTURE_ENTITY(connection)), FALSE, transport, error);
 }
 
+/* A save that leaves all three keys empty changes only the return URLs of
+ * the connection it names: everything else is the stored settings, so the
+ * owner need not enter the keys again. */
+static gboolean
+settings_keys_left_empty(JsonNode *settings)
+{
+	static const gchar *const keys[] = { "secret_key", "publishable_key", "webhook_secret" };
+	JsonObject *object;
+	guint i;
+	if (!settings || !JSON_NODE_HOLDS_OBJECT(settings)) return FALSE;
+	object = json_node_get_object(settings);
+	for (i = 0; i < G_N_ELEMENTS(keys); i++)
+	{
+		const gchar *value = settings_string(object, keys[i]);
+		/* Present and empty, as the settings form posts them: settings with
+		 * no keys at all (Connect) are a whole object, not a URL change. */
+		if (!value || *value) return FALSE;
+	}
+	return TRUE;
+}
+
+static JsonNode *
+settings_keep_keys(VentureDatabase *database, gint64 organization_id, gint64 connection_id,
+	gint64 version, JsonNode *settings, GError **error)
+{
+	static const gchar *const urls[] = { "success_url", "cancel_url" };
+	JsonObject *given = json_node_get_object(settings);
+	JsonNode *stored = venture_integration_service_resolve_version(venture_integration_service_get(database),
+		organization_id, connection_id, version, FALSE, error);
+	guint i;
+	if (!stored) return NULL;
+	if (!JSON_NODE_HOLDS_OBJECT(stored))
+	{
+		json_node_unref(stored);
+		refuse(error, "Stripe settings must be an object");
+		return NULL;
+	}
+	for (i = 0; i < G_N_ELEMENTS(urls); i++)
+	{
+		const gchar *value = settings_string(given, urls[i]);
+		if (value && *value) json_object_set_string_member(json_node_get_object(stored), urls[i], value);
+	}
+	return stored;
+}
+
 VentureIntegrationConnection *
 venture_stripe_settings_configure(VentureDatabase *database, gint64 organization_id,
 	JsonNode *settings, gint64 expected_version, gint64 expected_connection_id, StripeTransport *transport,
@@ -246,7 +291,14 @@ venture_stripe_settings_configure(VentureDatabase *database, gint64 organization
 	g_autoptr(VentureIntegrationConnection) current = NULL;
 	g_autoptr(VentureIntegrationConnection) configured = NULL;
 	g_autoptr(GError) lookup_error = NULL;
+	g_autoptr(JsonNode) kept = NULL;
 	if (!settings_manage(database, organization_id, error)) return NULL;
+	if (expected_connection_id > 0 && settings_keys_left_empty(settings))
+	{
+		kept = settings_keep_keys(database, organization_id, expected_connection_id, expected_version, settings, error);
+		if (!kept) return NULL;
+		settings = kept;
+	}
 	candidate = g_object_new(VENTURE_TYPE_STRIPE_SERVICE, "database", database,
 		"organization-id", organization_id, NULL);
 	if (transport) candidate->transport = g_object_ref(transport);

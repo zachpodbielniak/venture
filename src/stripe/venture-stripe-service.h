@@ -101,7 +101,11 @@ VentureStripeService *venture_stripe_service_for_connection(VentureDatabase *dat
  * @error: (out) (optional): redacted refusal
  *
  * Verifies the provider account before sealing settings. Account/environment
- * replacement requires disconnecting the old binding first.
+ * replacement requires disconnecting the old binding first. When
+ * @expected_connection_id names the connection and "secret_key",
+ * "publishable_key" and "webhook_secret" are all empty strings, only
+ * "success_url" and "cancel_url" (HTTPS) are taken from @settings and every
+ * other value stays as stored, so the keys need not be entered again.
  * Returns: (transfer full) (nullable): public connection metadata
  */
 VentureIntegrationConnection *venture_stripe_settings_configure(VentureDatabase *database,
