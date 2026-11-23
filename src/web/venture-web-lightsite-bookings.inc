@@ -4,7 +4,9 @@
  * booking's meeting; the body is exactly {"organization_id": N,
  * "starts_at": "<ISO 8601>"}, at most 4096 bytes. Only the trusted service
  * token reaches the booking service; a browser session is refused as no
- * service credential. */
+ * service credential. The 200 answer carries "booking", the object the
+ * signed booking hook body carries, read after the move: the caller writes
+ * the customer's letter and its token cannot read booking records. */
 static HtmxResponse *
 lightsite_booking_finish(HtmxResponse *response)
 {
@@ -21,7 +23,9 @@ venture_web_lightsite_booking_move(HtmxRequest *request, GHashTable *params, gpo
 	g_autoptr(VentureAccessScope) scope = NULL;
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureBookingService) service = NULL;
-	g_autoptr(VentureEntity) moved = NULL;
+	g_autoptr(VentureEntity) moved = NULL, reservation = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	JsonNode *details = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonParser) parser = json_parser_new();
 	g_autoptr(GDateTime) when = NULL, starts = NULL, ends = NULL;
@@ -75,6 +79,20 @@ venture_web_lightsite_booking_move(HtmxRequest *request, GHashTable *params, gpo
 	answer = json_object_new();
 	json_object_set_string_member(answer, "starts_at", starts_text);
 	json_object_set_string_member(answer, "ends_at", ends_text);
+	/* The move is committed, so a failed read answers null, never an error:
+	 * a retried move would be refused as the slot it already holds. */
+	query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, activity_id, NULL);
+	reservation = venture_database_find_one(database, query, &error);
+	if (reservation) details = venture_booking_service_hook_details(service, venture_entity_get_id(reservation), &error);
+	if (!details) {
+		g_warning("Lightsite booking move %" G_GINT64_FORMAT ": no booking details: %s", activity_id,
+			error ? error->message : "no reservation");
+		g_clear_error(&error);
+		details = json_node_new(JSON_NODE_NULL);
+	}
+	json_object_set_member(answer, "booking", details);
 	result = json_node_new(JSON_NODE_OBJECT);
 	json_node_take_object(result, answer);
 	return lightsite_booking_finish(venture_web_json_response(result, 200));

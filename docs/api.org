@@ -826,9 +826,16 @@ business owner reschedules it, under the same trusted-service authority.
 offers. It is the customer's reschedule reached by the owner: the booking
 keeps its booked length and its private link is renewed. Venture sends the
 customer no mail: the caller sends the letter, with the owner as the reply
-address. 200 answers ={"starts_at", "ends_at"}=; a booking of another business
-is 404, a taken slot or a booking that is not confirmed 409, and a bad body
-or time 422.
+address. 200 answers ={"starts_at", "ends_at", "booking"}=; a booking of
+another business is 404, a taken slot or a booking that is not confirmed 409,
+and a bad body or time 422. =booking= is exactly the object the signed booking
+hook body carries, read after the move, so its times are the new ones:
+=reservation_id=, =state=, =starts_at= and =ends_at= (ISO 8601 with the offset
+of the page's zone), =time_zone=, =service= (the page title), =customer=
+(={"name", "email", "phone"}=) and =note=; an unknown value is null. It is
+there because the caller writes the letter and its token cannot read booking
+records. The move is already made when it is read, so a failed read answers
+200 with =booking= null rather than an error.
 
 =GET /api/v1/lightsite/departure/:org= reads a business's leaving state,
 under the same trusted-service authority; Venture keeps it on the

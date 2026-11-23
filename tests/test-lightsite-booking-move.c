@@ -238,6 +238,43 @@ static void test_moves_and_keeps_length(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(letters(f, NULL), ==, queued);
 }
 
+/* The move answers with the booking as the signed hook body carries it, at
+ * its new time: the caller writes the letter and cannot read the booking. */
+static void test_answers_booking_details(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *start = slot(f, 4), *later = slot(f, 10);
+	g_autoptr(VentureEntity) booked = book(f, start, "first@example.test");
+	g_autoptr(VentureEntity) reservation = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *path = move_path(venture_entity_get_id(booked)), *body = move_body(f->business, later);
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(GDateTime) wanted = venture_time_from_string(later, NULL), moved = NULL;
+	JsonObject *object, *booking, *customer;
+	(void)unused;
+	venture_query_set_organization(query, f->business);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(booked), NULL);
+	reservation = venture_database_find_one(f->db, query, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	answer = post(f, path, body, TRUE, 200);
+	object = json_node_get_object(answer);
+	g_assert_true(json_object_has_member(object, "starts_at"));
+	g_assert_true(json_object_has_member(object, "ends_at"));
+	g_assert_true(json_object_has_member(object, "booking"));
+	booking = json_object_get_object_member(object, "booking");
+	g_assert_nonnull(booking);
+	g_assert_cmpint(json_object_get_int_member(booking, "reservation_id"), ==, venture_entity_get_id(reservation));
+	moved = venture_time_from_string(json_object_get_string_member(booking, "starts_at"), NULL);
+	g_assert_nonnull(moved);
+	g_assert_true(g_date_time_equal(moved, wanted));
+	g_assert_cmpstr(json_object_get_string_member(booking, "time_zone"), ==, "UTC");
+	g_assert_cmpstr(json_object_get_string_member(booking, "service"), ==, "Groom");
+	customer = json_object_get_object_member(booking, "customer");
+	g_assert_nonnull(customer);
+	g_assert_cmpstr(json_object_get_string_member(customer, "email"), ==, "first@example.test");
+	g_assert_cmpint(letters(f, NULL), ==, 1);
+}
+
 /* The customer moving their own booking through the private link is told. */
 static void test_customer_reschedule_mails(Fixture *f, gconstpointer unused)
 {
@@ -328,6 +365,7 @@ int main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/lightsite-booking-move/unauthenticated", Fixture, NULL, setup, test_unauthenticated, teardown);
 	g_test_add("/lightsite-booking-move/moves-and-keeps-length", Fixture, NULL, setup, test_moves_and_keeps_length, teardown);
+	g_test_add("/lightsite-booking-move/answers-booking-details", Fixture, NULL, setup, test_answers_booking_details, teardown);
 	g_test_add("/lightsite-booking-move/customer-reschedule-mails", Fixture, NULL, setup, test_customer_reschedule_mails, teardown);
 	g_test_add("/lightsite-booking-move/wrong-organization", Fixture, NULL, setup, test_wrong_organization, teardown);
 	g_test_add("/lightsite-booking-move/conflict", Fixture, NULL, setup, test_conflict, teardown);
