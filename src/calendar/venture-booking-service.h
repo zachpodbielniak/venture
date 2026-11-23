@@ -191,11 +191,12 @@ VentureEntity *venture_booking_service_move(VentureBookingService *self, gint64 
  * @actor: (nullable): audit actor
  * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND when no booking of that
  *   business has this meeting, %VENTURE_ERROR_CONFLICT when the booking is
- *   not confirmed
+ *   neither confirmed nor already cancelled
  *
  * The owner's cancel, reached by the meeting: the same records as the
  * customer's cancel through the private link, under the save lock. No mail
- * is queued: the caller sends the customer the letter.
+ * is queued: the caller sends the customer the letter. A booking already
+ * cancelled is returned unchanged, so a retry after a crash succeeds.
  * Returns: (transfer full) (nullable): the cancelled reservation
  */
 VentureEntity *venture_booking_service_cancel(VentureBookingService *self, gint64 organization_id,

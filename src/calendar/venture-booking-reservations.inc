@@ -451,6 +451,12 @@ VentureEntity *venture_booking_service_cancel(VentureBookingService *self, gint6
 	if (reservation == NULL) { refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"); goto fail; }
 	state = booking_string(reservation, "state");
 	g_object_get(activity, "status", &status, NULL);
+	/* Already cancelled: a retry after a crash. Nothing is written. */
+	if (g_strcmp0(state, "cancelled") == 0 && status == VENTURE_ACTIVITY_STATUS_CANCELLED)
+	{
+		venture_database_rollback(self->database);
+		return g_steal_pointer(&reservation);
+	}
 	if (g_strcmp0(state, "confirmed") != 0 || status != VENTURE_ACTIVITY_STATUS_PLANNED)
 	{ refuse(error, VENTURE_ERROR_CONFLICT, "Only a confirmed booking can be cancelled"); goto fail; }
 	/* No letter here: the caller sends it. */

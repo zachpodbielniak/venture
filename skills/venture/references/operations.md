@@ -241,5 +241,6 @@ time 422. The 200 answer also carries `booking`, the object the signed booking
 hook carries, at the new time. `POST /api/v1/lightsite/bookings/:id/cancel`
 is the owner's cancel, built the same way: body exactly
 `{"organization_id": N}`, the same records as the customer's cancel, no mail
-queued; 200 `{"booking"}` with `state` `cancelled`, 404 not that business's
-booking, 409 not confirmed, 422 bad body.
+queued; 200 `{"booking"}` with `state` `cancelled`, also for a booking
+already cancelled (a retry changes nothing), 404 not that business's booking,
+409 neither confirmed nor cancelled, 422 bad body.

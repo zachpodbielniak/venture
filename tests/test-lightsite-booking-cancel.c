@@ -6,8 +6,8 @@
  * and organization_id the business it must belong to.
  *
  * What breaks if these regress: an anonymous caller cancels a booking; a
- * booking of another business is cancelled; a cancelled booking is cancelled
- * again; Venture mails the customer too, so they get two letters (the caller
+ * booking of another business is cancelled; a retried cancel fails or
+ * changes the booking again; a finished meeting is cancelled; Venture mails the customer too, so they get two letters (the caller
  * sends the letter); the caller cannot read back whom to write to; the
  * generic cancel action answers 500 for a booking that does not exist.
  */
@@ -258,16 +258,59 @@ static void test_wrong_organization(Fixture *f, gconstpointer unused)
 	g_assert_cmpint(letters(f, NULL), ==, 1);
 }
 
-/* Done when 3: a booking that is not confirmed any more is 409. */
-static void test_not_confirmed(Fixture *f, gconstpointer unused)
+/* A repeated cancel is safe to retry: Lightsite's daemon calls again after
+ * a crash and needs the booking for the letter. The second answer is the
+ * first, and nothing changes. */
+static void test_repeat(Fixture *f, gconstpointer unused)
 {
-	g_autofree gchar *start = slot(f, 4);
+	g_autofree gchar *start = slot(f, 4), *state = NULL, *first_text = NULL, *second_text = NULL;
 	g_autoptr(VentureEntity) booked = book(f, start, "first@example.test");
 	g_autofree gchar *path = cancel_path(venture_entity_get_id(booked)), *body = cancel_body(f->business);
 	g_autoptr(JsonNode) a = NULL, b = NULL;
+	g_autoptr(VentureEntity) cancelled = NULL, again = NULL;
+	JsonObject *booking;
+	gint status = 0;
 	(void)unused;
 	a = post(f, path, body, TRUE, 200);
-	b = post(f, path, body, TRUE, 409);
+	cancelled = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(booked), NULL);
+	g_assert_nonnull(cancelled);
+	b = post(f, path, body, TRUE, 200);
+	booking = json_object_get_object_member(json_node_get_object(b), "booking");
+	g_assert_nonnull(booking);
+	g_assert_cmpstr(json_object_get_string_member(booking, "state"), ==, "cancelled");
+	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(booking, "customer"), "email"), ==, "first@example.test");
+	first_text = venture_json_to_string(a, FALSE);
+	second_text = venture_json_to_string(b, FALSE);
+	g_assert_cmpstr(first_text, ==, second_text);
+	again = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(booked), NULL);
+	g_assert_nonnull(again);
+	g_assert_cmpint(venture_entity_get_version(again), ==, venture_entity_get_version(cancelled));
+	states(f, booked, &state, &status);
+	g_assert_cmpstr(state, ==, "cancelled");
+	g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_CANCELLED);
+	g_assert_cmpint(letters(f, NULL), ==, 1);
+}
+
+/* A booking neither confirmed nor cancelled is 409: the meeting is done. A
+ * hold has no meeting yet, so it cannot be named here. */
+static void test_not_confirmed(Fixture *f, gconstpointer unused)
+{
+	g_autofree gchar *start = slot(f, 4), *state = NULL;
+	g_autoptr(VentureEntity) booked = book(f, start, "first@example.test");
+	g_autofree gchar *path = cancel_path(venture_entity_get_id(booked)), *body = cancel_body(f->business);
+	g_autoptr(JsonNode) answer = NULL;
+	g_autoptr(VentureEntity) meeting = NULL, done = NULL;
+	g_autoptr(GError) error = NULL;
+	gint status = 0;
+	(void)unused;
+	meeting = venture_database_get(f->db, VENTURE_TYPE_ACTIVITY, venture_entity_get_id(booked), NULL);
+	g_assert_nonnull(meeting);
+	done = venture_activity_service_complete(venture_database_get_activity_service(f->db), meeting, "Groomed", NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(done);
+	answer = post(f, path, body, TRUE, 409);
+	states(f, booked, &state, &status);
+	g_assert_cmpstr(state, ==, "confirmed");
+	g_assert_cmpint(status, ==, VENTURE_ACTIVITY_STATUS_DONE);
 	g_assert_cmpint(letters(f, NULL), ==, 1);
 }
 
@@ -323,6 +366,7 @@ int main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/lightsite-booking-cancel/cancels", Fixture, NULL, setup, test_cancels, teardown);
 	g_test_add("/lightsite-booking-cancel/wrong-organization", Fixture, NULL, setup, test_wrong_organization, teardown);
+	g_test_add("/lightsite-booking-cancel/repeat", Fixture, NULL, setup, test_repeat, teardown);
 	g_test_add("/lightsite-booking-cancel/not-confirmed", Fixture, NULL, setup, test_not_confirmed, teardown);
 	g_test_add("/lightsite-booking-cancel/unauthenticated", Fixture, NULL, setup, test_unauthenticated, teardown);
 	g_test_add("/lightsite-booking-cancel/invalid", Fixture, NULL, setup, test_invalid, teardown);

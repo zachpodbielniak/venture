@@ -847,8 +847,11 @@ the customer no mail: the caller sends the letter. 200 answers
 ={"booking"}=, the same object as the move's, read after the cancel, so its
 =state= is =cancelled=; a failed read is =booking= null, as for the move. No
 token is 401; any token but the trusted service's is 403; a booking of another
-business, or none, is 404; a booking that is not confirmed, a second cancel
-included, is 409; and a bad body or id is 422. The generic
+business, or none, is 404; a booking that is neither confirmed nor cancelled
+(its meeting is done) is 409; and a bad body or id is 422. A cancel is safe
+to retry: a booking already cancelled answers 200 with the same =booking= and
+nothing changes, so after a crash the caller calls again and still has what
+the letter needs. The generic
 =POST /api/v1/activity/:id/actions/cancel_booking= answers 404 for a meeting
 that does not exist.
 
