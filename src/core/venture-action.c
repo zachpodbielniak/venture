@@ -560,6 +560,9 @@ venture_action_registry_perform(VentureActionRegistry *self, const gchar *type_n
 	if (database == NULL || action == NULL || type == G_TYPE_INVALID)
 		return action_registry_perform_internal(self, type_name, id, name, params, actor, role, error);
 	subject = id == 0 && action->type_level ? g_object_new(type, NULL) : venture_database_get(database, type, id, error);
+	/* A missing record is not found, not a failure with no reason. */
+	if (subject == NULL && error != NULL && *error == NULL)
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No %s %" G_GINT64_FORMAT, type_name, id);
 	if (subject == NULL || !venture_action_validate_parameters(action, params, error) ||
 		!venture_action_prepare_target(action, subject, params, error) ||
 		!venture_action_require_organization(action, subject, database, error) ||

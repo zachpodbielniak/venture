@@ -237,4 +237,9 @@ keeps its booked length and its private link is renewed. Venture queues no
 customer mail: the caller sends the letter, with the owner as the reply
 address. 200 answers `{"starts_at", "ends_at"}`; a booking of another business
 is 404, a taken slot or a booking that is not confirmed 409, a bad body or
-time 422.
+time 422. The 200 answer also carries `booking`, the object the signed booking
+hook carries, at the new time. `POST /api/v1/lightsite/bookings/:id/cancel`
+is the owner's cancel, built the same way: body exactly
+`{"organization_id": N}`, the same records as the customer's cancel, no mail
+queued; 200 `{"booking"}` with `state` `cancelled`, 404 not that business's
+booking, 409 not confirmed, 422 bad body.

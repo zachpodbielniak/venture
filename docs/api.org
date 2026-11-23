@@ -837,6 +837,21 @@ there because the caller writes the letter and its token cannot read booking
 records. The move is already made when it is read, so a failed read answers
 200 with =booking= null rather than an error.
 
+=POST /api/v1/lightsite/bookings/:id/cancel= cancels a confirmed booking when
+its business owner cancels it, built the same way as the move: the same
+trusted-service authority, =:id= the booking's meeting, and the body exactly
+={"organization_id": N}=. It settles the same records as the customer's
+cancel through the private link (the reservation is cancelled and its link
+stops working, the meeting is cancelled and its capacity freed). Venture sends
+the customer no mail: the caller sends the letter. 200 answers
+={"booking"}=, the same object as the move's, read after the cancel, so its
+=state= is =cancelled=; a failed read is =booking= null, as for the move. No
+token is 401; any token but the trusted service's is 403; a booking of another
+business, or none, is 404; a booking that is not confirmed, a second cancel
+included, is 409; and a bad body or id is 422. The generic
+=POST /api/v1/activity/:id/actions/cancel_booking= answers 404 for a meeting
+that does not exist.
+
 =GET /api/v1/lightsite/departure/:org= reads a business's leaving state,
 under the same trusted-service authority; Venture keeps it on the
 organization and Lightsite only shows it. 200 answers

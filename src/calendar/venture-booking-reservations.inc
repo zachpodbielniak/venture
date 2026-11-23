@@ -426,6 +426,42 @@ fail:
 	return NULL;
 }
 
+VentureEntity *venture_booking_service_cancel(VentureBookingService *self, gint64 organization_id,
+	gint64 activity_id, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) activity = NULL, reservation = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GError) local = NULL;
+	g_autofree gchar *state = NULL;
+	gint status = 0;
+	g_return_val_if_fail(VENTURE_IS_BOOKING_SERVICE(self), NULL);
+	if (organization_id <= 0 || activity_id <= 0) return refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"), NULL;
+	if (self->database == NULL || venture_entity_registry_lookup(venture_entity_registry_get_default(), "booking_page") == G_TYPE_INVALID)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"), NULL;
+	if (!venture_database_begin(self->database, error)) return NULL;
+	activity = venture_database_get(self->database, VENTURE_TYPE_ACTIVITY, activity_id, &local);
+	if (local != NULL) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
+	if (activity == NULL || venture_entity_is_deleted(activity) || venture_entity_get_organization_id(activity) != organization_id)
+	{ refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"); goto fail; }
+	query = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	venture_query_set_organization(query, organization_id);
+	venture_query_add_filter_int(query, "activity-id", VENTURE_FILTER_OP_EQ, activity_id, NULL);
+	reservation = venture_database_find_one(self->database, query, &local);
+	if (local != NULL) { g_propagate_error(error, g_steal_pointer(&local)); goto fail; }
+	if (reservation == NULL) { refuse(error, VENTURE_ERROR_NOT_FOUND, "Booking not found"); goto fail; }
+	state = booking_string(reservation, "state");
+	g_object_get(activity, "status", &status, NULL);
+	if (g_strcmp0(state, "confirmed") != 0 || status != VENTURE_ACTIVITY_STATUS_PLANNED)
+	{ refuse(error, VENTURE_ERROR_CONFLICT, "Only a confirmed booking can be cancelled"); goto fail; }
+	/* No letter here: the caller sends it. */
+	if (!booking_cancel_records(self, reservation, activity, actor, error)) goto fail;
+	if (!venture_database_commit(self->database, error)) return NULL;
+	return g_steal_pointer(&reservation);
+fail:
+	venture_database_rollback(self->database);
+	return NULL;
+}
+
 VentureEntity *venture_booking_service_manage(VentureBookingService *self, VentureEntity *page,
 	const gchar *capability, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error)
 {
