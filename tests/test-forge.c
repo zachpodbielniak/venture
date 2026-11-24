@@ -15,6 +15,7 @@
 #include <venture.h>
 #include "venture-test-accounting.h"
 #include "venture-test-forge.h"
+#include "forge/venture-forgejo-client-private.h"
 
 #include <glib.h>
 #include <libsoup/soup.h>
@@ -1213,6 +1214,55 @@ test_forge_client_refuses_a_bad_scheme(void)
 }
 
 /*
+ * A forge URL with no port is on the scheme's default port, and a request
+ * sent there is not taken for a redirect.
+ *
+ * What breaks if this regresses: the client pinned port -1 for
+ * https://host, while the URI libsoup sends to names 443. Every request
+ * then failed the redirect check, so verifying such a forge refused it
+ * as a redirect until somebody typed :443 into the URL.
+ */
+static void
+test_forge_client_default_port_is_not_a_redirect(void)
+{
+	static const struct
+	{
+		const gchar	*base;
+		const gchar	*sent;
+		gboolean	 pinned;
+	} cases[] = {
+		{ "https://git.example.com", "https://git.example.com/api/v1/user", TRUE },
+		{ "https://git.example.com", "https://git.example.com:443/api/v1/user", TRUE },
+		{ "https://git.example.com:443", "https://git.example.com/api/v1/user", TRUE },
+		{ "http://git.example.com/sub", "http://git.example.com/sub/api/v1/user", TRUE },
+		{ "https://git.example.com:8443", "https://git.example.com:8443/api/v1/user", TRUE },
+		/* Still refused: another port, or another host. */
+		{ "https://git.example.com", "https://git.example.com:8443/api/v1/user", FALSE },
+		{ "https://git.example.com", "http://git.example.com/api/v1/user", FALSE },
+		{ "https://git.example.com", "https://elsewhere.example.com/api/v1/user", FALSE },
+	};
+	gsize i;
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		g_autoptr(VentureForgejoClient) client = NULL;
+		g_autoptr(SoupMessage) message = NULL;
+		g_autoptr(GError) error = NULL;
+
+		client = venture_forgejo_client_new(cases[i].base, "tok", 5, &error);
+		g_assert_no_error(error);
+
+		/* The URI exactly as libsoup holds it for the request. */
+		message = soup_message_new("GET", cases[i].sent);
+		g_assert_nonnull(message);
+
+		g_test_message("%s -> %s", cases[i].base, cases[i].sent);
+		g_assert_cmpint(venture_forgejo_client_is_pinned_origin(client,
+			soup_message_get_uri(message)), ==, cases[i].pinned);
+	}
+}
+
+/*
  * The client does not follow a redirect, and the token never reaches the
  * host the redirect named.
  *
@@ -1964,6 +2014,8 @@ main(
 
 	g_test_add_func("/forge/client-refuses-a-bad-scheme",
 	                test_forge_client_refuses_a_bad_scheme);
+	g_test_add_func("/forge/client-default-port-is-not-a-redirect",
+	                test_forge_client_default_port_is_not_a_redirect);
 	g_test_add_func("/forge/client-does-not-follow-a-redirect",
 	                test_forge_client_does_not_follow_a_redirect);
 	g_test_add_func("/forge/client-escapes-the-repository-name",

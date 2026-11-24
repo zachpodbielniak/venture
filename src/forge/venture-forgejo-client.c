@@ -6,6 +6,7 @@
  */
 
 #include "venture.h"
+#include "venture-forgejo-client-private.h"
 
 #include <string.h>
 
@@ -119,6 +120,14 @@ venture_forgejo_client_new(
 	self->scheme = g_strdup(scheme);
 	self->host = g_strdup(g_uri_get_host(uri));
 	self->port = g_uri_get_port(uri);
+
+	/*
+	 * No port means the scheme's own. libsoup sends to a URI that names
+	 * it, so an unset port here would never match the redirect check
+	 * and every request to https://host would be refused.
+	 */
+	if (-1 == self->port)
+		self->port = (0 == g_strcmp0(scheme, "https")) ? 443 : 80;
 	self->token = g_strdup(token);
 	self->timeout_seconds = (timeout_seconds > 0) ? timeout_seconds : 30;
 
@@ -149,6 +158,18 @@ venture_forgejo_client_new(
 
 /* --- Requests ------------------------------------------------------------ */
 
+gboolean
+venture_forgejo_client_is_pinned_origin(
+	VentureForgejoClient	*self,
+	GUri			*uri
+){
+	g_return_val_if_fail(VENTURE_IS_FORGEJO_CLIENT(self), FALSE);
+	g_return_val_if_fail(NULL != uri, FALSE);
+
+	return (0 == g_strcmp0(g_uri_get_host(uri), self->host)) &&
+	       (g_uri_get_port(uri) == self->port);
+}
+
 /*
  * Builds a message for a path under the pinned origin.
  *
@@ -167,17 +188,9 @@ venture_forgejo_message(
 	g_autofree gchar *url = NULL;
 	SoupMessage *message;
 
-	if (-1 == self->port)
-	{
-		url = g_strdup_printf("%s://%s%s/api/v1/%s", self->scheme,
-		                      self->host, self->base_path, path);
-	}
-	else
-	{
-		url = g_strdup_printf("%s://%s:%d%s/api/v1/%s", self->scheme,
-		                      self->host, self->port, self->base_path,
-		                      path);
-	}
+	/* The port is always set: the constructor fills in the default. */
+	url = g_strdup_printf("%s://%s:%d%s/api/v1/%s", self->scheme,
+	                      self->host, self->port, self->base_path, path);
 
 	message = soup_message_new(method, url);
 
@@ -388,8 +401,7 @@ venture_forgejo_send(
 	{
 		GUri *final_uri = soup_message_get_uri(message);
 
-		if ((0 != g_strcmp0(g_uri_get_host(final_uri), self->host)) ||
-		    (g_uri_get_port(final_uri) != self->port))
+		if (!venture_forgejo_client_is_pinned_origin(self, final_uri))
 		{
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NETWORK,
 			            "The request to %s was redirected to %s; refusing "

@@ -307,7 +307,7 @@ PUBLIC_HDRS := \
 	$(wildcard src/automation/*.h) \
 	$(wildcard src/plugin/*.h) \
 	$(wildcard src/web/*.h) \
-	$(wildcard src/forge/*.h) \
+	$(filter-out %-private.h,$(wildcard src/forge/*.h)) \
 	$(wildcard src/kb/*.h) \
 	$(wildcard src/util/*.h) \
 	$(wildcard src/mcp/*.h)
