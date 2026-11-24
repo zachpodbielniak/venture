@@ -5942,6 +5942,17 @@ venture_web_stripe_checkout(HtmxRequest *request, GHashTable *params, gpointer u
 	return venture_web_json_response(node, 200);
 }
 
+/*
+ * A refused Stripe event is a payment event nobody sees, and Stripe only
+ * shows the status. Each refusal logs the check that refused it. The
+ * reason is Venture's own text: never the body, the signature or a key.
+ */
+static void
+venture_web_stripe_webhook_refused(guint status, const gchar *route, const gchar *reason)
+{
+	g_message("Stripe webhook refused with %u for %s: %s", status, route, reason);
+}
+
 static HtmxResponse *
 venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -5955,20 +5966,46 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	GBytes *body = htmx_request_get_body_bytes(request);
 	SoupMessageHeaders *headers = soup_server_message_get_request_headers(htmx_request_get_message(request));
 	const gchar *signature = soup_message_headers_get_one(headers, "Stripe-Signature");
-	if (!venture_context_module_enabled(self->context, "stripe")) service = NULL;
+	g_autofree gchar *route = binding ? g_strdup_printf("connection %s", binding) : g_strdup("the installation account");
+	g_autofree gchar *why = NULL;
+	const gchar *unavailable = "no Stripe account is configured";
+	if (!venture_context_module_enabled(self->context, "stripe"))
+	{
+		service = NULL;
+		unavailable = "the Stripe module is disabled";
+	}
 	else if (binding)
 	{
+		g_autoptr(GError) lookup = NULL;
 		connection = venture_database_get(venture_context_get_database(self->context),
-			VENTURE_TYPE_INTEGRATION_CONNECTION, g_ascii_strtoll(binding, NULL, 10), NULL);
+			VENTURE_TYPE_INTEGRATION_CONNECTION, g_ascii_strtoll(binding, NULL, 10), &lookup);
 		if (connection)
 			configured = venture_stripe_service_for_connection(venture_context_get_database(self->context),
-				venture_entity_get_organization_id(connection), venture_entity_get_id(connection), TRUE, NULL, NULL);
+				venture_entity_get_organization_id(connection), venture_entity_get_id(connection), TRUE, NULL, &lookup);
 		service = configured;
+		if (!service)
+		{
+			/* Venture's errors here are already redacted refusals. */
+			why = g_strdup_printf("%s: %s", connection ? "its Stripe account could not be loaded" : "no such connection",
+				lookup ? lookup->message : "no reason given");
+			unavailable = why;
+		}
 	}
-	if (!service || !body)
-		htmx_response_set_status(response, service ? 400 : 503);
-	else if (!venture_stripe_service_handle_webhook(service, body, signature, &error))
+	if (!service)
+	{
+		htmx_response_set_status(response, 503);
+		venture_web_stripe_webhook_refused(503, route, unavailable);
+	}
+	else if (!body)
+	{
 		htmx_response_set_status(response, 400);
+		venture_web_stripe_webhook_refused(400, route, "the request has no body");
+	}
+	else if (!venture_stripe_service_handle_webhook(service, body, signature, &error))
+	{
+		htmx_response_set_status(response, 400);
+		venture_web_stripe_webhook_refused(400, route, error ? error->message : "refused without a reason");
+	}
 	else
 		htmx_response_set_status(response, 200);
 	return response;

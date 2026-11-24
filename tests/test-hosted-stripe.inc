@@ -396,6 +396,28 @@ hosted_retire_dying_page(Fixture *f, VentureStripeService *provider, FakeTranspo
 	g_test_message("Dying change page retired; a late confirmation cannot leave two cards enabled");
 }
 
+/* Stripe sends setup_intent.succeeded at about the same time as
+ * checkout.session.completed, and often first. Until the Checkout event
+ * links the Setup, no permission names it. Refusing it with 400 made
+ * Stripe retry an event that has nothing to add: the Checkout event
+ * carries the same Setup and saves the card. */
+static void
+hosted_setup_intent_first(Fixture *f, VentureStripeService *provider, VentureEntity *authorization)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *session = NULL, *sig = NULL;
+	g_autoptr(GBytes) raw = NULL;
+	const gchar *body = "{\"id\":\"evt_setup_first\",\"type\":\"setup_intent.succeeded\",\"livemode\":false,\"data\":{\"object\":{\"id\":\"seti_offline\",\"status\":\"succeeded\"}}}";
+	g_object_get(authorization, "session-id", &session, NULL);
+	g_assert_nonnull(session);
+	sig = binding_signature(body, "whsec_original");
+	raw = g_bytes_new(body, strlen(body));
+	g_assert_true(venture_stripe_service_handle_webhook(provider, raw, sig, &error));
+	g_assert_no_error(error);
+	finish_setup_event(f, provider, "evt_setup_completed", session, venture_entity_get_uuid(authorization));
+	g_test_message("setup_intent.succeeded before its Checkout event is answered; the Checkout event saves the card");
+}
+
 static void
 test_hosted_saved_card(Fixture *f, gconstpointer data)
 {
@@ -451,7 +473,9 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
 		invoices = rows(f, "invoice"); authorizations = rows(f, "stripe_authorization");
 		g_assert_cmpuint(invoices->len, ==, 0); g_assert_cmpuint(authorizations->len, ==, 1);
-		if (!data || g_strcmp0(data, "confirm-on-return")) {
+		if (data && !g_strcmp0(data, "setup-intent-first")) {
+			hosted_setup_intent_first(f, provider, g_ptr_array_index(authorizations, 0));
+		} else if (!data || g_strcmp0(data, "confirm-on-return")) {
 			g_assert_true(venture_stripe_service_verify_authorization(provider, venture_entity_get_id(g_ptr_array_index(authorizations, 0)), NULL, &error));
 			g_assert_no_error(error);
 		}

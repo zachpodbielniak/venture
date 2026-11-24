@@ -156,6 +156,14 @@ match. Incidental browser credentials do not widen or restrict webhook authority
 Unknown event types are durably ignored. Unknown Checkout identities are retained
 as =unknown= with a processor exception, so later association and operator retry
 can recover them. Reusing an event ID with different evidence is refused.
+A =setup_intent.*= event that no saved-card permission names yet is answered
+200 and changes nothing. Stripe often sends it before the Checkout event that
+links the Setup, and that Checkout event saves the card.
+
+Every refused webhook (400 or 503) logs one line: the status, the route (the
+installation account, =connection N= or =Connect=) and the check that refused
+it, for example =Stripe webhook refused with 400 for connection 3: Webhook
+verification rejected=. The line never holds the body, the signature or a key.
 
 Verified event evidence commits before financial processing. A failed posting
 rolls back receipt, allocations, ledger and Checkout changes together, while the

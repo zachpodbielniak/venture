@@ -690,7 +690,11 @@ test_flow(Fixture *f, gconstpointer data)
 		}
 		handler = g_signal_connect(venture_database_get_access_policy(f->database), "decide", G_CALLBACK(deny_stripe_event), NULL);
 		g_object_set(f->config, "security-require-auth", TRUE, NULL);
+		/* A refusal names the check that refused it, and nothing secret. */
+		g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+			"Stripe webhook refused with 400 for the installation account: Webhook verification rejected*");
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json", "{}", NULL), ==, 400);
+		g_test_assert_expected_messages();
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json",
 			"{\"id\":\"evt_http\",\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_unknown\"}}}", NULL), ==, 200);
 		g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json",
@@ -1302,6 +1306,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/binding-authorization", Fixture, "authorization", set_up, test_binding, tear_down);
 	g_test_add("/stripe/automatic-tenant-lifecycle", Fixture, "tenant-lifecycle", set_up, test_automatic_authorization, tear_down);
 	g_test_add("/stripe/hosted-saved-card", Fixture, NULL, set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-setup-intent-before-checkout", Fixture, "setup-intent-first", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-card-confirmed-on-return", Fixture, "confirm-on-return", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-change-card", Fixture, "change-card", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-change-card-on-return", Fixture, "change-card-return", set_up, test_hosted_saved_card, tear_down);

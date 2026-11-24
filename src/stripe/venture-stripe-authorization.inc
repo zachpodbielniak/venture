@@ -609,6 +609,17 @@ stripe_authorization_event(VentureStripeService *self, JsonObject *event,
 		}
 	}
 	if (!matches) return FALSE;
+	/* Stripe sends setup_intent.* at about the same time as the Checkout
+	 * event, often first, and only the Checkout event links the Setup to
+	 * its permission. The Checkout event carries the same Setup and saves
+	 * the card, so an unlinked Setup event has nothing to add. Refusing it
+	 * answered 400 and Stripe retried it for days; a Setup made outside
+	 * Venture would never be linked at all. */
+	if (!matches->len && g_str_has_prefix(type, "setup_intent."))
+	{
+		g_debug("Stripe %s names no saved-card permission yet; the Checkout event links it", type);
+		return TRUE;
+	}
 	if (!matches->len) return refuse(error, "Verified setup names an unknown authorization; retry after its session is linked");
 	for (i = 0; i < matches->len; i++)
 	{

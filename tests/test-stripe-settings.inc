@@ -232,10 +232,21 @@ test_binding(Fixture *f, gconstpointer data)
 			g_autofree gchar *callback = g_strdup_printf("/webhooks/stripe/%" G_GINT64_FORMAT, id);
 			const gchar *event = "{\"id\":\"evt_http\",\"type\":\"fixture.ignored\",\"livemode\":false,\"data\":{\"object\":{}}}";
 			g_assert_cmpuint(http_request(server, "POST", callback, "application/json", event, NULL), ==, 200);
-			g_assert_cmpuint(http_request(server, "POST", callback, "application/json", "{}", NULL), ==, 400);
+			{
+				g_autofree gchar *refused = g_strdup_printf("Stripe webhook refused with 400 for connection %" G_GINT64_FORMAT ": Webhook verification rejected*", id);
+				g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE, refused);
+				g_assert_cmpuint(http_request(server, "POST", callback, "application/json", "{}", NULL), ==, 400);
+				g_test_assert_expected_messages();
+			}
+			g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+				"Stripe webhook refused with 503 for the installation account: no Stripe account is configured*");
 			g_assert_cmpuint(http_request(server, "POST", "/webhooks/stripe", "application/json", event, NULL), ==, 503);
+			g_test_assert_expected_messages();
 			venture_config_set_module_enabled(f->config, "stripe", FALSE);
+			g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+				"Stripe webhook refused with 503 for connection *: the Stripe module is disabled*");
 			g_assert_cmpuint(http_request(server, "POST", callback, "application/json", event, NULL), ==, 503);
+			g_test_assert_expected_messages();
 			venture_config_set_module_enabled(f->config, "stripe", TRUE);
 		}
 		next = venture_stripe_settings_configure(f->database, f->organization_id, settings, 0, 0,

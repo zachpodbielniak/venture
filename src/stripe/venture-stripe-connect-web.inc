@@ -102,15 +102,25 @@ venture_web_stripe_connect_webhook(HtmxRequest *request, GHashTable *params, gpo
 	const gchar *signature = soup_message_headers_get_one(headers, "Stripe-Signature");
 	(void)params;
 	if (!venture_context_module_enabled(self->context, "stripe"))
+	{
 		htmx_response_set_status(response, 503);
+		venture_web_stripe_webhook_refused(503, "Connect", "the Stripe module is disabled");
+	}
 	else if (!body)
+	{
 		htmx_response_set_status(response, 400);
+		venture_web_stripe_webhook_refused(400, "Connect", "the request has no body");
+	}
 	else if (venture_stripe_connect_webhook(venture_context_get_database(self->context), body, signature,
 		stripe_connect_transport(self), &error))
 		htmx_response_set_status(response, 200);
 	else
-		htmx_response_set_status(response, g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND) ||
-			g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG) ? 503 : 400);
+	{
+		guint status = g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND) ||
+			g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG) ? 503 : 400;
+		htmx_response_set_status(response, status);
+		venture_web_stripe_webhook_refused(status, "Connect", error ? error->message : "refused without a reason");
+	}
 	return response;
 }
 

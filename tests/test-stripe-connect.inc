@@ -449,7 +449,10 @@ test_connect_charges_and_webhooks(Fixture *f, gconstpointer data)
 		g_clear_pointer(&body, g_free);
 		g_assert_cmpuint(connect_http(server, "POST", path, NULL, "{\"return_url\":\"https://app.example.test/r\"}", &body), ==, 422);
 		g_clear_pointer(&body, g_free);
+		g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+			"Stripe webhook refused with 400 for Connect: Stripe Connect webhook signature is invalid*");
 		g_assert_cmpuint(connect_http(server, "POST", "/webhooks/stripe/connect", bad, paid, NULL), ==, 400);
+		g_test_assert_expected_messages();
 		g_assert_cmpuint(connect_http(server, "POST", "/webhooks/stripe/connect", good, paid, NULL), ==, 200);
 		events = rows(f, "stripe_event");
 		g_assert_cmpuint(events->len, ==, 1);
