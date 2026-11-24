@@ -188,9 +188,77 @@ static void test_tool_name_is_not_the_sender(Fixture *fixture, gconstpointer dat
 	g_object_unref(wire.listener);
 }
 
+/* Mail sent through the organization's own account carries a Message-ID on
+ * the sender's domain. A reserved .invalid domain scores as spam. A retry
+ * sends the same ID, because bounces and replies are matched by it. */
+static void test_message_id_uses_sender_domain(Fixture *fixture, gconstpointer data)
+{
+	SmtpFixture wire;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureOrganizationMailer) selector = NULL;
+	g_autoptr(VentureMailOutbox) outbox = NULL;
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(JsonObject) values = json_object_new();
+	g_autoptr(GBytes) key = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureMailMessage) row = NULL;
+	g_autoptr(VentureEntity) stored = NULL;
+	g_autofree gchar *endpoint = NULL, *id = NULL, *expected = NULL, *header = NULL;
+	GThread *thread;
+	guint16 port;
+	(void)data;
+	wire.listener = g_socket_listener_new();
+	wire.bodies[0] = NULL;
+	wire.bodies[1] = NULL;
+	wire.recipients = 0;
+	port = g_socket_listener_add_any_inet_port(wire.listener, NULL, &error);
+	g_assert_no_error(error);
+	endpoint = g_strdup_printf("127.0.0.1:%u", port);
+	g_object_set(config, "mail-allowed-endpoints", endpoint, "mail-plaintext-endpoints", endpoint, NULL);
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(fixture->db), key, &error));
+	g_assert_no_error(error);
+	selector = venture_organization_mailer_new(fixture->db, config);
+	json_object_set_string_member(values, "host", "127.0.0.1");
+	json_object_set_int_member(values, "port", port);
+	json_object_set_string_member(values, "tls", "none");
+	json_object_set_string_member(values, "auth", "none");
+	json_object_set_string_member(values, "from", "Owner@Mail.Example.Test");
+	connection = venture_organization_mailer_configure(selector, fixture->org, values, 0, 0, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(connection);
+	outbox = venture_mail_outbox_new(fixture->db, VENTURE_MAILER(selector));
+	row = enqueue(fixture, outbox, "message-id-domain");
+	/* The ID is fixed when the message is queued, so a record that keeps
+	 * it at enqueue keeps the ID that goes on the wire. */
+	stored = venture_database_get(fixture->db, VENTURE_TYPE_MAIL_MESSAGE, venture_entity_get_id(VENTURE_ENTITY(row)), &error);
+	g_assert_no_error(error);
+	g_object_get(stored, "message-id", &id, NULL);
+	expected = g_strdup_printf("%s@mail.example.test", venture_entity_get_uuid(stored));
+	g_assert_cmpstr(id, ==, expected);
+	header = g_strdup_printf("<%s>", expected);
+	thread = g_thread_new("message-id-domain", smtp_server, &wire);
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, fixture->org, 1, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	assert_state(fixture, venture_entity_get_id(VENTURE_ENTITY(row)), "uncertain");
+	g_assert_true(venture_mail_outbox_retry(outbox, fixture->org, venture_entity_get_id(VENTURE_ENTITY(row)), NULL, &error));
+	g_assert_cmpint(venture_mail_outbox_deliver_due(outbox, fixture->org, 1, NULL, NULL, &error), ==, 1);
+	g_assert_no_error(error);
+	assert_state(fixture, venture_entity_get_id(VENTURE_ENTITY(row)), "sent");
+	g_thread_join(thread);
+	g_assert_nonnull(wire.bodies[0]);
+	g_assert_nonnull(wire.bodies[1]);
+	g_assert_nonnull(strstr(wire.bodies[0], header));
+	g_assert_nonnull(strstr(wire.bodies[1], header));
+	g_assert_null(strstr(wire.bodies[1], ".invalid"));
+	g_free(wire.bodies[0]);
+	g_free(wire.bodies[1]);
+	g_object_unref(wire.listener);
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 	g_test_add("/mail/tool-name-is-not-the-sender", Fixture, NULL, setup, test_tool_name_is_not_the_sender, teardown);
+	g_test_add("/mail/message-id-uses-sender-domain", Fixture, NULL, setup, test_message_id_uses_sender_domain, teardown);
 	return g_test_run();
 }

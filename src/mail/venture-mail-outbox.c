@@ -101,6 +101,23 @@ static gboolean snapshot_attachments(VentureMailOutbox *self, VentureEntity *ent
 	venture_entity_set_attribute(entity, "_mail_attachments", serialized);
 	return TRUE;
 }
+/* The right-hand side of a new message's Message-ID: the domain of the
+ * address the organization sends From. A reserved .invalid domain does
+ * not resolve and does not match the sender, and filters score both.
+ * It is chosen once, here, and stored: retries, bounce reports and
+ * replies all match the same ID. Selecting the transport reads no
+ * network; with none to select, the reserved domain still marks the ID
+ * as Venture's own. */
+static gchar *message_id_domain(VentureMailOutbox *self, VentureEntity *entity)
+{
+	g_autoptr(VentureMailer) transport = NULL;
+	g_autoptr(GError) unavailable = NULL;
+	gchar *domain = NULL;
+	if (self->mailer != NULL)
+		transport = venture_mailer_prepare(self->mailer, VENTURE_MAIL_MESSAGE(entity), &unavailable);
+	if (transport != NULL) domain = venture_mailer_dup_sender_domain(transport);
+	return domain != NULL ? domain : g_strdup("venture.invalid");
+}
 static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEntity *previous, gpointer data, GError **error)
 {
 	VentureMailOutbox *self = data;
@@ -136,7 +153,10 @@ static gboolean validate(VentureDatabase *db, VentureEntity *entity, VentureEnti
 	if (!snapshot_attachments(self, entity, error)) return FALSE;
 	if (!key || !*key) { g_free(key); key = g_uuid_string_random(); }
 	g_free(id);
-	id = g_strdup_printf("%s@venture.invalid", venture_entity_get_uuid(entity));
+	{
+		g_autofree gchar *domain = message_id_domain(self, entity);
+		id = g_strdup_printf("%s@%s", venture_entity_get_uuid(entity), domain);
+	}
 	g_object_set(entity, "state", "queued", "message-id", id, "idempotency-key", key,
 		"lease-until", NULL, "sent-at", NULL, "last-error", NULL, NULL);
 	return TRUE;

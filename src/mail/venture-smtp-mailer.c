@@ -247,8 +247,13 @@ static void smtp_binding(VentureMailer *mailer, gint64 *connection_id, gint64 *v
 	*connection_id = self->connection_id;
 	*version = self->connection_version;
 }
+static const gchar *smtp_sender(VentureMailer *mailer)
+{
+	return VENTURE_SMTP_MAILER(mailer)->from;
+}
 static void smtp_iface(VentureMailerInterface *iface)
 {
+	iface->get_sender = smtp_sender;
 	iface->send = smtp_send;
 	iface->get_binding = smtp_binding;
 }

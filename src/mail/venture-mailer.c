@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include <string.h>
 G_DEFINE_INTERFACE(VentureMailer, venture_mailer, G_TYPE_OBJECT)
 static void venture_mailer_default_init(VentureMailerInterface *iface) { }
 void venture_mailer_get_binding(VentureMailer *self, gint64 *connection_id, gint64 *version)
@@ -10,6 +11,21 @@ void venture_mailer_get_binding(VentureMailer *self, gint64 *connection_id, gint
 	*version = 0;
 	if (VENTURE_MAILER_GET_IFACE(self)->get_binding != NULL)
 		VENTURE_MAILER_GET_IFACE(self)->get_binding(self, connection_id, version);
+}
+gchar *venture_mailer_dup_sender_domain(VentureMailer *self)
+{
+	const gchar *sender, *domain, *p;
+	g_return_val_if_fail(VENTURE_IS_MAILER(self), NULL);
+	if (VENTURE_MAILER_GET_IFACE(self)->get_sender == NULL) return NULL;
+	sender = VENTURE_MAILER_GET_IFACE(self)->get_sender(self);
+	domain = sender ? strrchr(sender, '@') : NULL;
+	if (domain == NULL || *++domain == '\0' || *domain == '.' || *domain == '-') return NULL;
+	/* It becomes the right-hand side of a Message-ID: a dot-atom, and a
+	 * name a filter can resolve. Anything else keeps the reserved one. */
+	for (p = domain; *p != '\0'; p++)
+		if (!g_ascii_isalnum(*p) && *p != '.' && *p != '-') return NULL;
+	if (strchr(domain, '.') == NULL || p[-1] == '.' || strstr(domain, "..")) return NULL;
+	return g_ascii_strdown(domain, -1);
 }
 VentureMailer *venture_mailer_prepare(VentureMailer *self, VentureMailMessage *message, GError **error)
 {

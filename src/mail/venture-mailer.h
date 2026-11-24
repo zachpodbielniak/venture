@@ -11,14 +11,16 @@ G_DECLARE_INTERFACE(VentureMailer, venture_mailer, VENTURE, MAILER, GObject)
  * @send: one submission; uncertain acceptance must report MAIL_UNCERTAIN
  * @prepare: (nullable): resolve a concrete transport on the caller's thread
  * @get_binding: (nullable): return immutable connection identity, without I/O
+ * @get_sender: (nullable): return the From address, without I/O
  */
 struct _VentureMailerInterface {
 	GTypeInterface parent_iface;
 	gboolean (*send)(VentureMailer *self, VentureMailMessage *message, GCancellable *cancellable, GError **error);
 	VentureMailer *(*prepare)(VentureMailer *self, VentureMailMessage *message, GError **error);
 	void (*get_binding)(VentureMailer *self, gint64 *connection_id, gint64 *version);
+	const gchar *(*get_sender)(VentureMailer *self);
 	/*< private >*/
-	gpointer padding[8];
+	gpointer padding[7];
 };
 /**
  * venture_mailer_prepare:
@@ -44,6 +46,17 @@ VentureMailer *venture_mailer_prepare(VentureMailer *self, VentureMailMessage *m
  * submission and rejects changing a retained message's connection identity.
  */
 void venture_mailer_get_binding(VentureMailer *self, gint64 *connection_id, gint64 *version);
+/**
+ * venture_mailer_dup_sender_domain:
+ * @self: prepared concrete transport
+ *
+ * The domain of the address this transport sends From, in lower case.
+ * Reads no database and does no I/O.
+ *
+ * Returns: (transfer full) (nullable): the domain, or %NULL when the
+ *   transport has no sender or its domain is not a plain DNS name
+ */
+gchar *venture_mailer_dup_sender_domain(VentureMailer *self);
 /**
  * venture_mailer_send:
  * @self: the transport

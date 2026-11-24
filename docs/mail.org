@@ -29,6 +29,12 @@ retried. An expired =sending= lease also becomes =uncertain=: a process crash
 may have happened after the relay accepted the message. Deliberate retry
 reuses the same row and Message-ID; receiving MTAs may deduplicate it.
 
+The Message-ID is =<uuid>@<domain>=, set once at enqueue. The domain is
+that of the organization's sender address, in lower case, so it resolves
+and matches the From. Only when no transport can be selected at enqueue
+is it the reserved =venture.invalid=. Bounces and replies match the stored
+ID, so it never changes after enqueue.
+
 * Enqueueing from another feature
 
 =venture_mail_outbox_enqueue()= accepts an unsaved =VentureMailMessage= with
