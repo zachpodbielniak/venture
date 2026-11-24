@@ -205,13 +205,15 @@ The public =/pay/<opaque-capability>= path binds a cryptographically random
 256-bit secret to a record UUID. Only SHA256 of the complete capability is
 stored, compared in constant time. The record fixes organization, account,
 invoice ID and revision, expiry and revocation state. GET reveals only the
-outstanding amount and payment continuation. POST accepts the capability's
+outstanding amount and payment continuation (see "Pay now" for the
+one-click address and the paid and voided answers). POST accepts the capability's
 invoice only, irrespective of submitted invoice selectors. Responses disable
 caching and cross-origin referrer forwarding. The same-origin referrer policy
 keeps the anonymous browser form compatible with hosted workspace Origin
 validation; the capability is not forwarded to the external payment page.
-Missing, tampered, expired, revoked, paid,
-deleted or changed-invoice capabilities return the same unavailable page.
+Missing, tampered, expired, revoked, deleted
+or changed-invoice capabilities return the same unavailable page. A live
+capability whose invoice is paid or voided says so instead.
 
 Continuing creates or reuses one Checkout whose provider deadline cannot outlive
 the link. A bank payment already processing remains pending and creates no new
@@ -227,6 +229,35 @@ against the historical account. Replacement first revokes previous applicable
 links. An uncertain attempt or a historical account still able to collect must
 be reconciled before replacement. Revocation cannot rewrite or delete payment
 evidence.
+
+* Pay now
+
+Every invoice email sent through Send carries a *Pay now* button when the
+business has a Stripe account connected and =server.base_url= is set. The
+button is a shareable invoice link made for that email: the same record,
+digest, account and invoice-revision binding as above, minted in the send
+transaction after the invoice is issued. It is valid for thirty days.
+Sending the invoice is the authority to offer it, so no finance role is
+asked, and earlier links are not revoked: a button in an earlier email
+still works. Sending makes no Stripe call. An invoice Checkout cannot take,
+no account or no public origin sends the email without a button.
+
+The button is =GET /pay/<capability>/checkout=. It goes straight to
+Checkout for the outstanding balance, cards always and ACH debit where the
+business has it on, by the same path as the =POST= above. It is a plain
+link so that a mail client, which sends no =Origin=, is not refused on
+the public customer-link address. Opening it again reuses the open session.
+=GET /pay/<capability>= is the customer's invoice page with the same
+button. Only a signed completion records the payment and sends the receipt.
+
+A paid invoice answers "This invoice is paid" and a voided one "This
+invoice was voided", on both addresses, and neither reaches Stripe. Only
+an authentic, unexpired, unrevoked link learns that; every other failure
+is still the same unavailable page. A link to an invoice changed after the
+email, including by a partial payment, is unavailable, as above.
+
+The bearer link is in the message's private bodies only. The stored public
+body, the API and previews never show it.
 
 * Returns, disputes and settlement boundaries
 

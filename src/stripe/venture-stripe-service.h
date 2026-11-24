@@ -293,6 +293,47 @@ VentureStripePaymentLink *venture_stripe_service_create_payment_link(VentureStri
 VentureStripePaymentLink *venture_stripe_service_resolve_payment_link(VentureDatabase *database,
 	const gchar *token, GDateTime *now, GError **error);
 /**
+ * VENTURE_STRIPE_INVOICE_PAY_DAYS:
+ *
+ * How long the Pay now button in an invoice email stays valid: the
+ * longest a payment link may live.
+ */
+#define VENTURE_STRIPE_INVOICE_PAY_DAYS 30
+/**
+ * venture_stripe_service_invoice_pay_url:
+ * @self: active organization provider
+ * @invoice: the invoice being sent, as it will be sent
+ * @base_url: (nullable): trusted installation HTTPS origin
+ * @actor: (nullable): attribution for the link record
+ * @error: (out) (optional): a failed write
+ *
+ * The Pay now URL for an invoice email: a new payment link for @invoice,
+ * valid for %VENTURE_STRIPE_INVOICE_PAY_DAYS days, whose
+ * =/pay/<token>/checkout= address opens Checkout in one click. It writes
+ * inside the caller's transaction and makes no Stripe call. Earlier links
+ * are kept, so a button in an earlier email still works.
+ *
+ * Returns: (transfer full) (nullable): the bearer URL, shown only to the
+ *   mail transport; %NULL with no error when Checkout cannot take the
+ *   invoice or no account or origin is configured
+ */
+gchar *venture_stripe_service_invoice_pay_url(VentureStripeService *self, VentureEntity *invoice,
+	const gchar *base_url, const VentureActor *actor, GError **error);
+/**
+ * venture_stripe_service_payment_link_closed:
+ * @database: repository
+ * @token: complete opaque path capability
+ * @now: (nullable): lookup clock, defaults to current UTC time
+ *
+ * Why an authentic link cannot be paid, when the answer is safe to give
+ * its holder: its invoice is paid, or it was voided.
+ *
+ * Returns: (nullable): "paid", "void", or %NULL for every other case,
+ *   including a link that does not authenticate
+ */
+const gchar *venture_stripe_service_payment_link_closed(VentureDatabase *database,
+	const gchar *token, GDateTime *now);
+/**
  * venture_stripe_service_pay_link:
  * @self: active provider for the verified link organization
  * @token: opaque payment capability

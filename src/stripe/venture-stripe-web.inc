@@ -155,7 +155,11 @@ venture_stripe_web_settings_link(VentureWebServer *self, GString *content,
 	g_string_append_printf(content, "<p><a class=\"btn\" href=\"/organizations/%" G_GINT64_FORMAT "/settings/stripe\">Stripe settings</a></p>", id);
 }
 
-/* A payment capability authenticates itself before any invoice is read. */
+/* A payment capability authenticates itself before any invoice is read.
+ * GET /pay/<token> is the customer's invoice page; GET /pay/<token>/checkout
+ * is its Pay now button, and the one in the invoice email: a plain link a
+ * mail client opens with no Origin, so it must not depend on one. A POST
+ * to /pay/<token> is the older form and does the same. */
 static HtmxResponse *
 venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -167,15 +171,31 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 	g_autoptr(VentureStripeCheckout) checkout = NULL;
 	g_autoptr(VentureMoney) balance = NULL;
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\"><title>Invoice payment</title></head><body><h1>Invoice payment</h1>");
+	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
+		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Invoice payment</title></head>"
+		"<body style=\"font-family:sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem\"><h1>Invoice payment</h1>");
 	g_autofree gchar *amount = NULL, *url = NULL, *state = NULL;
 	const gchar *token = g_hash_table_lookup(params, "token");
+	const gchar *closed;
+	gboolean pay = htmx_request_get_method(request) == HTMX_METHOD_POST ||
+		g_str_has_suffix(htmx_request_get_path(request), "/checkout");
 	gint64 invoice_id, connection_id;
 	HtmxResponse *response;
 	link = venture_stripe_service_resolve_payment_link(database, token, NULL, &error);
-	if (!link) goto unavailable;
+	if (!link)
+	{
+		/* Paid or voided says so, and never reaches Stripe. */
+		closed = venture_stripe_service_payment_link_closed(database, token, NULL);
+		if (!closed) goto unavailable;
+		g_string_append(html, !g_strcmp0(closed, "paid") ?
+			"<p>This invoice is paid. Thank you. Nothing more is due.</p>" :
+			"<p>This invoice was voided. Nothing is due.</p>");
+		g_string_append(html, "</body></html>");
+		response = htmx_response_new_with_content(html->str);
+		goto headers;
+	}
 	g_object_get(link, "invoice-id", &invoice_id, "connection-id", &connection_id, NULL);
-	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
+	if (pay)
 	{
 		if (!service)
 		{
@@ -203,7 +223,13 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 		amount = venture_money_to_string(balance);
 		g_string_append(html, "<p>Outstanding amount: ");
 		venture_html_escape_append(html, amount);
-		g_string_append(html, "</p><form method=\"post\"><button>Continue to secure payment</button></form>");
+		/* The token is already in this page's address; the link only adds
+		 * the step. It is a link, not a form, for the same reason as the
+		 * email's: no Origin to be refused. */
+		g_string_append_printf(html, "</p><p><a href=\"/pay/%s/checkout\" style=\"display:inline-block;padding:16px 32px;"
+			"background:#1a56db;color:#ffffff;font-size:20px;font-weight:bold;text-decoration:none;border-radius:6px\">"
+			"Pay now</a></p><p>Card", token);
+		g_string_append(html, ", or bank account where offered, on a secure payment page.</p>");
 	}
 	g_string_append(html, "</body></html>");
 	response = htmx_response_new_with_content(html->str);

@@ -1185,6 +1185,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-settings.inc"
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
+#include "test-stripe-pay-now.inc"
 #include "test-stripe-automatic.inc"
 #include "test-hosted-stripe.inc"
 #include "test-stripe-connect.inc"
@@ -1216,6 +1217,12 @@ main(int argc, char **argv)
 	g_test_add("/stripe/payment-link/finance", Fixture, "finance", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/api", Fixture, "api", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/paid", Fixture, "paid", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/pay-now/email", Fixture, NULL, set_up, test_pay_now_email, tear_down);
+	g_test_add("/stripe/pay-now/without-stripe", Fixture, NULL, set_up, test_pay_now_without_stripe, tear_down);
+	g_test_add("/stripe/pay-now/click", Fixture, NULL, set_up, test_pay_now_click, tear_down);
+	g_test_add("/stripe/pay-now/void", Fixture, NULL, set_up, test_pay_now_void, tear_down);
+	g_test_add("/stripe/pay-now/ach", Fixture, NULL, set_up, test_pay_now_ach, tear_down);
+	g_test_add("/stripe/pay-now/public-origin", Fixture, NULL, set_up, test_pay_now_public_origin, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);

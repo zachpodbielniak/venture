@@ -190,7 +190,44 @@ static VentureMailTemplate *invoice_template(VentureDatabase *db, gint64 org, gb
 		"text-body", "Please find invoice {number} below. {terms}", "html-body", "", NULL);
 	return template;
 }
+/* The Pay now URL for @invoice, or NULL when Stripe cannot take it. The
+ * context's provider serves its own organization; another organization's
+ * invoice is offered through that organization's own account. */
+static gchar *invoice_pay_url(VentureContext *context, VentureEntity *invoice, const VentureActor *actor, GError **error)
+{
+	VentureDatabase *db = venture_context_get_database(context);
+	VentureStripeService *stripe = venture_context_get_stripe_service(context);
+	g_autoptr(VentureStripeService) own = NULL;
+	g_autofree gchar *base = NULL;
+	gchar *url = NULL;
+	if (!venture_context_module_enabled(context, "stripe")) return NULL;
+	g_object_get(venture_context_get_config(context), "server-base-url", &base, NULL);
+	if (stripe) {
+		url = venture_stripe_service_invoice_pay_url(stripe, invoice, base, actor, error);
+		if (url || (error && *error)) return url;
+	}
+	own = venture_stripe_service_for_organization(db, venture_entity_get_organization_id(invoice), NULL, NULL);
+	return own ? venture_stripe_service_invoice_pay_url(own, invoice, base, actor, error) : NULL;
+}
+/* A big button the customer cannot miss. Inline styles, because mail
+ * clients drop style sheets. */
+static gchar *pay_button_html(const gchar *url)
+{
+	g_autoptr(GString) html = g_string_new("<p style=\"margin:24px 0\"><a href=\"");
+	venture_html_escape_append(html, url);
+	g_string_append(html, "\" style=\"display:inline-block;padding:16px 32px;background:#1a56db;color:#ffffff;"
+		"font-size:20px;font-weight:bold;text-decoration:none;border-radius:6px\">Pay now</a></p>");
+	return g_string_free(g_steal_pointer(&html), FALSE);
+}
+/* With @pay_url the button goes into the private bodies only: the stored
+ * public copy is readable through the API and must not carry the bearer
+ * link. The transport sends the private bodies. */
+static VentureMailMessage *invoice_message_build(VentureContext *context, VentureEntity *invoice, const gchar *pay_url, GError **error);
 VentureMailMessage *venture_mail_invoice_message(VentureContext *context, VentureEntity *invoice, GError **error)
+{
+	return invoice_message_build(context, invoice, NULL, error);
+}
+static VentureMailMessage *invoice_message_build(VentureContext *context, VentureEntity *invoice, const gchar *pay_url, GError **error)
 {
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureMailTemplate) template = NULL;
@@ -218,6 +255,18 @@ VentureMailMessage *venture_mail_invoice_message(VentureContext *context, Ventur
 		}
 		g_object_set(message, "to", email, "html-body", body, "idempotency-key", key,
 			"related-type", "invoice", "related-id", venture_entity_get_id(invoice), NULL);
+		if (pay_url) {
+			g_autofree gchar *button = pay_button_html(pay_url), *text = NULL, *private_text = NULL;
+			g_autoptr(GString) private_html = g_string_new(html);
+			const gchar *start = strstr(html, "<body>");
+			gsize at = start ? (gsize)(start - html) + 6 : 0;
+			/* Above the line table, under the operator's own words. */
+			g_string_insert(private_html, at, button);
+			g_string_insert(private_html, at, intro ? intro : "");
+			g_object_get(message, "text-body", &text, NULL);
+			private_text = g_strdup_printf("%s\n\nPay now: %s\n", text ? text : "", pay_url);
+			g_object_set(message, "private-html-body", private_html->str, "private-text-body", private_text, NULL);
+		}
 	}
 	/* The invoice itself, as a PDF the customer can print and file. */
 	{
@@ -255,7 +304,7 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
 	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
 	g_autoptr(VentureQuery) keys = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
-	g_autofree gchar *email = NULL, *key = NULL;
+	g_autofree gchar *email = NULL, *key = NULL, *pay_url = NULL;
 	gboolean stored = FALSE;
 	gint status;
 	if (!outbox || !venture_context_module_enabled(context, "invoicing")) {
@@ -286,7 +335,10 @@ VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 or
 	template = invoice_template(db, org, &stored, error);
 	if (!template) goto fail;
 	if (!stored && !venture_database_save(db, VENTURE_ENTITY(template), actor, error)) goto fail;
-	message = venture_mail_invoice_message(context, invoice, error);
+	/* After the transition, so the link is bound to the invoice as sent. */
+	pay_url = invoice_pay_url(context, invoice, actor, error);
+	if (!pay_url && error && *error) goto fail;
+	message = invoice_message_build(context, invoice, pay_url, error);
 	if (!message) goto fail;
 	queued = venture_mail_outbox_enqueue(outbox, message, actor, error);
 	if (!queued || !venture_settlement_service_record_mail(settlement, VENTURE_INVOICE(invoice), actor, error)) goto fail;

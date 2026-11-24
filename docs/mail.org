@@ -215,6 +215,13 @@ invoice page reads: the seller's letterhead from the organization, the
 customer, the lines with their frozen tax, the total and any balance due,
 and the terms. The same PDF is at =GET /invoices/:id/pdf=.
 
+When the business has Stripe connected and =server.base_url= is set, the
+email also carries a big *Pay now* button. It opens Stripe Checkout for that
+one invoice in one click, with no sign-in. The link lives only in the
+private bodies the transport sends; the stored public copy has no button.
+An invoice Checkout cannot take is sent without one. See "Pay now" in
+=docs/stripe.org=.
+
 A recorded customer payment is answered with a receipt. Once the
 transaction that saved the payment and its allocations commits, the
 customer's company email is sent =Receipt for your payment of $X= with

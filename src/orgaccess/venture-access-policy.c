@@ -1673,11 +1673,16 @@ public_capability_request(HtmxRequest *request)
 	{
 		gchar uuid[37];
 		guint i;
-		if (strlen(path + 5) != 101 || path[41] != '.') return FALSE;
+		/* /pay/<token>, or its one-click /pay/<token>/checkout (GET only). */
+		gsize rest = strlen(path + 5);
+		gboolean one_click = rest == 101 + strlen("/checkout") && !strcmp(path + 106, "/checkout");
+		if (!one_click && rest != 101) return FALSE;
+		if (method != HTMX_METHOD_GET && (one_click || method != HTMX_METHOD_POST)) return FALSE;
+		if (path[41] != '.') return FALSE;
 		memcpy(uuid, path + 5, 36); uuid[36] = '\0';
 		if (!g_uuid_string_is_valid(uuid)) return FALSE;
 		for (i = 42; i < 106; i++) if (!g_ascii_isxdigit(path[i])) return FALSE;
-		return method == HTMX_METHOD_GET || method == HTMX_METHOD_POST;
+		return TRUE;
 	}
 	if (!g_strcmp0(path, "/webhooks/stripe")) return method == HTMX_METHOD_POST;
 	/* The platform's one Connect endpoint: it verifies the platform

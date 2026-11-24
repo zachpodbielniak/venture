@@ -152,7 +152,7 @@ test_payment_link(Fixture *f, gconstpointer data)
 			 * without leaking the payment capability to the provider. */
 			g_assert_cmpuint(http_request_origin(server, "GET", path, NULL, NULL, &body,
 				"venture.example", NULL, "same-origin"), ==, 200);
-			g_assert_nonnull(strstr(body, "Continue to secure payment"));
+			g_assert_nonnull(strstr(body, "Pay now"));
 			g_assert_cmpuint(http_request_origin(server, "POST", "/pay/invalid", "application/x-www-form-urlencoded", "", NULL,
 				"venture.example", "https://venture.example", NULL), ==, 404);
 			g_assert_cmpuint(((FakeTransport *)transport)->calls, ==, calls);

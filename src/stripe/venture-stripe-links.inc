@@ -38,49 +38,92 @@ stripe_link_nonce(GError **error)
 	return result;
 }
 
+/* The capability alone: format, constant-time digest, enabled, unexpired,
+ * not deleted. Says nothing about whether its invoice can be paid. On
+ * success *@link_out and *@invoice_out are owned by the caller; a link that
+ * does not authenticate is %FALSE with no error. */
+static gboolean
+link_authentic(VentureDatabase *database, const gchar *token, GDateTime *now,
+	VentureEntity **link_out, VentureEntity **invoice_out, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(GDateTime) expires = NULL;
+	g_autofree gchar *uuid = NULL, *digest = NULL, *stored = NULL;
+	VentureEntity *link;
+	gint64 invoice_id;
+	gboolean enabled;
+	guint i;
+	*link_out = NULL;
+	*invoice_out = NULL;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_payment_link") == G_TYPE_INVALID)
+		return FALSE;
+	if (!token || strlen(token) != 101 || token[36] != '.') return FALSE;
+	uuid = g_strndup(token, 36);
+	if (!g_uuid_string_is_valid(uuid)) return FALSE;
+	for (i = 37; i < 101; i++) if (!g_ascii_isxdigit(token[i])) return FALSE;
+	if (!venture_query_add_filter_string(query, "uuid", VENTURE_FILTER_OP_EQ, uuid, error)) return FALSE;
+	rows = venture_database_find(database, query, error);
+	if (!rows || rows->len != 1) return FALSE;
+	link = g_ptr_array_index(rows, 0);
+	g_object_get(link, "token-hash", &stored, "expires-at", &expires, "enabled", &enabled,
+		"invoice-id", &invoice_id, NULL);
+	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
+	if (!stored || !venture_constant_time_equal(stored, digest) || !enabled || !expires ||
+		g_date_time_compare(now, expires) >= 0 || venture_entity_is_deleted(link)) return FALSE;
+	*invoice_out = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (!*invoice_out) return FALSE;
+	if (venture_entity_is_deleted(*invoice_out) ||
+		venture_entity_get_organization_id(*invoice_out) != venture_entity_get_organization_id(link))
+	{
+		g_clear_object(invoice_out);
+		return FALSE;
+	}
+	*link_out = g_object_ref(link);
+	return TRUE;
+}
+
+const gchar *
+venture_stripe_service_payment_link_closed(VentureDatabase *database, const gchar *token, GDateTime *clock)
+{
+	g_autoptr(VentureEntity) link = NULL, invoice = NULL;
+	g_autoptr(GDateTime) now = clock ? g_date_time_ref(clock) : venture_time_now();
+	gint status;
+	/* Only the holder of a live capability learns the invoice's state. */
+	if (!link_authentic(database, token, now, &link, &invoice, NULL)) return NULL;
+	g_object_get(invoice, "status", &status, NULL);
+	if (status == VENTURE_INVOICE_STATUS_PAID) return "paid";
+	if (status == VENTURE_INVOICE_STATUS_VOID) return "void";
+	return NULL;
+}
+
 VentureStripePaymentLink *
 venture_stripe_service_resolve_payment_link(VentureDatabase *database,
 	const gchar *token, GDateTime *clock, GError **error)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
-	g_autoptr(GPtrArray) rows = NULL;
-	g_autoptr(VentureEntity) invoice = NULL, connection = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, connection = NULL, found = NULL;
 	g_autoptr(GDateTime) now = clock ? g_date_time_ref(clock) : venture_time_now();
-	g_autoptr(GDateTime) expires = NULL;
-	g_autofree gchar *uuid = NULL, *digest = NULL, *stored = NULL, *provider = NULL;
-	VentureStripePaymentLink *link;
-	gint64 invoice_id, connection_id, version, organization;
+	g_autofree gchar *provider = NULL;
+	VentureEntity *link;
+	gint64 connection_id, version, organization;
 	gint status;
-	gboolean enabled, connected;
-	guint i;
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_payment_link") == G_TYPE_INVALID)
+	gboolean connected;
+	if (!link_authentic(database, token, now, &found, &invoice, error))
+	{
+		if (error && *error) return NULL;
 		goto unavailable;
-	if (!token || strlen(token) != 101 || token[36] != '.') goto unavailable;
-	uuid = g_strndup(token, 36);
-	if (!g_uuid_string_is_valid(uuid)) goto unavailable;
-	for (i = 37; i < 101; i++) if (!g_ascii_isxdigit(token[i])) goto unavailable;
-	if (!venture_query_add_filter_string(query, "uuid", VENTURE_FILTER_OP_EQ, uuid, error)) return NULL;
-	rows = venture_database_find(database, query, error);
-	if (!rows) return NULL;
-	if (rows->len != 1) goto unavailable;
-	link = g_ptr_array_index(rows, 0);
-	g_object_get(link, "token-hash", &stored, "expires-at", &expires, "enabled", &enabled,
-		"invoice-id", &invoice_id, "connection-id", &connection_id, "invoice-version", &version, NULL);
-	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
-	if (!stored || !venture_constant_time_equal(stored, digest) || !enabled || !expires ||
-		g_date_time_compare(now, expires) >= 0 || venture_entity_is_deleted(VENTURE_ENTITY(link))) goto unavailable;
+	}
+	link = found;
+	g_object_get(link, "connection-id", &connection_id, "invoice-version", &version, NULL);
 	organization = venture_entity_get_organization_id(VENTURE_ENTITY(link));
-	invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, error);
-	if (!invoice) return NULL;
 	connection = venture_database_get(database, VENTURE_TYPE_INTEGRATION_CONNECTION, connection_id, error);
 	if (!connection) return NULL;
 	g_object_get(invoice, "status", &status, NULL);
 	g_object_get(connection, "enabled", &connected, "provider", &provider, NULL);
 	if (!connected || g_strcmp0(provider, "stripe") || venture_entity_is_deleted(connection) ||
-		venture_entity_get_organization_id(connection) != organization || venture_entity_is_deleted(invoice) ||
-		venture_entity_get_organization_id(invoice) != organization || venture_entity_get_version(invoice) != version ||
+		venture_entity_get_organization_id(connection) != organization || venture_entity_get_version(invoice) != version ||
 		(status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)) goto unavailable;
-	return g_object_ref(link);
+	return VENTURE_STRIPE_PAYMENT_LINK(g_steal_pointer(&found));
 unavailable:
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Payment link is unavailable");
 	return NULL;
@@ -134,29 +177,82 @@ venture_stripe_service_revoke_payment_link(VentureStripeService *self,
 	return TRUE;
 }
 
+/* A trusted HTTPS origin with nothing after it, and a lifetime from one
+ * hour through thirty days. */
+static gboolean
+link_terms_valid(const gchar *base_url, GDateTime *now, GDateTime *expires)
+{
+	g_autoptr(GUri) origin = base_url ? g_uri_parse(base_url, G_URI_FLAGS_NONE, NULL) : NULL;
+	return origin && strlen(base_url) <= 2048 && !g_strcmp0(g_uri_get_scheme(origin), "https") &&
+		g_uri_get_host(origin) && !g_uri_get_userinfo(origin) && !g_uri_get_query(origin) &&
+		!g_uri_get_fragment(origin) &&
+		(!g_uri_get_path(origin) || !*g_uri_get_path(origin) || !strcmp(g_uri_get_path(origin), "/")) &&
+		g_date_time_difference(expires, now) >= G_TIME_SPAN_HOUR &&
+		g_date_time_difference(expires, now) <= 30 * G_TIME_SPAN_DAY;
+}
+
+/* Writes one capability for @invoice as it is now. The caller has checked
+ * the authority and the terms; the bearer URL exists only in the returned
+ * object's transient url property. */
+static VentureStripePaymentLink *
+link_mint(VentureStripeService *self, VentureEntity *invoice, const gchar *base_url,
+	GDateTime *expires, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureStripePaymentLink) link = NULL;
+	g_autofree gchar *nonce = NULL, *token = NULL, *digest = NULL, *url = NULL;
+	nonce = stripe_link_nonce(error);
+	if (!nonce) return NULL;
+	link = venture_stripe_payment_link_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(link), self->organization_id);
+	token = g_strdup_printf("%s.%s", venture_entity_get_uuid(VENTURE_ENTITY(link)), nonce);
+	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
+	url = g_strdup_printf("%.*s/pay/%s", (gint)(strlen(base_url) - (g_str_has_suffix(base_url, "/") ? 1 : 0)), base_url, token);
+	g_object_set(link, "connection-id", self->connection_id, "invoice-id", venture_entity_get_id(invoice),
+		"invoice-version", venture_entity_get_version(invoice), "token-hash", digest,
+		"expires-at", expires, "enabled", TRUE, "url", url, NULL);
+	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(link), actor, error)) return NULL;
+	return g_steal_pointer(&link);
+}
+
+gchar *
+venture_stripe_service_invoice_pay_url(VentureStripeService *self, VentureEntity *invoice,
+	const gchar *base_url, const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureEntity) current = NULL;
+	g_autoptr(VentureStripePaymentLink) link = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) expires = g_date_time_add_days(now, VENTURE_STRIPE_INVOICE_PAY_DAYS);
+	g_autofree gchar *url = NULL;
+	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(invoice), NULL);
+	/* No button is better than a button that fails: an invoice Checkout
+	 * cannot take, no account, or no public origin sends the email
+	 * without one. Sending the invoice is the authority to offer it. */
+	if (!self->connection_id || venture_entity_get_organization_id(invoice) != self->organization_id ||
+		!link_terms_valid(base_url, now, expires) ||
+		!eligible(self, venture_entity_get_id(invoice), &current, NULL, NULL, NULL, NULL))
+		return NULL;
+	link = link_mint(self, current, base_url, expires, actor, error);
+	if (!link) return NULL;
+	g_object_get(link, "url", &url, NULL);
+	return g_strconcat(url, "/checkout", NULL);
+}
+
 VentureStripePaymentLink *
 venture_stripe_service_create_payment_link(VentureStripeService *self,
 	gint64 invoice_id, const gchar *base_url, GDateTime *deadline,
 	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(VentureStripePaymentLink) link = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(GDateTime) expires = deadline ? g_date_time_ref(deadline) : g_date_time_add_days(now, 7);
-	g_autoptr(GUri) origin = NULL;
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
 	g_autoptr(GPtrArray) previous = NULL;
-	g_autofree gchar *nonce = NULL, *token = NULL, *digest = NULL, *url = NULL;
 	guint i;
 	if (!stripe_finance(self, error) || !eligible(self, invoice_id, &invoice, NULL, NULL, NULL, error)) return NULL;
 	if (!self->connection_id) { refuse(error, "Payment links require a configured organization account"); return NULL; }
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), invoice, "write", error)) return NULL;
-	origin = base_url ? g_uri_parse(base_url, G_URI_FLAGS_NONE, NULL) : NULL;
-	if (!origin || strlen(base_url) > 2048 || g_strcmp0(g_uri_get_scheme(origin), "https") || !g_uri_get_host(origin) ||
-		g_uri_get_userinfo(origin) || g_uri_get_query(origin) || g_uri_get_fragment(origin) ||
-		(g_uri_get_path(origin) && *g_uri_get_path(origin) && strcmp(g_uri_get_path(origin), "/")) ||
-		g_date_time_difference(expires, now) < G_TIME_SPAN_HOUR ||
-		g_date_time_difference(expires, now) > 30 * G_TIME_SPAN_DAY)
+	if (!link_terms_valid(base_url, now, expires))
 	{ refuse(error, "Payment links require a trusted HTTPS origin and expiry from one hour through thirty days"); return NULL; }
 	if (venture_database_has_transaction(self->database))
 	{ refuse(error, "Payment link replacement cannot be nested in another transaction"); return NULL; }
@@ -184,18 +280,7 @@ venture_stripe_service_create_payment_link(VentureStripeService *self,
 		{ refuse(error, "Revoke the historical account's payment link before replacement"); return NULL; }
 		if (!venture_stripe_service_revoke_payment_link(self, venture_entity_get_id(old), actor, error)) return NULL;
 	}
-	nonce = stripe_link_nonce(error);
-	if (!nonce) return NULL;
-	link = venture_stripe_payment_link_new();
-	venture_entity_set_organization_id(VENTURE_ENTITY(link), self->organization_id);
-	token = g_strdup_printf("%s.%s", venture_entity_get_uuid(VENTURE_ENTITY(link)), nonce);
-	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
-	url = g_strdup_printf("%.*s/pay/%s", (gint)(strlen(base_url) - (g_str_has_suffix(base_url, "/") ? 1 : 0)), base_url, token);
-	g_object_set(link, "connection-id", self->connection_id, "invoice-id", invoice_id,
-		"invoice-version", venture_entity_get_version(invoice), "token-hash", digest,
-		"expires-at", expires, "enabled", TRUE, "url", url, NULL);
-	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(link), actor, error)) return NULL;
-	return g_steal_pointer(&link);
+	return link_mint(self, invoice, base_url, expires, actor, error);
 }
 
 VentureStripeCheckout *
