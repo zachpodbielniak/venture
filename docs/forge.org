@@ -288,9 +288,9 @@ VENTURE files an issue; the forge delivers a webhook for it; without care that b
 
 1. *The sender is VENTURE's own account.* The account is the login the forge answered with when the binding was configured, stored as the binding's verified =account-id= and read from there on every delivery; it is not the forge record's =bot-username=. Exact, needs no stored state on the ticket side, and works in the window before the link row has the issue number written back.
 2. *The delivery has already been applied.* A forge retries a delivery it thinks failed, and a retry that re-applied its payload would reopen a ticket somebody had just closed.
-3. *The edit changes nothing.* Compared before the write, not after — a save with an empty diff reports success without writing, so "did anything change" is not available as a signal afterwards.
+3. *The edit changes nothing.* Compared before the write, not after — a save with an empty diff reports success without writing, so "did anything change" is not available as a signal afterwards. The issue's state counts as a change: closing an issue changes neither its title nor its body.
 
-A closed issue closes the ticket. An open one does *not* reopen it: somebody moved that ticket into review deliberately, and the forge does not get to move it back.
+A closed issue closes the ticket. An open one does *not* reopen it on an edit: somebody moved that ticket into review deliberately, and the forge does not get to move it back. Only an explicit reopen upstream reopens a ticket the forge closed, back to /To do/.
 
 * Three worked configurations
 

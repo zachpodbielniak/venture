@@ -26205,6 +26205,9 @@ venture_web_forge_webhook_apply(
 	VentureTicketKind issue_kind = VENTURE_TICKET_KIND_INTERNAL;
 	gboolean enabled = FALSE;
 	gboolean created = FALSE;
+	gboolean closes;
+	gboolean reopens;
+	VentureTicketStatus existing_status = VENTURE_TICKET_STATUS_TRIAGE;
 	const gchar *event_name;
 
 	memset(&event, 0, sizeof(event));
@@ -26456,7 +26459,20 @@ venture_web_forge_webhook_apply(
 	}
 
 	g_object_get(ticket, "title", &existing_title, "description",
-	             &existing_body, NULL);
+	             &existing_body, "status", &existing_status, NULL);
+
+	/*
+	 * A closed issue closes the ticket, but an open one does not reopen
+	 * it. Somebody moved that ticket into review or blocked deliberately,
+	 * and the forge does not get to move it back on the next edit. Only
+	 * an explicit reopen upstream reopens a ticket the forge closed. A
+	 * ticket somebody cancelled here is already closed and stays so.
+	 */
+	closes = (0 == g_strcmp0(event.state, "closed")) &&
+	         (VENTURE_TICKET_STATUS_DONE != existing_status) &&
+	         (VENTURE_TICKET_STATUS_CANCELLED != existing_status);
+	reopens = (0 == g_strcmp0(event.action, "reopened")) &&
+	          (VENTURE_TICKET_STATUS_DONE == existing_status);
 
 	/*
 	 * Loop guard three: an edit that changes nothing.
@@ -26465,9 +26481,10 @@ venture_web_forge_webhook_apply(
 	 * diff is empty, so "did the save change anything" is not available
 	 * as a signal after the fact. The comparison has to happen before the
 	 * write, or an edit VENTURE itself pushed comes back, gets re-applied
-	 * and is pushed again.
+	 * and is pushed again. The state counts too: closing an issue changes
+	 * neither its title nor its body.
 	 */
-	if (!created &&
+	if (!created && !closes && !reopens &&
 	    (0 == g_strcmp0(existing_title, event.title)) &&
 	    (0 == g_strcmp0(existing_body, event.body)))
 	{
@@ -26477,15 +26494,15 @@ venture_web_forge_webhook_apply(
 
 	g_object_set(ticket, "title", event.title, "description", event.body, NULL);
 
-	/*
-	 * A closed issue closes the ticket, but an open one does not reopen
-	 * it. Somebody moved that ticket into review or blocked deliberately,
-	 * and the forge does not get to move it back on the next edit.
-	 */
-	if (0 == g_strcmp0(event.state, "closed"))
+	if (closes)
 	{
 		g_object_set(ticket, "status", VENTURE_TICKET_STATUS_DONE,
 		             "resolved-at", now, NULL);
+	}
+	else if (reopens)
+	{
+		g_object_set(ticket, "status", VENTURE_TICKET_STATUS_TODO,
+		             "resolved-at", NULL, NULL);
 	}
 
 	if (!venture_database_save(venture_context_get_database(self->context),

@@ -627,6 +627,104 @@ test_factory_workflow_run_becomes_a_build(
 }
 
 /*
+ * The one ticket a forge issue made, found through its link.
+ */
+static VentureEntity *
+issue_ticket(ServerFixture *fixture)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+	tickets = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(tickets);
+	g_assert_cmpuint(tickets->len, ==, 1);
+
+	return g_object_ref(g_ptr_array_index(tickets, 0));
+}
+
+/*
+ * An issue closed on the forge closes its ticket, and an issue reopened
+ * there reopens it.
+ *
+ * What breaks if this regresses: closing an issue changes neither its
+ * title nor its body. The handler dropped such an event as an edit that
+ * changed nothing, so the ticket stayed open after the work upstream
+ * was done.
+ */
+static void
+test_factory_forge_issue_state_follows_the_forge(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+#define ISSUE_PAYLOAD(action, state) \
+	"{\"action\":\"" action "\"," \
+	" \"repository\":{\"full_name\":\"zach/venture\"}," \
+	" \"sender\":{\"login\":\"zach\"}," \
+	" \"issue\":{\"number\":42,\"title\":\"It crashes\"," \
+	"            \"body\":\"every time\",\"state\":\"" state "\"," \
+	"            \"html_url\":\"https://git.example.com/zach/venture/issues/42\"," \
+	"            \"labels\":[]}}"
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(GDateTime) resolved = NULL;
+	VentureTicketStatus status;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
+		ISSUE_PAYLOAD("opened", "open")), ==, SOUP_STATUS_ACCEPTED);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_TRIAGE);
+	g_clear_object(&ticket);
+
+	/* Closed upstream, with the same title and body. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-2",
+		ISSUE_PAYLOAD("closed", "closed")), ==, SOUP_STATUS_ACCEPTED);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, "resolved-at", &resolved, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_DONE);
+	g_assert_nonnull(resolved);
+	g_clear_pointer(&resolved, g_date_time_unref);
+	g_clear_object(&ticket);
+
+	/* Reopened upstream: the ticket is open again and not resolved. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-3",
+		ISSUE_PAYLOAD("reopened", "open")), ==, SOUP_STATUS_ACCEPTED);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, "resolved-at", &resolved, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_TODO);
+	g_assert_null(resolved);
+	g_clear_object(&ticket);
+
+	/* An edit of an open issue still does not move a ticket somebody
+	 * moved by hand. */
+	ticket = issue_ticket(fixture);
+	g_object_set(ticket, "status", VENTURE_TICKET_STATUS_BLOCKED, NULL);
+	g_assert_true(venture_database_save(fixture->database, ticket, NULL,
+	                                    NULL));
+	g_clear_object(&ticket);
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-4",
+		ISSUE_PAYLOAD("edited", "open")), ==, SOUP_STATUS_NO_CONTENT);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_BLOCKED);
+
+	/* A ticket cancelled here is not turned into a finished one when the
+	 * issue is closed upstream. */
+	g_object_set(ticket, "status", VENTURE_TICKET_STATUS_CANCELLED, NULL);
+	g_assert_true(venture_database_save(fixture->database, ticket, NULL,
+	                                    NULL));
+	g_clear_object(&ticket);
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-5",
+		ISSUE_PAYLOAD("closed", "closed")), ==, SOUP_STATUS_NO_CONTENT);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_CANCELLED);
+#undef ISSUE_PAYLOAD
+}
+
+/*
  * A release cut on the forge becomes a release record, its version read
  * from the tag, and a later delivery for the same release updates it.
  */
@@ -2200,6 +2298,8 @@ main(
 	    test_factory_workflow_run_becomes_a_build);
 	ADD("/factory/http/forge-release-becomes-a-release",
 	    test_factory_forge_release_becomes_a_release);
+	ADD("/factory/http/forge-issue-state-follows-the-forge",
+	    test_factory_forge_issue_state_follows_the_forge);
 	ADD("/factory/http/changelog-is-drafted-from-tickets",
 	    test_factory_changelog_is_drafted_from_tickets);
 	ADD("/factory/http/reports-measure-the-loop",
