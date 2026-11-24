@@ -860,7 +860,10 @@ under the same trusted-service authority; Venture keeps it on the
 organization and Lightsite only shows it. 200 answers
 ={"organization_id": N, "state": "active", "left_at": null, "returned_at": null, "purged_at": null}=:
 =state= is =active= (the default), =closing=, =closed= or =purged=, and each
-time is ISO 8601 or null. An unknown organization is 404.
+time is ISO 8601 or null. An unknown organization is 404. A generic
+organization update cannot change =departure_state=, =left_at=,
+=returned_at= or =purged_at=: the save refuses, naming the field. Only
+these routes move them.
 =POST /api/v1/lightsite/departure/:org/:action= takes no body and answers the
 same object:
 - =leave=: =active= to =closing=; already =closing= is 200 and nothing

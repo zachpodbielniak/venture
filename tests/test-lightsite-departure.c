@@ -183,6 +183,9 @@ static void backdate(Fixture *f, gint months, gint days)
 	g_autoptr(GDateTime) now = venture_time_now(), earlier = g_date_time_add_months(now, -months), when = g_date_time_add_days(earlier, days);
 	g_assert_no_error(error); g_assert_nonnull(organization);
 	g_object_set(organization, "left-at", when, NULL);
+	/* The fixture's context installed the save validator. This helper is
+	 * how the window tests place left_at; it is not a generic write. */
+	venture_lightsite_departure_permit(organization);
 	save(f, organization);
 }
 
@@ -330,7 +333,71 @@ static gint64 scalar(VentureDatabase *db, const gchar *sql)
 	return orm_row_get_integer(orm_result_get_row(result), 0);
 }
 
-/* 6. The migration adds the four columns, and an organization from before
+/* 6. A generic save cannot move the leaving fields. Without the
+ * validator an organization update skips the state machine and the
+ * six-month window, including clearing a stamp or un-purging. A
+ * rename that posts the stored values back still saves. */
+static void test_generic_write(Fixture *f, gconstpointer unused)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(GDateTime) now = NULL;
+	g_autofree gchar *left = NULL;
+	(void)unused;
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->business, &error);
+	g_assert_no_error(error);
+	g_object_set(organization, "departure-state", VENTURE_DEPARTURE_STATE_PURGED, NULL);
+	g_assert_false(venture_database_save(f->db, organization, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "departure-state"));
+	g_clear_error(&error);
+	g_clear_object(&organization);
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->business, &error);
+	g_assert_no_error(error);
+	{
+		VentureDepartureState state = VENTURE_DEPARTURE_STATE_PURGED;
+		g_object_get(organization, "departure-state", &state, NULL);
+		g_assert_cmpint(state, ==, VENTURE_DEPARTURE_STATE_ACTIVE);
+	}
+	now = venture_time_now();
+	g_object_set(organization, "left-at", now, NULL);
+	g_clear_pointer(&now, g_date_time_unref);
+	g_assert_false(venture_database_save(f->db, organization, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "left-at"));
+	g_clear_error(&error);
+	g_clear_object(&organization);
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->business, &error);
+	g_assert_no_error(error);
+	g_object_set(organization, "name", "Example renamed", NULL);
+	save(f, organization);
+	json_node_unref(act(f, "leave", 200));
+	json_node_unref(act(f, "close", 200));
+	g_clear_object(&organization);
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->business, &error);
+	g_assert_no_error(error);
+	g_object_get(organization, "left-at", &now, NULL);
+	g_assert_nonnull(now);
+	left = g_date_time_format_iso8601(now);
+	g_clear_pointer(&now, g_date_time_unref);
+	g_object_set(organization, "name", "Example renamed again", NULL);
+	save(f, organization);
+	g_clear_object(&organization);
+	organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION, f->business, &error);
+	g_assert_no_error(error);
+	g_object_get(organization, "left-at", &now, NULL);
+	g_assert_nonnull(now);
+	{
+		g_autofree gchar *still = g_date_time_format_iso8601(now);
+		g_assert_cmpstr(still, ==, left);
+	}
+	g_object_set(organization, "left-at", NULL, NULL);
+	g_assert_false(venture_database_save(f->db, organization, NULL, &error));
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_assert_nonnull(strstr(error->message, "left-at"));
+}
+
+/* 7. The migration adds the four columns, and an organization from before
  * it reads active. A new one is stored active too. */
 static void test_migration(void)
 {
@@ -373,6 +440,7 @@ int main(int argc, char **argv)
 	g_test_add("/lightsite-departure/repeats", Fixture, NULL, setup, test_repeats, teardown);
 	g_test_add("/lightsite-departure/wrong-state", Fixture, NULL, setup, test_wrong_state, teardown);
 	g_test_add("/lightsite-departure/authority", Fixture, NULL, setup, test_authority, teardown);
+	g_test_add("/lightsite-departure/generic-write", Fixture, NULL, setup, test_generic_write, teardown);
 	g_test_add_func("/lightsite-departure/migration", test_migration);
 	return g_test_run();
 }

@@ -166,6 +166,9 @@ venture_lightsite_departure_act(VentureDatabase *database, gint64 organization_i
 		if (action == VENTURE_DEPARTURE_ACTION_CLOSE) g_object_set(organization, "left-at", now, NULL);
 		else if (action == VENTURE_DEPARTURE_ACTION_RETURN) g_object_set(organization, "returned-at", now, NULL);
 		else if (action == VENTURE_DEPARTURE_ACTION_PURGE) g_object_set(organization, "purged-at", now, NULL);
+		/* The organization validator refuses these four unless this save
+		 * is the one the departure routes just decided. */
+		venture_lightsite_departure_permit(organization);
 		if (!venture_database_save(database, organization, actor, error)) goto fail;
 	}
 	answer = view(organization);
@@ -177,4 +180,73 @@ venture_lightsite_departure_act(VentureDatabase *database, gint64 organization_i
 fail:
 	venture_database_rollback(database);
 	return NULL;
+}
+
+#define DEPARTURE_PERMIT "venture-departure-write"
+
+/* Both absent, or the same instant. A form that posts the stored time
+ * back is not a change, so a rename of a business that has left still
+ * saves. */
+static gboolean
+same_time(GDateTime *left, GDateTime *right)
+{
+	if (left == NULL || right == NULL)
+		return left == right;
+	return g_date_time_compare(left, right) == 0;
+}
+
+/* Hosted control is a dedicated operation. A generic organization update
+ * must not skip the state machine or the six-month window, and must not
+ * clear a stamp the service already wrote. */
+static gboolean
+departure_fields_held(VentureDatabase *database, VentureEntity *entity,
+	VentureEntity *previous, gpointer data, GError **error)
+{
+	VentureDepartureState state = VENTURE_DEPARTURE_STATE_ACTIVE;
+	VentureDepartureState was = VENTURE_DEPARTURE_STATE_ACTIVE;
+	g_autoptr(GDateTime) left_at = NULL, returned_at = NULL, purged_at = NULL;
+	g_autoptr(GDateTime) was_left = NULL, was_returned = NULL, was_purged = NULL;
+	const gchar *field = NULL;
+
+	(void)database;
+	(void)data;
+	if (g_object_get_data(G_OBJECT(entity), DEPARTURE_PERMIT) != NULL)
+		return TRUE;
+	g_object_get(entity, "departure-state", &state, "left-at", &left_at,
+		"returned-at", &returned_at, "purged-at", &purged_at, NULL);
+	if (previous != NULL)
+		g_object_get(previous, "departure-state", &was, "left-at", &was_left,
+			"returned-at", &was_returned, "purged-at", &was_purged, NULL);
+	if (state != was)
+		field = "departure-state";
+	else if (!same_time(left_at, was_left))
+		field = "left-at";
+	else if (!same_time(returned_at, was_returned))
+		field = "returned-at";
+	else if (!same_time(purged_at, was_purged))
+		field = "purged-at";
+	if (field == NULL)
+		return TRUE;
+	venture_set_error_validation(error, field,
+		"Only the Lightsite departure service may change this");
+	return FALSE;
+}
+
+void
+venture_lightsite_departure_permit(VentureEntity *organization)
+{
+	g_return_if_fail(VENTURE_IS_ENTITY(organization));
+	g_object_set_data(G_OBJECT(organization), DEPARTURE_PERMIT, GINT_TO_POINTER(1));
+}
+
+void
+venture_lightsite_departure_install(VentureDatabase *database)
+{
+	g_return_if_fail(VENTURE_IS_DATABASE(database));
+	if (g_object_get_data(G_OBJECT(database), "venture-departure-installed") != NULL)
+		return;
+	venture_database_add_save_validator(database, VENTURE_TYPE_ORGANIZATION,
+		departure_fields_held, NULL, NULL);
+	g_object_set_data(G_OBJECT(database), "venture-departure-installed",
+		GINT_TO_POINTER(1));
 }

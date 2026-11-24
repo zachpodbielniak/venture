@@ -119,7 +119,10 @@ from the bundled example plugin and exists only where that plugin loads.
   `default_currency` (the book currency; never a memo currency),
   `parent_id -> organization` (display roll-up only), `is_default`,
   `fiscal_year_start_month`, `quote_valid_days`, `tax_id` (sensitive),
-  `sequence_tracking`, `marketing_tracking`, `active`.
+  `sequence_tracking`, `marketing_tracking`, `active`,
+  `departure_state` [active|closing|closed|purged], `left_at`,
+  `returned_at`, `purged_at` (those four are service-owned: only
+  `POST /api/v1/lightsite/departure/:id/:action` moves them).
 - `venture` -- one thing you do. **name**, `venture_type` (a registered
   declarative type), `status` [idea|planning|building|active|paused|winding_down|archived],
   `priority`, `idea_id -> idea`, `owner_user_id -> user`, `team_id -> team`,

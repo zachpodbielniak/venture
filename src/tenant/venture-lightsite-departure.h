@@ -100,5 +100,26 @@ JsonNode *venture_lightsite_departure_read(VentureDatabase *database, gint64 org
 JsonNode *venture_lightsite_departure_act(VentureDatabase *database, gint64 organization_id,
 	VentureDepartureAction action, const VentureActor *actor, gboolean *gone, GError **error);
 
+/**
+ * venture_lightsite_departure_permit:
+ * @organization: the organization about to be saved
+ *
+ * Lets the next save of @organization change its leaving fields. The permit
+ * is on this object only, so a later load of the same row does not keep it.
+ * venture_lightsite_departure_act() is the writer that sets it.
+ */
+void venture_lightsite_departure_permit(VentureEntity *organization);
+
+/**
+ * venture_lightsite_departure_install:
+ * @database: the database
+ *
+ * Refuses an organization save that changes departure-state, left-at,
+ * returned-at or purged-at unless venture_lightsite_departure_permit() was
+ * called on that object. A new organization, and a save that leaves the
+ * four as they are, still succeeds. Safe to call more than once.
+ */
+void venture_lightsite_departure_install(VentureDatabase *database);
+
 G_END_DECLS
 #endif

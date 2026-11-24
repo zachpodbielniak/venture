@@ -29,7 +29,9 @@ lightsite_booking_details(VentureDatabase *database, VentureBookingService *serv
 	reservation = venture_database_find_one(database, query, &error);
 	if (reservation) details = venture_booking_service_hook_details(service, venture_entity_get_id(reservation), &error);
 	if (details) return details;
-	g_warning("Lightsite booking %" G_GINT64_FORMAT ": no booking details: %s", activity_id,
+	/* A miss here is the documented 200 with booking null. g_warning is
+	 * fatal under the test harness, so this must not be one. */
+	g_message("Lightsite booking %" G_GINT64_FORMAT ": no booking details: %s", activity_id,
 		error ? error->message : "no reservation");
 	return json_node_new(JSON_NODE_NULL);
 }
