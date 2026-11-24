@@ -510,6 +510,164 @@ test_paused_hooks_do_not_starve(void)
 }
 
 
+/* The exact shape a receiver reads: these members and no flat customer
+ * fields beside them. A receiver that finds the customer elsewhere sends
+ * no letter. */
+static void
+assert_booking_shape(JsonObject *booking)
+{
+	static const gchar *const members[] = { "reservation_id", "state", "starts_at", "ends_at", "time_zone",
+		"service", "customer", "note", NULL };
+	static const gchar *const customer_members[] = { "name", "email", "phone", NULL };
+	JsonNode *customer;
+	guint i;
+	g_assert_cmpuint(json_object_get_size(booking), ==, g_strv_length((gchar **)members));
+	for (i = 0; members[i] != NULL; i++)
+		g_assert_true(json_object_has_member(booking, members[i]));
+	g_assert_cmpint(json_node_get_value_type(json_object_get_member(booking, "reservation_id")), ==, G_TYPE_INT64);
+	customer = json_object_get_member(booking, "customer");
+	g_assert_true(JSON_NODE_HOLDS_OBJECT(customer));
+	g_assert_cmpuint(json_object_get_size(json_node_get_object(customer)), ==, g_strv_length((gchar **)customer_members));
+	for (i = 0; customer_members[i] != NULL; i++)
+		g_assert_true(json_object_has_member(json_node_get_object(customer), customer_members[i]));
+}
+
+/* A receiver writes the booking letter from the hook body alone: it holds no
+ * per-organization token to read the booking back. If the booking object
+ * goes missing, or a value drifts from the reservation, the letter is wrong
+ * or never sent. The replay feed stays minimal; only the signed push carries
+ * the details. */
+static void
+test_booking_hook_body(void)
+{
+	g_autofree gchar *secret = g_uuid_string_random();
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) database = venture_database_new("sqlite://:memory:", &error);
+	g_autoptr(VentureContext) context = NULL;
+	g_autoptr(VentureBookingService) service = NULL;
+	g_autoptr(VentureEntity) page = NULL, owner = NULL, contact = NULL, hook = NULL, meeting = NULL, reservation = NULL;
+	g_autoptr(VentureEntity) cancel_hook = NULL, cancelled = NULL;
+	g_autoptr(JsonNode) sent = NULL, feed = NULL, sent_cancel = NULL;
+	g_autoptr(SoupServer) endpoint = soup_server_new(NULL, NULL);
+	g_autoptr(GDateTime) booked_at = venture_time_from_string("2026-09-21T08:00:00Z", NULL);
+	g_autoptr(GDateTime) now = venture_time_now(), clock = g_date_time_add_hours(now, 1);
+	g_autoptr(VentureQuery) reservations = NULL;
+	g_autofree gchar *url = NULL, *feed_text = NULL, *cancel_url = NULL, *manage = NULL;
+	Receiver receiver = { 0, SOUP_STATUS_OK, NULL, NULL, NULL };
+	Receiver cancel_receiver = { 0, SOUP_STATUS_OK, NULL, NULL, NULL };
+	JsonObject *body, *booking, *customer;
+	GSList *uris;
+	gint64 organization, deadline;
+	receiver.secret = secret;
+	cancel_receiver.secret = secret;
+	g_assert_no_error(error);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	context = venture_context_new(config, database);
+	organization = venture_context_get_default_organization_id(context);
+	soup_server_add_handler(endpoint, "/", receive_event, &receiver, NULL);
+	soup_server_add_handler(endpoint, "/cancelled", receive_event, &cancel_receiver, NULL);
+	g_assert_true(soup_server_listen_local(endpoint, 0, 0, &error));
+	g_assert_no_error(error);
+	uris = soup_server_get_uris(endpoint); url = g_uri_to_string(uris->data);
+	g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+	cancel_url = g_strconcat(url, g_str_has_suffix(url, "/") ? "" : "/", "cancelled", NULL);
+	hook = g_object_new(VENTURE_TYPE_WEBHOOK, "organization-id", organization, "name", "Example receiver",
+		"url", url, "active", TRUE, "business-events", TRUE, "events", "booking.created", "secret", secret, NULL);
+	cancel_hook = g_object_new(VENTURE_TYPE_WEBHOOK, "organization-id", organization, "name", "Example cancellations",
+		"url", cancel_url, "active", TRUE, "business-events", TRUE, "events", "booking.cancelled", "secret", secret, NULL);
+	owner = g_object_new(VENTURE_TYPE_USER, "username", "calendar-owner", "active", TRUE, NULL);
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", organization, "name", "Example person",
+		"email", "person@example.test", "phone", "+1 555 0100", NULL);
+	/* Chicago is five hours behind UTC in September: the offset must show. */
+	page = g_object_new(VENTURE_TYPE_BOOKING_PAGE, "organization-id", organization,
+		"title", "Example consultation", "slug", "example", "owner", "calendar-owner", "timezone", "America/Chicago",
+		"duration-minutes", (gint64)30, "availability", "{\"mon\":\"09:00-10:00\"}", "horizon-days", (gint64)2, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(database, hook, NULL, &error));
+	g_assert_true(venture_database_save(database, cancel_hook, NULL, &error));
+	g_assert_true(venture_database_save(database, owner, NULL, &error));
+	g_assert_true(venture_database_save(database, contact, NULL, &error));
+	g_assert_true(venture_database_save(database, page, NULL, &error));
+	g_assert_no_error(error);
+	service = venture_booking_service_new(database);
+	meeting = venture_booking_service_book(service, page, "2026-09-21T14:00:00Z", "Example person",
+		"person@example.test", "Please use the side door.", booked_at, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(meeting);
+	reservations = venture_query_new(VENTURE_TYPE_BOOKING_RESERVATION);
+	reservation = venture_database_find_one(database, reservations, &error);
+	g_assert_no_error(error); g_assert_nonnull(reservation);
+	g_assert_true(venture_business_events_dispatch(context, clock, &error));
+	g_assert_no_error(error);
+	deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+	while (receiver.received == 0 && g_get_monotonic_time() < deadline)
+	{
+		while (g_main_context_iteration(NULL, FALSE)) { }
+		if (receiver.received == 0) g_usleep(1000);
+	}
+	/* receive_event checked the signature over every byte received. */
+	g_assert_cmpuint(receiver.received, ==, 1);
+	g_test_message("booking.created hook body: %s", receiver.body);
+	sent = venture_json_parse(receiver.body, &error);
+	g_assert_no_error(error);
+	body = json_node_get_object(sent);
+	g_assert_cmpint(json_object_get_int_member(body, "organization_id"), ==, organization);
+	g_assert_cmpstr(json_object_get_string_member(body, "event"), ==, "booking.created");
+	g_assert_true(g_uuid_string_is_valid(json_object_get_string_member(body, "id")));
+	g_assert_cmpstr(json_object_get_string_member(body, "source_type"), ==, "booking_reservation");
+	g_assert_cmpint(json_object_get_int_member(body, "source_id"), ==, venture_entity_get_id(reservation));
+	g_assert_true(json_object_has_member(body, "booking"));
+	booking = json_object_get_object_member(body, "booking");
+	g_assert_nonnull(booking);
+	g_assert_cmpint(json_object_get_int_member(booking, "reservation_id"), ==, venture_entity_get_id(reservation));
+	g_assert_cmpstr(json_object_get_string_member(booking, "starts_at"), ==, "2026-09-21T09:00:00-05:00");
+	g_assert_cmpstr(json_object_get_string_member(booking, "ends_at"), ==, "2026-09-21T09:30:00-05:00");
+	g_assert_cmpstr(json_object_get_string_member(booking, "time_zone"), ==, "America/Chicago");
+	g_assert_cmpstr(json_object_get_string_member(booking, "service"), ==, "Example consultation");
+	/* A receiver matches the details to the event by this id. */
+	g_assert_cmpint(json_object_get_int_member(booking, "reservation_id"), ==, json_object_get_int_member(body, "source_id"));
+	assert_booking_shape(booking);
+	customer = json_object_get_object_member(booking, "customer");
+	g_assert_cmpstr(json_object_get_string_member(customer, "name"), ==, "Example person");
+	g_assert_cmpstr(json_object_get_string_member(customer, "email"), ==, "person@example.test");
+	g_assert_cmpstr(json_object_get_string_member(customer, "phone"), ==, "+1 555 0100");
+	g_assert_cmpstr(json_object_get_string_member(booking, "note"), ==, "Please use the side door.");
+	feed = venture_business_events_read(database, organization, 0, 10, &error);
+	g_assert_no_error(error);
+	feed_text = venture_json_to_string(feed, FALSE);
+	g_assert_null(strstr(feed_text, "person@example.test"));
+	g_assert_null(strstr(feed_text, "side door"));
+	/* A cancellation letter needs the same details, with the new state. */
+	manage = venture_booking_service_manage_url(service, reservation, "https://booking.example.test", &error);
+	g_assert_no_error(error); g_assert_nonnull(manage);
+	cancelled = venture_booking_service_manage(service, page, strrchr(manage, '/') + 1, NULL, booked_at, NULL, &error);
+	g_assert_no_error(error); g_assert_nonnull(cancelled);
+	g_assert_true(venture_business_events_dispatch(context, clock, &error));
+	g_assert_no_error(error);
+	deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+	while (cancel_receiver.received == 0 && g_get_monotonic_time() < deadline)
+	{
+		while (g_main_context_iteration(NULL, FALSE)) { }
+		if (cancel_receiver.received == 0) g_usleep(1000);
+	}
+	g_assert_cmpuint(cancel_receiver.received, ==, 1);
+	g_assert_cmpuint(receiver.received, ==, 1);
+	sent_cancel = venture_json_parse(cancel_receiver.body, &error);
+	g_assert_no_error(error);
+	body = json_node_get_object(sent_cancel);
+	g_assert_cmpstr(json_object_get_string_member(body, "event"), ==, "booking.cancelled");
+	booking = json_object_get_object_member(body, "booking");
+	g_assert_nonnull(booking);
+	g_assert_cmpstr(json_object_get_string_member(booking, "state"), ==, "cancelled");
+	g_assert_cmpstr(json_object_get_string_member(booking, "starts_at"), ==, "2026-09-21T09:00:00-05:00");
+	g_assert_cmpint(json_object_get_int_member(booking, "reservation_id"), ==, json_object_get_int_member(body, "source_id"));
+	assert_booking_shape(booking);
+	customer = json_object_get_object_member(booking, "customer");
+	g_assert_cmpstr(json_object_get_string_member(customer, "email"), ==, "person@example.test");
+	g_free(receiver.body); g_free(receiver.delivery);
+	g_free(cancel_receiver.body); g_free(cancel_receiver.delivery);
+	soup_server_disconnect(endpoint);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -521,5 +679,6 @@ main(int argc, char **argv)
 	g_test_add_func("/business-events/http-replay", test_http_replay);
 	g_test_add_func("/business-events/organization-access", test_organization_access);
 	g_test_add_func("/business-events/paused-hooks", test_paused_hooks_do_not_starve);
+	g_test_add_func("/business-events/booking-hook-body", test_booking_hook_body);
 	return g_test_run();
 }

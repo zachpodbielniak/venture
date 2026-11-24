@@ -126,7 +126,7 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 		venture_html_escape_append(content, suffix ? suffix : "");
 		g_string_append(content, "\"></label><p>Stripe calls this a statement descriptor suffix. The shortened account prefix, separator and name must fit within 22 characters. Leave it empty for Stripe's default.</p><button name=\"operation\" value=\"descriptor\">Save statement name</button></form>");
 	}
-	g_string_append(content, "<p>Credentials are write-only. Supply all values when connecting or rotating. To change account or environment, disconnect first.</p><form method=\"post\">");
+	g_string_append(content, "<p>Credentials are write-only. Supply all values when connecting or rotating. To change only the success and cancel URLs, leave the three keys empty. To change account or environment, disconnect first.</p><form method=\"post\">");
 	g_string_append_printf(content, "<input type=\"hidden\" name=\"version\" value=\"%" G_GINT64_FORMAT "\">", version);
 	g_string_append_printf(content, "<input type=\"hidden\" name=\"connection_id\" value=\"%" G_GINT64_FORMAT "\">", connection ? venture_entity_get_id(VENTURE_ENTITY(connection)) : 0);
 	for (i = 0; i < G_N_ELEMENTS(fields); i++)

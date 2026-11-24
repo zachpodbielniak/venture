@@ -18,6 +18,12 @@ without credentials. The adapter verifies the account through authenticated
 discovery is outside this adapter's contract. For Standard-style connected
 accounts made by the installation, see [[*Connect with Stripe]].
 
+To change only =success_url= and =cancel_url= on a connected organization,
+save the settings form with the three keys left empty. The other values stay as
+stored, ACH and the statement name included, and the account is verified again
+with the stored keys. Both URLs must still be HTTPS. For example, Lightsite's
+billing organization sends owners back to =<app address>/home?card=back=.
+
 An optional =statement_descriptor_suffix= names the product on card statements.
 For example, set the billing organization's suffix to =LIGHTSITE= to distinguish
 those charges. Set the account's shortened descriptor prefix in Stripe first.

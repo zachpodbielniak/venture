@@ -208,9 +208,10 @@ Series store upkeep (retention in batches, vacuum, the one-time
 
 `POST /api/v1/lightsite/signups` accepts a trusted workspace administrator's
 write token, not a browser session or an anonymous caller. The body is a
-closed object of exactly seven strings: `idempotency_key`, `email`,
-`issuer`, `subject`, `business_name`, `first_name` and `last_name`. The old
-five-member body is 422. Surrounding ASCII whitespace is trimmed from the
+closed object of seven strings: `idempotency_key`, `email`,
+`issuer`, `subject`, `business_name`, `first_name` and `last_name`, plus an
+optional `timezone` (an IANA name GLib resolves; it is not part of the
+idempotency hash). Eight members is the most. The old five-member body is 422. Surrounding ASCII whitespace is trimmed from the
 two names before they are validated or hashed; a new owner's display name
 is those trimmed names joined by one space. Linking an existing member does
 not change their saved name, password or authority. The same key and trimmed
@@ -229,3 +230,28 @@ editor, `vk_`) is minted at Lightsite sign-up and may call only
 `POST /api/v1/lightsite/schedule-tokens/:id/rotate|revoke` needs the trusted
 admin bearer, returns a new secret once on rotate, and deactivates the
 previous tokens of that scope. See `docs/lightsite-schedule-token.org`.
+`POST /api/v1/lightsite/bookings/:id/move` is the same trusted admin bearer
+moving a confirmed booking when the business owner reschedules it: `:id` is
+the booking's meeting, the body exactly `{"organization_id": N, "starts_at":
+"<ISO 8601>"}`. The start must be one the booking page offers; the booking
+keeps its booked length and its private link is renewed. Venture queues no
+customer mail: the caller sends the letter, with the owner as the reply
+address. 200 answers `{"starts_at", "ends_at"}`; a booking of another business
+is 404, a taken slot or a booking that is not confirmed 409, a bad body or
+time 422. The 200 answer also carries `booking`, the object the signed booking
+hook carries, at the new time. `POST /api/v1/lightsite/bookings/:id/cancel`
+is the owner's cancel, built the same way: body exactly
+`{"organization_id": N}`, the same records as the customer's cancel, no mail
+queued; 200 `{"booking"}` with `state` `cancelled`, also for a booking
+already cancelled (a retry changes nothing), 404 not that business's booking,
+409 neither confirmed nor cancelled, 422 bad body.
+`GET /api/v1/lightsite/departure/:organization_id` and
+`POST .../:action` (`leave`, `close`, `return`, `purge`, no body) are the
+same trusted token reading and moving a business's leaving state. 200 is
+`organization_id`, `state` (`active`, `closing`, `closed`, `purged`) and
+`left_at`, `returned_at`, `purged_at`. A repeat is 200 and writes nothing.
+The wrong state is 409; purged, or a return later than `left_at` plus six
+calendar months, is 410 (the error code stays conflict; read the status).
+Anonymous is 401, any other token 403, an unknown organization or action
+404. Do not `update organization` those four fields: the save refuses and
+names the field. `docs/api.org`.

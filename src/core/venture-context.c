@@ -244,6 +244,9 @@ venture_context_new(
 	 * never move, and responses only the public door creates. */
 	venture_forms_install(self);
 	venture_booking_service_install(self->database);
+	/* Leaving state is four ordinary organization fields. The save
+	 * validator is what keeps a generic update from moving them. */
+	venture_lightsite_departure_install(self->database);
 
 	/*
 	 * The confirmation queue exists whether or not AI does. It began as

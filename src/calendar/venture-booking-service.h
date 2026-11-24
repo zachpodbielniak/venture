@@ -163,6 +163,45 @@ VentureEntity *venture_booking_service_manage_selected(VentureBookingService *se
 	const gchar *capability, const gchar *start, const gchar *resource,
 	GDateTime *now, const VentureActor *actor, GError **error);
 /**
+ * venture_booking_service_move:
+ * @self: the service
+ * @organization_id: the business the booking must belong to
+ * @activity_id: the booked meeting
+ * @start: new offered ISO 8601 start
+ * @now: (nullable): reference clock
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND when no booking of that
+ *   business has this meeting, %VENTURE_ERROR_CONFLICT when the slot is not
+ *   free or the booking is not confirmed, %VENTURE_ERROR_VALIDATION for a bad time
+ *
+ * The owner's side of venture_booking_service_manage(): the same reschedule
+ * under the save lock, reached by the meeting instead of the customer's
+ * capability. The booking keeps its booked length and the capability
+ * rotates. No mail is queued: the caller sends the customer the letter,
+ * with the owner as the reply address.
+ * Returns: (transfer full) (nullable): the moved meeting
+ */
+VentureEntity *venture_booking_service_move(VentureBookingService *self, gint64 organization_id,
+	gint64 activity_id, const gchar *start, GDateTime *now, const VentureActor *actor, GError **error);
+/**
+ * venture_booking_service_cancel:
+ * @self: the service
+ * @organization_id: the business the booking must belong to
+ * @activity_id: the booked meeting
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND when no booking of that
+ *   business has this meeting, %VENTURE_ERROR_CONFLICT when the booking is
+ *   neither confirmed nor already cancelled
+ *
+ * The owner's cancel, reached by the meeting: the same records as the
+ * customer's cancel through the private link, under the save lock. No mail
+ * is queued: the caller sends the customer the letter. A booking already
+ * cancelled is returned unchanged, so a retry after a crash succeeds.
+ * Returns: (transfer full) (nullable): the cancelled reservation
+ */
+VentureEntity *venture_booking_service_cancel(VentureBookingService *self, gint64 organization_id,
+	gint64 activity_id, const VentureActor *actor, GError **error);
+/**
  * venture_booking_service_release:
  * @self: the service
  * @reservation: saved hold
@@ -220,6 +259,27 @@ JsonNode *venture_booking_service_describe(VentureBookingService *self, VentureE
  */
 gboolean venture_booking_service_estimate(VentureBookingService *self, VentureEntity *page, const gchar *arrival,
 	const gchar *departure, JsonNode **estimate, gchar **summary, GError **error);
+
+/**
+ * venture_booking_service_hook_details:
+ * @self: the service
+ * @reservation_id: a reservation of any state
+ * @error: (out) (optional): %VENTURE_ERROR_NOT_FOUND for no such
+ *   reservation, or a database failure (a removed page, meeting or contact
+ *   only leaves its values null)
+ *
+ * What a letter about the booking needs, for a signed business-event hook:
+ * "reservation_id", "state", "starts_at" and "ends_at" (ISO 8601 with the
+ * offset of the page's zone), "time_zone", "service" (the page title),
+ * "customer" (an object of "name", "email" and "phone", from the meeting's
+ * contact) and "note" (what the customer wrote). "reservation_id" equals
+ * the event's "source_id". A value that is unknown or
+ * no longer readable is null. Read at delivery time, so a retry carries the
+ * booking as it is then. Never put it in the replay feed.
+ *
+ * Returns: (transfer full) (nullable): a JSON object
+ */
+JsonNode *venture_booking_service_hook_details(VentureBookingService *self, gint64 reservation_id, GError **error);
 
 G_END_DECLS
 #endif

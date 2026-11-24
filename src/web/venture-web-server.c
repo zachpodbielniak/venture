@@ -485,6 +485,8 @@ venture_web_set_module_disabled_error(
 #include "venture-web-account-identity.inc"
 static gboolean venture_web_require_for_type(VentureWebServer *self, VentureAuthPrincipal *principal, GType entity_type, VentureUserRole ordinary, GError **error);
 #include "venture-web-lightsite-areas.inc"
+#include "venture-web-lightsite-bookings.inc"
+#include "venture-web-lightsite-departure.inc"
 
 /*
  * Refuses an API request into a module that is off.
@@ -36398,6 +36400,10 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/account-identity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_account_identity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/signups", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_signup, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/owner", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_owner, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/bookings/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_booking_move, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/bookings/:id/cancel", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_booking_cancel, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/departure/:org", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_departure, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/departure/:org/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_departure, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/rotate", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/revoke", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/lightsite-areas", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_areas, self);

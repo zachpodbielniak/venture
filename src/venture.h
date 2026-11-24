@@ -311,6 +311,7 @@
 #include "ai/venture-ai-provider-service.h"
 #include "sales/venture-sales-service.h"
 #include "tenant/venture-tenant-service.h"
+#include "tenant/venture-lightsite-departure.h"
 #include "ai/venture-ai-assist.h"
 #include "ai/venture-ai-factory.h"
 #include "ai/venture-ai-skills.h"

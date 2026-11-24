@@ -57,6 +57,26 @@ typedef enum
 } VentureOrganizationKind;
 
 /**
+ * VentureDepartureState:
+ * @VENTURE_DEPARTURE_STATE_ACTIVE: in business (the default)
+ * @VENTURE_DEPARTURE_STATE_CLOSING: the owner chose to leave and the
+ *   leaving steps are under way
+ * @VENTURE_DEPARTURE_STATE_CLOSED: left; may come back within six
+ *   calendar months of leaving
+ * @VENTURE_DEPARTURE_STATE_PURGED: deleted for good
+ *
+ * Where a hosted business is in leaving Lightsite. Venture owns it, beside
+ * the organization's left_at; Lightsite only shows it.
+ */
+typedef enum
+{
+	VENTURE_DEPARTURE_STATE_ACTIVE = 0,
+	VENTURE_DEPARTURE_STATE_CLOSING,
+	VENTURE_DEPARTURE_STATE_CLOSED,
+	VENTURE_DEPARTURE_STATE_PURGED
+} VentureDepartureState;
+
+/**
  * VentureVentureStatus:
  * @VENTURE_VENTURE_STATUS_IDEA: not started; still just a notion
  * @VENTURE_VENTURE_STATUS_PLANNING: being scoped and researched
@@ -1119,6 +1139,7 @@ typedef enum
 
 #define VENTURE_TYPE_FIELD_ROLE			(venture_field_role_get_type())
 #define VENTURE_TYPE_ORGANIZATION_KIND		(venture_organization_kind_get_type())
+#define VENTURE_TYPE_DEPARTURE_STATE		(venture_departure_state_get_type())
 #define VENTURE_TYPE_VENTURE_STATUS		(venture_venture_status_get_type())
 #define VENTURE_TYPE_ACCOUNT_KIND		(venture_account_kind_get_type())
 #define VENTURE_TYPE_LEDGER_SIDE		(venture_ledger_side_get_type())
@@ -1163,6 +1184,7 @@ typedef enum
 
 GType venture_field_role_get_type		(void) G_GNUC_CONST;
 GType venture_organization_kind_get_type	(void) G_GNUC_CONST;
+GType venture_departure_state_get_type		(void) G_GNUC_CONST;
 GType venture_venture_status_get_type		(void) G_GNUC_CONST;
 GType venture_account_kind_get_type		(void) G_GNUC_CONST;
 GType venture_ledger_side_get_type		(void) G_GNUC_CONST;

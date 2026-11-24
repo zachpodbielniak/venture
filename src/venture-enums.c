@@ -87,6 +87,18 @@ VENTURE_DEFINE_ENUM_TYPE(venture_organization_kind_get_type,
                          "VentureOrganizationKind",
                          venture_organization_kind_values)
 
+static const GEnumValue venture_departure_state_values[] = {
+	VE(VENTURE_DEPARTURE_STATE_ACTIVE,  "active"),
+	VE(VENTURE_DEPARTURE_STATE_CLOSING, "closing"),
+	VE(VENTURE_DEPARTURE_STATE_CLOSED,  "closed"),
+	VE(VENTURE_DEPARTURE_STATE_PURGED,  "purged"),
+	VE_END
+};
+
+VENTURE_DEFINE_ENUM_TYPE(venture_departure_state_get_type,
+                         "VentureDepartureState",
+                         venture_departure_state_values)
+
 /* --- Venture lifecycle --------------------------------------------------- */
 
 static const GEnumValue venture_venture_status_values[] = {

@@ -90,6 +90,34 @@ defer_delivery(VentureDatabase *database, VentureEntity *delivery, GDateTime *no
 	return venture_business_events_store(database, delivery, error);
 }
 
+/* A receiver of a booking hook writes the owner and the customer a letter,
+ * and may hold no token to read the booking back. So the signed push, and
+ * only the push, carries the details; the replay feed stays minimal. The
+ * object is added before the body is serialized, so the signature covers it.
+ * FALSE is a failed read: retry later rather than send a body without it. */
+static gboolean
+attach_details(VentureDatabase *database, JsonObject *event, GError **error)
+{
+	g_autoptr(VentureBookingService) service = NULL;
+	g_autoptr(GError) local = NULL;
+	JsonNode *details;
+	if (g_strcmp0(json_object_get_string_member_with_default(event, "source_type", NULL), "booking_reservation") != 0 ||
+		!venture_entity_registry_is_type_enabled(venture_entity_registry_get_default(), "booking_reservation"))
+		return TRUE;
+	service = venture_booking_service_new(database);
+	details = venture_booking_service_hook_details(service, json_object_get_int_member(event, "source_id"), &local);
+	if (details != NULL)
+	{
+		json_object_set_member(event, "booking", details);
+		return TRUE;
+	}
+	/* A booking that is gone still gets its event, with the identities a
+	 * receiver always had: waiting would hold the delivery back forever. */
+	if (local == NULL || g_error_matches(local, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND)) return TRUE;
+	g_propagate_error(error, g_steal_pointer(&local));
+	return FALSE;
+}
+
 static gboolean
 start_delivery(VentureContext *context, VentureEntity *delivery, GDateTime *now, GError **error)
 {
@@ -137,6 +165,11 @@ start_delivery(VentureContext *context, VentureEntity *delivery, GDateTime *now,
 	event = json_array_get_element(events, 0);
 	if (json_object_get_int_member(json_node_get_object(event), "cursor") != event_id)
 		return defer_delivery(database, delivery, now, error);
+	if (!attach_details(database, json_node_get_object(event), &page_error))
+	{
+		g_debug("Booking details unreadable, delivery retried later: %s", page_error->message);
+		return defer_delivery(database, delivery, now, error);
+	}
 	body = venture_json_to_string(event, FALSE);
 	/* Retain a retry before any transport, including malformed configuration.
 	 * Saturation prevents a long-lived refusal from overflowing its counter. */

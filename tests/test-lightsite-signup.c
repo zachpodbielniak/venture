@@ -1112,6 +1112,116 @@ test_owner_follows_records(Fixture *f, gconstpointer data)
 	g_assert_false(json_object_has_member(json_node_get_object(gone), "organization_id"));
 }
 
+/* The business time zone, sent as an optional eighth member. Without it a
+ * new business reads as UTC, so an owner's quiet hours, campaigns and
+ * after-hours run on the wrong clock. */
+static gchar *
+body_with_zone(const gchar *key, const gchar *email, const gchar *subject, const gchar *zone_json)
+{
+	return g_strdup_printf("{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"%s\",\"email\":\"%s\",\"issuer\":\"" ISSUER "\","
+		"\"subject\":\"%s\",\"business_name\":\"Zone Co\",\"timezone\":%s}", key, email, subject, zone_json);
+}
+
+static gchar *
+organization_zone(Fixture *f, JsonNode *result)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) organization = venture_database_get(f->db, VENTURE_TYPE_ORGANIZATION,
+		json_object_get_int_member(json_node_get_object(result), "organization_id"), &error);
+	gchar *zone = NULL;
+	g_assert_no_error(error); g_assert_nonnull(organization);
+	g_object_get(organization, "timezone", &zone, NULL);
+	return zone;
+}
+
+static void
+test_timezone_saved(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *payload = body_with_zone("signup:zone", "zone@example.test", "kc-zone", "\"America/New_York\"");
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *zone = NULL;
+	(void)data;
+	result = signup(f, payload, 201);
+	zone = organization_zone(f, result);
+	g_assert_cmpstr(zone, ==, "America/New_York");
+}
+
+/* Not a zone: 422, and no user, business, membership or receipt. */
+static void
+test_timezone_refused(Fixture *f, gconstpointer data)
+{
+	static const gchar *const refused[] = {
+		"\"Mars/Base\"", "\"\"", "\"   \"", "\"/etc/localtime\"", "\"../zoneinfo/UTC\"", "\"America/New_York\\u0001\"",
+		"null", "5", "{\"name\":\"America/New_York\"}",
+	};
+	g_autoptr(JsonNode) result = NULL;
+	Counts before = counts(f, TRUE);
+	guint i;
+	(void)data;
+	for (i = 0; i < G_N_ELEMENTS(refused); i++) {
+		g_autofree gchar *payload = body_with_zone("signup:bad-zone", "bad.zone@example.test", "kc-bad-zone", refused[i]);
+		result = signup(f, payload, 422); g_clear_pointer(&result, json_node_unref);
+	}
+	assert_counts(counts(f, TRUE), before);
+}
+
+/* No member at all: exactly as before, and the zone stays blank. */
+static void
+test_timezone_absent(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *payload = body_for("signup:no-zone", "no.zone@example.test", "kc-no-zone", "No Zone Co");
+	g_autoptr(JsonNode) result = NULL;
+	g_autofree gchar *zone = NULL;
+	(void)data;
+	result = signup(f, payload, 201);
+	g_assert_cmpuint(json_object_get_size(json_node_get_object(result)), ==, 7);
+	zone = organization_zone(f, result);
+	g_assert_true(venture_string_is_empty(zone));
+}
+
+/* A repeat is answered from the receipt, whatever zone it carries: the
+ * saved zone is not changed and nothing is written. */
+static void
+test_timezone_repeat(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *payload = body_with_zone("signup:zone-repeat", "zone.repeat@example.test", "kc-zone-repeat", "\"America/New_York\"");
+	g_autofree gchar *other = body_with_zone("signup:zone-repeat", "zone.repeat@example.test", "kc-zone-repeat", "\"Europe/Berlin\"");
+	g_autofree gchar *bare = NULL, *zone = NULL;
+	g_autoptr(JsonNode) first = NULL, second = NULL;
+	Counts created;
+	gint64 organization_id;
+	(void)data;
+	first = signup(f, payload, 201);
+	organization_id = json_object_get_int_member(json_node_get_object(first), "organization_id");
+	created = counts(f, TRUE);
+	second = signup(f, other, 200);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(second), "organization_id"), ==, organization_id);
+	g_clear_pointer(&second, json_node_unref);
+	bare = g_strdup_printf("{\"first_name\":\"Alex\",\"last_name\":\"Example\",\"idempotency_key\":\"signup:zone-repeat\","
+		"\"email\":\"zone.repeat@example.test\",\"issuer\":\"" ISSUER "\",\"subject\":\"kc-zone-repeat\",\"business_name\":\"Zone Co\"}");
+	second = signup(f, bare, 200);
+	g_assert_cmpint(json_object_get_int_member(json_node_get_object(second), "organization_id"), ==, organization_id);
+	assert_counts(counts(f, TRUE), created);
+	zone = organization_zone(f, first);
+	g_assert_cmpstr(zone, ==, "America/New_York");
+}
+
+/* The route's documentation names the member. */
+static void
+test_timezone_documented(void)
+{
+	static const gchar *const files[] = { "docs/api.org", "docs/lightsite-accounts.org" };
+	guint i;
+	for (i = 0; i < G_N_ELEMENTS(files); i++) {
+		g_autofree gchar *text = NULL;
+		const gchar *route;
+		g_assert_true(g_file_get_contents(files[i], &text, NULL, NULL));
+		route = g_strstr_len(text, -1, "=POST /api/v1/lightsite/signups=");
+		g_assert_nonnull(route);
+		g_assert_nonnull(g_strstr_len(route, -1, "=timezone="));
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1130,6 +1240,11 @@ main(int argc, char **argv)
 	g_test_add("/lightsite-signup/rollback", Fixture, NULL, setup, test_rollback, teardown);
 	g_test_add("/lightsite-signup/usernames", Fixture, NULL, setup, test_usernames, teardown);
 	g_test_add("/lightsite-signup/passwordless-recovery", Fixture, NULL, setup, test_passwordless_recovery, teardown);
+	g_test_add("/lightsite-signup/timezone/saved", Fixture, NULL, setup, test_timezone_saved, teardown);
+	g_test_add("/lightsite-signup/timezone/refused", Fixture, NULL, setup, test_timezone_refused, teardown);
+	g_test_add("/lightsite-signup/timezone/absent", Fixture, NULL, setup, test_timezone_absent, teardown);
+	g_test_add("/lightsite-signup/timezone/repeat", Fixture, NULL, setup, test_timezone_repeat, teardown);
+	g_test_add_func("/lightsite-signup/timezone/documented", test_timezone_documented);
 	g_test_add("/lightsite-owner/found", Fixture, NULL, setup, test_owner_found, teardown);
 	g_test_add("/lightsite-owner/names", Fixture, NULL, setup, test_owner_names, teardown);
 	g_test_add("/lightsite-owner/not-found", Fixture, NULL, setup, test_owner_not_found, teardown);

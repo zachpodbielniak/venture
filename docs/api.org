@@ -800,6 +800,17 @@ organization ID and active lifecycle state; never grants token access to
 workspace administration. See [[file:lightsite-accounts.org][Lightsite account validation]] for refusals and
 consumer requirements.
 
+=POST /api/v1/lightsite/signups= finishes a Lightsite self sign-up under a
+workspace administrator's service token: it creates or links the owner and
+creates their business. The body is a closed object of the seven strings
+=idempotency_key=, =email=, =issuer=, =subject=, =business_name=,
+=first_name= and =last_name=, plus an optional eighth, =timezone=: an IANA
+zone name such as =America/New_York=, saved as the new business's time zone.
+A =timezone= GLib cannot resolve, or one that is not a string, is 422 and
+nothing is created; without it the zone stays blank, which Venture reads as
+UTC. A repeat of a finished sign-up replays its answer and never changes the
+saved zone. See [[file:lightsite-accounts.org][Lightsite accounts]], "Trusted-service self sign-up".
+
 =POST /api/v1/lightsite/billing/subscriptions= binds a Lightsite business to a
 plan in the configured billing organization (=lightsite.billing_organization_id=),
 idempotently; =GET /api/v1/lightsite/billing/:organization_id= and
@@ -807,6 +818,69 @@ idempotently; =GET /api/v1/lightsite/billing/:organization_id= and
 customer, is on and owes. All three take the trusted-service authority of the
 sign-up and answer 404 while no billing organization is configured. See
 [[file:lightsite-billing.org][Lightsite billing]].
+
+=POST /api/v1/lightsite/bookings/:id/move= moves a confirmed booking when its
+business owner reschedules it, under the same trusted-service authority.
+=:id= is the booking's meeting; the body is exactly
+={"organization_id": N, "starts_at": "<ISO 8601>"}=, a start the booking page
+offers. It is the customer's reschedule reached by the owner: the booking
+keeps its booked length and its private link is renewed. Venture sends the
+customer no mail: the caller sends the letter, with the owner as the reply
+address. 200 answers ={"starts_at", "ends_at", "booking"}=; a booking of
+another business is 404, a taken slot or a booking that is not confirmed 409,
+and a bad body or time 422. =booking= is exactly the object the signed booking
+hook body carries, read after the move, so its times are the new ones:
+=reservation_id=, =state=, =starts_at= and =ends_at= (ISO 8601 with the offset
+of the page's zone), =time_zone=, =service= (the page title), =customer=
+(={"name", "email", "phone"}=) and =note=; an unknown value is null. It is
+there because the caller writes the letter and its token cannot read booking
+records. The move is already made when it is read, so a failed read answers
+200 with =booking= null rather than an error.
+
+=POST /api/v1/lightsite/bookings/:id/cancel= cancels a confirmed booking when
+its business owner cancels it, built the same way as the move: the same
+trusted-service authority, =:id= the booking's meeting, and the body exactly
+={"organization_id": N}=. It settles the same records as the customer's
+cancel through the private link (the reservation is cancelled and its link
+stops working, the meeting is cancelled and its capacity freed). Venture sends
+the customer no mail: the caller sends the letter. 200 answers
+={"booking"}=, the same object as the move's, read after the cancel, so its
+=state= is =cancelled=; a failed read is =booking= null, as for the move. No
+token is 401; any token but the trusted service's is 403; a booking of another
+business, or none, is 404; a booking that is neither confirmed nor cancelled
+(its meeting is done) is 409; and a bad body or id is 422. A cancel is safe
+to retry: a booking already cancelled answers 200 with the same =booking= and
+nothing changes, so after a crash the caller calls again and still has what
+the letter needs. The generic
+=POST /api/v1/activity/:id/actions/cancel_booking= answers 404 for a meeting
+that does not exist.
+
+=GET /api/v1/lightsite/departure/:org= reads a business's leaving state,
+under the same trusted-service authority; Venture keeps it on the
+organization and Lightsite only shows it. 200 answers
+={"organization_id": N, "state": "active", "left_at": null, "returned_at": null, "purged_at": null}=:
+=state= is =active= (the default), =closing=, =closed= or =purged=, and each
+time is ISO 8601 or null. An unknown organization is 404. A generic
+organization update cannot change =departure_state=, =left_at=,
+=returned_at= or =purged_at=: the save refuses, naming the field. Only
+these routes move them.
+=POST /api/v1/lightsite/departure/:org/:action= takes no body and answers the
+same object:
+- =leave=: =active= to =closing=; already =closing= is 200 and nothing
+  changes; =closed= or =purged= is 409.
+- =close=: =closing= to =closed=, =left_at= set to now; already =closed= is
+  200 and =left_at= does not move; =active= or =purged= is 409.
+- =return=: =closed= to =active=, =returned_at= set to now and =left_at=
+  kept; already back (=active= with =returned_at= set) is 200 and
+  =returned_at= does not move; =active= and never left, or =closing=, is 409;
+  =purged=, or later than =left_at= plus six calendar months, is 410.
+- =purge=: =closed= to =purged=, =purged_at= set to now; already =purged= is
+  200 and =purged_at= does not move; =active= or =closing= is 409.
+Any other action is 404. No token is 401; any token but the trusted
+service's, the business owner's own included, is 403. Lightsite calls
+=leave=, cancels the plan, takes the site offline and packs the files, then
+calls =close=; after a crash it calls =leave= again (200) and finishes the
+steps that did not.
 * Receipt printing
 
 =GET /api/v1/printers= returns configured names, default flags and unknown

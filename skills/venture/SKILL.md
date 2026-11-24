@@ -175,10 +175,10 @@ Setup that replaces the card only once Stripe confirms it) were added after
 `ec60e31b` (2026-11-07, server version 0.9.0); see billing.md,
 api-routes.md and data-model-revenue.md.
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-11 against 469915d2 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-23 against c161f1a3 -->
 ```bash
 # From a checkout: what changed since this skill was written?
-base=469915d2
+base=c161f1a3
 git log --oneline "$base"..HEAD -- src docs migrations data plugins AGENTS.md
 git diff --stat "$base" HEAD -- src/cli docs src/web/venture-web-server.c
 # Without a checkout: compare the live ground truths with what this skill says
@@ -423,7 +423,8 @@ ids, notes) in words.
 | Request | Answer | Guide |
 |---|---|---|
 | "Change the text quiet hours" (or any workflow default) | `venturectl settings set telephony.quiet-hours 20:00-07:00`; `settings list` names every key; one audit entry | [platform.md](references/platform.md) |
-| "Provision a Lightsite owner" | `POST /api/v1/lightsite/signups`: seven strings, including `first_name` and `last_name`; the old five-member body is 422 | [operations.md](references/operations.md) |
+| "Provision a Lightsite owner" | `POST /api/v1/lightsite/signups`: seven strings, including `first_name` and `last_name`, plus optional `timezone`; the old five-member body is 422 | [operations.md](references/operations.md) |
+| "Move a Lightsite business's leaving state" | `GET`/`POST /api/v1/lightsite/departure/:organization_id[/:action]` with the trusted sign-up token; `leave`, `close`, `return`, `purge`; do not edit the four organization fields | [operations.md](references/operations.md) |
 | "Which business did this Lightsite sign-in get?" | `GET /api/v1/lightsite/owner?issuer=&subject=` with the trusted sign-up token; earliest receipt; no-store | [operations.md](references/operations.md) |
 | "Use an owner's provider token" | link and verify issuer/subject; check current authority | [platform.md](references/platform.md) |
 | "Sign an enrolled owner into the browser" | `hosted.identity_browser_client`, then Continue with Lightsite; never creates an account | [platform.md](references/platform.md) |
