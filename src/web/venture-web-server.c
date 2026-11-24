@@ -26467,11 +26467,17 @@ venture_web_forge_webhook_apply(
 	 * and the forge does not get to move it back on the next edit. Only
 	 * an explicit reopen upstream reopens a ticket the forge closed. A
 	 * ticket somebody cancelled here is already closed and stays so.
+	 *
+	 * Only an issue event moves the ticket. A comment on a closed issue
+	 * also says "closed", and must not close a ticket that somebody
+	 * reopened here.
 	 */
-	closes = (0 == g_strcmp0(event.state, "closed")) &&
+	closes = (0 == g_strcmp0(event_name, "issues")) &&
+	         (0 == g_strcmp0(event.state, "closed")) &&
 	         (VENTURE_TICKET_STATUS_DONE != existing_status) &&
 	         (VENTURE_TICKET_STATUS_CANCELLED != existing_status);
-	reopens = (0 == g_strcmp0(event.action, "reopened")) &&
+	reopens = (0 == g_strcmp0(event_name, "issues")) &&
+	          (0 == g_strcmp0(event.action, "reopened")) &&
 	          (VENTURE_TICKET_STATUS_DONE == existing_status);
 
 	/*
@@ -26481,10 +26487,11 @@ venture_web_forge_webhook_apply(
 	 * diff is empty, so "did the save change anything" is not available
 	 * as a signal after the fact. The comparison has to happen before the
 	 * write, or an edit VENTURE itself pushed comes back, gets re-applied
-	 * and is pushed again. The state counts too: closing an issue changes
-	 * neither its title nor its body.
+	 * and is pushed again. The close and the reopen themselves count too:
+	 * they change neither the title nor the body.
 	 */
-	if (!created && !closes && !reopens &&
+	if (!created && !reopens &&
+	    !(closes && (0 == g_strcmp0(event.action, "closed"))) &&
 	    (0 == g_strcmp0(existing_title, event.title)) &&
 	    (0 == g_strcmp0(existing_body, event.body)))
 	{

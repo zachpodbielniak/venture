@@ -721,6 +721,25 @@ test_factory_forge_issue_state_follows_the_forge(
 	ticket = issue_ticket(fixture);
 	g_object_get(ticket, "status", &status, NULL);
 	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_CANCELLED);
+
+	/* Reopened here while the issue stays closed upstream: a comment on
+	 * the closed issue is not a close, and does not move the ticket. */
+	g_object_set(ticket, "status", VENTURE_TICKET_STATUS_IN_PROGRESS, NULL);
+	g_assert_true(venture_database_save(fixture->database, ticket, NULL,
+	                                    NULL));
+	g_clear_object(&ticket);
+	server_deliver_webhook(fixture, "issue_comment", "i-6",
+		"{\"action\":\"created\","
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"zach\"},"
+		" \"comment\":{\"body\":\"still broken?\"},"
+		" \"issue\":{\"number\":42,\"title\":\"It crashes\","
+		"            \"body\":\"every time\",\"state\":\"closed\","
+		"            \"html_url\":\"https://git.example.com/zach/venture/issues/42\","
+		"            \"labels\":[]}}");
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_IN_PROGRESS);
 #undef ISSUE_PAYLOAD
 }
 
