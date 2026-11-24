@@ -206,7 +206,11 @@ test_pay_now_click(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(((FakeTransport *)p.transport)->checkouts, ==, 1);
 	/* A tampered link is still the same unavailable answer. */
 	g_clear_pointer(&body, g_free);
-	checkout[strlen(checkout) - strlen("/checkout") - 1] ^= 1;
+	{
+		/* Still well formed, so the digest is what refuses it. */
+		gchar *last = checkout + strlen(checkout) - strlen("/checkout") - 1;
+		*last = *last == 'a' ? 'b' : 'a';
+	}
 	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, &body), ==, 404);
 	g_assert_null(strstr(body, "paid"));
 	venture_web_server_stop(server);
