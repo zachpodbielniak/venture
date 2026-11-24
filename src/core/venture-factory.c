@@ -2002,6 +2002,64 @@ venture_factory_validate_build(
 	return TRUE;
 }
 
+/*
+ * A ticket made from a linked repository takes the repository's venture.
+ *
+ * A validator rather than a line in the webhook, because the webhook is
+ * one of several writers: a mirror files tickets through the REST API
+ * with only the repository set. Filled only when the writer chose no
+ * venture, and only when the repository is new to the ticket, so a
+ * venture somebody cleared by hand does not come back on the next save.
+ * A repository in another organization lends nothing.
+ */
+static gboolean
+venture_factory_validate_ticket(
+	VentureDatabase	 *database,
+	VentureEntity	 *entity,
+	VentureEntity	 *previous,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(VentureEntity) repo = NULL;
+	gint64 repo_id = 0;
+	gint64 venture_id = 0;
+	gint64 repo_venture = 0;
+
+	(void)user_data;
+	(void)error;
+
+	g_object_get(entity, "repo-id", &repo_id, "venture-id", &venture_id,
+	             NULL);
+
+	if ((repo_id <= 0) || (venture_id > 0))
+		return TRUE;
+
+	if (NULL != previous)
+	{
+		gint64 was_repo = 0;
+
+		g_object_get(previous, "repo-id", &was_repo, NULL);
+
+		if (was_repo == repo_id)
+			return TRUE;
+	}
+
+	repo = venture_database_get(database, VENTURE_TYPE_FORGE_REPO, repo_id,
+	                            NULL);
+
+	if ((NULL == repo) ||
+	    (venture_entity_get_organization_id(repo) !=
+	     venture_entity_get_organization_id(entity)))
+		return TRUE;
+
+	g_object_get(repo, "venture-id", &repo_venture, NULL);
+
+	if (repo_venture > 0)
+		g_object_set(entity, "venture-id", repo_venture, NULL);
+
+	return TRUE;
+}
+
 void
 venture_factory_install(VentureContext *context)
 {
@@ -2025,6 +2083,9 @@ venture_factory_install(VentureContext *context)
 	                                    context, NULL);
 	venture_database_add_save_validator(database, VENTURE_TYPE_BUILD,
 	                                    venture_factory_validate_build,
+	                                    context, NULL);
+	venture_database_add_save_validator(database, VENTURE_TYPE_TICKET,
+	                                    venture_factory_validate_ticket,
 	                                    context, NULL);
 }
 

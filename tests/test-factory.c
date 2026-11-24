@@ -725,6 +725,85 @@ test_factory_forge_issue_state_follows_the_forge(
 }
 
 /*
+ * A ticket made from a linked repository takes the repository's venture,
+ * whether the forge's webhook made it or a client wrote it directly.
+ *
+ * What breaks if this regresses: the ticket had the repository and the
+ * business but venture 0, so it was missing from its venture's page and
+ * every report scoped to that venture.
+ */
+static void
+test_factory_ticket_takes_the_repo_venture(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const opened =
+		"{\"action\":\"opened\","
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"zach\"},"
+		" \"issue\":{\"number\":7,\"title\":\"Add a page\","
+		"            \"body\":\"please\",\"state\":\"open\","
+		"            \"html_url\":\"https://git.example.com/zach/venture/issues/7\","
+		"            \"labels\":[]}}";
+	g_autoptr(VentureEntity) venture = NULL;
+	g_autoptr(VentureEntity) other = NULL;
+	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureEntity) ticket = NULL;
+	g_autoptr(VentureEntity) mirrored = NULL;
+	g_autoptr(VentureEntity) chosen = NULL;
+	gint64 venture_id = 0;
+
+	(void)user_data;
+
+	venture = VENTURE_ENTITY(venture_venture_new());
+	venture_entity_set_organization_id(venture, 1);
+	g_object_set(venture, "name", "Venture itself", "slug", "venture-itself",
+	             NULL);
+	g_assert_true(venture_database_save(fixture->database, venture, NULL,
+	                                    NULL));
+
+	other = VENTURE_ENTITY(venture_venture_new());
+	venture_entity_set_organization_id(other, 1);
+	g_object_set(other, "name", "Something else", "slug", "something-else",
+	             NULL);
+	g_assert_true(venture_database_save(fixture->database, other, NULL,
+	                                    NULL));
+
+	repo = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_REPO,
+	                            fixture->repo_id, NULL);
+	g_assert_nonnull(repo);
+	g_object_set(repo, "venture-id", venture_entity_get_id(venture), NULL);
+	g_assert_true(venture_database_save(fixture->database, repo, NULL, NULL));
+
+	/* Made by the forge's webhook. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "v-1", opened),
+	                 ==, SOUP_STATUS_ACCEPTED);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "venture-id", &venture_id, NULL);
+	g_assert_cmpint(venture_id, ==, venture_entity_get_id(venture));
+
+	/* Written directly with only the repository, as a mirror does. */
+	mirrored = VENTURE_ENTITY(venture_ticket_new());
+	venture_entity_set_organization_id(mirrored, 1);
+	g_object_set(mirrored, "title", "Mirrored", "repo-id", fixture->repo_id,
+	             NULL);
+	g_assert_true(venture_database_save(fixture->database, mirrored, NULL,
+	                                    NULL));
+	g_object_get(mirrored, "venture-id", &venture_id, NULL);
+	g_assert_cmpint(venture_id, ==, venture_entity_get_id(venture));
+
+	/* A venture the writer chose is kept. */
+	chosen = VENTURE_ENTITY(venture_ticket_new());
+	venture_entity_set_organization_id(chosen, 1);
+	g_object_set(chosen, "title", "Chosen", "repo-id", fixture->repo_id,
+	             "venture-id", venture_entity_get_id(other), NULL);
+	g_assert_true(venture_database_save(fixture->database, chosen, NULL,
+	                                    NULL));
+	g_object_get(chosen, "venture-id", &venture_id, NULL);
+	g_assert_cmpint(venture_id, ==, venture_entity_get_id(other));
+}
+
+/*
  * A release cut on the forge becomes a release record, its version read
  * from the tag, and a later delivery for the same release updates it.
  */
@@ -2300,6 +2379,8 @@ main(
 	    test_factory_forge_release_becomes_a_release);
 	ADD("/factory/http/forge-issue-state-follows-the-forge",
 	    test_factory_forge_issue_state_follows_the_forge);
+	ADD("/factory/http/ticket-takes-the-repo-venture",
+	    test_factory_ticket_takes_the_repo_venture);
 	ADD("/factory/http/changelog-is-drafted-from-tickets",
 	    test_factory_changelog_is_drafted_from_tickets);
 	ADD("/factory/http/reports-measure-the-loop",
