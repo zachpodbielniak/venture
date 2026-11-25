@@ -50,6 +50,7 @@ struct _VentureFiber
 	VentureFiberFunc	 swap;
 	gpointer		 data;
 	VentureFiber		*outer;		/* running when this one was woken */
+	gint			 depth;		/* g_main_depth() it was woken at */
 	gboolean		 started;
 	gboolean		 done;
 };
@@ -99,7 +100,8 @@ venture_fiber_new(
 	if (MAP_FAILED == self->stack)
 		g_error("Cannot map a fiber stack: %s", g_strerror(errno));
 	/* An overflow faults on the guard instead of writing over the heap. */
-	mprotect(self->stack, page, PROT_NONE);
+	if (0 != mprotect(self->stack, page, PROT_NONE))
+		g_warning("A fiber stack has no guard page: %s", g_strerror(errno));
 	self->func = func;
 	self->done_func = done;
 	self->swap = swap;
@@ -119,6 +121,7 @@ venture_fiber_wake(VentureFiber *self)
 	g_return_if_fail(!self->done && self != fiber_current);
 
 	self->outer = fiber_current;
+	self->depth = g_main_depth();
 	fiber_current = self;
 	if (NULL != self->swap)
 		self->swap(self->data);
@@ -145,11 +148,20 @@ venture_fiber_wake(VentureFiber *self)
 	}
 }
 
-/* The fiber running on this thread, or %NULL on a plain stack. */
+/*
+ * The fiber running on this thread, or %NULL on a plain stack.
+ *
+ * A main loop the fiber runs itself (a nested wait on its own stack) is a
+ * plain stack too: what it dispatches did not start the fiber, and a yield
+ * from there would leave that loop's dispatch suspended on the fiber's
+ * stack while the outer loop dispatches on.
+ */
 VentureFiber *
 venture_fiber_current(void)
 {
-	return (g_thread_self() == fiber_thread) ? fiber_current : NULL;
+	if (g_thread_self() != fiber_thread || NULL == fiber_current)
+		return NULL;
+	return (g_main_depth() == fiber_current->depth) ? fiber_current : NULL;
 }
 
 /* Gives the thread back to whoever woke the running fiber. */
