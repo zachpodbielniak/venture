@@ -29,6 +29,11 @@
  * property, always "<section>-<key>" with underscores turned into hyphens.
  * Keeping the two forms in one row is what stops a rename in the YAML from
  * quietly losing a setting.
+ *
+ * @follows names a boolean setting whose value this one takes until it is
+ * set itself -- from a file, the environment or code. It is how a hosted
+ * workspace gets what every hosted plan includes without the operator
+ * writing it down, while an explicit false still wins.
  */
 typedef struct
 {
@@ -41,16 +46,19 @@ typedef struct
 	gint64		 default_int;
 	gboolean	 default_bool;
 	const gchar	*blurb;
+	const gchar	*follows;
 } VentureConfigSetting;
 
 #define VC_STR(name, section, key, fallback, blurb) \
-	{ name, section, key, G_TYPE_STRING, NULL, fallback, 0, FALSE, blurb }
+	{ name, section, key, G_TYPE_STRING, NULL, fallback, 0, FALSE, blurb, NULL }
 #define VC_INT(name, section, key, fallback, blurb) \
-	{ name, section, key, G_TYPE_INT64, NULL, NULL, fallback, FALSE, blurb }
+	{ name, section, key, G_TYPE_INT64, NULL, NULL, fallback, FALSE, blurb, NULL }
 #define VC_BOOL(name, section, key, fallback, blurb) \
-	{ name, section, key, G_TYPE_BOOLEAN, NULL, NULL, 0, fallback, blurb }
+	{ name, section, key, G_TYPE_BOOLEAN, NULL, NULL, 0, fallback, blurb, NULL }
+#define VC_BOOL_FOLLOWS(name, section, key, follows, blurb) \
+	{ name, section, key, G_TYPE_BOOLEAN, NULL, NULL, 0, FALSE, blurb, follows }
 #define VC_ENUM(name, section, key, type_func, blurb) \
-	{ name, section, key, G_TYPE_INVALID, type_func, NULL, 0, FALSE, blurb }
+	{ name, section, key, G_TYPE_INVALID, type_func, NULL, 0, FALSE, blurb, NULL }
 /*
  * G_TYPE_STRV is a function call rather than a constant, so it cannot appear
  * in a static initialiser. G_TYPE_BOXED is a constant and no setting is a
@@ -58,7 +66,7 @@ typedef struct
  * the real G_TYPE_STRV is used when the property is actually installed.
  */
 #define VC_STRV(name, section, key, blurb) \
-	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb }
+	{ name, section, key, G_TYPE_BOXED, NULL, NULL, 0, FALSE, blurb, NULL }
 
 static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR("forms-scanner-executable", "forms", "scanner_executable", "", "Optional trusted upload scanner executable; receives bytes on stdin"),
@@ -314,8 +322,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Exact platform-approved issuer URLs; empty refuses all providers"),
 	VC_BOOL("payroll-enabled", "payroll", "enabled", FALSE,
 	        "Enable imported payroll runs; native tax calculation is out of scope"),
-	VC_BOOL("bankfeed-enabled", "bankfeed", "enabled", FALSE,
-	        "Enable pluggable bank feeds; each organization binds its own provider credentials in settings"),
+	/* Every hosted plan includes bank feeds, and a hosted owner can neither
+	 * edit this file nor restart the service. Self-hosted stays opt-in. */
+	VC_BOOL_FOLLOWS("bankfeed-enabled", "bankfeed", "enabled", "hosted-enabled",
+	        "Enable pluggable bank feeds; each organization binds its own provider credentials in settings. "
+	        "Unset, it follows hosted.enabled"),
 	VC_BOOL("commerce-enabled", "commerce", "enabled", FALSE,
 	        "Enable commerce connectors with explicit organization account settings"),
 	VC_BOOL("group-enabled", "group", "enabled", FALSE,
@@ -546,6 +557,11 @@ struct _VentureConfig
 	 * table above. Held apart and resolved by #VentureModuleRegistry.
 	 */
 	GHashTable	*module_switches;
+
+	/* Names of settings set by a file, the environment or code, as
+	 * opposed to seeded with their default. Only a setting that
+	 * follows another asks. */
+	GHashTable	*explicit;
 };
 
 static GParamSpec *venture_config_properties[VENTURE_CONFIG_N_SETTINGS + 1];
@@ -586,6 +602,18 @@ venture_config_get_property(
 	self = VENTURE_CONFIG(object);
 	stored = g_hash_table_lookup(self->values, pspec->name);
 
+	if ((prop_id >= VENTURE_CONFIG_PROP_BASE) &&
+	    (prop_id < VENTURE_CONFIG_PROP_BASE + VENTURE_CONFIG_N_SETTINGS))
+	{
+		const VentureConfigSetting *setting;
+
+		setting = &venture_config_settings[prop_id - VENTURE_CONFIG_PROP_BASE];
+
+		if ((NULL != setting->follows) &&
+		    !g_hash_table_contains(self->explicit, pspec->name))
+			stored = g_hash_table_lookup(self->values, setting->follows);
+	}
+
 	if (NULL != stored)
 	{
 		g_value_copy(stored, value);
@@ -612,6 +640,7 @@ venture_config_set_property(
 	g_value_copy(value, stored);
 
 	g_hash_table_insert(self->values, g_strdup(pspec->name), stored);
+	g_hash_table_add(self->explicit, g_strdup(pspec->name));
 
 	(void)prop_id;
 }
@@ -627,6 +656,7 @@ venture_config_finalize(GObject *object)
 	g_free(self->default_printer);
 	g_clear_pointer(&self->values, g_hash_table_unref);
 	g_clear_pointer(&self->module_switches, g_hash_table_unref);
+	g_clear_pointer(&self->explicit, g_hash_table_unref);
 	g_clear_pointer(&self->resolved_state_dir, g_free);
 	g_clear_pointer(&self->loaded_from, g_free);
 
@@ -1001,6 +1031,7 @@ venture_config_init(VentureConfig *self)
 	                                              g_free, NULL);
 	self->values = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 	                                     venture_config_free_value);
+	self->explicit = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
 	/* Seed every setting with its declared default, so a getter never has
 	 * to distinguish "unset" from "default" and the YAML writer can emit a
@@ -1049,6 +1080,9 @@ venture_config_init(VentureConfig *self)
 	 * to the zero value, which would be read-only and make the assistant
 	 * useless for anything but questions. */
 	g_object_set(self, "ai-policy", VENTURE_AI_POLICY_CONFIRM_WRITES, NULL);
+
+	/* Seeding went through the setter; none of it was set by anybody. */
+	g_hash_table_remove_all(self->explicit);
 }
 
 VentureConfig *
@@ -2072,13 +2106,22 @@ venture_config_to_yaml(
 		if (NULL == setting->section)
 			continue;
 
+		/* Unset, it is the setting it follows. Writing the derived
+		 * value down would pin it, and a default false would turn the
+		 * hosted default off on the next load. */
+		if ((NULL != setting->follows) &&
+		    !g_hash_table_contains(self->explicit, setting->name))
+			continue;
+
 		pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(self),
 		                                     setting->name);
 
 		g_value_init(&value, pspec->value_type);
 		g_object_get_property(G_OBJECT(self), setting->name, &value);
 
-		if (!include_defaults &&
+		/* An explicit value of a follower is never a default: a false
+		 * left out would read back as the setting it follows. */
+		if (!include_defaults && (NULL == setting->follows) &&
 		    g_param_value_defaults(pspec, &value))
 			continue;
 

@@ -121,7 +121,10 @@ threshold (default 80) stage bank-transaction action confirmations when
 banking is installed -- it never applies. `report bank_reconciliation
 statement_id=N`.
 
-**Bank feeds** (opt-in `bankfeed.enabled`): credentials belong to the
+**Bank feeds** (opt-in `bankfeed.enabled`; on in a hosted workspace
+unless that key is set): `/bankfeed` first shows an owner how to bring a
+statement file in through the bank account's import action, then the live
+connection. Live connection credentials belong to the
 selected `bank_connection`'s organization. Open its Settings link on
 `/bankfeed` to configure or rotate the write-only provider settings, then
 **Sync and test** imports the last 30 days of statement evidence -- a real

@@ -79,11 +79,56 @@ bankfeed_sync(HtmxRequest *request, GHashTable *params, gpointer data)
 	return venture_web_json_response(node, 200);
 }
 
+/*
+ * GET /bankfeed - how an owner gets their bank into the books.
+ *
+ * A statement file is the way that works for every business on every
+ * install: banks offer CSV, OFX or QFX, and the account's own page imports
+ * it, matches it and reconciles it. A live connection needs a provider's
+ * access, which an owner may not have, so it is offered second and says
+ * so. Before this page, an owner with no provider access found only a
+ * form of provider fields.
+ */
+static void
+bankfeed_ui_accounts(VentureWebServer *self, HtmxRequest *request, GString *content, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_BANK_ACCOUNT);
+	g_autoptr(GPtrArray) accounts = NULL;
+	guint i;
+	venture_query_set_organization(query, venture_web_active_organization(self, request));
+	accounts = venture_database_find(venture_context_get_database(self->context), query, error);
+	if (accounts == NULL) return;
+	g_string_append(content,
+		"<div class=\"card\"><div class=\"card-head\"><h2>Connect your bank</h2></div><ol>"
+		"<li>Add your bank account. <a class=\"btn\" href=\"/e/bank_account/new\">Add a bank account</a></li>"
+		"<li>Download a statement from your bank's website as a CSV, OFX or QFX file.</li>"
+		"<li>Open the account below. Under Banking actions, choose <strong>import</strong> and pick the file.</li>"
+		"<li>Match each line to your books, then choose <strong>reconcile</strong> on the statement.</li></ol>");
+	if (accounts->len == 0)
+	{
+		g_string_append(content, "<p class=\"muted\">No bank accounts yet.</p></div>");
+		return;
+	}
+	g_string_append(content, "<table><thead><tr><th>Bank account</th><th></th></tr></thead><tbody>");
+	for (i = 0; i < accounts->len; i++)
+	{
+		VentureEntity *account = g_ptr_array_index(accounts, i);
+		g_autofree gchar *name = NULL;
+		g_object_get(account, "name", &name, NULL);
+		g_string_append_printf(content, "<tr><td><a href=\"/e/bank_account/%" G_GINT64_FORMAT "\">",
+			venture_entity_get_id(account));
+		venture_html_escape_append(content, name);
+		g_string_append_printf(content, "</a></td><td><a href=\"/e/bank_account/%" G_GINT64_FORMAT "\">"
+			"Import a statement</a></td></tr>", venture_entity_get_id(account));
+	}
+	g_string_append(content, "</tbody></table></div>");
+}
+
 static HtmxResponse *
 bankfeed_ui(HtmxRequest *request, GHashTable *params, gpointer data)
 {
 	VentureWebServer *self = data;
-	g_autoptr(GString) content = g_string_new("<div class=\"page-head\"><h1>Bank feeds</h1><a class=\"btn\" href=\"/e/bank_connection/new\">Link account</a></div>");
+	g_autoptr(GString) content = g_string_new("<div class=\"page-head\"><h1>Bank feeds</h1></div>");
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GError) error = NULL;
@@ -93,11 +138,24 @@ bankfeed_ui(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (gate != NULL) return gate;
 	gate = venture_web_require_module_ui(self, request, "bankfeed");
 	if (gate != NULL) return gate;
+	bankfeed_ui_accounts(self, request, content, &error);
+	if (error != NULL) return venture_web_error_response(error);
 	query = venture_query_new(VENTURE_TYPE_BANK_CONNECTION);
 	venture_query_set_organization(query, venture_web_active_organization(self, request));
 	rows = venture_database_find(venture_context_get_database(self->context), query, &error);
 	if (rows == NULL) return venture_web_error_response(error);
-	g_string_append(content, "<div class=\"card\"><div class=\"card-head\"><h2>Connections</h2></div><table><thead><tr><th>Name</th><th>Provider</th><th></th></tr></thead><tbody>");
+	g_string_append(content,
+		"<div class=\"card\"><div class=\"card-head\"><h2>Live connection</h2>"
+		"<a class=\"btn\" href=\"/e/bank_connection/new\">Link a provider account</a></div>"
+		"<p class=\"muted\">A live connection brings in new transactions by itself. It needs access from a "
+		"bank-data provider. If you have that access, link the account, then enter the access under Settings. "
+		"Without it, import statements as shown above.</p>");
+	if (rows->len == 0)
+	{
+		g_string_append(content, "</div>");
+		return venture_web_html_response(venture_web_page(self, request, "/bankfeed", "Bank feeds", content->str), 200);
+	}
+	g_string_append(content, "<table><thead><tr><th>Name</th><th>Provider</th><th></th></tr></thead><tbody>");
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);

@@ -599,6 +599,8 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-identity/browser-calendar", Fixture, "browser", setup, test_browser_calendar, teardown);
 	g_test_add("/hosted-identity/browser-token-refusals", Fixture, "browser", setup, test_browser_token_refusals, teardown);
 	g_test_add("/hosted-identity/browser-webhooks", Fixture, "browser", setup, test_browser_webhooks, teardown);
+	g_test_add("/hosted-identity/browser-bankfeed", Fixture, "browser", setup, test_browser_bankfeed, teardown);
+	g_test_add("/hosted-identity/browser-bankfeed-switch", Fixture, "browser", setup, test_browser_bankfeed_switch, teardown);
 	g_test_add_func("/hosted-identity/config", test_config);
 	return g_test_run();
 }

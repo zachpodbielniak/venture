@@ -11,8 +11,85 @@
  */
 
 #include <venture.h>
+#include <string.h>
 
 #include "venture-test-util.h"
+
+static gboolean
+config_bool(VentureConfig *config, const gchar *name)
+{
+	gboolean value = FALSE;
+
+	g_object_get(config, name, &value, NULL);
+	return value;
+}
+
+/*
+ * Every hosted plan includes bank feeds, and a hosted owner cannot edit the
+ * configuration or restart anything. So a hosted workspace has bank feeds
+ * unless the operator said otherwise; self-hosted stays opt-in. If this
+ * regresses, an owner's Bank feeds page says the module is off and asks
+ * them to restart the service.
+ */
+static void
+test_config_hosted_includes_bankfeed(void)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *yaml = NULL;
+
+	{
+		g_autoptr(VentureConfig) plain = venture_config_new();
+
+		g_assert_false(config_bool(plain, "hosted-enabled"));
+		g_assert_false(config_bool(plain, "bankfeed-enabled"));
+	}
+	{
+		g_autoptr(VentureConfig) hosted = venture_config_new();
+
+		g_object_set(hosted, "hosted-enabled", TRUE, NULL);
+		g_assert_true(config_bool(hosted, "bankfeed-enabled"));
+		/* Derived, not written: the exported file still follows hosted. */
+		yaml = venture_config_to_yaml(hosted, FALSE);
+		g_assert_null(strstr(yaml, "bankfeed"));
+		g_clear_pointer(&yaml, g_free);
+		yaml = venture_config_to_yaml(hosted, TRUE);
+		g_assert_null(strstr(yaml, "\nbankfeed:\n  enabled: false"));
+		g_clear_pointer(&yaml, g_free);
+	}
+	{
+		/* An explicit false wins, in either order. */
+		g_autoptr(VentureConfig) before = venture_config_new();
+		g_autoptr(VentureConfig) after = venture_config_new();
+
+		g_object_set(before, "bankfeed-enabled", FALSE, "hosted-enabled", TRUE, NULL);
+		g_object_set(after, "hosted-enabled", TRUE, "bankfeed-enabled", FALSE, NULL);
+		g_assert_false(config_bool(before, "bankfeed-enabled"));
+		g_assert_false(config_bool(after, "bankfeed-enabled"));
+		yaml = venture_config_to_yaml(after, FALSE);
+		g_assert_nonnull(strstr(yaml, "bankfeed:"));
+		g_clear_pointer(&yaml, g_free);
+	}
+	{
+		g_autoptr(VentureConfig) file = venture_config_new();
+
+		g_assert_true(venture_config_apply_yaml_string(file,
+			"hosted:\n  enabled: true\nbankfeed:\n  enabled: false\n", &error));
+		g_assert_no_error(error);
+		g_assert_true(config_bool(file, "hosted-enabled"));
+		g_assert_false(config_bool(file, "bankfeed-enabled"));
+	}
+	{
+		/* A switch the registry sees: hosted alone resolves the module on. */
+		g_autoptr(VentureConfig) hosted = venture_config_new();
+		g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
+
+		venture_module_registry_register_builtins(modules);
+		g_object_set(hosted, "hosted-enabled", TRUE, NULL);
+		g_assert_true(venture_module_registry_configure(modules, hosted, &error));
+		g_assert_no_error(error);
+		g_assert_true(venture_module_registry_is_enabled(modules, "bankfeed"));
+	}
+}
 
 static void
 test_config_defaults(void)
@@ -963,6 +1040,7 @@ main(
 	g_test_add_func("/config/resolve-path", test_config_resolve_path);
 	g_test_add_func("/config/to-yaml-round-trips", test_config_to_yaml_round_trips);
 	g_test_add_func("/config/hosted-and-billing-round-trip", test_config_hosted_and_billing_round_trip);
+	g_test_add_func("/config/hosted-includes-bankfeed", test_config_hosted_includes_bankfeed);
 	g_test_add_func("/config/to-yaml-omits-defaults", test_config_to_yaml_omits_defaults);
 
 	g_test_add_func("/config/redacts-a-uri-password",

@@ -49,7 +49,7 @@ Written bottom-up, because a module may only require what precedes it:
 | =dashboards= | core            | dashboard, dashboard_widget; the =/dashboards= pages and their API | |
 | =reconciliation= | ledger | matcher registry, deterministic and AI matchers, staged suggestions; suggests banking | |
 | =banking= | ledger | bank_account, bank_statement, bank_transaction, bank_match, reconciliation; =bank_reconciliation= | |
-| =bankfeed= | banking | bank_connection | =bankfeed.enabled= (opt-in) |
+| =bankfeed= | banking | bank_connection | =bankfeed.enabled= (opt-in; on in a hosted workspace unless set) |
 | =commerce= | invoicing, receivables, integrations | commerce_import_link; organization-owned provider accounts and order import through invoice compose | =commerce.enabled= (opt-in) |
 | =billing= | invoicing, receivables | plan, plan_price, customer_subscription, subscription_event, dunning_step, billing_notice, billing_request, customer_payment_method; =mrr=, =churn=, =subscriptions_due= | |
 | =projects= | invoicing, receivables | client_project, project_rate, project_time, project_cost, project_billing, project_scope, project_deliverable; =project_margin= | |
@@ -175,7 +175,7 @@ The registries the rest of the system already reads are masked, once, when the c
 
 - Its *record types are hidden* from the entity registry. They stay registered — their =GType=, prototype and table are all still there — but every lookup and listing skips them. That one loop is what makes a disabled module disappear from REST, the schema, the forms, global search, the AI's tool arguments, =venturectl= and =venturectl mcp= at once: none of them know what a module is; they ask the registry.
 - Its *reports are hidden* from the report registry the same way, so a profit-and-loss is not offered on an install that keeps no books, and comes back with nothing re-registered when it is.
-- Its *pages answer 404* with the module named and the switch to look at. An anonymous request is sent to sign in first, so which modules an install runs is not disclosed to whoever asks.
+- Its *pages answer 404* with the module named and the switch to look at. An anonymous request is sent to sign in first, so which modules an install runs is not disclosed to whoever asks. In a hosted workspace the page names no switch and asks for no restart: the person reading it is a business owner, who can do neither. It says the feature is not available on the service and that support turns it on.
 - Its *services are never built*: the AI service, the knowledge-base embedder, the automation engine, the coding-run service each ask the module registry before doing anything.
 - Its *webhook events are acknowledged and dropped*: a forge that keeps getting errors disables the hook, so a build delivered to an install with the factory off is a 204, not a 404.
 

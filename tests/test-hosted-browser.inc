@@ -519,3 +519,116 @@ static void test_browser_webhooks(Fixture *f, gconstpointer data)
 	path = g_strdup_printf("/api/v1/webhooks/%" G_GINT64_FORMAT "/secret", venture_entity_get_id(hook));
 	g_assert_cmpuint(exchange(f, "POST", path, NULL, editor_token, "application/json", "{}", NULL, NULL), ==, 403);
 }
+
+/* Every hosted plan promises bank feeds and reconciliation. Given a hosted
+ * workspace whose configuration never names bank feeds, an owner should open
+ * Bank feeds, find how to connect a bank, bring in a statement and reconcile
+ * it against an entry already in the books. Expected: the page answers 200
+ * with the way to connect and no word about restarting; the statement line
+ * matches the expense and the statement reconciles to zero. Got before the
+ * fix: 404, "The bankfeed module is turned off ... Turn it on and restart". */
+static void test_browser_bankfeed(Fixture *f, gconstpointer data)
+{
+	gint64 own, bank, statement, line_id;
+	g_autofree gchar *cookie = NULL, *body = NULL, *payload = NULL, *path = NULL, *state = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(VentureEntity) expense = NULL, line = NULL, match = NULL;
+	g_autoptr(VentureMoney) cost = venture_money_new_for_currency(1800, "USD");
+	g_autoptr(GDateTime) day = g_date_time_new_utc(2026, 10, 12, 12, 0, 0);
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) lines = NULL;
+	(void)data;
+	own = sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", NULL);
+	cookie = browser_login(f, "/bankfeed");
+	g_assert_cmpuint(exchange(f, "GET", "/bankfeed", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_null(strstr(body, "restart"));
+	g_assert_nonnull(strstr(body, "Connect your bank"));
+	g_assert_nonnull(strstr(body, "href=\"/e/bank_account/new\""));
+	g_clear_pointer(&body, g_free);
+
+	/* The owner adds the account the statement belongs to. */
+	payload = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT ",\"name\":\"Business Checking\","
+		"\"kind\":\"checking\",\"currency\":\"USD\"}", own);
+	g_assert_cmpuint(exchange(f, "POST", "/api/v1/bank_account", cookie, NULL, "application/json", payload, &body, NULL), ==, 201);
+	node = json_of(body);
+	bank = json_object_get_int_member(json_node_get_object(node), "id");
+	g_clear_pointer(&node, json_node_unref); g_clear_pointer(&body, g_free); g_clear_pointer(&payload, g_free);
+	g_assert_cmpuint(exchange(f, "GET", "/bankfeed", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "Business Checking"));
+	path = g_strdup_printf("href=\"/e/bank_account/%" G_GINT64_FORMAT "\"", bank);
+	g_assert_nonnull(strstr(body, path));
+	g_clear_pointer(&body, g_free); g_clear_pointer(&path, g_free);
+
+	/* An entry already in the books: supplies bought on the 12th and paid
+	 * from that account, so the account's ledger balance is -18. */
+	{
+		g_autoptr(VentureEntity) account = venture_database_get(f->db, VENTURE_TYPE_BANK_ACCOUNT, bank, &error);
+		gint64 ledger = 0;
+		g_assert_no_error(error);
+		g_object_get(account, "account-id", &ledger, NULL);
+		g_assert_cmpint(ledger, >, 0);
+		expense = g_object_new(VENTURE_TYPE_EXPENSE, "organization-id", own, "description", "SYNTHETIC window cleaning supplies",
+			"amount", cost, "occurred-at", day, "cash-account-id", ledger, NULL);
+	}
+	g_assert_true(venture_database_save(f->db, expense, NULL, &error)); g_assert_no_error(error);
+
+	/* A synthetic statement from the bank, imported the way the account page does. */
+	payload = g_strdup("{\"format\":\"csv\",\"period_start\":\"2026-10-01\",\"period_end\":\"2026-10-31\","
+		"\"opening_balance\":\"0 USD\",\"closing_balance\":\"-18 USD\","
+		"\"date_column\":\"Date\",\"amount_column\":\"Amount\",\"description_column\":\"Memo\",\"external_id_column\":\"ID\","
+		"\"data\":\"Date,Amount,Memo,ID\\n2026-10-12,-18.00,SYNTHETIC SUPPLY STORE,synthetic-220-1\\n\"}");
+	path = g_strdup_printf("/api/v1/bank_accounts/%" G_GINT64_FORMAT "/import", bank);
+	g_assert_cmpuint(exchange(f, "POST", path, cookie, NULL, "application/json", payload, &body, NULL), ==, 200);
+	node = json_of(body);
+	statement = json_object_get_int_member(json_node_get_object(node), "id");
+	g_clear_pointer(&node, json_node_unref); g_clear_pointer(&body, g_free); g_clear_pointer(&path, g_free);
+
+	path = g_strdup_printf("/api/v1/bank_statements/%" G_GINT64_FORMAT "/auto", statement);
+	g_assert_cmpuint(exchange(f, "POST", path, cookie, NULL, "application/json", "{}", NULL, NULL), ==, 200);
+	g_clear_pointer(&path, g_free);
+	path = g_strdup_printf("/api/v1/bank_statements/%" G_GINT64_FORMAT "/reconcile", statement);
+	{
+		guint status = exchange(f, "POST", path, cookie, NULL, "application/json", "{}", &body, NULL);
+		if (status != 200) { gchar *flat = g_strdelimit(g_strdup(body), "\n", (gchar)32); g_test_message("reconcile answered %u: %s", status, flat); g_free(flat); }
+		g_assert_cmpuint(status, ==, 200);
+	}
+	node = json_of(body);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(node), "state"), ==, "reconciled");
+
+	query = venture_query_new(VENTURE_TYPE_BANK_TRANSACTION);
+	venture_query_set_organization(query, own);
+	lines = venture_database_find(f->db, query, &error); g_assert_no_error(error);
+	g_assert_cmpuint(lines->len, ==, 1);
+	line_id = venture_entity_get_id(g_ptr_array_index(lines, 0));
+	line = venture_database_get(f->db, VENTURE_TYPE_BANK_TRANSACTION, line_id, &error); g_assert_no_error(error);
+	g_object_get(line, "state", &state, NULL);
+	g_assert_cmpstr(state, ==, "matched");
+	{
+		gint64 match_id = 0, record_id = 0;
+		g_autofree gchar *record_type = NULL;
+		g_object_get(line, "match-id", &match_id, NULL);
+		match = venture_database_get(f->db, VENTURE_TYPE_BANK_MATCH, match_id, &error); g_assert_no_error(error);
+		g_object_get(match, "record-type", &record_type, "record-id", &record_id, NULL);
+		g_assert_cmpstr(record_type, ==, "expense");
+		g_assert_cmpint(record_id, ==, venture_entity_get_id(expense));
+	}
+}
+
+/* Turned off by the operator, the page says so in an owner's words, never
+ * "restart"; turned back on, it answers at once, with no restart. */
+static void test_browser_bankfeed_switch(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *cookie = NULL, *body = NULL;
+	(void)data;
+	sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", NULL);
+	cookie = browser_login(f, "/bankfeed");
+	g_object_set(f->config, "bankfeed-enabled", FALSE, NULL);
+	g_assert_cmpuint(exchange(f, "GET", "/bankfeed", cookie, NULL, NULL, NULL, &body, NULL), ==, 404);
+	g_assert_null(strstr(body, "restart"));
+	g_assert_null(strstr(body, "bankfeed.enabled"));
+	g_clear_pointer(&body, g_free);
+	g_object_set(f->config, "bankfeed-enabled", TRUE, NULL);
+	g_assert_cmpuint(exchange(f, "GET", "/bankfeed", cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "Connect your bank"));
+}

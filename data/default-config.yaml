@@ -631,7 +631,9 @@ backup:
 #   enabled: false
 #
 # Pluggable bank feeds; each organization binds its own provider
-# credentials in settings. See docs/bankfeed.org.
+# credentials in settings. Unset, this follows hosted.enabled: a hosted
+# workspace has bank feeds, a self-hosted install does not. Setting it,
+# here or in VENTURE_BANKFEED_ENABLED, wins either way. See docs/bankfeed.org.
 # bankfeed:
 #   enabled: false
 #

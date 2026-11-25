@@ -1030,6 +1030,38 @@ venture_web_require_module_ui(
 	if (NULL != redirect)
 		return redirect;
 
+	/*
+	 * A hosted owner can neither edit the configuration nor restart the
+	 * service, so telling them to is no remedy at all. They are told it
+	 * is off and who can turn it on; the switch stays the operator's.
+	 */
+	{
+		gboolean hosted = FALSE;
+
+		g_object_get(venture_context_get_config(self->context),
+		             "hosted-enabled", &hosted, NULL);
+
+		if (hosted)
+		{
+			VentureModule *module;
+
+			module = venture_module_registry_lookup(
+				venture_context_get_modules(self->context), module_name);
+			body = g_string_new("<div class=\"empty\"><h3>");
+			venture_html_escape_append(body, (NULL != module)
+				? venture_module_get_label(module) : module_name);
+			g_string_append(body,
+				" is not available on this service</h3><p class=\"muted\">"
+				"Nothing in your business needs to change. Ask support to turn "
+				"it on; it starts working as soon as they do.</p>"
+				"<p><a class=\"btn btn-primary\" href=\"/\">Dashboard</a></p></div>");
+
+			return venture_web_html_response(
+				venture_web_page(self, request, "/", "Not available",
+				                 body->str), 404);
+		}
+	}
+
 	body = g_string_new("<div class=\"empty\"><h3>The ");
 	venture_html_escape_append(body, module_name);
 	g_string_append(body,
