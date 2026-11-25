@@ -559,6 +559,14 @@ static void test_browser_bankfeed(Fixture *f, gconstpointer data)
 	path = g_strdup_printf("href=\"/e/bank_account/%" G_GINT64_FORMAT "\"", bank);
 	g_assert_nonnull(strstr(body, path));
 	g_clear_pointer(&body, g_free); g_clear_pointer(&path, g_free);
+	/* Both links the page offers open for the owner, and the account page
+	 * is where the statement is imported. */
+	g_assert_cmpuint(exchange(f, "GET", "/e/bank_account/new", cookie, NULL, NULL, NULL, NULL, NULL), ==, 200);
+	path = g_strdup_printf("/e/bank_account/%" G_GINT64_FORMAT, bank);
+	g_assert_cmpuint(exchange(f, "GET", path, cookie, NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_nonnull(strstr(body, "Banking actions"));
+	g_assert_nonnull(strstr(body, "<option>import</option>"));
+	g_clear_pointer(&body, g_free); g_clear_pointer(&path, g_free);
 
 	/* An entry already in the books: supplies bought on the 12th and paid
 	 * from that account, so the account's ledger balance is -18. */
