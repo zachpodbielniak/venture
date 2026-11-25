@@ -123,6 +123,36 @@ VentureAccessScope *venture_access_policy_enter_snapshot(VentureAccessPolicy *se
 void venture_access_snapshot_free(VentureAccessSnapshot *snapshot);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureAccessSnapshot, venture_access_snapshot_free)
 
+typedef struct _VentureAccessState VentureAccessState;
+
+/**
+ * venture_access_state_new: (skip)
+ *
+ * A reader state as a thread starts with: no actor and no organization
+ * pin. Work that yields its thread part-way -- a fiber -- keeps its own
+ * here between turns (venture_access_policy_exchange()).
+ *
+ * Returns: (transfer full): a fresh state
+ */
+VentureAccessState *venture_access_state_new(void);
+
+/**
+ * venture_access_policy_exchange: (skip)
+ * @self: policy
+ * @state: a state from venture_access_state_new()
+ *
+ * Swaps the calling thread's live reader state with @state. Called once
+ * to put a fiber's state in place and once more to take it out again.
+ * Scopes entered while a state is live leave it as they found it.
+ */
+void venture_access_policy_exchange(VentureAccessPolicy *self, VentureAccessState *state);
+
+/**
+ * venture_access_state_free: (skip)
+ * @state: (nullable): a state not live on any thread
+ */
+void venture_access_state_free(VentureAccessState *state);
+
 /**
  * venture_access_policy_enter_shared:
  * @self: repository policy

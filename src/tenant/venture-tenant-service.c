@@ -1322,6 +1322,23 @@ rollback:
 	return NULL;
 }
 
+void
+venture_tenant_service_exchange_request(VentureTenantService *self,
+	VentureTenantSupportScope **support, guint *maintenance_depth)
+{
+	VentureTenantSupportScope *live_support;
+	guint live_depth;
+
+	g_return_if_fail(VENTURE_IS_TENANT_SERVICE(self));
+	g_return_if_fail(NULL != support && NULL != maintenance_depth);
+	live_support = self->support;
+	live_depth = self->maintenance_depth;
+	self->support = *support;
+	self->maintenance_depth = *maintenance_depth;
+	*support = live_support;
+	*maintenance_depth = live_depth;
+}
+
 VentureTenantSupportScope *
 venture_tenant_service_enter_request(VentureTenantService *self, const VentureAuthPrincipal *actor,
 	const gchar *capability, const gchar *resource, GError **error)

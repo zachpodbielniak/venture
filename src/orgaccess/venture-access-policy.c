@@ -252,6 +252,44 @@ venture_access_snapshot_free(VentureAccessSnapshot *snapshot)
 	g_free(snapshot);
 }
 
+struct _VentureAccessState
+{
+	PolicyState state;
+};
+
+VentureAccessState *
+venture_access_state_new(void)
+{
+	VentureAccessState *self = g_new0(VentureAccessState, 1);
+
+	self->state.read_action = "read";
+	self->state.batch_tenant_administrator = -1;
+	return self;
+}
+
+/* Only between two list reads: a batch never spans a turn. */
+void
+venture_access_policy_exchange(VentureAccessPolicy *self, VentureAccessState *state)
+{
+	PolicyState live;
+
+	g_return_if_fail(VENTURE_IS_ACCESS_POLICY(self));
+	g_return_if_fail(NULL != state);
+	live = *st(self);
+	*st(self) = state->state;
+	state->state = live;
+}
+
+void
+venture_access_state_free(VentureAccessState *state)
+{
+	if (NULL == state)
+		return;
+	g_clear_pointer(&state->state.batch_members, g_hash_table_unref);
+	g_clear_pointer(&state->state.batch_resources, g_hash_table_unref);
+	g_free(state);
+}
+
 VentureAccessScope *
 venture_access_policy_enter_snapshot(VentureAccessPolicy *self, const VentureAccessSnapshot *snapshot)
 {

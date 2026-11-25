@@ -408,6 +408,19 @@ VentureTenantSupportGrant *venture_tenant_service_create_support_grant(VentureTe
  */
 VentureTenantSupportScope *venture_tenant_service_enter_request(VentureTenantService *self,
 	const VentureAuthPrincipal *actor, const gchar *capability, const gchar *resource, GError **error);
+
+/**
+ * venture_tenant_service_exchange_request: (skip)
+ * @self: tenant service
+ * @support: (inout): a request scope to make current, or %NULL
+ * @maintenance_depth: (inout): its maintenance depth
+ *
+ * Swaps the current request scope and maintenance depth with the values
+ * given. A fiber keeps its own between turns: called once to put them in
+ * place and once more to take them out again. Holds no reference.
+ */
+void venture_tenant_service_exchange_request(VentureTenantService *self,
+	VentureTenantSupportScope **support, guint *maintenance_depth);
 /**
  * venture_tenant_service_get_support_organization:
  * @self: service
