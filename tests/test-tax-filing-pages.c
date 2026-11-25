@@ -348,10 +348,15 @@ test_other_business_refused(Fixture *f, gconstpointer data)
 	a = send_as_owner(f, "GET", vendor_path, NULL, &status, NULL);
 	g_assert_cmpuint(status, ==, 404);
 	g_assert_null(strstr(a, "Elsewhere Strings Co"));
+	/* The reason names the business, not a missing tax form: the refusal
+	 * is the ownership check, which a form filed later would not get past. */
+	g_assert_nonnull(strstr(a, "not one of this business"));
 	b = send_as_owner(f, "POST", "/tax-filings/prepare", vendor_body, &status, NULL);
 	g_assert_cmpuint(status, ==, 404);
+	g_assert_nonnull(strstr(b, "not one of this business"));
 	c = send_as_owner(f, "POST", "/tax-filings/prepare", period_body, &status, NULL);
 	g_assert_cmpuint(status, ==, 404);
+	g_assert_nonnull(strstr(c, "not one of this business"));
 	g_assert_cmpuint(count(f, VENTURE_TYPE_CONTRACTOR_TAX_PACK), ==, 0);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_TAX_FILING), ==, 0);
 }
