@@ -26465,7 +26465,7 @@ venture_web_forge_webhook_apply(
 	 * A closed issue closes the ticket, but an open one does not reopen
 	 * it. Somebody moved that ticket into review or blocked deliberately,
 	 * and the forge does not get to move it back on the next edit. Only
-	 * an explicit reopen upstream reopens a ticket the forge closed. A
+	 * an explicit reopen upstream reopens a Done ticket. A
 	 * ticket somebody cancelled here is already closed and stays so.
 	 *
 	 * Only an issue event moves the ticket. A comment on a closed issue

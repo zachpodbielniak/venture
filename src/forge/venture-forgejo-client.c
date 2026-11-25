@@ -166,7 +166,8 @@ venture_forgejo_client_is_pinned_origin(
 	g_return_val_if_fail(VENTURE_IS_FORGEJO_CLIENT(self), FALSE);
 	g_return_val_if_fail(NULL != uri, FALSE);
 
-	return (0 == g_strcmp0(g_uri_get_host(uri), self->host)) &&
+	return (0 == g_strcmp0(g_uri_get_scheme(uri), self->scheme)) &&
+	       (0 == g_strcmp0(g_uri_get_host(uri), self->host)) &&
 	       (g_uri_get_port(uri) == self->port);
 }
 

@@ -20,8 +20,9 @@ G_BEGIN_DECLS
  * @self: a #VentureForgejoClient
  * @uri: the URI a request was finally sent to
  *
- * Whether @uri is on the host and port the client was pinned to. A request
- * that ends anywhere else was redirected, and its answer is refused.
+ * Whether @uri is on the scheme, host and port the client was pinned to.
+ * A request that ends anywhere else was redirected, and its answer is
+ * refused.
  *
  * Returns: %TRUE when @uri is on the pinned origin
  */

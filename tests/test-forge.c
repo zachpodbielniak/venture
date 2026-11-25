@@ -1240,6 +1240,8 @@ test_forge_client_default_port_is_not_a_redirect(void)
 		{ "https://git.example.com", "https://git.example.com:8443/api/v1/user", FALSE },
 		{ "https://git.example.com", "http://git.example.com/api/v1/user", FALSE },
 		{ "https://git.example.com", "https://elsewhere.example.com/api/v1/user", FALSE },
+		/* Same host and port, but no TLS. */
+		{ "https://git.example.com:8443", "http://git.example.com:8443/api/v1/user", FALSE },
 	};
 	gsize i;
 
