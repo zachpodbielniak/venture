@@ -247,6 +247,12 @@ malformed:
 	return lightsite_billing_finish(venture_web_error_response(error));
 }
 
+/* Setup, a card change, publication, the first charge and money back can
+ * each wait on Stripe, so they are answered from the main loop and every
+ * other request is served while they wait (venture-web-later.inc).
+ * Cancel never calls Stripe and stays synchronous. */
+VENTURE_WEB_LATER_ROUTE(venture_web_lightsite_billing_provider, venture_web_lightsite_billing_transition)
+
 static HtmxResponse *
 venture_web_lightsite_billing_guarantee(HtmxRequest *request, GHashTable *params, gpointer data)
 {
@@ -354,7 +360,7 @@ venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *sel
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/cancel",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/money-back",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_provider, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/prepay",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_enroll, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/lightsite/billing/:organization_id/made-back",
@@ -362,13 +368,13 @@ venture_lightsite_billing_web_register(HtmxRouter *router, VentureWebServer *sel
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/guarantee",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_guarantee, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/setup",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_provider, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/change-card",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_provider, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/publish",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_provider, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/first-charge",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_transition, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_provider, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/switch-preview",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_billing_switch, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/billing/switch",

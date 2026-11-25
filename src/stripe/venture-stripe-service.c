@@ -26,6 +26,16 @@ struct _VentureStripeService
 G_DEFINE_TYPE(VentureStripeService, venture_stripe_service, G_TYPE_OBJECT)
 enum { PROP_0, PROP_DATABASE, PROP_ORGANIZATION, N_PROPS };
 
+/* A client on @transport (a test's offline one, or %NULL for the network)
+ * through a transport that keeps the main loop serving while Stripe
+ * answers (venture-stripe-transport.c). */
+static StripeClient *
+stripe_client_on(VentureDatabase *database, const gchar *yaml, StripeTransport *transport, GError **error)
+{
+	g_autoptr(StripeTransport) waiting = venture_stripe_transport_new(database, transport);
+	return stripe_client_new(yaml, waiting, NULL, error);
+}
+
 /* Sorting equality warns and returns zero on rescaling overflow. Financial
  * validation must instead propagate failure through checked arithmetic. */
 static gboolean
@@ -261,7 +271,7 @@ venture_stripe_service_new(VentureDatabase *database, gint64 organization_id,
 	self->success_url = g_strdup(values[4]);
 	self->cancel_url = g_strdup(values[5]);
 	if (transport) self->transport = g_object_ref(transport);
-	self->client = stripe_client_new(self->yaml, transport, NULL, error);
+	self->client = stripe_client_on(database, self->yaml, transport, error);
 	if (!self->client) return NULL;
 	g_signal_connect(self->client, "event", G_CALLBACK(audit_event), self);
 	return g_steal_pointer(&self);

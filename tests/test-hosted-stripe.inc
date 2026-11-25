@@ -435,32 +435,32 @@ hosted_setup_intent_first(Fixture *f, VentureStripeService *provider, VentureEnt
 	g_test_message("setup_intent.succeeded before its Checkout event is answered; the Checkout event saves the card");
 }
 
-static void
-test_hosted_saved_card(Fixture *f, gconstpointer data)
+/* A hosted business enrolled on a ten-dollar monthly plan, its provider
+ * on @transport and injected into the context, and the service token's
+ * secret. The token's scope stays entered for the caller in @scope. */
+static gint64
+hosted_enrolled(Fixture *f, GObject *transport, VentureStripeService **provider,
+	gchar **secret, VentureAccessScope **scope, JsonNode **enrolled)
 {
 	g_autoptr(GError) error = NULL;
-	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
 	g_autoptr(JsonNode) settings = binding_settings("whsec_original");
 	g_autoptr(GBytes) key = g_bytes_new_take(g_malloc0(32), 32);
 	g_autoptr(VentureIntegrationConnection) connection = NULL;
-	g_autoptr(VentureStripeService) provider = NULL;
 	g_autoptr(VentureEntity) plan = record_new(f, "plan"), price = record_new(f, "plan_price");
 	g_autoptr(VentureQuery) users_query = venture_query_new(VENTURE_TYPE_USER);
-	g_autoptr(GPtrArray) users = NULL, invoices = NULL, authorizations = NULL, attempts = NULL;
+	g_autoptr(GPtrArray) users = NULL;
 	g_autoptr(VentureApiToken) token = venture_api_token_new();
-	g_autoptr(VentureAccessScope) scope = NULL;
-	g_autoptr(JsonNode) signup = NULL, enrolled = NULL, setup = NULL, charged = NULL, repeated = NULL, paid = NULL;
-	g_autofree gchar *secret = NULL;
+	g_autoptr(JsonNode) signup = NULL;
 	VentureTenantService *tenant = venture_tenant_service_get(f->database);
 	VentureAuthPrincipal principal = { 0 };
 	gboolean created = FALSE;
-	gint64 business, invoice;
+	gint64 business;
 	json_object_set_string_member(json_node_get_object(settings), "api_version", "2024-06-20");
 	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->database), key, &error));
 	connection = venture_stripe_settings_configure(f->database, f->organization_id, settings, 0, 0, STRIPE_TRANSPORT(transport), NULL, &error);
 	g_assert_no_error(error);
-	provider = venture_stripe_service_for_organization(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
-	g_assert_no_error(error); venture_context_set_stripe_service(f->context, provider);
+	*provider = venture_stripe_service_for_organization(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
+	g_assert_no_error(error); venture_context_set_stripe_service(f->context, *provider);
 	g_object_set(plan, "name", "Example plan", "active", TRUE, NULL); save(f, plan);
 	g_object_set(price, "plan-id", venture_entity_get_id(plan), "currency", "USD", "active", TRUE, "product-id", f->product_id, NULL);
 	money_field(price, "amount", "10 USD"); save(f, price);
@@ -472,15 +472,30 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	users = venture_database_find(f->database, users_query, &error); g_assert_no_error(error);
 	principal.user_id = venture_entity_get_id(g_ptr_array_index(users, 0));
 	g_object_set(token, "name", "Example service", "user-id", principal.user_id, "role", VENTURE_USER_ROLE_EDITOR, NULL);
-	secret = venture_api_token_generate(token); save(f, VENTURE_ENTITY(token));
+	*secret = venture_api_token_generate(token); save(f, VENTURE_ENTITY(token));
 	principal.token_id = venture_entity_get_id(VENTURE_ENTITY(token));
 	principal.role = VENTURE_USER_ROLE_EDITOR; principal.authenticated = TRUE; principal.name = (gchar *)"Example service";
-	scope = venture_access_policy_enter(venture_database_get_access_policy(f->database), &principal);
+	*scope = venture_access_policy_enter(venture_database_get_access_policy(f->database), &principal);
 	signup = venture_tenant_service_lightsite_signup(tenant, "hosted-example", "owner@example.test", "https://id.example.test", "example-owner", "Example business", "Alex", "Example", NULL, &created, &error);
 	g_assert_no_error(error); g_assert_nonnull(signup);
 	business = json_object_get_int_member(json_node_get_object(signup), "organization_id");
-	enrolled = venture_lightsite_billing_enroll(f->database, f->organization_id, business, venture_entity_get_id(price), &created, &error);
+	*enrolled = venture_lightsite_billing_enroll(f->database, f->organization_id, business, venture_entity_get_id(price), &created, &error);
 	g_assert_no_error(error); g_assert_true(created);
+	return business;
+}
+
+static void
+test_hosted_saved_card(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(VentureStripeService) provider = NULL;
+	g_autoptr(GPtrArray) invoices = NULL, authorizations = NULL, attempts = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(JsonNode) enrolled = NULL, setup = NULL, charged = NULL, repeated = NULL, paid = NULL;
+	g_autofree gchar *secret = NULL;
+	gint64 business, invoice;
+	business = hosted_enrolled(f, transport, &provider, &secret, &scope, &enrolled);
 	setup = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
 	g_assert_no_error(error); g_assert_nonnull(setup);
 	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(setup), "state"), ==, "awaiting_card");
@@ -605,4 +620,101 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 	}
 
 	g_test_message("Hosted enrollment + verified Setup: zero invoices; publish replay: one invoice and one collection; signed fixture settlement: paid");
+}
+
+/* A Stripe call that does not answer delays its own request and nothing
+ * else: a health check sent while the card page waits on the provider is
+ * answered at once, and the card page is answered when Stripe is. With
+ * "fails", Stripe's answer never comes (the call times out) and only the
+ * card page says so. */
+static void
+test_hosted_slow_provider(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(VentureStripeService) provider = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(JsonNode) enrolled = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *secret = NULL, *state_dir = NULL, *body = NULL, *auth = NULL;
+	SlowCall card = { 0 }, health = { 0 };
+	SlowCall *calls[2];
+	gboolean fails = data && !g_strcmp0(data, "fails");
+	gint64 business = hosted_enrolled(f, transport, &provider, &secret, &scope, &enrolled);
+	g_clear_object(&scope);
+	((FakeTransport *)transport)->stall_times_out = fails;
+	g_object_set(f->config, "lightsite-billing-organization-id", f->organization_id, NULL);
+	server = start_server(f, &state_dir);
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", business);
+	auth = g_strconcat("Bearer ", secret, NULL);
+	card.body = body; card.content_type = "application/json"; card.auth = auth; card.host = "example.test";
+	health.host = "example.test"; health.wait_for = (FakeTransport *)transport; health.wait_stalls = 1;
+	slow_provider((FakeTransport *)transport, 3 * G_USEC_PER_SEC, 0);
+	slow_call_start(&card, server, "/api/v1/lightsite/billing/setup");
+	slow_call_start(&health, server, "/api/v1/health");
+	calls[0] = &card; calls[1] = &health;
+	slow_calls_finish(calls, 2);
+	g_test_message("Card page: %u after %" G_GINT64_FORMAT " ms; health: %u after %" G_GINT64_FORMAT " ms",
+		card.status, slow_call_ms(&card), health.status, slow_call_ms(&health));
+	g_assert_cmpuint(health.status, ==, 200);
+	g_assert_cmpint(health.ended - health.started, <, G_USEC_PER_SEC);
+	g_assert_cmpint(health.ended, <, card.ended);
+	if (fails) g_assert_cmpuint(card.status, >=, 500);
+	else g_assert_cmpuint(card.status, ==, 200);
+	g_assert_cmpint(card.ended - card.started, >=, 3 * G_USEC_PER_SEC);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
+}
+
+/* Two card pages waiting on Stripe at once are each answered when their
+ * own answer arrives: the first, which Stripe answers after one second,
+ * is not held until the second, which it answers after three. */
+static void
+test_hosted_slow_provider_order(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(VentureStripeService) provider = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(JsonNode) enrolled = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *secret = NULL, *state_dir = NULL, *body = NULL, *auth = NULL;
+	g_autoptr(JsonNode) second = NULL, second_enrolled = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *second_body = NULL;
+	SlowCall slow = { 0 }, quick = { 0 };
+	SlowCall *calls[2];
+	gboolean created = FALSE;
+	gint64 business = hosted_enrolled(f, transport, &provider, &secret, &scope, &enrolled), other;
+	(void)data;
+	/* Two businesses, so neither request waits on the other's records. */
+	second = venture_tenant_service_lightsite_signup(venture_tenant_service_get(f->database), "hosted-second",
+		"second@example.test", "https://id.example.test", "second-owner", "Second business", "Sam", "Second", NULL, &created, &error);
+	g_assert_no_error(error); g_assert_nonnull(second);
+	other = json_object_get_int_member(json_node_get_object(second), "organization_id");
+	second_enrolled = venture_lightsite_billing_enroll(f->database, f->organization_id, other,
+		json_object_get_int_member(json_node_get_object(enrolled), "plan_price_id"), &created, &error);
+	g_assert_no_error(error); g_assert_true(created);
+	g_clear_object(&scope);
+	g_object_set(f->config, "lightsite-billing-organization-id", f->organization_id, NULL);
+	server = start_server(f, &state_dir);
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", business);
+	second_body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", other);
+	auth = g_strconcat("Bearer ", secret, NULL);
+	quick.body = body; slow.body = second_body; slow.content_type = quick.content_type = "application/json";
+	slow.auth = quick.auth = auth; slow.host = quick.host = "example.test";
+	slow.wait_for = (FakeTransport *)transport; slow.wait_stalls = 1;
+	((FakeTransport *)transport)->distinct_customers = TRUE;
+	slow_provider((FakeTransport *)transport, 1 * G_USEC_PER_SEC, 3 * G_USEC_PER_SEC);
+	slow_call_start(&quick, server, "/api/v1/lightsite/billing/setup");
+	slow_call_start(&slow, server, "/api/v1/lightsite/billing/setup");
+	calls[0] = &quick; calls[1] = &slow;
+	slow_calls_finish(calls, 2);
+	g_test_message("First, one-second Stripe call: %u after %" G_GINT64_FORMAT " ms; second, three-second call: %u after %" G_GINT64_FORMAT " ms",
+		quick.status, slow_call_ms(&quick), slow.status, slow_call_ms(&slow));
+	g_assert_cmpuint(quick.status, ==, 200);
+	g_assert_cmpint(quick.ended - quick.started, <, 2 * G_USEC_PER_SEC);
+	g_assert_cmpint(quick.ended, <, slow.ended);
+	g_assert_cmpint(slow.ended - slow.started, >=, 3 * G_USEC_PER_SEC);
+	g_assert_cmpuint(slow.status, ==, 200);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
 }

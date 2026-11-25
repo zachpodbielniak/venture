@@ -1,4 +1,14 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Tests put a service with an offline transport on the context; the
+ * routes use its transport. Production has none and uses the network. */
+static StripeTransport *
+stripe_connect_transport(VentureWebServer *self)
+{
+	VentureStripeService *installed = venture_context_get_stripe_service(self->context);
+	return installed ? venture_stripe_service_get_transport(installed) : NULL;
+}
+
 static HtmxResponse *
 venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -58,7 +68,7 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 			json_object_set_string_member(object, "statement_descriptor_suffix",
 				htmx_request_get_form_value(request, "statement_descriptor_suffix") ?
 				htmx_request_get_form_value(request, "statement_descriptor_suffix") : "");
-			connection = venture_stripe_settings_configure(database, id, settings, version, expected_connection, NULL, &actor, &error);
+			connection = venture_stripe_settings_configure(database, id, settings, version, expected_connection, stripe_connect_transport(self), &actor, &error);
 		}
 		else if (!g_strcmp0(operation, "descriptor"))
 		{
@@ -76,12 +86,12 @@ venture_web_stripe_settings(HtmxRequest *request, GHashTable *params, gpointer u
 				json_object_set_string_member(json_node_get_object(settings),
 					"statement_descriptor_suffix", value ? value : "");
 				connection = venture_stripe_settings_configure(database, id, settings,
-					version, expected_connection, NULL, &actor, &error);
+					version, expected_connection, stripe_connect_transport(self), &actor, &error);
 			}
 		}
 		else if (!g_strcmp0(operation, "test"))
 		{
-			if (venture_stripe_settings_test(database, id, NULL, &error))
+			if (venture_stripe_settings_test(database, id, stripe_connect_transport(self), &error))
 				g_string_append(content, "<p>Stripe verified the configured account.</p>");
 		}
 		else if (!g_strcmp0(operation, "disconnect"))
@@ -245,3 +255,13 @@ headers:
 	htmx_response_add_header(response, "Referrer-Policy", "same-origin");
 	return response;
 }
+
+/*
+ * What asks Stripe answers from a fiber, so nobody else waits on it
+ * (venture-web-later.inc): checkout, the customer's payment (its GET page
+ * does not ask), and the settings operations (configure, the statement
+ * name and the key test; the page itself does not ask).
+ */
+VENTURE_WEB_LATER_ROUTE(venture_web_stripe_checkout_later, venture_web_stripe_checkout)
+VENTURE_WEB_LATER_ROUTE(venture_web_stripe_payment_link_later, venture_web_stripe_payment_link)
+VENTURE_WEB_LATER_ROUTE(venture_web_stripe_settings_later, venture_web_stripe_settings)

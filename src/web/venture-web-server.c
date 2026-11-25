@@ -6235,6 +6235,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 		htmx_response_set_status(response, 200);
 	return response;
 }
+#include "venture-web-later.inc"
 #include "stripe/venture-stripe-web.inc"
 #include "stripe/venture-stripe-connect-web.inc"
 #include "ai/venture-ai-settings-web.inc"
@@ -36678,16 +36679,16 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/plugins", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_plugins, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/modules", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_modules, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/plugins/config", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_plugins_config, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout_later, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_checkout_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pay/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pay/:token/checkout", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_payment_link, self);
 	venture_stripe_connect_web_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_webhook, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe/:connection_id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_webhook, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_settings, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_settings, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/stripe", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_settings_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/organizations/:id/settings/mail", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/organizations/:id/settings/mail", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_settings, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/status", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_invoice_status, self);

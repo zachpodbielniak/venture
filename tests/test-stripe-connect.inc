@@ -418,6 +418,25 @@ test_connect_charges_and_webhooks(Fixture *f, gconstpointer data)
 	checkout_a = venture_stripe_service_checkout(service_a, venture_entity_get_id(invoice_a), NULL, &error);
 	g_assert_no_error(error);
 	g_assert_cmpstr(transport->checkout_account, ==, "acct_connectA");
+	if (!g_strcmp0(mode, "slow"))
+	{
+		/* Reading and starting Connect wait on Stripe without holding
+		 * anybody else up. */
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autofree gchar *state = NULL;
+		g_autoptr(VentureStripeService) installed = venture_stripe_service_new(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error);
+		g_autofree gchar *path = g_strdup_printf("/api/v1/organizations/%" G_GINT64_FORMAT "/stripe/connect", business_a);
+		g_assert_no_error(error);
+		venture_context_set_stripe_service(f->context, installed);
+		server = start_server(f, &state);
+		assert_route_unblocked(server, transport, "GET", path, NULL, NULL, NULL, NULL, NULL, 200);
+		assert_route_unblocked(server, transport, "POST", path, "application/json",
+			"{\"return_url\":\"https://app.example.test/r\",\"refresh_url\":\"https://app.example.test/f\","
+			"\"success_url\":\"https://app.example.test/s\",\"cancel_url\":\"https://app.example.test/c\"}", NULL, NULL, NULL, 200);
+		venture_web_server_stop(server);
+		venture_test_remove_tree(state);
+		return;
+	}
 	if (!g_strcmp0(mode, "http"))
 	{
 		/* The same routing through the public route and its refusals. */

@@ -132,7 +132,7 @@ test_payment_link(Fixture *f, gconstpointer data)
 		g_autoptr(VentureWebServer) server = NULL;
 		g_autofree gchar *state_directory = NULL, *path = g_strdup_printf("/pay/%s", token), *body = NULL;
 		venture_context_set_stripe_service(f->context, service);
-		if (!g_strcmp0(mode, "hosted"))
+		if (!g_strcmp0(mode, "hosted") || !g_strcmp0(mode, "slow-hosted"))
 		{
 			VentureTenantService *tenant = venture_tenant_service_get(f->database);
 			g_object_set(f->config, "hosted-enabled", TRUE,
@@ -144,6 +144,17 @@ test_payment_link(Fixture *f, gconstpointer data)
 			g_assert_no_error(error);
 		}
 		server = start_server(f, &state_directory);
+		if (!g_strcmp0(mode, "slow") || !g_strcmp0(mode, "slow-hosted"))
+		{
+			/* The customer's payment waits on Stripe without holding
+			 * anybody else up, hosted or not. */
+			gboolean hosted = !g_strcmp0(mode, "slow-hosted");
+			assert_route_unblocked(server, (FakeTransport *)transport, "POST", path, "application/x-www-form-urlencoded",
+				"invoice_id=999999", hosted ? "venture.example" : NULL, hosted ? "https://venture.example" : NULL, NULL, 303);
+			venture_web_server_stop(server);
+			venture_test_remove_tree(state_directory);
+			return;
+		}
 		if (!g_strcmp0(mode, "hosted"))
 		{
 			VentureTenantService *tenant = venture_tenant_service_get(f->database);

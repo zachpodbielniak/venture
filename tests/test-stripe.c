@@ -15,6 +15,7 @@ typedef struct
 	gint64 organization_id;
 	gint64 customer_id;
 	gint64 product_id;
+	gchar *directory;	/* a file database's, which read workers need */
 } Fixture;
 
 static void
@@ -36,7 +37,17 @@ set_up(Fixture *f, gconstpointer data)
 
 	f->config = venture_config_new();
 	g_object_set(f->config, "stripe-enabled", TRUE, NULL);
-	f->database = venture_test_accounting_database(&error);
+	if (data && !g_strcmp0(data, "slow-reads"))
+	{
+		/* An in-memory database keeps every read on the main thread. */
+		g_autofree gchar *uri = NULL;
+		f->directory = g_dir_make_tmp("venture-stripe-db-XXXXXX", &error);
+		g_assert_no_error(error);
+		uri = g_strdup_printf("sqlite://%s/venture.db", f->directory);
+		f->database = venture_database_new(uri, &error);
+	}
+	else
+		f->database = venture_test_accounting_database(&error);
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(f->database,
 		venture_entity_registry_get_default(), &error));
@@ -64,6 +75,11 @@ tear_down(Fixture *f, gconstpointer data)
 	venture_test_accounting_database_cleanup(f->database);
 	g_clear_object(&f->database);
 	g_clear_object(&f->config);
+	if (f->directory)
+	{
+		venture_test_remove_tree(f->directory);
+		g_clear_pointer(&f->directory, g_free);
+	}
 }
 
 static GType
@@ -322,7 +338,15 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	/* Connect (test-stripe-connect.inc): what each connected-account call carried. */
 	const gchar *connect_id; guint account_creates, account_reads, account_links; gboolean charges_enabled;
 	gchar *create_body, *create_key, *create_version, *create_type, *create_authorization, *read_header, *read_authorization;
-	gchar *link_body, *link_header, *last_account, *checkout_account, *checkout_authorization, *checkout_fee; } FakeTransport;
+	gchar *link_body, *link_header, *last_account, *checkout_account, *checkout_authorization, *checkout_fee;
+	/* A provider that does not answer: calls take their waits from
+	 * stalls_us in the order they arrive (stall_next), and stalled counts
+	 * the waits begun, read from another thread. With stall_times_out a
+	 * call that waited then fails as a provider deadline does. Calls may
+	 * arrive on several threads at once; the rest of a call runs alone. */
+	guint stalls_us[4]; gint stall_next; gint stalled; gboolean stall_times_out;
+	/* Each customer after the first its own id, for two businesses at once. */
+	gboolean distinct_customers; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -339,12 +363,38 @@ fake_setup_free(gpointer data)
 	g_free(setup);
 }
 static StripeResponse *fake_connect_send(FakeTransport *self, const StripeHttpRequest *request);
+static StripeResponse *fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **error);
+static void assert_route_unblocked(VentureWebServer *server, FakeTransport *transport, const gchar *method,
+	const gchar *path, const gchar *content_type, const gchar *body, const gchar *host,
+	const gchar *origin, const gchar *auth, guint expected);
+static void assert_route_unblocked_by(VentureWebServer *server, FakeTransport *transport, const gchar *method,
+	const gchar *path, const gchar *content_type, const gchar *body, const gchar *host,
+	const gchar *origin, const gchar *auth, guint expected, const gchar *probe);
 static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	GCancellable *cancellable, GError **error)
 {
+	static GMutex alone;
 	FakeTransport *self = (FakeTransport *)transport;
-	(void)cancellable; (void)error;
+	gint turn = g_atomic_int_add(&self->stall_next, 1);
+	StripeResponse *response;
+	(void)cancellable;
+	if (turn >= 0 && turn < (gint)G_N_ELEMENTS(self->stalls_us) && self->stalls_us[turn]) {
+		g_atomic_int_inc(&self->stalled);
+		g_usleep(self->stalls_us[turn]);
+		if (self->stall_times_out) {
+			g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Provider deadline exhausted");
+			return NULL;
+		}
+	}
+	g_mutex_lock(&alone);
+	response = fake_send_alone(self, request, error);
+	g_mutex_unlock(&alone);
+	return response;
+}
+static StripeResponse *
+fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **error)
+{
 	self->calls++;
 	g_free(self->last_account); self->last_account = g_strdup(request->stripe_account);
 	if (strstr(request->url, "/v2/core/accounts") || strstr(request->url, "/v1/accounts/") || g_str_has_suffix(request->url, "/v1/account_links"))
@@ -400,6 +450,11 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	{
 		self->customers++;
 		g_assert_nonnull(strstr(request->body, "venture_company_uuid"));
+		if (self->distinct_customers && self->customers > 1)
+		{
+			g_autofree gchar *made = g_strdup_printf("{\"id\":\"cus_offline%u\",\"object\":\"customer\"}", self->customers);
+			return stripe_response_new(200, made, NULL, NULL);
+		}
 		return stripe_response_new(200, "{\"id\":\"cus_offline\",\"object\":\"customer\"}", NULL, NULL);
 	}
 	/* Each new Setup (a new client reference) is a new session, method and
@@ -653,6 +708,47 @@ test_flow(Fixture *f, gconstpointer data)
 		g_assert_no_error(error);
 		g_assert_cmpuint(http_request(server, "POST", path, "application/x-www-form-urlencoded", form, NULL), ==, 404);
 		g_assert_cmpuint(((FakeTransport *)transport)->checkouts, ==, 1);
+		venture_web_server_stop(server);
+		g_clear_object(&server);
+		venture_test_remove_tree(state_dir);
+		return;
+	}
+	if (!g_strcmp0(mode, "slow-reads"))
+	{
+		/* Record reads answered on read workers go on while checkout waits
+		 * on Stripe: the main loop is idle, so the workers' gate opens. */
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autofree gchar *state_dir = NULL;
+		g_autofree gchar *api = g_strdup_printf("/api/v1/invoices/%" G_GINT64_FORMAT "/checkout", venture_entity_get_id(invoice));
+		guint64 jobs;
+		g_object_set(f->config, "server-read-workers", (gint64)2, NULL);
+		venture_context_set_stripe_service(f->context, service);
+		server = start_server(f, &state_dir);
+		g_assert_true(venture_parallel_is_installed());
+		/* The first read opens the workers' connections; time a later one. */
+		g_assert_cmpuint(http_request(server, "GET", "/api/v1/company", NULL, NULL, NULL), ==, 200);
+		jobs = venture_parallel_get_jobs_run();
+		assert_route_unblocked_by(server, (FakeTransport *)transport, "POST", api, "application/json", "{}", NULL, NULL, NULL, 200,
+			"/api/v1/company");
+		g_assert_cmpuint(venture_parallel_get_jobs_run(), >, jobs);
+		venture_web_server_stop(server);
+		g_clear_object(&server);
+		venture_test_remove_tree(state_dir);
+		return;
+	}
+	if (!g_strcmp0(mode, "slow"))
+	{
+		/* Checkout waits on Stripe without holding anybody else up. */
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autofree gchar *state_dir = NULL;
+		g_autofree gchar *api = g_strdup_printf("/api/v1/invoices/%" G_GINT64_FORMAT "/checkout", venture_entity_get_id(invoice));
+		/* Another invoice: the first one's open session is answered without Stripe. */
+		g_autoptr(VentureEntity) other = invoice_new(f, "stripe-test-form", "2026-01-01", "100 USD");
+		g_autofree gchar *form = g_strdup_printf("/invoices/%" G_GINT64_FORMAT "/checkout", venture_entity_get_id(other));
+		venture_context_set_stripe_service(f->context, service);
+		server = start_server(f, &state_dir);
+		assert_route_unblocked(server, (FakeTransport *)transport, "POST", api, "application/json", "{}", NULL, NULL, NULL, 200);
+		assert_route_unblocked(server, (FakeTransport *)transport, "POST", form, "application/x-www-form-urlencoded", "", NULL, NULL, NULL, 303);
 		venture_web_server_stop(server);
 		g_clear_object(&server);
 		venture_test_remove_tree(state_dir);
@@ -1181,6 +1277,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(rows(f, "processor_exception")->len, ==, 0);
 }
 
+#include "test-stripe-slow.inc"
 #include "test-stripe-forms.inc"
 #include "test-stripe-settings.inc"
 #include "test-stripe-ach.inc"
@@ -1234,6 +1331,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/origin-migration", Fixture, NULL, set_up, test_pay_now_origin_migration, tear_down);
 	g_test_add("/stripe/pay-now/expired-session", Fixture, NULL, set_up, test_pay_now_expired_session, tear_down);
 	g_test_add("/stripe/pay-now/production-click", Fixture, NULL, set_up, test_pay_now_production_click, tear_down);
+	g_test_add("/stripe/payment-link/slow", Fixture, "slow", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/slow-hosted", Fixture, "slow-hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);
@@ -1293,7 +1392,7 @@ main(int argc, char **argv)
 
 	g_test_add_func("/stripe/missing-key", test_missing_key);
 	{
-		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback", "virtual-currency" };
+		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback", "virtual-currency", "slow", "slow-reads" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(cases); i++)
 		{
@@ -1316,6 +1415,7 @@ main(int argc, char **argv)
 	g_test_add_func("/stripe/account-binding-metadata", test_account_binding_metadata);
 	g_test_add("/stripe/binding-organizations", Fixture, NULL, set_up, test_binding_organizations, tear_down);
 	g_test_add("/stripe/binding-settings-ui", Fixture, "settings-ui", set_up, test_binding, tear_down);
+	g_test_add("/stripe/binding-settings-slow", Fixture, "settings-slow", set_up, test_binding, tear_down);
 	g_test_add("/stripe/descriptor-suffix", Fixture, NULL, set_up, test_descriptor_suffix, tear_down);
 	g_test_add("/stripe/return-urls-alone", Fixture, NULL, set_up, test_return_urls_alone, tear_down);
 	g_test_add("/stripe/binding-migration", Fixture, NULL, set_up, test_binding_migration, tear_down);
@@ -1332,6 +1432,9 @@ main(int argc, char **argv)
 	g_test_add("/stripe/hosted-expired-then-published", Fixture, "expired", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back", Fixture, "money-back", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-lost", Fixture, "money-back-lost", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-slow-provider", Fixture, NULL, set_up, test_hosted_slow_provider, tear_down);
+	g_test_add("/stripe/hosted-slow-provider-fails", Fixture, "fails", set_up, test_hosted_slow_provider, tear_down);
+	g_test_add("/stripe/hosted-slow-provider-order", Fixture, NULL, set_up, test_hosted_slow_provider_order, tear_down);
 	g_test_add("/stripe/hosted-money-back-late", Fixture, "money-back-late", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/connect/create", Fixture, NULL, set_up, test_connect_create, tear_down);
 	g_test_add("/stripe/connect/refuse-keys", Fixture, "keys", set_up, test_connect_refusals, tear_down);
@@ -1341,6 +1444,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/connect/status", Fixture, NULL, set_up, test_connect_status, tear_down);
 	g_test_add("/stripe/connect/webhooks", Fixture, NULL, set_up, test_connect_charges_and_webhooks, tear_down);
 	g_test_add("/stripe/connect/webhooks-http", Fixture, "http", set_up, test_connect_charges_and_webhooks, tear_down);
+	g_test_add("/stripe/connect/slow", Fixture, "slow", set_up, test_connect_charges_and_webhooks, tear_down);
 	g_test_add("/stripe/connect/live", Fixture, "live", set_up, test_connect_live, tear_down);
 	g_test_add("/stripe/connect/live-restricted", Fixture, "restricted", set_up, test_connect_live, tear_down);
 	g_test_add("/stripe/connect/live-mismatch", Fixture, "mismatch", set_up, test_connect_live, tear_down);

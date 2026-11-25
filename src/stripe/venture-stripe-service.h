@@ -128,6 +128,20 @@ gboolean venture_stripe_settings_test(VentureDatabase *database, gint64 organiza
  */
 StripeTransport *venture_stripe_service_get_transport(VentureStripeService *self);
 /**
+ * venture_stripe_transport_new: (skip)
+ * @database: (nullable): the database whose open transaction keeps the wait blocking
+ * @inner: (nullable): the transport that talks to Stripe; %NULL for the network
+ *
+ * A transport that sends through @inner on a thread of its own and, when
+ * called inside the default main loop on its thread with no transaction
+ * open on @database, keeps that loop serving other work while it waits.
+ * Elsewhere it waits as @inner does. Every client the Stripe service
+ * makes uses one, around the network or a test's offline transport.
+ *
+ * Returns: (transfer full): the transport
+ */
+StripeTransport *venture_stripe_transport_new(VentureDatabase *database, StripeTransport *inner);
+/**
  * venture_stripe_connect_start: (skip)
  * @database: storage
  * @organization_id: the business, administered by the caller (owner or admin)

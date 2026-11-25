@@ -136,10 +136,10 @@ connect_yaml(const ConnectPlatform *platform, const gchar *account)
 }
 
 static StripeClient *
-connect_client(const ConnectPlatform *platform, StripeTransport *transport, GError **error)
+connect_client(VentureDatabase *database, const ConnectPlatform *platform, StripeTransport *transport, GError **error)
 {
 	g_autofree gchar *yaml = connect_yaml(platform, NULL);
-	StripeClient *client = stripe_client_new(yaml, transport, NULL, NULL);
+	StripeClient *client = stripe_client_on(database, yaml, transport, NULL);
 	if (!client) refuse(error, "Stripe rejected the Connect platform configuration");
 	return client;
 }
@@ -193,7 +193,7 @@ settings_load_connect(VentureStripeService *self, JsonObject *object, const gcha
 	}
 	yaml = connect_yaml(&platform, account);
 	connect_platform_clear(&platform);
-	client = stripe_client_new(yaml, self->transport, NULL, NULL);
+	client = stripe_client_on(self->database, yaml, self->transport, NULL);
 	if (!client) return refuse(error, "Stripe rejected the Connect platform configuration");
 	g_set_object(&self->client, client);
 	g_free(self->yaml);
@@ -326,7 +326,7 @@ venture_stripe_connect_start(VentureDatabase *database, gint64 organization_id,
 	}
 	if (!connect_platform_load(database, &platform, error)) return NULL;
 	environment = g_strdup(platform.environment);
-	client = connect_client(&platform, transport, error);
+	client = connect_client(database, &platform, transport, error);
 	connect_platform_clear(&platform);
 	if (!client) return NULL;
 	if (!connect_current(database, organization_id, &current, &settings, error)) return NULL;
@@ -409,7 +409,7 @@ venture_stripe_connect_status(VentureDatabase *database, gint64 organization_id,
 	if (!settings_manage(database, organization_id, error)) return NULL;
 	if (!connect_platform_load(database, &platform, error)) return NULL;
 	environment = g_strdup(platform.environment);
-	client = connect_client(&platform, transport, error);
+	client = connect_client(database, &platform, transport, error);
 	connect_platform_clear(&platform);
 	if (!client) return NULL;
 	if (!connect_current(database, organization_id, &current, &settings, error)) return NULL;
@@ -495,7 +495,7 @@ venture_stripe_connect_webhook(VentureDatabase *database, GBytes *raw, const gch
 	if (!connect_platform_load(database, &platform, error)) return FALSE;
 	live = !g_strcmp0(platform.environment, "live");
 	environment = live ? "live" : "test";
-	verifier = connect_client(&platform, transport, error);
+	verifier = connect_client(database, &platform, transport, error);
 	connect_platform_clear(&platform);
 	if (!verifier) return FALSE;
 	/* The raw bytes are verified before anything reads them as JSON. */

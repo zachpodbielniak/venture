@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /*
- * Connect with Stripe over HTTP. Included after venture-stripe-web.inc.
+ * Connect with Stripe over HTTP. Included after venture-stripe-web.inc,
+ * whose transport it uses (stripe_connect_transport()).
  *
  *   GET  /api/v1/organizations/:organization_id/stripe/connect   the state
  *   POST /api/v1/organizations/:organization_id/stripe/connect   account + link
@@ -9,15 +10,6 @@
  * The two API routes act as the calling person: only an owner or admin of
  * the business passes (the same check as the Stripe settings page).
  */
-
-/* Tests put a service with an offline transport on the context; the
- * routes use its transport. Production has none and uses the network. */
-static StripeTransport *
-stripe_connect_transport(VentureWebServer *self)
-{
-	VentureStripeService *installed = venture_context_get_stripe_service(self->context);
-	return installed ? venture_stripe_service_get_transport(installed) : NULL;
-}
 
 static const gchar *
 stripe_connect_member(JsonObject *object, const gchar *name)
@@ -124,6 +116,9 @@ venture_web_stripe_connect_webhook(HtmxRequest *request, GHashTable *params, gpo
 	return response;
 }
 
+/* Both the state and the start ask Stripe (venture-web-later.inc). */
+VENTURE_WEB_LATER_ROUTE(venture_web_stripe_connect_later, venture_web_stripe_connect)
+
 /* Before /webhooks/stripe/:connection_id: the router takes the first match. */
 static void
 venture_stripe_connect_web_register(VentureWebServer *self)
@@ -131,7 +126,7 @@ venture_stripe_connect_web_register(VentureWebServer *self)
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/webhooks/stripe/connect",
 		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_connect_webhook, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/stripe/connect",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_connect, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_connect_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/stripe/connect",
-		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_connect, self);
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_stripe_connect_later, self);
 }

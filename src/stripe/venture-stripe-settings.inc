@@ -113,7 +113,7 @@ settings_load(VentureStripeService *self, JsonNode *settings, GError **error)
 			return refuse(error, "Stripe return URLs require HTTPS without embedded credentials");
 	}
 	yaml = g_strdup_printf("secret_key: '%s'\npublishable_key: '%s'\nwebhook_signing_secrets: ['%s']\napi_version: '%s'\n", values[0], values[1], values[2], values[3]);
-	client = stripe_client_new(yaml, self->transport, NULL, NULL);
+	client = stripe_client_on(self->database, yaml, self->transport, NULL);
 	if (!client) return refuse(error, "Stripe rejected the supplied configuration");
 	g_set_object(&self->client, client);
 	g_free(self->yaml);

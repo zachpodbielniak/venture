@@ -190,6 +190,22 @@ test_binding(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	g_assert_true(venture_stripe_settings_test(f->database, f->organization_id, STRIPE_TRANSPORT(transport), &error));
 	g_assert_no_error(error);
+	if (!strcmp(mode, "settings-slow"))
+	{
+		/* Testing the keys waits on Stripe without holding anybody else up.
+		 * The page uses the transport a test put on the context, as the
+		 * Connect routes do; with none it uses the network. */
+		g_autoptr(VentureWebServer) server = NULL;
+		g_autofree gchar *state = NULL;
+		g_autofree gchar *path = g_strdup_printf("/organizations/%" G_GINT64_FORMAT "/settings/stripe", f->organization_id);
+		venture_context_set_stripe_service(f->context, service);
+		server = start_server(f, &state);
+		assert_route_unblocked(server, (FakeTransport *)transport, "POST", path, "application/x-www-form-urlencoded",
+			"operation=test", NULL, NULL, NULL, 200);
+		venture_web_server_stop(server);
+		venture_test_remove_tree(state);
+		return;
+	}
 	if (!strcmp(mode, "settings-ui"))
 	{
 		g_autoptr(VentureWebServer) server = NULL;
