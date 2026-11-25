@@ -567,16 +567,22 @@ stripe_authorization_event_kind(JsonObject *event)
  * transaction. Provider reads therefore cannot hold a database write lock.
  * Without @verify only local rows change: an event that needs the provider's
  * Setup read sets @deferred and the Stripe timer verifies it after the
- * webhook has been answered. */
+ * webhook has been answered. @unlinked is set when a Setup event names no
+ * permission yet: the caller stores that event ignored, and Checkout applies
+ * the card. */
 static gboolean
 stripe_authorization_event(VentureStripeService *self, JsonObject *event,
-	gboolean verify, gboolean *deferred, const VentureActor *actor, GError **error)
+	gboolean verify, gboolean *deferred, gboolean *unlinked, const VentureActor *actor, GError **error)
 {
 	const gchar *type = string_member(event, "type");
 	JsonObject *object = object_member(object_member(event, "data"), "object");
 	const gchar *id = string_member(object, "id");
 	g_autoptr(GPtrArray) matches = NULL;
 	guint i;
+	/* An unlinked Setup is not an applied authorization. The caller stores
+	 * that event as ignored, so a recovered exception cannot say the card
+	 * was saved. */
+	if (unlinked) *unlinked = FALSE;
 	if (!id) return refuse(error, "Authorization event requires a provider identity");
 	if (!g_strcmp0(type, "payment_method.detached") || !g_strcmp0(type, "mandate.updated"))
 	{
@@ -618,6 +624,7 @@ stripe_authorization_event(VentureStripeService *self, JsonObject *event,
 	if (!matches->len && g_str_has_prefix(type, "setup_intent."))
 	{
 		g_debug("Stripe %s names no saved-card permission yet; the Checkout event links it", type);
+		if (unlinked) *unlinked = TRUE;
 		return TRUE;
 	}
 	if (!matches->len) return refuse(error, "Verified setup names an unknown authorization; retry after its session is linked");

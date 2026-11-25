@@ -175,7 +175,7 @@ Setup that replaces the card only once Stripe confirms it) were added after
 `ec60e31b` (2026-11-07, server version 0.9.0); see billing.md,
 api-routes.md and data-model-revenue.md.
 
-<!-- skill-baseline:start -- incrementally updated 2026-11-23 against c161f1a3 -->
+<!-- skill-baseline:start -- incrementally updated 2026-11-24 against c161f1a3 -->
 ```bash
 # From a checkout: what changed since this skill was written?
 base=c161f1a3
@@ -205,6 +205,11 @@ supplier bill (`payables.md`).
 A Stripe connection stores an optional statement-descriptor suffix; card
 charges send it as a suffix, and an invoice uses it as the full descriptor
 only at 5 characters or more (`billing.md`).
+An early `setup_intent` that no saved-card permission names yet is answered
+200 and stored `ignored`; the Checkout event saves the card. A refused
+Stripe webhook logs its status, route and reason (`billing.md`). A queued
+message's Message-ID uses the organization's sender domain
+(`mail.md`).
 Public booking limits use a relay's last `X-Forwarded-For` hop only when
 that socket is listed in `security.booking_trusted_relays` (`mail.md`).
 `POST /api/v1/mail/connect` turns a business's mail on from one address;

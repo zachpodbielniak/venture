@@ -179,7 +179,14 @@ many documents all-or-nothing. A non-admin must name the organization.
   completion plus verified Setup/mandate evidence activates permission.
   The webhook stores the signed Setup event and answers before that provider
   read; the Stripe timer finishes it (at least a minute between tries, three
-  days, then an exception). `act stripe_authorization ID verify` recovers a
+  days, then an exception). A `setup_intent.succeeded` or
+  `setup_intent.setup_failed` that no saved-card permission names yet is
+  answered 200 and stored `ignored` (Stripe often sends it before Checkout;
+  the Checkout event links the Setup and saves the card). A repeat of that
+  event stays ignored. A refused Stripe webhook (400 or 503) logs one line:
+  the status, the route (`the installation account`, `connection N` or
+  `Connect`) and Venture's own reason, never the body, the signature or a
+  key. `act stripe_authorization ID verify` recovers a
   missed callback;
   `revoke_authorization` stops future charges without discarding settlement
   evidence. Changing terms needs fresh permission. The running server

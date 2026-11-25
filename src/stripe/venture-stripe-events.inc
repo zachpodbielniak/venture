@@ -24,6 +24,7 @@ stripe_process_verified(VentureStripeService *self, JsonObject *event, GBytes *r
 	gint64 invoice_id = 0, record_id = 0, checkout_id = 0;
 	gboolean mismatch = FALSE;
 	gboolean deferred = FALSE;
+	gboolean unlinked = FALSE;
 	gboolean authorization_event = stripe_authorization_event_kind(event);
 	gboolean invoice_event = stripe_invoice_event_kind(event);
 	g_autoptr(GError) authorization_error = NULL;
@@ -77,7 +78,7 @@ resume:
 	record_id = venture_entity_get_id(VENTURE_ENTITY(record));
 	if (authorization_event)
 	{
-		if (!stripe_authorization_event(self, event, !defer, &deferred, actor, &authorization_error) && !authorization_error)
+		if (!stripe_authorization_event(self, event, !defer, &deferred, &unlinked, actor, &authorization_error) && !authorization_error)
 			refuse(&authorization_error, "Authorization event could not be applied");
 	}
 	if (invoice_event)
@@ -96,6 +97,14 @@ resume:
 	if (authorization_event && deferred)
 	{
 		g_object_set(record, "result", "verifying", NULL);
+		goto done;
+	}
+	/* The Setup arrived before Checkout linked it. Nothing was applied, so
+	 * this must not be a recovered authorization. Checkout, a different
+	 * event, saves the card. A repeat of this event id stays ignored. */
+	if (authorization_event && unlinked)
+	{
+		g_object_set(record, "result", "ignored", NULL);
 		goto done;
 	}
 	if (authorization_event)

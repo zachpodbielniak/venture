@@ -414,6 +414,23 @@ hosted_setup_intent_first(Fixture *f, VentureStripeService *provider, VentureEnt
 	raw = g_bytes_new(body, strlen(body));
 	g_assert_true(venture_stripe_service_handle_webhook(provider, raw, sig, &error));
 	g_assert_no_error(error);
+	/* Answered, and not applied: a recovered exception here would say the
+	 * card was saved before Checkout linked the Setup. */
+	{
+		g_autoptr(GPtrArray) early = rows(f, "stripe_event");
+		g_autoptr(VentureEntity) again = NULL;
+		g_autofree gchar *result = NULL, *setup_id = NULL;
+		g_assert_cmpuint(early->len, ==, 1);
+		g_object_get(g_ptr_array_index(early, 0), "result", &result, NULL);
+		g_assert_cmpstr(result, ==, "ignored");
+		/* A pending permission is created enabled. What the early Setup
+		 * must not do is link a card onto it. */
+		again = venture_database_get(f->database, VENTURE_TYPE_STRIPE_AUTHORIZATION,
+			venture_entity_get_id(authorization), &error);
+		g_assert_no_error(error);
+		g_object_get(again, "setup-intent-id", &setup_id, NULL);
+		g_assert_true(setup_id == NULL || setup_id[0] == '\0');
+	}
 	finish_setup_event(f, provider, "evt_setup_completed", session, venture_entity_get_uuid(authorization));
 	g_test_message("setup_intent.succeeded before its Checkout event is answered; the Checkout event saves the card");
 }

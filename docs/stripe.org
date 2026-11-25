@@ -157,8 +157,9 @@ Unknown event types are durably ignored. Unknown Checkout identities are retaine
 as =unknown= with a processor exception, so later association and operator retry
 can recover them. Reusing an event ID with different evidence is refused.
 A =setup_intent.*= event that no saved-card permission names yet is answered
-200 and changes nothing. Stripe often sends it before the Checkout event that
-links the Setup, and that Checkout event saves the card.
+200 and stored =ignored=. It does not write a recovered authorization, and a
+repeat of that event id stays ignored. Stripe often sends it before the
+Checkout event that links the Setup, and that Checkout event saves the card.
 
 Every refused webhook (400 or 503) logs one line: the status, the route (the
 installation account, =connection N= or =Connect=) and the check that refused

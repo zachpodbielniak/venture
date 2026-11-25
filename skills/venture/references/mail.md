@@ -21,6 +21,10 @@ venturectl mail retry 88                        # deliberate resend, same Messag
   and decide), and `uncertain` (the relay may or may not have accepted it).
   **Never automatically retry uncertain rows**: a retry may mail the
   customer twice. The outbox commits `sent` before writing the CRM timeline.
+- The stored Message-ID is `<uuid>@<sender-domain>`, chosen once at enqueue
+  from the organization's From address, in lower case. No selectable
+  transport, or a domain that is not a plain DNS name, keeps
+  `@venture.invalid`. A retry sends that same stored ID.
 - Mail actions reject `--stage`; propose an enqueue with `--stage create
   mail_message ...` when approval is required.
 - Subscription notices are queued inside the billing instruction and keyed

@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-13]
-#+updated: [2026-10-04]
+#+updated: [2026-11-24]
 #+version: 0.7.0
 
 * Delivery semantics
@@ -31,9 +31,10 @@ reuses the same row and Message-ID; receiving MTAs may deduplicate it.
 
 The Message-ID is =<uuid>@<domain>=, set once at enqueue. The domain is
 that of the organization's sender address, in lower case, so it resolves
-and matches the From. Only when no transport can be selected at enqueue
-is it the reserved =venture.invalid=. Bounces and replies match the stored
-ID, so it never changes after enqueue.
+and matches the From. It is the reserved =venture.invalid= when no
+transport can be selected at enqueue, or when that sender's domain is not
+a plain DNS name. Bounces and replies match the stored ID, so it never
+changes after enqueue.
 
 * Enqueueing from another feature
 

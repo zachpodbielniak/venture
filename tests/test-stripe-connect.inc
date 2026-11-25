@@ -457,7 +457,10 @@ test_connect_charges_and_webhooks(Fixture *f, gconstpointer data)
 		events = rows(f, "stripe_event");
 		g_assert_cmpuint(events->len, ==, 1);
 		g_object_set(f->config, "stripe-connect-webhook-secret", "", NULL);
+		g_test_expect_message("Venture", G_LOG_LEVEL_MESSAGE,
+			"Stripe webhook refused with 503 for Connect: Stripe Connect is not configured*");
 		g_assert_cmpuint(connect_http(server, "POST", "/webhooks/stripe/connect", good, paid, NULL), ==, 503);
+		g_test_assert_expected_messages();
 		g_assert_cmpuint(connect_http(server, "GET", path, NULL, NULL, NULL), ==, 404);
 		venture_web_server_stop(server);
 		g_clear_object(&server);
