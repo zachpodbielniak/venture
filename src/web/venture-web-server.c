@@ -5088,12 +5088,15 @@ venture_web_ui_overview(
 	{
 		g_autoptr(VentureQuery) query = NULL;
 		g_autoptr(GPtrArray) entries = NULL;
+		g_autoptr(VentureActorNames) names = NULL;
 		guint e;
 
 		query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
 		venture_query_add_order(query, "id", VENTURE_SORT_DESCENDING,
 		                        NULL);
 		venture_query_set_limit(query, 8);
+		names = venture_actor_names_new(
+			venture_context_get_database(self->context));
 
 		entries = venture_database_find(
 			venture_context_get_database(self->context), query, NULL);
@@ -5125,8 +5128,13 @@ venture_web_ui_overview(
 			             NULL);
 
 			g_string_append(content, "<li><span class=\"activity-actor\">");
-			venture_html_escape_append(content,
-				venture_string_is_empty(actor) ? "The system" : actor);
+			{
+				g_autofree gchar *shown = NULL;
+
+				shown = venture_actor_names_display(names, actor);
+				venture_html_escape_append(content,
+					venture_string_is_empty(shown) ? "The system" : shown);
+			}
 			g_string_append(content, "</span> ");
 			venture_web_append_nick(content, VENTURE_TYPE_AUDIT_ACTION, (gint)action);
 			g_string_append(content, " ");
@@ -6950,7 +6958,8 @@ venture_web_append_view_crumbs(VentureWebServer *self, HtmxRequest *request,
 static GPtrArray *venture_web_list_columns(GPtrArray *specs,
 	GPtrArray *records);
 static void venture_web_append_list_cell(VentureWebServer *self,
-	GString *html, VentureEntity *record, VentureFieldSpec *spec);
+	GString *html, VentureEntity *record, VentureFieldSpec *spec,
+	VentureActorNames *names);
 static guint venture_web_form_group(VentureFieldSpec *spec,
 	guint *facts_seen);
 static VentureFieldSpec *venture_web_list_drop_title(GPtrArray *columns,
@@ -8036,6 +8045,7 @@ venture_web_ui_list(
 	g_autoptr(GPtrArray) records = NULL;
 	g_autoptr(GPtrArray) specs = NULL;
 	g_autoptr(GPtrArray) columns = NULL;
+	g_autoptr(VentureActorNames) actor_names = NULL;
 	g_autofree gchar *heading = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
@@ -8326,6 +8336,11 @@ venture_web_ui_list(
 
 	g_string_append(content, "</tr></thead><tbody>");
 
+	/* Whose tokens the audit log's actors were, once per token for the
+	 * page; a type with no actor column never asks it anything. */
+	actor_names = venture_actor_names_new(
+		venture_context_get_database(self->context));
+
 	for (j = 0; j < records->len; j++)
 	{
 		VentureEntity *record;
@@ -8357,7 +8372,8 @@ venture_web_ui_list(
 
 		for (i = 0; i < columns->len; i++)
 			venture_web_append_list_cell(self, content, record,
-			                             g_ptr_array_index(columns, i));
+			                             g_ptr_array_index(columns, i),
+			                             actor_names);
 
 		g_string_append(content, "</tr>");
 	}
@@ -24276,6 +24292,7 @@ venture_web_api_confirmations(
 	g_autoptr(GPtrArray) pending = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
 	g_autoptr(GError) error = NULL;
 	guint i;
 
@@ -24298,11 +24315,13 @@ venture_web_api_confirmations(
 
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
+	names = venture_actor_names_new(venture_context_get_database(self->context));
 
 	for (i = 0; i < pending->len; i++)
 	{
 		json_builder_add_value(builder,
-			venture_confirmation_to_json(g_ptr_array_index(pending, i)));
+			venture_confirmation_to_json_with_names(
+				g_ptr_array_index(pending, i), names));
 	}
 
 	json_builder_end_array(builder);
@@ -31802,12 +31821,21 @@ venture_web_ui_inbox(
 	}
 	else
 	{
+		g_autoptr(VentureActorNames) names = NULL;
+
+		/* A token's notification was written "API token #N updated ...";
+		 * the person it belongs to is put in front of it here, for this
+		 * reader, and the stored title stays as it was. */
+		names = venture_actor_names_new(
+			venture_context_get_database(self->context));
 		g_string_append(content, "<div class=\"card\"><ul class=\"inbox\">");
 
 		for (i = 0; i < rows->len; i++)
 		{
 			VentureEntity *row;
+			g_autofree gchar *stored_title = NULL;
 			g_autofree gchar *title = NULL;
+			g_autofree gchar *actor = NULL;
 			g_autofree gchar *body = NULL;
 			g_autofree gchar *target_type = NULL;
 			g_autoptr(GDateTime) read_at = NULL;
@@ -31817,9 +31845,12 @@ venture_web_ui_inbox(
 			gint64 target_id = 0;
 
 			row = g_ptr_array_index(rows, i);
-			g_object_get(row, "kind", &kind, "title", &title, "body", &body,
+			g_object_get(row, "kind", &kind, "title", &stored_title,
+			             "actor", &actor, "body", &body,
 			             "target-type", &target_type, "target-id", &target_id,
 			             "read-at", &read_at, "occurred-at", &when, NULL);
+			title = venture_actor_names_display_lead(names, actor,
+			                                         stored_title);
 			relative = (NULL != when) ? venture_time_to_relative_string(when)
 			                          : g_strdup("");
 
@@ -32461,8 +32492,17 @@ venture_web_append_activity(
 			"<span class=\"timeline-dot\"></span>"
 			"<div class=\"timeline-body\"><div class=\"timeline-head\">"
 			"<span class=\"timeline-actor\">", kind);
-		venture_html_escape_append(content,
-			venture_string_is_empty(actor) ? "System" : actor);
+		{
+			g_autofree gchar *shown = NULL;
+
+			/* The timeline already resolved whose token it was, for
+			 * this reader; the page only words it. */
+			shown = venture_actor_names_format(actor,
+				venture_json_object_get_string(event, "actor_username",
+				                               NULL));
+			venture_html_escape_append(content,
+				venture_string_is_empty(shown) ? "System" : shown);
+		}
 		g_string_append(content, "</span> ");
 
 		if (0 == g_strcmp0(kind, "comment"))
@@ -32519,8 +32559,13 @@ venture_web_append_activity(
 
 			if (!venture_string_is_empty(approved))
 			{
+				g_autofree gchar *shown = NULL;
+
+				shown = venture_actor_names_format(approved,
+					venture_json_object_get_string(event,
+						"approved_by_username", NULL));
 				g_string_append(content, " <span class=\"muted\">(approved by ");
-				venture_html_escape_append(content, approved);
+				venture_html_escape_append(content, shown);
 				g_string_append(content, ")</span>");
 			}
 		}

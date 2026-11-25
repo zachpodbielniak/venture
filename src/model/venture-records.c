@@ -3897,9 +3897,13 @@ static const VentureFieldDecl venture_audit_entry_fields[] = {
 	                   venture_audit_action_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_ENUM("actor-kind", "Actor kind",
-	                   "Whether a person, the AI or an automation did it",
+	                   "Whether a person, an API token, the AI or an automation did it",
 	                   venture_actor_kind_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
+	/* The actor string, stored exactly as it was: a username, a model,
+	 * or "API token #N" -- never a token's name, and never rewritten to
+	 * name the token's owner, because other programs match on it. Pages
+	 * show the owner beside it at render time (venture-actor-names.c). */
 	VENTURE_FIELD("actor", "Actor", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_SEARCHABLE),
 	VENTURE_FIELD("target-type", "Target type", NULL,

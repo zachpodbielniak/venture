@@ -187,7 +187,11 @@ owner_invitation_prepare(VentureTenantService *self, gint64 organization_id, gin
 	if (business) g_object_get(organization, "name", business, NULL);
 	g_object_get(user, "display-name", &display, "username", &username, NULL);
 	if (inviter) *inviter = g_strdup(!venture_string_is_empty(display) ? display : username);
-	audit->kind = VENTURE_ACTOR_KIND_IMPORT;
+	/* A token is recorded as a token, as venture_auth_to_actor() does;
+	 * the owner's own session keeps the kind this operation always
+	 * recorded. */
+	audit->kind = (actor->token_id > 0) ? VENTURE_ACTOR_KIND_TOKEN
+	                                    : VENTURE_ACTOR_KIND_IMPORT;
 	audit->name = actor->name;
 	audit->prompt = NULL;
 	audit->request_id = NULL;

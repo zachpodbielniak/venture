@@ -150,7 +150,7 @@ from the bundled example plugin and exists only where that plugin loads.
   See [data-model-work.md](data-model-work.md) and [automation.md](automation.md).
 - `audit_entry` -- read-only trail: `action`
   [create|update|delete|login|logout|tool_call|confirm|reject|automation|export],
-  `actor`, `actor_kind` [system|user|ai|automation|plugin|import],
+  `actor`, `actor_kind` [system|user|ai|automation|plugin|import|token],
   `target_type/target_id`, `diff`, `approved_by`, `request_id`, `source`.
 - `saved_view` (a named list URL: `entity_type`, `query`, `board`,
   `personal`, `pinned`), `watch` (a user following a record),

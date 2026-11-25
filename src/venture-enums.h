@@ -647,10 +647,19 @@ typedef enum
  * @VENTURE_ACTOR_KIND_AI: an AI tool call
  * @VENTURE_ACTOR_KIND_AUTOMATION: a podomation binding
  * @VENTURE_ACTOR_KIND_PLUGIN: a loaded plugin
- * @VENTURE_ACTOR_KIND_IMPORT: a bulk import
+ * @VENTURE_ACTOR_KIND_IMPORT: a bulk import. Until
+ *   %VENTURE_ACTOR_KIND_TOKEN existed every request made with an API token
+ *   was recorded as this too, and those rows keep it
+ * @VENTURE_ACTOR_KIND_TOKEN: a request authenticated with an API token.
+ *   The actor string is "API token #N", never the token's name; the
+ *   person it belongs to is resolved for display by
+ *   venture_actor_names_lookup(), not stored
  *
  * Who caused a change. Every mutation records this, which is what makes it
  * possible to answer "did I do that, or did the AI?" months later.
+ *
+ * The values are stored as integers, so a new kind is only ever appended:
+ * inserting one would change what every existing audit row says.
  */
 typedef enum
 {
@@ -659,7 +668,8 @@ typedef enum
 	VENTURE_ACTOR_KIND_AI,
 	VENTURE_ACTOR_KIND_AUTOMATION,
 	VENTURE_ACTOR_KIND_PLUGIN,
-	VENTURE_ACTOR_KIND_IMPORT
+	VENTURE_ACTOR_KIND_IMPORT,
+	VENTURE_ACTOR_KIND_TOKEN
 } VentureActorKind;
 
 /**

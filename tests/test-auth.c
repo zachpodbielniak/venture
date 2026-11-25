@@ -329,10 +329,11 @@ test_auth_actor_distinguishes_token_traffic(
 	g_assert_cmpint(actor.kind, ==, VENTURE_ACTOR_KIND_USER);
 
 	/* Machine traffic is recorded as such rather than attributed to a
-	 * person who was not at the keyboard. */
+	 * person who was not at the keyboard -- and as a token, not as a
+	 * bulk import, which is a different question to ask the trail. */
 	principal.token_id = 7;
 	venture_auth_to_actor(&principal, &actor);
-	g_assert_cmpint(actor.kind, ==, VENTURE_ACTOR_KIND_IMPORT);
+	g_assert_cmpint(actor.kind, ==, VENTURE_ACTOR_KIND_TOKEN);
 }
 
 /* --- Tokens -------------------------------------------------------------- */

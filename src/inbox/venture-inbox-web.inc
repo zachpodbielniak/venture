@@ -266,6 +266,7 @@ venture_web_inbox_history(VentureWebServer *self, GString *html, VentureEntity *
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_AUDIT_ENTRY);
 	g_autoptr(GPtrArray) entries = NULL;
+	g_autoptr(VentureActorNames) names = venture_actor_names_new(venture_context_get_database(self->context));
 	guint i, shown = 0;
 	venture_query_add_filter_string(query, "target-type", VENTURE_FILTER_OP_EQ, "inbox_conversation", NULL);
 	venture_query_add_filter_int(query, "target-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(row), NULL);
@@ -277,7 +278,7 @@ venture_web_inbox_history(VentureWebServer *self, GString *html, VentureEntity *
 	for (i = 0; i < entries->len; i++)
 	{
 		VentureEntity *entry = g_ptr_array_index(entries, i);
-		g_autofree gchar *actor = NULL, *diff = NULL;
+		g_autofree gchar *actor = NULL, *diff = NULL, *who = NULL;
 		g_autoptr(GDateTime) when = NULL;
 		const gchar *what;
 		g_object_get(entry, "actor", &actor, "diff", &diff, "occurred-at", &when, NULL);
@@ -291,7 +292,8 @@ venture_web_inbox_history(VentureWebServer *self, GString *html, VentureEntity *
 		g_string_append(html, "<li>");
 		venture_web_inbox_when(self, html, when);
 		g_string_append(html, " · ");
-		venture_html_escape_append(html, actor != NULL ? actor : "Someone");
+		who = venture_actor_names_display(names, actor);
+		venture_html_escape_append(html, who != NULL ? who : "Someone");
 		g_string_append_printf(html, " %s</li>", what);
 	}
 	if (shown > 0)

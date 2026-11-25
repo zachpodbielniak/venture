@@ -60,4 +60,4 @@ A ticket comment made through the API records its writer as its =author= (since 
 
 * What the activity log shows
 
-Every change an agent makes through its token is recorded against =API token #N=, the number =whoami= reported for it; the token's page shows which user it belongs to. Changes the mirror makes for an agent are made with that agent's own token, so they read the same way.
+Every change an agent makes through its token is recorded against =API token #N=, the number =whoami= reported for it, with the actor kind =token=. That string never changes, so the mirror keeps matching on it: a confirmation's =origin.name=, an activity row's =actor=, a comment's =author=. A person reading the record sees whose token it was -- =erin (API token #N)= -- and the JSON carries it beside the key as =actor_username= (=origin.username= on a confirmation), absent when the token or its owner is gone or the reader may not know it. Changes the mirror makes for an agent are made with that agent's own token, so they read the same way.

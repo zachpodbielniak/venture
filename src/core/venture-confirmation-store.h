@@ -109,10 +109,32 @@ venture_confirmation_get_entity_type(VentureConfirmation *self);
  * inbox somewhere else is the intended reader, and it cannot go and look at
  * the HTTP call that produced this.
  *
+ * `origin.name` is the actor string exactly as it will be audited ("API
+ * token #N" for a token), which callers match on. When it is a token and
+ * the reader of the current access scope may know whose it is,
+ * `origin.username` carries the owning account's username beside it.
+ *
  * Returns: (transfer full): the confirmation as JSON
  */
 JsonNode *
 venture_confirmation_to_json(VentureConfirmation *self);
+
+/**
+ * venture_confirmation_to_json_with_names:
+ * @self: a #VentureConfirmation
+ * @names: (nullable): a cache shared by every confirmation in one
+ *   response, or %NULL for one made for this call
+ *
+ * venture_confirmation_to_json(), for a caller rendering a list: each
+ * distinct token behind the list is then looked up once.
+ *
+ * Returns: (transfer full): the confirmation as JSON
+ */
+JsonNode *
+venture_confirmation_to_json_with_names(
+	VentureConfirmation	*self,
+	VentureActorNames	*names
+);
 
 /* --- The queue ----------------------------------------------------------- */
 

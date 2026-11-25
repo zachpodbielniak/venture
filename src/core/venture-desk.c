@@ -1018,6 +1018,28 @@ venture_desk_builder_add_optional(
 		json_builder_add_null_value(builder);
 }
 
+/*
+ * Beside an event's actor string, the username of the account behind it
+ * when it is a token the reader may know the owner of. Added, never
+ * replacing: "actor" is what whoami, webhooks and the stored trail say,
+ * and a client matching on it must keep matching.
+ */
+static void
+venture_desk_name_actor(
+	VentureActorNames	*names,
+	JsonObject		*event,
+	const gchar		*member,
+	const gchar		*username_member
+){
+	const gchar *username;
+
+	username = venture_actor_names_lookup(names,
+		venture_json_object_get_string(event, member, NULL));
+
+	if (NULL != username)
+		json_object_set_string_member(event, username_member, username);
+}
+
 static void
 venture_desk_builder_add_when(
 	JsonBuilder	*builder,
@@ -1043,6 +1065,7 @@ venture_desk_activity(
 	VentureDatabase *database;
 	g_autoptr(GPtrArray) events = NULL;
 	g_autoptr(JsonBuilder) out = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -1299,6 +1322,9 @@ venture_desk_activity(
 	}
 	g_ptr_array_sort(events, venture_desk_compare_events);
 
+	/* One cache for the whole timeline, so a token that made forty of
+	 * these changes is looked up once, for the reader of this page. */
+	names = venture_actor_names_new(database);
 	out = json_builder_new();
 	json_builder_begin_array(out);
 
@@ -1307,6 +1333,15 @@ venture_desk_activity(
 		VentureDeskEvent *event;
 
 		event = g_ptr_array_index(events, i);
+
+		if (JSON_NODE_HOLDS_OBJECT(event->node))
+		{
+			venture_desk_name_actor(names, json_node_get_object(event->node),
+			                        "actor", "actor_username");
+			venture_desk_name_actor(names, json_node_get_object(event->node),
+			                        "approved_by", "approved_by_username");
+		}
+
 		json_builder_add_value(out, json_node_ref(event->node));
 	}
 

@@ -267,6 +267,12 @@ venture_desk_bulk_delete(
  * and worklogs woven in by time. This is the timeline a record's page
  * shows and `GET /api/v1/activity/:type/:id` returns.
  *
+ * An event whose `actor` (or `approved_by`) is a token, "API token #N",
+ * also carries `actor_username` (or `approved_by_username`): the account
+ * that owns the token, when the reader of the current access scope may
+ * know it (venture_actor_names_lookup()). The actor strings themselves
+ * are never rewritten.
+ *
  * Returns: (transfer full) (nullable): a JSON array
  */
 JsonNode *

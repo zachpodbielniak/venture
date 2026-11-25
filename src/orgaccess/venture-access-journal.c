@@ -123,7 +123,8 @@ venture_orgaccess_post_journal(VentureContext *context, const VentureAuthPrincip
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT, "Only a draft journal may be posted");
 		return NULL;
 	}
-	actor.kind = principal->token_id > 0 ? VENTURE_ACTOR_KIND_IMPORT : VENTURE_ACTOR_KIND_USER;
+	/* As venture_auth_to_actor() records any token request. */
+	actor.kind = principal->token_id > 0 ? VENTURE_ACTOR_KIND_TOKEN : VENTURE_ACTOR_KIND_USER;
 	actor.name = principal->name;
 	actor.prompt = NULL;
 	actor.request_id = NULL;

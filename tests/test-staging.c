@@ -198,7 +198,7 @@ fixture_create_expense(
 static void
 fixture_agent_actor(VentureActor *actor)
 {
-	actor->kind = VENTURE_ACTOR_KIND_IMPORT;
+	actor->kind = VENTURE_ACTOR_KIND_TOKEN;
 	actor->name = "bookkeeper-token";
 	actor->prompt = NULL;
 	actor->request_id = NULL;

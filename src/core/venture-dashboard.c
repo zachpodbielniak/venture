@@ -2206,6 +2206,7 @@ venture_widget_kind_activity(
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(GString) html = NULL;
 	g_autofree gchar *entity_type = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
 	guint i;
 
 	(void)scope;
@@ -2240,11 +2241,14 @@ venture_widget_kind_activity(
 	builder = json_builder_new();
 	json_builder_begin_array(builder);
 	html = g_string_new("<ul class=\"activity\">");
+	names = venture_actor_names_new(venture_context_get_database(context));
 
 	for (i = 0; i < entries->len; i++)
 	{
 		VentureEntity *entry;
 		g_autofree gchar *actor = NULL;
+		g_autofree gchar *shown = NULL;
+		const gchar *username;
 		g_autofree gchar *target_type = NULL;
 		g_autofree gchar *target_label = NULL;
 		g_autofree gchar *when = NULL;
@@ -2268,10 +2272,22 @@ venture_widget_kind_activity(
 		when = (NULL != occurred) ? venture_time_to_relative_string(occurred)
 		                          : NULL;
 
+		/* "actor" stays what the trail says; who the token belongs to is
+		 * beside it, for the reader of this dashboard. */
+		username = venture_actor_names_lookup(names, actor);
+		shown = venture_actor_names_format(actor, username);
+
 		json_builder_begin_object(builder);
 		json_builder_set_member_name(builder, "actor");
 		json_builder_add_string_value(builder,
 			venture_string_is_empty(actor) ? "The system" : actor);
+
+		if (NULL != username)
+		{
+			json_builder_set_member_name(builder, "actor_username");
+			json_builder_add_string_value(builder, username);
+		}
+
 		json_builder_set_member_name(builder, "action");
 		json_builder_add_string_value(builder, action_nick);
 		json_builder_set_member_name(builder, "target_type");
@@ -2288,7 +2304,7 @@ venture_widget_kind_activity(
 
 		g_string_append(html, "<li><span class=\"activity-actor\">");
 		venture_html_escape_append(html,
-			venture_string_is_empty(actor) ? "The system" : actor);
+			venture_string_is_empty(shown) ? "The system" : shown);
 		g_string_append(html, "</span> ");
 		venture_html_escape_append(html, action_nick);
 		g_string_append(html, " ");
@@ -2346,6 +2362,7 @@ venture_widget_kind_confirmations(
 	g_autoptr(GPtrArray) pending = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(GString) html = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
 	guint limit;
 	guint i;
 
@@ -2355,6 +2372,7 @@ venture_widget_kind_confirmations(
 
 	pending = venture_confirmation_store_list_pending(
 		venture_context_get_confirmations(context));
+	names = venture_actor_names_new(venture_context_get_database(context));
 	limit = venture_widget_get_limit(widget, 8);
 
 	result = venture_widget_result_new();
@@ -2391,7 +2409,7 @@ venture_widget_kind_confirmations(
 		confirmation = g_ptr_array_index(pending, i);
 
 		json_builder_add_value(builder,
-			venture_confirmation_to_json(confirmation));
+			venture_confirmation_to_json_with_names(confirmation, names));
 
 		g_string_append(html, "<li>");
 		venture_html_escape_append(html,

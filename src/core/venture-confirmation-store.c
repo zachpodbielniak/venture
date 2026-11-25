@@ -48,6 +48,13 @@ struct _VentureConfirmation
 	gchar *deal_move_note;
 	gchar *record_action;
 	GHashTable *parameters;
+
+	/*
+	 * The repository the store that made this belongs to, so the JSON can
+	 * say whose token asked. Weak: the database owns the store and the
+	 * store owns this, and a strong reference back would be a cycle.
+	 */
+	GWeakRef database;
 };
 
 G_DEFINE_FINAL_TYPE(VentureConfirmation, venture_confirmation, G_TYPE_OBJECT)
@@ -72,6 +79,7 @@ venture_confirmation_finalize(GObject *object)
 	g_free(self->deal_move_note);
 	g_free(self->record_action);
 	g_clear_pointer(&self->parameters, g_hash_table_unref);
+	g_weak_ref_clear(&self->database);
 
 	G_OBJECT_CLASS(venture_confirmation_parent_class)->finalize(object);
 }
@@ -87,6 +95,7 @@ venture_confirmation_init(VentureConfirmation *self)
 {
 	self->state = VENTURE_CONFIRMATION_STATE_PENDING;
 	self->origin_kind = VENTURE_ACTOR_KIND_SYSTEM;
+	g_weak_ref_init(&self->database, NULL);
 }
 
 const gchar *
@@ -127,9 +136,44 @@ venture_confirmation_get_entity_type(VentureConfirmation *self)
 JsonNode *
 venture_confirmation_to_json(VentureConfirmation *self)
 {
+	return venture_confirmation_to_json_with_names(self, NULL);
+}
+
+JsonNode *
+venture_confirmation_to_json_with_names(
+	VentureConfirmation	*self,
+	VentureActorNames	*names
+){
 	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(VentureActorNames) own_names = NULL;
+	const gchar *username;
 
 	g_return_val_if_fail(VENTURE_IS_CONFIRMATION(self), NULL);
+
+	/*
+	 * Whose token asked, for the reader of the current scope. A caller
+	 * listing many shares one cache; one card alone makes its own, and
+	 * only when there is a token to ask about.
+	 */
+	username = NULL;
+
+	if (0 != venture_actor_names_parse_token(self->origin))
+	{
+		if (NULL == names)
+		{
+			g_autoptr(VentureDatabase) database = NULL;
+
+			database = g_weak_ref_get(&self->database);
+
+			if (NULL != database)
+				own_names = venture_actor_names_new(database);
+
+			names = own_names;
+		}
+
+		if (NULL != names)
+			username = venture_actor_names_lookup(names, self->origin);
+	}
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
@@ -196,6 +240,15 @@ venture_confirmation_to_json(VentureConfirmation *self)
 		venture_enum_to_nick(VENTURE_TYPE_ACTOR_KIND, (gint)self->origin_kind));
 	json_builder_set_member_name(builder, "name");
 	json_builder_add_string_value(builder, self->origin);
+
+	/* Beside "name", never instead of it: clawtilla routes a decision by
+	 * matching "name" against whoami's actor. */
+	if (NULL != username)
+	{
+		json_builder_set_member_name(builder, "username");
+		json_builder_add_string_value(builder, username);
+	}
+
 	json_builder_set_member_name(builder, "via");
 	json_builder_add_string_value(builder, self->via);
 	json_builder_end_object(builder);
@@ -511,6 +564,7 @@ venture_confirmation_store_stage(
 	}
 
 	confirmation = g_object_new(VENTURE_TYPE_CONFIRMATION, NULL);
+	g_weak_ref_set(&confirmation->database, self->database);
 	confirmation->id = venture_generate_token(8);
 	confirmation->summary = g_steal_pointer(&summary);
 	confirmation->action = action;
@@ -1013,6 +1067,7 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 	while (g_hash_table_iter_next(&iter, &key, &value))
 		json_object_set_member(object, key, json_node_ref(value));
 	confirmation = g_object_new(VENTURE_TYPE_CONFIRMATION, NULL);
+	g_weak_ref_set(&confirmation->database, self->database);
 	confirmation->id = venture_generate_token(8);
 	confirmation->record_action = g_strdup(name);
 	confirmation->summary = g_strdup_printf("%s %s #%" G_GINT64_FORMAT, label,

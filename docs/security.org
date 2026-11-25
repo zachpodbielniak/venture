@@ -211,6 +211,37 @@ keeps it: ticket comment authors, ticket assignees, worklog authors,
 Nothing in those strings says reliably which were a token, so a rewrite
 would be a guess.
 
+** Whose token it was
+
+A person reading the history sees the account behind a token --
+=erin (API token #12)= -- on a record's Activity panel, the audit log, the
+dashboard's recent activity, a conversation's history and the inbox, and
+the JSON beside them carries it as =actor_username= (a confirmation's
+=origin.username=). It is worked out when the page is drawn
+(=src/core/venture-actor-names.c=), never stored: the stored actor stays
+=API token #12=, which clawtilla, the comment thread and the market-data
+alerts match on. The token's *name* is still never shown.
+
+Resolving at render time rather than stamping an =actor_user_id= column at
+audit time was chosen because the column needs a migration on both
+backends, a backfill that can only guess for rows whose token is already
+gone, and a new member at every hand-filled =VentureActor= site. What it
+costs: a row whose token or owner has been deleted reads =API token #12=,
+as every row did before.
+
+The owner is a username, so who may see it is decided in one place. A
+reader is told only when they are a global owner or administrator, the
+owner themself, or an active member of an organization the owner is also
+an active member of. That is no more than they could already learn: the
+membership records a member of an organization reads name everybody in
+it, and the owner's own direct changes there carry their username as the
+actor. A reader who shares no organization with the owner -- the customer
+of a hosted install, looking at a change the operator's admin token made in
+their business -- sees =API token #12= and nothing else. With organization
+access switched off there is one boundary, the install, and every signed-in
+person is inside it. Internal work and scheduled deliveries have no reader
+and are told nothing.
+
 * Passwords in request bodies
 
 A password reaches the server in a request body: the sign-in form, a password change, the MFA confirmation, an invitation or Lightsite sign-up, an OIDC link, and =POST /api/v1/users= with a =password= member. Until 2026-11-12 every copy of that body was freed without being cleared, so the plaintext stayed in the heap until the allocator reused the block, readable by a core dump, a crash report or an unrelated over-read.

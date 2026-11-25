@@ -251,6 +251,9 @@
 #include "jobs/venture-job-service.h"
 #include "periods/venture-period-report.h"
 
+/* Who a token actor belongs to; a confirmation's JSON names its type. */
+#include "core/venture-actor-names.h"
+
 /* The confirmation store comes first: the context owns one and names its
  * type in an accessor. */
 #include "core/venture-confirmation-store.h"

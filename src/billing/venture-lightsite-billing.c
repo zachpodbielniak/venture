@@ -913,7 +913,10 @@ subscribe_impl(VentureDatabase *database, gint64 billing_organization_id, gint64
 	}
 	if (!prepare(database, billing, &actor_id, error)) return NULL;
 	principal = venture_access_policy_get_actor(venture_database_get_access_policy(database));
-	audit.kind = VENTURE_ACTOR_KIND_IMPORT;
+	/* prepare() admitted only a workspace administrator's service token,
+	 * so this is token traffic, recorded as venture_auth_to_actor()
+	 * records any other. */
+	audit.kind = VENTURE_ACTOR_KIND_TOKEN;
 	audit.name = principal ? principal->name : NULL;
 	audit.prompt = NULL;
 	audit.request_id = NULL;

@@ -1201,9 +1201,13 @@ venture_auth_to_actor(
 	actor->approved_by = NULL;
 
 	/* A token-authenticated request is machine traffic, and the audit
-	 * trail should say so rather than attributing it to a person. */
+	 * trail should say so rather than attributing it to a person. It is
+	 * its own kind, not an import: "what did the tokens do" and "what
+	 * came in from a file" are different questions. Whose token it was is
+	 * resolved when the trail is read (venture_actor_names_lookup()); the
+	 * name stays "API token #N", which other programs match on. */
 	if ((NULL != principal) && (0 != principal->token_id))
-		actor->kind = VENTURE_ACTOR_KIND_IMPORT;
+		actor->kind = VENTURE_ACTOR_KIND_TOKEN;
 }
 
 gboolean

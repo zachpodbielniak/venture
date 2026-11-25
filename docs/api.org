@@ -107,7 +107,10 @@ another's:
 
 - =actor= -- the string every audit row, activity line, comment and webhook
   body records for it: =API token #N= for a token, the username for a
-  session.
+  session. It never changes, and it is what to match on. A person reading
+  the history is shown the owner beside it (=erin (API token #12)=), and
+  the JSON a person's tools read carries the owner in a field of its own
+  (=actor_username=, a confirmation's =origin.username=); see [[*Whose token it was][Whose token it was]].
 - =role= -- the global role in force (a token is held to its user's
   current role when that is lower).
 - =token_id= and =expires_at= (=null= for never) for a token; =0= for a
@@ -283,7 +286,7 @@ A widget's place on the grid is four fields, =grid_col=, =grid_row=, =grid_width
 
 =GET /api/v1/inbox= returns ={"unread": N, "notifications": [...]}= for the caller — a token with no user has no inbox — each notification with its kind, title, body, actor, the record it is about and a =url= to it, whether it is read, and when. =POST /api/v1/inbox/read= with ={"id": N}= marks one read, or every unread one with 0; somebody else's notification is not found, never forbidden. =POST /api/v1/watch= with ={"type": "ticket", "id": 7, "watch": true}= follows a record (=false= stops); =GET /api/v1/watching/:type/:id= says whether you do and who else does.
 
-=GET /api/v1/activity/:type/:id= is the record's timeline, newest first: each audited change with =actor=, =actor_kind=, =action=, =when= and =changes= (the diff, field to ={"from","to"}=), and for a ticket its comments (=body=, =internal=) and worklogs (=hours=, =body=) woven in. =GET /api/v1/tickets/:id/sla= is the ticket's clocks: whether a policy covers it, each clock's state (=none=, =ok=, =warning=, =breached=) and seconds remaining, whether it has been answered, whether it is closed.
+=GET /api/v1/activity/:type/:id= is the record's timeline, newest first: each audited change with =actor=, =actor_kind=, =action=, =when= and =changes= (the diff, field to ={"from","to"}=), and for a ticket its comments (=body=, =internal=) and worklogs (=hours=, =body=) woven in. A row whose =actor= is a token also carries =actor_username=, the account that owns it, when the caller may know it (see [[*Whose token it was][Whose token it was]]); =actor= itself is always the stored =API token #N=. =GET /api/v1/tickets/:id/sla= is the ticket's clocks: whether a policy covers it, each clock's state (=none=, =ok=, =warning=, =breached=) and seconds remaining, whether it has been answered, whether it is closed.
 
 =POST /api/v1/tickets/:id/macro= applies a macro by name or id and answers with the ticket; =POST /api/v1/tickets/:id/worklog= logs hours and answers 201 with the worklog. =POST /api/v1/:type/bulk= takes ={"ids": [...], "changes": {"status": "done"}}= or ={"ids": [...], "delete": true}=, applies it in one transaction — one refusal and nothing changes — and answers ={"changed": N}=; at most 500 ids. =POST /api/v1/incidents/:id/ticket= opens the incident's fix ticket and answers 201 with it; an incident that already names one gets 409. =POST /api/v1/sla/sweep= marks open tickets past their resolution target and answers ={"marked": N}=.
 
@@ -338,7 +341,7 @@ curl -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
     "state": "pending",
     "type": "expense",
     "label": "Cover art",
-    "origin": { "kind": "import", "name": "books-agent", "via": "rest-api" },
+    "origin": { "kind": "token", "name": "API token #12", "username": "erin", "via": "rest-api" },
     "diff": { "description": "Cover art", "amount": { "amount": 25000, "currency": "USD" } },
     "created_at": "2026-08-29T14:02:11Z",
     "expires_at": "2026-08-29T15:02:11Z"
@@ -354,7 +357,11 @@ decision inbox in another program entirely.
 
 The card is deliberately self-contained: which record type, which record if
 there is one, what would change, and who asked. Whatever renders it will not
-have the request that produced it.
+have the request that produced it. =origin.name= is the actor string the
+change will be audited under -- match on it, as clawtilla matches it against
+=whoami='s =actor=. =origin.username=, when present, is the account that
+owns the token, for a person deciding; it is absent for a token or owner
+that has been deleted and for a reader who may not know it (see [[*Whose token it was][Whose token it was]]).
 
 The prompt behind an assistant-staged change is *not* on the card. This
 endpoint is open to any viewer and a prompt is the text of somebody's private
@@ -433,7 +440,7 @@ thing that staged anything. They govern the whole queue.
 | Case                    | =actor_kind=  | =actor=        | =approved_by= | =request_id=    |
 |-------------------------+---------------+----------------+---------------+-----------------|
 | direct, session         | =user=        | the person     | —             | —               |
-| direct, bearer token    | =import=      | the token      | —             | —               |
+| direct, bearer token    | =token=       | =API token #N= | —             | —               |
 | staged, then approved   | who asked     | who asked      | who approved  | confirmation id |
 | the assistant's own     | =ai=          | the model      | who approved  | confirmation id |
 
@@ -443,6 +450,44 @@ of these did somebody actually approve" is a filter rather than an inference:
 #+begin_src sh
 venturectl list audit_entry approved_by__not_null=1 order=-occurred_at
 #+end_src
+
+A bearer token's change was recorded as =import= until =token= existed, and
+those rows were not rewritten: history says what was written at the time.
+So =actor_kind__eq=token= finds only the newer token changes and
+=actor_kind__eq=import= still finds the older ones beside real imports. To
+ask for every change any token ever made, filter on the actor string, which
+has always been the same:
+
+#+begin_src sh
+venturectl list audit_entry 'actor__like=API token #%' order=-occurred_at
+#+end_src
+
+** Whose token it was
+
+The stored actor is the key, and nothing rewrites it: not the audit row, not
+the inbox, not a webhook body, not =whoami=, not a confirmation's
+=origin.name=. Who the token belongs to is worked out when somebody reads it,
+from the token's =user_id= to that user's =username=, once per token per page:
+
+- A record's Activity panel, the audit log (list and entry), the dashboard's
+  recent activity, a conversation's history and the inbox read
+  =erin (API token #12)=. An inbox title that leads with the actor is shown
+  with the owner in front; the stored title is unchanged.
+- =GET /api/v1/activity/:type/:id= adds =actor_username= (and
+  =approved_by_username= for an approver that was a token) to a row whose
+  actor is a token; the dashboard's =activity= widget adds =actor_username=;
+  a confirmation's =origin= adds =username=. Each is *absent*, never null,
+  when it does not apply.
+- A token that has been deleted, or whose owner has, reads =API token #12=
+  exactly as before.
+
+The owner is shown only to a reader who could already see who that person
+is: a global owner or administrator, the owner themself, or somebody who is
+an active member of an organization the owner is also an active member of
+-- the membership records a member reads name everybody in it. Anybody else
+(a customer of a hosted install, looking at a change the operator's token
+made) sees =API token #12=. A request with no person behind it -- internal
+work, a scheduled delivery -- is told nothing.
 
 ** What is not stageable
 

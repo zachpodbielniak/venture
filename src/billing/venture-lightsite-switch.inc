@@ -230,7 +230,11 @@ switch_impl(VentureDatabase *database, gint64 billing, gint64 business, gint64 p
 	if (!switch_prepare(database, billing, business, &actor_id, error)) return NULL;
 	principal = venture_access_policy_get_actor(venture_database_get_access_policy(database));
 	if (actor_id == 0 && principal) actor_id = principal->user_id;
-	audit.kind = VENTURE_ACTOR_KIND_IMPORT;
+	/* A token is recorded as a token, as venture_auth_to_actor() does;
+	 * the owner's own session keeps the kind this operation always
+	 * recorded. */
+	audit.kind = (NULL != principal) && (principal->token_id > 0)
+		? VENTURE_ACTOR_KIND_TOKEN : VENTURE_ACTOR_KIND_IMPORT;
 	audit.name = principal ? principal->name : NULL;
 	audit.prompt = NULL;
 	audit.request_id = NULL;

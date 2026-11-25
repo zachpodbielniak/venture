@@ -1851,7 +1851,8 @@ venture_tenant_service_lightsite_signup(VentureTenantService *self, const gchar 
 	if (!venture_tenant_service_check_trusted_service(self, &actor_id, error)) return NULL;
 	policy = venture_database_get_access_policy(self->database);
 	actor = venture_access_policy_get_actor(policy);
-	audit.kind = VENTURE_ACTOR_KIND_IMPORT;
+	/* check_trusted_service() admitted only a service token. */
+	audit.kind = VENTURE_ACTOR_KIND_TOKEN;
 	audit.name = actor->name;
 	audit.prompt = NULL;
 	audit.request_id = NULL;
@@ -1966,7 +1967,8 @@ venture_tenant_service_lightsite_schedule_token(VentureTenantService *self,
 	if (organization_id <= 0 || !venture_tenant_service_check_trusted_service(self, &actor_id, error)) return NULL;
 	policy = venture_database_get_access_policy(self->database);
 	principal = venture_access_policy_get_actor(policy);
-	audit.kind = VENTURE_ACTOR_KIND_IMPORT;
+	/* check_trusted_service() admitted only a service token. */
+	audit.kind = VENTURE_ACTOR_KIND_TOKEN;
 	audit.name = principal->name;
 	audit.prompt = NULL;
 	audit.request_id = NULL;

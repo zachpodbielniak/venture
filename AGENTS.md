@@ -154,7 +154,15 @@ order the data flows.
   fields that copied a token's name as free text -- a comment's author, an
   assignee, a worklog author, `deployed_by`, the bank-match, enrolment and
   approval stamps -- keep it, and so do their audit diffs: rewriting those
-  would mean guessing which strings were ever a token.
+  would mean guessing which strings were ever a token. **Whose token it was
+  is shown, never stored.** Every surface a person reads an actor on asks
+  `venture_actor_names_lookup()` (one `VentureActorNames` per page, made in
+  the reader's scope) and words it with `venture_actor_names_format()`;
+  JSON gets `actor_username` / `origin.username` *beside* the key. Never
+  rewrite `actor`, `origin.name`, whoami's `actor` or a webhook body to
+  name the owner -- clawtilla routes decisions by matching them. Token
+  requests are `VENTURE_ACTOR_KIND_TOKEN`, not `IMPORT`; older token rows
+  stay `import`. `/token-actor/*` pins it.
 - **`VentureActor` is filled field by field at every call site.** It is a
   plain struct declared as a bare local, `-Wmissing-field-initializers` is on
   so nobody writes `= {0}`, and `venture_database_record_audit()` reads every

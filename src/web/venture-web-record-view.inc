@@ -239,6 +239,59 @@ venture_web_append_string_value(
 }
 
 /*
+ * Whether @spec is an actor string -- who did something, as the audit
+ * trail and the inbox store it -- which a person reads with the owner of
+ * the token it names. Only the stored-actor fields: the same words typed
+ * into a deal's name are the deal's name.
+ */
+static gboolean
+venture_web_spec_is_actor(
+	VentureEntity		*record,
+	VentureFieldSpec	*spec
+){
+	const gchar *name;
+
+	if (VENTURE_FIELD_KIND_STRING != venture_field_spec_get_kind(spec))
+		return FALSE;
+
+	name = venture_field_spec_get_name(spec);
+
+	if (VENTURE_IS_AUDIT_ENTRY(record))
+		return (0 == g_strcmp0(name, "actor")) ||
+		       (0 == g_strcmp0(name, "approved-by"));
+
+	if (VENTURE_IS_NOTIFICATION(record))
+		return 0 == g_strcmp0(name, "actor");
+
+	return FALSE;
+}
+
+/*
+ * An actor field's value as a person reads it: "erin (API token #4)" when
+ * the reader may know whose token it was, else exactly what is stored.
+ */
+static void
+venture_web_append_actor_value(
+	GString			*html,
+	VentureActorNames	*names,
+	VentureEntity		*record,
+	VentureFieldSpec	*spec
+){
+	g_auto(GValue) value = G_VALUE_INIT;
+	g_autofree gchar *shown = NULL;
+
+	if (!venture_entity_get_field(record, venture_field_spec_get_name(spec),
+	                              &value) ||
+	    !G_VALUE_HOLDS_STRING(&value))
+		return;
+
+	shown = venture_actor_names_display(names, g_value_get_string(&value));
+
+	if (NULL != shown)
+		venture_html_escape_append(html, shown);
+}
+
+/*
  * One value, the way a person reads it. Empty is an en dash in the muted
  * colour; the callers that list only what is set never reach it.
  */
@@ -333,6 +386,18 @@ venture_web_append_value(
 
 		label = venture_web_choice_label(spec, g_value_get_string(&value));
 		venture_html_escape_append(html, label);
+		return;
+	}
+
+	/* One record's page names at most a couple of actors, so the cache
+	 * lives for the one value; a list shares one across its rows. */
+	if (venture_web_spec_is_actor(record, spec))
+	{
+		g_autoptr(VentureActorNames) names = NULL;
+
+		names = venture_actor_names_new(
+			venture_context_get_database(self->context));
+		venture_web_append_actor_value(html, names, record, spec);
 		return;
 	}
 
@@ -1129,7 +1194,8 @@ venture_web_append_list_cell(
 	VentureWebServer	*self,
 	GString			*html,
 	VentureEntity		*record,
-	VentureFieldSpec	*spec
+	VentureFieldSpec	*spec,
+	VentureActorNames	*names
 ){
 	VentureFieldKind kind;
 
@@ -1151,6 +1217,15 @@ venture_web_append_list_cell(
 
 	if (venture_web_value_is_empty(record, spec))
 	{
+		g_string_append(html, "</td>");
+		return;
+	}
+
+	/* The audit log's "By" column: the page's one cache, so a token on
+	 * every row is looked up once. */
+	if ((NULL != names) && venture_web_spec_is_actor(record, spec))
+	{
+		venture_web_append_actor_value(html, names, record, spec);
 		g_string_append(html, "</td>");
 		return;
 	}

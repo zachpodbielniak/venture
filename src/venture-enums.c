@@ -467,6 +467,7 @@ static const GEnumValue venture_actor_kind_values[] = {
 	VE(VENTURE_ACTOR_KIND_AUTOMATION, "automation"),
 	VE(VENTURE_ACTOR_KIND_PLUGIN,     "plugin"),
 	VE(VENTURE_ACTOR_KIND_IMPORT,     "import"),
+	VE(VENTURE_ACTOR_KIND_TOKEN,      "token"),
 	VE_END
 };
 
