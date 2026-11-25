@@ -31,7 +31,10 @@ venturectl contractor-tax export 1
 #+end_src
 
 The same actions sit on =/e/contractor_tax_pack=, and the prepare form
-lives on =/tax-filings=.
+lives on =/tax-filings=: the owner picks a supplier by name and a year,
+and sees a preview before anything is saved (see
+[[file:tax-filing.org][tax filing]]). A vendor of another business is
+refused as not found.
 
 * Scope and source
 

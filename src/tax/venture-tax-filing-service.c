@@ -136,7 +136,8 @@ require_status(VentureEntity *entity, const gchar *wanted, GError **error)
 }
 
 static gboolean
-load_period_dates(VentureDatabase *db, gint64 period_id, GDateTime **start, GDateTime **end, GError **error)
+load_period_dates(VentureDatabase *db, gint64 organization_id, gint64 period_id,
+	GDateTime **start, GDateTime **end, GError **error)
 {
 	g_autoptr(VentureEntity) period = NULL;
 	if (period_id <= 0)
@@ -146,16 +147,24 @@ load_period_dates(VentureDatabase *db, gint64 period_id, GDateTime **start, GDat
 		return FALSE;
 	}
 	period = venture_database_get(db, VENTURE_TYPE_FISCAL_PERIOD, period_id, error);
-	if (period == NULL)
+	if (period == NULL && error != NULL && *error != NULL)
 		return FALSE;
+	/* A period of another business is answered as missing: a number
+	 * typed into a form must not prepare a return over somebody else's
+	 * dates, nor say that the period exists. */
+	if (period == NULL || venture_entity_get_organization_id(period) != organization_id)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "That fiscal period is not one of this business's periods");
 	g_object_get(period, "start-at", start, "end-at", end, NULL);
 	return *start != NULL && *end != NULL;
 }
 
-VentureEntity *
-venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organization_id,
+/* The filing a preparation makes. With @save FALSE nothing is written:
+ * the adapter fills an unsaved record, which is what the preview shows. */
+static VentureEntity *
+draft_filing(VentureTaxFilingService *self, gint64 organization_id,
 	const gchar *country, const gchar *jurisdiction, gint64 fiscal_period_id,
-	GDateTime *period_start, GDateTime *period_end, const VentureActor *actor, GError **error)
+	GDateTime *period_start, GDateTime *period_end, gboolean save,
+	const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureEntity) filing = NULL;
@@ -165,7 +174,6 @@ venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organiz
 	g_autofree gchar *book = NULL;
 	VentureTaxFilingAdapter *adapter;
 	const gchar *place;
-	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
 	place = (jurisdiction != NULL && *jurisdiction != '\0') ? jurisdiction :
 		(country != NULL && *country != '\0') ? country : "(unnamed)";
 	if (country == NULL || *country == '\0')
@@ -189,9 +197,12 @@ venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organiz
 		start = g_date_time_ref(period_start);
 		end = g_date_time_ref(period_end);
 	}
-	else if (!load_period_dates(db, fiscal_period_id, &start, &end, error))
+	else if (!load_period_dates(db, organization_id, fiscal_period_id, &start, &end, error))
 		return NULL;
-	if (!begin_op(self, db, error))
+	if (!save && !module_on())
+		return refuse(error, VENTURE_ERROR_CONFIG,
+			"The tax_filing module is disabled (modules.tax_filing.enabled)"), NULL;
+	if (save && !begin_op(self, db, error))
 		return NULL;
 	{
 		g_autofree gchar *stamp = g_date_time_format(start, "%Y-%m");
@@ -208,12 +219,33 @@ venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organiz
 		"adapter", country, "rule-id", venture_tax_filing_adapter_get_rule_id(adapter),
 		"status", "draft", "currency", book, NULL);
 	venture_entity_set_organization_id(filing, organization_id);
+	if (!save)
+		return venture_tax_filing_adapter_prepare(adapter, db, filing, error) ? g_steal_pointer(&filing) : NULL;
 	if (!venture_tax_filing_adapter_prepare(adapter, db, filing, error) ||
 		!save_internal(self, db, filing, actor, error))
 		return finish_op(self, db, FALSE, error), NULL;
 	if (!finish_op(self, db, TRUE, error))
 		return NULL;
 	return g_steal_pointer(&filing);
+}
+
+VentureEntity *
+venture_tax_filing_service_prepare(VentureTaxFilingService *self, gint64 organization_id,
+	const gchar *country, const gchar *jurisdiction, gint64 fiscal_period_id,
+	GDateTime *period_start, GDateTime *period_end, const VentureActor *actor, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
+	return draft_filing(self, organization_id, country, jurisdiction, fiscal_period_id,
+		period_start, period_end, TRUE, actor, error);
+}
+
+VentureEntity *
+venture_tax_filing_service_preview(VentureTaxFilingService *self, gint64 organization_id,
+	const gchar *country, const gchar *jurisdiction, gint64 fiscal_period_id, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
+	return draft_filing(self, organization_id, country, jurisdiction, fiscal_period_id,
+		NULL, NULL, FALSE, NULL, error);
 }
 
 static gboolean
@@ -444,9 +476,12 @@ build_1099_csv(VentureEntity *form, VentureEntity *vendor, gint year, const Vent
 		year, legal_cell, tin_cell, amount_cell);
 }
 
-VentureEntity *
-venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 organization_id,
-	gint64 vendor_id, gint year, const VentureActor *actor, GError **error)
+/* The pack a 1099-NEC preparation makes, or the one already made for
+ * this vendor and year. With @save FALSE nothing is written: the preview
+ * shows an unsaved pack, whose id is 0. */
+static VentureEntity *
+draft_pack(VentureTaxFilingService *self, gint64 organization_id, gint64 vendor_id, gint year,
+	gboolean save, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureDatabase) db = NULL;
 	g_autoptr(VentureEntity) form = NULL;
@@ -456,7 +491,6 @@ venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 or
 	g_autoptr(VentureMoney) paid = NULL;
 	g_autoptr(VentureMoney) threshold = NULL;
 	g_autofree gchar *key = NULL;
-	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
 	db = service_db(self);
 	if (db == NULL)
 		return refuse(error, VENTURE_ERROR_DATABASE, "The database has been closed"), NULL;
@@ -467,6 +501,13 @@ venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 or
 	if (year < 2020 || year > 2026)
 		return refuse(error, VENTURE_ERROR_VALIDATION,
 			"1099-NEC bookkeeping rules support 2020 through 2026; update the year-specific threshold for later years"), NULL;
+	/* A vendor of another business is answered as missing, as a period
+	 * is: a typed number must not name somebody else's supplier. */
+	vendor = venture_database_get(db, VENTURE_TYPE_COMPANY, vendor_id, error);
+	if (vendor == NULL && error != NULL && *error != NULL)
+		return NULL;
+	if (vendor == NULL || venture_entity_get_organization_id(vendor) != organization_id)
+		return refuse(error, VENTURE_ERROR_NOT_FOUND, "That vendor is not one of this business's suppliers"), NULL;
 	key = g_strdup_printf("%" G_GINT64_FORMAT ":%d:1099-NEC", vendor_id, year);
 	existing = find_pack(db, organization_id, key, error);
 	if (error != NULL && *error != NULL)
@@ -504,21 +545,36 @@ venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 or
 			year == 2026 ? "2000" : "600", year);
 		return NULL;
 	}
-	vendor = venture_database_get(db, VENTURE_TYPE_COMPANY, vendor_id, error);
-	if (vendor == NULL)
-		return NULL;
-	if (!begin_op(self, db, error))
-		return NULL;
 	pack = VENTURE_ENTITY(venture_contractor_tax_pack_new());
 	g_object_set(pack, "vendor-id", vendor_id, "form-id", venture_entity_get_id(form),
 		"year", (gint64)year, "form-kind", "1099-NEC", "filing-key", key,
 		"status", "draft", "amount", paid, NULL);
 	venture_entity_set_organization_id(pack, organization_id);
+	if (!save)
+		return g_steal_pointer(&pack);
+	if (!begin_op(self, db, error))
+		return NULL;
 	if (!save_internal(self, db, pack, actor, error))
 		return finish_op(self, db, FALSE, error), NULL;
 	if (!finish_op(self, db, TRUE, error))
 		return NULL;
 	return g_steal_pointer(&pack);
+}
+
+VentureEntity *
+venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self, gint64 organization_id,
+	gint64 vendor_id, gint year, const VentureActor *actor, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
+	return draft_pack(self, organization_id, vendor_id, year, TRUE, actor, error);
+}
+
+VentureEntity *
+venture_tax_filing_service_preview_1099(VentureTaxFilingService *self, gint64 organization_id,
+	gint64 vendor_id, gint year, GError **error)
+{
+	g_return_val_if_fail(VENTURE_IS_TAX_FILING_SERVICE(self), NULL);
+	return draft_pack(self, organization_id, vendor_id, year, FALSE, NULL, error);
 }
 
 static gboolean

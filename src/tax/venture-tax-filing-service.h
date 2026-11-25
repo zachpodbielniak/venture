@@ -43,6 +43,24 @@ VentureEntity *venture_tax_filing_service_prepare(VentureTaxFilingService *self,
 	const VentureActor *actor, GError **error);
 
 /**
+ * venture_tax_filing_service_preview:
+ * @self: the service
+ * @organization_id: legal entity
+ * @country: (nullable): ISO country; required
+ * @jurisdiction: (nullable): filing jurisdiction
+ * @fiscal_period_id: a fiscal period of @organization_id
+ * @error: (out) (optional): failure
+ *
+ * Builds the filing venture_tax_filing_service_prepare() would save, and
+ * saves nothing. A period of another organization is refused as not found.
+ *
+ * Returns: (transfer full) (nullable): an unsaved draft filing pack
+ */
+VentureEntity *venture_tax_filing_service_preview(VentureTaxFilingService *self,
+	gint64 organization_id, const gchar *country, const gchar *jurisdiction,
+	gint64 fiscal_period_id, GError **error);
+
+/**
  * venture_tax_filing_service_review:
  * @self: the service or registry instance
  * @filing: tax filing record
@@ -90,6 +108,24 @@ VentureEntity *venture_tax_filing_service_amend(VentureTaxFilingService *self, V
 VentureEntity *venture_tax_filing_service_prepare_1099(VentureTaxFilingService *self,
 	gint64 organization_id, gint64 vendor_id, gint year, const VentureActor *actor,
 	GError **error);
+
+/**
+ * venture_tax_filing_service_preview_1099:
+ * @self: the service
+ * @organization_id: legal entity
+ * @vendor_id: a supplier company of @organization_id
+ * @year: calendar year
+ * @error: (out) (optional): failure
+ *
+ * Checks and totals what venture_tax_filing_service_prepare_1099() would
+ * save, and saves nothing. A pack already prepared is returned as it is,
+ * with its id; a new one has id 0. A vendor of another organization is
+ * refused as not found.
+ *
+ * Returns: (transfer full) (nullable): the pack preparation would give
+ */
+VentureEntity *venture_tax_filing_service_preview_1099(VentureTaxFilingService *self,
+	gint64 organization_id, gint64 vendor_id, gint year, GError **error);
 /**
  * venture_tax_filing_service_review_1099:
  * @self: the service or registry instance

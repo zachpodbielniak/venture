@@ -36690,6 +36690,8 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-rates/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tax_rate_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tax-rates/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tax_rate_new, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-filings", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filings_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tax-filings/preview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_preview_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tax-filings/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_prepare_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/tax-filings/:id/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, tax_filing_api, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/contractor-tax/prepare", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, contractor_tax_api, self);

@@ -49,5 +49,29 @@ venturectl tax-filing acknowledge 1 acknowledgment_id=ACK-1
 venturectl tax-filing amend 1
 #+end_src
 
-The web list is =/tax-filings=, with a prepare form and the generic
-=/e/tax_filing= record plus review/submit/acknowledge/amend actions.
+The web list is =/tax-filings=, with the generic =/e/tax_filing= record
+plus review/submit/acknowledge/amend actions.
+
+* Preparing from the page: named choices and a preview
+
+An owner never types an id on =/tax-filings=. The sales-tax form offers
+the countries an adapter is registered for, the jurisdictions the
+business's tax rates already name, and the business's own fiscal periods
+by name, grouped under their fiscal year. The 1099-NEC form offers the
+business's own suppliers by name (any company with the supplier role,
+customers that are also suppliers included) and the calendar years its
+fiscal years cover.
+
+Both forms go to =/tax-filings/preview= first. It shows what preparing
+would make -- the business, the supplier or period by name, the dates and
+the totals -- and saves nothing. Its button posts to =/tax-filings/prepare=,
+which prepares and opens the new record. A 1099-NEC pack already made for
+that supplier and year is shown as already prepared, with a link.
+
+=venture_tax_filing_service_preview()= and
+=venture_tax_filing_service_preview_1099()= are the read-only halves of
+the two prepares: same checks, same adapter, no write. Every prepare and
+preview refuses a fiscal period or a vendor of another business as not
+found, so a number edited into the address cannot reach somebody else's
+records. =tests/test-tax-filing-pages.c= pins the page, the preview, the
+preparation and the refusal.
