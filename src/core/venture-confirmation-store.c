@@ -43,6 +43,7 @@ struct _VentureConfirmation
 	VentureEntity			*staged;
 	VentureEntity			*original;
 	gint64 proposer_user_id;
+	gint64 proposer_token_id;
 	gboolean activity_completion;
 	gint64 deal_stage_id;
 	gchar *deal_move_note;
@@ -147,6 +148,7 @@ venture_confirmation_to_json_with_names(
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(VentureActorNames) own_names = NULL;
 	const gchar *username;
+	gboolean token_origin;
 
 	g_return_val_if_fail(VENTURE_IS_CONFIRMATION(self), NULL);
 
@@ -156,8 +158,9 @@ venture_confirmation_to_json_with_names(
 	 * only when there is a token to ask about.
 	 */
 	username = NULL;
+	token_origin = (0 != venture_actor_names_parse_token(self->origin));
 
-	if (0 != venture_actor_names_parse_token(self->origin))
+	if (token_origin)
 	{
 		if (NULL == names)
 		{
@@ -247,6 +250,31 @@ venture_confirmation_to_json_with_names(
 	{
 		json_builder_set_member_name(builder, "username");
 		json_builder_add_string_value(builder, username);
+	}
+
+	/* Stable ids, so a client need not parse "API token #N". token_id is
+	 * not secret: name already says it. user_id follows exactly the rule
+	 * that decides username: a token's owner only when the reader may know
+	 * who that is, a person's own id always. */
+	if (self->proposer_token_id > 0)
+	{
+		json_builder_set_member_name(builder, "token_id");
+		json_builder_add_int_value(builder, self->proposer_token_id);
+	}
+
+	if (self->proposer_user_id > 0 && (!token_origin || NULL != username))
+	{
+		json_builder_set_member_name(builder, "user_id");
+		json_builder_add_int_value(builder, self->proposer_user_id);
+	}
+
+	/* The record's organization: the reader can already read the staged
+	 * record, which is how they see the card at all. */
+	if (NULL != self->staged && venture_entity_get_organization_id(self->staged) > 0)
+	{
+		json_builder_set_member_name(builder, "organization_id");
+		json_builder_add_int_value(builder,
+			venture_entity_get_organization_id(self->staged));
 	}
 
 	json_builder_set_member_name(builder, "via");
@@ -572,7 +600,11 @@ venture_confirmation_store_stage(
 	confirmation->staged = g_object_ref(staged);
 	confirmation->original = (NULL != original) ? g_object_ref(original) : NULL;
 	confirmation->via = g_strdup(via);
-	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database))) confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database)))
+	{
+		confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
+		confirmation->proposer_token_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->token_id;
+	}
 
 	if (NULL != origin)
 	{
@@ -1079,7 +1111,11 @@ venture_confirmation_store_stage_action(VentureConfirmationStore *self, VentureA
 	snapshot = venture_json_to_string(values, FALSE);
 	confirmation->diff = venture_json_parse(snapshot, NULL);
 	confirmation->via = g_strdup(via);
-	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database))) confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
+	if (NULL != venture_access_policy_get_actor(venture_database_get_access_policy(self->database)))
+	{
+		confirmation->proposer_user_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->user_id;
+		confirmation->proposer_token_id = venture_access_policy_get_actor(venture_database_get_access_policy(self->database))->token_id;
+	}
 	confirmation->created_at = g_date_time_ref(now);
 	confirmation->expires_at = g_date_time_add_seconds(now, (gdouble)self->ttl_seconds);
 	if (origin)

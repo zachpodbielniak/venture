@@ -363,6 +363,22 @@ change will be audited under -- match on it, as clawtilla matches it against
 owns the token, for a person deciding; it is absent for a token or owner
 that has been deleted and for a reader who may not know it (see [[*Whose token it was][Whose token it was]]).
 
+Three more members of =origin= are stable ids, so a client can tell whose
+change it is without parsing =API token #N=; each is absent, never null, when
+it does not apply:
+
+- =origin.token_id= is the API token's id; present only for a change staged
+  with a token. It is not secret: =origin.name= already says it.
+- =origin.user_id= is the proposer's user id. For a token it follows
+  =origin.username= exactly (present only when the reader may know who owns
+  the token); for a person it is always present.
+- =origin.organization_id= is the staged record's organization, when it has
+  one.
+
+=GET /api/v1/confirmations= lists a card only when the caller can read the
+staged record, or proposed it themself and would still need approval to make
+that change. The listing does not widen with a role beyond that.
+
 The prompt behind an assistant-staged change is *not* on the card. This
 endpoint is open to any viewer and a prompt is the text of somebody's private
 chat thread; it goes to the audit trail instead, where "why did this change"

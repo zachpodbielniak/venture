@@ -635,6 +635,12 @@ test_confirmation_names_owner(Fixture *f, gconstpointer data)
 	g_assert_cmpstr(json_object_get_string_member(origin, "kind"), ==, "token");
 	g_assert_cmpstr(venture_json_object_get_string(origin, "username", NULL),
 	                ==, "erin");
+	g_assert_cmpint(json_object_get_int_member(origin, "token_id"), ==,
+	                f->editor_token_id);
+	g_assert_cmpint(json_object_get_int_member(origin, "user_id"), ==,
+	                f->editor_id);
+	g_assert_cmpint(json_object_get_int_member(origin, "organization_id"), ==,
+	                venture_entity_get_organization_id(f->company));
 
 	queue = json_as(f, "/api/v1/confirmations", f->owner_token);
 	g_assert_true(JSON_NODE_HOLDS_ARRAY(queue));
@@ -705,6 +711,128 @@ test_reader_outside_owners_organizations(Fixture *f, gconstpointer data)
 }
 
 /*
+ * A change staged from a browser session has no token behind it: the card
+ * carries origin.user_id for the person and no token_id, and the staged
+ * record's organization_id.
+ */
+static void
+test_confirmation_session_requester(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) edited = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(JsonNode) card = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureAuthPrincipal principal;
+	VentureConfirmation *confirmation;
+	VentureActor origin;
+	JsonObject *object;
+
+	(void)data;
+
+	memset(&principal, 0, sizeof(principal));
+	principal.user_id = f->editor_id;
+	principal.token_id = 0;
+	principal.role = VENTURE_USER_ROLE_EDITOR;
+	principal.name = (gchar *)"erin";
+	principal.authenticated = TRUE;
+
+	edited = venture_database_get(f->database, VENTURE_TYPE_COMPANY,
+	                              venture_entity_get_id(f->company), &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(edited);
+	g_object_set(edited, "industry", "Session", NULL);
+
+	memset(&origin, 0, sizeof(origin));
+	origin.kind = VENTURE_ACTOR_KIND_USER;
+	origin.name = "erin";
+
+	scope = venture_access_policy_enter(
+		venture_database_get_access_policy(f->database), &principal);
+	confirmation = venture_confirmation_store_stage(
+		venture_context_get_confirmations(f->context),
+		VENTURE_AUDIT_ACTION_UPDATE, edited, f->company, &origin, "web",
+		&error);
+	g_assert_no_error(error);
+	g_assert_nonnull(confirmation);
+
+	card = venture_confirmation_to_json(confirmation);
+	object = json_object_get_object_member(json_node_get_object(card),
+	                                       "origin");
+	g_assert_false(json_object_has_member(object, "token_id"));
+	g_assert_cmpint(json_object_get_int_member(object, "user_id"), ==,
+	                f->editor_id);
+	g_assert_cmpint(json_object_get_int_member(object, "organization_id"), ==,
+	                venture_entity_get_organization_id(f->company));
+}
+
+/*
+ * Vic has never shared an organization with Gail, so the card gives him her
+ * token's id (it is in origin.name already) and neither her user id nor her
+ * username.
+ */
+static void
+test_confirmation_reader_outside_owners_organizations(Fixture *f, gconstpointer data)
+{
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	g_autoptr(JsonNode) staged = NULL;
+	g_autoptr(JsonNode) vics = NULL;
+	g_autoptr(JsonNode) olives = NULL;
+	JsonObject *origin;
+	const gchar *id;
+	JsonArray *queue;
+	guint i;
+
+	(void)data;
+
+	path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT "?stage=1",
+	                       venture_entity_get_id(f->company));
+	g_assert_cmpuint(request(f, "PATCH", path, f->stranger_token,
+	                         "{\"industry\":\"Staged\"}", &body), ==, 202);
+	staged = venture_json_parse(body, NULL);
+	g_assert_nonnull(staged);
+	id = json_object_get_string_member(
+		json_object_get_object_member(json_node_get_object(staged),
+		                              "confirmation"), "id");
+
+	/* Vic, who owns the company and reads the card. */
+	vics = json_as(f, "/api/v1/confirmations", f->viewer_token);
+	queue = json_node_get_array(vics);
+	origin = NULL;
+
+	for (i = 0; i < json_array_get_length(queue); i++)
+	{
+		JsonObject *card = json_array_get_object_element(queue, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(card, "id"), id))
+			origin = json_object_get_object_member(card, "origin");
+	}
+
+	g_assert_nonnull(origin);
+	g_assert_cmpint(json_object_get_int_member(origin, "token_id"), ==,
+	                f->stranger_token_id);
+	g_assert_false(json_object_has_member(origin, "user_id"));
+	g_assert_false(json_object_has_member(origin, "username"));
+
+	/* The install's owner may know who it is. */
+	olives = json_as(f, "/api/v1/confirmations", f->owner_token);
+	queue = json_node_get_array(olives);
+	origin = NULL;
+
+	for (i = 0; i < json_array_get_length(queue); i++)
+	{
+		JsonObject *card = json_array_get_object_element(queue, i);
+
+		if (0 == g_strcmp0(json_object_get_string_member(card, "id"), id))
+			origin = json_object_get_object_member(card, "origin");
+	}
+
+	g_assert_nonnull(origin);
+	g_assert_cmpint(json_object_get_int_member(origin, "user_id"), ==,
+	                f->stranger_id);
+}
+
+/*
  * The comment thread's own "via API token #N" still reads the stored
  * author, which is still the key.
  */
@@ -749,6 +877,10 @@ main(
 	ADD("/token-actor/confirmation-names-owner", test_confirmation_names_owner);
 	ADD("/token-actor/reader-outside-owners-organizations",
 	    test_reader_outside_owners_organizations);
+	ADD("/token-actor/confirmation-session-requester",
+	    test_confirmation_session_requester);
+	ADD("/token-actor/confirmation-reader-outside-owners-organizations",
+	    test_confirmation_reader_outside_owners_organizations);
 	ADD("/token-actor/comment-prefix-unchanged", test_comment_prefix_unchanged);
 
 #undef ADD
