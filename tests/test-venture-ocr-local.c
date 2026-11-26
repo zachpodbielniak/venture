@@ -18,6 +18,7 @@ static void test_version_probe_outruns_page_deadline(void)
 	gsize length;
 	gint64 start;
 	cairo_surface_t *surface;
+	if (!venture_test_need_decoder()) return;
 	g_assert_true(g_file_set_contents(binary,
 		"#!/bin/sh\n"
 		"if [ \"$1\" = --version ]; then sleep 0.2; printf 'fixture OCR 1\\n'; exit 0; fi\n"

@@ -6,12 +6,24 @@
 #include "venture-test-util.h"
 #include "printing-goldens.h"
 
+/* Whether iconv can open @codepage. Fedora splits CP437/CP858 into
+ * glibc-gconv-extra, so a minimal container has CP1252 and not those. */
+static gboolean
+have_codepage(const gchar *codepage)
+{
+	g_autoptr(GError)	error = NULL;
+	g_autofree gchar	*out = g_convert("x", -1, codepage, "UTF-8", NULL, NULL, &error);
+
+	return out != NULL;
+}
+
 /* Fixed Bash goldens catch framing, byte-count and layout drift, including
  * every barcode system the source tool actually accepts. */
 static void
 test_goldens(void)
 {
-	guint	i;
+	gboolean	skipped = FALSE;
+	guint		i;
 
 	for (i = 0; i < G_N_ELEMENTS(golden); i++)
 	{
@@ -74,6 +86,14 @@ test_goldens(void)
 		}
 		if (!strcmp(name, "cp437") || !strcmp(name, "cp858"))
 		{
+			if (!have_codepage(name))
+			{
+				/* The rest of the goldens still run: skip is per-test, so
+				 * say it and move on rather than hiding them behind it. */
+				g_test_message("skipping golden %s: needs iconv %s (glibc-gconv-extra)", name, name);
+				skipped = TRUE;
+				continue;
+			}
 			document.codepage = name;
 		}
 		if (g_str_has_prefix(name, "barcode_"))
@@ -97,6 +117,36 @@ test_goldens(void)
 		g_assert_cmpmem(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes), golden[i].bytes,
 						golden[i].length);
 	}
+	if (skipped)
+	{
+		g_test_skip("needs iconv CP437 (glibc-gconv-extra)");
+	}
+}
+
+/* Without the iconv module for a codepage the renderer must say so, not print
+ * a silently shortened string. The codepage name is validated by the renderer
+ * (cp437, cp1252, cp858 only), so a bogus name cannot reach iconv; this runs
+ * only where the CP437 module is really missing and skips where it is there. */
+static void
+test_codepage_module_missing(void)
+{
+	VentureEscposDocument	document;
+	g_autoptr(GBytes)		bytes = NULL;
+	g_autoptr(GError)		error = NULL;
+
+	if (have_codepage("cp437"))
+	{
+		g_test_skip("iconv CP437 is installed; the missing-module path cannot be reached");
+		return;
+	}
+	venture_escpos_document_init(&document, NULL);
+	document.codepage = "cp437";
+	document.body = "\xe2\x82\xac caf\xc3\xa9";
+	bytes = venture_escpos_render(&document, &error);
+	g_assert_null(bytes);
+	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+	g_assert_nonnull(strstr(error->message, "cp437"));
+	g_assert_nonnull(strstr(error->message, "glibc-gconv-extra"));
 }
 
 /* Explicit timestamp avoids dependence on wall time and local timezone;
@@ -748,6 +798,7 @@ main(
 ){
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_func("/printing/goldens", test_goldens);
+	g_test_add_func("/printing/codepage-module-missing", test_codepage_module_missing);
 	g_test_add_func("/printing/timestamp-raw", test_timestamp_raw);
 	g_test_add_func("/printing/config", test_config);
 	g_test_add_func("/printing/payment", test_payment);

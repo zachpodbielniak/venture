@@ -65,7 +65,10 @@ venture_escpos_document_init(
  * venture_escpos_render:
  * @document: text and layout
  * @error: (out) (optional): return location for an error
- * Returns: (transfer full) (nullable): ESC/POS bytes, suitable for a dry run
+ * Returns: (transfer full) (nullable): ESC/POS bytes, suitable for a dry run;
+ *   %NULL with %VENTURE_ERROR_UNSUPPORTED if iconv cannot open the document's
+ *   codepage (its module is missing), or %VENTURE_ERROR_INVALID_ARGUMENT for
+ *   an invalid layout
  */
 GBytes *
 venture_escpos_render(

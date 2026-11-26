@@ -108,6 +108,7 @@ static void test_extract_review_replay(Fixture *f, gconstpointer data)
 	g_autofree gchar *text = NULL, *args = NULL, *hash = NULL;
 	gint64 pages;
 	(void)data;
+	if (!venture_test_need_decoder()) return;
 	job = venture_ocr_service_queue(f->service, document, "eng", FALSE, NULL, &error);
 	g_assert_no_error(error); g_assert_nonnull(job); assert_state(job, "pending");
 	done = venture_ocr_service_step(f->service, job, NULL, NULL, &error);
@@ -141,6 +142,7 @@ static void test_failure_retry_cancel(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) document = image_document(f, "retry.png"), job = NULL, failed = NULL, retry = NULL, cancelled = NULL, resumed = NULL, done = NULL;
 	g_autoptr(GError) error = NULL;
 	(void)data;
+	if (!venture_test_need_decoder()) return;
 	set_engine_script(f, "exit 3\n");
 	job = venture_ocr_service_queue(f->service, document, NULL, FALSE, NULL, &error); g_assert_no_error(error);
 	failed = venture_ocr_service_step(f->service, job, NULL, NULL, &error); g_assert_no_error(error); assert_state(failed, "failed");
@@ -225,6 +227,7 @@ static void test_deadline(Fixture *f, gconstpointer data)
 	gsize length;
 	gint64 start;
 	(void)data;
+	if (!venture_test_need_decoder()) return;
 	set_engine_script(f, "while :; do :; done\n");
 	/* Allow process startup under load; extraction must still time out
 	 * and the existing five-second runaway bound remains unchanged. */
@@ -245,6 +248,7 @@ static void test_batch_failure_isolation(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) one = venture_capture_service_ingest_for_organization(capture, 1, "receipt", "Bad", "test", venture_entity_get_id(bad), NULL, NULL, NULL, NULL, NULL, &error);
 	g_autoptr(VentureEntity) two = venture_capture_service_ingest_for_organization(capture, 1, "receipt", "Good", "test", venture_entity_get_id(good), NULL, NULL, NULL, NULL, NULL, &error);
 	(void)data;
+	if (!venture_test_need_decoder()) return;
 	g_assert_no_error(error); g_assert_nonnull(one); g_assert_nonnull(two);
 	g_object_get(bad, "path", &path, NULL); g_assert_cmpint(g_unlink(path), ==, 0);
 	batch = venture_ocr_service_batch(f->service, 1, 0, 25, NULL, FALSE, NULL, &error); g_assert_no_error(error);
@@ -262,6 +266,7 @@ static void test_process_bounds_and_cancel(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	GThread *thread;
 	(void)data;
+	if (!venture_test_need_decoder()) return;
 	set_engine_script(f, "while :; do :; done\n");
 	job = venture_ocr_service_queue(f->service, document, NULL, FALSE, NULL, &error); g_assert_no_error(error);
 	/* This worker only signals cancellation; it never accesses records. */
@@ -328,6 +333,7 @@ static void test_stale_review(Fixture *f, gconstpointer data)
 	VentureConfirmation *confirmation;
 	VentureConfirmationStore *store = venture_context_get_confirmations(f->context);
 	(void)data;
+	if (!venture_test_need_decoder()) return;
 	job = venture_ocr_service_queue(f->service, document, NULL, FALSE, NULL, &error);
 	done = venture_ocr_service_step(f->service, job, NULL, NULL, &error); g_assert_no_error(error);
 	current = venture_database_get(f->database, VENTURE_TYPE_DOCUMENT, venture_entity_get_id(document), &error);

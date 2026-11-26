@@ -656,6 +656,13 @@ FEDORA_DEPS += jq gnupg2
 DEBIAN_DEPS += jq gnupg
 ARCH_DEPS += jq gnupg
 
+# The printing goldens render CP437/CP858 through iconv. Fedora splits those
+# modules out of glibc into glibc-gconv-extra; without it the ESC/POS
+# renderer refuses with an error and the goldens skip. Debian and Arch ship
+# the modules with glibc, so only Fedora needs the line. libetpan and
+# libgudev are podomation's mail and device modules.
+FEDORA_DEPS += glibc-gconv-extra libetpan-devel libgudev-devel
+
 # ai-glib builds its vendored mcp-glib, which resolves libdex-1 through
 # pkg-config. Nothing VENTURE links needs it at run time.
 FEDORA_DEPS += libdex-devel

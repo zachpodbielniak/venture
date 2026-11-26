@@ -336,6 +336,45 @@ dependency set in a single =pkg-config= call, so one missing package empties
 the flags entirely and the build fails on a missing =glib.h=, which points
 nowhere near the actual cause.
 
+** A build and test container on Fedora 44
+
+For a fresh =registry.fedoraproject.org/fedora:44= container that builds
+VENTURE and runs =make test=, install this one set (=weak deps off= is fine).
+It is the Build list above plus what a minimal image lacks and the suite
+needs; =make check-deps= reports which of the tools are missing.
+
+#+begin_src
+# build, required
+gcc make git pkgconf-pkg-config findutils which diffutils
+glib2-devel gobject-introspection-devel libyaml-devel json-glib-devel
+libsoup3-devel libxml2-devel sqlite-devel libpq-devel readline-devel
+openssl-devel gnutls-devel libjose-devel jansson-devel gmime30-devel
+libdex-devel libetpan-devel libgudev-devel
+
+# build, optional features (the server builds without them)
+libarchive-devel        # knowledge-base zip/tar.gz/.docx import and export
+poppler-glib-devel      # PDF text extraction
+gdk-pixbuf2-devel       # image decode: local OCR, profile pictures
+
+# test-only
+nodejs                  # /attribution/script runs the page script; it never skips
+jq gnupg2               # tenant recovery GTest and tools/venture-tenant-backup
+glibc-gconv-extra       # iconv CP437/CP858; Fedora splits them out of glibc
+#+end_src
+
+Notes on the test-only and optional ones:
+
+- =nodejs= is a hard test dependency: the attribution test fails, on purpose,
+  rather than skipping when =node= is missing.
+- =jq= is also a runtime dependency of =tools/venture-tenant-backup=.
+- Without =glibc-gconv-extra= the ESC/POS renderer returns an error naming
+  the codepage (it used to print a silently shortened string), and the
+  CP437/CP858 printing goldens skip with that reason.
+- The OCR and avatar decode tests skip, with the reason, where image decode
+  is unavailable. A container that refuses =bwrap --dev /dev= (glycin's
+  sandbox, which gdk-pixbuf uses for loaders) is the usual cause; it is not
+  fixed by a package.
+
 Runtime, if you are installing rather than containerising:
 
 #+begin_src

@@ -742,6 +742,23 @@ check-deps:
 			printf "  %-20s MISSING (run: git submodule update --init --recursive)\n" "$$(basename $$d)"; \
 		fi \
 	done
+	@echo ""
+	@echo "Checking test tools (a missing one fails or skips tests, not the build)..."
+	@if command -v node >/dev/null 2>&1; then \
+		printf "  %-20s OK (%s)\n" "node" "$$(node --version 2>/dev/null)"; \
+	else \
+		printf "  %-20s WARNING: missing; /attribution/script fails (Fedora: nodejs)\n" "node"; \
+	fi
+	@if command -v jq >/dev/null 2>&1; then \
+		printf "  %-20s OK (%s)\n" "jq" "$$(jq --version 2>/dev/null)"; \
+	else \
+		printf "  %-20s WARNING: missing; tenant recovery test and venture-tenant-backup need it (Fedora: jq)\n" "jq"; \
+	fi
+	@if iconv -l 2>/dev/null | grep -qi 'CP437\|IBM437'; then \
+		printf "  %-20s OK\n" "iconv CP437"; \
+	else \
+		printf "  %-20s WARNING: missing; ESC/POS rendering errors and the printing goldens skip (Fedora: glibc-gconv-extra)\n" "iconv CP437"; \
+	fi
 
 # Generate compile_commands.json for clangd from the real build flags.
 .PHONY: compile-commands

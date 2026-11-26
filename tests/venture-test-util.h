@@ -19,6 +19,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef VENTURE_HAVE_GDK_PIXBUF
+#include <gdk-pixbuf/gdk-pixbuf.h>
+#endif
+
 /*
  * Whether @path is @root, or something under it.
  *
@@ -269,4 +273,78 @@ venture_test_page_with_ui(
 	}
 	g_string_append(out, at);
 	return g_string_free(out, FALSE);
+}
+
+/*
+ * Whether this machine can decode an image at all.
+ *
+ * TRUE when GdkPixbuf here decodes a PNG. FALSE in a build without it, and
+ * where its decoder cannot run -- glycin loads images in a bwrap sandbox
+ * that mounts /dev, which some containers refuse ("Loader process exited
+ * early"). *@why then says which, for a skip message; it stays owned by
+ * this function. The probe runs once and is cached.
+ */
+static inline gboolean
+venture_test_can_decode(
+	const gchar	**why
+){
+#ifdef VENTURE_HAVE_GDK_PIXBUF
+	/* A 1x1 PNG, so the probe needs no encoder of its own. */
+	static const gchar	png_base64[] =
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+	static gint			known = -1;
+	static gchar		*reason = NULL;
+
+	if (known < 0)
+	{
+		g_autoptr(GdkPixbufLoader)	loader = NULL;
+		g_autoptr(GBytes)			png = NULL;
+		g_autoptr(GError)			error = NULL;
+		g_autofree guchar			*raw = NULL;
+		gsize						length = 0;
+		gboolean					ok;
+
+		raw = g_base64_decode(png_base64, &length);
+		png = g_bytes_new(raw, length);
+		loader = gdk_pixbuf_loader_new_with_mime_type("image/png", &error);
+		ok = (NULL != loader) && gdk_pixbuf_loader_write_bytes(loader, png, &error);
+
+		if (NULL != loader)
+			ok = gdk_pixbuf_loader_close(loader, ok ? &error : NULL) && ok;
+
+		known = ok ? 1 : 0;
+
+		if (!ok)
+		{
+			const gchar	*message = (NULL != error) ? error->message : "no reason";
+
+			reason = g_strdup_printf("image decode unavailable: %s%s", message,
+				(NULL != strstr(message, "Loader process"))
+					? " (glycin's bwrap sandbox cannot mount /dev here)"
+					: "");
+		}
+	}
+
+	*why = reason;
+
+	return 1 == known;
+#else
+	*why = "image decode unavailable: built without GdkPixbuf";
+
+	return FALSE;
+#endif
+}
+
+/* Skips the current test unless images can be decoded; TRUE to go on. */
+static inline gboolean
+venture_test_need_decoder(void)
+{
+	const gchar	*why = NULL;
+
+	if (venture_test_can_decode(&why))
+		return TRUE;
+
+	g_test_skip(why);
+
+	return FALSE;
 }

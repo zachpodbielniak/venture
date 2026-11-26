@@ -380,48 +380,8 @@ png_chunks(
 
 /* --- Whether this machine can decode ------------------------------------- */
 
-/*
- * TRUE when GdkPixbuf here can decode a PNG at all. FALSE in a build
- * without it, and where its decoder cannot run (glycin's sandbox in a
- * container); *why says which, for the skip message.
- */
-static gboolean
-can_decode(const gchar **why)
-{
-#ifdef VENTURE_HAVE_GDK_PIXBUF
-	static gint known = -1;
-	static gchar *reason = NULL;
-
-	if (known < 0)
-	{
-		g_autoptr(GdkPixbufLoader) loader = NULL;
-		g_autoptr(GBytes) png = NULL;
-		g_autoptr(GError) error = NULL;
-		gboolean ok;
-
-		png = wide_png();
-		loader = gdk_pixbuf_loader_new_with_mime_type("image/png", &error);
-		ok = (NULL != loader) && gdk_pixbuf_loader_write_bytes(loader, png, &error);
-
-		if (NULL != loader)
-			ok = gdk_pixbuf_loader_close(loader, ok ? &error : NULL) && ok;
-
-		known = ok ? 1 : 0;
-
-		if (!ok)
-			reason = g_strdup_printf("GdkPixbuf cannot decode here: %s",
-			                         (NULL != error) ? error->message : "no reason");
-	}
-
-	*why = reason;
-
-	return 1 == known;
-#else
-	*why = "built without GdkPixbuf";
-
-	return FALSE;
-#endif
-}
+/* The probe lives in venture-test-util.h, shared with the OCR tests. */
+#define can_decode(why) venture_test_can_decode(why)
 
 /* can_decode() without the reason. */
 #ifdef VENTURE_HAVE_GDK_PIXBUF
@@ -438,14 +398,7 @@ can_decode_quietly(void)
 static gboolean
 need_decoder(void)
 {
-	const gchar *why = NULL;
-
-	if (can_decode(&why))
-		return TRUE;
-
-	g_test_skip(why);
-
-	return FALSE;
+	return venture_test_need_decoder();
 }
 
 /* --- Before any decoder ---------------------------------------------------- */

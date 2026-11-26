@@ -72,13 +72,16 @@ command(
 	g_string_append_c(out, value);
 }
 
-/* Strip terminal controls before conversion so only intentional printer commands reach paper. */
+/* Strip terminal controls before conversion so only intentional printer commands reach paper.
+ * Returns NULL with @error set when iconv cannot open @charset at all (its module is not
+ * installed): that is a broken installation, never something to print around. */
 static gchar *
 encode(
 	const gchar	*input,
 	const gchar	*charset,
 	guint		tabs,
-	gboolean	body
+	gboolean	body,
+	GError		**error
 ){
 	g_autoptr(GString)	staged = g_string_new(NULL);
 	g_autoptr(GString)	clean = g_string_new(NULL);
@@ -88,6 +91,7 @@ encode(
 	gsize				i;
 	gsize				column = 0;
 	gsize				size = 0;
+	g_autoptr(GError)	convert_error = NULL;
 	const gchar			*text = input ? input : "";
 
 	if (body)
@@ -154,7 +158,19 @@ encode(
 		g_autofree gchar	*target = g_strconcat(charset, "//TRANSLIT", NULL);
 
 		encoded = g_convert_with_fallback(staged->str, staged->len, target, "UTF-8", "?", NULL,
-										  &size, NULL);
+										  &size, &convert_error);
+	}
+	/* iconv could not open the codepage: its module is missing. Falling
+	 * through to the ASCII-only path would print a silently shortened
+	 * string (" caf" for "EUR caf\x82"), so refuse instead. A character the
+	 * codepage lacks is not this case: it is transliterated or replaced above. */
+	if (!encoded && g_error_matches(convert_error, G_CONVERT_ERROR, G_CONVERT_ERROR_NO_CONVERSION))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
+					"Cannot convert text to codepage %s: the iconv module for it is not "
+					"installed (glibc-gconv-extra on Fedora)",
+					charset);
+		return NULL;
 	}
 	/* Binary/truncated UTF-8 must never abort a print. The script's last
 	 * resort keeps only ASCII, tabs and LF from the staged input. */
@@ -461,8 +477,12 @@ venture_escpos_render(
 	{
 		return g_bytes_ref(document->raw);
 	}
-	body =
-		encode(document->cut_only ? "" : document->body, document->codepage, document->tabs, TRUE);
+	body = encode(document->cut_only ? "" : document->body, document->codepage, document->tabs,
+				  TRUE, error);
+	if (!body)
+	{
+		return NULL;
+	}
 	length = strlen(body);
 	lines = g_strsplit(body, "\n", -1);
 	/* awk has no extra empty record for a terminating newline. */
@@ -519,9 +539,15 @@ venture_escpos_render(
 	if (document->title && *document->title)
 	{
 		g_autofree gchar	*title =
-			encode(document->title, document->codepage, document->tabs, FALSE);
+			encode(document->title, document->codepage, document->tabs, FALSE, error);
 		g_autofree gchar	*rule = g_strnfill(width, '-');
-		gsize				n = strlen(title);
+		gsize				n;
+
+		if (!title)
+		{
+			return NULL;
+		}
+		n = strlen(title);
 
 		while (n && title[n - 1] == '\n')
 		{

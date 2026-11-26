@@ -3683,6 +3683,59 @@ test_feeds_push_cap_is_validated(void)
 /* --- Upkeep ------------------------------------------------------------------------ */
 
 /*
+ * Waits, bounded, for the upkeep the worker starts by itself after a
+ * store's first pass to end, and returns @id's upkeep state once it has.
+ *
+ * A new store has no upkeep on record, so it is due at once: the pass
+ * that creates the store starts one (worker_pass_finish()). It is not an
+ * upkeep anybody asked for, so it is not counted as pending, and settle()
+ * returns while it is still stepping -- slowly enough on a slow disk that
+ * reading the state straight after a sync found it running every time.
+ *
+ * Ended is both halves of what the worker does when it finishes: the
+ * result is kept in the store ("last"), and the upkeep is cleared from
+ * the status it publishes ("running"). The result is written first, so
+ * waiting for "last" alone would read "running" in between. An upkeep
+ * that ends without clearing "running" never satisfies this, and fails
+ * here with the state it was stuck in.
+ */
+static JsonNode *
+wait_for_scheduled_upkeep(
+	Fixture	*fixture,
+	gint64	 id
+){
+	gint64 deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+	for (;;)
+	{
+		g_autoptr(GError) error = NULL;
+		JsonNode *state;
+		JsonObject *root;
+
+		state = venture_feeds_service_dup_upkeep(service_of(fixture), id, &error);
+		g_assert_no_error(error);
+		root = json_node_get_object(state);
+
+		if (JSON_NODE_HOLDS_OBJECT(json_object_get_member(root, "last")) &&
+		    JSON_NODE_HOLDS_NULL(json_object_get_member(root, "running")))
+			return state;
+
+		if (g_get_monotonic_time() > deadline)
+		{
+			g_autofree gchar *text = json_to_string(state, FALSE);
+
+			g_error("source %" G_GINT64_FORMAT "'s first upkeep did not end within 30 "
+			        "seconds: %s", id, text);
+		}
+
+		json_node_unref(state);
+
+		if (!g_main_context_iteration(NULL, FALSE))
+			g_usleep(2000);
+	}
+}
+
+/*
  * An upkeep asked for -- with the rebuild -- runs on the worker, keeps
  * its result where the API reads it, leaves the store incremental, and a
  * sync queued behind it still runs once it is done.
@@ -3714,11 +3767,18 @@ test_feeds_upkeep_on_request(
 	run = sync_and_wait(fixture, id);
 	g_assert_cmpint(run_status(run), ==, VENTURE_DATA_SOURCE_RUN_STATUS_OK);
 
-	/* Never asked for, a store has no running upkeep; its size is read. */
-	state = venture_feeds_service_dup_upkeep(service_of(fixture), id, &error);
-	g_assert_no_error(error);
+	/*
+	 * Not asked for, the store's first upkeep still runs -- after the
+	 * pass that made the store -- and when it has ended nothing is left
+	 * running: the scheduled kind, without a rebuild, and no error. Its
+	 * size is read.
+	 */
+	state = wait_for_scheduled_upkeep(fixture, id);
 	root = json_node_get_object(state);
 	g_assert_true(JSON_NODE_HOLDS_NULL(json_object_get_member(root, "running")));
+	last = json_object_get_object_member(root, "last");
+	g_assert_false(json_object_has_member(last, "error"));
+	g_assert_false(json_object_get_boolean_member(last, "rebuild"));
 	g_assert_cmpstr(json_object_get_string_member(json_object_get_object_member(root, "size"), "auto_vacuum"),
 	                ==, "incremental");
 	g_clear_pointer(&state, json_node_unref);
