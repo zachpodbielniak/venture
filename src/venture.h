@@ -309,6 +309,8 @@
 #include "orgaccess/venture-access-policy.h"
 /* Comments name VentureAuthPrincipal: who may read, write and mention. */
 #include "core/venture-comment.h"
+/* Profile pictures name VentureContext, VentureActor and VentureActorNames. */
+#include "core/venture-avatar.h"
 #include "orgaccess/venture-accountant-role.h"
 
 #include "ai/venture-ai-service.h"

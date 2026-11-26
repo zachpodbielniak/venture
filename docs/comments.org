@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-10-04]
-#+updated: [2026-10-04]
+#+updated: [2026-11-26]
 #+version: 0.7.0
 
 * What this is
@@ -122,7 +122,7 @@ The assistant panel's renderer is a separate, older function in the web server w
 
 Every record page that takes comments has a *Discussion* card after the type's own block and before the tabs: the threads, oldest first, replies hung from a rule under the comment they answer, a reply box folded at the foot of each thread, and the box for a new comment at the bottom. An empty discussion says so and invites the first comment.
 
-Each comment shows its author as two letters and a name, a badge when they are the reader ("You"), the install's owner or an administrator, "via API token #N" when a token wrote it, how long ago -- the exact time on hover, and the time is the permalink -- and "edited" when it was. Below it: *Reply*, *Copy link*, *Edit* for its author and *Delete* for whoever may.
+Each comment shows its author by their picture -- or, when they have none or the reader may not see it, two letters -- and a name, a badge when they are the reader ("You"), the install's owner or an administrator, "via API token #N" when a token wrote it, how long ago -- the exact time on hover, and the time is the permalink -- and "edited" when it was. Below it: *Reply*, *Copy link*, *Edit* for its author and *Delete* for whoever may.
 
 All of it works with scripting off. A comment is an ordinary form that answers with a redirect to the comment; a reply box and an edit box are =<details>=; a permalink is a link. =venture.js= adds:
 
@@ -167,7 +167,8 @@ A comment in JSON:
   "id": 12, "uuid": "…", "subject_type": "invoice", "subject_id": 3,
   "subject_label": "INV-0003", "parent_id": null,
   "author": "erin", "author_user_id": 4, "author_name": "Erin Vale",
-  "author_initials": "EV", "author_username": "erin", "author_role": "editor",
+  "author_initials": "EV", "avatar_url": "/avatar/4/32?v=3f1c9a0e7b52d6a84c11",
+  "author_username": "erin", "author_role": "editor",
   "via_token": false,
   "body": "Sent a reminder, @bob", "html": "<p>Sent a reminder, <span class=\"mention\" …>@bob</span></p>",
   "mentions": ["bob"], "created_at": "…", "edited_at": null, "deleted": false,
@@ -175,6 +176,8 @@ A comment in JSON:
   "can_edit": true, "can_delete": true
 }
 #+end_src
+
+=avatar_url= is the author's 32 pixel picture, or null when they have none or the reader may not see it (the people the @ menu offers carry one too); the badge is then =author_initials=. See [[file:avatars.org][Profile pictures]].
 
 A deleted comment with replies appears with =deleted: true= and =body= and =html= null; one without replies is left out. =can_edit= and =can_delete= are the policy's answer for the reader, so the buttons and the refusals agree. The page routes are =POST /comments=, =GET /comments/:id=, =POST /comments/:id/edit= and =POST /comments/:id/delete=.
 

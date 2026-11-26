@@ -1172,7 +1172,11 @@ venture_web_forms_body_limit(SoupServerMessage *message, gpointer data)
 	g_autoptr(VentureAccessScope) boundary = NULL;
 	g_autoptr(HtmxRequest) request = NULL;
 	VentureTenantService *service;
+	gsize avatar;
 	if (path != NULL && g_str_has_prefix(path, "/hooks/lightsite/")) return 32768;
+	/* A profile picture is capped well under the server-wide limit. */
+	avatar = path != NULL ? venture_web_avatar_body_limit(path) : 0;
+	if (avatar > 0) return avatar;
 	if (path == NULL || !g_str_has_prefix(path, "/pub/form/")) return G_MAXSIZE;
 	if (g_strcmp0(soup_server_message_get_method(message), "POST") != 0 || path[10] == '\0' || strchr(path + 10, '/') != NULL) return VENTURE_FORMS_MAX_BODY;
 	boundary = venture_access_policy_enter(venture_database_get_access_policy(database), NULL);

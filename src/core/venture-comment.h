@@ -236,7 +236,9 @@ venture_comment_count(
  *
  * One comment for the API: who wrote it and when, its markdown and its
  * rendered HTML (both %NULL once deleted), what it is on, its permalink
- * and whether the reader may edit or delete it.
+ * and whether the reader may edit or delete it. "author_initials" is the
+ * badge, and "avatar_url" the author's 32 pixel picture, null when they
+ * have none or the reader may not see it (venture_avatar_url_for()).
  *
  * Returns: (transfer full): the object
  */
@@ -319,7 +321,9 @@ venture_comment_user_can_read(
  * matching @prefix, by username. Nobody who may not read the record is
  * offered, so the list says nothing about anybody outside it.
  *
- * Returns: (transfer full): a JSON array of {username, name, initials}
+ * Returns: (transfer full): a JSON array of {username, name, initials,
+ *   avatar_url}; avatar_url is null when the person has no picture or the
+ *   current reader may not see it
  */
 JsonNode *
 venture_comment_mention_candidates(

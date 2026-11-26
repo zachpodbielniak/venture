@@ -45,6 +45,10 @@ struct _VentureActorNames
 	 * so a reader's own memberships and an owner named by several tokens
 	 * are each read once. */
 	GHashTable		*organizations;
+
+	/* User id -> the version of their picture, or NULL for none and for
+	 * a person this reader may not see. Present once looked at. */
+	GHashTable		*avatars;
 };
 
 VentureActorNames *
@@ -63,6 +67,8 @@ venture_actor_names_new(VentureDatabase *database)
 	self->organizations = g_hash_table_new_full(g_int64_hash, g_int64_equal,
 	                                            g_free,
 	                                            (GDestroyNotify)g_hash_table_unref);
+	self->avatars = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+	                                      g_free, g_free);
 
 	return self;
 }
@@ -75,6 +81,7 @@ venture_actor_names_free(VentureActorNames *self)
 
 	g_clear_pointer(&self->by_token, g_hash_table_unref);
 	g_clear_pointer(&self->organizations, g_hash_table_unref);
+	g_clear_pointer(&self->avatars, g_hash_table_unref);
 	g_clear_pointer(&self->reader, venture_auth_principal_free);
 	g_clear_object(&self->database);
 	g_free(self);
@@ -345,4 +352,87 @@ venture_actor_names_display_lead(
 	shown = venture_actor_names_format(actor, username);
 
 	return g_strconcat(shown, text + length, NULL);
+}
+
+gboolean
+venture_actor_names_may_see_user(
+	VentureActorNames	*self,
+	gint64			 user_id
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+
+	g_return_val_if_fail(NULL != self, FALSE);
+
+	/* Asked first so a page for nobody costs no reads at all. */
+	if ((user_id <= 0) || (NULL == self->reader) || !self->reader->authenticated)
+		return FALSE;
+
+	/* The memberships are owner-only records: read them as trusted work.
+	 * What the reader is told is still reader_may_know()'s call. */
+	internal = venture_access_policy_enter(
+		venture_database_get_access_policy(self->database), NULL);
+
+	return venture_actor_names_reader_may_know(self, user_id);
+}
+
+/*
+ * The stored version of @user_id's picture, or NULL. Called inside the
+ * trusted scope: a user row is owner-only to the record policy.
+ */
+static gchar *
+venture_actor_names_read_avatar(
+	VentureActorNames	*self,
+	gint64			 user_id
+){
+	g_autoptr(VentureEntity) user = NULL;
+	g_autofree gchar *version = NULL;
+
+	user = venture_database_get(self->database, VENTURE_TYPE_USER, user_id,
+	                            NULL);
+
+	if ((NULL == user) || venture_entity_is_deleted(user))
+		return NULL;
+
+	g_object_get(user, "avatar-version", &version, NULL);
+
+	if (venture_string_is_empty(version))
+		return NULL;
+
+	return g_steal_pointer(&version);
+}
+
+const gchar *
+venture_actor_names_avatar_version(
+	VentureActorNames	*self,
+	gint64			 user_id
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	gpointer known;
+	gchar *version;
+	gint64 *key;
+
+	g_return_val_if_fail(NULL != self, NULL);
+
+	if (user_id <= 0)
+		return NULL;
+
+	if (g_hash_table_lookup_extended(self->avatars, &user_id, NULL, &known))
+		return known;
+
+	version = NULL;
+
+	/* Who may see the person comes first: a reader who may not is not
+	 * told whether there is a picture to see either. */
+	if (venture_actor_names_may_see_user(self, user_id))
+	{
+		internal = venture_access_policy_enter(
+			venture_database_get_access_policy(self->database), NULL);
+		version = venture_actor_names_read_avatar(self, user_id);
+	}
+
+	key = g_new(gint64, 1);
+	*key = user_id;
+	g_hash_table_insert(self->avatars, key, version);
+
+	return version;
 }

@@ -285,6 +285,7 @@ venture_database_init(VentureDatabase *self)
 	venture_mail_sync_install_validators(self);
 	venture_stripe_install_validators(self);
 	venture_document_install_validators(self);
+	venture_avatar_install(self);
 	venture_household_yearend_install(self);
 	venture_account_code_install(self);
 	venture_bankfeed_install_validators(self);

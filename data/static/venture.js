@@ -4588,7 +4588,21 @@
 			option.setAttribute("aria-selected", i === 0 ? "true" : "false");
 			initials.setAttribute("data-discussion-option-initials", "");
 			initials.setAttribute("aria-hidden", "true");
-			initials.textContent = person.initials || "?";
+
+			/* Their picture when the server offered one (it does only
+			 * when this reader may see it), else their initials. */
+			if (person.avatar_url) {
+				var picture = document.createElement("img");
+
+				picture.className = "avatar";
+				picture.src = person.avatar_url;
+				picture.alt = "";
+				picture.width = 32;
+				picture.height = 32;
+				initials.appendChild(picture);
+			} else {
+				initials.textContent = person.initials || "?";
+			}
 			name.textContent = person.name || person.username;
 			handle.setAttribute("data-discussion-option-handle", "");
 			handle.textContent = "@" + person.username;

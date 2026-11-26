@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-11-15]
+#+updated: [2026-11-26]
 #+version: 0.6.0
 
 * Configuration
@@ -83,6 +83,13 @@ saving it? Delete the state directory and start again, or pass
 though the session already proves who you are — that is what stops somebody
 who walked up to an unlocked browser from locking you out of your own books.
 
+** Your picture
+
+=/account= also takes a picture: a PNG, JPEG or WebP of at most 5 MB, of
+which only small square PNGs are kept. It is drawn beside your comments and
+in the account menu, to the people who share an organization with you;
+everybody else sees your initials. See [[file:avatars.org][Profile pictures]].
+
 ** Signing out
 
 The *Sign out* button is at the bottom of the sidebar, under the name of
@@ -103,7 +110,8 @@ that is the useful behaviour.
 
 =/users=, owner only. Add an account with a username, role and password;
 change a role; deactivate somebody; reset a password without knowing the old
-one, which is the point of a reset.
+one, which is the point of a reset; set or remove somebody's picture (see
+[[file:avatars.org][Profile pictures]]).
 
 A deactivated account fails authentication before the password is even
 compared, so deactivating is the way to remove access without deleting the

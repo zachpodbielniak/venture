@@ -225,11 +225,15 @@ ifeq ($(POPPLER_AVAILABLE),1)
     CFLAGS_BASE += -DVENTURE_HAVE_POPPLER=1
 endif
 
-# Optional bounded image decoding for local OCR. Ordinary capture needs neither.
+# Optional bounded image decoding, for local OCR and for profile pictures.
+# Ordinary capture needs neither. Without it the server builds and runs:
+# OCR of images is unavailable, picture uploads answer that this build
+# cannot take them, and everybody is drawn by their initials. Build
+# without it on a machine that has it with `make OCR_RASTER_AVAILABLE=0`.
 OCR_RASTER_AVAILABLE := $(shell $(PKG_CONFIG) --exists gdk-pixbuf-2.0 2>/dev/null && echo 1 || echo 0)
 ifeq ($(OCR_RASTER_AVAILABLE),1)
     DEPS_SERVER += gdk-pixbuf-2.0
-    CFLAGS_BASE += -DVENTURE_HAVE_OCR_RASTER=1
+    CFLAGS_BASE += -DVENTURE_HAVE_OCR_RASTER=1 -DVENTURE_HAVE_GDK_PIXBUF=1
 endif
 
 # Archive reading and writing, for knowledge-base import and export.

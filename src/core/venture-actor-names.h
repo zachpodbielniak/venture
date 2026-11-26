@@ -150,6 +150,48 @@ venture_actor_names_display_lead(
 	const gchar		*text
 );
 
+/**
+ * venture_actor_names_may_see_user:
+ * @self: a cache
+ * @user_id: the account the reader would be shown
+ *
+ * Whether the reader may be shown who @user_id is -- their name, and so
+ * their picture. The rule is the one that decides whether a token's owner
+ * is named: a global owner or administrator, the account itself, anybody
+ * signed in when organization access is off, or an active member of an
+ * organization @user_id is also an active member of. An unauthenticated
+ * reader and trusted internal work are told nothing.
+ *
+ * `GET /avatar/:id/:size` answers by this, so a picture is served to
+ * exactly the readers a name is shown to.
+ *
+ * Returns: %TRUE when the reader may see @user_id
+ */
+gboolean
+venture_actor_names_may_see_user(
+	VentureActorNames	*self,
+	gint64			 user_id
+);
+
+/**
+ * venture_actor_names_avatar_version:
+ * @self: a cache
+ * @user_id: the account whose picture is wanted
+ *
+ * The version of @user_id's profile picture, when they have one and the
+ * reader may see them (venture_actor_names_may_see_user()). Read once
+ * per user per cache, however many rows name the same person.
+ *
+ * Returns: (transfer none) (nullable): the version, owned by @self; %NULL
+ *   for no picture, an account that does not exist or was deleted, and a
+ *   reader who may not see it
+ */
+const gchar *
+venture_actor_names_avatar_version(
+	VentureActorNames	*self,
+	gint64			 user_id
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_ACTOR_NAMES_H */

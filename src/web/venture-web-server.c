@@ -3320,12 +3320,27 @@ venture_web_page(
 		if ((NULL != principal) && principal->authenticated &&
 		    !venture_string_is_empty(principal->name))
 		{
+			g_autoptr(VentureActorNames) viewer = NULL;
+			g_autofree gchar *picture = NULL;
+
+			/* Their own picture, which links to where it is changed;
+			 * the initials when there is none. */
+			viewer = venture_actor_names_new(
+				venture_context_get_database(self->context));
+			picture = venture_avatar_html(viewer, principal->user_id,
+			                              principal->name,
+			                              VENTURE_AVATAR_SIZE_SMALL);
+
 			g_string_append(html, "<div class=\"sidebar-user\">"
+			                      "<a class=\"sidebar-user-avatar\" href=\"/account\" "
+			                      "title=\"Your account\">");
+			g_string_append(html, picture);
+			g_string_append(html, "</a><span class=\"sidebar-user-text\">"
 			                      "<span class=\"name\">");
 			venture_html_escape_append(html, principal->name);
 			g_string_append(html, "</span><span class=\"role\">");
 			venture_web_append_nick(html, VENTURE_TYPE_USER_ROLE, (gint)principal->role);
-			g_string_append(html, "</span></div>");
+			g_string_append(html, "</span></span></div>");
 		}
 	}
 
@@ -13748,6 +13763,9 @@ venture_web_append_incident_block(
 #include "attribution/venture-attribution-settings-web.inc"
 #include "arbitrage/venture-arbitrage-web.inc"
 #include "web/venture-web-comments.inc"
+/* Before the account and users pages, which draw and change pictures, and
+ * before the forms routes, whose transport limit asks it about uploads. */
+#include "web/venture-web-avatars.inc"
 #include "web/venture-web-planning.inc"
 #include "web/venture-web-company-tree.inc"
 
@@ -15942,13 +15960,29 @@ venture_web_ui_account(
 
 	if (NULL != notice)
 	{
-		g_string_append_printf(content, "<div class=\"banner %s\">",
-			(0 == g_strcmp0(notice, "changed")) ? "banner-ok" : "banner-warn");
-		venture_html_escape_append(content,
-			(0 == g_strcmp0(notice, "changed"))
-				? "Password changed."
-				: "That did not work. Check the current password and try "
-				  "again.");
+		const gchar *picture_text;
+		gboolean picture_ok;
+
+		picture_ok = FALSE;
+		picture_text = venture_web_avatar_notice_text(notice, &picture_ok);
+
+		if (NULL != picture_text)
+		{
+			g_string_append_printf(content, "<div class=\"banner %s\">",
+				picture_ok ? "banner-ok" : "banner-warn");
+			venture_html_escape_append(content, picture_text);
+		}
+		else
+		{
+			g_string_append_printf(content, "<div class=\"banner %s\">",
+				(0 == g_strcmp0(notice, "changed")) ? "banner-ok" : "banner-warn");
+			venture_html_escape_append(content,
+				(0 == g_strcmp0(notice, "changed"))
+					? "Password changed."
+					: "That did not work. Check the current password and try "
+					  "again.");
+		}
+
 		g_string_append(content, "</div>");
 	}
 
@@ -15982,6 +16016,17 @@ venture_web_ui_account(
 		g_string_append(content, "</dd><dt>Role</dt><dd>");
 		venture_web_append_nick(content, VENTURE_TYPE_USER_ROLE, (gint)role);
 		g_string_append(content, "</dd></dl>");
+
+		/* The picture, as everybody who may see the name sees it. */
+		{
+			g_autoptr(VentureActorNames) viewer = NULL;
+
+			viewer = venture_actor_names_new(
+				venture_context_get_database(self->context));
+			venture_web_avatar_account_section(content, viewer,
+				principal->user_id,
+				venture_string_is_empty(display_name) ? username : display_name);
+		}
 
 		g_string_append_printf(content,
 			"<h2>Change password</h2>"
@@ -16986,6 +17031,7 @@ venture_web_ui_users(
 	g_autoptr(GPtrArray) users = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureActorNames) viewer = NULL;
 	HtmxResponse *redirect;
 	const gchar *notice;
 	guint i;
@@ -17020,13 +17066,19 @@ venture_web_ui_users(
 
 	if (NULL != notice)
 	{
+		const gchar *picture_text;
+		gboolean picture_ok;
 		gboolean ok;
 
-		ok = (NULL != g_strrstr(notice, "ok"));
+		picture_ok = FALSE;
+		picture_text = venture_web_avatar_notice_text(notice, &picture_ok);
+		ok = (NULL != picture_text) ? picture_ok : (NULL != g_strrstr(notice, "ok"));
 		g_string_append_printf(content, "<div class=\"banner %s\">",
 		                       ok ? "banner-ok" : "banner-warn");
 
-		if (0 == g_strcmp0(notice, "created-ok"))
+		if (NULL != picture_text)
+			venture_html_escape_append(content, picture_text);
+		else if (0 == g_strcmp0(notice, "created-ok"))
 			g_string_append(content, "User created.");
 		else if (0 == g_strcmp0(notice, "created-access-ok"))
 			g_string_append(content, "User created. They can sign in and work in this business now.");
@@ -17057,12 +17109,16 @@ venture_web_ui_users(
 	                         "<table class=\"table\"><thead><tr>"
 	                         "<th>Username</th><th>Name</th><th>Role</th>"
 	                         "<th>Status</th><th>Last login</th>"
-	                         "<th>Reset password</th></tr></thead><tbody>");
+	                         "<th>Reset password</th><th>Picture</th>"
+	                         "</tr></thead><tbody>");
+
+	viewer = venture_actor_names_new(venture_context_get_database(self->context));
 
 	for (i = 0; i < users->len; i++)
 	{
 		g_autofree gchar *username = NULL;
 		g_autofree gchar *display_name = NULL;
+		g_autofree gchar *avatar_version = NULL;
 		g_autoptr(GDateTime) last_login = NULL;
 		VentureEntity *entity;
 		VentureUserRole role;
@@ -17074,7 +17130,8 @@ venture_web_ui_users(
 
 		g_object_get(entity, "username", &username, "display-name",
 		             &display_name, "role", &role, "active", &active,
-		             "last-login-at", &last_login, NULL);
+		             "last-login-at", &last_login,
+		             "avatar-version", &avatar_version, NULL);
 
 		g_string_append(content, "<tr><td>");
 		venture_html_escape_append(content, username);
@@ -17144,8 +17201,22 @@ venture_web_ui_users(
 			"minlength=\"%u\" placeholder=\"new password\" "
 			"autocomplete=\"new-password\">"
 			"<button class=\"btn btn-sm\" type=\"submit\">Reset</button>"
-			"</form></td></tr>",
+			"</form></td><td><div class=\"avatar-cell\">",
 			id, venture_auth_get_password_min_length(self->auth));
+
+		/* The picture beside the forms that change it. */
+		{
+			g_autofree gchar *picture = NULL;
+
+			picture = venture_avatar_html(viewer, id,
+				venture_string_is_empty(display_name) ? username : display_name,
+				VENTURE_AVATAR_SIZE_SMALL);
+			g_string_append(content, picture);
+		}
+
+		venture_web_avatar_users_cell(content, id,
+		                              !venture_string_is_empty(avatar_version));
+		g_string_append(content, "</div></td></tr>");
 	}
 
 	g_string_append(content, "</tbody></table></div></div>");
@@ -36401,6 +36472,9 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/entities/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_entities_delete, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_account, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/password", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_account_password, self);
+	/* Profile pictures; before /api/v1/:type/:id, which would read
+	 * /api/v1/account/avatar as a record. */
+	venture_web_avatars_register(self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/kb", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_kb, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/account/tokens", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_tokens, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/account/tokens", VENTURE_DATA_CLASS_PERSONAL, VENTURE_HOSTED_ROUTE_CONTROL, venture_web_ui_tokens_create, self);

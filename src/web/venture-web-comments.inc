@@ -299,11 +299,19 @@ venture_web_comments_article(
 		reply ? " is-reply" : "", deleted ? " is-deleted" : "",
 		own ? " is-own" : "", id, id);
 
-	/* The avatar is two letters, not a photograph: nobody uploads one, and
-	 * a grey silhouette beside every comment says nothing. */
+	/* The author's picture when they have one this reader may see (the
+	 * JSON carries its address only then), else their two letters: never
+	 * a grey silhouette, which beside every comment says nothing. A
+	 * deleted comment shows neither. */
 	g_string_append(html, "<span class=\"discussion-avatar\" aria-hidden=\"true\">");
-	venture_html_escape_append(html, deleted ? "\xe2\x80\x93"
-		: venture_json_object_get_string(comment, "author_initials", "?"));
+
+	if (deleted)
+		venture_html_escape_append(html, "\xe2\x80\x93");
+	else
+		venture_avatar_html_append(html,
+			venture_json_object_get_string(comment, "avatar_url", NULL), name,
+			VENTURE_AVATAR_SIZE_SMALL);
+
 	g_string_append(html, "</span><div class=\"discussion-main\"><header class=\"discussion-head\">");
 
 	if (deleted)

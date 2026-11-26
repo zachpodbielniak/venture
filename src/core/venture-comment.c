@@ -123,37 +123,12 @@ comment_load_user_by_name(
 	return venture_database_find_one(database, query, NULL);
 }
 
-/* "Ruth Ellery" to "RE", "zach" to "Z": the avatar's two letters. */
+/* "Ruth Ellery" to "RE", "zach" to "Z": the badge drawn when there is no
+ * picture. One rule for every badge, kept beside the pictures. */
 static gchar *
 comment_initials(const gchar *name)
 {
-	g_autoptr(GString) out = NULL;
-	const gchar *p;
-	gboolean word_start = TRUE;
-
-	out = g_string_new(NULL);
-
-	for (p = name; (NULL != p) && ('\0' != *p) && (g_utf8_strlen(out->str, -1) < 2);
-	     p = g_utf8_next_char(p))
-	{
-		gunichar c = g_utf8_get_char(p);
-
-		if (!g_unichar_isalnum(c))
-		{
-			word_start = TRUE;
-			continue;
-		}
-
-		if (word_start)
-			g_string_append_unichar(out, g_unichar_toupper(c));
-
-		word_start = FALSE;
-	}
-
-	if (0 == out->len)
-		g_string_append_c(out, '?');
-
-	return g_string_free(g_steal_pointer(&out), FALSE);
+	return venture_avatar_initials(name);
 }
 
 /* The names a comment's "mentions" field holds, as a vector. */
@@ -1010,10 +985,15 @@ comment_add_string(
 		json_builder_add_null_value(builder);
 }
 
-JsonNode *
-venture_comment_to_json(
+/*
+ * One comment as JSON, with @names the reader's cache: one per thread,
+ * so a person who wrote twenty comments is looked up once.
+ */
+static JsonNode *
+comment_to_json_with(
 	VentureContext			*context,
 	const VentureAuthPrincipal	*principal,
+	VentureActorNames		*names,
 	VentureEntity			*comment
 ){
 	g_autoptr(JsonBuilder) builder = NULL;
@@ -1087,6 +1067,16 @@ venture_comment_to_json(
 	comment_add_string(builder, "author_name", name);
 	comment_add_string(builder, "author_initials", initials);
 
+	/* The author's picture, when they have one and the reader may see
+	 * it; null otherwise, and the initials above are the badge. */
+	{
+		g_autofree gchar *avatar = NULL;
+
+		avatar = venture_avatar_url_for(names, author_user_id,
+		                                VENTURE_AVATAR_SIZE_SMALL);
+		comment_add_string(builder, "avatar_url", avatar);
+	}
+
 	/* The account behind it, for the reply box's @name and the page's
 	 * badge: who the author is to this install. */
 	{
@@ -1138,6 +1128,28 @@ venture_comment_to_json(
 	return json_builder_get_root(builder);
 }
 
+JsonNode *
+venture_comment_to_json(
+	VentureContext			*context,
+	const VentureAuthPrincipal	*principal,
+	VentureEntity			*comment
+){
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(VENTURE_IS_COMMENT(comment), NULL);
+
+	/* The names cache reads its reader from the scope, so make it in
+	 * the principal's. */
+	if (NULL != principal)
+		scope = venture_access_policy_enter(comment_policy(context), principal);
+
+	names = venture_actor_names_new(venture_context_get_database(context));
+
+	return comment_to_json_with(context, principal, names, comment);
+}
+
 /* Every comment on a record, deleted ones included, oldest first. */
 static GPtrArray *
 comment_list_all(
@@ -1181,12 +1193,15 @@ venture_comment_thread(
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(GHashTable) live_replies = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
 	if (NULL != principal)
 		scope = venture_access_policy_enter(comment_policy(context), principal);
+
+	names = venture_actor_names_new(venture_context_get_database(context));
 
 	subject = comment_load_subject(venture_context_get_database(context),
 	                               subject_type, subject_id, error);
@@ -1240,7 +1255,7 @@ venture_comment_thread(
 		    !g_hash_table_contains(live_replies, &top_id))
 			continue;
 
-		node = venture_comment_to_json(context, principal, top);
+		node = comment_to_json_with(context, principal, names, top);
 		json_object_set_array_member(json_node_get_object(node), "replies",
 		                             json_array_new());
 
@@ -1257,7 +1272,7 @@ venture_comment_thread(
 			json_array_add_element(
 				json_object_get_array_member(json_node_get_object(node),
 				                             "replies"),
-				venture_comment_to_json(context, principal, reply));
+				comment_to_json_with(context, principal, names, reply));
 		}
 
 		json_builder_add_value(builder, g_steal_pointer(&node));
@@ -1346,6 +1361,7 @@ venture_comment_mention_candidates(
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) users = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
 	guint offered = 0;
 	guint i;
 
@@ -1354,6 +1370,10 @@ venture_comment_mention_candidates(
 
 	if (0 == limit)
 		limit = 8;
+
+	/* Made before the trusted scope below, so its reader is the person
+	 * typing the @: whose pictures they may see is their question. */
+	names = venture_actor_names_new(venture_context_get_database(context));
 
 	internal = venture_access_policy_enter(comment_policy(context), NULL);
 	query = venture_query_new(VENTURE_TYPE_USER);
@@ -1396,6 +1416,15 @@ venture_comment_mention_candidates(
 		comment_add_string(builder, "name",
 		                   !venture_string_is_empty(display) ? display : username);
 		comment_add_string(builder, "initials", initials);
+
+		{
+			g_autofree gchar *avatar = NULL;
+
+			avatar = venture_avatar_url_for(names, venture_entity_get_id(user),
+			                                VENTURE_AVATAR_SIZE_SMALL);
+			comment_add_string(builder, "avatar_url", avatar);
+		}
+
 		json_builder_end_object(builder);
 		offered++;
 	}

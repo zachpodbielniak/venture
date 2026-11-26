@@ -37,6 +37,7 @@ in the repository lists today's.
 | `GET /printers`, `GET /printers/:name/status`, `POST /printers/:name/test`, `POST /print/:type/:id` | receipt printers | `printers`, `print` |
 | `POST /federation` | federation operations (owner) | `federation JSON` |
 | `GET /account-identity/:id` | hosted organization identity check | -- |
+| `PUT`/`DELETE /account/avatar`, `PUT`/`DELETE /users/:id/avatar` (owner for another account); body is the raw image or multipart `file`; PNG/JPEG/WebP, 5 MB, 4096 px a side; 422 names the refusal, 501 without image support. `GET /avatar/:id/:size` at the root (32, 64, 96, 192): 404 unless the reader may see that person's name. Comment rows carry `avatar_url` (null = draw `author_initials`) | profile pictures (docs/avatars.org) | -- |
 
 ## Desk, KB, factory, forge
 

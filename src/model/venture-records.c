@@ -3681,7 +3681,17 @@ static const VentureFieldDecl venture_user_fields[] = {
 	              VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("timezone", "Timezone", NULL, VENTURE_FIELD_KIND_STRING,
 	              VENTURE_COLUMN_FLAG_NONE),
-	VENTURE_FIELD_TEXT("notes", "Notes", NULL)
+	VENTURE_FIELD_TEXT("notes", "Notes", NULL),
+	/*
+	 * The profile picture, named by the digest of its renditions; empty
+	 * when there is none. Only the avatar store (src/core/venture-avatar.c)
+	 * writes it -- a save validator refuses every other writer -- and the
+	 * pictures themselves live under <state_dir>/avatars/, never in the
+	 * database. The digest is what gives a new picture a new address, so
+	 * a browser's year-long cache never shows the old one.
+	 */
+	VENTURE_FIELD("avatar-version", "Picture version", "Digest of the profile picture; set by uploading one",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TECHNICAL)
 };
 
 /* A person by the name they go by, before their e-mail address: a list of

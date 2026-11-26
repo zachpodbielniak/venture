@@ -741,11 +741,20 @@ body::after {
 /* Who you are signed in as, above the controls that end the session. */
 .sidebar-user {
 	display: flex;
-	flex-direction: column;
-	gap: 1px;
+	align-items: center;
+	gap: var(--space-2);
 	padding: var(--space-3) var(--space-4);
 	min-width: 0;
 	border-bottom: 1px solid var(--border);
+}
+
+.sidebar-user-avatar { display: inline-flex; flex: none; }
+
+.sidebar-user-text {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
 }
 
 .sidebar-user .name {
@@ -5409,10 +5418,47 @@ input:not([type="hidden"]):focus-visible {
 	column-gap: var(--space-3);
 	scroll-margin-top: var(--space-7);
 }
+/*
+ * A person's badge: their picture, or their initials on ink when there is
+ * none -- src/core/venture-avatar.c draws both, with the same classes.
+ * Square, like everything else here. A box that sizes a badge (a comment,
+ * the @ menu) sizes either kind.
+ */
+.avatar {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	object-fit: cover;
+	background: var(--ink);
+	color: var(--ink-contrast);
+	font-family: var(--font-mono);
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	user-select: none;
+}
+.avatar-32 { width: 32px; height: 32px; font-size: 11px; }
+.avatar-96 { width: 96px; height: 96px; font-size: 28px; }
+.discussion-avatar .avatar,
+[data-discussion-option] [data-discussion-option-initials] .avatar {
+	width: 100%;
+	height: 100%;
+	font-size: inherit;
+	letter-spacing: inherit;
+	background: inherit;
+	color: inherit;
+}
+/* The account page's picture beside the forms that change it, and the
+ * users page's cell. */
+.avatar-edit { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-4); }
+.avatar-edit-forms { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.avatar-cell { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+
 .discussion-avatar {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	overflow: hidden;
 	width: 32px;
 	height: 32px;
 	background: var(--ink);
@@ -5684,6 +5730,7 @@ input:not([type="hidden"]):focus-visible {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	overflow: hidden;
 	width: 22px;
 	height: 22px;
 	background: var(--ink);

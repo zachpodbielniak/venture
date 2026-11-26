@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-09-12]
+#+updated: [2026-11-26]
 #+version: 0.7.0
 
 * REST API
@@ -190,6 +190,11 @@ falls back rather than guesses.
 | =GET=    | =/api/v1/reports=                   | list reports                         |
 | =GET=    | =/api/v1/reports/:name=             | run one; =?format=csv= for CSV       |
 | =POST=   | =/api/v1/tokens=                    | mint an API token                    |
+| =PUT=    | =/api/v1/account/avatar=            | set your picture: the raw image, or multipart =file= ([[file:avatars.org][Profile pictures]]) |
+| =DELETE= | =/api/v1/account/avatar=            | remove your picture                  |
+| =PUT=    | =/api/v1/users/:id/avatar=          | set anybody's picture (owner)        |
+| =DELETE= | =/api/v1/users/:id/avatar=          | remove anybody's picture (owner)     |
+| =GET=    | =/avatar/:id/:size=                 | a picture (32, 64, 96, 192), to readers who may see the name; at the root, not under =/api/v1= |
 | =GET=    | =/api/v1/confirmations=             | changes awaiting approval            |
 | =POST=   | =/api/v1/confirmations/:id/approve= | apply a staged change                |
 | =POST=   | =/api/v1/confirmations/:id/reject=  | discard one                          |

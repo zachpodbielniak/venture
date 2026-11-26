@@ -1,0 +1,157 @@
+#+title: Profile pictures
+#+description: A picture on every user account: uploading and removing it, what is checked and kept, who may see it, how it is served and drawn, and building without image support
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-11-26]
+#+updated: [2026-11-26]
+#+version: 0.1.0
+
+* What this is
+
+A user account can carry a picture. Where VENTURE draws a person -- beside their comments, in the account menu at the foot of the sidebar -- it draws their picture if they have one, and their initials if they do not. Anybody may set their own on =/account=; an owner may set anybody's on =/users=; a script does either through the API.
+
+The picture a person uploads is never kept. It is checked from its bytes, decoded, cropped to its middle square and written again as small PNG files; those files are all that is stored, so nothing the original carried besides pixels -- a phone's location, the camera, comments, colour profiles -- survives.
+
+* Uploading and removing
+
+** From the web interface
+
+- =/account= :: *Picture*: the picture as others see it (or the initials), a file chooser and *Upload* (*Replace* once there is one), and *Remove picture*. Anybody signed in may change their own, viewers included: it is their account, as their password is.
+- =/users= :: owner only, like everything else on the page. The *Picture* column shows each person's badge, with *Set* (*Replace*) and *Remove*.
+
+A refused upload comes back to the page with a notice saying why: too large, not a picture of an accepted kind, too many pixels, or not readable. The full reason goes to the server log.
+
+** Through the API
+
+| Method   | Path                          | Who                                        |
+|----------+-------------------------------+--------------------------------------------|
+| =PUT=    | =/api/v1/account/avatar=      | the caller, for their own account          |
+| =DELETE= | =/api/v1/account/avatar=      | the caller, for their own account          |
+| =PUT=    | =/api/v1/users/:id/avatar=    | a global owner, for any account; anybody for their own |
+| =DELETE= | =/api/v1/users/:id/avatar=    | a global owner, for any account; anybody for their own |
+
+The body of a =PUT= is the picture itself (=curl --data-binary @face.jpg=, any =Content-Type=), or a =multipart/form-data= body with the picture in the field =file= -- what a browser form sends, and what the hosted image upload takes. Neither the file name nor the declared type is read: the bytes are.
+
+An API token acts as the user who owns it. A token minted read-only (role =viewer=) stays read-only and is refused with 403, even for its owner's own picture. A token with no user behind it has no picture to change (422).
+
+Both answer the account's picture as it now is:
+
+#+begin_src json
+{
+  "user_id": 4,
+  "avatar_version": "3f1c9a0e7b52d6a84c11",
+  "avatar_url": "/avatar/4/32?v=3f1c9a0e7b52d6a84c11",
+  "avatar_urls": {
+    "32": "/avatar/4/32?v=3f1c9a0e7b52d6a84c11",
+    "64": "/avatar/4/64?v=3f1c9a0e7b52d6a84c11",
+    "96": "/avatar/4/96?v=3f1c9a0e7b52d6a84c11",
+    "192": "/avatar/4/192?v=3f1c9a0e7b52d6a84c11"
+  }
+}
+#+end_src
+
+After a =DELETE= (or with no picture) =avatar_version= and =avatar_url= are =null= and =avatar_urls= is empty. Removing a picture that is not there succeeds.
+
+| Status | When                                                                             |
+|--------+----------------------------------------------------------------------------------|
+| 200    | done                                                                             |
+| 401    | no credential                                                                    |
+| 403    | somebody else's picture without the owner role; a read-only token                |
+| 404    | no such account                                                                  |
+| 413    | the body is far past the size cap; refused at its headers, before it is buffered |
+| 422    | refused picture -- the message says which check (below)                          |
+| 501    | this server was built without image support                                      |
+
+* What is checked, in order
+
+Everything that needs no decoder runs first, so nothing but a PNG, JPEG or WebP picture of a sane size ever reaches one:
+
+1. *Something arrived.*
+2. *Size*: at most 5 MB (=VENTURE_AVATAR_MAX_BYTES=). The HTTP layer also refuses a body much past that at its headers (=src/web/venture-web-avatars.inc=), so a huge upload is never held in memory.
+3. *Kind, from the magic number*: PNG, JPEG or WebP, read from the bytes by the same sniffer the hosted email images use. SVG (which can carry script), GIF, BMP, TIFF, ICO, XPM, text and a header cut short are refused.
+4. *Dimensions, from the header*: at most 4096 pixels a side (=VENTURE_AVATAR_MAX_SIDE=). A file of a few bytes claiming 100000 by 100000 pixels -- forty gigabytes decoded, a decompression bomb -- is refused here, before anything is allocated.
+5. *Decoding* with GdkPixbuf, through a loader made for the sniffed type only (never format guessing). The loader's =size-prepared= signal refuses an image over the pixel cap again. With a classic in-process loader that stops the module before it allocates; GdkPixbuf on current Fedora decodes through glycin, in a memory-limited sandbox, and reports the size only after decoding, so there the header check in step 4 is the fence and =size-prepared= a second opinion. A WebP picture on a server with no WebP decoder is refused saying so, never a crash.
+
+* What is kept
+
+The decoded picture is turned the way its EXIF orientation says, cropped to its middle square (a portrait loses top and bottom equally, a landscape its sides), and scaled (bilinear) to four sizes: 32 and 96 pixels, and twice each -- 64 and 192 -- for high-density screens. Each is written as a PNG by VENTURE's own encoder (=venture_avatar_png_encode()=): the IHDR, IDAT and IEND chunks and nothing else, so there is nowhere for metadata to go.
+
+The encoder is VENTURE's rather than GdkPixbuf's because GdkPixbuf on Fedora 44 hands saving to glycin too, whose sandbox a container may not be able to start; writing a PNG of known pixels needs only zlib, which GLib carries. It also writes the same bytes for the same pixels, which keeps a picture's version stable.
+
+** Where
+
+=<state_dir>/avatars/<user id>/<version>-<size>.png=: a 0700 directory, 0600 files, written whole. The user record's =avatar-version= names the current set; it is the first twenty hex digits of the SHA-256 of all four files. Nothing about the picture is in the database besides that.
+
+A new picture writes its files, then points the record at them, then deletes the previous picture's files. Removing a picture clears the record, then deletes the files and the directory: a removed picture is removed, not hidden. An installation's files are backed up with the state directory, as attachments are (see [[file:backup.org][Backups]]).
+
+Why not a document or a hosted image: both are an /organization's/ records, and a person is not one organization's -- the same account works in several, and there is no right one to file their face under. A document is also read by the Documents pages, search, OCR and the generic attachment route under the document's own rules, which would be a second way to reach the picture beside =/avatar='s; deleting a document keeps its bytes, and removing a picture must not; and four sizes would be four documents per person. A hosted image is public by design, because a mail app fetches it with no credential; a picture is shown only to people who may see the name beside it. What the store shares with those is its shape: files under the state directory, written whole, read back through =openat()= with =O_NOFOLLOW= at every step, refusing anything that is not a regular file.
+
+** The version is not writable
+
+=avatar-version= is a field on the user record (a technical one, shown under *Technical* on the record's page), and a save validator refuses any change to it that the picture store did not make: a REST client, a form or a staged change naming a version would point the account at files that do not exist. Change the picture through the routes above.
+
+* Who may see a picture
+
+=GET /avatar/:id/:size= answers a picture to exactly the readers who may already see that person's name: the rule =venture_actor_names_may_see_user()= (=src/core/venture-actor-names.c=), which is also the rule that decides whether a reader is told whose API token made a change. A reader may see a person when they are
+
+- a global owner or administrator,
+- the person themself,
+- anybody signed in, when organization access is off (one boundary: the install), or
+- an active member of an organization the person is also an active member of.
+
+Everybody else -- somebody from another organization of a hosted install, say -- gets 404, the same 404 as for an account that does not exist, an account with no picture, a deleted account and a size that is not kept. The address says nothing about who exists. With no credential at all the route answers 401. A person with no organization membership still sees their own picture: =/avatar/= and the account page's picture forms are exempt from the redirect that sends such a person to =/account=.
+
+The sizes are 32, 64, 96 and 192; any other is 404.
+
+** Caching
+
+The answer is =image/png= with =X-Content-Type-Options: nosniff=, a =Content-Security-Policy= of =default-src 'none'; sandbox=, and an =ETag= of the version and size; =If-None-Match= with it answers 304.
+
+When the address carries the current version (=?v==), the picture behind it can never change, so it is cached for a year: =Cache-Control: private, max-age=31536000, immutable=. Without it, or with an old version, the current picture is answered with =private, no-cache=, checked each time. =private= either way: a picture is behind a sign-in, and no shared cache may keep it.
+
+* Drawing a person
+
+Everything that draws a person asks one function, so a picture and the initials are never two renderers:
+
+#+begin_src c
+gchar *
+venture_avatar_html(
+	VentureActorNames	*viewer,   /* one per page, made in the reader's scope */
+	gint64			 user_id,  /* 0 for a token, an import, nobody: initials */
+	const gchar		*name,     /* as the page names them; alt text and initials */
+	guint			 size      /* VENTURE_AVATAR_SIZE_SMALL (32) or _LARGE (96) */
+);
+#+end_src
+
+It answers an =<img class="avatar avatar-32">= with =alt=, =width=, =height=, =loading="lazy"= and a =srcset= for the 2x picture when the person has a picture the reader may see, and otherwise the initials badge, =<span class="avatar avatar-32 avatar-initials" aria-hidden="true">RE</span>= -- hidden from a screen reader because the name is always written beside it. =venture_avatar_html_append()= is the same for markup drawn from an API row (its =avatar_url=), which is how the comment panel draws. The initials are =venture_avatar_initials()=: the first letter or digit of each of the first two words, "?" for none.
+
+Both looks style =.avatar=; a container that sizes a badge (=.discussion-avatar=, the @ menu) sizes either kind.
+
+** In JSON
+
+A row that names a person carries =avatar_url= beside its initials: the 32 pixel address, or =null= when the person has no picture or the reader may not see it -- non-null exactly when =GET= on it would answer the reader 200. =venture_avatar_url_for()= is the one place that decides. Today:
+
+- a comment (=GET /api/v1/comments=, =/comments/:id=): =avatar_url= beside =author_initials=;
+- the @ menu (=GET /api/v1/comments/mentions=): =avatar_url= beside =initials=.
+
+** Where pictures are drawn
+
+- beside every comment, in the discussion panel, and in the @ menu;
+- the account menu at the foot of the sidebar, linking to =/account=;
+- =/account= (96 pixels) and the =/users= picture column.
+
+Every other place a person is named still draws a name only; they are being moved to =venture_avatar_html()=.
+
+* Building without image support
+
+Pictures need GdkPixbuf (=gdk-pixbuf2-devel= on Fedora) at build time; it is found by =pkg-config= the way local OCR finds it, and both turn on together (=VENTURE_HAVE_GDK_PIXBUF=, =config.mk=). Without it the server builds and runs with the same routes: uploads answer 501 saying the build cannot take pictures, the account page says so instead of offering the form, and everybody is drawn by their initials. =make OCR_RASTER_AVAILABLE=0= builds that way on a machine that has GdkPixbuf.
+
+WebP needs a WebP decoder at run time as well (glycin's, or =webp-pixbuf-loader= with a classic GdkPixbuf); without one, WebP is refused with a message saying so and PNG and JPEG still work.
+
+** In a container
+
+On Fedora 44, GdkPixbuf decodes through glycin, which starts its codec in a =bwrap= sandbox and needs user namespaces to do it. A container that cannot create them (rootless podman without nested user namespaces, for one) cannot decode a picture: uploads are refused with glycin's own reason ("Loader process exited early ...") in the 422 message and the log, and everything else carries on. Local OCR of images fails the same way. Run the container with user namespaces available, or decode on a host that has them.
+
+* Tests
+
+=tests/test-avatars.c=: the sniffer (PNG, JPEG and WebP accepted; GIF, SVG, BMP, text, nothing and a cut-short PNG refused), the size cap, the pixel cap against a header claiming 100000 by 100000, the encoder's chunks and determinism, the initials and the badge markup, rendering a wide picture to four square PNGs with no text or EXIF chunk and the middle kept, who may change whose picture (and a read-only token), the version refused when written directly, the API round trip with the cache headers and 304, the 404 across organizations and for an unknown size, removal putting the initials back on a comment, a replaced picture's files deleted, and the account and users pages. The tests that decode skip, saying why, where GdkPixbuf cannot decode (a build without it, or a container where glycin's sandbox cannot start).

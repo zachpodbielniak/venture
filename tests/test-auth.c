@@ -1186,6 +1186,18 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/users"),
 	                 ==, SOUP_STATUS_FOUND);
 
+	/* Profile pictures: a face is shown only to people who may see the
+	 * name, so never to nobody; and nobody changes one. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/avatar/1/32"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/account/avatar", NULL, "x", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "DELETE", "/api/v1/account/avatar", NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "PUT", "/api/v1/users/1/avatar", NULL, "x", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "DELETE", "/api/v1/users/1/avatar", NULL, NULL, NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/avatar", NULL, "x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/account/avatar/remove", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/users/1/avatar", NULL, "x", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/users/1/avatar/remove", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+
 	/* Global search reaches every record type at once, which makes it the
 	 * single worst page to leave unauthenticated. */
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/search"),
