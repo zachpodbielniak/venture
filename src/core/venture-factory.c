@@ -2008,9 +2008,16 @@ venture_factory_validate_build(
  * A validator rather than a line in the webhook, because the webhook is
  * one of several writers: a mirror files tickets through the REST API
  * with only the repository set. Filled only when the writer chose no
- * venture, and only when the repository is new to the ticket, so a
- * venture somebody cleared by hand does not come back on the next save.
- * A repository in another organization lends nothing.
+ * venture, and only on create. An update is left alone, including one
+ * that changes the repository or clears the venture by hand: the audit
+ * diff is taken before validators run, so a venture copied on update
+ * would be saved and never audited.
+ *
+ * The venture is loaded and copied only when it exists, is not deleted,
+ * and belongs to the ticket's organization. This runs after the
+ * reference check, which never sees the id being copied, so a venture
+ * from another organization or a soft-deleted one would otherwise land
+ * unchecked. A repository in another organization lends nothing.
  */
 static gboolean
 venture_factory_validate_ticket(
@@ -2021,6 +2028,7 @@ venture_factory_validate_ticket(
 	GError		**error
 ){
 	g_autoptr(VentureEntity) repo = NULL;
+	g_autoptr(VentureEntity) lent = NULL;
 	gint64 repo_id = 0;
 	gint64 venture_id = 0;
 	gint64 repo_venture = 0;
@@ -2028,21 +2036,15 @@ venture_factory_validate_ticket(
 	(void)user_data;
 	(void)error;
 
+	/* Create only. See the comment above for why an update is skipped. */
+	if (NULL != previous)
+		return TRUE;
+
 	g_object_get(entity, "repo-id", &repo_id, "venture-id", &venture_id,
 	             NULL);
 
 	if ((repo_id <= 0) || (venture_id > 0))
 		return TRUE;
-
-	if (NULL != previous)
-	{
-		gint64 was_repo = 0;
-
-		g_object_get(previous, "repo-id", &was_repo, NULL);
-
-		if (was_repo == repo_id)
-			return TRUE;
-	}
 
 	repo = venture_database_get(database, VENTURE_TYPE_FORGE_REPO, repo_id,
 	                            NULL);
@@ -2054,8 +2056,18 @@ venture_factory_validate_ticket(
 
 	g_object_get(repo, "venture-id", &repo_venture, NULL);
 
-	if (repo_venture > 0)
-		g_object_set(entity, "venture-id", repo_venture, NULL);
+	if (repo_venture <= 0)
+		return TRUE;
+
+	lent = venture_database_get(database, VENTURE_TYPE_VENTURE, repo_venture,
+	                            NULL);
+
+	if ((NULL == lent) || venture_entity_is_deleted(lent) ||
+	    (venture_entity_get_organization_id(lent) !=
+	     venture_entity_get_organization_id(entity)))
+		return TRUE;
+
+	g_object_set(entity, "venture-id", repo_venture, NULL);
 
 	return TRUE;
 }

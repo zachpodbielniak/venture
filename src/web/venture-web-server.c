@@ -26468,12 +26468,17 @@ venture_web_forge_webhook_apply(
 	 * an explicit reopen upstream reopens a Done ticket. A
 	 * ticket somebody cancelled here is already closed and stays so.
 	 *
-	 * Only an issue event moves the ticket. A comment on a closed issue
-	 * also says "closed", and must not close a ticket that somebody
-	 * reopened here.
+	 * Only an issue event whose action is "closed" moves the ticket to
+	 * Done. An edit of an issue that is already closed still carries
+	 * state "closed"; that is a title or body change, not a close, and
+	 * must not shut a ticket somebody reopened here. The one exception
+	 * is a ticket created from an issue that arrives already closed:
+	 * there is no earlier open state to keep. A comment is not an issue
+	 * event, so it does not close either.
 	 */
 	closes = (0 == g_strcmp0(event_name, "issues")) &&
-	         (0 == g_strcmp0(event.state, "closed")) &&
+	         ((0 == g_strcmp0(event.action, "closed")) ||
+	          (created && (0 == g_strcmp0(event.state, "closed")))) &&
 	         (VENTURE_TICKET_STATUS_DONE != existing_status) &&
 	         (VENTURE_TICKET_STATUS_CANCELLED != existing_status);
 	reopens = (0 == g_strcmp0(event_name, "issues")) &&
@@ -26490,8 +26495,7 @@ venture_web_forge_webhook_apply(
 	 * and is pushed again. The close and the reopen themselves count too:
 	 * they change neither the title nor the body.
 	 */
-	if (!created && !reopens &&
-	    !(closes && (0 == g_strcmp0(event.action, "closed"))) &&
+	if (!created && !reopens && !closes &&
 	    (0 == g_strcmp0(existing_title, event.title)) &&
 	    (0 == g_strcmp0(existing_body, event.body)))
 	{

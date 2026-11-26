@@ -181,7 +181,7 @@ use it.
 
 Set *Venture* to the business the code belongs to. This is what scopes a webhook-created ticket to the right organisation: a webhook carries no session, so without it a ticket would land in the default organisation and then be invisible on a board filtered to a specific entity.
 
-A ticket made with this repository and no venture of its own takes the repository's /Venture/ field, whichever writer made it: the webhook, a mirror over the REST API, or a person. A venture the writer chose is kept.
+A ticket created with this repository and no venture of its own takes the repository's /Venture/ field, whichever writer made it: the webhook, a mirror over the REST API, or a person. A venture the writer chose is kept. This happens only when the ticket is created. A later save does not copy it, including one that changes the repository or clears the venture by hand: the audit diff is recorded before this rule runs, so a venture filled in on an update would be stored with no audit row. The copy is also skipped when that venture is missing, soft-deleted, or belongs to another organization, and when the repository itself belongs to another organization.
 
 Two switches decide direction:
 
