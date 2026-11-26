@@ -109,7 +109,7 @@ bankfeed_ui_accounts(VentureWebServer *self, HtmxRequest *request, GString *cont
 		g_string_append(content, "<p class=\"muted\">No bank accounts yet.</p></div>");
 		return;
 	}
-	g_string_append(content, "<table><thead><tr><th>Bank account</th><th></th></tr></thead><tbody>");
+	g_string_append(content, "<table><thead><tr><th>Bank account</th></tr></thead><tbody>");
 	for (i = 0; i < accounts->len; i++)
 	{
 		VentureEntity *account = g_ptr_array_index(accounts, i);
@@ -118,8 +118,7 @@ bankfeed_ui_accounts(VentureWebServer *self, HtmxRequest *request, GString *cont
 		g_string_append_printf(content, "<tr><td><a href=\"/e/bank_account/%" G_GINT64_FORMAT "\">",
 			venture_entity_get_id(account));
 		venture_html_escape_append(content, name);
-		g_string_append_printf(content, "</a></td><td><a href=\"/e/bank_account/%" G_GINT64_FORMAT "\">"
-			"Import a statement</a></td></tr>", venture_entity_get_id(account));
+		g_string_append(content, "</a></td></tr>");
 	}
 	g_string_append(content, "</tbody></table></div>");
 }
