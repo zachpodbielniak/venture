@@ -8,9 +8,9 @@
  * The hung page is what that deadline stops. */
 static void test_version_probe_outruns_page_deadline(void)
 {
-	g_autofree gchar *directory = g_dir_make_tmp("venture-ocr-probe-XXXXXX", NULL);
-	g_autofree gchar *binary = g_build_filename(directory, "fake-tesseract", NULL);
-	g_autofree gchar *png = g_build_filename(directory, "page.png", NULL);
+	g_autofree gchar *directory = NULL;
+	g_autofree gchar *binary = NULL;
+	g_autofree gchar *png = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureOcrEngine) engine = NULL;
 	g_autoptr(GBytes) bytes = NULL;
@@ -18,7 +18,13 @@ static void test_version_probe_outruns_page_deadline(void)
 	gsize length;
 	gint64 start;
 	cairo_surface_t *surface;
+	/* Skip before making the fixture directory: a skip after it leaves the
+	 * directory behind, and the suite's litter check fails the run. */
 	if (!venture_test_need_decoder()) return;
+	directory = g_dir_make_tmp("venture-ocr-probe-XXXXXX", NULL);
+	g_assert_nonnull(directory);
+	binary = g_build_filename(directory, "fake-tesseract", NULL);
+	png = g_build_filename(directory, "page.png", NULL);
 	g_assert_true(g_file_set_contents(binary,
 		"#!/bin/sh\n"
 		"if [ \"$1\" = --version ]; then sleep 0.2; printf 'fixture OCR 1\\n'; exit 0; fi\n"
