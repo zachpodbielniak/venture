@@ -1695,6 +1695,20 @@ test_auth_api_refuses_anonymous_requests(
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/contractor-tax/prepare",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
+	/* The owner's preview-then-prepare pages are a session's. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/tax-filings/preview?kind=tax_filing"), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/tax-filings/prepare",
+		NULL, "kind=tax_filing", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	/* The emailed Pay now link and its form are public by design (the
+	 * customer has no session), so an unknown token is simply not found
+	 * and never reaches Stripe. */
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture,
+		"/pay/0000000000000000000000000000000000000000000000000000000000000000/checkout"),
+		==, SOUP_STATUS_NOT_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/pay/0000000000000000000000000000000000000000000000000000000000000000",
+		NULL, "", NULL, NULL), ==, SOUP_STATUS_NOT_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/capture",
 		NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/bankfeed/1/sync",
