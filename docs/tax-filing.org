@@ -70,8 +70,13 @@ that supplier and year is shown as already prepared, with a link.
 
 =venture_tax_filing_service_preview()= and
 =venture_tax_filing_service_preview_1099()= are the read-only halves of
-the two prepares: same checks, same adapter, no write. Every prepare and
-preview refuses a fiscal period or a vendor of another business as not
-found, so a number edited into the address cannot reach somebody else's
-records. =tests/test-tax-filing-pages.c= pins the page, the preview, the
-preparation and the refusal.
+the two prepares: same checks, same adapter, no write, and no audit or
+activity row. Every prepare and preview refuses a fiscal period or a vendor
+of another business as not found, and a 1099 preview or prepare also refuses
+a company of this business that is not a supplier, so a number edited into
+the address cannot reach somebody else's records or a customer.
+=/tax-filings/prepare= needs the editor role when authentication is on; a
+viewer is refused and nothing is saved. A database error while listing the
+named choices is a visible error, not an empty list.
+=tests/test-tax-filing-pages.c= pins the page, the preview, the preparation,
+the refusal and that gate.

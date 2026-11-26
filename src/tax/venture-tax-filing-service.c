@@ -501,12 +501,14 @@ draft_pack(VentureTaxFilingService *self, gint64 organization_id, gint64 vendor_
 	if (year < 2020 || year > 2026)
 		return refuse(error, VENTURE_ERROR_VALIDATION,
 			"1099-NEC bookkeeping rules support 2020 through 2026; update the year-specific threshold for later years"), NULL;
-	/* A vendor of another business is answered as missing, as a period
-	 * is: a typed number must not name somebody else's supplier. */
+	/* A vendor of another business, or a company of this one that is
+	 * not a supplier, is answered as missing, as a period is: a typed
+	 * number must not name somebody else's supplier, nor a customer. */
 	vendor = venture_database_get(db, VENTURE_TYPE_COMPANY, vendor_id, error);
 	if (vendor == NULL && error != NULL && *error != NULL)
 		return NULL;
-	if (vendor == NULL || venture_entity_get_organization_id(vendor) != organization_id)
+	if (vendor == NULL || venture_entity_get_organization_id(vendor) != organization_id ||
+		!venture_company_is_supplier(vendor))
 		return refuse(error, VENTURE_ERROR_NOT_FOUND, "That vendor is not one of this business's suppliers"), NULL;
 	key = g_strdup_printf("%" G_GINT64_FORMAT ":%d:1099-NEC", vendor_id, year);
 	existing = find_pack(db, organization_id, key, error);

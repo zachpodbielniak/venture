@@ -54,7 +54,7 @@ VentureEntity *venture_tax_filing_service_prepare(VentureTaxFilingService *self,
  * Builds the filing venture_tax_filing_service_prepare() would save, and
  * saves nothing. A period of another organization is refused as not found.
  *
- * Returns: (transfer full) (nullable): an unsaved draft filing pack
+ * Returns: (transfer full) (nullable): an unsaved draft tax filing
  */
 VentureEntity *venture_tax_filing_service_preview(VentureTaxFilingService *self,
 	gint64 organization_id, const gchar *country, const gchar *jurisdiction,
@@ -120,7 +120,8 @@ VentureEntity *venture_tax_filing_service_prepare_1099(VentureTaxFilingService *
  * Checks and totals what venture_tax_filing_service_prepare_1099() would
  * save, and saves nothing. A pack already prepared is returned as it is,
  * with its id; a new one has id 0. A vendor of another organization is
- * refused as not found.
+ * refused as not found. A company of this business that is not a supplier
+ * is refused the same way.
  *
  * Returns: (transfer full) (nullable): the pack preparation would give
  */

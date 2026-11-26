@@ -173,9 +173,10 @@ tax_year_descending(gconstpointer a, gconstpointer b)
 }
 
 /* The owner's own suppliers, by name. Filtered in C on the role, not on
- * the kind column: a company can be a customer and a supplier at once. */
-static void
-tax_vendor_options(VentureWebServer *self, GString *html, gint64 organization)
+ * the kind column: a company can be a customer and a supplier at once.
+ * A database error is not an empty list: the page says so. */
+static gboolean
+tax_vendor_options(VentureWebServer *self, GString *html, gint64 organization, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_COMPANY);
 	g_autoptr(GPtrArray) rows = NULL;
@@ -183,8 +184,10 @@ tax_vendor_options(VentureWebServer *self, GString *html, gint64 organization)
 	venture_query_set_limit(query, 0);
 	venture_query_set_organization(query, organization);
 	venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
-	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
-	for (i = 0; rows != NULL && i < rows->len; i++)
+	rows = venture_database_find(venture_context_get_database(self->context), query, error);
+	if (rows == NULL)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
 		g_autofree gchar *name = NULL;
@@ -195,21 +198,24 @@ tax_vendor_options(VentureWebServer *self, GString *html, gint64 organization)
 		venture_html_escape_append(html, name);
 		g_string_append(html, "</option>");
 	}
+	return TRUE;
 }
 
 static GPtrArray *
-tax_fiscal_years(VentureWebServer *self, gint64 organization)
+tax_fiscal_years(VentureWebServer *self, gint64 organization, GError **error)
 {
 	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_FISCAL_YEAR);
 	venture_query_set_limit(query, 0);
 	venture_query_set_organization(query, organization);
 	venture_query_add_order(query, "start-at", VENTURE_SORT_DESCENDING, NULL);
-	return venture_database_find(venture_context_get_database(self->context), query, NULL);
+	return venture_database_find(venture_context_get_database(self->context), query, error);
 }
 
-/* The owner's fiscal periods, by name, grouped under their fiscal year. */
-static void
-tax_period_options(VentureWebServer *self, GString *html, GPtrArray *years, gint64 organization)
+/* The owner's fiscal periods, by name, grouped under their fiscal year.
+ * Returns FALSE when a period list cannot be read. */
+static gboolean
+tax_period_options(VentureWebServer *self, GString *html, GPtrArray *years, gint64 organization,
+	GError **error)
 {
 	guint i, j;
 	for (i = 0; years != NULL && i < years->len; i++)
@@ -224,8 +230,10 @@ tax_period_options(VentureWebServer *self, GString *html, GPtrArray *years, gint
 		if (!venture_query_add_filter_int(query, "fiscal-year-id", VENTURE_FILTER_OP_EQ,
 				venture_entity_get_id(year), NULL))
 			continue;
-		periods = venture_database_find(venture_context_get_database(self->context), query, NULL);
-		if (periods == NULL || periods->len == 0)
+		periods = venture_database_find(venture_context_get_database(self->context), query, error);
+		if (periods == NULL)
+			return FALSE;
+		if (periods->len == 0)
 			continue;
 		g_string_append(html, "<optgroup label=\"");
 		venture_html_escape_append(html, year_name);
@@ -240,6 +248,7 @@ tax_period_options(VentureWebServer *self, GString *html, GPtrArray *years, gint
 		}
 		g_string_append(html, "</optgroup>");
 	}
+	return TRUE;
 }
 
 /* Calendar years the owner's fiscal years cover, newest first; this year
@@ -288,21 +297,24 @@ tax_year_options(GString *html, GPtrArray *years)
 			g_array_index(seen, gint, j), g_array_index(seen, gint, j));
 }
 
-/* Jurisdictions the owner's tax rates already name, as suggestions. */
-static void
-tax_jurisdiction_options(VentureWebServer *self, GString *html, gint64 organization)
+/* Jurisdictions the owner's tax rates already name, as suggestions.
+ * Returns FALSE when that list cannot be read. */
+static gboolean
+tax_jurisdiction_options(VentureWebServer *self, GString *html, gint64 organization, GError **error)
 {
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) rows = NULL;
 	g_autoptr(GHashTable) seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	guint i;
 	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "tax_code") == G_TYPE_INVALID)
-		return;
+		return TRUE;
 	query = venture_query_new(VENTURE_TYPE_TAX_CODE);
 	venture_query_set_limit(query, 0);
 	venture_query_set_organization(query, organization);
-	rows = venture_database_find(venture_context_get_database(self->context), query, NULL);
-	for (i = 0; rows != NULL && i < rows->len; i++)
+	rows = venture_database_find(venture_context_get_database(self->context), query, error);
+	if (rows == NULL)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
 	{
 		g_autofree gchar *place = NULL;
 		g_object_get(g_ptr_array_index(rows, i), "jurisdiction", &place, NULL);
@@ -313,6 +325,7 @@ tax_jurisdiction_options(VentureWebServer *self, GString *html, gint64 organizat
 		g_string_append(html, "\">");
 		g_hash_table_add(seen, g_steal_pointer(&place));
 	}
+	return TRUE;
 }
 
 static void
@@ -541,7 +554,9 @@ tax_filings_ui(HtmxRequest *request, GHashTable *params, gpointer data)
 	if (gate != NULL)
 		return gate;
 	organization = tax_org(self, request);
-	years = tax_fiscal_years(self, organization);
+	years = tax_fiscal_years(self, organization, &error);
+	if (years == NULL)
+		return venture_web_error_response(error);
 	/* Every choice is the owner's own record, by name: nobody types an id. */
 	g_string_append(content,
 		"<div class=\"card\"><div class=\"card-head\"><h2>Prepare a sales-tax return</h2></div>"
@@ -566,11 +581,13 @@ tax_filings_ui(HtmxRequest *request, GHashTable *params, gpointer data)
 	g_string_append(content, "</select></label>"
 		"<label>State or region <input name=\"jurisdiction\" list=\"tax-jurisdictions\" placeholder=\"US-NY\"></label>"
 		"<datalist id=\"tax-jurisdictions\">");
-	tax_jurisdiction_options(self, content, organization);
+	if (!tax_jurisdiction_options(self, content, organization, &error))
+		return venture_web_error_response(error);
 	g_string_append(content, "</datalist>"
 		"<label>Fiscal period <select name=\"fiscal_period_id\" required>"
 		"<option value=\"\">Pick a period\xe2\x80\xa6</option>");
-	tax_period_options(self, content, years, organization);
+	if (!tax_period_options(self, content, years, organization, &error))
+		return venture_web_error_response(error);
 	g_string_append(content, "</select></label>"
 		"<span class=\"field-help\">No period listed? <a href=\"/e/fiscal_year/new\">Set up a fiscal year</a>.</span>"
 		"<button type=\"submit\">Preview</button></form></div>");
@@ -580,7 +597,8 @@ tax_filings_ui(HtmxRequest *request, GHashTable *params, gpointer data)
 		"<input type=\"hidden\" name=\"kind\" value=\"1099\">"
 		"<label>Supplier <select name=\"vendor_id\" required>"
 		"<option value=\"\">Who you paid\xe2\x80\xa6</option>");
-	tax_vendor_options(self, content, organization);
+	if (!tax_vendor_options(self, content, organization, &error))
+		return venture_web_error_response(error);
 	g_string_append(content, "</select></label>"
 		"<span class=\"field-help\">Not listed? <a href=\"/e/company/new\">Add them</a> "
 		"as a company whose relationship is Supplier.</span>"
