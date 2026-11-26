@@ -1812,6 +1812,30 @@ venture_config_is_set(
 }
 
 gboolean
+venture_config_is_following(
+	VentureConfig	*self,
+	const gchar	*name
+){
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != name, FALSE);
+
+	/* Only a setting declared to follow another one can be following,
+	 * and only while nobody has written it down. */
+	if (g_hash_table_contains(self->explicit, name))
+		return FALSE;
+	for (i = 0; i < VENTURE_CONFIG_N_SETTINGS; i++)
+	{
+		const VentureConfigSetting *setting = &venture_config_settings[i];
+
+		if (0 == g_strcmp0(setting->name, name))
+			return NULL != setting->follows;
+	}
+	return FALSE;
+}
+
+gboolean
 venture_config_validate(
 	VentureConfig	 *self,
 	GError		**error

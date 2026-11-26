@@ -1705,13 +1705,15 @@ venture_module_registry_resolve_one(
 				g_object_get(self->config, module->info->legacy_switch,
 				             &legacy, NULL);
 
-				/* A switch nobody wrote is on only because a
-				 * setting it follows is on (hosted). A missing
-				 * requirement then turns the module off rather
-				 * than refusing to start; an explicit true is
-				 * still an error. */
-				if (legacy && !venture_config_is_set(self->config,
-				                                      module->info->legacy_switch))
+				/* A switch that is on only because it follows
+				 * another setting (bankfeed follows hosted) and
+				 * that nobody wrote down: a missing requirement
+				 * then turns the module off rather than refusing
+				 * to start. A switch that is on by its own
+				 * default, or written down as true, still makes
+				 * a missing requirement an error. */
+				if (legacy && venture_config_is_following(self->config,
+				                                           module->info->legacy_switch))
 					quiet = TRUE;
 
 				if (!legacy)

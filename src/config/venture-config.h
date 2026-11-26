@@ -214,6 +214,24 @@ venture_config_is_set(
 );
 
 /**
+ * venture_config_is_following:
+ * @self: a #VentureConfig
+ * @name: the property name, such as `bankfeed-enabled`
+ *
+ * Whether the setting takes its value from another setting it follows,
+ * such as `bankfeed-enabled` following `hosted-enabled` while nobody has
+ * written it down. A setting that follows nothing, or one set explicitly,
+ * is not following.
+ *
+ * Returns: %TRUE if the value comes from the setting it follows
+ */
+gboolean
+venture_config_is_following(
+	VentureConfig	*self,
+	const gchar	*name
+);
+
+/**
  * venture_config_validate:
  * @self: a #VentureConfig
  * @error: (out) (optional): return location for a #GError
