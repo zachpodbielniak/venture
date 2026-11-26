@@ -170,6 +170,14 @@ many documents all-or-nothing. A non-admin must name the organization.
   stays pending -- revoking cannot cancel a bank debit already initiated.
   An uncertain provider response keeps the attempt blocked until
   reconciled -- do not create another payment by guessing.
+- **Pay now in the invoice email**: when the business has Stripe connected
+  and `server.base_url` is set, every invoice sent through Send carries a
+  Pay now button, a thirty-day payment link minted in the send (no Stripe
+  call, earlier links stay valid). It is `GET /pay/:token/checkout`,
+  straight to Checkout; `/pay/:token` is the invoice page. A paid or
+  voided invoice answers so on both and never reaches Stripe. The bearer
+  link is only in the sent bodies, never the stored copy, API or preview
+  (`docs/stripe.org` "Pay now").
 - **Recurring collection**: read `describe stripe_authorization` and the
   subscription's actions first. `act customer_subscription ID
   authorize_payment limit='100 USD'` returns a copy-once hosted Setup URL

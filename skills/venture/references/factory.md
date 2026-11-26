@@ -107,6 +107,11 @@ HMAC-checked; a forge with no secret is refused).
 - **Coding runs are off until `forge.runs_enabled: true`.** Everything else
   (linking, issues both ways, builds) works without it. A CLI runner needs
   its command in `forge.cli_allowed_commands`.
+- An accepted issue becomes a ticket of the repo's `issue_kind` (a new
+  repo is `internal`, one enrolled before the column `external`) and, with
+  no venture of its own, the repo's venture. Closing the issue closes the
+  ticket and reopening it reopens the ticket; an edit or comment on a
+  closed issue does not reclose a ticket reopened here.
 - Tickets gain `repo_id`; `ticket_link` carries the issue, branch and pull
   request. Web routes: `/tickets/:id/link|branch|work`, `/tickets/:id/runs`,
   `/runs/:id/cancel`.
@@ -129,6 +134,10 @@ Troubleshooting: "rejected this install's access token" -- rotate both
 credentials; "not allowed to ..." -- token scope (`write:issue`,
 `write:repository`); a webhook that does nothing -- secret mismatch, the
 repository lacks *Accept issues*, or the name is not exactly `owner/repo`;
+forge issues in the support queue -- the repo's `issue_kind` is
+`external` (`update forge_repo ID issue_kind=internal`; filed tickets keep
+their kind); a ticket that stayed open after its issue was edited -- only
+the issue's close event closes it, an edit or comment does not;
 a 401 delivery -- the active binding is missing, revoked or signed
 differently; tickets not on the board -- the repository has no venture, so
 they landed in the default organization; a run failing at once with a git

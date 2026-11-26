@@ -31,7 +31,8 @@ curl -s -H "Authorization: Bearer $VENTURE_TOKEN" "$VENTURE_SERVER/api/v1/report
   wins, then the sidebar selection. The workspace default is used only
   when that business is readable. A hosted owner with one readable
   business gets that business; a foreign or stale selection is refused
-  and does not fall back. `All` keeps the report's unscoped result.
+  and does not fall back. `All` keeps the report's unscoped result,
+  except with one readable business, where it is that business.
   Most also take `venture_id`, `currency`,
   `group_by`; see the catalogue. An option a report does not know is
   refused by some (`report aggregate`, the market and arbitrage reports,

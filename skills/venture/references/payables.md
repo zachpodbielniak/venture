@@ -143,6 +143,14 @@ venturectl contractor-tax prepare vendor_id=1 year=2026
 venturectl contractor-tax review 1 ; venturectl contractor-tax approve 1 ; venturectl contractor-tax export 1
 ```
 
+An owner on `/tax-filings` never types an id: the forms offer countries,
+jurisdictions, fiscal periods and suppliers by name, go to
+`/tax-filings/preview` (shows what would be made, saves nothing), and its
+button posts to `/tax-filings/prepare` (editor role; a viewer is refused
+and nothing is saved). Every prepare and preview, API included, refuses a
+fiscal period or vendor of another business as not found, and a 1099 also
+refuses a company of this business that is not a supplier.
+
 A filing preserves its JSON/CSV pack bytes and versioned rule id. TINs
 (`contractor_tax_form`) are sensitive and never generically exported.
 1099-NEC is USD by law and refuses other currencies. Sales-tax return CSVs

@@ -107,6 +107,7 @@ in the repository lists today's.
 | `POST /expense_claim/:id/:action` | `claim ...` |
 | `POST /payroll/import`, `POST /payroll_run/:id/:action` | `payroll ...` |
 | `POST /tax-filings/prepare`, `POST /tax-filings/:id/:action` | `tax-filing ...` |
+| `GET /tax-filings/preview`, `POST /tax-filings/prepare` (site root, session): the owner's page picks named choices, previews without saving, then prepares | -- |
 | `POST /contractor-tax/prepare`, `POST /contractor-tax/:id/:action`, `GET /contractor-tax/:id/export` | `contractor-tax ...` |
 | `GET /budget_reports?period=&kind=` | `budget vs-actual\|forecast` |
 | `POST /equity/post` | `equity KIND AMOUNT` |
@@ -145,7 +146,10 @@ in the repository lists today's.
 
 `/login` (+ `/login/mfa`), `/f/:token` (lead capture), `/q/:token` and
 `/q/:token/accept` (quote acceptance), `/portal/:token` (customer portal,
-own subscriptions only), `/supplier/:token` (supplier portal),
+own subscriptions only), `/supplier/:token` (supplier portal), `/pay/:token` (the customer's
+invoice page; POST pays) and `GET /pay/:token/checkout` (the invoice
+email's Pay now button, straight to Stripe Checkout; a paid or voided
+invoice says so, anything else unknown is 404),
 `/book/:slug` (booking page), `/t/o/:token.gif`, `/t/c/:token/:n`,
 `/sequences/u/:token` (sequence one-click stop; GET is the form) and
 `/marketing/t|u/...` (tracking and unsubscribe), `/attribution.js` and

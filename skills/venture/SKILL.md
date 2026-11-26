@@ -97,6 +97,13 @@ memberships, which is how an agent is confined to one organization.
 
 ## Skill baseline -- maintained
 
+The 2026-11-26 fixes epic (checked 2026-11-27 against daaa5a4a): the invoice email's Pay
+now button `GET /pay/:token/checkout` (billing.md, api-routes.md); the
+owner's tax filing preview `/tax-filings/preview` then `/tax-filings/prepare`
+(payables.md); closed issues closing tickets, and a repo's venture on its
+tickets (factory.md, data-model-work.md); All with one readable business
+(reports.md). No verb or flag changed.
+
 Forges are readable by every member of their organization (2026-11-15):
 an editor or agent lists and gets `forge` and picks one for a
 `forge_repo`; creating, changing, deleting or restoring a forge and every

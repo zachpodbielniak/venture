@@ -91,7 +91,8 @@ hidden from the related-records walk).
   issue is filed as; a new repository defaults to
   `internal` (your own project work), stored explicitly; a repository
   enrolled before the column existed was backfilled to `external` (a
-  support request) by migration 001082.
+  support request) by migration 001082. A ticket made from a repo with no
+  venture of its own takes the repo's venture, on creation only.
 - `forge_rule` -- what may happen automatically: scope (`repo_id` or
   `forge_id`), `issue_type` or `all_issue_types`, `enabled`, `trigger`
   [manual|on_create|on_todo|on_in_progress], `runner` [agent|cli],
