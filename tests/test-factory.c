@@ -2082,6 +2082,100 @@ test_factory_forge_issue_kind_refuses_an_unknown_value(
 	g_assert_cmpstr(kind, ==, "external");
 }
 
+/*
+ * A repository enrolled before issue_kind existed has NULL in the column,
+ * and NULL reads as internal. The fixture saves its repository after the
+ * column was added, so it stores a value; this one is put back to what an
+ * old row holds.
+ *
+ * What breaks if this regresses: the column's NULL reads as something
+ * other than zero, and every repository enrolled before the upgrade starts
+ * filing its issues as support requests, or stops filing them at all.
+ */
+static void
+test_factory_forge_issue_kind_null_row_is_internal(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) repo = NULL;
+	g_autofree gchar *statement = NULL;
+	VentureTicketKind kind = VENTURE_TICKET_KIND_EXTERNAL;
+
+	(void)user_data;
+
+	/* The row as an older install left it. */
+	statement = g_strdup_printf(
+		"UPDATE forge_repos SET issue_kind = NULL WHERE id = %" G_GINT64_FORMAT,
+		fixture->repo_id);
+	g_assert_true(venture_database_execute(fixture->database, statement,
+	                                       NULL, &error));
+	g_assert_no_error(error);
+
+	repo = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_REPO,
+	                            fixture->repo_id, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(repo);
+	g_object_get(repo, "issue-kind", &kind, NULL);
+	g_assert_cmpint(kind, ==, VENTURE_TICKET_KIND_INTERNAL);
+
+	/* And the webhook files the issue as the NULL row reads. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
+	                                        forge_issue_opened), <, 300);
+	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
+	                VENTURE_TICKET_KIND_INTERNAL);
+}
+
+/*
+ * A ticket that already has a linked issue keeps its kind when the
+ * repository's setting changes and the issue is edited: only a new ticket
+ * takes the repository's kind.
+ *
+ * What breaks if this regresses: changing a repository to external
+ * re-files every open issue as a support request the next time somebody
+ * edits it.
+ */
+static void
+test_factory_forge_issue_kind_linked_ticket_keeps_its_kind(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	static const gchar *const edited =
+		"{\"action\":\"edited\","
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"someone-else\"},"
+		" \"issue\":{\"number\":42,\"title\":\"It crashes on start\","
+		"            \"body\":\"every time\",\"state\":\"open\","
+		"            \"html_url\":\"https://git.example.com/zach/venture/issues/42\","
+		"            \"labels\":[{\"name\":\"bug\"}]}}";
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	g_autofree gchar *title = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
+	                                        forge_issue_opened), <, 300);
+	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
+	                VENTURE_TICKET_KIND_INTERNAL);
+
+	g_assert_cmpuint(forge_repo_patch(fixture,
+	                                  "{\"issue_kind\":\"external\"}"), ==,
+	                 SOUP_STATUS_OK);
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-2",
+	                                        edited), <, 300);
+
+	/* The edit reached the same ticket (the helper asserts there is one),
+	 * and it is still internal. */
+	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
+	                VENTURE_TICKET_KIND_INTERNAL);
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+	tickets = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(tickets);
+	g_object_get(g_ptr_array_index(tickets, 0), "title", &title, NULL);
+	g_assert_cmpstr(title, ==, "It crashes on start");
+}
+
 int
 main(
 	int	  argc,
@@ -2122,6 +2216,10 @@ main(
 	    test_factory_forge_issue_kind_external);
 	ADD("/factory/http/forge-issue-kind-refuses-an-unknown-value",
 	    test_factory_forge_issue_kind_refuses_an_unknown_value);
+	ADD("/factory/http/forge-issue-kind-null-row-is-internal",
+	    test_factory_forge_issue_kind_null_row_is_internal);
+	ADD("/factory/http/forge-issue-kind-linked-ticket-keeps-its-kind",
+	    test_factory_forge_issue_kind_linked_ticket_keeps_its_kind);
 	ADD("/factory/http/operations", test_factory_operations_over_http);
 	ADD("/factory/http/without-an-assistant",
 	    test_factory_without_an_assistant);
