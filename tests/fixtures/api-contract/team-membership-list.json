@@ -1,0 +1,20 @@
+{
+  "count" : "int",
+  "records" : [
+    {
+      "active" : "bool",
+      "created_at" : "string",
+      "deleted_at" : "null",
+      "display_name" : "string",
+      "id" : "int",
+      "organization_id" : "int",
+      "team_id" : "int",
+      "type" : "string",
+      "updated_at" : "string",
+      "user_id" : "int",
+      "uuid" : "string",
+      "version" : "int"
+    }
+  ],
+  "total" : "int"
+}

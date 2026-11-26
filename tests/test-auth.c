@@ -3653,6 +3653,8 @@ test_auth_clawtilla_contract(
 	gint64 editor_id = 0;
 	gint64 ticket;
 	gint64 run;
+	gint64 team;
+	gint64 vera_id = 0;
 	guint status;
 
 	(void)user_data;
@@ -3667,6 +3669,22 @@ test_auth_clawtilla_contract(
 	forge = auth_forge_create(fixture, home, "Our forge",
 	                          "https://git.example.test");
 	repo = auth_repo_create(fixture, home, forge, "acme/site", NULL);
+
+	/* a team of agents, the agent an active member of it */
+	{
+		g_autoptr(VentureEntity) made = g_object_new(VENTURE_TYPE_TEAM,
+			"name", "agents-dev-site", "organization-id", home, NULL);
+		g_autoptr(VentureEntity) member = NULL;
+
+		g_assert_true(venture_database_save(fixture->database, made, NULL,
+		                                    NULL));
+		team = venture_entity_get_id(made);
+		member = g_object_new(VENTURE_TYPE_TEAM_MEMBERSHIP,
+			"user-id", editor_id, "organization-id", home, "team-id", team,
+			"active", TRUE, NULL);
+		g_assert_true(venture_database_save(fixture->database, member, NULL,
+		                                    NULL));
+	}
 
 	status = server_fixture_request(fixture, "GET", "/api/v1/whoami", editor,
 	                                NULL, &body, NULL);
@@ -3717,13 +3735,160 @@ test_auth_clawtilla_contract(
 	/* The mirror hands a task to the agent's user, which must be a member
 	 * of the ticket's organization to be given it. */
 	server_fixture_create_member(fixture, "vera", "v-long-password",
-		VENTURE_USER_ROLE_VIEWER, NULL);
+		VENTURE_USER_ROLE_VIEWER, &vera_id);
 	path = g_strdup_printf("/api/v1/ticket/%" G_GINT64_FORMAT, ticket);
-	status = server_fixture_request(fixture, "PATCH", path, editor,
-		"{\"status\":\"in_progress\",\"assignee\":\"vera\",\"version\":1}",
-		&body, NULL);
-	contract_check("ticket-update", status, SOUP_STATUS_OK, body);
-	g_clear_pointer(&body, g_free);
+	{
+		/* given to a team too: the timeline then says who set it */
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"status\":\"in_progress\",\"assignee\":\"vera\","
+			"\"team_id\":%" G_GINT64_FORMAT ",\"version\":1}", team);
+
+		status = server_fixture_request(fixture, "PATCH", path, editor,
+		                                json, &body, NULL);
+		contract_check("ticket-update", status, SOUP_STATUS_OK, body);
+		g_clear_pointer(&body, g_free);
+	}
+
+	/*
+	 * A ticket for the team that nobody has yet, and the list intake
+	 * reads for it: `assignee=` and `external_ref=` are "none", null or
+	 * blank.  Beside it, todo tickets that list must not answer: one in
+	 * the team somebody has, one in it from another system, one nobody
+	 * has in no team, and the one above (taken, and in progress).
+	 */
+	{
+		g_autofree gchar *json = g_strdup_printf(
+			"{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"For the "
+			"team\",\"description\":\"d\",\"status\":\"todo\","
+			"\"kind\":\"internal\",\"team_id\":%" G_GINT64_FORMAT "}",
+			home, team);
+		g_autofree gchar *assigned = g_strdup_printf(
+			"{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"Taken\","
+			"\"status\":\"todo\",\"kind\":\"internal\",\"assignee\":"
+			"\"agent\",\"team_id\":%" G_GINT64_FORMAT "}", home, team);
+		g_autofree gchar *elsewhere = g_strdup_printf(
+			"{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"Theirs\","
+			"\"status\":\"todo\",\"kind\":\"internal\",\"external_ref\":"
+			"\"tracker:ABC-1\",\"team_id\":%" G_GINT64_FORMAT "}", home, team);
+		g_autofree gchar *teamless = g_strdup_printf(
+			"{\"organization_id\":%" G_GINT64_FORMAT ",\"title\":\"No team\","
+			"\"status\":\"todo\",\"kind\":\"internal\"}", home);
+		g_autofree gchar *list = g_strdup_printf(
+			"/api/v1/ticket?team_id=%" G_GINT64_FORMAT "&assignee="
+			"&external_ref=&status=todo&kind=internal&id__gt=0&order=id"
+			"&limit=10&organization_id=%" G_GINT64_FORMAT, team, home);
+		g_autofree gchar *after = NULL;
+		g_autofree gchar *left_out = NULL;
+		g_autofree gchar *members = g_strdup_printf(
+			"/api/v1/team_membership?user_id__in=%" G_GINT64_FORMAT
+			"&active=true&order=id&limit=100&organization_id=%"
+			G_GINT64_FORMAT, editor_id, home);
+		g_autoptr(VentureEntity) person = g_object_new(
+			VENTURE_TYPE_TEAM_MEMBERSHIP, "user-id", vera_id,
+			"organization-id", home, "team-id", team, "active", TRUE, NULL);
+		JsonArray *records;
+		gint64 for_team;
+
+		status = server_fixture_request(fixture, "POST", "/api/v1/ticket",
+		                                editor, json, &body, NULL);
+		g_assert_cmpuint(status, ==, SOUP_STATUS_CREATED);
+		node = venture_json_parse(body, NULL);
+		for_team = json_object_get_int_member(json_node_get_object(node),
+		                                      "id");
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/ticket", editor, assigned, NULL, NULL), ==,
+			SOUP_STATUS_CREATED);
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/ticket", editor, elsewhere, NULL, NULL), ==,
+			SOUP_STATUS_CREATED);
+		/* and one nobody has in no team: not the agents' teams' */
+		g_assert_cmpuint(server_fixture_request(fixture, "POST",
+			"/api/v1/ticket", editor, teamless, NULL, NULL), ==,
+			SOUP_STATUS_CREATED);
+
+		/* a person in the same team: not asked for, not answered */
+		g_assert_true(venture_database_save(fixture->database, person,
+		                                    NULL, NULL));
+
+		/* and the agent's own old membership of another team, inactive */
+		{
+			g_autoptr(VentureEntity) old_team = g_object_new(
+				VENTURE_TYPE_TEAM, "name", "agents-old",
+				"organization-id", home, NULL);
+			g_autoptr(VentureEntity) old = NULL;
+
+			g_assert_true(venture_database_save(fixture->database,
+			                                    old_team, NULL, NULL));
+			old = g_object_new(VENTURE_TYPE_TEAM_MEMBERSHIP,
+				"user-id", editor_id, "organization-id", home,
+				"team-id", venture_entity_get_id(old_team),
+				"active", FALSE, NULL);
+			g_assert_true(venture_database_save(fixture->database, old,
+			                                    NULL, NULL));
+		}
+
+		status = server_fixture_request(fixture, "GET", list, editor, NULL,
+		                                &body, NULL);
+		contract_check("ticket-team-list", status, SOUP_STATUS_OK, body);
+		node = venture_json_parse(body, NULL);
+		records = json_object_get_array_member(json_node_get_object(node),
+		                                       "records");
+		g_assert_cmpuint(json_array_get_length(records), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(
+			json_array_get_object_element(records, 0), "id"), ==, for_team);
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+
+		/*
+		 * The next page starts after the last id (id__gt), and tickets
+		 * already linked to a task are left out (id__not_in): either
+		 * way, the one ticket is not answered again.
+		 */
+		after = g_strdup_printf(
+			"/api/v1/ticket?team_id=%" G_GINT64_FORMAT "&assignee="
+			"&external_ref=&status=todo&kind=internal&id__gt=%"
+			G_GINT64_FORMAT "&order=id&limit=10&organization_id=%"
+			G_GINT64_FORMAT, team, for_team, home);
+		left_out = g_strdup_printf(
+			"/api/v1/ticket?team_id=%" G_GINT64_FORMAT "&assignee="
+			"&external_ref=&status=todo&kind=internal&id__gt=0"
+			"&id__not_in=%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT
+			"&order=id&limit=10&organization_id=%" G_GINT64_FORMAT,
+			team, ticket, for_team, home);
+		status = server_fixture_request(fixture, "GET", after, editor, NULL,
+		                                &body, NULL);
+		g_assert_cmpuint(status, ==, SOUP_STATUS_OK);
+		node = venture_json_parse(body, NULL);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			json_node_get_object(node), "records")), ==, 0);
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+		status = server_fixture_request(fixture, "GET", left_out, editor,
+		                                NULL, &body, NULL);
+		g_assert_cmpuint(status, ==, SOUP_STATUS_OK);
+		node = venture_json_parse(body, NULL);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+			json_node_get_object(node), "records")), ==, 0);
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+
+		/* the agents' own active memberships: which teams have one, and
+		 * who -- not the person's, not the agent's inactive one */
+		status = server_fixture_request(fixture, "GET", members, editor, NULL,
+		                                &body, NULL);
+		contract_check("team-membership-list", status, SOUP_STATUS_OK, body);
+		node = venture_json_parse(body, NULL);
+		records = json_object_get_array_member(json_node_get_object(node),
+		                                       "records");
+		g_assert_cmpuint(json_array_get_length(records), ==, 1);
+		g_assert_cmpint(json_object_get_int_member(
+			json_array_get_object_element(records, 0), "team_id"), ==, team);
+		g_clear_pointer(&node, json_node_unref);
+		g_clear_pointer(&body, g_free);
+	}
 
 	/* re-read after a stale version (0.10.6) */
 	status = server_fixture_request(fixture, "GET", path, editor, NULL, &body,

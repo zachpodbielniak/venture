@@ -12,6 +12,10 @@
       "status" : {
         "from" : "string",
         "to" : "string"
+      },
+      "team_id" : {
+        "from" : "int",
+        "to" : "int"
       }
     },
     "id" : "int",

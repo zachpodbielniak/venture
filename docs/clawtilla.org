@@ -3,7 +3,7 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs integrations
 #+created: [2026-11-16]
-#+updated: [2026-11-16]
+#+updated: [2026-11-26]
 #+version: 0.10.0
 
 * What this is
@@ -53,6 +53,16 @@ clawtilla does not rely on webhooks -- it polls -- but a webhook wakes it early.
 * The contract (since 0.10.2)
 
 Every answer clawtilla's mirror reads has its shape -- which keys, of which types -- recorded in =tests/fixtures/api-contract/=, and =/auth/clawtilla-contract= fails when an answer no longer matches.  A change that is meant is recorded again with =make contract-fixtures=; clawtilla keeps a copy in its =tests/fixtures/venture/= and checks its reader against it, and its =make check-venture-contract= diffs the two.  A field renamed under the mirror is then a failing test on one side or the other, not a fleet whose tickets quietly stop updating.
+
+* A ticket for a team of agents
+
+clawtilla can take in an =internal=, =todo= ticket given to a team and to nobody. In each organization it first reads its agents' own team memberships, =GET /api/v1/team_membership?user_id__in=…&active=true= -- each agent matched by the =user.id= its token's =whoami= answers -- which say which teams have an agent in them and who; then each of those teams' tickets, =GET /api/v1/ticket?team_id=N&assignee=&external_ref=&status=todo&kind=internal=, paged with =id__gt==, leaving out with =id__not_in== tickets it has already linked to a task whose assignee is not yet written. It gives each ticket to one of the team's agents and writes that agent back as the ticket's =assignee=. Nothing in VENTURE is configured for it beyond the team itself:
+
+- a =team= in the organization the tickets are in (a team belongs to one organization; the same name in two organizations is two teams);
+- an *active* =team_membership= for each agent's user -- made through the API, it must say ~"active": true~, as an organization membership must;
+- each agent's user an active member of the organization too, since it becomes the ticket's assignee (below).
+
+=assignee== and =external_ref== mean "none" -- null or blank alike. The contract test asserts each list answers exactly what it should (the unassigned team ticket, not one somebody has, one from another system or one in no team; nothing after it by =id__gt= or once left out by =id__not_in=; the agent's active membership, not its inactive one nor a person's in the same team), and records both answers (=ticket-team-list=, =team-membership-list=) and the timeline's =changes.team_id=, which tells clawtilla whether another agent's own account gave the ticket to the team.
 
 * The assignee must be a member (since the assignee picker)
 
