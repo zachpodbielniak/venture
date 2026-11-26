@@ -33,7 +33,10 @@ typedef struct
 	gint64 foreign_vendor;
 	gint64 period;
 	gint64 foreign_period;
+	gint64 customer;
 	gchar *period_name;
+	gchar *viewer;
+	gchar *editor;
 } Fixture;
 
 static void
@@ -111,8 +114,36 @@ pay(Fixture *f, gint64 vendor, const gchar *number, const gchar *amount, const g
 	save(f, payment);
 }
 
+/* A bearer for a real member. The org-access middleware sends a principal
+ * with no membership to /account before the page runs, so the editor gate
+ * is only reachable through a member. The global role is what the gate
+ * checks; the organization role is owner so the books stay writable. */
+static gchar *
+issue_token(Fixture *f, const gchar *name, VentureUserRole role)
+{
+	g_autoptr(VentureApiToken) token = venture_api_token_new();
+	g_autoptr(VentureUser) user = venture_user_new();
+	g_autoptr(VentureEntity) member = NULL;
+	g_autoptr(GError) error = NULL;
+	gchar *secret;
+	g_object_set(user, "username", name, "role", role, "active", TRUE, NULL);
+	g_assert_true(venture_user_set_password(user, "tax-pages-test-password", 1000, &error));
+	g_assert_no_error(error);
+	save(f, VENTURE_ENTITY(user));
+	member = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP,
+		"user-id", venture_entity_get_id(VENTURE_ENTITY(user)),
+		"organization-id", f->own, "role", VENTURE_ORGANIZATION_ROLE_OWNER,
+		"active", TRUE, NULL);
+	save(f, member);
+	g_object_set(token, "name", name, "role", role,
+		"user-id", venture_entity_get_id(VENTURE_ENTITY(user)), NULL);
+	secret = venture_api_token_generate(token);
+	save(f, VENTURE_ENTITY(token));
+	return secret;
+}
+
 static void
-set_up(Fixture *f, gconstpointer data)
+set_up_common(Fixture *f, gconstpointer data, gboolean require_auth)
 {
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureEntity) other = NULL;
@@ -122,7 +153,7 @@ set_up(Fixture *f, gconstpointer data)
 	f->state_dir = g_dir_make_tmp("venture-tax-pages-XXXXXX", NULL);
 	f->config = venture_config_new();
 	g_object_set(f->config, "state-dir", f->state_dir, "server-bind-address", "127.0.0.1",
-		"server-port", (gint64)0, "security-require-auth", FALSE, NULL);
+		"server-port", (gint64)0, "security-require-auth", require_auth, NULL);
 	f->database = venture_database_new("sqlite://:memory:", &error);
 	g_assert_no_error(error);
 	f->context = venture_context_new(f->config, f->database);
@@ -140,6 +171,7 @@ set_up(Fixture *f, gconstpointer data)
 	customer = g_object_new(VENTURE_TYPE_COMPANY, "organization-id", f->own,
 		"name", "Only A Customer", "kind", VENTURE_COMPANY_KIND_CUSTOMER, NULL);
 	save(f, customer);
+	f->customer = venture_entity_get_id(customer);
 	f->period = first_period(f, f->own, "FY 2026", "2026-01-01", &f->period_name);
 	f->foreign_period = first_period(f, f->other, "Their FY 2026", "2026-01-01", NULL);
 
@@ -148,6 +180,11 @@ set_up(Fixture *f, gconstpointer data)
 		"legal-name", "Harbor Felt Supply LLC", "active", TRUE, NULL);
 	save(f, form);
 	pay(f, f->harbor, "B-1", "2500.00", "2026-03-04");
+	if (require_auth)
+	{
+		f->viewer = issue_token(f, "tax-viewer", VENTURE_USER_ROLE_VIEWER);
+		f->editor = issue_token(f, "tax-editor", VENTURE_USER_ROLE_EDITOR);
+	}
 
 	f->server = venture_web_server_new(f->context, &error);
 	g_assert_no_error(error);
@@ -155,6 +192,18 @@ set_up(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	f->url = g_strdup_printf("http://127.0.0.1:%u", venture_web_server_get_port(f->server));
 	f->session = soup_session_new();
+}
+
+static void
+set_up(Fixture *f, gconstpointer data)
+{
+	set_up_common(f, data, FALSE);
+}
+
+static void
+set_up_auth(Fixture *f, gconstpointer data)
+{
+	set_up_common(f, data, TRUE);
 }
 
 static void
@@ -171,6 +220,8 @@ tear_down(Fixture *f, gconstpointer data)
 	g_free(f->state_dir);
 	g_free(f->url);
 	g_free(f->period_name);
+	g_free(f->viewer);
+	g_free(f->editor);
 }
 
 typedef struct
@@ -188,11 +239,12 @@ request_done(GObject *source, GAsyncResult *result, gpointer data)
 	request->done = TRUE;
 }
 
-/* Sends @method @path (with a form @body for POST) as the owner of the
- * fixture's own business, without following a redirect. */
+/* Sends @method @path (with a form @body for POST) for the fixture's own
+ * business, without following a redirect. @token is a bearer when
+ * authentication is on, or NULL when the server does not require it. */
 static gchar *
-send_as_owner(Fixture *f, const gchar *method, const gchar *path, const gchar *body,
-	guint *status, gchar **location)
+send_request(Fixture *f, const gchar *token, const gchar *method, const gchar *path,
+	const gchar *body, guint *status, gchar **location)
 {
 	g_autofree gchar *url = g_strconcat(f->url, path, NULL);
 	g_autoptr(SoupMessage) message = soup_message_new(method, url);
@@ -202,6 +254,11 @@ send_as_owner(Fixture *f, const gchar *method, const gchar *path, const gchar *b
 	soup_message_add_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	soup_message_headers_append(soup_message_get_request_headers(message), "Cookie", cookie);
 	soup_message_headers_append(soup_message_get_request_headers(message), "Accept", "text/html");
+	if (token != NULL)
+	{
+		g_autofree gchar *bearer = g_strconcat("Bearer ", token, NULL);
+		soup_message_headers_append(soup_message_get_request_headers(message), "Authorization", bearer);
+	}
 	if (body != NULL)
 	{
 		g_autoptr(GBytes) bytes = g_bytes_new(body, strlen(body));
@@ -217,6 +274,13 @@ send_as_owner(Fixture *f, const gchar *method, const gchar *path, const gchar *b
 	text = g_strndup(g_bytes_get_data(result.body, NULL), g_bytes_get_size(result.body));
 	g_bytes_unref(result.body);
 	return text;
+}
+
+static gchar *
+send_as_owner(Fixture *f, const gchar *method, const gchar *path, const gchar *body,
+	guint *status, gchar **location)
+{
+	return send_request(f, NULL, method, path, body, status, location);
 }
 
 static guint
@@ -274,7 +338,11 @@ test_1099_preview_then_prepare(Fixture *f, gconstpointer data)
 	g_autoptr(GError) error = NULL;
 	gint64 vendor = 0;
 	gint64 year = 0;
+	guint audits;
+	guint activities;
 	(void)data;
+	audits = count(f, VENTURE_TYPE_AUDIT_ENTRY);
+	activities = count(f, VENTURE_TYPE_ACTIVITY);
 	preview = send_as_owner(f, "GET", path, NULL, &status, NULL);
 	g_assert_cmpuint(status, ==, 200);
 	g_assert_nonnull(strstr(preview, "Harbor Felt Supply"));
@@ -282,6 +350,8 @@ test_1099_preview_then_prepare(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(preview, "2,500.00"));
 	g_assert_nonnull(strstr(preview, "action=\"/tax-filings/prepare\""));
 	g_assert_cmpuint(count(f, VENTURE_TYPE_CONTRACTOR_TAX_PACK), ==, 0);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_AUDIT_ENTRY), ==, audits);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_ACTIVITY), ==, activities);
 
 	done = send_as_owner(f, "POST", "/tax-filings/prepare", body, &status, &location);
 	g_assert_cmpuint(status / 100, ==, 3);
@@ -312,13 +382,19 @@ test_sales_preview_then_prepare(Fixture *f, gconstpointer data)
 	g_autoptr(VentureEntity) filing = NULL;
 	g_autoptr(GError) error = NULL;
 	gint64 period = 0;
+	guint audits;
+	guint activities;
 	(void)data;
+	audits = count(f, VENTURE_TYPE_AUDIT_ENTRY);
+	activities = count(f, VENTURE_TYPE_ACTIVITY);
 	preview = send_as_owner(f, "GET", path, NULL, &status, NULL);
 	g_assert_cmpuint(status, ==, 200);
 	g_assert_nonnull(strstr(preview, f->period_name));
 	g_assert_nonnull(strstr(preview, "US-NY"));
 	g_assert_nonnull(strstr(preview, "action=\"/tax-filings/prepare\""));
 	g_assert_cmpuint(count(f, VENTURE_TYPE_TAX_FILING), ==, 0);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_AUDIT_ENTRY), ==, audits);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_ACTIVITY), ==, activities);
 
 	done = send_as_owner(f, "POST", "/tax-filings/prepare", body, &status, &location);
 	g_assert_cmpuint(status / 100, ==, 3);
@@ -340,10 +416,12 @@ test_other_business_refused(Fixture *f, gconstpointer data)
 	guint status = 0;
 	g_autofree gchar *vendor_path = g_strdup_printf("/tax-filings/preview?kind=1099&vendor_id=%" G_GINT64_FORMAT "&year=2026", f->foreign_vendor);
 	g_autofree gchar *vendor_body = g_strdup_printf("kind=1099&vendor_id=%" G_GINT64_FORMAT "&year=2026", f->foreign_vendor);
+	g_autofree gchar *period_path = g_strdup_printf("/tax-filings/preview?kind=sales&country=US&jurisdiction=US-NY&fiscal_period_id=%" G_GINT64_FORMAT, f->foreign_period);
 	g_autofree gchar *period_body = g_strdup_printf("kind=sales&country=US&jurisdiction=US-NY&fiscal_period_id=%" G_GINT64_FORMAT, f->foreign_period);
 	g_autofree gchar *a = NULL;
 	g_autofree gchar *b = NULL;
 	g_autofree gchar *c = NULL;
+	g_autofree gchar *d = NULL;
 	(void)data;
 	a = send_as_owner(f, "GET", vendor_path, NULL, &status, NULL);
 	g_assert_cmpuint(status, ==, 404);
@@ -351,6 +429,9 @@ test_other_business_refused(Fixture *f, gconstpointer data)
 	/* The reason names the business, not a missing tax form: the refusal
 	 * is the ownership check, which a form filed later would not get past. */
 	g_assert_nonnull(strstr(a, "not one of this business"));
+	d = send_as_owner(f, "GET", period_path, NULL, &status, NULL);
+	g_assert_cmpuint(status, ==, 404);
+	g_assert_nonnull(strstr(d, "not one of this business"));
 	b = send_as_owner(f, "POST", "/tax-filings/prepare", vendor_body, &status, NULL);
 	g_assert_cmpuint(status, ==, 404);
 	g_assert_nonnull(strstr(b, "not one of this business"));
@@ -359,6 +440,57 @@ test_other_business_refused(Fixture *f, gconstpointer data)
 	g_assert_nonnull(strstr(c, "not one of this business"));
 	g_assert_cmpuint(count(f, VENTURE_TYPE_CONTRACTOR_TAX_PACK), ==, 0);
 	g_assert_cmpuint(count(f, VENTURE_TYPE_TAX_FILING), ==, 0);
+}
+
+/* A customer of this business is not a supplier. Preview and prepare
+ * refuse the id the same way they refuse another business's vendor. */
+static void
+test_customer_refused(Fixture *f, gconstpointer data)
+{
+	guint status = 0;
+	g_autofree gchar *path = g_strdup_printf("/tax-filings/preview?kind=1099&vendor_id=%" G_GINT64_FORMAT "&year=2026", f->customer);
+	g_autofree gchar *body = g_strdup_printf("kind=1099&vendor_id=%" G_GINT64_FORMAT "&year=2026", f->customer);
+	g_autofree gchar *preview = NULL;
+	g_autofree gchar *done = NULL;
+	(void)data;
+	preview = send_as_owner(f, "GET", path, NULL, &status, NULL);
+	g_assert_cmpuint(status, ==, 404);
+	g_assert_nonnull(strstr(preview, "not one of this business"));
+	g_assert_null(strstr(preview, "Only A Customer"));
+	done = send_as_owner(f, "POST", "/tax-filings/prepare", body, &status, NULL);
+	g_assert_cmpuint(status, ==, 404);
+	g_assert_nonnull(strstr(done, "not one of this business"));
+	g_assert_cmpuint(count(f, VENTURE_TYPE_CONTRACTOR_TAX_PACK), ==, 0);
+}
+
+/* With authentication on, a viewer cannot prepare and an editor can. */
+static void
+test_prepare_requires_editor(Fixture *f, gconstpointer data)
+{
+	guint status = 0;
+	g_autofree gchar *body = g_strdup_printf("kind=1099&vendor_id=%" G_GINT64_FORMAT "&year=2026", f->harbor);
+	g_autofree gchar *refused = NULL;
+	g_autofree gchar *done = NULL;
+	g_autofree gchar *location = NULL;
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_CONTRACTOR_TAX_PACK);
+	g_autoptr(VentureEntity) pack = NULL;
+	g_autoptr(GError) error = NULL;
+	gint64 vendor = 0;
+	(void)data;
+	refused = send_request(f, f->viewer, "POST", "/tax-filings/prepare", body, &status, NULL);
+	g_assert_cmpuint(status, ==, 403);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_CONTRACTOR_TAX_PACK), ==, 0);
+	g_assert_cmpuint(count(f, VENTURE_TYPE_TAX_FILING), ==, 0);
+	(void)refused;
+	done = send_request(f, f->editor, "POST", "/tax-filings/prepare", body, &status, &location);
+	g_assert_cmpuint(status / 100, ==, 3);
+	pack = venture_database_find_one(f->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(pack);
+	g_object_get(pack, "vendor-id", &vendor, NULL);
+	g_assert_cmpint(vendor, ==, f->harbor);
+	g_assert_nonnull(location);
+	(void)done;
 }
 
 int
@@ -370,5 +502,7 @@ main(int argc, char **argv)
 	g_test_add("/tax-filing-pages/1099-preview-prepare", Fixture, NULL, set_up, test_1099_preview_then_prepare, tear_down);
 	g_test_add("/tax-filing-pages/sales-preview-prepare", Fixture, NULL, set_up, test_sales_preview_then_prepare, tear_down);
 	g_test_add("/tax-filing-pages/other-business-refused", Fixture, NULL, set_up, test_other_business_refused, tear_down);
+	g_test_add("/tax-filing-pages/customer-refused", Fixture, NULL, set_up, test_customer_refused, tear_down);
+	g_test_add("/tax-filing-pages/prepare-requires-editor", Fixture, NULL, set_up_auth, test_prepare_requires_editor, tear_down);
 	return g_test_run();
 }
