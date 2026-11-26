@@ -8,7 +8,13 @@ with =bankfeed.enabled: true=. A hosted workspace (=hosted.enabled=) has it
 without that line, because every hosted plan includes bank feeds and a
 business owner can neither edit the configuration nor restart the service.
 An explicit =bankfeed.enabled: false= still turns it off there; the owner's
-page then says it is not available and that support turns it on. The Teller factory is registered without credentials;
+page then says it is not available and that support turns it on.
+
+An unset =bankfeed.enabled= follows =hosted.enabled= only while =banking= is
+on. A hosted install with =modules.banking.enabled: false= (or the ledger off)
+starts as before, with bank feeds off and the reason "requires banking".
+An explicit =bankfeed.enabled: true= with banking off is still a startup
+error. =venture_config_is_set()= is what tells the two apart. The Teller factory is registered without credentials;
 plugins can register other providers. =VENTURE_BANKFEED_TELLER_KEY= is no
 longer read. An unconfigured connection fails closed even if that old
 installation variable is present. Production HTTP uses
@@ -33,7 +39,7 @@ every business, with no provider:
 1. Add the bank account (=/e/bank_account/new=). Leave the ledger account
    empty and one is made for it.
 2. Download a statement from the bank's website as CSV, OFX or QFX.
-3. Open the account from the list on =/bankfeed=. Under Banking actions,
+3. Open the account from the list on =/bankfeed=. On its page, under Banking actions,
    choose =import= and pick the file. See [[file:banking.org][Bank statements and reconciliation]]
    for the columns and formats.
 4. Match each line to the books (=auto= on the statement, or =match= per

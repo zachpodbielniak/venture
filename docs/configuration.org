@@ -263,7 +263,9 @@ venture --generate-c-config > ~/.config/venture/config.c
 - *stripe*, *payroll*, *bankfeed*, *commerce*, *group* — one =enabled=
   switch each, off by default, equivalent to the =modules= entry. Left
   unset, =bankfeed.enabled= follows =hosted.enabled=: every hosted plan
-  includes bank feeds. Set it to =false= to turn them off there
+  includes bank feeds, unless =banking= is off, in which case they stay off
+  quietly. Set it to =false= to turn them off there; an explicit =true= with
+  banking off is an error
 - *stripe.connect* — the Connect platform keys (=secret_key=,
   =publishable_key=, =webhook_secret=, =environment=, =api_version=), a
   mapping inside =stripe=; =VENTURE_STRIPE_CONNECT_*= in the environment. All

@@ -1666,9 +1666,11 @@ venture_module_registry_resolve_one(
 ){
 	const gchar *const *requires;
 	gboolean enabled;
+	gboolean quiet;
 	gsize i;
 
 	enabled = TRUE;
+	quiet = FALSE;
 	venture_module_set_state(module, TRUE, NULL);
 
 	if (module->info->locked)
@@ -1702,6 +1704,15 @@ venture_module_registry_resolve_one(
 			{
 				g_object_get(self->config, module->info->legacy_switch,
 				             &legacy, NULL);
+
+				/* A switch nobody wrote is on only because a
+				 * setting it follows is on (hosted). A missing
+				 * requirement then turns the module off rather
+				 * than refusing to start; an explicit true is
+				 * still an error. */
+				if (legacy && !venture_config_is_set(self->config,
+				                                      module->info->legacy_switch))
+					quiet = TRUE;
 
 				if (!legacy)
 				{
@@ -1745,6 +1756,9 @@ venture_module_registry_resolve_one(
 			                                 : "not registered");
 			venture_module_set_state(module, FALSE, reason);
 		}
+
+		if (quiet)
+			return NULL;
 
 		return g_strdup_printf("Module \"%s\" requires \"%s\", which is "
 		                       "disabled. Enable %s, or disable %s as well.",

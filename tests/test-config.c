@@ -67,7 +67,31 @@ test_config_hosted_includes_bankfeed(void)
 		g_assert_false(config_bool(after, "bankfeed-enabled"));
 		yaml = venture_config_to_yaml(after, FALSE);
 		g_assert_nonnull(strstr(yaml, "bankfeed:"));
+
+		/* The written file, loaded into a fresh config, is still hosted
+		 * with bank feeds off. */
+		{
+			g_autoptr(VentureConfig) reloaded = venture_config_new();
+
+			g_assert_true(venture_config_apply_yaml_string(reloaded, yaml, &error));
+			g_assert_no_error(error);
+			g_assert_true(config_bool(reloaded, "hosted-enabled"));
+			g_assert_false(config_bool(reloaded, "bankfeed-enabled"));
+			g_assert_true(venture_config_is_set(reloaded, "bankfeed-enabled"));
+		}
 		g_clear_pointer(&yaml, g_free);
+	}
+	{
+		/* The environment wins over what hosted would give. */
+		g_autoptr(VentureConfig) env = venture_config_new();
+
+		g_setenv("VENTURE_BANKFEED_ENABLED", "false", TRUE);
+		g_object_set(env, "hosted-enabled", TRUE, NULL);
+		venture_config_apply_environment(env);
+		g_unsetenv("VENTURE_BANKFEED_ENABLED");
+		g_assert_true(config_bool(env, "hosted-enabled"));
+		g_assert_false(config_bool(env, "bankfeed-enabled"));
+		g_assert_true(venture_config_is_set(env, "bankfeed-enabled"));
 	}
 	{
 		g_autoptr(VentureConfig) file = venture_config_new();
@@ -88,6 +112,47 @@ test_config_hosted_includes_bankfeed(void)
 		g_assert_true(venture_module_registry_configure(modules, hosted, &error));
 		g_assert_no_error(error);
 		g_assert_true(venture_module_registry_is_enabled(modules, "bankfeed"));
+	}
+}
+
+/*
+ * A hosted install that turned banking (or the ledger) off worked before
+ * bank feeds followed hosted. The follower switching on must not make it
+ * refuse to start: the unset bankfeed goes off quietly. Only a bankfeed
+ * somebody wrote down as true is still an error.
+ */
+static void
+test_config_hosted_without_banking_still_validates(void)
+{
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureConfig) config = venture_config_new();
+		g_autoptr(VentureModuleRegistry) modules = venture_module_registry_new();
+
+		g_assert_true(venture_config_apply_yaml_string(config,
+			"hosted:\n  enabled: true\nmodules:\n  banking:\n    enabled: false\n",
+			&error));
+		g_assert_no_error(error);
+		g_assert_true(venture_config_validate(config, &error));
+		g_assert_no_error(error);
+
+		venture_module_registry_register_builtins(modules);
+		g_assert_true(venture_module_registry_configure(modules, config, &error));
+		g_assert_no_error(error);
+		g_assert_false(venture_module_registry_is_enabled(modules, "bankfeed"));
+		g_assert_false(venture_module_registry_is_enabled(modules, "banking"));
+	}
+	{
+		g_autoptr(GError) error = NULL;
+		g_autoptr(VentureConfig) config = venture_config_new();
+
+		g_assert_true(venture_config_apply_yaml_string(config,
+			"hosted:\n  enabled: true\nbankfeed:\n  enabled: true\n"
+			"modules:\n  banking:\n    enabled: false\n", &error));
+		g_assert_no_error(error);
+		g_assert_false(venture_config_validate(config, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG);
+		g_assert_nonnull(strstr(error->message, "requires \"banking\""));
 	}
 }
 
@@ -1041,6 +1106,8 @@ main(
 	g_test_add_func("/config/to-yaml-round-trips", test_config_to_yaml_round_trips);
 	g_test_add_func("/config/hosted-and-billing-round-trip", test_config_hosted_and_billing_round_trip);
 	g_test_add_func("/config/hosted-includes-bankfeed", test_config_hosted_includes_bankfeed);
+	g_test_add_func("/config/hosted-without-banking-validates",
+	                test_config_hosted_without_banking_still_validates);
 	g_test_add_func("/config/to-yaml-omits-defaults", test_config_to_yaml_omits_defaults);
 
 	g_test_add_func("/config/redacts-a-uri-password",

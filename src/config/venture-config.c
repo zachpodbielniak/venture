@@ -1798,6 +1798,20 @@ venture_config_load(
 /* --- Validation ---------------------------------------------------------- */
 
 gboolean
+venture_config_is_set(
+	VentureConfig	*self,
+	const gchar	*name
+){
+	g_return_val_if_fail(VENTURE_IS_CONFIG(self), FALSE);
+	g_return_val_if_fail(NULL != name, FALSE);
+
+	/* The table holds every property written by a file, the
+	 * environment, compiled config or code, so a value that only
+	 * follows another setting is not in it. */
+	return g_hash_table_contains(self->explicit, name);
+}
+
+gboolean
 venture_config_validate(
 	VentureConfig	 *self,
 	GError		**error

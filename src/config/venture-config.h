@@ -197,6 +197,23 @@ venture_config_apply_c_config(
 );
 
 /**
+ * venture_config_is_set:
+ * @self: a #VentureConfig
+ * @name: the property name, such as `bankfeed-enabled`
+ *
+ * Whether the setting was written explicitly, by a file, the environment,
+ * a compiled configuration or code. A setting that only follows another
+ * one, such as `bankfeed-enabled` following `hosted-enabled`, is not set.
+ *
+ * Returns: %TRUE if the value was set explicitly
+ */
+gboolean
+venture_config_is_set(
+	VentureConfig	*self,
+	const gchar	*name
+);
+
+/**
  * venture_config_validate:
  * @self: a #VentureConfig
  * @error: (out) (optional): return location for a #GError
