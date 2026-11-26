@@ -186,6 +186,12 @@ Two switches decide direction:
 - *File issues upstream* — linking a ticket here opens a forge issue for it.
 - *Accept issues from upstream* — a webhook issue becomes a ticket.
 
+*File accepted issues as* (=issue_kind=) decides the [[*Issue types][kind]] of the ticket an accepted issue becomes. It defaults to =internal=: an issue on your own repository is your own project work, and filing it as a support request would put all of it in the support queue. Set it to =external= on a repository that takes reports from outside users, and its issues arrive as support requests. Any other value is refused. The setting applies when the ticket is created; a ticket already linked to the issue keeps the kind it has. A repository enrolled before the setting existed reads as =internal= (migration =001080_forge_repo_issue_kind=, SQLite and PostgreSQL, adds the column and backfills nothing).
+
+#+begin_src bash
+venturectl update forge_repo 3 issue_kind=external
+#+end_src
+
 * Finding a repository from a remote
 
 A checkout knows its git remotes, not its =forge_repo= id. =GET /api/v1/forge_repo/resolve?url=<remote>= (since 0.10.0; the =repo_resolve= feature) answers the repository a remote names -- =id=, =name=, =forge_id=, =organization_id=, the =clone_url= VENTURE would clone from, and the =key= it matched on -- so a client filing work against the code it is in (an agent fleet mirroring its tasks) asks once rather than listing every forge and composing every clone URL itself.
@@ -369,6 +375,7 @@ A coding agent is a separate thing from the chat assistant, on a separate execut
 
 - *"That forge rejected this install's access token"* — the token is wrong, expired, or was revoked. Rotate both credentials in the forge settings page.
 - *"The access token is not allowed to …"* — the token exists but lacks a scope. Check =write:issue= for filing and commenting, =write:repository= for branches.
+- *Forge issues land in the support queue.* The repository's *File accepted issues as* is =external=; set it to =internal= for a repository whose issues are your own work. Tickets already filed keep their kind and are re-marked by hand.
 - *A webhook does nothing.* Check the secret matches, that the repository has =Accept issues from upstream= on, and that the repository's name in VENTURE matches =owner/repo= exactly. Forgejo's own delivery log shows the response VENTURE gave.
 - *A webhook creates nothing and the delivery shows 401.* The exact active binding is missing, inactive, revoked or signed with a different secret. Configure or rotate explicitly; plaintext is never a fallback.
 - *Tickets appear but not on the board.* The repository has no Venture set, so its tickets landed in the default organisation. Set it and move them.
