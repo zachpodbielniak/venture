@@ -1924,6 +1924,164 @@ test_factory_cli_release_flags(void)
 	g_assert_nonnull(strstr(misplaced, "belong to the release command"));
 }
 
+/* --- What a forge issue is filed as --------------------------------------- */
+
+static const gchar *const forge_issue_opened =
+	"{\"action\":\"opened\","
+	" \"repository\":{\"full_name\":\"zach/venture\"},"
+	" \"sender\":{\"login\":\"someone-else\"},"
+	" \"issue\":{\"number\":42,\"title\":\"It crashes\","
+	"            \"body\":\"every time\",\"state\":\"open\","
+	"            \"html_url\":\"https://git.example.com/zach/venture/issues/42\","
+	"            \"labels\":[{\"name\":\"bug\"}]}}";
+
+/*
+ * The one ticket the forge issue above became, and its kind.
+ */
+static VentureTicketKind
+forge_issue_ticket_kind(ServerFixture *fixture)
+{
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) tickets = NULL;
+	VentureTicketKind kind = VENTURE_TICKET_KIND_INTERNAL;
+	gint64 repo_id = 0;
+
+	query = venture_query_new(VENTURE_TYPE_TICKET);
+	tickets = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(tickets);
+	g_assert_cmpuint(tickets->len, ==, 1);
+
+	g_object_get(g_ptr_array_index(tickets, 0), "kind", &kind,
+	             "repo-id", &repo_id, NULL);
+	g_assert_cmpint(repo_id, ==, fixture->repo_id);
+
+	return kind;
+}
+
+/*
+ * The repository's issue kind, as the API reports it.
+ */
+static gchar *
+forge_repo_issue_kind(ServerFixture *fixture)
+{
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *body = NULL;
+	JsonObject *object;
+
+	path = g_strdup_printf("/api/v1/forge_repo/%" G_GINT64_FORMAT,
+	                       fixture->repo_id);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &body), ==,
+	                 SOUP_STATUS_OK);
+	node = venture_json_parse(body, NULL);
+	g_assert_nonnull(node);
+	g_assert_true(JSON_NODE_HOLDS_OBJECT(node));
+	object = json_node_get_object(node);
+	g_assert_true(json_object_has_member(object, "issue_kind"));
+
+	return g_strdup(json_object_get_string_member(object, "issue_kind"));
+}
+
+static guint
+forge_repo_patch(
+	ServerFixture	*fixture,
+	const gchar	*json
+){
+	g_autofree gchar *path = NULL;
+
+	path = g_strdup_printf("/api/v1/forge_repo/%" G_GINT64_FORMAT,
+	                       fixture->repo_id);
+
+	return server_request_full(fixture, "PATCH", path, "application/json",
+	                           json, NULL, NULL);
+}
+
+/*
+ * An issue opened on an enrolled repository left at its defaults becomes
+ * internal work, not a support request.
+ *
+ * What breaks if this regresses: a repository's own issues are its project
+ * work, and filing them as external puts every one of them in the support
+ * queue, where they bury the requests that really came from somebody else.
+ */
+static void
+test_factory_forge_issue_is_internal_by_default(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *kind = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *form = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
+	                                        forge_issue_opened), <, 300);
+	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
+	                VENTURE_TICKET_KIND_INTERNAL);
+
+	/* The default is said, not implied: the API reports it and the
+	 * repository's form offers both choices. */
+	kind = forge_repo_issue_kind(fixture);
+	g_assert_cmpstr(kind, ==, "internal");
+
+	path = g_strdup_printf("/e/forge_repo/%" G_GINT64_FORMAT "/edit",
+	                       fixture->repo_id);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &form), ==,
+	                 SOUP_STATUS_OK);
+	g_assert_nonnull(strstr(form, "name=\"issue-kind\""));
+	g_assert_nonnull(strstr(form, "value=\"external\""));
+}
+
+/*
+ * A repository that takes reports from outside users can file its issues as
+ * external, and they then reach the support queue.
+ */
+static void
+test_factory_forge_issue_kind_external(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *kind = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(forge_repo_patch(fixture,
+	                                  "{\"issue_kind\":\"external\"}"), ==,
+	                 SOUP_STATUS_OK);
+	kind = forge_repo_issue_kind(fixture);
+	g_assert_cmpstr(kind, ==, "external");
+
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
+	                                        forge_issue_opened), <, 300);
+	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
+	                VENTURE_TICKET_KIND_EXTERNAL);
+}
+
+/*
+ * A value that is not a ticket kind is refused, and the setting is left as
+ * it was rather than falling back to whatever zero means.
+ */
+static void
+test_factory_forge_issue_kind_refuses_an_unknown_value(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *kind = NULL;
+
+	(void)user_data;
+
+	g_assert_cmpuint(forge_repo_patch(fixture,
+	                                  "{\"issue_kind\":\"external\"}"), ==,
+	                 SOUP_STATUS_OK);
+	g_assert_cmpuint(forge_repo_patch(fixture,
+	                                  "{\"issue_kind\":\"customer\"}"), ==,
+	                 SOUP_STATUS_BAD_REQUEST);
+
+	kind = forge_repo_issue_kind(fixture);
+	g_assert_cmpstr(kind, ==, "external");
+}
+
 int
 main(
 	int	  argc,
@@ -1958,6 +2116,12 @@ main(
 	    test_factory_late_deliveries_do_not_unfinish_a_build);
 	ADD("/factory/http/forge-release-finds-the-row-it-means",
 	    test_factory_forge_release_finds_the_row_it_means);
+	ADD("/factory/http/forge-issue-is-internal-by-default",
+	    test_factory_forge_issue_is_internal_by_default);
+	ADD("/factory/http/forge-issue-kind-external",
+	    test_factory_forge_issue_kind_external);
+	ADD("/factory/http/forge-issue-kind-refuses-an-unknown-value",
+	    test_factory_forge_issue_kind_refuses_an_unknown_value);
 	ADD("/factory/http/operations", test_factory_operations_over_http);
 	ADD("/factory/http/without-an-assistant",
 	    test_factory_without_an_assistant);

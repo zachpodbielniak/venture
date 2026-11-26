@@ -26202,6 +26202,7 @@ venture_web_forge_webhook_apply(
 	gint64 max_bytes = 32;
 	gint64 repo_id;
 	gboolean accept_issues = FALSE;
+	VentureTicketKind issue_kind = VENTURE_TICKET_KIND_INTERNAL;
 	gboolean enabled = FALSE;
 	gboolean created = FALSE;
 	const gchar *event_name;
@@ -26363,7 +26364,8 @@ venture_web_forge_webhook_apply(
 		return venture_web_forge_ack(SOUP_STATUS_NO_CONTENT);
 	}
 
-	g_object_get(repo, "accept-issues", &accept_issues, NULL);
+	g_object_get(repo, "accept-issues", &accept_issues,
+	             "issue-kind", &issue_kind, NULL);
 	repo_id = venture_entity_get_id(VENTURE_ENTITY(repo));
 
 	if (!accept_issues)
@@ -26435,8 +26437,15 @@ venture_web_forge_webhook_apply(
 		ticket = VENTURE_ENTITY(venture_ticket_new());
 		venture_entity_set_organization_id(ticket, organization);
 
+		/*
+		 * The kind is the repository's to say. An issue on your own
+		 * repository is your own project work, and filing every one
+		 * as a support request buries the requests that really came
+		 * from outside. Only a new ticket takes it: a linked ticket
+		 * keeps whatever kind somebody gave it.
+		 */
 		g_object_set(ticket,
-		             "kind", VENTURE_TICKET_KIND_EXTERNAL,
+		             "kind", issue_kind,
 		             "issue-type",
 		             venture_web_forge_type_from_labels(event.labels),
 		             "status", VENTURE_TICKET_STATUS_TRIAGE,

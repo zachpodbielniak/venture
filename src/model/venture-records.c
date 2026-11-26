@@ -2946,6 +2946,21 @@ static const VentureFieldDecl venture_forge_repo_fields[] = {
 	VENTURE_FIELD("accept-issues", "Accept issues from upstream",
 	              "A webhook issue becomes a ticket",
 	              VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	/*
+	 * What an accepted issue is filed as. Internal by default, because
+	 * an issue on your own repository is your own project work; a
+	 * repository that takes reports from outside users sets external,
+	 * and its issues then reach the support queue.
+	 *
+	 * The default is the enum's zero value, and it has to stay that way:
+	 * the column is added to a table that already has rows, every one of
+	 * them NULL here, and NULL reads back as zero.
+	 */
+	VENTURE_FIELD_ENUM("issue-kind", "File accepted issues as",
+	                   "Internal: your own project work. External: a "
+	                   "support request from somebody else",
+	                   venture_ticket_kind_get_type,
+	                   VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
 	              VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("notes", "Notes", NULL)

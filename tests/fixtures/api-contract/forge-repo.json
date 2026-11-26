@@ -9,6 +9,7 @@
   "display_name" : "string",
   "forge_id" : "int",
   "id" : "int",
+  "issue_kind" : "string",
   "name" : "string",
   "notes" : "null",
   "organization_id" : "int",
