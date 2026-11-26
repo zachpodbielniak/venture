@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "venture-test-util.h"
+#include "venture-test-member.h"
 #include "venture-test-forge.h"
 
 typedef struct
@@ -930,6 +931,24 @@ test_webhook_ntfy_push(
 
 /* --- Routing --------------------------------------------------------------- */
 
+/*
+ * The desk's people. A rota, and a ticket's assignee, may only name
+ * members of the organization the work is in, so they are made first.
+ */
+static void
+make_people(Fixture *fixture)
+{
+	static const gchar *const names[] = { "alice", "bob", "carol", "dave" };
+	gint64 organization_id;
+	guint i;
+
+	organization_id =
+		venture_context_get_default_organization_id(fixture->context);
+
+	for (i = 0; i < G_N_ELEMENTS(names); i++)
+		venture_test_member(fixture->database, organization_id, names[i]);
+}
+
 static VentureEntity *
 create_rule(
 	Fixture			*fixture,
@@ -973,6 +992,7 @@ test_routing_assigns_new_tickets(
 	g_autofree gchar *tagged = NULL;
 
 	(void)user_data;
+	make_people(fixture);
 
 	rota = create_rule(fixture, "Support rota", "alice, bob",
 	                   VENTURE_ROUTING_STRATEGY_ROUND_ROBIN, NULL);
@@ -1047,6 +1067,7 @@ test_routing_least_busy_and_empty(
 	guint i;
 
 	(void)user_data;
+	make_people(fixture);
 
 	/* Alice is holding two; bob one. */
 	for (i = 0; i < 3; i++)
@@ -1097,6 +1118,7 @@ test_support_report_scores_ratings(
 	guint i;
 
 	(void)user_data;
+	make_people(fixture);
 
 	{
 		static const VentureSatisfaction ratings[] = {

@@ -17,6 +17,7 @@
 #include <libsoup/soup.h>
 
 #include "venture-test-util.h"
+#include "venture-test-member.h"
 #include "venture-test-accounting.h"
 
 /* --- The classification ---------------------------------------------------- */
@@ -1292,6 +1293,8 @@ test_ticket_board(Fixture *f, gconstpointer data)
 	g_object_set(fire, "status", value, NULL);
 	save(f, fire);
 
+	/* An assignee must be a member of the ticket's organization. */
+	venture_test_member(f->database, f->organization_id, "dave");
 	chore = g_object_new(VENTURE_TYPE_TICKET, "title", "Rotate the keys",
 		"assignee", "dave", NULL);
 	g_assert_true(venture_enum_from_nick(VENTURE_TYPE_TICKET_STATUS, "in_progress", &value));

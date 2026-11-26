@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include "venture-test-accounting.h"
+#include "venture-test-member.h"
 
 typedef struct {
 	VentureDatabase *db;
@@ -35,6 +36,9 @@ setup(Fixture *f, gconstpointer data)
 	f->config = venture_config_new();
 	f->context = venture_context_new(f->config, f->db);
 	f->org = venture_context_get_default_organization_id(f->context);
+	/* The sales rep the inquiry rule routes to; work handed on from the
+	 * deal lands on them, so they must be a member. */
+	venture_test_member(f->db, f->org, "rep");
 }
 
 static void

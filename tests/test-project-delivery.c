@@ -9,6 +9,7 @@
 #include <string.h>
 #include "venture-test-util.h"
 #include "venture-test-accounting.h"
+#include "venture-test-member.h"
 
 typedef struct
 {
@@ -51,6 +52,9 @@ setup(Fixture *f, gconstpointer data)
 	g_assert_no_error(error);
 	f->context = venture_context_new(f->config, f->db);
 	f->org = venture_context_get_default_organization_id(f->context);
+	/* The project owner these tests hand work to; a ticket made for the
+	 * project lands on them, so they must be a member. */
+	venture_test_member(f->db, f->org, "biller");
 	company = venture_company_new();
 	g_object_set(company, "name", "Client", NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(company), f->org);

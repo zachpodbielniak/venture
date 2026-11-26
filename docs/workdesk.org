@@ -57,7 +57,7 @@ The live state is always computed from those fields and the moment of asking: ok
 
 * Macros
 
-A =macro= is a reply and a set of changes, applied to a ticket in one press from the Desk card on its page. The reply is optional and so is every change — "close as duplicate" needs no words, "send the how-to" changes nothing — and the reply fills in ={me}=, ={ticket}= and ={title}=. It can set the status, the priority, the assignee (={me}= for whoever applies it) and add tags, merged into what the ticket has. One transaction: a refused status leaves no orphan comment. An inactive macro is refused.
+A =macro= is a reply and a set of changes, applied to a ticket in one press from the Desk card on its page. The reply is optional and so is every change — "close as duplicate" needs no words, "send the how-to" changes nothing — and the reply fills in ={me}=, ={ticket}= and ={title}=. It can set the status, the priority, the assignee (a member of the macro's organization, or ={me}= for whoever applies it -- see [[*Assigning: who may have a ticket][Assigning]]) and add tags, merged into what the ticket has. One transaction: a refused status leaves no orphan comment. An inactive macro is refused.
 
 * Worklogs
 
@@ -67,11 +67,37 @@ Log time from the Desk card, =venturectl ticket ID worklog 1.5 "what"=, or =POST
 
 A =sprint= is a window with a goal, a status (planned, active, completed), dates and a points capacity. Tickets are planned into it by their =sprint_id=; =story_points= is what each weighs there, a separate number from the hour estimate because it answers a different question. =/sprints= shows every sprint with its burn — done points over planned, against capacity, with days left — and a sprint's page lists its tickets by status. The board takes =?sprint_id=N= to show just the sprint's tickets.
 
+* Assigning: who may have a ticket
+
+A ticket's =assignee= is a username, and on the wire it still is -- what changed is that it has to be somebody. A non-empty assignee must be the username of an active user who holds an active membership of the ticket's organization. Empty is unassigned and always allowed. "oxpeker" for "oxpecker" used to save, belong to nobody, tell nobody and never reach whatever lists tickets by exact username (clawtilla's intake does); now it is refused:
+
+#+begin_src json
+{ "error": "validation", "message": "assignee: \"oxpeker\" is not an active member of Acme; choose a member, or leave it unassigned", "code": 5 }
+#+end_src
+
+That is a 422 from the API, the field and the value first so a client can say which box to change. It is one save validator (=venture_assignee_install()=, =src/core/venture-assignee.c=) on the record, so it holds at every door at once: the REST create and update that =venturectl= and the MCP server's =venture_create= / =venture_update= speak, the ticket form, the board and Desk quick-assign, a macro, a bulk edit, a routing rule, a staged write when its confirmation is approved (the approval is the 422), the assistant, automations and plugins.
+
+Who counts, exactly:
+
+- an active, undeleted user with an active =organization_membership= of the ticket's organization, of any role;
+- outside a hosted install, the owner and administrators too -- they read every organization by role, membership row or not;
+- with organization access switched off there are no memberships at all, so every active user counts.
+
+*It is judged only when written.* On create, and on an update only when the assignee changes -- or the ticket moves to another organization, because the name it keeps is then a claim about different people. A ticket whose stored assignee has gone stale (an old typo from before the rule, a member who left) still takes a new title, status or comment; only changing the assignee to another non-member is refused, and clearing it always works. This is the same reference rule the save applies to every link.
+
+*Choosing, not typing.* The ticket form draws the assignee as a list of the organization's members: "Unassigned", "Me — yourname" and then everybody by username, filtered as you type ("ox" finds oxpecker, by username or display name). It is the same combobox every searchable select gets; with scripting off it is the plain =<select>= the server rendered, so it works without JavaScript. A stored name that is not a member any more stays the selected choice, marked "not a member", so saving the form unchanged does not unassign the ticket. The board card and the Desk card each carry the same picker with an Assign button (=POST /tickets/:id/assign=), beside the Desk's "Assign to me". When the form refuses a save, the message above it names the field and the box is marked.
+
+*Looking somebody up.* =GET /api/v1/organizations/:id/members?q=ox&limit=20&offset=0= answers the people a ticket there may be given, ordered by username, as ={"total", "count", "limit", "offset", "records": [{"username", "display_name"}]}= -- nothing else about anybody. =q= matches anywhere in the username or display name, ignoring case. It answers only for an organization the caller may read (a membership of it, or owner/administrator); any other answers 404, the same as one that does not exist. Deliberately not the users list, which is the owner's alone: an editor who may assign a ticket has to be able to find out to whom.
+
+The same rule covers the other places a username is typed: a =macro='s assignee (a member, or ={me}=) and a =routing_rule='s =assignees= rota (every name in it). A team's members are chosen as user records already, not typed.
+
 * Routing: who a new ticket goes to
 
 A queue nobody owns is a queue nobody works. A =routing_rule= matches a ticket on its kind, its priority and a tag — most specific first, and a tag is the narrowest thing a rule can name because it is the one somebody wrote by hand — and puts a name on the ticket the moment it arrives. Three strategies: =round_robin= takes the next name in the rota (the position is kept on the rule, so two tickets raised in the same second go to two people), =least_busy= counts open tickets and picks the fewest, and =first= always uses the first name, which is a queue with one owner.
 
 It applies only when the ticket arrives with nobody on it, so raising a ticket for somebody specific still works. It runs as a save validator rather than afterwards: assigning after the write would be a second save, a second audit entry and a notification about a change nobody made.
+
+Every name in a rota is checked when the rule is saved. A rota only ever hands a ticket to somebody who may take it in /the ticket's/ organization: a name that has since left is skipped for the next one, and a rota with nobody left leaves the ticket unassigned. It never refuses the ticket -- one stale name must not stop tickets arriving. (A rule matches on kind, priority and tag, not organization, so another organization's rota can cover a ticket; its names are not members here, and the ticket arrives unassigned.)
 
 * Satisfaction
 
@@ -173,7 +199,7 @@ The writes that cannot wait in the confirmation queue — a macro is a comment p
 
 - *A derived write bumps the version.* The first-reply stamp and the logged-hours total are saves of the ticket, so a form or an object read before them is a version behind and its save is a conflict. A page reloads; code re-reads. The macro saves the ticket before its reply for exactly this reason.
 - *The sweep is lazy.* Nothing runs on a timer; the board and the inbox sweep when opened, bounded. An install that wants breaches marked overnight calls =POST /api/v1/sla/sweep= from a cron rule.
-- *An assignee is a username.* The inbox resolves it to a user; a name that is not a user is simply nobody to tell.
+- *An assignee is a member's username.* The save refuses anybody who is not an active member of the ticket's organization, so the inbox always has somebody to tell for a ticket assigned since the rule. A stale name stored before it, or left by a member who went, is still nobody to tell -- and stays editable; see [[*Assigning: who may have a ticket][Assigning]].
 
 * What support costs
 

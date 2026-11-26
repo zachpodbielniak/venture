@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "venture-test-util.h"
+#include "venture-test-member.h"
 
 typedef struct
 {
@@ -1483,6 +1484,10 @@ test_http(
 	g_object_set(mine, "title", "Book the room", "assignee", "owner", "event-id", ID(event), NULL);
 	g_assert_true(venture_entity_set_field_from_string(mine, "due-at", "2026-03-05", NULL));
 	server_save(fixture, mine);
+	/* Somebody else's, which an assignee must be a member to be. */
+	venture_test_member(fixture->database,
+		venture_context_get_default_organization_id(fixture->context),
+		"someone");
 	theirs = VENTURE_ENTITY(venture_ticket_new());
 	g_object_set(theirs, "title", "Print slides", "assignee", "someone", "event-id", ID(event), NULL);
 	g_assert_true(venture_entity_set_field_from_string(theirs, "due-at", "2026-03-06", NULL));

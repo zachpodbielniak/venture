@@ -54,6 +54,10 @@ clawtilla does not rely on webhooks -- it polls -- but a webhook wakes it early.
 
 Every answer clawtilla's mirror reads has its shape -- which keys, of which types -- recorded in =tests/fixtures/api-contract/=, and =/auth/clawtilla-contract= fails when an answer no longer matches.  A change that is meant is recorded again with =make contract-fixtures=; clawtilla keeps a copy in its =tests/fixtures/venture/= and checks its reader against it, and its =make check-venture-contract= diffs the two.  A field renamed under the mirror is then a failing test on one side or the other, not a fleet whose tickets quietly stop updating.
 
+* The assignee must be a member (since the assignee picker)
+
+The mirror writes a ticket's =assignee= as the agent's username, the one its token's =whoami= answered. A ticket's assignee must now be an active member of the ticket's organization, so the agent's user needs an active =organization_membership= of the organization the ticket is filed in -- the one its repository belongs to. Without it the create is refused with a 422 (=assignee: "wildebuild" is not an active member of ...=), which the mirror reports as a dead job ("filing the ticket: ...") rather than retrying. Before, the same ticket would have been made and then been unwritable by that agent, whose own token could not update a ticket in an organization it is not a member of. An agent with no VENTURE account is written as no assignee, which is always allowed. Updates are judged only when the assignee changes, so a reassignment to an agent who is not a member is refused the same way; an unchanged assignee never is.
+
 * Who wrote a comment
 
 A ticket comment made through the API records its writer as its =author= (since 0.10.1): =API token #N= for a token, the username for a session.  An author the caller names is kept -- that is how a mail import records the sender.  clawtilla reads it to tell a person's comment from the assignee agent's own.

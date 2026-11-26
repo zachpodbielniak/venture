@@ -1090,6 +1090,18 @@ typedef enum
  *   known" -- a year installed nobody remembers. Presentation only: zero
  *   is drawn as an empty box and an empty value, so typing 2014 into a
  *   new form is 2014 and not 20140. Storage ignores it.
+ * @VENTURE_COLUMN_FLAG_MEMBER_USERNAME: a string naming one person who may
+ *   be given the work -- a ticket's assignee. Empty is nobody; anything
+ *   else must be the username of an active member of the record's
+ *   organization. Checked at the save when written (see
+ *   venture_assignee_install()); the form offers the members to choose
+ *   from instead of a text box.
+ * @VENTURE_COLUMN_FLAG_MEMBER_USERNAMES: like
+ *   %VENTURE_COLUMN_FLAG_MEMBER_USERNAME, but a comma-separated list in
+ *   order -- a routing rule's rota. Every name in it is checked.
+ * @VENTURE_COLUMN_FLAG_MEMBER_PLACEHOLDER: with either of the two above, the
+ *   field is a template's and may also hold "{me}", filled in with whoever
+ *   applies it -- a macro's assignee.
  *
  * Per-property persistence hints. These are attached to a GObject property
  * with venture_entity_class_set_column_flags(), which is how a plain
@@ -1116,7 +1128,10 @@ typedef enum
 	VENTURE_COLUMN_FLAG_SAME_PARENT = 1 << 15,
 	VENTURE_COLUMN_FLAG_BLANK_ZERO = 1 << 16,
 	VENTURE_COLUMN_FLAG_PRIVACY_PARENT = 1 << 17,
-	VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT = 1 << 18
+	VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT = 1 << 18,
+	VENTURE_COLUMN_FLAG_MEMBER_USERNAME = 1 << 19,
+	VENTURE_COLUMN_FLAG_MEMBER_USERNAMES = 1 << 20,
+	VENTURE_COLUMN_FLAG_MEMBER_PLACEHOLDER = 1 << 21
 } VentureColumnFlags;
 
 /**

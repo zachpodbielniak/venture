@@ -185,6 +185,11 @@ venture_context_new(
 	 * Routing is a validator so it runs before the row is written;
 	 * webhooks listen to the audit trail, like the inbox. */
 	venture_routing_install(self);
+
+	/* A field naming whom the work goes to names a member of the record's
+	 * organization. After routing, so the name a rota chose is the name
+	 * judged -- routing only chooses members, so it never trips this. */
+	venture_assignee_install(self);
 	venture_webhook_install(self);
 	venture_business_events_install(self);
 

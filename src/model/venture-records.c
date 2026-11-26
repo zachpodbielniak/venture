@@ -1537,8 +1537,13 @@ static const VentureFieldDecl venture_ticket_fields[] = {
 	                   venture_priority_get_type,
 	                   VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD_TEXT("description", "Description", NULL),
-	VENTURE_FIELD("assignee", "Assignee", "Who is doing it",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED | VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME),
+	/* A username, held to the organization's active members when written:
+	 * a typo used to save and then belong to nobody. */
+	VENTURE_FIELD("assignee", "Assignee",
+	              "Who is doing it: a member of this organization, or nobody",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_INDEXED |
+	              VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME |
+	              VENTURE_COLUMN_FLAG_MEMBER_USERNAME),
 	/* Who asked. Set for an external ticket, empty for your own work;
 	 * when the company is set too, somebody at that company. */
 	VENTURE_FIELD_REF("contact-id", "Raised by", NULL, "contact",
@@ -2523,8 +2528,10 @@ static const VentureFieldDecl venture_macro_fields[] = {
 	                   venture_priority_get_type,
 	                   VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("assignee", "Assign to",
-	              "A username, or {me} for whoever applies it; blank leaves it",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	              "A member, or {me} for whoever applies it; blank leaves it",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_MEMBER_USERNAME |
+	              VENTURE_COLUMN_FLAG_MEMBER_PLACEHOLDER),
 	VENTURE_FIELD("add-tags", "Add tags", "Comma separated",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("active", "Active", NULL, VENTURE_FIELD_KIND_BOOLEAN,
@@ -2713,8 +2720,9 @@ static const VentureFieldDecl venture_routing_rule_fields[] = {
 	                   venture_routing_strategy_get_type,
 	                   VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("assignees", "Assign to",
-	              "Usernames, comma separated, in rota order",
-	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	              "Members' usernames, comma separated, in rota order",
+	              VENTURE_FIELD_KIND_STRING,
+	              VENTURE_COLUMN_FLAG_MEMBER_USERNAMES),
 	VENTURE_FIELD("cursor", "Rota position",
 	              "Where the round robin has got to", VENTURE_FIELD_KIND_INTEGER,
 	              VENTURE_COLUMN_FLAG_NONE),

@@ -282,6 +282,7 @@
 #include "core/venture-webhook.h"
 #include "core/venture-business-events.h"
 #include "core/venture-routing.h"
+#include "core/venture-assignee.h"
 #include "core/venture-currency.h"
 #include "core/venture-parallel.h"
 #include "core/venture-category.h"

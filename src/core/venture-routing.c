@@ -9,10 +9,21 @@
 
 /*
  * The usernames a rule names, in rota order, with the blanks dropped.
+ *
+ * With @organization_id set, only the names that may be given that
+ * organization's work (venture_assignee_is_member()). A rota is checked
+ * when it is saved, but a member can leave after, and a rule matches
+ * tickets by kind, priority and tag rather than by organization: handing
+ * the ticket to a name the save would refuse would refuse the ticket,
+ * and one stale name must not stop tickets arriving. Skipped instead,
+ * the ticket goes to the next person, or to nobody.
  */
 static GStrv
-venture_routing_assignees(VentureEntity *rule)
-{
+venture_routing_assignees(
+	VentureContext	*context,
+	VentureEntity	*rule,
+	gint64		 organization_id
+){
 	g_autoptr(GPtrArray) names = NULL;
 	g_auto(GStrv) parts = NULL;
 	g_autofree gchar *assignees = NULL;
@@ -28,8 +39,15 @@ venture_routing_assignees(VentureEntity *rule)
 
 		name = g_strstrip(g_strdup(parts[i]));
 
-		if (!venture_string_is_empty(name))
-			g_ptr_array_add(names, g_steal_pointer(&name));
+		if (venture_string_is_empty(name))
+			continue;
+
+		if ((organization_id > 0) &&
+		    !venture_assignee_is_member(venture_context_get_database(context),
+		                                organization_id, name))
+			continue;
+
+		g_ptr_array_add(names, g_steal_pointer(&name));
 	}
 
 	g_ptr_array_add(names, NULL);
@@ -176,20 +194,22 @@ venture_routing_open_count(
 	return (count < 0) ? G_MAXINT64 : count;
 }
 
-gchar *
-venture_routing_choose(
+/*
+ * venture_routing_choose(), from the names that may take work in
+ * @organization_id (every name, for 0).
+ */
+static gchar *
+venture_routing_choose_in(
 	VentureContext	 *context,
 	VentureEntity	 *rule,
+	gint64		  organization_id,
 	GError		**error
 ){
 	g_auto(GStrv) names = NULL;
 	VentureRoutingStrategy strategy;
 	guint n;
 
-	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
-	g_return_val_if_fail(VENTURE_IS_ROUTING_RULE(rule), NULL);
-
-	names = venture_routing_assignees(rule);
+	names = venture_routing_assignees(context, rule, organization_id);
 	n = g_strv_length(names);
 
 	if (0 == n)
@@ -260,6 +280,18 @@ venture_routing_choose(
 	}
 }
 
+gchar *
+venture_routing_choose(
+	VentureContext	 *context,
+	VentureEntity	 *rule,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(VENTURE_IS_ROUTING_RULE(rule), NULL);
+
+	return venture_routing_choose_in(context, rule, 0, error);
+}
+
 /*
  * A new ticket with nobody on it gets a name, if a rule covers it. A
  * validator rather than a signal handler because it has to happen
@@ -302,7 +334,11 @@ venture_routing_validate_ticket(
 	if (NULL == rule)
 		return TRUE;
 
-	chosen = venture_routing_choose(context, rule, NULL);
+	/* Only somebody who may take this organization's work; nobody, if the
+	 * rota has nobody left who may. */
+	chosen = venture_routing_choose_in(context, rule,
+	                                   venture_entity_get_organization_id(entity),
+	                                   NULL);
 
 	if (!venture_string_is_empty(chosen))
 		g_object_set(entity, "assignee", chosen, NULL);

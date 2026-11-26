@@ -1105,6 +1105,9 @@ static const GFlagsValue venture_column_flags_values[] = {
 	VE(VENTURE_COLUMN_FLAG_TECHNICAL, "technical"),
 	VE(VENTURE_COLUMN_FLAG_SAME_PARENT, "same_parent"),
 	VE(VENTURE_COLUMN_FLAG_BLANK_ZERO, "blank_zero"),
+	VE(VENTURE_COLUMN_FLAG_MEMBER_USERNAME, "member_username"),
+	VE(VENTURE_COLUMN_FLAG_MEMBER_USERNAMES, "member_usernames"),
+	VE(VENTURE_COLUMN_FLAG_MEMBER_PLACEHOLDER, "member_placeholder"),
 	VE_END
 };
 

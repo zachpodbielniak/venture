@@ -2,6 +2,7 @@
 #include <venture.h>
 #include <string.h>
 #include "venture-test-util.h"
+#include "venture-test-member.h"
 
 /* A complete export must not require the operator to discover that a
  * supported vendor has no mapping for one of its ordinary CRM modules. */
@@ -173,6 +174,10 @@ test_complete_export(gconstpointer data)
 	g_assert_no_error(error);
 	context = venture_context_new(config, db);
 	org = venture_context_get_default_organization_id(context);
+	/* The manifests' owner_map sends owner-1 here; an owner_map destination
+	 * names somebody in the organization, and an imported ticket's
+	 * assignee is held to that. */
+	venture_test_member(db, org, "synthetic-operator");
 	g_assert_cmpint(venture_deal_service_ensure_default(venture_database_get_deal_service(db), org, &error), >, 0);
 	g_assert_no_error(error);
 	g_object_set(venture, "name", "Synthetic import target", "slug", "synthetic-import-target", NULL);

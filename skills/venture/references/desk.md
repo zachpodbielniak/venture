@@ -42,8 +42,16 @@ venturectl incident 2 ticket                     # the bug for an incident, prio
   logged-hours roll-up are saves of the ticket, so an object read before
   them conflicts -- re-read after commenting or logging time.
 - `routing_rule` assigns a new ticket (round_robin, least_busy, first) by
-  kind/priority/tag, only when it has no assignee. An `assignee` is a
-  username; one that is no user is nobody to tell.
+  kind/priority/tag, only when it has no assignee, and only to names that
+  are members of the ticket's organization (others are skipped).
+- An `assignee` is a username that must be an **active member of the
+  ticket's organization** (or empty for nobody); anything else is a 422
+  `assignee: "name" is not an active member of ...`. Judged only when the
+  assignee is written (or the ticket changes organization), so a ticket
+  with a stale assignee still takes other edits. Find who may be assigned
+  with `GET /api/v1/organizations/:id/members?q=ox` (username and display
+  name only). A macro's `assignee` may also be `{me}`; a routing rule's
+  `assignees` rota is checked name by name.
 - `bulk` and `macro` are several records at once and cannot be staged;
   propose the pieces with `create`/`update --stage` instead. A worklog is
   one record and stages.

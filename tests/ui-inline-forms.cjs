@@ -7,6 +7,7 @@ const vm = require('node:vm');
 class Element {
     constructor() { this.children = []; this.disabled = false; this.attributes = []; }
     setAttribute() {}
+    removeAttribute() {}
     appendChild(child) { this.children.push(child); }
     scrollIntoView() {}
     set textContent(value) { this.children = []; this.text = value; }

@@ -13,7 +13,8 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   reads replies), `issue_type` [task|subtask|story|epic|bug|research]
   (what shape the work is; what forge rules key on), `status`
   [triage|todo|in_progress|blocked|review|done|cancelled], `priority`
-  [low|normal|high|urgent], `assignee` (a username), `owner_user_id`,
+  [low|normal|high|urgent], `assignee` (a username of an active member of
+  the ticket's organization, or empty), `owner_user_id`,
   `team_id`, `contact_id`, `company_id`, `venture_id`, `idea_id`,
   `parent_id -> ticket` (shape held by the save: epic none; story under
   an epic or none; task/bug/research under an epic, a story or none;
@@ -38,10 +39,12 @@ are in [data-model.md](data-model.md); usage is in [desk.md](desk.md),
   `subject_id`, label stored); made through the service, not CRUD.
 - `sla_policy` (`kind`/`priority` or `all_*`, `first_response_hours`,
   `resolution_hours`), `macro` (canned reply plus `apply_status`,
-  `apply_priority`, `assignee`, `add_tags`), `worklog` (`hours`, `note`),
+  `apply_priority`, `assignee` (a member or `{me}`), `add_tags`),
+  `worklog` (`hours`, `note`),
   `sprint` (`status` [planned|active|completed], `starts_on`, `ends_on`,
   `capacity_points`), `routing_rule` (`strategy`
-  [round_robin|least_busy|first], `assignees`, matching kind/priority/tag).
+  [round_robin|least_busy|first], `assignees` (members, comma separated),
+  matching kind/priority/tag).
 
 ## planner (requires core; suggests goals, tickets, crm, activities, money_calendar, calendar) -- no reports
 

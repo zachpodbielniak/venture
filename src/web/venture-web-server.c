@@ -9879,6 +9879,15 @@ venture_web_append_reference_option(
 	g_string_append(content, "</option>");
 }
 
+/* Member pickers: venture-web-assignee.inc. */
+static gboolean venture_web_append_member_field(VentureWebServer *self,
+	GString *content, VentureFieldSpec *spec, VentureEntity *record,
+	gint64 organization, const gchar *current);
+static void venture_web_append_ticket_assign(VentureWebServer *self,
+	GString *content, VentureEntity *ticket, GHashTable *names);
+static void venture_web_append_desk_assign(VentureWebServer *self,
+	GString *content, VentureEntity *ticket);
+
 static void
 venture_web_append_form_field_scoped(
 	VentureWebServer	*self,
@@ -10204,6 +10213,11 @@ venture_web_append_form_field_scoped(
 		break;
 
 	default:
+		/* A username that must name a member: chosen, not typed. */
+		if (venture_web_append_member_field(self, content, spec, record,
+		                                    organization, current))
+			break;
+
 		g_string_append_printf(content,
 			"<input type=\"text\" name=\"%s\" value=\"", name);
 		venture_html_escape_append(content, current);
@@ -14581,6 +14595,9 @@ venture_web_append_ticket_card(
 	g_string_append(content, "</select>"
 	                         "<button class=\"btn btn-sm\" type=\"submit\">"
 	                         "Move</button></form>");
+
+	/* And who has it, the same way. */
+	venture_web_append_ticket_assign(self, content, ticket, names);
 
 	g_string_append(content, "</article>");
 }
@@ -32841,6 +32858,9 @@ venture_web_append_ticket_desk_block(
 			"<button class=\"btn btn-sm\" type=\"submit\">Assign to me"
 			"</button></form>", id);
 
+	/* Anybody else in the organization, or nobody. */
+	venture_web_append_desk_assign(self, content, ticket);
+
 	g_string_append(content, "</div></div><div class=\"card-body desk-body\">");
 
 	/* The clocks. */
@@ -33188,6 +33208,8 @@ venture_web_ui_ticket_assign_me(
 
 	return venture_web_desk_answer(request, back, error);
 }
+
+#include "venture-web-assignee.inc"
 
 /*
  * The API forms of the three, plus the service level as JSON.
@@ -36219,6 +36241,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/macro", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_macro, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/worklog", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_worklog, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/assign-me", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_assign_me, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/assign", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_assign, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/sprints", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_sprints, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/runs", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_runs, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/runs/table", VENTURE_DATA_CLASS_PLATFORM, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_runs_table, self);
@@ -36489,6 +36512,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/rotate", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/lightsite/schedule-tokens/:id/revoke", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_schedule_token, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/lightsite-areas", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_lightsite_areas, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/members", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_organization_members, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/organizations/:organization_id/invitations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/organizations/:organization_id/invitations/:invitation_id/resend", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_tenant_web_owner_invitations, self);

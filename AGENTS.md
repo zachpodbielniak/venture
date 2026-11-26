@@ -313,6 +313,19 @@ order the data flows.
   `PRAGMA foreign_keys=ON` is inert by design. Tests must create real
   referents (`create_organization()` in `tests/test-database.c`); a
   fabricated id that used to save quietly now fails the save.
+- **A username that names who does the work is a member's, checked when
+  written.** A string field flagged `VENTURE_COLUMN_FLAG_MEMBER_USERNAME`
+  (`_USERNAMES` for a comma-separated rota, `_PLACEHOLDER` to allow
+  `{me}` in a template) must name an active member of the record's
+  organization; one validator on `VENTURE_TYPE_ENTITY`
+  (`src/core/venture-assignee.c`) holds every type, and the form draws a
+  member picker for it. Judged on insert, on a changed value, or on a
+  changed organization -- never on a value kept, so a stale assignee does
+  not lock a ticket. Anything that *chooses* a name for a record (routing)
+  must choose from `venture_assignee_is_member()`, or one stale name
+  refuses the record. A test that saves a ticket with an assignee must
+  create that user and an active membership first; `ASSIGNED_USERNAME`
+  (ownership) is a separate flag and checks nothing.
 - **A polymorphic subject buys nothing from the generic machinery.**
   `ticket_relation` names its subject by type and id, so it gets no picker,
   no reverse section from `venture_web_append_related()` and no rendered

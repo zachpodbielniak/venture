@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "venture-test-util.h"
+#include "venture-test-member.h"
 
 typedef struct
 {
@@ -73,6 +74,12 @@ create_ticket(
 ){
 	VentureTicket *ticket;
 	VentureActor actor;
+
+	/* An assignee must be somebody who may take the work. */
+	if (NULL != assignee)
+		venture_test_member(fixture->database,
+			venture_context_get_default_organization_id(fixture->context),
+			assignee);
 
 	actor_for(&actor, by);
 	ticket = venture_ticket_new();
@@ -853,6 +860,9 @@ test_desk_service_levels(
 
 		now = venture_time_now();
 		yesterday = g_date_time_add_days(now, -1);
+		venture_test_member(fixture->database,
+			venture_context_get_default_organization_id(fixture->context),
+			"bob");
 		overdue = venture_ticket_new();
 		g_object_set(overdue, "title", "Slow one", "assignee", "bob",
 		             "status", VENTURE_TICKET_STATUS_IN_PROGRESS,
@@ -918,6 +928,10 @@ test_desk_macro_applies_in_one_go(
 	(void)user_data;
 
 	create_user(fixture, "alice", VENTURE_USER_ROLE_EDITOR);
+	/* {me} becomes alice, who must be a member to be given the ticket. */
+	venture_test_member(fixture->database,
+		venture_context_get_default_organization_id(fixture->context),
+		"alice");
 	ticket = create_ticket(fixture, "Cannot print", NULL, "alice");
 	g_object_set(ticket, "tags", "printer, urgent", NULL);
 	g_assert_true(venture_database_save(fixture->database, ticket, NULL, NULL));
@@ -1127,6 +1141,10 @@ test_desk_bulk_is_all_or_nothing(
 	(void)user_data;
 
 	actor_for(&actor, "alice");
+	/* The bulk change hands the tickets to alice, who must be a member. */
+	venture_test_member(fixture->database,
+		venture_context_get_default_organization_id(fixture->context),
+		"alice");
 
 	for (i = 0; i < 3; i++)
 	{

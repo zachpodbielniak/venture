@@ -1169,6 +1169,7 @@ test_auth_pages_refuse_anonymous_requests(
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/lightsite/billing/change-card", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/organizations/1/invitations"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/organizations/1/lightsite-areas"), ==, SOUP_STATUS_UNAUTHORIZED);
+	g_assert_cmpuint(server_fixture_get_anonymous(fixture, "/api/v1/organizations/1/members?q=ox"), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/organizations/1/invitations", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/organizations/1/invitations/1/resend", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/api/v1/organizations/1/invitations/1/revoke", NULL, "{}", NULL, NULL), ==, SOUP_STATUS_UNAUTHORIZED);
@@ -1263,6 +1264,8 @@ test_auth_pages_refuse_anonymous_requests(
 		==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/tickets/1/assign-me", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
+	g_assert_cmpuint(server_fixture_request(fixture, "POST",
+		"/tickets/1/assign", NULL, "assignee=anyone", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST",
 		"/incidents/1/ticket", NULL, "", NULL, NULL), ==, SOUP_STATUS_FOUND);
 	g_assert_cmpuint(server_fixture_request(fixture, "POST", "/e/ticket/bulk",
@@ -3699,6 +3702,10 @@ test_auth_clawtilla_contract(
 	contract_check("ticket-list", status, SOUP_STATUS_OK, body);
 	g_clear_pointer(&body, g_free);
 
+	/* The mirror hands a task to the agent's user, which must be a member
+	 * of the ticket's organization to be given it. */
+	server_fixture_create_member(fixture, "vera", "v-long-password",
+		VENTURE_USER_ROLE_VIEWER, NULL);
 	path = g_strdup_printf("/api/v1/ticket/%" G_GINT64_FORMAT, ticket);
 	status = server_fixture_request(fixture, "PATCH", path, editor,
 		"{\"status\":\"in_progress\",\"assignee\":\"vera\",\"version\":1}",

@@ -210,7 +210,42 @@
 		box.appendChild(title);
 		box.appendChild(document.createTextNode(message));
 		box.hidden = false;
+		markInvalidField(form, message);
 		box.scrollIntoView({ block: "center", behavior: "smooth" });
+	}
+
+	/*
+	 * A refusal that starts with a field's wire name -- "assignee: ..." --
+	 * marks that control, so the person sees which box to change. A label
+	 * ("Part of: ...") names no control and marks nothing; the message
+	 * above the form still says it. A picker's own button is marked too,
+	 * since the select behind it is out of sight.
+	 */
+	function markInvalidField(form, message) {
+		var named = /^([A-Za-z_][A-Za-z0-9_]*): /.exec(message || "");
+
+		form.querySelectorAll("[aria-invalid]").forEach(function (el) {
+			el.removeAttribute("aria-invalid");
+		});
+
+		if (!named) {
+			return;
+		}
+
+		var control = form.querySelector("[name=\"" + named[1].toLowerCase() + "\"]");
+
+		if (!control) {
+			return;
+		}
+
+		control.setAttribute("aria-invalid", "true");
+
+		var wrap = control.closest(".picker");
+		var button = wrap ? wrap.querySelector(".picker-button") : null;
+
+		if (button) {
+			button.setAttribute("aria-invalid", "true");
+		}
 	}
 
 	function postsInline(form) {

@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "venture-test-util.h"
+#include "venture-test-member.h"
 
 /* --- A context, no server ------------------------------------------------- */
 
@@ -46,6 +47,12 @@ create_ticket(
 	const gchar		*assignee
 ){
 	g_autoptr(VentureTicket) ticket = NULL;
+
+	/* An assignee must be somebody who may take the work. */
+	if (NULL != assignee)
+		venture_test_member(fixture->database,
+			venture_context_get_default_organization_id(fixture->context),
+			assignee);
 
 	ticket = venture_ticket_new();
 	g_object_set(ticket, "title", title, "status", status,
