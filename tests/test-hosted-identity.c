@@ -593,6 +593,8 @@ int main(int argc, char **argv)
 	g_test_add("/hosted-identity/browser-business-context", Fixture, "browser", setup, test_browser_business_context, teardown);
 	g_test_add("/hosted-identity/browser-reports", Fixture, "browser", setup, test_browser_reports, teardown);
 	g_test_add("/hosted-identity/browser-report-selection", Fixture, "browser", setup, test_browser_report_selection, teardown);
+	g_test_add("/hosted-identity/browser-statements", Fixture, "browser", setup, test_browser_statements, teardown);
+	g_test_add("/hosted-identity/browser-statements-portfolio", Fixture, "browser", setup, test_browser_statements_portfolio, teardown);
 	g_test_add("/hosted-identity/browser-edit-pages", Fixture, "browser", setup, test_browser_edit_pages, teardown);
 	g_test_add("/hosted-identity/browser-calendar", Fixture, "browser", setup, test_browser_calendar, teardown);
 	g_test_add("/hosted-identity/browser-token-refusals", Fixture, "browser", setup, test_browser_token_refusals, teardown);

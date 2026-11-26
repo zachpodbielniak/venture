@@ -11422,14 +11422,13 @@ venture_web_report_organization(VentureWebServer *self, HtmxRequest *request,
 	g_autoptr(VentureEntity) organization = NULL;
 	g_autoptr(GError) failure = NULL;
 	gint64 id;
+	gboolean portfolio = FALSE;
 
 	if (venture_string_is_empty(requested))
 	{
-		/* Preserve the existing portfolio request; individual report engines
-		 * decide whether they support an unscoped result. */
-		if (!g_strcmp0(cookie, "all"))
-			return TRUE;
-		requested = cookie;
+		portfolio = !g_strcmp0(cookie, "all");
+		if (!portfolio)
+			requested = cookie;
 	}
 	if (requested != NULL)
 	{
@@ -11441,7 +11440,7 @@ venture_web_report_organization(VentureWebServer *self, HtmxRequest *request,
 		}
 	}
 	else
-		id = venture_context_get_default_organization_id(self->context);
+		id = portfolio ? 0 : venture_context_get_default_organization_id(self->context);
 
 	if (id > 0)
 		organization = venture_database_get(database, VENTURE_TYPE_ORGANIZATION, id, &failure);
@@ -11474,6 +11473,12 @@ venture_web_report_organization(VentureWebServer *self, HtmxRequest *request,
 			return TRUE;
 		if (available->len != 1)
 		{
+			/* All is a portfolio request only when there is a portfolio.
+			 * With one readable business, an unscoped statement would
+			 * fall back to the workspace's own business, which an owner
+			 * cannot read, and answer "No such record". */
+			if (portfolio)
+				return TRUE;
 			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 				"Choose a business in the sidebar before opening this report.");
 			return FALSE;

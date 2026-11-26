@@ -1263,7 +1263,10 @@ Without a selection, the workspace default is used only when readable.
 A hosted owner with exactly one accessible business uses that business;
 several accessible businesses require a sidebar selection if the workspace
 default is unavailable. The resolved business is retained in period and CSV
-links. The existing explicit All entities choice retains each report's
+links. The explicit All entities choice is the same when only one business
+is readable: the report uses that business, so a hosted owner's balance
+sheet and cash flow never fall back to the workspace default, which the owner
+cannot read. With several readable businesses, All keeps each report's
 existing unscoped behavior.
 Accounts with no readable businesses retain each report's existing empty or
 unavailable result under the database access policy; they cannot read another

@@ -304,6 +304,165 @@ static void test_browser_report_selection(Fixture *f, gconstpointer data)
 	g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/receivables?organization_id=invalid", cookie, NULL, NULL, NULL, NULL, NULL), ==, 400);
 }
 
+/* One account of a signed-up business, made the way its owner would make it. */
+static gint64 statement_account(Fixture *f, gint64 business, const gchar *code, const gchar *name,
+	VentureAccountKind kind, gboolean cash)
+{
+	g_autoptr(VentureAccount) account = venture_account_new();
+	g_autoptr(GError) error = NULL;
+	g_object_set(account, "organization-id", business, "code", code, "name", name,
+		"kind", kind, "cash-equivalent", cash, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, VENTURE_ENTITY(account), NULL, &error));
+	g_assert_no_error(error);
+	return venture_entity_get_id(VENTURE_ENTITY(account));
+}
+static void statement_post(Fixture *f, gint64 business, const gchar *when, gint64 debit, gint64 credit, gint64 cents)
+{
+	g_autoptr(VentureJournal) header = venture_journal_new();
+	g_autoptr(VentureJournal) posted = NULL;
+	g_autoptr(GPtrArray) lines = g_ptr_array_new_with_free_func(g_object_unref);
+	g_autoptr(GDateTime) date = g_date_time_new_from_iso8601(when, NULL);
+	g_autoptr(VentureMoney) money = venture_money_new_for_currency(cents, "USD");
+	g_autoptr(GError) error = NULL;
+	VentureJournalLine *line;
+	g_object_set(header, "organization-id", business, "source-type", "organization",
+		"source-id", business, "occurred-at", date, "currency", "USD", NULL);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", debit, "side", VENTURE_LEDGER_SIDE_DEBIT, "amount", money, NULL);
+	g_ptr_array_add(lines, line);
+	line = venture_journal_line_new();
+	g_object_set(line, "account-id", credit, "side", VENTURE_LEDGER_SIDE_CREDIT, "amount", money, NULL);
+	g_ptr_array_add(lines, line);
+	posted = venture_posting_service_post(venture_database_get_posting_service(f->db), header, lines, NULL, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(posted);
+}
+/* The formatted figure of one summary row of a JSON report. */
+static gchar *statement_figure(const gchar *body, const gchar *key)
+{
+	g_autoptr(JsonNode) node = json_of(body);
+	JsonArray *rows = json_object_get_array_member(json_node_get_object(node), "rows");
+	guint i;
+	for (i = 0; i < json_array_get_length(rows); i++) {
+		JsonObject *row = json_array_get_object_element(rows, i);
+		if (!g_strcmp0(json_object_get_string_member_with_default(row, "key", NULL), key))
+			return g_strdup(json_object_get_string_member(row, "current_formatted"));
+	}
+	g_error("report has no %s row: %s", key, body);
+	return NULL;
+}
+/* Exactly @cents US dollars, shown the way every report shows money. */
+static void statement_expect(const gchar *figure, gint64 cents)
+{
+	g_autoptr(VentureMoney) money = venture_money_new_for_currency(cents, "USD");
+	g_autofree gchar *expected = venture_money_to_display_string(money, TRUE);
+	g_assert_cmpstr(figure, ==, expected);
+}
+/* A fresh hosted owner opens the advertised statements from the ordinary
+ * report links, whatever the sidebar says. Given an investment of 125.00,
+ * a sale of 40.00 and supplies of 15.00, both statements tie to cash 150.00.
+ * What breaks: All falls back to the workspace's own business, which the
+ * owner cannot read, and the page says "No such record". */
+static void test_browser_statements(Fixture *f, gconstpointer data)
+{
+	static const gchar *const scopes[] = { "", "; venture_entity=all", "; venture_entity=own", NULL };
+	gint64 own, other, cash, equity, sales, supplies, other_cash, other_equity;
+	g_autofree gchar *session = NULL;
+	guint i;
+	(void)data;
+	own = sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", NULL);
+	other = sign_up(f, "other-signup", "other@example.test", "other-owner", "Other Example Co", NULL);
+	cash = statement_account(f, own, "1000", "Cash", VENTURE_ACCOUNT_KIND_ASSET, TRUE);
+	equity = statement_account(f, own, "3000", "Owner's equity", VENTURE_ACCOUNT_KIND_EQUITY, FALSE);
+	sales = statement_account(f, own, "4000", "Sales", VENTURE_ACCOUNT_KIND_INCOME, FALSE);
+	supplies = statement_account(f, own, "6400", "Supplies", VENTURE_ACCOUNT_KIND_EXPENSE, FALSE);
+	statement_post(f, own, "2026-03-02T12:00:00Z", cash, equity, 12500);
+	statement_post(f, own, "2026-03-10T12:00:00Z", cash, sales, 4000);
+	statement_post(f, own, "2026-03-20T12:00:00Z", supplies, cash, 1500);
+	/* Another tenant's books, so a statement that read past its business
+	 * would show different totals. */
+	other_cash = statement_account(f, other, "1000", "Cash", VENTURE_ACCOUNT_KIND_ASSET, TRUE);
+	other_equity = statement_account(f, other, "3000", "Owner's equity", VENTURE_ACCOUNT_KIND_EQUITY, FALSE);
+	statement_post(f, other, "2026-03-05T12:00:00Z", other_cash, other_equity, 99900);
+	session = browser_login(f, "/reports");
+	for (i = 0; scopes[i]; i++) {
+		g_autofree gchar *scope = g_strcmp0(scopes[i], "; venture_entity=own") ? g_strdup(scopes[i]) :
+			g_strdup_printf("; venture_entity=%" G_GINT64_FORMAT, own);
+		g_autofree gchar *cookie = g_strconcat(session, scope, NULL);
+		g_autofree gchar *sheet = NULL, *flow = NULL, *page = NULL, *csv = NULL, *foreign = NULL;
+		g_autofree gchar *scoped = NULL, *expected = NULL;
+		g_autofree gchar *assets = NULL, *equity_total = NULL, *net = NULL, *difference = NULL;
+		g_autofree gchar *financing = NULL, *cash_end = NULL, *operating = NULL, *flow_difference = NULL;
+		g_test_message("sidebar scope '%s'", scope);
+		g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/balance_sheet?period=2026&currency=USD", cookie,
+			NULL, NULL, NULL, &sheet, NULL), ==, 200);
+		assets = statement_figure(sheet, "assets");
+		equity_total = statement_figure(sheet, "equity");
+		net = statement_figure(sheet, "net_income");
+		difference = statement_figure(sheet, "difference");
+		statement_expect(assets, 15000);
+		statement_expect(equity_total, 15000);
+		statement_expect(net, 2500);
+		statement_expect(difference, 0);
+		g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/cash_flow?period=2026&currency=USD", cookie,
+			NULL, NULL, NULL, &flow, NULL), ==, 200);
+		operating = statement_figure(flow, "operating");
+		financing = statement_figure(flow, "financing");
+		cash_end = statement_figure(flow, "cash_end");
+		flow_difference = statement_figure(flow, "difference");
+		statement_expect(operating, 2500);
+		statement_expect(financing, 12500);
+		statement_expect(cash_end, 15000);
+		statement_expect(flow_difference, 0);
+		g_assert_cmpuint(exchange(f, "GET", "/reports/balance_sheet?period=2026&currency=USD", cookie,
+			NULL, NULL, NULL, &page, NULL), ==, 200);
+		g_assert_null(strstr(page, "No such record"));
+		g_assert_nonnull(strstr(page, "150.00"));
+		g_clear_pointer(&page, g_free);
+		g_assert_cmpuint(exchange(f, "GET", "/reports/cash_flow?period=2026&currency=USD", cookie,
+			NULL, NULL, NULL, &page, NULL), ==, 200);
+		g_assert_null(strstr(page, "No such record"));
+		g_assert_nonnull(strstr(page, "125.00"));
+		g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/cash_flow?period=2026&currency=USD&format=csv", cookie,
+			NULL, NULL, NULL, &csv, NULL), ==, 200);
+		g_assert_nonnull(strstr(csv, "150.00"));
+		scoped = g_strdup_printf("/api/v1/reports/balance_sheet?period=2026&currency=USD&format=csv&organization_id=%"
+			G_GINT64_FORMAT, own);
+		g_assert_cmpuint(exchange(f, "GET", scoped, session, NULL, NULL, NULL, &expected, NULL), ==, 200);
+		g_assert_nonnull(strstr(expected, "150.00"));
+		g_clear_pointer(&csv, g_free);
+		g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/balance_sheet?period=2026&currency=USD&format=csv", cookie,
+			NULL, NULL, NULL, &csv, NULL), ==, 200);
+		g_assert_cmpstr(csv, ==, expected);
+		foreign = g_strdup_printf("/api/v1/reports/balance_sheet?period=2026&organization_id=%" G_GINT64_FORMAT, other);
+		g_assert_cmpuint(exchange(f, "GET", foreign, cookie, NULL, NULL, NULL, NULL, NULL), ==, 404);
+	}
+}
+
+/* An owner of two businesses who picks All still gets a portfolio report.
+ * What breaks: All resolved to a business only when there is one, so
+ * here it must stay unscoped rather than ask for a sidebar choice. */
+static void test_browser_statements_portfolio(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) membership = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *session = NULL, *cookie = NULL, *body = NULL;
+	gint64 own, other, owner;
+	(void)data;
+	own = sign_up(f, "browser-signup", "owner@example.test", "browser-owner", "Example Co", &owner);
+	other = sign_up(f, "other-signup", "other@example.test", "other-owner", "Other Example Co", NULL);
+	g_assert_cmpint(own, !=, other);
+	membership = g_object_new(VENTURE_TYPE_ORGANIZATION_MEMBERSHIP, "user-id", owner,
+		"organization-id", other, "role", VENTURE_ORGANIZATION_ROLE_OWNER, "active", TRUE, NULL);
+	g_assert_true(venture_database_save(f->db, membership, NULL, &error));
+	g_assert_no_error(error);
+	session = browser_login(f, "/reports");
+	cookie = g_strconcat(session, "; venture_entity=all", NULL);
+	g_assert_cmpuint(exchange(f, "GET", "/api/v1/reports/receivables?period=2026", cookie,
+		NULL, NULL, NULL, &body, NULL), ==, 200);
+	g_assert_null(strstr(body, "Choose a business"));
+}
+
 /* Webhook controls may expose only the current business's destinations and
  * must retain the owner-only credential boundary after hosted classification. */
 static void test_browser_webhooks(Fixture *f, gconstpointer data)
