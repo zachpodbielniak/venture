@@ -404,7 +404,10 @@ venture_actor_names_read_avatar(
 
 	g_object_get(user, "avatar-version", &version, NULL);
 
-	if (venture_string_is_empty(version))
+	/* Only a version the store could have written: anything else in the
+	 * column would become part of an address on somebody's page. The
+	 * validator keeps other writers out; this is the second fence. */
+	if (!venture_avatar_version_is_valid(version))
 		return NULL;
 
 	return g_steal_pointer(&version);

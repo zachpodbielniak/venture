@@ -30,6 +30,7 @@
 
 #include "venture.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -91,11 +92,264 @@ venture_avatar_is_available(void)
 
 /* --- Before any decoder ---------------------------------------------------- */
 
-const gchar *
-venture_avatar_sniff(
-	GBytes	*data,
-	gint	*width,
-	gint	*height
+static guint32
+venture_avatar_le32(const guint8 *p)
+{
+	return (guint32)p[0] | ((guint32)p[1] << 8) | ((guint32)p[2] << 16) |
+	       ((guint32)p[3] << 24);
+}
+
+static guint32
+venture_avatar_le24(const guint8 *p)
+{
+	return (guint32)p[0] | ((guint32)p[1] << 8) | ((guint32)p[2] << 16);
+}
+
+static guint32
+venture_avatar_le16(const guint8 *p)
+{
+	return (guint32)p[0] | ((guint32)p[1] << 8);
+}
+
+/*
+ * The size of the one frame a WebP file holds, read from the bitstream
+ * itself rather than from the VP8X canvas in front of it.
+ *
+ * Why. The extended format's VP8X chunk states a canvas size, and that is
+ * all the shared sniffer reads; the decoder believes the VP8 or VP8L
+ * bitstream instead, and only compares the two after it has decoded the
+ * whole frame. So a 64 by 64 canvas around a 16383 by 16383 lossy frame
+ * passed the pixel cap and cost seconds of decoding before the decoder
+ * refused it. Here every chunk is walked (RIFF: a fourcc, a little-endian
+ * length, the payload padded to an even length), and the file is refused
+ * unless it holds exactly one still frame whose bitstream size is the size
+ * the canvas claims. Anything malformed is refused: fail closed.
+ *
+ * Offsets, from the WebP container and VP8/VP8L bitstream specifications,
+ * relative to a chunk's payload:
+ *   VP8X  0: flags (0x02 animation), 1-3 reserved, 4-6 canvas width - 1,
+ *         7-9 canvas height - 1 (24-bit little-endian each)
+ *   "VP8 " 0-2: frame tag (bit 0 clear on a key frame), 3-5: start code
+ *         9d 01 2a, 6-7: width, 8-9: height (14 bits each, 2 scale bits)
+ *   VP8L  0: signature 0x2f, 1-4: 14 bits width - 1, 14 bits height - 1,
+ *         1 bit alpha, 3 bits version (must be 0)
+ */
+static gboolean
+venture_avatar_webp_frame_size(
+	const guint8	 *p,
+	gsize		  size,
+	gint		 *width,
+	gint		 *height,
+	GError		**error
+){
+	gsize end;
+	gsize offset;
+	guint32 riff_size;
+	gboolean extended;
+	gboolean found;
+	gint canvas_width;
+	gint canvas_height;
+	gint frame_width;
+	gint frame_height;
+
+	if ((size < 12) || (0 != memcmp(p, "RIFF", 4)) || (0 != memcmp(p + 8, "WEBP", 4)))
+	{
+		venture_set_error_validation(error, "Picture", "it is not a WebP file");
+		return FALSE;
+	}
+
+	/* The RIFF length covers everything after its own eight bytes. Bytes
+	 * past it are not part of the file (the decoder ignores them too);
+	 * a length past the end means the file was cut short. */
+	riff_size = venture_avatar_le32(p + 4);
+
+	if ((riff_size < 4) || ((gsize)riff_size > size - 8))
+	{
+		venture_set_error_validation(error, "Picture",
+			"it is a WebP file cut short: its header says %u bytes follow, "
+			"and %" G_GSIZE_FORMAT " do", riff_size, size - 8);
+		return FALSE;
+	}
+
+	end = 8 + (gsize)riff_size;
+	offset = 12;
+	extended = FALSE;
+	found = FALSE;
+	canvas_width = 0;
+	canvas_height = 0;
+	frame_width = 0;
+	frame_height = 0;
+
+	while (offset < end)
+	{
+		const guint8 *chunk;
+		const guint8 *payload;
+		gsize length;
+		gsize padded;
+
+		/* Every comparison is against what is left, never a sum that
+		 * could wrap: a hostile length is up to 4 GB. */
+		if (end - offset < 8)
+		{
+			venture_set_error_validation(error, "Picture",
+				"it is a WebP file with a chunk header cut short");
+			return FALSE;
+		}
+
+		chunk = p + offset;
+		payload = chunk + 8;
+		length = (gsize)venture_avatar_le32(chunk + 4);
+
+		if (length > end - offset - 8)
+		{
+			venture_set_error_validation(error, "Picture",
+				"it is a WebP file with a chunk that runs past its end");
+			return FALSE;
+		}
+
+		/* Padded to an even length; a writer that left the pad byte off
+		 * the very last chunk is let off, as the decoder lets it off. */
+		padded = length + (length & 1);
+
+		if (padded > end - offset - 8)
+			padded = length;
+
+		/* The first chunk says which layout this is: VP8X for the
+		 * extended format, or the bitstream itself for the simple one. */
+		if ((12 == offset) &&
+		    (0 != memcmp(chunk, "VP8X", 4)) &&
+		    (0 != memcmp(chunk, "VP8 ", 4)) &&
+		    (0 != memcmp(chunk, "VP8L", 4)))
+		{
+			venture_set_error_validation(error, "Picture",
+				"it is a WebP file that does not start with a picture");
+			return FALSE;
+		}
+
+		if (0 == memcmp(chunk, "VP8X", 4))
+		{
+			if ((12 != offset) || (length < 10))
+			{
+				venture_set_error_validation(error, "Picture",
+					"it is a WebP file with a misplaced or short VP8X header");
+				return FALSE;
+			}
+
+			if (0 != (payload[0] & 0x02))
+			{
+				venture_set_error_validation(error, "Picture",
+					"it is an animated WebP; a picture of a person is one still "
+					"frame");
+				return FALSE;
+			}
+
+			extended = TRUE;
+			canvas_width = (gint)venture_avatar_le24(payload + 4) + 1;
+			canvas_height = (gint)venture_avatar_le24(payload + 7) + 1;
+		}
+		else if ((0 == memcmp(chunk, "ANIM", 4)) || (0 == memcmp(chunk, "ANMF", 4)))
+		{
+			venture_set_error_validation(error, "Picture",
+				"it is an animated WebP; a picture of a person is one still "
+				"frame");
+			return FALSE;
+		}
+		else if ((0 == memcmp(chunk, "VP8 ", 4)) || (0 == memcmp(chunk, "VP8L", 4)))
+		{
+			gboolean lossless;
+
+			lossless = (0 == memcmp(chunk, "VP8L", 4));
+
+			if (found)
+			{
+				venture_set_error_validation(error, "Picture",
+					"it is a WebP file with more than one frame; a picture of a "
+					"person is one still frame");
+				return FALSE;
+			}
+
+			if (lossless)
+			{
+				guint32 bits;
+
+				if ((length < 5) || (0x2f != payload[0]))
+				{
+					venture_set_error_validation(error, "Picture",
+						"it is a WebP file whose lossless frame header is "
+						"damaged");
+					return FALSE;
+				}
+
+				bits = venture_avatar_le32(payload + 1);
+
+				if (0 != (bits >> 29))
+				{
+					venture_set_error_validation(error, "Picture",
+						"it is a WebP file in an unknown lossless version");
+					return FALSE;
+				}
+
+				frame_width = (gint)(bits & 0x3fff) + 1;
+				frame_height = (gint)((bits >> 14) & 0x3fff) + 1;
+			}
+			else
+			{
+				/* Only a key frame carries the start code and the size;
+				 * the first frame of a still picture is always one. */
+				if ((length < 10) || (0 != (payload[0] & 0x01)) ||
+				    (0x9d != payload[3]) || (0x01 != payload[4]) ||
+				    (0x2a != payload[5]))
+				{
+					venture_set_error_validation(error, "Picture",
+						"it is a WebP file whose lossy frame header is "
+						"damaged");
+					return FALSE;
+				}
+
+				frame_width = (gint)(venture_avatar_le16(payload + 6) & 0x3fff);
+				frame_height = (gint)(venture_avatar_le16(payload + 8) & 0x3fff);
+			}
+
+			found = TRUE;
+		}
+
+		offset += 8 + padded;
+	}
+
+	if (!found || (frame_width <= 0) || (frame_height <= 0))
+	{
+		venture_set_error_validation(error, "Picture",
+			"it is a WebP file with no picture in it");
+		return FALSE;
+	}
+
+	if (extended &&
+	    ((frame_width != canvas_width) || (frame_height != canvas_height)))
+	{
+		venture_set_error_validation(error, "Picture",
+			"it is a WebP file whose header says %d by %d pixels and whose "
+			"picture is %d by %d; the two must agree",
+			canvas_width, canvas_height, frame_width, frame_height);
+		return FALSE;
+	}
+
+	*width = frame_width;
+	*height = frame_height;
+
+	return TRUE;
+}
+
+/*
+ * venture_avatar_sniff() with the reason a WebP file was refused, as a
+ * %VENTURE_ERROR_VALIDATION in @error. Bytes that are not a picture at all
+ * leave @error unset; the caller names that refusal.
+ */
+static const gchar *
+venture_avatar_sniff_checked(
+	GBytes	 *data,
+	gint	 *width,
+	gint	 *height,
+	GError	**error
 ){
 	const gchar *type;
 	gint w;
@@ -106,11 +360,30 @@ venture_avatar_sniff(
 
 	/* The hosted image sniffer already reads PNG, JPEG, WebP and GIF
 	 * headers, dimensions included; a picture of a person is never a GIF
-	 * (an animation, and a format with a history of decoder bugs). */
+	 * (an animation, and a format with a history of decoder bugs).
+	 *
+	 * For PNG and JPEG the size it reads is the one the decoder uses: a
+	 * PNG's IHDR must be its first chunk (the sniffer insists on offset
+	 * 12) and a decoder refuses a second; a JPEG's size is its first
+	 * frame header, which is the decoder's too, and a second one makes
+	 * it fail before any scan is decoded. WebP is the format where the
+	 * header read there (the VP8X canvas) is not what the decoder
+	 * believes, so it is walked again here, to the bitstream. */
 	type = venture_hosted_image_sniff(data, &w, &h, NULL);
 
 	if ((NULL == type) || (0 == g_strcmp0(type, "image/gif")))
 		return NULL;
+
+	if (0 == g_strcmp0(type, "image/webp"))
+	{
+		gsize size;
+		const guint8 *p;
+
+		p = g_bytes_get_data(data, &size);
+
+		if (!venture_avatar_webp_frame_size(p, size, &w, &h, error))
+			return NULL;
+	}
 
 	if (NULL != width)
 		*width = w;
@@ -122,10 +395,20 @@ venture_avatar_sniff(
 }
 
 const gchar *
+venture_avatar_sniff(
+	GBytes	*data,
+	gint	*width,
+	gint	*height
+){
+	return venture_avatar_sniff_checked(data, width, height, NULL);
+}
+
+const gchar *
 venture_avatar_check_upload(
 	GBytes	 *data,
 	GError	**error
 ){
+	g_autoptr(GError) local = NULL;
 	const gchar *type;
 	gsize size;
 	gint width;
@@ -149,7 +432,14 @@ venture_avatar_check_upload(
 
 	width = 0;
 	height = 0;
-	type = venture_avatar_sniff(data, &width, &height);
+	type = venture_avatar_sniff_checked(data, &width, &height, &local);
+
+	/* A WebP file refused for what is inside it says why. */
+	if ((NULL == type) && (NULL != local))
+	{
+		g_propagate_error(error, g_steal_pointer(&local));
+		return NULL;
+	}
 
 	if (NULL == type)
 	{
@@ -519,28 +809,24 @@ venture_avatar_rendition(
 		error);
 }
 
-#endif /* VENTURE_HAVE_GDK_PIXBUF */
-
-GPtrArray *
-venture_avatar_render(
-	GBytes	 *data,
-	GError	**error
+/*
+ * The decode, the crop and every rendition, for bytes that passed
+ * venture_avatar_check_upload() as @type, by a caller holding the slot.
+ * Touches nothing shared, so it runs on any thread.
+ */
+static GPtrArray *
+venture_avatar_render_unlocked(
+	GBytes		 *data,
+	const gchar	 *type,
+	GError		**error
 ){
-#ifdef VENTURE_HAVE_GDK_PIXBUF
 	g_autoptr(GdkPixbuf) decoded = NULL;
 	g_autoptr(GdkPixbuf) square = NULL;
 	g_autoptr(GPtrArray) renditions = NULL;
-	const gchar *type;
 	gint width;
 	gint height;
 	gint side;
 	guint i;
-
-	/* Every check that needs no decoder runs before one is made. */
-	type = venture_avatar_check_upload(data, error);
-
-	if (NULL == type)
-		return NULL;
 
 	decoded = venture_avatar_decode(data, type, error);
 
@@ -571,14 +857,198 @@ venture_avatar_render(
 	}
 
 	return g_steal_pointer(&renditions);
-#else
-	(void)data;
+}
+
+#endif /* VENTURE_HAVE_GDK_PIXBUF */
+
+/* --- The decode slot ------------------------------------------------------- */
+
+/*
+ * One decode at a time, process-wide. An honest 4096-pixel PNG costs a
+ * fifth of a second and a hundred megabytes to decode and scale; a queue
+ * of them is a queue of that, so a second upload is told to come back
+ * rather than made to wait. 0 free, 1 held; changed only atomically,
+ * because the worker gives it back.
+ */
+static gint venture_avatar_slot_held = 0;
+
+gboolean
+venture_avatar_render_slot_acquire(void)
+{
+	return g_atomic_int_compare_and_exchange(&venture_avatar_slot_held, 0, 1);
+}
+
+void
+venture_avatar_render_slot_release(void)
+{
+	g_atomic_int_set(&venture_avatar_slot_held, 0);
+}
+
+/* The refusal for a second render while one is running. */
+static void
+venture_avatar_set_error_busy(GError **error)
+{
+	g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_BUSY,
+		"Another picture is being processed; try again in a few seconds");
+}
+
+#ifndef VENTURE_HAVE_GDK_PIXBUF
+static void
+venture_avatar_set_error_unsupported(GError **error)
+{
 	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED,
 		"Profile pictures are not available in this build: the server was "
 		"built without GdkPixbuf (gdk-pixbuf2-devel), so everybody is drawn "
 		"by their initials");
+}
+#endif
+
+GPtrArray *
+venture_avatar_render(
+	GBytes	 *data,
+	GError	**error
+){
+#ifdef VENTURE_HAVE_GDK_PIXBUF
+	GPtrArray *renditions;
+	const gchar *type;
+
+	/* Every check that needs no decoder runs before one is made, and
+	 * before the slot: a bad file is told so even while it is busy. */
+	type = venture_avatar_check_upload(data, error);
+
+	if (NULL == type)
+		return NULL;
+
+	if (!venture_avatar_render_slot_acquire())
+	{
+		venture_avatar_set_error_busy(error);
+		return NULL;
+	}
+
+	renditions = venture_avatar_render_unlocked(data, type, error);
+	venture_avatar_render_slot_release();
+
+	return renditions;
+#else
+	(void)data;
+	venture_avatar_set_error_unsupported(error);
 	return NULL;
 #endif
+}
+
+#ifdef VENTURE_HAVE_GDK_PIXBUF
+
+/* What a render worker is handed: the bytes and their sniffed type. */
+typedef struct
+{
+	GBytes		*data;
+	const gchar	*type;		/* a static string from the sniffer */
+} VentureAvatarRenderJob;
+
+static void
+venture_avatar_render_job_free(gpointer data)
+{
+	VentureAvatarRenderJob *job;
+
+	job = data;
+	g_clear_pointer(&job->data, g_bytes_unref);
+	g_free(job);
+}
+
+/*
+ * On a GTask worker, holding the slot venture_avatar_render_async() took
+ * for it, and giving it back the moment the pixels are done with.
+ */
+static void
+venture_avatar_render_thread(
+	GTask		*task,
+	gpointer	 source,
+	gpointer	 task_data,
+	GCancellable	*cancellable
+){
+	VentureAvatarRenderJob *job;
+	GPtrArray *renditions;
+	GError *error;
+
+	(void)source;
+	(void)cancellable;
+
+	job = task_data;
+	error = NULL;
+	renditions = venture_avatar_render_unlocked(job->data, job->type, &error);
+	venture_avatar_render_slot_release();
+
+	if (NULL == renditions)
+		g_task_return_error(task, error);
+	else
+		g_task_return_pointer(task, renditions,
+		                      (GDestroyNotify)g_ptr_array_unref);
+}
+
+#endif /* VENTURE_HAVE_GDK_PIXBUF */
+
+void
+venture_avatar_render_async(
+	GBytes			*data,
+	GCancellable		*cancellable,
+	GAsyncReadyCallback	 callback,
+	gpointer		 user_data
+){
+	g_autoptr(GTask) task = NULL;
+	GError *error;
+
+	task = g_task_new(NULL, cancellable, callback, user_data);
+	g_task_set_source_tag(task, venture_avatar_render_async);
+	g_task_set_static_name(task, "venture-avatar-render");
+	error = NULL;
+
+#ifdef VENTURE_HAVE_GDK_PIXBUF
+	{
+		VentureAvatarRenderJob *job;
+		const gchar *type;
+
+		/* The cheap refusals here, on the caller's thread: they need no
+		 * worker and no slot. */
+		type = venture_avatar_check_upload(data, &error);
+
+		if (NULL == type)
+		{
+			g_task_return_error(task, error);
+			return;
+		}
+
+		/* Taken here, not on the worker, so the very next request on
+		 * this thread already finds it held. */
+		if (!venture_avatar_render_slot_acquire())
+		{
+			venture_avatar_set_error_busy(&error);
+			g_task_return_error(task, error);
+			return;
+		}
+
+		job = g_new0(VentureAvatarRenderJob, 1);
+		job->data = g_bytes_ref(data);
+		job->type = type;
+		g_task_set_task_data(task, job, venture_avatar_render_job_free);
+		g_task_run_in_thread(task, venture_avatar_render_thread);
+	}
+#else
+	(void)data;
+	venture_avatar_set_error_unsupported(&error);
+	g_task_return_error(task, error);
+#endif
+}
+
+GPtrArray *
+venture_avatar_render_finish(
+	GAsyncResult	 *result,
+	GError		**error
+){
+	g_return_val_if_fail(g_task_is_valid(result, NULL), NULL);
+	g_return_val_if_fail(g_task_get_source_tag(G_TASK(result)) ==
+	                     venture_avatar_render_async, NULL);
+
+	return g_task_propagate_pointer(G_TASK(result), error);
 }
 
 /* --- Names and badges ------------------------------------------------------ */
@@ -769,9 +1239,10 @@ venture_avatar_user_directory(gint64 user_id)
 
 /*
  * A version is twenty lowercase hex digits. Anything else in the column
- * was not written by this store and must not become part of a path.
+ * was not written by this store and must not become part of a path, nor
+ * of an address on a page.
  */
-static gboolean
+gboolean
 venture_avatar_version_is_valid(const gchar *version)
 {
 	gsize i;
@@ -895,8 +1366,29 @@ venture_avatar_set(
 	const VentureActor	 *actor,
 	GError			**error
 ){
-	VentureDatabase *database;
 	g_autoptr(GPtrArray) renditions = NULL;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+
+	/* Everything about the picture is settled before anything is
+	 * written, so a refused upload leaves no trace. */
+	renditions = venture_avatar_render(data, error);
+
+	if (NULL == renditions)
+		return NULL;
+
+	return venture_avatar_store(context, user_id, renditions, actor, error);
+}
+
+gchar *
+venture_avatar_store(
+	VentureContext		 *context,
+	gint64			  user_id,
+	GPtrArray		 *renditions,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	VentureDatabase *database;
 	g_autoptr(VentureAccessScope) internal = NULL;
 	g_autoptr(VentureEntity) user = NULL;
 	g_autofree gchar *root = NULL;
@@ -907,16 +1399,19 @@ venture_avatar_set(
 	guint i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
+	g_return_val_if_fail(NULL != renditions, NULL);
+
+	/* Only what venture_avatar_render() makes: one PNG per size. */
+	if (G_N_ELEMENTS(venture_avatar_size_table) != renditions->len)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "A picture is %u renditions, not %u",
+		            (guint)G_N_ELEMENTS(venture_avatar_size_table),
+		            renditions->len);
+		return NULL;
+	}
 
 	database = venture_context_get_database(context);
-
-	/* Everything about the picture is settled before anything is
-	 * written, so a refused upload leaves no trace. */
-	renditions = venture_avatar_render(data, error);
-
-	if (NULL == renditions)
-		return NULL;
-
 	version = venture_avatar_digest(renditions);
 
 	internal = venture_access_policy_enter(
@@ -1031,6 +1526,264 @@ venture_avatar_remove(
 	(void)g_rmdir(directory);
 
 	return TRUE;
+}
+
+gboolean
+venture_avatar_purge(
+	VentureContext	 *context,
+	gint64		  user_id,
+	GError		**error
+){
+	g_autofree gchar *root = NULL;
+	g_autofree gchar *leaf = NULL;
+	g_autoptr(GPtrArray) names = NULL;
+	struct dirent *entry;
+	DIR *listing;
+	gint directory;
+	gint child;
+	gint saved;
+	guint i;
+
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), FALSE);
+
+	if (user_id <= 0)
+		return TRUE;
+
+	root = venture_avatar_root(context);
+	leaf = venture_avatar_user_directory(user_id);
+
+	/* No store, or no directory for this person: nothing to remove. */
+	directory = g_open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, 0);
+
+	if (directory < 0)
+	{
+		saved = errno;
+
+		if (ENOENT == saved)
+			return TRUE;
+
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Cannot open the picture store %s: %s", root,
+		            g_strerror(saved));
+		return FALSE;
+	}
+
+	child = openat(directory, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+
+	if (child < 0)
+	{
+		saved = errno;
+
+		if (ENOENT == saved)
+		{
+			close(directory);
+			return TRUE;
+		}
+
+		/* Not a directory this store made -- a link, or a file, in its
+		 * place. The name itself goes; what a link points at is never
+		 * followed, let alone removed. */
+		if ((ELOOP == saved) || (ENOTDIR == saved))
+		{
+			if ((0 != unlinkat(directory, leaf, 0)) && (ENOENT != errno))
+			{
+				saved = errno;
+				close(directory);
+				g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+				            "Cannot remove %s/%s: %s", root, leaf,
+				            g_strerror(saved));
+				return FALSE;
+			}
+
+			close(directory);
+			return TRUE;
+		}
+
+		close(directory);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Cannot open the pictures of user %" G_GINT64_FORMAT ": %s",
+		            user_id, g_strerror(saved));
+		return FALSE;
+	}
+
+	/* Every name in it, read first and removed after, so the listing is
+	 * not changing under readdir(). Each goes by unlinkat() relative to
+	 * the directory opened above: a name is never resolved twice. */
+	listing = fdopendir(child);
+
+	if (NULL == listing)
+	{
+		saved = errno;
+		close(child);
+		close(directory);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Cannot list the pictures of user %" G_GINT64_FORMAT ": %s",
+		            user_id, g_strerror(saved));
+		return FALSE;
+	}
+
+	names = g_ptr_array_new_with_free_func(g_free);
+
+	while (NULL != (entry = readdir(listing)))
+	{
+		if ((0 == strcmp(entry->d_name, ".")) || (0 == strcmp(entry->d_name, "..")))
+			continue;
+
+		g_ptr_array_add(names, g_strdup(entry->d_name));
+	}
+
+	saved = 0;
+
+	for (i = 0; i < names->len; i++)
+	{
+		const gchar *name = g_ptr_array_index(names, i);
+
+		if ((0 != unlinkat(dirfd(listing), name, 0)) && (ENOENT != errno))
+		{
+			saved = errno;
+			g_message("Could not remove the picture %s/%s/%s: %s", root,
+			          leaf, name, g_strerror(saved));
+		}
+	}
+
+	closedir(listing);
+
+	if ((0 != unlinkat(directory, leaf, AT_REMOVEDIR)) && (ENOENT != errno))
+	{
+		if (0 == saved)
+			saved = errno;
+	}
+
+	close(directory);
+
+	if (0 != saved)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		            "Cannot remove every picture of user %" G_GINT64_FORMAT
+		            " from %s: %s", user_id, root, g_strerror(saved));
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* --- Deleting a user ------------------------------------------------------- */
+
+/* On the context: the users deleted inside a transaction still open,
+ * whose pictures go when it commits. */
+#define VENTURE_AVATAR_PENDING_KEY "venture-avatar-pending-purges"
+
+/* Purges each of @ids, saying in the log what could not be removed. */
+static void
+venture_avatar_purge_all(
+	VentureContext	*context,
+	GArray		*ids
+){
+	guint i;
+
+	for (i = 0; i < ids->len; i++)
+	{
+		g_autoptr(GError) error = NULL;
+		gint64 user_id;
+
+		user_id = g_array_index(ids, gint64, i);
+
+		if (!venture_avatar_purge(context, user_id, &error))
+			g_warning("The picture of deleted user %" G_GINT64_FORMAT
+			          " was not removed: %s", user_id, error->message);
+	}
+}
+
+/*
+ * A user was deleted: their picture goes with them. Not at once inside a
+ * transaction, because a rollback would bring the account back without
+ * its picture; then at the outermost commit, and not at all on rollback.
+ */
+static void
+venture_avatar_on_deleted(
+	VentureDatabase	*database,
+	VentureEntity	*entity,
+	gpointer	 data
+){
+	VentureContext *context;
+	GArray *pending;
+	gint64 user_id;
+
+	if (!VENTURE_IS_USER(entity))
+		return;
+
+	context = data;
+	user_id = venture_entity_get_id(entity);
+
+	if (user_id <= 0)
+		return;
+
+	if (venture_database_has_transaction(database))
+	{
+		pending = g_object_get_data(G_OBJECT(context), VENTURE_AVATAR_PENDING_KEY);
+		g_array_append_val(pending, user_id);
+		return;
+	}
+
+	{
+		g_autoptr(GArray) one = NULL;
+
+		one = g_array_new(FALSE, FALSE, sizeof(gint64));
+		g_array_append_val(one, user_id);
+		venture_avatar_purge_all(context, one);
+	}
+}
+
+static void
+venture_avatar_on_transaction_finished(
+	VentureDatabase	*database,
+	gboolean	 committed,
+	gpointer	 data
+){
+	VentureContext *context;
+	GArray *pending;
+	g_autoptr(GArray) due = NULL;
+
+	(void)database;
+
+	context = data;
+	pending = g_object_get_data(G_OBJECT(context), VENTURE_AVATAR_PENDING_KEY);
+
+	if ((NULL == pending) || (0 == pending->len))
+		return;
+
+	/* Taken whole before any purge runs, so a purge that somehow starts
+	 * another transaction cannot see or change this list. */
+	due = g_array_copy(pending);
+	g_array_set_size(pending, 0);
+
+	if (committed)
+		venture_avatar_purge_all(context, due);
+}
+
+void
+venture_avatar_install_store(VentureContext *context)
+{
+	VentureDatabase *database;
+
+	g_return_if_fail(VENTURE_IS_CONTEXT(context));
+
+	if (NULL != g_object_get_data(G_OBJECT(context), VENTURE_AVATAR_PENDING_KEY))
+		return;
+
+	database = venture_context_get_database(context);
+
+	/* Per context, not per database: each context has its own state
+	 * directory, and so its own store, to clear. Disconnected when the
+	 * context goes. */
+	g_object_set_data_full(G_OBJECT(context), VENTURE_AVATAR_PENDING_KEY,
+	                       g_array_new(FALSE, FALSE, sizeof(gint64)),
+	                       (GDestroyNotify)g_array_unref);
+	g_signal_connect_object(database, "entity-deleted",
+	                        G_CALLBACK(venture_avatar_on_deleted), context, 0);
+	g_signal_connect_object(database, "transaction-finished",
+	                        G_CALLBACK(venture_avatar_on_transaction_finished),
+	                        context, 0);
 }
 
 /*

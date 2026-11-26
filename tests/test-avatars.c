@@ -23,6 +23,7 @@
 #include <venture.h>
 
 #include <string.h>
+#include <unistd.h>
 #include <libsoup/soup.h>
 
 #ifdef VENTURE_HAVE_GDK_PIXBUF
@@ -171,6 +172,154 @@ claimed_png(
 	bytes[25] = 6;
 
 	return g_bytes_new(bytes, sizeof(bytes));
+}
+
+/* --- Writing WebP headers -------------------------------------------------- */
+
+/*
+ * WebP files of chunk headers only: enough for everything that reads a
+ * header, and nothing a decoder could turn into pixels. Built chunk by
+ * chunk so each test says exactly what its file holds.
+ */
+
+static void
+put_le16(
+	GByteArray	*out,
+	guint32		 value
+){
+	guint8 b[2];
+
+	b[0] = (guint8)value;
+	b[1] = (guint8)(value >> 8);
+	g_byte_array_append(out, b, 2);
+}
+
+static void
+put_le24(
+	GByteArray	*out,
+	guint32		 value
+){
+	guint8 b[3];
+
+	b[0] = (guint8)value;
+	b[1] = (guint8)(value >> 8);
+	b[2] = (guint8)(value >> 16);
+	g_byte_array_append(out, b, 3);
+}
+
+static void
+put_le32(
+	GByteArray	*out,
+	guint32		 value
+){
+	guint8 b[4];
+
+	b[0] = (guint8)value;
+	b[1] = (guint8)(value >> 8);
+	b[2] = (guint8)(value >> 16);
+	b[3] = (guint8)(value >> 24);
+	g_byte_array_append(out, b, 4);
+}
+
+/* One RIFF chunk: fourcc, length, payload, and the pad to an even length. */
+static void
+webp_chunk(
+	GByteArray	*out,
+	const gchar	*fourcc,
+	GByteArray	*payload
+){
+	static const guint8 pad = 0;
+
+	g_byte_array_append(out, (const guint8 *)fourcc, 4);
+	put_le32(out, payload->len);
+	g_byte_array_append(out, payload->data, payload->len);
+
+	if (0 != (payload->len & 1))
+		g_byte_array_append(out, &pad, 1);
+}
+
+/* A VP8X chunk: @flags, and the canvas @width by @height. */
+static void
+webp_vp8x(
+	GByteArray	*out,
+	guint8		 flags,
+	guint32		 width,
+	guint32		 height
+){
+	g_autoptr(GByteArray) payload = g_byte_array_new();
+	static const guint8 reserved[3] = { 0, 0, 0 };
+
+	g_byte_array_append(payload, &flags, 1);
+	g_byte_array_append(payload, reserved, 3);
+	put_le24(payload, width - 1);
+	put_le24(payload, height - 1);
+	webp_chunk(out, "VP8X", payload);
+}
+
+/* A lossy key frame's header claiming @width by @height, and a little
+ * of what would be its bitstream. */
+static void
+webp_vp8(
+	GByteArray	*out,
+	guint32		 width,
+	guint32		 height
+){
+	g_autoptr(GByteArray) payload = g_byte_array_new();
+	static const guint8 tag[3] = { 0x10, 0x02, 0x00 };	/* key frame, shown */
+	static const guint8 start[3] = { 0x9d, 0x01, 0x2a };
+	static const guint8 rest[6] = { 0, 0, 0, 0, 0, 0 };
+
+	g_byte_array_append(payload, tag, 3);
+	g_byte_array_append(payload, start, 3);
+	put_le16(payload, width);
+	put_le16(payload, height);
+	g_byte_array_append(payload, rest, 6);
+	webp_chunk(out, "VP8 ", payload);
+}
+
+/* A lossless frame's header claiming @width by @height. */
+static void
+webp_vp8l(
+	GByteArray	*out,
+	guint32		 width,
+	guint32		 height
+){
+	g_autoptr(GByteArray) payload = g_byte_array_new();
+	static const guint8 signature = 0x2f;
+	static const guint8 rest[4] = { 0, 0, 0, 0 };
+
+	g_byte_array_append(payload, &signature, 1);
+	put_le32(payload, (width - 1) | ((height - 1) << 14));
+	g_byte_array_append(payload, rest, 4);
+	webp_chunk(out, "VP8L", payload);
+}
+
+/* A chunk of @length bytes of zeros, for ANIM, ANMF, ICCP and the like. */
+static void
+webp_other(
+	GByteArray	*out,
+	const gchar	*fourcc,
+	guint		 length
+){
+	g_autoptr(GByteArray) payload = g_byte_array_new();
+
+	g_byte_array_set_size(payload, length);
+	memset(payload->data, 0, length);
+	webp_chunk(out, fourcc, payload);
+}
+
+/* @chunks as a whole WebP file: the RIFF header in front. */
+static GBytes *
+webp_file(GByteArray *chunks)
+{
+	g_autoptr(GByteArray) out = g_byte_array_new();
+
+	g_byte_array_append(out, (const guint8 *)"RIFF", 4);
+	put_le32(out, 4 + chunks->len);
+	g_byte_array_append(out, (const guint8 *)"WEBP", 4);
+	g_byte_array_append(out, chunks->data, chunks->len);
+
+	return g_byte_array_free_to_bytes(g_steal_pointer(&out));
 }
 
 /* --- Reading PNG back ------------------------------------------------------ */
@@ -442,6 +591,363 @@ test_pixel_cap(void)
 	edge = claimed_png(VENTURE_AVATAR_MAX_SIDE + 1, 1);
 	g_assert_null(venture_avatar_check_upload(edge, &error));
 	g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+	g_clear_error(&error);
+
+	/* The WebP header lie: a 64 by 64 VP8X canvas around a lossy frame
+	 * of 16383 by 16383. The canvas is what the shared sniffer reads --
+	 * it says 64 by 64 still -- and the frame is what a decoder decodes,
+	 * for seconds, before noticing. Refused from the frame's own header,
+	 * by the upload check and by the whole render, before any decoder;
+	 * the test would take seconds, not fail, if it reached one. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) lie = NULL;
+		gint width;
+		gint height;
+
+		webp_vp8x(chunks, 0, 64, 64);
+		webp_vp8(chunks, 16383, 16383);
+		lie = webp_file(chunks);
+
+		width = height = 0;
+		g_assert_cmpstr(venture_hosted_image_sniff(lie, &width, &height, NULL), ==,
+		                "image/webp");
+		g_assert_cmpint(width, ==, 64);
+		g_assert_null(venture_avatar_sniff(lie, NULL, NULL));
+
+		g_assert_null(venture_avatar_check_upload(lie, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "64 by 64"));
+		g_assert_nonnull(strstr(error->message, "16383 by 16383"));
+		g_clear_error(&error);
+
+		g_assert_null(venture_avatar_render(lie, &error));
+
+		if (venture_avatar_is_available())
+		{
+			g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+			g_assert_nonnull(strstr(error->message, "16383 by 16383"));
+		}
+		else
+		{
+			g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+		}
+
+		g_clear_error(&error);
+	}
+
+	/* The same frame told honestly is still over the cap, by its frame. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) honest = NULL;
+		gint width;
+		gint height;
+
+		webp_vp8x(chunks, 0, 16383, 16383);
+		webp_vp8(chunks, 16383, 16383);
+		honest = webp_file(chunks);
+
+		width = height = 0;
+		g_assert_cmpstr(venture_avatar_sniff(honest, &width, &height), ==, "image/webp");
+		g_assert_cmpint(width, ==, 16383);
+		g_assert_cmpint(height, ==, 16383);
+		g_assert_null(venture_avatar_check_upload(honest, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "at most 4096 on a side"));
+		g_clear_error(&error);
+	}
+
+	/* A simple (no VP8X) lossy file is sized by its frame as well. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) simple = NULL;
+
+		webp_vp8(chunks, 5000, 10);
+		simple = webp_file(chunks);
+		g_assert_null(venture_avatar_check_upload(simple, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "5000 by 10"));
+		g_clear_error(&error);
+	}
+}
+
+/*
+ * A WebP picture is one still frame whose bitstream is the size its
+ * header says. Each refusal here is a file a decoder would otherwise have
+ * been handed: an animation, a lossless frame that disagrees with its
+ * canvas, a second frame, a chunk that runs off the end of the file.
+ */
+static void
+test_webp_frames(void)
+{
+	g_autoptr(GError) error = NULL;
+
+	/* Honest, extended: a canvas, a colour profile of odd length (so
+	 * padded), the frame, and metadata after it. Accepted with the size. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+		gint width;
+		gint height;
+
+		webp_vp8x(chunks, 0x20, 64, 48);
+		webp_other(chunks, "ICCP", 3);
+		webp_vp8(chunks, 64, 48);
+		webp_other(chunks, "EXIF", 7);
+		file = webp_file(chunks);
+
+		width = height = 0;
+		g_assert_cmpstr(venture_avatar_check_upload(file, &error), ==, "image/webp");
+		g_assert_no_error(error);
+		g_assert_cmpstr(venture_avatar_sniff(file, &width, &height), ==, "image/webp");
+		g_assert_cmpint(width, ==, 64);
+		g_assert_cmpint(height, ==, 48);
+	}
+
+	/* The fixture: a simple lossless file, 6 by 4. */
+	{
+		g_autoptr(GBytes) file = g_bytes_new_static(fixture_webp, sizeof(fixture_webp));
+
+		g_assert_cmpstr(venture_avatar_check_upload(file, &error), ==, "image/webp");
+		g_assert_no_error(error);
+	}
+
+	/* A lossless frame of 64 by 64 inside a 6 by 4 canvas. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+
+		webp_vp8x(chunks, 0, 6, 4);
+		webp_vp8l(chunks, 64, 64);
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_sniff(file, NULL, NULL));
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "6 by 4"));
+		g_assert_nonnull(strstr(error->message, "64 by 64"));
+		g_clear_error(&error);
+	}
+
+	/* Animated, flagged: the VP8X animation bit, ANIM and a frame. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+
+		webp_vp8x(chunks, 0x02, 64, 64);
+		webp_other(chunks, "ANIM", 6);
+		webp_other(chunks, "ANMF", 16);
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "animated"));
+		g_clear_error(&error);
+	}
+
+	/* Animated, unflagged: an ANMF chunk where a still picture has none. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+
+		webp_vp8x(chunks, 0, 64, 64);
+		webp_vp8(chunks, 64, 64);
+		webp_other(chunks, "ANMF", 16);
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "animated"));
+		g_clear_error(&error);
+	}
+
+	/* Two frames. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+
+		webp_vp8x(chunks, 0, 64, 64);
+		webp_vp8(chunks, 64, 64);
+		webp_vp8(chunks, 64, 64);
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "more than one frame"));
+		g_clear_error(&error);
+	}
+
+	/* A canvas and no frame at all. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+
+		webp_vp8x(chunks, 0, 64, 64);
+		webp_other(chunks, "EXIF", 8);
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "no picture"));
+		g_clear_error(&error);
+	}
+
+	/* A chunk whose length runs past the end of the file. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+
+		webp_vp8x(chunks, 0, 64, 64);
+		g_byte_array_append(chunks, (const guint8 *)"VP8 ", 4);
+		put_le32(chunks, 100000);
+		g_byte_array_append(chunks, (const guint8 *)"\x10\x02\x00\x9d\x01\x2a\x40\x00\x40\x00", 10);
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "runs past its end"));
+		g_clear_error(&error);
+	}
+
+	/* A RIFF length past the end of the file: cut short. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) whole = NULL;
+		g_autoptr(GBytes) cut = NULL;
+
+		webp_vp8x(chunks, 0, 64, 64);
+		webp_vp8(chunks, 64, 64);
+		whole = webp_file(chunks);
+		cut = g_bytes_new_from_bytes(whole, 0, g_bytes_get_size(whole) - 4);
+
+		g_assert_null(venture_avatar_check_upload(cut, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(error->message, "cut short"));
+		g_clear_error(&error);
+	}
+
+	/* A lossy frame that is not a key frame has no size to read. */
+	{
+		g_autoptr(GByteArray) chunks = g_byte_array_new();
+		g_autoptr(GBytes) file = NULL;
+		guint8 *frame;
+
+		webp_vp8(chunks, 64, 64);
+		frame = chunks->data + 8;
+		frame[0] |= 0x01;
+		file = webp_file(chunks);
+
+		g_assert_null(venture_avatar_check_upload(file, &error));
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&error);
+	}
+}
+
+/* --- The decode slot -------------------------------------------------------- */
+
+typedef struct
+{
+	gboolean	 done;
+	GPtrArray	*renditions;
+	GError		*error;
+} Rendered;
+
+static void
+rendered(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 data
+){
+	Rendered *r = data;
+
+	(void)source;
+	r->renditions = venture_avatar_render_finish(result, &r->error);
+	r->done = TRUE;
+}
+
+/* venture_avatar_render_async(), waited for on this thread's main context. */
+static void
+render_and_wait(
+	GBytes		*data,
+	Rendered	*r
+){
+	memset(r, 0, sizeof(*r));
+	venture_avatar_render_async(data, NULL, rendered, r);
+
+	/* Never answered on the calling stack, even when refused at once. */
+	g_assert_false(r->done);
+
+	while (!r->done)
+		g_main_context_iteration(NULL, TRUE);
+}
+
+/*
+ * One decode at a time, and a second refused rather than queued. Proved
+ * by holding the slot, not by racing two decodes: while it is held a
+ * render -- direct or on a worker -- is refused with G_IO_ERROR_BUSY, a
+ * bad file is still told what is wrong with it, and once it is given back
+ * the next render goes through and the worker gives it back in turn.
+ */
+static void
+test_render_slot(void)
+{
+	static const gchar svg[] = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GBytes) header = NULL;
+	g_autoptr(GBytes) bad = NULL;
+	Rendered r;
+
+	header = claimed_png(10, 10);
+	bad = g_bytes_new_static(svg, sizeof(svg) - 1);
+
+	g_assert_true(venture_avatar_render_slot_acquire());
+	g_assert_false(venture_avatar_render_slot_acquire());
+
+	g_assert_null(venture_avatar_render(header, &error));
+
+	if (venture_avatar_is_available())
+		g_assert_error(error, G_IO_ERROR, G_IO_ERROR_BUSY);
+	else
+		g_assert_error(error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+
+	g_clear_error(&error);
+
+	render_and_wait(header, &r);
+	g_assert_null(r.renditions);
+
+	if (venture_avatar_is_available())
+		g_assert_error(r.error, G_IO_ERROR, G_IO_ERROR_BUSY);
+	else
+		g_assert_error(r.error, VENTURE_ERROR, VENTURE_ERROR_UNSUPPORTED);
+
+	g_clear_error(&r.error);
+
+	/* The checks that need no decoder come before the slot. */
+	if (venture_avatar_is_available())
+	{
+		render_and_wait(bad, &r);
+		g_assert_error(r.error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_assert_nonnull(strstr(r.error->message, "not a PNG, JPEG or WebP"));
+		g_clear_error(&r.error);
+	}
+
+	/* A refusal leaves the slot with whoever held it. */
+	g_assert_false(venture_avatar_render_slot_acquire());
+	venture_avatar_render_slot_release();
+
+	/* Free again: this one reaches a worker. Ten by ten of nothing is not
+	 * a picture, so the decoder refuses it -- and the worker gives the
+	 * slot back, which is what is being proved. */
+	if (venture_avatar_is_available())
+	{
+		render_and_wait(header, &r);
+		g_assert_null(r.renditions);
+		g_assert_error(r.error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION);
+		g_clear_error(&r.error);
+	}
+
+	g_assert_true(venture_avatar_render_slot_acquire());
+	venture_avatar_render_slot_release();
 }
 
 /*
@@ -880,6 +1386,7 @@ typedef struct
 	gchar *etag;
 	gchar *nosniff;
 	gchar *location;
+	gchar *retry_after;
 } Answer;
 
 static void
@@ -891,6 +1398,7 @@ answer_clear(Answer *answer)
 	g_clear_pointer(&answer->etag, g_free);
 	g_clear_pointer(&answer->nosniff, g_free);
 	g_clear_pointer(&answer->location, g_free);
+	g_clear_pointer(&answer->retry_after, g_free);
 }
 
 /*
@@ -952,6 +1460,7 @@ request(
 	answer->etag = g_strdup(soup_message_headers_get_one(response, "ETag"));
 	answer->nosniff = g_strdup(soup_message_headers_get_one(response, "X-Content-Type-Options"));
 	answer->location = g_strdup(soup_message_headers_get_one(response, "Location"));
+	answer->retry_after = g_strdup(soup_message_headers_get_one(response, "Retry-After"));
 }
 
 /* The body of an answer as JSON. */
@@ -1678,6 +2187,241 @@ test_pictures_beside_names(Fixture *f, gconstpointer data)
 	answer_clear(&answer);
 }
 
+/*
+ * The decode slot through the API: while another picture holds it, an
+ * upload is answered 503 with Retry-After -- for one's own picture and an
+ * owner's change of somebody else's alike -- and a file that is not a
+ * picture is still told so. Given back, the next upload reaches the
+ * worker and is answered from there.
+ */
+static void
+test_upload_busy(Fixture *f, gconstpointer data)
+{
+	static const gchar svg[] = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+	g_autoptr(GBytes) header = NULL;
+	g_autoptr(GBytes) bad = NULL;
+	g_autofree gchar *path = NULL;
+	Answer answer;
+
+	(void)data;
+
+	if (!venture_avatar_is_available())
+	{
+		g_test_skip("built without GdkPixbuf: an upload is refused with 501 "
+		            "before the decode slot is asked");
+		return;
+	}
+
+	header = claimed_png(10, 10);
+	bad = g_bytes_new_static(svg, sizeof(svg) - 1);
+	path = g_strdup_printf("/api/v1/users/%" G_GINT64_FORMAT "/avatar", f->viewer_id);
+
+	g_assert_true(venture_avatar_render_slot_acquire());
+
+	request(f, "PUT", "/api/v1/account/avatar", f->editor_token, "image/png",
+	        header, NULL, &answer);
+	g_assert_cmpuint(answer.status, ==, 503);
+	g_assert_cmpstr(answer.retry_after, ==, "5");
+	g_assert_true(answer_mentions(&answer, "being processed"));
+	answer_clear(&answer);
+
+	request(f, "PUT", path, f->owner_token, "image/png", header, NULL, &answer);
+	g_assert_cmpuint(answer.status, ==, 503);
+	g_assert_cmpstr(answer.retry_after, ==, "5");
+	answer_clear(&answer);
+
+	request(f, "PUT", "/api/v1/account/avatar", f->editor_token, "image/svg+xml",
+	        bad, NULL, &answer);
+	g_assert_cmpuint(answer.status, ==, 422);
+	g_assert_null(answer.retry_after);
+	answer_clear(&answer);
+
+	venture_avatar_render_slot_release();
+
+	/* Free: decoded on a worker, refused by the decoder (ten by ten of
+	 * nothing is not a picture), answered from there -- and the slot is
+	 * free again afterwards. */
+	request(f, "PUT", "/api/v1/account/avatar", f->editor_token, "image/png",
+	        header, NULL, &answer);
+	g_assert_cmpuint(answer.status, ==, 422);
+	g_assert_true(answer_mentions(&answer, "could not be decoded"));
+	answer_clear(&answer);
+
+	g_assert_true(venture_avatar_render_slot_acquire());
+	venture_avatar_render_slot_release();
+}
+
+/* Files standing in for @user_id's renditions, without a decoder. */
+static gchar *
+plant_pictures(
+	Fixture	*f,
+	gint64	 user_id
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *file = NULL;
+	gchar *directory;
+
+	directory = g_strdup_printf("%s/avatars/%" G_GINT64_FORMAT, f->state_dir, user_id);
+	g_assert_cmpint(g_mkdir_with_parents(directory, 0700), ==, 0);
+
+	file = g_build_filename(directory, "0123456789abcdef0123-32.png", NULL);
+	g_assert_true(g_file_set_contents(file, "png", 3, &error));
+	g_assert_no_error(error);
+	g_clear_pointer(&file, g_free);
+
+	file = g_build_filename(directory, "0123456789abcdef0123-192.png", NULL);
+	g_assert_true(g_file_set_contents(file, "png", 3, &error));
+	g_assert_no_error(error);
+
+	return directory;
+}
+
+/* Deletes @user_id as trusted work; the row is soft deleted. */
+static void
+delete_user(
+	Fixture	*f,
+	gint64	 user_id
+){
+	g_autoptr(VentureAccessScope) trusted = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autoptr(GError) error = NULL;
+
+	trusted = venture_access_policy_enter(
+		venture_database_get_access_policy(f->database), NULL);
+	user = venture_database_get(f->database, VENTURE_TYPE_USER, user_id, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_database_delete(f->database, user, NULL, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * A deleted user's pictures are deleted with them: at once outside a
+ * transaction; at the commit inside one, and not at all when it rolls
+ * back. A link in the user's place is removed, never followed. Before
+ * this, the files outlived the account, and venture_avatar_remove() --
+ * which refuses a deleted user -- could not reach them.
+ */
+static void
+test_purge_on_delete(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *editor_dir = NULL;
+	g_autofree gchar *viewer_dir = NULL;
+	g_autofree gchar *outside = NULL;
+	g_autofree gchar *kept = NULL;
+	g_autofree gchar *planted_link = NULL;
+
+	(void)data;
+
+	/* Outside a transaction: gone with the deletion. */
+	editor_dir = plant_pictures(f, f->editor_id);
+	delete_user(f, f->editor_id);
+	g_assert_false(g_file_test(editor_dir, G_FILE_TEST_EXISTS));
+
+	/* Inside one that rolls back: the account is back, so are its files. */
+	viewer_dir = plant_pictures(f, f->viewer_id);
+	g_assert_true(venture_database_begin(f->database, &error));
+	g_assert_no_error(error);
+	delete_user(f, f->viewer_id);
+	g_assert_true(g_file_test(viewer_dir, G_FILE_TEST_IS_DIR));
+	venture_database_rollback(f->database);
+	g_assert_true(g_file_test(viewer_dir, G_FILE_TEST_IS_DIR));
+
+	/* Inside one that commits: kept until the commit, gone after it. */
+	g_assert_true(venture_database_begin(f->database, &error));
+	g_assert_no_error(error);
+	delete_user(f, f->viewer_id);
+	g_assert_true(g_file_test(viewer_dir, G_FILE_TEST_IS_DIR));
+	g_assert_true(venture_database_commit(f->database, &error));
+	g_assert_no_error(error);
+	g_assert_false(g_file_test(viewer_dir, G_FILE_TEST_EXISTS));
+
+	/* A link where the directory should be: the link goes, what it
+	 * points at stays. */
+	outside = g_build_filename(f->state_dir, "not-pictures", NULL);
+	g_assert_cmpint(g_mkdir_with_parents(outside, 0700), ==, 0);
+	kept = g_build_filename(outside, "keep.txt", NULL);
+	g_assert_true(g_file_set_contents(kept, "mine", 4, &error));
+	g_assert_no_error(error);
+	planted_link = g_strdup_printf("%s/avatars/%" G_GINT64_FORMAT, f->state_dir, f->outsider_id);
+	g_assert_cmpint(symlink(outside, planted_link), ==, 0);
+
+	delete_user(f, f->outsider_id);
+	g_assert_false(g_file_test(planted_link, G_FILE_TEST_IS_SYMLINK));
+	g_assert_true(g_file_test(kept, G_FILE_TEST_IS_REGULAR));
+
+	/* Nothing stored: nothing to do, and that succeeds. */
+	g_assert_true(venture_avatar_purge(f->context, f->owner_id, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * A version that is not one the store writes is no picture: no address is
+ * made from it, and the initials are drawn. The validator keeps such a
+ * value out of the column; this stands in for a row written some other
+ * way, by saving as the store does.
+ */
+static void
+test_malformed_version(Fixture *f, gconstpointer data)
+{
+	static const gchar *const malformed[] = {
+		"../../../../etc/passwd",
+		"0123456789ABCDEF0123",
+		"0123456789abcdef012",
+		"0123456789abcdef0123\"><script>",
+	};
+	static gchar vic_name[] = "vic";
+	VentureAuthPrincipal vic;
+	guint i;
+
+	(void)data;
+
+	principal_for(&vic, f->viewer_id, VENTURE_USER_ROLE_VIEWER, vic_name);
+
+	for (i = 0; i <= G_N_ELEMENTS(malformed); i++)
+	{
+		g_autoptr(VentureAccessScope) trusted = NULL;
+		g_autoptr(VentureAccessScope) as_vic = NULL;
+		g_autoptr(VentureEntity) user = NULL;
+		g_autoptr(VentureActorNames) names = NULL;
+		g_autofree gchar *url = NULL;
+		g_autofree gchar *html = NULL;
+		const gchar *version;
+
+		/* The last round is a well-formed version: the control. */
+		version = (i < G_N_ELEMENTS(malformed)) ? malformed[i] : "0123456789abcdef0123";
+
+		trusted = venture_access_policy_enter(
+			venture_database_get_access_policy(f->database), NULL);
+		user = venture_database_get(f->database, VENTURE_TYPE_USER, f->viewer_id, NULL);
+		g_object_set(user, "avatar-version", version, NULL);
+		g_object_set_data(G_OBJECT(f->database), "venture-avatar-filing", user);
+		save(f, user);
+		g_object_set_data(G_OBJECT(f->database), "venture-avatar-filing", NULL);
+		g_clear_object(&trusted);
+
+		as_vic = venture_access_policy_enter(
+			venture_database_get_access_policy(f->database), &vic);
+		names = venture_actor_names_new(f->database);
+		url = venture_avatar_url_for(names, f->viewer_id, VENTURE_AVATAR_SIZE_SMALL);
+		html = venture_avatar_html(names, f->viewer_id, "Vic Views",
+		                           VENTURE_AVATAR_SIZE_SMALL);
+
+		if (i < G_N_ELEMENTS(malformed))
+		{
+			g_assert_null(url);
+			g_assert_nonnull(strstr(html, "avatar-initials"));
+			g_assert_null(strstr(html, "/avatar/"));
+		}
+		else
+		{
+			g_assert_nonnull(url);
+			g_assert_nonnull(strstr(url, "?v=0123456789abcdef0123"));
+			g_assert_nonnull(strstr(html, "<img"));
+		}
+	}
+}
+
 #define AVATAR_TEST(path, func) \
 	g_test_add("/avatars/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -1689,6 +2433,8 @@ main(int argc, char **argv)
 	g_test_add_func("/avatars/sniff", test_sniff);
 	g_test_add_func("/avatars/size-cap", test_size_cap);
 	g_test_add_func("/avatars/pixel-cap", test_pixel_cap);
+	g_test_add_func("/avatars/webp-frames", test_webp_frames);
+	g_test_add_func("/avatars/render-slot", test_render_slot);
 	g_test_add_func("/avatars/png-encode", test_png_encode);
 	g_test_add_func("/avatars/initials", test_initials);
 	g_test_add_func("/avatars/badge-markup", test_badge_markup);
@@ -1700,6 +2446,9 @@ main(int argc, char **argv)
 	AVATAR_TEST("account-page", test_account_page);
 	AVATAR_TEST("user-id-for", test_user_id_for);
 	AVATAR_TEST("pictures-beside-names", test_pictures_beside_names);
+	AVATAR_TEST("upload-busy", test_upload_busy);
+	AVATAR_TEST("purge-on-delete", test_purge_on_delete);
+	AVATAR_TEST("malformed-version", test_malformed_version);
 
 	return g_test_run();
 }

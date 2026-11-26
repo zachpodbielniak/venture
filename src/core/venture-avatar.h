@@ -31,6 +31,7 @@
 #endif
 
 #include <glib-object.h>
+#include <gio/gio.h>
 
 G_BEGIN_DECLS
 
@@ -188,6 +189,12 @@ venture_avatar_png_encode(
  * in a build without GdkPixbuf; %VENTURE_ERROR_VALIDATION when the bytes
  * cannot be decoded, or are WebP and this server has no WebP decoder.
  *
+ * The decode runs in the one decode slot
+ * (venture_avatar_render_slot_acquire()); when another render holds it,
+ * this refuses at once with %G_IO_ERROR_BUSY rather than waiting. It
+ * blocks the calling thread for as long as the decode takes: a server's
+ * main thread uses venture_avatar_render_async() instead.
+ *
  * Returns: (transfer full) (element-type GBytes) (nullable): one PNG per
  *   size, in the order of venture_avatar_sizes(), or %NULL with @error set
  */
@@ -196,6 +203,81 @@ venture_avatar_render(
 	GBytes	 *data,
 	GError	**error
 );
+
+/**
+ * venture_avatar_render_async:
+ * @data: the uploaded bytes
+ * @cancellable: (nullable): a #GCancellable; the decode, once started,
+ *   runs to the end regardless
+ * @callback: (scope async) (closure user_data): called on the thread-default
+ *   main context of the caller when the renditions are ready
+ * @user_data: data for @callback
+ *
+ * venture_avatar_render() with the decode, the crop, the scaling and the
+ * encoding on a worker thread, so the caller's main loop goes on serving.
+ * The checks that need no decoder run first, on the calling thread. The
+ * decode slot is taken here, on the calling thread, so the very next
+ * call finds it held and is refused with %G_IO_ERROR_BUSY; the worker
+ * gives it back as soon as the pixels are done with.
+ */
+void
+venture_avatar_render_async(
+	GBytes			*data,
+	GCancellable		*cancellable,
+	GAsyncReadyCallback	 callback,
+	gpointer		 user_data
+);
+
+/**
+ * venture_avatar_render_finish:
+ * @result: the #GAsyncResult given to the callback
+ * @error: return location for a #GError, or %NULL
+ *
+ * Returns: (transfer full) (element-type GBytes) (nullable): as
+ *   venture_avatar_render() does, or %NULL with @error set
+ */
+GPtrArray *
+venture_avatar_render_finish(
+	GAsyncResult	 *result,
+	GError		**error
+);
+
+/**
+ * venture_avatar_render_slot_acquire:
+ *
+ * Takes the decode slot if it is free, without waiting. There is one per
+ * process: a picture costs up to a few hundred milliseconds and a hundred
+ * megabytes to decode and scale, so a second upload is refused while one
+ * is being processed rather than queued. venture_avatar_render() and
+ * venture_avatar_render_async() take and give it back themselves; this is
+ * for a caller that must hold it -- a test proving the refusal.
+ *
+ * Returns: %TRUE when the caller now holds the slot and must give it back
+ *   with venture_avatar_render_slot_release()
+ */
+gboolean
+venture_avatar_render_slot_acquire(void);
+
+/**
+ * venture_avatar_render_slot_release:
+ *
+ * Gives back the decode slot taken by venture_avatar_render_slot_acquire().
+ */
+void
+venture_avatar_render_slot_release(void);
+
+/**
+ * venture_avatar_version_is_valid:
+ * @version: (nullable): a value of "avatar-version"
+ *
+ * Whether @version is one the store could have written: twenty lowercase
+ * hex digits. Anything else names no picture, and never becomes part of
+ * a path or an address.
+ *
+ * Returns: %TRUE when @version is well formed
+ */
+gboolean
+venture_avatar_version_is_valid(const gchar *version);
 
 /**
  * venture_avatar_initials:
@@ -344,6 +426,66 @@ venture_avatar_set(
 	const VentureActor	 *actor,
 	GError			**error
 );
+
+/**
+ * venture_avatar_store:
+ * @context: the application context
+ * @user_id: whose picture it is
+ * @renditions: (element-type GBytes): what venture_avatar_render() or
+ *   venture_avatar_render_finish() returned
+ * @actor: (nullable): who is responsible, for the audit log
+ * @error: return location for a #GError, or %NULL
+ *
+ * The second half of venture_avatar_set(): writes the renditions and
+ * points the user record at them, then removes the previous picture's
+ * files. Quick (four small files and one save), and on the thread that
+ * owns the database: a server renders on a worker, then stores here.
+ * Trusted, as venture_avatar_set() is.
+ *
+ * Returns: (transfer full) (nullable): the new version, or %NULL with
+ *   @error set
+ */
+gchar *
+venture_avatar_store(
+	VentureContext		 *context,
+	gint64			  user_id,
+	GPtrArray		 *renditions,
+	const VentureActor	 *actor,
+	GError			**error
+);
+
+/**
+ * venture_avatar_purge:
+ * @context: the application context
+ * @user_id: whose pictures to remove
+ * @error: return location for a #GError, or %NULL
+ *
+ * Removes <state_dir>/avatars/<user id>/ and everything in it, whatever
+ * the user record says -- for an account that is deleted, or gone. The
+ * record is not read or written: venture_avatar_remove() is the change a
+ * live account's owner makes. Nothing is followed: a link in the store
+ * is removed, never what it points at. Nothing there succeeds.
+ *
+ * Returns: %TRUE when nothing of the user's is left in the store
+ */
+gboolean
+venture_avatar_purge(
+	VentureContext	 *context,
+	gint64		  user_id,
+	GError		**error
+);
+
+/**
+ * venture_avatar_install_store:
+ * @context: the application context
+ *
+ * Deletes a user's pictures (venture_avatar_purge()) when the user is
+ * deleted: at once outside a transaction, at the outermost commit inside
+ * one, and never when it rolls back. Called once per context, by the
+ * context itself.
+ */
+void
+venture_avatar_install_store(VentureContext *context);
 
 /**
  * venture_avatar_remove:

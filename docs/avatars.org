@@ -4,7 +4,7 @@
 #+categories: projects docs
 #+created: [2026-11-26]
 #+updated: [2026-11-26]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * What this is
 
@@ -19,7 +19,7 @@ The picture a person uploads is never kept. It is checked from its bytes, decode
 - =/account= :: *Picture*: the picture as others see it (or the initials), a file chooser and *Upload* (*Replace* once there is one), and *Remove picture*. Anybody signed in may change their own, viewers included: it is their account, as their password is.
 - =/users= :: owner only, like everything else on the page. The *Picture* column shows each person's badge, with *Set* (*Replace*) and *Remove*.
 
-A refused upload comes back to the page with a notice saying why: too large, not a picture of an accepted kind, too many pixels, or not readable. The full reason goes to the server log.
+A refused upload comes back to the page with a notice saying why: too large, not a picture of an accepted kind, too many pixels, an animated or inconsistent WebP, another picture being processed at that moment (try again in a few seconds), or not readable. The full reason goes to the server log.
 
 ** Through the API
 
@@ -61,6 +61,9 @@ After a =DELETE= (or with no picture) =avatar_version= and =avatar_url= are =nul
 | 413    | the body is far past the size cap; refused at its headers, before it is buffered |
 | 422    | refused picture -- the message says which check (below)                          |
 | 501    | this server was built without image support                                      |
+| 503    | another picture is being decoded right now; =Retry-After: 5= says when to retry  |
+
+The 503 body is the usual error JSON with the code =conflict=. It is never queued: see [[*One decode at a time][One decode at a time]].
 
 * What is checked, in order
 
@@ -69,8 +72,27 @@ Everything that needs no decoder runs first, so nothing but a PNG, JPEG or WebP 
 1. *Something arrived.*
 2. *Size*: at most 5 MB (=VENTURE_AVATAR_MAX_BYTES=). The HTTP layer also refuses a body much past that at its headers (=src/web/venture-web-avatars.inc=), so a huge upload is never held in memory.
 3. *Kind, from the magic number*: PNG, JPEG or WebP, read from the bytes by the same sniffer the hosted email images use. SVG (which can carry script), GIF, BMP, TIFF, ICO, XPM, text and a header cut short are refused.
-4. *Dimensions, from the header*: at most 4096 pixels a side (=VENTURE_AVATAR_MAX_SIDE=). A file of a few bytes claiming 100000 by 100000 pixels -- forty gigabytes decoded, a decompression bomb -- is refused here, before anything is allocated.
+4. *Dimensions, from the header the decoder will believe*: at most 4096 pixels a side (=VENTURE_AVATAR_MAX_SIDE=). A file of a few bytes claiming 100000 by 100000 pixels -- forty gigabytes decoded, a decompression bomb -- is refused here, before anything is allocated. Which header that is depends on the format (below): the point is that the size checked is the size the decoder will decode, not a size the file merely states somewhere.
 5. *Decoding* with GdkPixbuf, through a loader made for the sniffed type only (never format guessing). The loader's =size-prepared= signal refuses an image over the pixel cap again. With a classic in-process loader that stops the module before it allocates; GdkPixbuf on current Fedora decodes through glycin, in a memory-limited sandbox, and reports the size only after decoding, so there the header check in step 4 is the fence and =size-prepared= a second opinion. A WebP picture on a server with no WebP decoder is refused saying so, never a crash.
+
+** Which header is the size
+
+- *PNG* :: the IHDR chunk, which must be the file's first chunk (the sniffer insists on it at offset 12). A decoder takes its size from that IHDR and refuses a second one.
+- *JPEG* :: the first frame header (SOF), found by walking the markers by their lengths, as a decoder does. A decoder takes its size from the first SOF and fails on a second before decoding any scan; a JPEG with a small first SOF and a huge second one is refused by the decoder in milliseconds.
+- *WebP* :: the bitstream, not the VP8X canvas. The extended format puts a canvas size in its VP8X chunk, and that is all the shared sniffer reads; the decoder believes the VP8 or VP8L bitstream instead and compares the two only after decoding the whole frame. So a 64 by 64 canvas around a 16383 by 16383 frame, 600 KB on disk, would pass the pixel cap and cost seconds of decoding before the decoder refused it. Every RIFF chunk is therefore walked (=venture_avatar_webp_frame_size()= in =src/core/venture-avatar.c=), and a WebP file is refused unless:
+  - it holds exactly one frame: one =VP8 = or =VP8L= chunk, no =ANIM= or =ANMF= chunk, and the VP8X animation flag clear -- a picture of a person is one still frame;
+  - the frame's size, read from its bitstream (a lossy key frame's start code and 14-bit sizes, or the lossless header), is the size the VP8X canvas states, when there is one;
+  - every chunk fits inside the file and the RIFF length (a chunk running past the end, a header cut short, or a file that does not start with VP8X or a bitstream is refused).
+
+  The pixel cap then applies to the bitstream's size.
+
+* One decode at a time
+
+Decoding is the expensive step: an honest 4096 pixel PNG costs about 220 ms and 110 MB to decode and scale. It never runs on the web server's main thread. =venture_avatar_render_async()= runs the decode, the crop, the scaling and the encoding on a GTask worker thread, and the request is answered through a deferred response when it is done; only the store -- four small files and one save of the user record -- runs back on the main thread, which owns the database. Meanwhile the main loop goes on serving everybody else.
+
+There is exactly one decode slot in the process (=venture_avatar_render_slot_acquire()=). An upload that arrives while another picture is being decoded is refused at once -- 503 with =Retry-After: 5= from the API, the "busy" notice on the pages -- never queued, because a queue of decodes is a queue of that cost. The checks that need no decoder still run first, so a bad file is told what is wrong with it even while the slot is taken. A caller outside the web server (=venture_avatar_set()=, =venture_avatar_render()=) uses the same slot and is refused the same way, with =G_IO_ERROR_BUSY=.
+
+A hosted install keeps every request on the main thread, as its read workers do: its per-workspace support scope and admission wrap the handler, and a save made after the handler returned would run outside them. There the decode stays inline, still in the one slot.
 
 * What is kept
 
@@ -82,13 +104,17 @@ The encoder is VENTURE's rather than GdkPixbuf's because GdkPixbuf on Fedora 44 
 
 =<state_dir>/avatars/<user id>/<version>-<size>.png=: a 0700 directory, 0600 files, written whole. The user record's =avatar-version= names the current set; it is the first twenty hex digits of the SHA-256 of all four files. Nothing about the picture is in the database besides that.
 
-A new picture writes its files, then points the record at them, then deletes the previous picture's files. Removing a picture clears the record, then deletes the files and the directory: a removed picture is removed, not hidden. An installation's files are backed up with the state directory, as attachments are (see [[file:backup.org][Backups]]).
+A new picture writes its files, then points the record at them, then deletes the previous picture's files. Removing a picture clears the record, then deletes the files and the directory: a removed picture is removed, not hidden.
+
+Deleting a user deletes their pictures too: =<state_dir>/avatars/<user id>/= and everything in it (=venture_avatar_purge()=), whatever the record says. A deletion inside a transaction purges when the outermost transaction commits, and not at all when it rolls back, so an account that comes back keeps its picture. Nothing in the directory is followed: a link there is removed, never what it points at. A deleted account that is later restored comes back without its picture files while its record still names a version, so its address answers 404 until the picture is replaced or removed. An installation's files are backed up with the state directory, as attachments are (see [[file:backup.org][Backups]]).
 
 Why not a document or a hosted image: both are an /organization's/ records, and a person is not one organization's -- the same account works in several, and there is no right one to file their face under. A document is also read by the Documents pages, search, OCR and the generic attachment route under the document's own rules, which would be a second way to reach the picture beside =/avatar='s; deleting a document keeps its bytes, and removing a picture must not; and four sizes would be four documents per person. A hosted image is public by design, because a mail app fetches it with no credential; a picture is shown only to people who may see the name beside it. What the store shares with those is its shape: files under the state directory, written whole, read back through =openat()= with =O_NOFOLLOW= at every step, refusing anything that is not a regular file.
 
 ** The version is not writable
 
 =avatar-version= is a field on the user record (a technical one, shown under *Technical* on the record's page), and a save validator refuses any change to it that the picture store did not make: a REST client, a form or a staged change naming a version would point the account at files that do not exist. Change the picture through the routes above.
+
+As a second fence, a version that is not twenty lowercase hex digits (=venture_avatar_version_is_valid()=) is treated as no picture wherever a page or a JSON row draws one: no address is made from it, and the initials are drawn.
 
 * Who may see a picture
 
@@ -164,4 +190,4 @@ On Fedora 44, GdkPixbuf decodes through glycin, which starts its codec in a =bwr
 
 * Tests
 
-=tests/test-avatars.c=: the sniffer (PNG, JPEG and WebP accepted; GIF, SVG, BMP, text, nothing and a cut-short PNG refused), the size cap, the pixel cap against a header claiming 100000 by 100000, the encoder's chunks and determinism, the initials and the badge markup, rendering a wide picture to four square PNGs with no text or EXIF chunk and the middle kept, who may change whose picture (and a read-only token), the version refused when written directly, the API round trip with the cache headers and 304, the 404 across organizations and for an unknown size, removal putting the initials back on a comment, a replaced picture's files deleted, and the account and users pages. The username lookup covers a member, an unknown name, a person the reader may not see, a token actor (stored and as "erin (API token #N)"), and the cache (a renamed account still answers the string already asked). A board card and an Activity row draw =/avatar/<id>/32?v=...= for an account with a picture and the initials badge for one without. The tests that decode skip, saying why, where GdkPixbuf cannot decode (a build without it, or a container where glycin's sandbox cannot start).
+=tests/test-avatars.c=: the sniffer (PNG, JPEG and WebP accepted; GIF, SVG, BMP, text, nothing and a cut-short PNG refused), the size cap, the pixel cap against a header claiming 100000 by 100000 and against WebP files that lie (a 64 by 64 VP8X canvas around a 16383 by 16383 lossy frame, an honest 16383 canvas, a lossless frame that disagrees with its canvas, an animated file, a second frame, a chunk past the end), the decode slot (held, a render and an upload are refused with =G_IO_ERROR_BUSY= and 503 with =Retry-After=; given back, they are not), the purge of a deleted user's pictures (at once, at commit, not on rollback, a link left alone), a malformed =avatar-version= drawing no address, the encoder's chunks and determinism, the initials and the badge markup, rendering a wide picture to four square PNGs with no text or EXIF chunk and the middle kept, who may change whose picture (and a read-only token), the version refused when written directly, the API round trip with the cache headers and 304, the 404 across organizations and for an unknown size, removal putting the initials back on a comment, a replaced picture's files deleted, and the account and users pages. The username lookup covers a member, an unknown name, a person the reader may not see, a token actor (stored and as "erin (API token #N)"), and the cache (a renamed account still answers the string already asked). A board card and an Activity row draw =/avatar/<id>/32?v=...= for an account with a picture and the initials badge for one without. The tests that decode skip, saying why, where GdkPixbuf cannot decode (a build without it, or a container where glycin's sandbox cannot start).

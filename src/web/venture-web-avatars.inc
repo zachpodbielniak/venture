@@ -18,10 +18,19 @@
  * Who may change a picture is who may already edit that account: the
  * person themself, and a global owner for anybody (the /users rule). A
  * token acts as its owning user, and a read-only token stays read-only.
+ *
+ * An upload is decoded off the main thread (venture_avatar_render_async())
+ * and answered later through a deferred response; only the store -- four
+ * small files and one save -- runs back on the main thread. One picture
+ * is decoded at a time: a second upload meanwhile is answered 503 with
+ * Retry-After (the API) or the "busy" notice (the pages), not queued.
  */
 
 /* What a multipart envelope may add around the picture itself. */
 #define VENTURE_WEB_AVATAR_ENVELOPE_BYTES (64 * 1024)
+
+/* Seconds a client is told to wait when the decode slot is taken. */
+#define VENTURE_WEB_AVATAR_RETRY_AFTER "5"
 
 /*
  * The transport limit for the picture routes, so a body far past the cap
@@ -223,6 +232,228 @@ venture_web_avatar_state(
 	return venture_web_json_response(node, 200);
 }
 
+/*
+ * The notice a page shows for a failed upload, worked out again from the
+ * upload so the words match the reason; the full message goes to the log.
+ */
+static const gchar *
+venture_web_avatar_notice(GBytes *upload)
+{
+	gsize size;
+	gint width;
+	gint height;
+
+	if (!venture_avatar_is_available())
+		return "avatar-unavailable";
+
+	size = (NULL != upload) ? g_bytes_get_size(upload) : 0;
+
+	if (0 == size)
+		return "avatar-missing";
+
+	if (size > VENTURE_AVATAR_MAX_BYTES)
+		return "avatar-too-large";
+
+	width = 0;
+	height = 0;
+
+	if (NULL == venture_avatar_sniff(upload, &width, &height))
+	{
+		/* A WebP file the shared sniffer reads but the picture rules
+		 * refuse: animated, or its sizes disagree. */
+		if (0 == g_strcmp0(venture_hosted_image_sniff(upload, NULL, NULL, NULL),
+		                   "image/webp"))
+			return "avatar-webp";
+
+		return "avatar-not-image";
+	}
+
+	if ((width > VENTURE_AVATAR_MAX_SIDE) || (height > VENTURE_AVATAR_MAX_SIDE))
+		return "avatar-dimensions";
+
+	return "avatar-failed";
+}
+
+/* A 503 for an upload that arrived while another was being decoded. */
+static HtmxResponse *
+venture_web_avatar_busy(const GError *busy)
+{
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *response;
+
+	/* The body is the usual error JSON; its code is "conflict" (another
+	 * picture holds the decoder), the status the honest 503. */
+	g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT,
+	                    (NULL != busy) ? busy->message : "busy");
+	response = venture_web_error_response(error);
+	htmx_response_set_status(response, 503);
+	htmx_response_add_header(response, "Retry-After", VENTURE_WEB_AVATAR_RETRY_AFTER);
+	htmx_response_add_header(response, "Cache-Control", "no-store");
+
+	return response;
+}
+
+/*
+ * The answer to an upload, once it is settled: @version on success, or
+ * @error. @back is the page a form returns to with a notice, or NULL for
+ * the API, which answers JSON. The same words and statuses whether the
+ * picture was decoded on a worker or here.
+ */
+static HtmxResponse *
+venture_web_avatar_answer(
+	VentureWebServer	*self,
+	gint64			 user_id,
+	GBytes			*upload,
+	const gchar		*back,
+	const gchar		*version,
+	const GError		*error
+){
+	g_autofree gchar *location = NULL;
+	gboolean busy;
+
+	if (NULL != version)
+	{
+		if (NULL == back)
+			return venture_web_avatar_state(self, user_id, version);
+
+		location = g_strconcat(back, "?notice=avatar-ok", NULL);
+		return venture_web_redirect_to(location);
+	}
+
+	busy = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_BUSY);
+	g_message("Picture for user %" G_GINT64_FORMAT " refused: %s", user_id,
+	          (NULL != error) ? error->message : "no reason");
+
+	if (NULL == back)
+		return busy ? venture_web_avatar_busy(error) : venture_web_error_response(error);
+
+	location = g_strconcat(back, "?notice=",
+	                       busy ? "avatar-busy" : venture_web_avatar_notice(upload),
+	                       NULL);
+	return venture_web_redirect_to(location);
+}
+
+/*
+ * Whether an upload may be answered after its handler returns. Hosted
+ * installs keep every request on the main thread, as their read workers
+ * do: the per-workspace support scope and admission wrap the handler
+ * (venture_web_hosted_preflight()), and a save after it returns would run
+ * outside them. There the decode stays inline, still in the one slot.
+ */
+static gboolean
+venture_web_avatar_may_defer(VentureWebServer *self)
+{
+	VentureDatabase *database;
+	gboolean hosted;
+
+	database = venture_context_get_database(self->context);
+	hosted = FALSE;
+	g_object_get(venture_context_get_config(self->context),
+	             "hosted-enabled", &hosted, NULL);
+
+	return !hosted &&
+	       !venture_tenant_service_is_enabled(venture_tenant_service_get(database));
+}
+
+/* One upload being decoded on a worker, and what its answer needs. */
+typedef struct
+{
+	VentureWebServer	*server;
+	VentureAuthPrincipal	*principal;
+	HtmxResponse		*deferred;
+	GBytes			*upload;
+	gchar			*back;
+	gint64			 user_id;
+} VentureWebAvatarJob;
+
+static void
+venture_web_avatar_job_free(VentureWebAvatarJob *job)
+{
+	g_clear_object(&job->server);
+	g_clear_pointer(&job->principal, venture_auth_principal_free);
+	g_clear_object(&job->deferred);
+	g_clear_pointer(&job->upload, g_bytes_unref);
+	g_clear_pointer(&job->back, g_free);
+	g_free(job);
+}
+
+/* Back on the main thread: store the renditions and answer. */
+static void
+venture_web_avatar_rendered(
+	GObject		*source,
+	GAsyncResult	*result,
+	gpointer	 data
+){
+	VentureWebAvatarJob *job;
+	g_autoptr(GPtrArray) renditions = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(HtmxResponse) response = NULL;
+	g_autofree gchar *version = NULL;
+
+	(void)source;
+
+	job = data;
+	renditions = venture_avatar_render_finish(result, &error);
+
+	if (NULL != renditions)
+	{
+		VentureActor actor;
+
+		venture_auth_to_actor(job->principal, &actor);
+		version = venture_avatar_store(job->server->context, job->user_id,
+		                               renditions, &actor, &error);
+	}
+
+	response = venture_web_avatar_answer(job->server, job->user_id, job->upload,
+	                                     job->back, version, error);
+	htmx_response_complete(job->deferred, response);
+	venture_web_avatar_job_free(job);
+}
+
+/*
+ * Sets @user_id's picture from @upload, authority already checked: on a
+ * worker, answered later, where the install allows it; here otherwise.
+ * @back as venture_web_avatar_answer() takes it.
+ */
+static HtmxResponse *
+venture_web_avatar_change(
+	VentureWebServer	*self,
+	VentureAuthPrincipal	*principal,
+	gint64			 user_id,
+	GBytes			*upload,
+	const gchar		*back
+){
+	VentureWebAvatarJob *job;
+
+	if (!venture_web_avatar_may_defer(self))
+	{
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *version = NULL;
+		VentureActor actor;
+
+		venture_auth_to_actor(principal, &actor);
+		version = venture_avatar_set(self->context, user_id, upload, &actor,
+		                             &error);
+
+		return venture_web_avatar_answer(self, user_id, upload, back, version,
+		                                 error);
+	}
+
+	job = g_new0(VentureWebAvatarJob, 1);
+	job->server = g_object_ref(self);
+	job->principal = venture_auth_principal_copy(principal);
+	job->deferred = htmx_response_new_deferred();
+	job->upload = g_bytes_ref(upload);
+	job->back = g_strdup(back);
+	job->user_id = user_id;
+
+	/* A refusal that needs no decoder (a bad file, the slot taken) comes
+	 * back through the same callback, on a later iteration. */
+	venture_avatar_render_async(upload, NULL, venture_web_avatar_rendered, job);
+
+	return g_object_ref(job->deferred);
+}
+
 /* PUT or DELETE on @user_id's picture, once the caller is known. */
 static HtmxResponse *
 venture_web_avatar_api_change(
@@ -234,7 +465,6 @@ venture_web_avatar_api_change(
 ){
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GBytes) upload = NULL;
-	g_autofree gchar *version = NULL;
 	VentureActor actor;
 
 	if (!venture_web_avatar_may_change(self, request, principal, user_id, &error))
@@ -255,16 +485,7 @@ venture_web_avatar_api_change(
 	if (NULL == upload)
 		return venture_web_error_response(error);
 
-	version = venture_avatar_set(self->context, user_id, upload, &actor, &error);
-
-	if (NULL == version)
-	{
-		g_message("Picture for user %" G_GINT64_FORMAT " refused: %s", user_id,
-		          (NULL != error) ? error->message : "no reason");
-		return venture_web_error_response(error);
-	}
-
-	return venture_web_avatar_state(self, user_id, version);
+	return venture_web_avatar_change(self, principal, user_id, upload, NULL);
 }
 
 /* PUT and DELETE /api/v1/account/avatar: the caller's own picture. */
@@ -332,40 +553,6 @@ venture_web_avatar_api_user(
 }
 
 /*
- * The notice a page shows for a failed upload, worked out again from the
- * upload so the words match the reason; the full message goes to the log.
- */
-static const gchar *
-venture_web_avatar_notice(GBytes *upload)
-{
-	gsize size;
-	gint width;
-	gint height;
-
-	if (!venture_avatar_is_available())
-		return "avatar-unavailable";
-
-	size = (NULL != upload) ? g_bytes_get_size(upload) : 0;
-
-	if (0 == size)
-		return "avatar-missing";
-
-	if (size > VENTURE_AVATAR_MAX_BYTES)
-		return "avatar-too-large";
-
-	width = 0;
-	height = 0;
-
-	if (NULL == venture_avatar_sniff(upload, &width, &height))
-		return "avatar-not-image";
-
-	if ((width > VENTURE_AVATAR_MAX_SIDE) || (height > VENTURE_AVATAR_MAX_SIDE))
-		return "avatar-dimensions";
-
-	return "avatar-failed";
-}
-
-/*
  * The page form's half of a change: set or remove, then back to @back with
  * a notice. Authority was checked by the caller.
  */
@@ -380,7 +567,6 @@ venture_web_avatar_form_change(
 ){
 	g_autoptr(GError) error = NULL;
 	g_autoptr(GBytes) upload = NULL;
-	g_autofree gchar *version = NULL;
 	g_autofree gchar *location = NULL;
 	VentureActor actor;
 
@@ -404,21 +590,10 @@ venture_web_avatar_form_change(
 
 	upload = venture_web_avatar_upload(request, &error);
 
-	if (NULL != upload)
-		version = venture_avatar_set(self->context, user_id, upload, &actor, &error);
+	if (NULL == upload)
+		return venture_web_avatar_answer(self, user_id, NULL, back, NULL, error);
 
-	if (NULL == version)
-	{
-		g_message("Picture for user %" G_GINT64_FORMAT " refused: %s", user_id,
-		          (NULL != error) ? error->message : "no reason");
-		location = g_strconcat(back, "?notice=",
-		                       venture_web_avatar_notice(upload), NULL);
-		return venture_web_redirect_to(location);
-	}
-
-	location = g_strconcat(back, "?notice=avatar-ok", NULL);
-
-	return venture_web_redirect_to(location);
+	return venture_web_avatar_change(self, principal, user_id, upload, back);
 }
 
 /* POST /account/avatar and /account/avatar/remove. */
@@ -511,6 +686,8 @@ venture_web_avatar_notice_text(
 		{ "avatar-too-large", FALSE, "That file is too large: a picture may be at most 5 MB." },
 		{ "avatar-not-image", FALSE, "That is not a PNG, JPEG or WebP picture. SVG, GIF, BMP, TIFF and icon files are not accepted." },
 		{ "avatar-dimensions", FALSE, "That picture is too big: at most 4096 pixels on a side." },
+		{ "avatar-webp", FALSE, "That WebP file is animated, or its sizes disagree: a picture must be one still frame." },
+		{ "avatar-busy", FALSE, "Another picture is being processed right now. Try again in a few seconds." },
 		{ "avatar-failed", FALSE, "That picture could not be read or saved. Try a PNG or JPEG." },
 	};
 	guint i;

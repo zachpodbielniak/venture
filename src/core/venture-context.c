@@ -165,6 +165,10 @@ venture_context_new(
 	venture_sla_install(self);
 	venture_desk_install(self);
 
+	/* A deleted user's picture is deleted with them, once the deletion
+	 * commits; the store is under this context's state directory. */
+	venture_avatar_install_store(self);
+
 	/* Epics, stories and their pieces: which shapes may hang under which,
 	 * judged only when a parent or an issue type is written. */
 	venture_ticket_tree_install(self);
