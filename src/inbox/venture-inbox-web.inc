@@ -215,6 +215,8 @@ venture_web_inbox_list_page(HtmxRequest *request, GHashTable *params, gpointer d
 		g_string_append(html, "<p class=\"muted\">No conversations here. A new email, text, call or chat from a contact starts one.</p>");
 	else
 		g_string_append(html, "<ol class=\"inbox-list\">");
+	{
+	g_autoptr(VentureActorNames) viewer = venture_actor_names_new(db);
 	for (i = 0; i < rows->len; i++)
 	{
 		VentureEntity *row = g_ptr_array_index(rows, i);
@@ -242,6 +244,9 @@ venture_web_inbox_list_page(HtmxRequest *request, GHashTable *params, gpointer d
 		g_string_append_printf(html, "</span><span class=\"inbox-badge %s\">%s</span>", venture_web_inbox_status_name(row_status),
 			row_status == VENTURE_INBOX_STATUS_WAITING ? "Waiting" : row_status == VENTURE_INBOX_STATUS_CLOSED ? "Closed" : "Open");
 		g_string_append(html, "<span class=\"when\">");
+		if (owner_id > 0)
+			venture_web_append_user_picture_id(html, viewer, owner_id,
+				owner != NULL ? owner : "Unassigned");
 		venture_html_escape_append(html, owner != NULL ? owner : "Unassigned");
 		g_string_append(html, " · ");
 		venture_web_inbox_when(self, html, last);
@@ -253,6 +258,7 @@ venture_web_inbox_list_page(HtmxRequest *request, GHashTable *params, gpointer d
 		}
 		venture_html_escape_append(html, summary != NULL ? summary : "");
 		g_string_append(html, "</span></a></li>");
+	}
 	}
 	if (rows->len > 0)
 		g_string_append(html, "</ol>");
@@ -293,6 +299,8 @@ venture_web_inbox_history(VentureWebServer *self, GString *html, VentureEntity *
 		venture_web_inbox_when(self, html, when);
 		g_string_append(html, " · ");
 		who = venture_actor_names_display(names, actor);
+		venture_web_append_user_picture(html, names, actor,
+			who != NULL ? who : "Someone");
 		venture_html_escape_append(html, who != NULL ? who : "Someone");
 		g_string_append_printf(html, " %s</li>", what);
 	}

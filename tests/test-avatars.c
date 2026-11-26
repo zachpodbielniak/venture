@@ -1466,6 +1466,218 @@ test_account_page(Fixture *f, gconstpointer data)
 	answer_clear(&answer);
 }
 
+/*
+ * The store refuses a version written by anybody but the picture store.
+ * The store's own saves set this qdata to the row; the key is
+ * VENTURE_AVATAR_FILING_KEY in venture-avatar.c. Tests that only need the
+ * address in HTML set it the same way, without decoding a picture.
+ */
+static void
+stamp_picture(Fixture *f, gint64 user_id)
+{
+	g_autoptr(VentureEntity) user = NULL;
+
+	user = venture_database_get(f->database, VENTURE_TYPE_USER, user_id, NULL);
+	g_assert_nonnull(user);
+	g_object_set_data(G_OBJECT(f->database), "venture-avatar-filing", user);
+	g_object_set(user, "avatar-version", "0123456789abcdef0123", NULL);
+	save(f, user);
+	g_object_set_data(G_OBJECT(f->database), "venture-avatar-filing", NULL);
+}
+
+static void
+principal_for(
+	VentureAuthPrincipal	*principal,
+	gint64			 user_id,
+	VentureUserRole		 role,
+	gchar			*name
+){
+	memset(principal, 0, sizeof(*principal));
+	principal->user_id = user_id;
+	principal->role = role;
+	principal->name = name;
+	principal->authenticated = TRUE;
+}
+
+static gint64
+make_owned_token(Fixture *f, gint64 user_id)
+{
+	g_autoptr(VentureApiToken) token = NULL;
+	g_autofree gchar *secret = NULL;
+
+	token = venture_api_token_new();
+	g_object_set(token, "name", "face", "user-id", user_id,
+	             "role", VENTURE_USER_ROLE_EDITOR, NULL);
+	secret = venture_api_token_generate(token);
+	save(f, VENTURE_ENTITY(token));
+
+	return venture_entity_get_id(VENTURE_ENTITY(token));
+}
+
+/*
+ * A username resolves to the account a reader may see, and to nobody
+ * otherwise. The second ask is the cache: renaming the account does not
+ * change the answer for the string already asked. A token's stored actor
+ * and the reading "erin (API token #N)" are that token's owner.
+ */
+static void
+test_user_id_for(Fixture *f, gconstpointer data)
+{
+	static gchar vic_name[] = "vic";
+	static gchar otto_name[] = "otto";
+	VentureAuthPrincipal vic;
+	VentureAuthPrincipal otto;
+	g_autoptr(VentureAccessScope) as_vic = NULL;
+	g_autoptr(VentureAccessScope) as_otto = NULL;
+	g_autoptr(VentureAccessScope) trusted = NULL;
+	g_autoptr(VentureActorNames) names = NULL;
+	g_autoptr(VentureActorNames) hidden = NULL;
+	g_autoptr(VentureActorNames) tokens = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+	g_autofree gchar *stored = NULL;
+	g_autofree gchar *shown = NULL;
+	gint64 token_id;
+	gint64 first;
+	gint64 second;
+
+	(void)data;
+
+	principal_for(&vic, f->viewer_id, VENTURE_USER_ROLE_VIEWER, vic_name);
+	principal_for(&otto, f->outsider_id, VENTURE_USER_ROLE_EDITOR, otto_name);
+
+	/* Before any reader is entered: the same way the fixture's tokens
+	 * are made, with nobody to refuse a viewer the write. */
+	token_id = make_owned_token(f, f->editor_id);
+	stored = g_strdup_printf("API token #%" G_GINT64_FORMAT, token_id);
+	shown = g_strdup_printf("erin (API token #%" G_GINT64_FORMAT ")",
+	                        token_id);
+
+	as_vic = venture_access_policy_enter(
+		venture_database_get_access_policy(f->database), &vic);
+	names = venture_actor_names_new(f->database);
+
+	first = venture_actor_names_user_id_for(names, "erin");
+	second = venture_actor_names_user_id_for(names, "erin");
+	g_assert_cmpint(first, ==, f->editor_id);
+	g_assert_cmpint(second, ==, f->editor_id);
+	g_assert_cmpint(venture_actor_names_user_id_for(names, "nobody-at-all"),
+	                ==, 0);
+	g_assert_cmpint(venture_actor_names_user_id_for(names, ""), ==, 0);
+
+	/* Otto shares no organization with Erin, so the name is not hers. */
+	as_otto = venture_access_policy_enter(
+		venture_database_get_access_policy(f->database), &otto);
+	hidden = venture_actor_names_new(f->database);
+	g_assert_cmpint(venture_actor_names_user_id_for(hidden, "erin"), ==, 0);
+	g_clear_object(&as_otto);
+
+	/* Trusted, so a viewer may rename an account they do not administer.
+	 * The cached "erin" must not be asked again: the row no longer has
+	 * that username, and a fresh query would answer 0. */
+	trusted = venture_access_policy_enter(
+		venture_database_get_access_policy(f->database), NULL);
+	user = venture_database_get(f->database, VENTURE_TYPE_USER, f->editor_id,
+	                            NULL);
+	g_object_set(user, "username", "erin-renamed", NULL);
+	save(f, user);
+	g_clear_object(&trusted);
+
+	g_assert_cmpint(venture_actor_names_user_id_for(names, "erin"), ==,
+	                f->editor_id);
+	g_assert_cmpint(venture_actor_names_user_id_for(names, "erin-renamed"),
+	                ==, f->editor_id);
+
+	tokens = venture_actor_names_new(f->database);
+	g_assert_cmpint(venture_actor_names_user_id_for(tokens, stored), ==,
+	                f->editor_id);
+	g_assert_cmpint(venture_actor_names_user_id_for(tokens, shown), ==,
+	                f->editor_id);
+
+	as_otto = venture_access_policy_enter(
+		venture_database_get_access_policy(f->database), &otto);
+	g_clear_pointer(&hidden, venture_actor_names_free);
+	hidden = venture_actor_names_new(f->database);
+	g_assert_cmpint(venture_actor_names_user_id_for(hidden, stored), ==, 0);
+	g_assert_cmpint(venture_actor_names_user_id_for(hidden, shown), ==, 0);
+}
+
+/*
+ * A board card and an activity row draw the picture when the account has
+ * one, and the initials when it does not. The name beside either is the
+ * name the page already wrote.
+ */
+static void
+test_pictures_beside_names(Fixture *f, gconstpointer data)
+{
+	g_autoptr(VentureEntity) with_face = NULL;
+	g_autoptr(VentureEntity) without = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *face = NULL;
+	g_autofree gchar *path = NULL;
+	VentureActor actor;
+	Answer answer;
+	gint status = 0;
+
+	(void)data;
+
+	stamp_picture(f, f->editor_id);
+
+	with_face = g_object_new(VENTURE_TYPE_TICKET, "title", "Face on the card",
+	                         "assignee", "erin", NULL);
+	g_assert_true(venture_enum_from_nick(VENTURE_TYPE_TICKET_STATUS, "triage",
+	                                     &status));
+	g_object_set(with_face, "status", status, NULL);
+	venture_entity_set_organization_id(with_face, f->org);
+	save(f, with_face);
+
+	without = g_object_new(VENTURE_TYPE_TICKET, "title", "Initials on the card",
+	                       "assignee", "vic", NULL);
+	g_object_set(without, "status", status, NULL);
+	venture_entity_set_organization_id(without, f->org);
+	save(f, without);
+
+	request(f, "GET", "/tickets", f->editor_token, NULL, NULL, NULL, &answer);
+	g_assert_cmpuint(answer.status, ==, 200);
+	face = g_strdup_printf("/avatar/%" G_GINT64_FORMAT
+	                       "/32?v=0123456789abcdef0123", f->editor_id);
+	g_assert_true(answer_mentions(&answer, face));
+	g_assert_true(answer_mentions(&answer,
+		"<img class=\"avatar avatar-32\""));
+	g_assert_true(answer_mentions(&answer,
+		"<span class=\"ticket-assignee\">erin</span>"));
+	g_assert_true(answer_mentions(&answer,
+		"avatar-initials\" aria-hidden=\"true\">V</span>"
+		"<span class=\"ticket-assignee\">vic</span>"));
+	answer_clear(&answer);
+
+	memset(&actor, 0, sizeof(actor));
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "erin";
+	g_object_set(f->company, "name", "Bellhaven Books Ltd", NULL);
+	g_assert_true(venture_database_save(f->database, f->company, &actor,
+	                                    &error));
+	g_assert_no_error(error);
+
+	actor.name = "vic";
+	g_object_set(f->company, "name", "Bellhaven Books", NULL);
+	g_assert_true(venture_database_save(f->database, f->company, &actor,
+	                                    &error));
+	g_assert_no_error(error);
+
+	path = g_strdup_printf("/e/%s/%" G_GINT64_FORMAT,
+	                       venture_entity_get_entity_name(f->company),
+	                       venture_entity_get_id(f->company));
+	request(f, "GET", path, f->editor_token, NULL, NULL, NULL, &answer);
+	g_assert_cmpuint(answer.status, ==, 200);
+	g_assert_true(answer_mentions(&answer, face));
+	g_assert_true(answer_mentions(&answer,
+		"class=\"timeline-actor\"><img class=\"avatar avatar-32\""));
+	g_assert_true(answer_mentions(&answer,
+		"class=\"timeline-actor\"><span class=\"avatar avatar-32 "
+		"avatar-initials\" aria-hidden=\"true\">V</span>vic"));
+	answer_clear(&answer);
+}
+
 #define AVATAR_TEST(path, func) \
 	g_test_add("/avatars/" path, Fixture, NULL, fixture_set_up, func, fixture_tear_down)
 
@@ -1486,6 +1698,8 @@ main(int argc, char **argv)
 	AVATAR_TEST("round-trip", test_round_trip);
 	AVATAR_TEST("replace", test_replace);
 	AVATAR_TEST("account-page", test_account_page);
+	AVATAR_TEST("user-id-for", test_user_id_for);
+	AVATAR_TEST("pictures-beside-names", test_pictures_beside_names);
 
 	return g_test_run();
 }

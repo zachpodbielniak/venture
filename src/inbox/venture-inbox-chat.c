@@ -575,13 +575,25 @@ static void
 chat_render(VentureContext *context, const VentureInboxItem *item, GString *html)
 {
 	g_autofree gchar *body = string(item->record, "body"), *author = string(item->record, "author");
-	(void)context;
+	g_autoptr(VentureActorNames) viewer = NULL;
 	g_string_append(html, "<div class=\"inbox-text\">");
 	venture_html_escape_append(html, body);
 	g_string_append(html, "</div>");
 	if (!item->inbound && !venture_string_is_empty(author))
 	{
+		g_autofree gchar *picture = NULL;
+
+		/* The author's words stay. The picture is theirs when the
+		 * reader may see them; otherwise the initials. */
+		viewer = venture_actor_names_new(
+			venture_context_get_database(context));
+		picture = venture_avatar_html_for_username(viewer, author, author,
+			VENTURE_AVATAR_SIZE_SMALL);
 		g_string_append(html, "<span class=\"inbox-by\">");
+
+		if (NULL != picture)
+			g_string_append(html, picture);
+
 		venture_html_escape_append(html, author);
 		g_string_append(html, "</span>");
 	}

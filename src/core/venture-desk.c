@@ -1031,13 +1031,31 @@ venture_desk_name_actor(
 	const gchar		*member,
 	const gchar		*username_member
 ){
+	const gchar *actor;
 	const gchar *username;
+	g_autofree gchar *avatar_url = NULL;
+	gint64 user_id;
 
-	username = venture_actor_names_lookup(names,
-		venture_json_object_get_string(event, member, NULL));
+	actor = venture_json_object_get_string(event, member, NULL);
+	username = venture_actor_names_lookup(names, actor);
 
 	if (NULL != username)
 		json_object_set_string_member(event, username_member, username);
+
+	/* A picture only when this reader may see one. Leaving the member
+	 * off keeps an event that has no picture the shape it already had. */
+	user_id = venture_actor_names_user_id_for(names, actor);
+	avatar_url = venture_avatar_url_for(names, user_id,
+	                                    VENTURE_AVATAR_SIZE_SMALL);
+
+	if (NULL == avatar_url)
+		return;
+
+	if (0 == g_strcmp0(username_member, "actor_username"))
+		json_object_set_string_member(event, "avatar_url", avatar_url);
+	else if (0 == g_strcmp0(username_member, "approved_by_username"))
+		json_object_set_string_member(event, "approved_by_avatar_url",
+		                              avatar_url);
 }
 
 static void

@@ -2288,6 +2288,22 @@ venture_widget_kind_activity(
 			json_builder_add_string_value(builder, username);
 		}
 
+		/* Same rule as the page: a picture only when there is one. */
+		{
+			g_autofree gchar *avatar_url = NULL;
+			gint64 user_id;
+
+			user_id = venture_actor_names_user_id_for(names, actor);
+			avatar_url = venture_avatar_url_for(names, user_id,
+			                                    VENTURE_AVATAR_SIZE_SMALL);
+
+			if (NULL != avatar_url)
+			{
+				json_builder_set_member_name(builder, "avatar_url");
+				json_builder_add_string_value(builder, avatar_url);
+			}
+		}
+
 		json_builder_set_member_name(builder, "action");
 		json_builder_add_string_value(builder, action_nick);
 		json_builder_set_member_name(builder, "target_type");
@@ -2303,8 +2319,27 @@ venture_widget_kind_activity(
 		json_builder_end_object(builder);
 
 		g_string_append(html, "<li><span class=\"activity-actor\">");
-		venture_html_escape_append(html,
-			venture_string_is_empty(shown) ? "The system" : shown);
+		{
+			const gchar *label;
+
+			label = venture_string_is_empty(shown) ? "The system" : shown;
+
+			/* The stored actor is the lookup; the words stay the
+			 * reading already written beside it. */
+			if (!venture_string_is_empty(actor) &&
+			    (0 != g_strcmp0(label, "The system")))
+			{
+				g_autofree gchar *picture = NULL;
+
+				picture = venture_avatar_html_for_username(names, actor,
+					label, VENTURE_AVATAR_SIZE_SMALL);
+
+				if (NULL != picture)
+					g_string_append(html, picture);
+			}
+
+			venture_html_escape_append(html, label);
+		}
 		g_string_append(html, "</span> ");
 		venture_html_escape_append(html, action_nick);
 		g_string_append(html, " ");

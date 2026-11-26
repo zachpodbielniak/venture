@@ -49,6 +49,14 @@ struct _VentureActorNames
 	/* User id -> the version of their picture, or NULL for none and for
 	 * a person this reader may not see. Present once looked at. */
 	GHashTable		*avatars;
+
+	/* The string a page asked about -> that account's id, or 0 when
+	 * there is nobody to draw (unknown, or not this reader's to see).
+	 * The value is a g_new'd gint64: a pointer is not wide enough for
+	 * an id on every architecture this builds for, and 0 has to be
+	 * stored, so a missing value cannot mean "not cached". Made on the
+	 * first ask and freed with the cache. */
+	GHashTable		*by_username;
 };
 
 VentureActorNames *
@@ -82,6 +90,7 @@ venture_actor_names_free(VentureActorNames *self)
 	g_clear_pointer(&self->by_token, g_hash_table_unref);
 	g_clear_pointer(&self->organizations, g_hash_table_unref);
 	g_clear_pointer(&self->avatars, g_hash_table_unref);
+	g_clear_pointer(&self->by_username, g_hash_table_unref);
 	g_clear_pointer(&self->reader, venture_auth_principal_free);
 	g_clear_object(&self->database);
 	g_free(self);
@@ -435,4 +444,174 @@ venture_actor_names_avatar_version(
 	g_hash_table_insert(self->avatars, key, version);
 
 	return version;
+}
+
+/*
+ * The token an actor string names. Exactly "API token #N", or the
+ * reading venture_actor_names_format() gives it: "erin (API token #N)",
+ * with the parenthesis the whole tail. A username that only mentions a
+ * token in the middle is still a username.
+ */
+static gint64
+venture_actor_names_token_from_text(const gchar *text)
+{
+	const gchar *open;
+	gchar *inside;
+	gsize length;
+	gint64 id;
+
+	id = venture_actor_names_parse_token(text);
+
+	if (0 != id)
+		return id;
+
+	if (NULL == text)
+		return 0;
+
+	length = strlen(text);
+
+	if ((length < 2) || (')' != text[length - 1]))
+		return 0;
+
+	open = strrchr(text, '(');
+
+	if ((NULL == open) || (open == text) || (' ' != *(open - 1)))
+		return 0;
+
+	inside = g_strndup(open + 1, length - (gsize)(open + 1 - text) - 1);
+	id = venture_actor_names_parse_token(inside);
+	g_free(inside);
+
+	return id;
+}
+
+/*
+ * The account that owns @token_id, before the reader is considered.
+ * Called so a token's picture is that person's; the caller then asks
+ * venture_actor_names_may_see_user().
+ */
+static gint64
+venture_actor_names_token_owner(
+	VentureActorNames	*self,
+	gint64			 token_id
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureEntity) token = NULL;
+	gint64 user_id;
+
+	if ((NULL == self->reader) || !self->reader->authenticated)
+		return 0;
+
+	internal = venture_access_policy_enter(
+		venture_database_get_access_policy(self->database), NULL);
+	token = venture_database_get(self->database, VENTURE_TYPE_API_TOKEN,
+	                             token_id, NULL);
+
+	if ((NULL == token) || venture_entity_is_deleted(token))
+		return 0;
+
+	user_id = 0;
+	g_object_get(token, "user-id", &user_id, NULL);
+
+	return (user_id > 0) ? user_id : 0;
+}
+
+/*
+ * The account whose username is exactly @username. A user row is
+ * owner-only, so it is read as trusted work; whether the reader is told
+ * is venture_actor_names_may_see_user()'s call. A deleted account is
+ * nobody. An inactive one still is that person: a ticket they hold is
+ * still theirs.
+ */
+static gint64
+venture_actor_names_query_username(
+	VentureActorNames	*self,
+	const gchar		*username
+){
+	g_autoptr(VentureAccessScope) internal = NULL;
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(VentureEntity) user = NULL;
+
+	if ((NULL == self->reader) || !self->reader->authenticated)
+		return 0;
+
+	internal = venture_access_policy_enter(
+		venture_database_get_access_policy(self->database), NULL);
+	query = venture_query_new(VENTURE_TYPE_USER);
+
+	if (!venture_query_add_filter_string(query, "username",
+	                                     VENTURE_FILTER_OP_EQ, username,
+	                                     NULL))
+		return 0;
+
+	venture_query_set_limit(query, 1);
+	user = venture_database_find_one(self->database, query, NULL);
+
+	if ((NULL == user) || venture_entity_is_deleted(user))
+		return 0;
+
+	return venture_entity_get_id(user);
+}
+
+gint64
+venture_actor_names_user_id_for(
+	VentureActorNames	*self,
+	const gchar		*username
+){
+	gpointer known;
+	gint64 *stored;
+	gint64 token_id;
+	gint64 user_id;
+	gchar *key;
+
+	g_return_val_if_fail(NULL != self, 0);
+
+	if (venture_string_is_empty(username))
+		return 0;
+
+	if ((NULL != self->by_username) &&
+	    g_hash_table_lookup_extended(self->by_username, username, NULL,
+	                                 &known))
+		return *(gint64 *)known;
+
+	token_id = venture_actor_names_token_from_text(username);
+
+	if (0 != token_id)
+		user_id = venture_actor_names_token_owner(self, token_id);
+	else
+		user_id = venture_actor_names_query_username(self, username);
+
+	/* 0 either way: an account the reader may not see is drawn by its
+	 * initials, the same as an account that has no picture. */
+	if ((user_id > 0) && !venture_actor_names_may_see_user(self, user_id))
+		user_id = 0;
+
+	if (NULL == self->by_username)
+		self->by_username = g_hash_table_new_full(g_str_hash, g_str_equal,
+		                                          g_free, g_free);
+
+	key = g_strdup(username);
+	stored = g_new(gint64, 1);
+	*stored = user_id;
+	g_hash_table_insert(self->by_username, key, stored);
+
+	return user_id;
+}
+
+gchar *
+venture_avatar_html_for_username(
+	VentureActorNames	*viewer,
+	const gchar		*username,
+	const gchar		*display_name,
+	guint			 size
+){
+	const gchar *name;
+	gint64 user_id;
+
+	g_return_val_if_fail(NULL != viewer, NULL);
+
+	user_id = venture_actor_names_user_id_for(viewer, username);
+	name = !venture_string_is_empty(display_name) ? display_name : username;
+
+	return venture_avatar_html(viewer, user_id, name, size);
 }

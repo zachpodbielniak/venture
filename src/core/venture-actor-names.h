@@ -192,6 +192,28 @@ venture_actor_names_avatar_version(
 	gint64			 user_id
 );
 
+/**
+ * venture_actor_names_user_id_for:
+ * @self: a cache
+ * @username: (nullable): a username, a stored actor ("API token #N"), or
+ *   the way that actor reads ("erin (API token #N)")
+ *
+ * The account @username names, when the reader may see that person
+ * (venture_actor_names_may_see_user()). A token actor -- the stored key,
+ * or the "name (API token #N)" reading -- is the account that owns the
+ * token, so a change a token made is drawn with that person's picture.
+ * %0 when @username is empty, names nobody, or names somebody this reader
+ * may not see. Asked twice for the same string, the second answer is the
+ * first: the page does not look it up again.
+ *
+ * Returns: the account's id, or 0
+ */
+gint64
+venture_actor_names_user_id_for(
+	VentureActorNames	*self,
+	const gchar		*username
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_ACTOR_NAMES_H */

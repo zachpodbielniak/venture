@@ -375,6 +375,68 @@ venture_web_html_response(
 	return response;
 }
 
+/*
+ * A person's picture immediately before the name the page already writes.
+ * @username is what the lookup takes (a username, or a token actor);
+ * @display_name is the text beside the picture, which is not changed.
+ * Nothing is written for a placeholder that is not a person, and nothing
+ * is written when there is no reader cache -- a picture with no reader
+ * would be a picture for nobody.
+ */
+static gboolean
+venture_web_name_is_person(const gchar *name)
+{
+	if (venture_string_is_empty(name))
+		return FALSE;
+
+	if ((0 == g_strcmp0(name, "The system")) ||
+	    (0 == g_strcmp0(name, "System")) ||
+	    (0 == g_strcmp0(name, "Someone")) ||
+	    (0 == g_strcmp0(name, "Unassigned")))
+		return FALSE;
+
+	return TRUE;
+}
+
+static void
+venture_web_append_user_picture(
+	GString			*html,
+	VentureActorNames	*viewer,
+	const gchar		*username,
+	const gchar		*display_name
+){
+	g_autofree gchar *picture = NULL;
+
+	if ((NULL == viewer) || !venture_web_name_is_person(username))
+		return;
+
+	picture = venture_avatar_html_for_username(viewer, username,
+		!venture_string_is_empty(display_name) ? display_name : username,
+		VENTURE_AVATAR_SIZE_SMALL);
+
+	if (NULL != picture)
+		g_string_append(html, picture);
+}
+
+static void
+venture_web_append_user_picture_id(
+	GString			*html,
+	VentureActorNames	*viewer,
+	gint64			 user_id,
+	const gchar		*display_name
+){
+	g_autofree gchar *picture = NULL;
+
+	if ((NULL == viewer) || (user_id <= 0))
+		return;
+
+	picture = venture_avatar_html(viewer, user_id, display_name,
+	                              VENTURE_AVATAR_SIZE_SMALL);
+
+	if (NULL != picture)
+		g_string_append(html, picture);
+}
+
 /* ==========================================================================
  * The page shell
  * ========================================================================== */
@@ -5145,10 +5207,12 @@ venture_web_ui_overview(
 			g_string_append(content, "<li><span class=\"activity-actor\">");
 			{
 				g_autofree gchar *shown = NULL;
+				const gchar *text;
 
 				shown = venture_actor_names_display(names, actor);
-				venture_html_escape_append(content,
-					venture_string_is_empty(shown) ? "The system" : shown);
+				text = venture_string_is_empty(shown) ? "The system" : shown;
+				venture_web_append_user_picture(content, names, actor, text);
+				venture_html_escape_append(content, text);
 			}
 			g_string_append(content, "</span> ");
 			venture_web_append_nick(content, VENTURE_TYPE_AUDIT_ACTION, (gint)action);
@@ -11763,6 +11827,11 @@ venture_web_append_detail_value(
 			((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER) &&
 			g_strcmp0(venture_field_spec_get_reference_type(spec), "user") == 0))) {
 			g_autofree gchar *label = venture_web_household_member_name(self, venture_entity_get_organization_id(record), id);
+			g_autoptr(VentureActorNames) viewer = NULL;
+
+			viewer = venture_actor_names_new(
+				venture_context_get_database(self->context));
+			venture_web_append_user_picture_id(content, viewer, id, label);
 			venture_html_escape_append(content, label);
 			return;
 		}
@@ -11795,6 +11864,16 @@ venture_web_append_detail_value(
 
 				label = venture_entity_get_display_name(target);
 
+				if (0 == g_strcmp0(type_name, "user"))
+				{
+					g_autoptr(VentureActorNames) viewer = NULL;
+
+					viewer = venture_actor_names_new(
+						venture_context_get_database(self->context));
+					venture_web_append_user_picture_id(content, viewer,
+					                                   id, label);
+				}
+
 				g_string_append_printf(content,
 					"<a href=\"/e/%s/%" G_GINT64_FORMAT "\">", type_name, id);
 				venture_html_escape_append(content, label);
@@ -11817,7 +11896,19 @@ venture_web_append_detail_value(
 		if (venture_string_is_empty(text))
 			g_string_append(content, "<span class=\"muted\">—</span>");
 		else
+		{
+			if (0 != (venture_field_spec_get_flags(spec) &
+			          VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME))
+			{
+				g_autoptr(VentureActorNames) viewer = NULL;
+
+				viewer = venture_actor_names_new(
+					venture_context_get_database(self->context));
+				venture_web_append_user_picture(content, viewer, text, text);
+			}
+
 			venture_html_escape_append(content, text);
+		}
 	}
 	else
 	{
@@ -14438,7 +14529,8 @@ venture_web_append_ticket_card(
 	VentureWebServer	*self,
 	GString			*content,
 	VentureEntity		*ticket,
-	GHashTable		*names
+	GHashTable		*names,
+	VentureActorNames	*viewer
 ){
 	g_autofree gchar *title = NULL;
 	g_autofree gchar *assignee = NULL;
@@ -14501,6 +14593,7 @@ venture_web_append_ticket_card(
 	g_string_append(content, "<span class=\"visually-hidden\">, assigned to </span>");
 	if (!venture_string_is_empty(assignee))
 	{
+		venture_web_append_user_picture(content, viewer, assignee, assignee);
 		g_string_append(content, "<span class=\"ticket-assignee\">");
 		venture_html_escape_append(content, assignee);
 		g_string_append(content, "</span>");
@@ -14869,6 +14962,14 @@ venture_web_ui_tickets(
 	venture_web_append_save_view_form(content, request, "ticket", board);
 	g_string_append(content, "</nav>");
 
+	{
+		g_autoptr(VentureActorNames) viewer = NULL;
+
+		/* One cache for every assignee on the board and the list: the
+		 * same person on fifty cards is one lookup. */
+		viewer = venture_actor_names_new(
+			venture_context_get_database(self->context));
+
 	if (board)
 	{
 		g_autoptr(GHashTable) names = NULL;
@@ -14929,7 +15030,8 @@ venture_web_ui_tickets(
 				if (status != venture_web_board_columns[column])
 					continue;
 
-				venture_web_append_ticket_card(self, content, ticket, names);
+				venture_web_append_ticket_card(self, content, ticket, names,
+				                               viewer);
 			}
 
 			g_string_append(content, "</div></section>");
@@ -14976,6 +15078,7 @@ venture_web_ui_tickets(
 			g_string_append(content, "</td><td>");
 			venture_web_append_nick(content, VENTURE_TYPE_PRIORITY, (gint)priority);
 			g_string_append(content, "</td><td>");
+			venture_web_append_user_picture(content, viewer, assignee, assignee);
 			venture_html_escape_append(content, assignee);
 			g_string_append(content, "</td><td>");
 
@@ -14995,6 +15098,8 @@ venture_web_ui_tickets(
 		}
 
 		g_string_append(content, "</tbody></table></div></div>");
+	}
+
 	}
 
 	return venture_web_html_response(
@@ -31959,6 +32064,7 @@ venture_web_ui_inbox(
 				g_string_append_printf(content,
 					"<a class=\"inbox-title\" href=\"/comments/%" G_GINT64_FORMAT
 					"\">", target_id);
+				venture_web_append_user_picture(content, names, actor, title);
 				venture_html_escape_append(content, title);
 				g_string_append(content, "</a>");
 			}
@@ -31967,12 +32073,14 @@ venture_web_ui_inbox(
 				g_string_append_printf(content,
 					"<a class=\"inbox-title\" href=\"/e/%s/%" G_GINT64_FORMAT
 					"\">", target_type, target_id);
+				venture_web_append_user_picture(content, names, actor, title);
 				venture_html_escape_append(content, title);
 				g_string_append(content, "</a>");
 			}
 			else
 			{
 				g_string_append(content, "<span class=\"inbox-title\">");
+				venture_web_append_user_picture(content, names, actor, title);
 				venture_html_escape_append(content, title);
 				g_string_append(content, "</span>");
 			}
@@ -32522,6 +32630,7 @@ venture_web_append_activity(
 ){
 	g_autoptr(JsonNode) events = NULL;
 	g_autoptr(GPtrArray) specs = venture_entity_get_field_specs(record);
+	g_autoptr(VentureActorNames) viewer = NULL;
 	JsonArray *array;
 	guint i;
 
@@ -32550,6 +32659,8 @@ venture_web_append_activity(
 	}
 
 	g_string_append(content, "<ol class=\"timeline\">");
+	viewer = venture_actor_names_new(
+		venture_context_get_database(self->context));
 
 	for (i = 0; i < json_array_get_length(array); i++)
 	{
@@ -32582,14 +32693,17 @@ venture_web_append_activity(
 			"<span class=\"timeline-actor\">", kind);
 		{
 			g_autofree gchar *shown = NULL;
+			const gchar *text;
 
 			/* The timeline already resolved whose token it was, for
-			 * this reader; the page only words it. */
+			 * this reader; the page only words it. The picture is that
+			 * person's, from the stored actor, not from the reading. */
 			shown = venture_actor_names_format(actor,
 				venture_json_object_get_string(event, "actor_username",
 				                               NULL));
-			venture_html_escape_append(content,
-				venture_string_is_empty(shown) ? "System" : shown);
+			text = venture_string_is_empty(shown) ? "System" : shown;
+			venture_web_append_user_picture(content, viewer, actor, text);
+			venture_html_escape_append(content, text);
 		}
 		g_string_append(content, "</span> ");
 
@@ -32653,6 +32767,7 @@ venture_web_append_activity(
 					venture_json_object_get_string(event,
 						"approved_by_username", NULL));
 				g_string_append(content, " <span class=\"muted\">(approved by ");
+				venture_web_append_user_picture(content, viewer, approved, shown);
 				venture_html_escape_append(content, shown);
 				g_string_append(content, ")</span>");
 			}

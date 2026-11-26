@@ -288,7 +288,14 @@ venture_web_append_actor_value(
 	shown = venture_actor_names_display(names, g_value_get_string(&value));
 
 	if (NULL != shown)
+	{
+		/* The stored actor is what resolves a token to its owner; the
+		 * text beside the picture stays the reading the page already
+		 * gave. */
+		venture_web_append_user_picture(html, names,
+			g_value_get_string(&value), shown);
 		venture_html_escape_append(html, shown);
+	}
 }
 
 /*
@@ -404,6 +411,19 @@ venture_web_append_value(
 	if (G_VALUE_HOLDS_STRING(&value) &&
 	    (VENTURE_FIELD_KIND_TEXT != venture_field_spec_get_kind(spec)))
 	{
+		/* An assignee, an owner, anyone the column says is a username:
+		 * the words stay, the picture goes in front of them. */
+		if (0 != (venture_field_spec_get_flags(spec) &
+		          VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME))
+		{
+			g_autoptr(VentureActorNames) viewer = NULL;
+
+			viewer = venture_actor_names_new(
+				venture_context_get_database(self->context));
+			venture_web_append_user_picture(html, viewer,
+				g_value_get_string(&value), g_value_get_string(&value));
+		}
+
 		venture_web_append_string_value(html, name,
 		                                g_value_get_string(&value));
 		return;
@@ -421,6 +441,11 @@ venture_web_append_value(
 			((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER) &&
 			g_strcmp0(venture_field_spec_get_reference_type(spec), "user") == 0))) {
 			g_autofree gchar *label = venture_web_household_member_name(self, venture_entity_get_organization_id(record), id);
+			g_autoptr(VentureActorNames) viewer = NULL;
+
+			viewer = venture_actor_names_new(
+				venture_context_get_database(self->context));
+			venture_web_append_user_picture_id(html, viewer, id, label);
 			venture_html_escape_append(html, label);
 			return;
 		}
@@ -446,6 +471,18 @@ venture_web_append_value(
 			g_autofree gchar *label = NULL;
 
 			label = venture_entity_get_display_name(target);
+
+			/* A reference to a user is a person; every other reference
+			 * is a record, and a record keeps its own tile. */
+			if (0 == g_strcmp0(type_name, "user"))
+			{
+				g_autoptr(VentureActorNames) viewer = NULL;
+
+				viewer = venture_actor_names_new(
+					venture_context_get_database(self->context));
+				venture_web_append_user_picture_id(html, viewer, id, label);
+			}
+
 			g_string_append_printf(html,
 				"<a href=\"/e/%s/%" G_GINT64_FORMAT "\">", type_name, id);
 			venture_html_escape_append(html, label);
@@ -1271,6 +1308,12 @@ venture_web_append_list_cell(
 		 * is a page, and a truncated URI can still carry the password. */
 		shown = venture_string_redact_uri(g_value_get_string(&value));
 		text = venture_truncate(shown, 60);
+
+		if (0 != (venture_field_spec_get_flags(spec) &
+		          VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME))
+			venture_web_append_user_picture(html, names,
+				g_value_get_string(&value), text);
+
 		venture_html_escape_append(html, text);
 		g_string_append(html, "</td>");
 		return;

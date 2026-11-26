@@ -134,13 +134,23 @@ A row that names a person carries =avatar_url= beside its initials: the 32 pixel
 - a comment (=GET /api/v1/comments=, =/comments/:id=): =avatar_url= beside =author_initials=;
 - the @ menu (=GET /api/v1/comments/mentions=): =avatar_url= beside =initials=.
 
-** Where pictures are drawn
+** Where pictures appear
+
+Small (32 pixels) unless the line says otherwise. A reader who may not see that person gets the initials, the same as a person with no picture. The words beside the picture are unchanged.
 
 - beside every comment, in the discussion panel, and in the @ menu;
 - the account menu at the foot of the sidebar, linking to =/account=;
-- =/account= (96 pixels) and the =/users= picture column.
+- =/account= (96 pixels) and the =/users= picture column;
+- ticket board cards and the ticket list, in front of the assignee;
+- a ticket's (and any record's) assignee, owner, user reference and household member on the record page;
+- Activity timelines, including a token actor's owner, and the approver when one is named;
+- the inbox, in front of each notification's title; a conversation's owner; and who changed a conversation;
+- an inbox web-chat reply's author;
+- the overview's recent activity, and a dashboard Recent activity widget (its JSON carries =avatar_url= only when there is a picture);
+- the desk timeline's JSON: =avatar_url= and =approved_by_avatar_url=, only when there is a picture (the Desk card itself does not name the assignee);
+- a calendar item whose detail is "Assigned to <username>", in front of that username.
 
-Every other place a person is named still draws a name only; they are being moved to =venture_avatar_html()=.
+=venture_actor_names_user_id_for()= is how a page that has a username or a token actor string ("API token #N", or "erin (API token #N)") finds the account. =venture_avatar_html_for_username()= draws from that. The record tile's company initials, a contact's name, "Raised by" (a contact), public web-chat visitors, and the assistant's spark and starter badges stay as they were.
 
 * Building without image support
 
@@ -154,4 +164,4 @@ On Fedora 44, GdkPixbuf decodes through glycin, which starts its codec in a =bwr
 
 * Tests
 
-=tests/test-avatars.c=: the sniffer (PNG, JPEG and WebP accepted; GIF, SVG, BMP, text, nothing and a cut-short PNG refused), the size cap, the pixel cap against a header claiming 100000 by 100000, the encoder's chunks and determinism, the initials and the badge markup, rendering a wide picture to four square PNGs with no text or EXIF chunk and the middle kept, who may change whose picture (and a read-only token), the version refused when written directly, the API round trip with the cache headers and 304, the 404 across organizations and for an unknown size, removal putting the initials back on a comment, a replaced picture's files deleted, and the account and users pages. The tests that decode skip, saying why, where GdkPixbuf cannot decode (a build without it, or a container where glycin's sandbox cannot start).
+=tests/test-avatars.c=: the sniffer (PNG, JPEG and WebP accepted; GIF, SVG, BMP, text, nothing and a cut-short PNG refused), the size cap, the pixel cap against a header claiming 100000 by 100000, the encoder's chunks and determinism, the initials and the badge markup, rendering a wide picture to four square PNGs with no text or EXIF chunk and the middle kept, who may change whose picture (and a read-only token), the version refused when written directly, the API round trip with the cache headers and 304, the 404 across organizations and for an unknown size, removal putting the initials back on a comment, a replaced picture's files deleted, and the account and users pages. The username lookup covers a member, an unknown name, a person the reader may not see, a token actor (stored and as "erin (API token #N)"), and the cache (a renamed account still answers the string already asked). A board card and an Activity row draw =/avatar/<id>/32?v=...= for an account with a picture and the initials badge for one without. The tests that decode skip, saying why, where GdkPixbuf cannot decode (a build without it, or a container where glycin's sandbox cannot start).

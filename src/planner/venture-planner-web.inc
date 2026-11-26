@@ -403,7 +403,8 @@ planner_calendar_append_item(
 	VentureWebServer		*self,
 	GString				*html,
 	const VentureCalendarItem	*item,
-	gboolean			 show_time
+	gboolean			 show_time,
+	VentureActorNames		*viewer
 ){
 	g_string_append(html, "<li class=\"cal-item cal-kind-");
 	venture_html_escape_append(html, item->kind);
@@ -447,8 +448,22 @@ planner_calendar_append_item(
 
 	if (!venture_string_is_empty(item->detail))
 	{
+		/* Ticket items say "Assigned to <username>". The words stay;
+		 * the picture goes in front of the name, not the sentence. */
 		g_string_append(html, " <span class=\"cal-detail muted\">");
-		venture_html_escape_append(html, item->detail);
+
+		if (g_str_has_prefix(item->detail, "Assigned to "))
+		{
+			const gchar *who;
+
+			who = item->detail + strlen("Assigned to ");
+			g_string_append(html, "Assigned to ");
+			venture_web_append_user_picture(html, viewer, who, who);
+			venture_html_escape_append(html, who);
+		}
+		else
+			venture_html_escape_append(html, item->detail);
+
 		g_string_append(html, "</span>");
 	}
 
@@ -480,8 +495,11 @@ planner_calendar_append_grid(
 	gboolean week;
 	guint rows;
 	guint i;
+	g_autoptr(VentureActorNames) viewer = NULL;
 
 	timezone = venture_context_get_timezone(self->context);
+	viewer = venture_actor_names_new(
+		venture_context_get_database(self->context));
 	week = (0 == g_strcmp0(ask->view, "week"));
 	cursor = g_date_time_add_days(ask->from, 1 - g_date_time_get_day_of_week(ask->from));
 	last = g_date_time_add_days(ask->to, -1);
@@ -526,7 +544,8 @@ planner_calendar_append_grid(
 					VentureCalendarItem *item = g_ptr_array_index(result->items, k);
 
 					if (venture_calendar_item_covers_day(item, day, timezone))
-						planner_calendar_append_item(self, html, item, TRUE);
+						planner_calendar_append_item(self, html, item, TRUE,
+						                             viewer);
 				}
 
 				g_string_append(html, "</ul>");
@@ -560,7 +579,10 @@ planner_calendar_append_agenda(
 ){
 	const gchar *current = NULL;
 	guint i;
+	g_autoptr(VentureActorNames) viewer = NULL;
 
+	viewer = venture_actor_names_new(
+		venture_context_get_database(self->context));
 	g_string_append(html, "<div class=\"cal-agenda\">");
 
 	if (0 == result->items->len)
@@ -581,7 +603,7 @@ planner_calendar_append_agenda(
 			current = item->day;
 		}
 
-		planner_calendar_append_item(self, html, item, TRUE);
+		planner_calendar_append_item(self, html, item, TRUE, viewer);
 	}
 
 	if (NULL != current)

@@ -294,6 +294,30 @@ venture_avatar_html(
 );
 
 /**
+ * venture_avatar_html_for_username:
+ * @viewer: the reader's names cache, from venture_actor_names_new()
+ * @username: (nullable): a username, or a token actor string, as
+ *   venture_actor_names_user_id_for() takes
+ * @display_name: (nullable): who it is, as the page names them; @username
+ *   when %NULL
+ * @size: VENTURE_AVATAR_SIZE_SMALL, VENTURE_AVATAR_SIZE_LARGE, or another
+ *   of venture_avatar_sizes() that is not a 2x size
+ *
+ * venture_avatar_html() for a page that has a name rather than an account
+ * id. A name the reader may not see, and a name that is not an account,
+ * draw the initials -- never a picture beside a name that is not shown.
+ *
+ * Returns: (transfer full): the markup
+ */
+gchar *
+venture_avatar_html_for_username(
+	VentureActorNames	*viewer,
+	const gchar		*username,
+	const gchar		*display_name,
+	guint			 size
+);
+
+/**
  * venture_avatar_set:
  * @context: the application context
  * @user_id: whose picture it is
