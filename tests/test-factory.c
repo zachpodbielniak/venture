@@ -667,6 +667,7 @@ test_factory_forge_issue_state_follows_the_forge(
 	"            \"labels\":[]}}"
 	g_autoptr(VentureEntity) ticket = NULL;
 	g_autoptr(GDateTime) resolved = NULL;
+	g_autofree gchar *title = NULL;
 	VentureTicketStatus status;
 
 	(void)user_data;
@@ -728,7 +729,7 @@ test_factory_forge_issue_state_follows_the_forge(
 	g_assert_true(venture_database_save(fixture->database, ticket, NULL,
 	                                    NULL));
 	g_clear_object(&ticket);
-	server_deliver_webhook(fixture, "issue_comment", "i-6",
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issue_comment", "i-6",
 		"{\"action\":\"created\","
 		" \"repository\":{\"full_name\":\"zach/venture\"},"
 		" \"sender\":{\"login\":\"zach\"},"
@@ -736,10 +737,67 @@ test_factory_forge_issue_state_follows_the_forge(
 		" \"issue\":{\"number\":42,\"title\":\"It crashes\","
 		"            \"body\":\"every time\",\"state\":\"closed\","
 		"            \"html_url\":\"https://git.example.com/zach/venture/issues/42\","
-		"            \"labels\":[]}}");
+		"            \"labels\":[]}}"), ==, SOUP_STATUS_NO_CONTENT);
 	ticket = issue_ticket(fixture);
 	g_object_get(ticket, "status", &status, NULL);
 	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_IN_PROGRESS);
+	g_clear_object(&ticket);
+
+	/* The issue stays closed upstream and somebody edits its title.
+	 * state=closed is not a close: the ticket reopened here stays
+	 * where it was put. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-7",
+		"{\"action\":\"edited\","
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"zach\"},"
+		" \"issue\":{\"number\":42,\"title\":\"It still crashes\","
+		"            \"body\":\"every time\",\"state\":\"closed\","
+		"            \"html_url\":\"https://git.example.com/zach/venture/issues/42\","
+		"            \"labels\":[]}}"), ==, SOUP_STATUS_ACCEPTED);
+	ticket = issue_ticket(fixture);
+	g_object_get(ticket, "status", &status, "title", &title, NULL);
+	g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_IN_PROGRESS);
+	g_assert_cmpstr(title, ==, "It still crashes");
+	g_clear_pointer(&title, g_free);
+	g_clear_object(&ticket);
+
+	/* An issue that arrives already closed has no earlier open state,
+	 * so creating the ticket closes it. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-8",
+		"{\"action\":\"opened\","
+		" \"repository\":{\"full_name\":\"zach/venture\"},"
+		" \"sender\":{\"login\":\"zach\"},"
+		" \"issue\":{\"number\":43,\"title\":\"Already shut\","
+		"            \"body\":\"done upstream\",\"state\":\"closed\","
+		"            \"html_url\":\"https://git.example.com/zach/venture/issues/43\","
+		"            \"labels\":[]}}"), ==, SOUP_STATUS_ACCEPTED);
+	{
+		g_autoptr(VentureQuery) query = NULL;
+		g_autoptr(GPtrArray) tickets = NULL;
+		guint i;
+		gboolean found = FALSE;
+
+		query = venture_query_new(VENTURE_TYPE_TICKET);
+		tickets = venture_database_find(fixture->database, query, NULL);
+		g_assert_nonnull(tickets);
+
+		for (i = 0; i < tickets->len; i++)
+		{
+			g_autofree gchar *one_title = NULL;
+			VentureEntity *one = g_ptr_array_index(tickets, i);
+
+			g_object_get(one, "title", &one_title, "status", &status,
+			             NULL);
+
+			if (0 != g_strcmp0(one_title, "Already shut"))
+				continue;
+
+			found = TRUE;
+			g_assert_cmpint(status, ==, VENTURE_TICKET_STATUS_DONE);
+		}
+
+		g_assert_true(found);
+	}
 #undef ISSUE_PAYLOAD
 }
 
@@ -820,6 +878,150 @@ test_factory_ticket_takes_the_repo_venture(
 	                                    NULL));
 	g_object_get(chosen, "venture-id", &venture_id, NULL);
 	g_assert_cmpint(venture_id, ==, venture_entity_get_id(other));
+
+	/* Cleared by hand: the next save does not put it back. */
+	g_object_set(mirrored, "venture-id", (gint64)0, NULL);
+	g_assert_true(venture_database_save(fixture->database, mirrored, NULL,
+	                                    NULL));
+	g_object_get(mirrored, "venture-id", &venture_id, NULL);
+	g_assert_cmpint(venture_id, ==, 0);
+
+	/* The same copy over REST, which is the path a mirror takes. */
+	{
+		g_autofree gchar *json = NULL;
+		g_autofree gchar *body = NULL;
+		g_autoptr(JsonNode) node = NULL;
+		JsonObject *created;
+
+		json = g_strdup_printf(
+			"{\"organization_id\":1,\"title\":\"From the API\","
+			"\"repo_id\":%" G_GINT64_FORMAT "}", fixture->repo_id);
+		g_assert_cmpuint(server_request_full(fixture, "POST",
+			"/api/v1/ticket", "application/json", json, NULL, &body), ==,
+			SOUP_STATUS_CREATED);
+		node = venture_json_parse(body, NULL);
+		g_assert_nonnull(node);
+		created = json_node_get_object(node);
+		g_assert_cmpint(json_object_get_int_member(created, "venture_id"),
+		                ==, venture_entity_get_id(venture));
+	}
+
+	/* A repository in another organization lends nothing. */
+	{
+		g_autoptr(VentureEntity) org = NULL;
+		g_autoptr(VentureEntity) away_venture = NULL;
+		g_autoptr(VentureEntity) away_repo = NULL;
+		g_autoptr(VentureEntity) home_ticket = NULL;
+		gint64 org_id;
+
+		org = VENTURE_ENTITY(venture_organization_new());
+		g_object_set(org, "name", "Other org", NULL);
+		g_assert_true(venture_database_save(fixture->database, org, NULL,
+		                                    NULL));
+		org_id = venture_entity_get_id(org);
+		g_assert_cmpint(org_id, !=, 1);
+
+		away_venture = VENTURE_ENTITY(venture_venture_new());
+		venture_entity_set_organization_id(away_venture, org_id);
+		g_object_set(away_venture, "name", "Away", "slug", "away", NULL);
+		g_assert_true(venture_database_save(fixture->database, away_venture,
+		                                    NULL, NULL));
+
+		away_repo = VENTURE_ENTITY(venture_forge_repo_new());
+		g_object_set(away_repo,
+		             "name", "other/repo",
+		             "organization-id", org_id,
+		             "forge-id", fixture->forge_id,
+		             "venture-id", venture_entity_get_id(away_venture),
+		             "accept-issues", TRUE,
+		             NULL);
+		g_assert_true(venture_database_save(fixture->database, away_repo,
+		                                    NULL, NULL));
+
+		home_ticket = VENTURE_ENTITY(venture_ticket_new());
+		venture_entity_set_organization_id(home_ticket, 1);
+		g_object_set(home_ticket, "title", "Cross org repo",
+		             "repo-id", venture_entity_get_id(away_repo), NULL);
+		g_assert_true(venture_database_save(fixture->database, home_ticket,
+		                                    NULL, NULL));
+		g_object_get(home_ticket, "venture-id", &venture_id, NULL);
+		g_assert_cmpint(venture_id, ==, 0);
+	}
+
+	/* A venture that belongs to another organization lends nothing,
+	 * even when the repository itself is in this one. */
+	{
+		g_autoptr(VentureEntity) org = NULL;
+		g_autoptr(VentureEntity) foreign = NULL;
+		g_autoptr(VentureEntity) local_repo = NULL;
+		g_autoptr(VentureEntity) home_ticket = NULL;
+		gint64 org_id;
+
+		org = VENTURE_ENTITY(venture_organization_new());
+		g_object_set(org, "name", "Foreign books", NULL);
+		g_assert_true(venture_database_save(fixture->database, org, NULL,
+		                                    NULL));
+		org_id = venture_entity_get_id(org);
+
+		foreign = VENTURE_ENTITY(venture_venture_new());
+		venture_entity_set_organization_id(foreign, org_id);
+		g_object_set(foreign, "name", "Foreign", "slug", "foreign", NULL);
+		g_assert_true(venture_database_save(fixture->database, foreign,
+		                                    NULL, NULL));
+
+		local_repo = VENTURE_ENTITY(venture_forge_repo_new());
+		g_object_set(local_repo,
+		             "name", "zach/foreign-venture",
+		             "organization-id", (gint64)1,
+		             "forge-id", fixture->forge_id,
+		             "venture-id", venture_entity_get_id(foreign),
+		             NULL);
+		g_assert_true(venture_database_save(fixture->database, local_repo,
+		                                    NULL, NULL));
+
+		home_ticket = VENTURE_ENTITY(venture_ticket_new());
+		venture_entity_set_organization_id(home_ticket, 1);
+		g_object_set(home_ticket, "title", "Foreign venture",
+		             "repo-id", venture_entity_get_id(local_repo), NULL);
+		g_assert_true(venture_database_save(fixture->database, home_ticket,
+		                                    NULL, NULL));
+		g_object_get(home_ticket, "venture-id", &venture_id, NULL);
+		g_assert_cmpint(venture_id, ==, 0);
+	}
+
+	/* A soft-deleted venture does not come back onto a new ticket. */
+	{
+		g_autoptr(VentureEntity) doomed = NULL;
+		g_autoptr(VentureEntity) doomed_repo = NULL;
+		g_autoptr(VentureEntity) home_ticket = NULL;
+
+		doomed = VENTURE_ENTITY(venture_venture_new());
+		venture_entity_set_organization_id(doomed, 1);
+		g_object_set(doomed, "name", "Gone", "slug", "gone", NULL);
+		g_assert_true(venture_database_save(fixture->database, doomed, NULL,
+		                                    NULL));
+
+		doomed_repo = VENTURE_ENTITY(venture_forge_repo_new());
+		g_object_set(doomed_repo,
+		             "name", "zach/gone",
+		             "organization-id", (gint64)1,
+		             "forge-id", fixture->forge_id,
+		             "venture-id", venture_entity_get_id(doomed),
+		             NULL);
+		g_assert_true(venture_database_save(fixture->database, doomed_repo,
+		                                    NULL, NULL));
+		g_assert_true(venture_database_delete(fixture->database, doomed,
+		                                      NULL, NULL));
+
+		home_ticket = VENTURE_ENTITY(venture_ticket_new());
+		venture_entity_set_organization_id(home_ticket, 1);
+		g_object_set(home_ticket, "title", "After the delete",
+		             "repo-id", venture_entity_get_id(doomed_repo), NULL);
+		g_assert_true(venture_database_save(fixture->database, home_ticket,
+		                                    NULL, NULL));
+		g_object_get(home_ticket, "venture-id", &venture_id, NULL);
+		g_assert_cmpint(venture_id, ==, 0);
+	}
 }
 
 /*
