@@ -222,6 +222,7 @@ venture_stripe_service_invoice_pay_url(VentureStripeService *self, VentureEntity
 	g_autoptr(VentureStripePaymentLink) link = NULL;
 	g_autoptr(GDateTime) now = venture_time_now();
 	g_autoptr(GDateTime) expires = g_date_time_add_days(now, VENTURE_STRIPE_INVOICE_PAY_DAYS);
+	g_autoptr(GError) reason = NULL;
 	g_autofree gchar *url = NULL;
 	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(invoice), NULL);
@@ -229,8 +230,18 @@ venture_stripe_service_invoice_pay_url(VentureStripeService *self, VentureEntity
 	 * cannot take, no account, or no public origin sends the email
 	 * without one. Sending the invoice is the authority to offer it. */
 	if (!self->connection_id || venture_entity_get_organization_id(invoice) != self->organization_id ||
-		!link_terms_valid(base_url, now, expires) ||
-		!eligible(self, venture_entity_get_id(invoice), &current, NULL, NULL, NULL, NULL))
+		!link_terms_valid(base_url, now, expires))
+		return NULL;
+	if (!eligible(self, venture_entity_get_id(invoice), &current, NULL, NULL, NULL, &reason))
+	{
+		g_debug("No Pay now link for invoice %" G_GINT64_FORMAT ": %s",
+			venture_entity_get_id(invoice), reason ? reason->message : "not eligible");
+		return NULL;
+	}
+	/* Sending is the authority to offer the button, but this function is
+	 * public: it writes a capability, so it asks for write access itself
+	 * and does not rely on its callers having done so. */
+	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), current, "write", error))
 		return NULL;
 	link = link_mint(self, current, base_url, expires, actor, error);
 	if (!link) return NULL;

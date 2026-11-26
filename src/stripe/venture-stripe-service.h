@@ -298,7 +298,7 @@ VentureStripePaymentLink *venture_stripe_service_resolve_payment_link(VentureDat
  * How long the Pay now button in an invoice email stays valid: the
  * longest a payment link may live.
  */
-#define VENTURE_STRIPE_INVOICE_PAY_DAYS 30
+#define VENTURE_STRIPE_INVOICE_PAY_DAYS (30)
 /**
  * venture_stripe_service_invoice_pay_url:
  * @self: active organization provider
@@ -310,8 +310,10 @@ VentureStripePaymentLink *venture_stripe_service_resolve_payment_link(VentureDat
  * The Pay now URL for an invoice email: a new payment link for @invoice,
  * valid for %VENTURE_STRIPE_INVOICE_PAY_DAYS days, whose
  * =/pay/<token>/checkout= address opens Checkout in one click. It writes
- * inside the caller's transaction and makes no Stripe call. Earlier links
- * are kept, so a button in an earlier email still works.
+ * inside the caller's transaction and makes no Stripe call. @actor needs
+ * write access to @invoice. An invoice has one enabled link, so a link
+ * made later with venture_stripe_service_create_payment_link() replaces
+ * this one.
  *
  * Returns: (transfer full) (nullable): the bearer URL, shown only to the
  *   mail transport; %NULL with no error when Checkout cannot take the

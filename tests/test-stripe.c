@@ -1223,6 +1223,11 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/void", Fixture, NULL, set_up, test_pay_now_void, tear_down);
 	g_test_add("/stripe/pay-now/ach", Fixture, NULL, set_up, test_pay_now_ach, tear_down);
 	g_test_add("/stripe/pay-now/public-origin", Fixture, NULL, set_up, test_pay_now_public_origin, tear_down);
+	g_test_add("/stripe/pay-now/production-path", Fixture, NULL, set_up, test_pay_now_production_path, tear_down);
+	g_test_add("/stripe/pay-now/never-shown", Fixture, NULL, set_up, test_pay_now_never_shown, tear_down);
+	g_test_add("/stripe/pay-now/edited-invoice", Fixture, NULL, set_up, test_pay_now_edited_invoice, tear_down);
+	g_test_add("/stripe/pay-now/expiry", Fixture, NULL, set_up, test_pay_now_expiry, tear_down);
+	g_test_add("/stripe/pay-now/ach-off", Fixture, NULL, set_up, test_pay_now_ach_off, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);

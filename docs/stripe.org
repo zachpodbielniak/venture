@@ -236,10 +236,14 @@ Every invoice email sent through Send carries a *Pay now* button when the
 business has a Stripe account connected and =server.base_url= is set. The
 button is a shareable invoice link made for that email: the same record,
 digest, account and invoice-revision binding as above, minted in the send
-transaction after the invoice is issued. It is valid for thirty days.
-Sending the invoice is the authority to offer it, so no finance role is
-asked, and earlier links are not revoked: a button in an earlier email
-still works. Sending makes no Stripe call. An invoice Checkout cannot take,
+transaction after the invoice is issued. The token is 256 random bits, kept
+only as its SHA-256 digest, and valid for thirty days. Sending the invoice
+is the authority to offer it, so no finance role is asked, but the sender
+still needs write access to the invoice. Send is idempotent per invoice, so
+there is no earlier email. An invoice has one enabled link at a time:
+*Create payment link* (and *Revoke payment link*) replaces the link, so the
+button in the email stops working once a link is shared afterwards. Sending
+makes no Stripe call. An invoice Checkout cannot take,
 no account or no public origin sends the email without a button.
 
 The button is =GET /pay/<capability>/checkout=. It goes straight to
