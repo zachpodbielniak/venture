@@ -884,6 +884,7 @@ venture_avatar_render_slot_release(void)
 	g_atomic_int_set(&venture_avatar_slot_held, 0);
 }
 
+#ifdef VENTURE_HAVE_GDK_PIXBUF
 /* The refusal for a second render while one is running. */
 static void
 venture_avatar_set_error_busy(GError **error)
@@ -891,8 +892,8 @@ venture_avatar_set_error_busy(GError **error)
 	g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_BUSY,
 		"Another picture is being processed; try again in a few seconds");
 }
-
-#ifndef VENTURE_HAVE_GDK_PIXBUF
+#else
+/* The refusal for every render in a build without a decoder. */
 static void
 venture_avatar_set_error_unsupported(GError **error)
 {
