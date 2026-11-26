@@ -244,13 +244,13 @@ pack_add(struct archive *writer, const gchar *path, GString *contents)
 	archive_entry_free(entry);
 	return ok;
 }
-#endif
 
 static void
 free_body(gpointer body)
 {
 	g_string_free(body, TRUE);
 }
+#endif
 
 /* Rows are (file, line, content) in file order; consecutive rows of one
  * file are joined back into that file with the newline each line lost. */
