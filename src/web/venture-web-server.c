@@ -1486,6 +1486,8 @@ venture_web_report_organization(VentureWebServer *self, HtmxRequest *request,
 static HtmxResponse *
 venture_web_redirect_to(const gchar *path);
 
+static gchar *venture_web_safe_local_path(const gchar *candidate, const gchar *fallback);
+
 /* A merged-away company or contact id forwards to its survivor; defined in
  * dedupe/venture-dedupe-web.inc, reached from the generic record routes. */
 static HtmxResponse *
@@ -1506,6 +1508,110 @@ venture_web_scope_to_active_organization(
 	HtmxRequest		*request,
 	VentureQuery		*query
 );
+
+/*
+ * One path, on this site: a single leading slash, nothing that a browser
+ * reads as a second host or a scheme, and no character that can split a
+ * header. @text is a C string, so a NUL inside a decoded copy is checked
+ * by the caller before this runs.
+ */
+static gboolean
+venture_web_path_is_local(const gchar *text)
+{
+	const gchar *cursor;
+
+	if ((NULL == text) || ('\0' == text[0]) || ('/' != text[0]))
+		return FALSE;
+
+	/* "//evil" and "/\evil" are another host. A single "/" is the root. */
+	if (('/' == text[1]) || ('\\' == text[1]))
+		return FALSE;
+
+	for (cursor = text; '\0' != *cursor; cursor++)
+	{
+		if (((guchar)*cursor < 0x20) || (0x7f == (guchar)*cursor) ||
+		    ('\\' == *cursor))
+			return FALSE;
+	}
+
+	/* "javascript:" at the start, or "://" anywhere ("/http://evil"). */
+	if ((NULL != g_uri_peek_scheme(text)) || (NULL != strstr(text, "://")))
+		return FALSE;
+
+	return TRUE;
+}
+
+/*
+ * venture_web_safe_local_path:
+ * @candidate: (nullable): a path taken from the request
+ * @fallback: path used when @candidate is not on this site
+ *
+ * A redirect target copied out of a query string or a form is whatever
+ * the caller sent. A browser follows a Location that names another host,
+ * a scheme, or a second header smuggled in with a newline, and it treats
+ * a backslash like a slash. Percent-encoding hides the same spellings
+ * ("%2F%2Fevil", "%5Cevil", "%0D%0A"), so the decoded copy has to pass
+ * the same rules as the text that would be written into the header.
+ * An encoded NUL is refused on its own: a decoded C string would stop
+ * there and the rest of the value would never be checked.
+ *
+ * Kept only when @candidate is non-empty, starts with exactly one '/',
+ * has no control character and no '\\', and has no scheme or host.
+ * Otherwise a copy of @fallback is returned. The kept value is the
+ * original text, not the decoded copy.
+ *
+ * Returns: (transfer full): @candidate, or a copy of @fallback
+ */
+static gchar *
+venture_web_safe_local_path(
+	const gchar	*candidate,
+	const gchar	*fallback
+){
+	g_autoptr(GBytes) decoded = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
+	const gchar *cursor;
+	const guint8 *data;
+	gsize length;
+
+	if (!venture_web_path_is_local(candidate))
+		return g_strdup(fallback);
+
+	for (cursor = candidate; '\0' != *cursor; cursor++)
+	{
+		gint high;
+		gint low;
+
+		if ('%' != *cursor)
+			continue;
+
+		if (!g_ascii_isxdigit(cursor[1]) || !g_ascii_isxdigit(cursor[2]))
+			continue;
+
+		high = g_ascii_xdigit_value(cursor[1]);
+		low = g_ascii_xdigit_value(cursor[2]);
+
+		if (0 == ((high << 4) | low))
+			return g_strdup(fallback);
+	}
+
+	decoded = g_uri_unescape_bytes(candidate, -1, NULL, &error);
+
+	if (NULL == decoded)
+		return g_strdup(fallback);
+
+	data = g_bytes_get_data(decoded, &length);
+
+	if ((NULL == data) || (0 == length) || (NULL != memchr(data, 0, length)))
+		return g_strdup(fallback);
+
+	text = g_strndup((const gchar *)data, length);
+
+	if (!venture_web_path_is_local(text))
+		return g_strdup(fallback);
+
+	return g_strdup(candidate);
+}
 
 /*
  * Every sidebar icon, drawn at one stroke weight.
@@ -9631,7 +9737,6 @@ venture_web_ui_look(
 	HtmxResponse *redirect;
 	HtmxResponse *response;
 	const gchar *look;
-	const gchar *back;
 
 	self = user_data;
 	redirect = venture_web_ui_require_session(self, request);
@@ -9640,13 +9745,13 @@ venture_web_ui_look(
 		return redirect;
 
 	look = htmx_request_get_form_value(request, "look");
-	back = htmx_request_get_form_value(request, "back");
+	{
+		g_autofree gchar *safe = NULL;
 
-	if (venture_string_is_empty(back) || ('/' != back[0]) ||
-	    g_str_has_prefix(back, "//"))
-		back = "/";
-
-	response = venture_web_redirect_to(back);
+		safe = venture_web_safe_local_path(
+			htmx_request_get_form_value(request, "back"), "/");
+		response = venture_web_redirect_to(safe);
+	}
 
 	if (venture_config_look_is_valid(look))
 	{
@@ -11573,11 +11678,17 @@ venture_web_ui_switch_entity(
 	gpointer	 user_data
 ){
 	VentureWebServer *self;
+	g_autoptr(VentureEntity) organization = NULL;
+	g_autoptr(GError) error = NULL;
 	g_autofree gchar *cookie = NULL;
+	g_autofree gchar *value = NULL;
+	g_autofree gchar *back = NULL;
 	HtmxResponse *response;
 	HtmxResponse *redirect;
 	const gchar *id;
-	const gchar *back;
+	const gchar *cursor;
+	gint64 organization_id = 0;
+	gboolean digits;
 
 	self = user_data;
 
@@ -11588,19 +11699,64 @@ venture_web_ui_switch_entity(
 
 	id = g_hash_table_lookup(params, "id");
 
+	/*
+	 * "all" is the portfolio view. Anything else has to be a positive
+	 * decimal id with no sign and no trailing junk: the raw path is
+	 * written into Set-Cookie, and "1;Path=/x" would add attributes.
+	 * A readable organization is the same test the Trading pages use --
+	 * the row under this request's access scope. A stranger and a
+	 * malformed id are both NOT_FOUND, and neither gets the cookie, so
+	 * the switch cannot be used to learn which organizations exist.
+	 */
+	if (0 == g_strcmp0(id, "all"))
+		value = g_strdup("all");
+	else
+	{
+		digits = (NULL != id) && ('\0' != id[0]);
+
+		for (cursor = id; digits && ('\0' != *cursor); cursor++)
+		{
+			if (!g_ascii_isdigit(*cursor))
+				digits = FALSE;
+		}
+
+		if (!digits || !g_ascii_string_to_signed(id, 10, 1, G_MAXINT64,
+		                                         &organization_id, NULL))
+		{
+			g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			                    "There is no organization");
+			return venture_web_error_response(error);
+		}
+
+		organization = venture_database_get(
+			venture_context_get_database(self->context),
+			VENTURE_TYPE_ORGANIZATION, organization_id, &error);
+
+		if ((NULL == organization) || venture_entity_is_deleted(organization))
+		{
+			g_clear_error(&error);
+			g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+			            "There is no organization %" G_GINT64_FORMAT,
+			            organization_id);
+			return venture_web_error_response(error);
+		}
+
+		value = g_strdup_printf("%" G_GINT64_FORMAT, organization_id);
+	}
+
 	/* Same lifetime and flags as the session cookie: this is a view
 	 * preference, so it is not signed, but it should not outlive the
-	 * browser session in a way the user would not expect. */
+	 * browser session in a way the user would not expect. Only the
+	 * validated value is written, never the path text. */
 	cookie = g_strdup_printf("%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d",
-	                         VENTURE_WEB_ENTITY_COOKIE,
-	                         (NULL != id) ? id : "all", 60 * 60 * 24 * 365);
+	                         VENTURE_WEB_ENTITY_COOKIE, value,
+	                         60 * 60 * 24 * 365);
 
-	back = htmx_request_get_query_param(request, "back");
+	back = venture_web_safe_local_path(htmx_request_get_query_param(request, "back"), "/");
 
 	response = htmx_response_new();
 	htmx_response_set_status(response, 302);
-	htmx_response_add_header(response, "Location",
-	                         venture_string_is_empty(back) ? "/" : back);
+	htmx_response_add_header(response, "Location", back);
 	htmx_response_add_header(response, "Set-Cookie", cookie);
 
 	return response;
@@ -12705,9 +12861,17 @@ venture_web_link_return_path(
 	const gchar	*source_type,
 	gint64		 source_id
 ){
-	if ((NULL != back) && g_str_has_prefix(back, "/e/") &&
-	    (NULL == strstr(back, "//")))
-		return g_strdup(back);
+	if (NULL != back)
+	{
+		g_autofree gchar *safe = NULL;
+
+		/* Still only a record page. The helper refuses the encodings
+		 * a slash-and-slash check does not see. */
+		safe = venture_web_safe_local_path(back, NULL);
+
+		if ((NULL != safe) && g_str_has_prefix(safe, "/e/"))
+			return g_steal_pointer(&safe);
+	}
 
 	if (!venture_string_is_empty(source_type) && (0 != source_id))
 		return g_strdup_printf("/e/%s/%" G_GINT64_FORMAT, source_type,
@@ -31348,15 +31512,8 @@ venture_web_desk_back(
 	HtmxRequest	*request,
 	const gchar	*fallback
 ){
-	const gchar *back;
-
-	back = htmx_request_get_form_value(request, "back");
-
-	if (!venture_string_is_empty(back) && ('/' == back[0]) &&
-	    ('/' != back[1]) && ('\\' != back[1]))
-		return g_strdup(back);
-
-	return g_strdup(fallback);
+	return venture_web_safe_local_path(
+		htmx_request_get_form_value(request, "back"), fallback);
 }
 
 /*

@@ -447,12 +447,13 @@ late_fees_form_all(HtmxRequest *request, const gchar *name)
 static HtmxResponse *
 late_fees_back(HtmxRequest *request, const gchar *fallback, const gchar *message)
 {
-	const gchar *back = htmx_request_get_form_value(request, "return");
+	g_autofree gchar *back = NULL;
 	g_autofree gchar *encoded = message != NULL ? g_uri_escape_string(message, NULL, FALSE) : NULL;
 	g_autofree gchar *target = NULL;
-	/* Only a path of this site: never a link out. */
-	if (back == NULL || back[0] != '/' || back[1] == '/' || strchr(back, '\\') != NULL)
-		back = fallback;
+
+	/* The notice is appended only after the form's path is known to
+	 * stay on this site. An encoded slash or newline is the same refusal. */
+	back = venture_web_safe_local_path(htmx_request_get_form_value(request, "return"), fallback);
 	target = encoded != NULL ? g_strdup_printf("%s%sdone=%s", back, strchr(back, '?') ? "&" : "?", encoded) : g_strdup(back);
 	return venture_web_redirect_to(target);
 }

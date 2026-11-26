@@ -648,17 +648,13 @@ acw_period_label(
 /* --- Ignoring accounts ----------------------------------------------------------- */
 
 /* Where a switch sends the reader back to: a path on this site, or the
- * overview -- never somewhere a form field could point elsewhere. */
-static const gchar *
+ * overview -- never somewhere a form field could point elsewhere.
+ * The string is newly allocated; the caller frees it. */
+static gchar *
 acw_back(HtmxRequest *request)
 {
-	const gchar *back = htmx_request_get_form_value(request, "back");
-
-	if ((NULL == back) || ('/' != back[0]) || ('/' == back[1]) || (NULL != strchr(back, '\\')) ||
-	    (NULL != strpbrk(back, "\r\n")))
-		return "/accounts";
-
-	return back;
+	return venture_web_safe_local_path(
+		htmx_request_get_form_value(request, "back"), "/accounts");
 }
 
 /* A button that posts one ignore switch. @id > 0 turns that record off;
@@ -2910,7 +2906,11 @@ venture_marketdata_web_ignore(
 		existing = venture_database_find(venture_context_get_database(self->context), query, NULL);
 
 	if ((NULL != existing) && (existing->len > 0))
-		return venture_web_redirect_to(acw_back(request));
+	{
+		g_autofree gchar *back = acw_back(request);
+
+		return venture_web_redirect_to(back);
+	}
 
 	principal = venture_auth_authenticate(self->auth, request);
 	venture_auth_to_actor(principal, &actor);
@@ -2922,7 +2922,11 @@ venture_marketdata_web_ignore(
 	if (!venture_database_save(venture_context_get_database(self->context), record, &actor, &error))
 		return venture_web_error_response(error);
 
-	return venture_web_redirect_to(acw_back(request));
+	{
+		g_autofree gchar *back = acw_back(request);
+
+		return venture_web_redirect_to(back);
+	}
 }
 
 /* POST /accounts/ignores/:id/delete: the switch off again. */
@@ -2967,7 +2971,11 @@ venture_marketdata_web_unignore(
 	    !venture_database_delete(venture_context_get_database(self->context), record, &actor, &error))
 		return venture_web_error_response(error);
 
-	return venture_web_redirect_to(acw_back(request));
+	{
+		g_autofree gchar *back = acw_back(request);
+
+		return venture_web_redirect_to(back);
+	}
 }
 
 static void

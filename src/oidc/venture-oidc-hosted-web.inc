@@ -99,7 +99,11 @@ static HtmxResponse *venture_hosted_browser_callback(HtmxRequest *request, GHash
 			"<h2>We couldn't sign you in</h2><p>Please start again from Lightsite.</p><a href=\"/auth/hosted/start\">Try again</a>"), 401);
 	} else {
 		g_autofree gchar *business = venture_hosted_browser_business(self, venture_entity_get_id(VENTURE_ENTITY(identity)), target);
-		response = venture_web_redirect_to(mfa ? "/login/mfa" : target);
+		g_autofree gchar *local = venture_web_safe_local_path(target, "/");
+		/* return_to was stored as a local path. Check it again on the
+		 * way out: the authorization URL above is a different redirect
+		 * and stays a full https address on purpose. */
+		response = venture_web_redirect_to(mfa ? "/login/mfa" : local);
 		htmx_response_append_header(response, "Set-Cookie", session);
 		if (business) htmx_response_append_header(response, "Set-Cookie", business);
 	}

@@ -629,6 +629,8 @@ venture_email_design_web_dismiss(HtmxRequest *request, GHashTable *params, gpoin
 	g_autoptr(VentureAccessScope) scope = NULL;
 	g_autoptr(GError) error = NULL;
 	const gchar *back = htmx_request_get_form_value(request, "return_to");
+	g_autofree gchar *safe = NULL;
+	const gchar *location;
 	gint64 org;
 	VentureActor actor;
 	HtmxResponse *response, *gate = venture_web_ui_require_session(self, request);
@@ -641,9 +643,13 @@ venture_email_design_web_dismiss(HtmxRequest *request, GHashTable *params, gpoin
 	venture_auth_to_actor(principal, &actor);
 	if (!venture_email_design_dismiss_logo_ask(self->context, org, &actor, &error))
 		return venture_web_error_response(error);
+	/* Still only the design pages. The helper refuses a host, a scheme
+	 * and an encoded slash that the prefix check would otherwise keep. */
+	safe = venture_web_safe_local_path(back, "/email-design");
+	location = g_str_has_prefix(safe, "/email-design") ? safe : "/email-design";
 	response = htmx_response_new();
 	htmx_response_set_status(response, 303);
-	htmx_response_add_header(response, "Location", back != NULL && g_str_has_prefix(back, "/email-design") ? back : "/email-design");
+	htmx_response_add_header(response, "Location", location);
 	return response;
 }
 
@@ -694,11 +700,16 @@ venture_email_design_web_upload(HtmxRequest *request, GHashTable *params, gpoint
 	if (image == NULL)
 		return venture_web_error_response(error);
 	back = form != NULL ? g_hash_table_lookup(form, "return_to") : NULL;
-	if (back != NULL && g_str_has_prefix(back, "/email-design/")) {
-		HtmxResponse *response = htmx_response_new();
-		htmx_response_set_status(response, 303);
-		htmx_response_add_header(response, "Location", back);
-		return response;
+	{
+		g_autofree gchar *safe = venture_web_safe_local_path(back, NULL);
+
+		/* Anything else is the image record, not a redirect. */
+		if (safe != NULL && g_str_has_prefix(safe, "/email-design/")) {
+			HtmxResponse *response = htmx_response_new();
+			htmx_response_set_status(response, 303);
+			htmx_response_add_header(response, "Location", safe);
+			return response;
+		}
 	}
 	url = venture_hosted_image_url(self->context, image);
 	g_object_get(image, "content-type", &type, "width", &width, "height", &height, NULL);

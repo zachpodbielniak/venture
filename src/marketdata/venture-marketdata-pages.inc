@@ -946,11 +946,16 @@ mdw_list_back(
 	gboolean	 created
 ){
 	g_autofree gchar *base = NULL;
+	g_autofree gchar *safe = NULL;
 	const gchar *target = fallback;
 
-	if ((NULL != asked) && (g_str_has_prefix(asked, "/market/") || g_str_has_prefix(asked, "/arbitrage/")) &&
-	    (NULL == strstr(asked, "//")) && (NULL == strchr(asked, '\\')) && (NULL == strpbrk(asked, "\r\n")))
-		target = asked;
+	/* Trading pages only, and only a path the helper will put in
+	 * Location. @safe has to outlive the printf below. */
+	safe = venture_web_safe_local_path(asked, NULL);
+
+	if ((NULL != safe) &&
+	    (g_str_has_prefix(safe, "/market/") || g_str_has_prefix(safe, "/arbitrage/")))
+		target = safe;
 
 	{
 		const gchar *mark = strchr(target, '?');

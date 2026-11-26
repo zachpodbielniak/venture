@@ -224,17 +224,13 @@ customer_credits_id(const gchar *text)
 static gchar *
 customer_credits_back(const gchar *back, gint64 invoice_id)
 {
-	const gchar *cursor;
-	gboolean local = (NULL != back) && ('/' == back[0]) && ('/' != back[1]);
+	g_autofree gchar *fallback = NULL;
 
-	/* Browsers remove tabs/newlines and treat backslashes as slashes.
-	 * Reject those spellings before deciding that the path is local. */
-	for (cursor = back; local && *cursor; cursor++)
-		if (((guchar)*cursor < 0x20) || ((guchar)*cursor == 0x7f) || ('\\' == *cursor))
-			local = FALSE;
-	if (local)
-		return g_strdup(back);
-	return g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, invoice_id);
+	/* The invoice is ours. A form "back" is kept only when it is a
+	 * path on this site, including after percent-decoding. */
+	fallback = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, invoice_id);
+
+	return venture_web_safe_local_path(back, fallback);
 }
 
 /*
