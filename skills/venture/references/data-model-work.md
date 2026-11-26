@@ -86,7 +86,10 @@ hidden from the related-records walk).
   `clone_base_url`, `bot_username`, `verified_at`, `active`). Owner-only;
   credentials go through `forge settings`, never fields.
 - `forge_repo` -- `name` (`owner/repo`), `forge_id`, `default_branch`,
-  `branch_prefix`, `push_issues`, `accept_issues`, `workspace_path`.
+  `branch_prefix`, `push_issues`, `accept_issues`, `issue_kind`
+  [internal|external], `workspace_path`. `issue_kind` is what an accepted
+  issue is filed as; the default, and what a NULL column reads as, is
+  `internal` (your own project work); `external` is a support request.
 - `forge_rule` -- what may happen automatically: scope (`repo_id` or
   `forge_id`), `issue_type` or `all_issue_types`, `enabled`, `trigger`
   [manual|on_create|on_todo|on_in_progress], `runner` [agent|cli],
