@@ -203,6 +203,7 @@ LABEL org.opencontainers.image.title="VENTURE" \
 # repositories would work without them. They are cheap enough not to make
 # that a build option.
 #
+# gdk-pixbuf2 pulls in glycin-libs, glycin-loaders and bubblewrap (image decode).
 RUN dnf install -y --setopt=install_weak_deps=False \
         glib2 \
         openssl-libs \

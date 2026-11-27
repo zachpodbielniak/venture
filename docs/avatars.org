@@ -186,7 +186,7 @@ WebP needs a WebP decoder at run time as well (glycin's, or =webp-pixbuf-loader=
 
 ** In a container
 
-On Fedora 44, GdkPixbuf decodes through glycin, which starts its codec in a =bwrap= sandbox and needs user namespaces to do it. A container that cannot create them (rootless podman without nested user namespaces, for one) cannot decode a picture: uploads are refused with glycin's own reason ("Loader process exited early ...") in the 422 message and the log, and everything else carries on. Local OCR of images fails the same way. Run the container with user namespaces available, or decode on a host that has them.
+On Fedora 44, GdkPixbuf decodes through glycin, which starts its codec in a =bwrap= sandbox that mounts devpts on =/dev/pts=. SELinux's default =container_t= refuses that mount, so in a container without the fix a picture cannot be decoded: uploads are refused with glycin's own reason ("Loader process exited early ...") in the 422 message and the log, and everything else carries on. Local OCR of images fails the same way. User namespaces are not the cause. Run the container with =--security-opt label=type:container_engine_t= (the compose files already do); see =docs/containers.org=, "Image decode and SELinux", for the compose and quadlet forms.
 
 * Tests
 
