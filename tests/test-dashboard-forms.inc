@@ -66,7 +66,7 @@ static void test_dashboard_forms(Fixture *f, gconstpointer unused)
 		if (i == 5) g_assert_cmpint(json_object_get_int_member(first, "count"), ==, 1);
 		{
 			gint64 other = org + 1000;
-			VentureWidgetScope scope = { &other, 1, 0, NULL, 0 };
+			VentureWidgetScope scope = { &other, 1, 0, NULL, 0, NULL, NULL };
 			g_autoptr(VentureWidgetResult) denied = venture_dashboard_render_widget(f->context, widget, &scope);
 			g_assert_nonnull(denied->error);
 		}

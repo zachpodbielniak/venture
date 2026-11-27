@@ -392,6 +392,13 @@ order the data flows.
   - `g_task_run_in_thread` under the feeds worker: provider parsing, exec
     providers and `venture_func_data_source_provider_new()` fetches. They
     see only their `VentureFeedRequest`.
+  - the **query workers** (`venture-web-query.inc`, four threads): LQL
+    evaluation only. A query is prepared on the main thread (parsed,
+    refusals checked, every named source's schema built, the functions'
+    inputs captured) and each fetch the worker needs is handed back to the
+    request's fiber and read there (`venture_lql_set_read_dispatch()`).
+    A function registered in an LQL environment is evaluated here, so it
+    must be pure; see docs/lql.org, "Where a query runs";
   - the **read workers** (`venture-parallel.c`, `server.read_workers`):
     the one exception, and fenced -- see "Parallel reads" below. They read
     the database through leased read-only connections, inside a gate the

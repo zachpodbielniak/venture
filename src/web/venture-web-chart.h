@@ -44,6 +44,15 @@ G_BEGIN_DECLS
 #define VENTURE_WEB_CHART_MAX_SERIES (4)
 
 /**
+ * VENTURE_WEB_CHART_MAX_SLICES:
+ *
+ * The most slices a pie draws. Each has its own mark (chart-slice-1 to
+ * chart-slice-8) in both stylesheets; past it a pie is a smear of slivers
+ * nobody can read, and bars say the same thing better.
+ */
+#define VENTURE_WEB_CHART_MAX_SLICES (8)
+
+/**
  * VentureWebChartFormat:
  * @value: a value, never NAN
  * @user_data: the data given beside the function
@@ -174,6 +183,20 @@ venture_web_chart_line(const VentureWebChart *chart);
  */
 gchar *
 venture_web_chart_bar(const VentureWebChart *chart);
+
+/**
+ * venture_web_chart_pie:
+ * @chart: the chart; its first series is drawn, one slice per point
+ *
+ * Draws each point's share of the whole as a slice, with a key beside the
+ * circle (label, value, percentage) and the data table. Only a whole of
+ * parts can be a pie: a negative value, no positive total or more than
+ * %VENTURE_WEB_CHART_MAX_SLICES points draws the empty state instead.
+ *
+ * Returns: (transfer full): an HTML <figure>, or an empty-state paragraph
+ */
+gchar *
+venture_web_chart_pie(const VentureWebChart *chart);
 
 /**
  * venture_web_chart_sparkline:

@@ -189,7 +189,7 @@ no authentication is not a configuration choice.
 Also refused: half-configured TLS (which would silently serve plain HTTP), a
 port out of range, an unrecognised database scheme, a =postgres://= URI in a
 build without libpq, a malformed currency, a fiscal month outside 1–12,
-and an LQL =query.max_rows= or =query.timeout_ms= outside its range.
+and an LQL =query.max_rows=, =query.timeout_ms= or =query.max_bytes= outside its range.
 
 =locale.default_currency= is any well-formed currency code: a letter
 followed by 1 to 14 letters, digits or underscores (=USD=, =EUR=, =GOLD=).
@@ -250,7 +250,7 @@ venture --generate-c-config > ~/.config/venture/config.c
   default until a person picks one with the toggle), accent,
   page size, the AI panel (=ui.chat_dock= gates the
   launcher and panel entirely; =ui.chat_dock_expanded= starts the panel open)
-- *query* — LQL queries: =max_rows= (10000, 1 to 1000000: the most rows one =fetch= may read; more is an error, never a shorter answer) and =timeout_ms= (5000, 1 to 600000: the longest one query may run); neither can be switched off. See [[file:lql.org::*Bounds][LQL: bounds]]
+- *query* — LQL queries: =max_rows= (10000, 1 to 1000000: the most rows one =fetch= may read; more is an error, never a shorter answer) =timeout_ms= (5000, 1 to 600000: the longest one query may run) and =max_bytes= (67108864, 1048576 to 1073741824: the most string and array bytes one query may create; more is a refused query, VENTURE #44); none can be switched off. See [[file:lql.org::*Bounds][LQL: bounds]]
 - *logging* — level, file, format
 - *modules* — which modules are on; see below and [[file:modules.org][Modules]]
 - *federation* — opt-in object sharing; see [[file:federation.org][Federation]]

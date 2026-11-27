@@ -1346,6 +1346,79 @@ venture_mcp_tool_report(
 	return g_string_free(g_steal_pointer(&text), FALSE);
 }
 
+/*
+ * venture_query: one LQL query through POST /api/v1/query, as this
+ * session's caller. The answer is the server's body untouched -- the
+ * venture.query/1 document, or its CSV -- so an agent reads exactly the
+ * rows the API and venturectl query give. Read-only, and listed so.
+ */
+static gchar *
+venture_mcp_tool_query(
+	VentureMcpServer	 *self,
+	JsonObject		 *arguments,
+	GError			**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autofree gchar *content_type = NULL;
+	g_autoptr(GString) path = NULL;
+	gchar *text;
+	const gchar *query;
+	const gchar *format;
+	gboolean explain;
+
+	query = (NULL != arguments)
+		? venture_json_object_get_string(arguments, "query", NULL) : NULL;
+
+	if ((NULL == query) || ('\0' == query[0]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Which query? Such as: fetch ticket | summarize n = count(), by: status");
+		return NULL;
+	}
+
+	format = venture_json_object_get_string(arguments, "format", NULL);
+
+	if ((NULL != format) && (0 != g_strcmp0(format, "json")) && (0 != g_strcmp0(format, "csv")))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" is not a query format. Use json or csv.", format);
+		return NULL;
+	}
+
+	explain = venture_json_object_get_bool(arguments, "explain", FALSE);
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "query");
+	json_builder_add_string_value(builder, query);
+	json_builder_set_member_name(builder, "format");
+	json_builder_add_string_value(builder, (NULL != format) ? format : "json");
+	json_builder_set_member_name(builder, "explain");
+	json_builder_add_boolean_value(builder, explain);
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	/* The business to scope to, as the API's ?organization_id= takes it. */
+	if (json_object_has_member(arguments, "organization_id"))
+	{
+		g_autofree gchar *organization = NULL;
+
+		organization = venture_mcp_query_value(json_object_get_member(arguments, "organization_id"));
+		path = g_string_new("/api/v1/query?organization_id=");
+		g_string_append_uri_escaped(path, organization, NULL, FALSE);
+	}
+	else
+	{
+		path = g_string_new("/api/v1/query");
+	}
+
+	text = venture_mcp_server_request_text(self, "POST", path->str, body,
+	                                       &content_type, error);
+
+	return text;
+}
+
 static gchar *
 venture_mcp_tool_confirmations(
 	VentureMcpServer	 *self,
@@ -2462,6 +2535,9 @@ venture_mcp_dispatch_tool(
 
 	if (0 == g_strcmp0(name, "venture_report"))
 		return venture_mcp_tool_report(self, arguments, error);
+
+	if (0 == g_strcmp0(name, "venture_query"))
+		return venture_mcp_tool_query(self, arguments, error);
 
 	if (0 == g_strcmp0(name, "venture_confirmations"))
 		return venture_mcp_tool_confirmations(self, arguments, error);

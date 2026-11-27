@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-11]
-#+updated: [2026-10-04]
-#+version: 0.7.1
+#+updated: [2026-11-27]
+#+version: 0.8.0
 
 * What this is
 
@@ -76,6 +76,7 @@ Every widget has a kind, a title (or the kind supplies one), a width — one col
 | =accounts_summary= | money on hand across the accounts, what their holdings are worth, what is listed, what waits in the mail and the thirty days' net (needs =marketdata=) | =options= (=data_source_id=, =basis=, =login=) |
 | =holdings_value= | the most valuable things the accounts hold, valued on a basis (needs =marketdata=) | =options= (=data_source_id=, =basis=, =place=, =login=), =limit= |
 | =external_pnl= | the period's net from the source's own ledger of trades, with a sparkline of each day's and the sales and purchases (needs =marketdata=) | =period=, =options= (=data_source_id=, =account_key=, =login=) |
+| =query=          | an [[file:lql.org][LQL]] query, run as whoever is looking, as a table, bars, a line or a pie; money one series per currency | =body= (the query), =options= (={"chart": "bar", "x": "assignee", "value": "n"}=, =series=) |
 
 *The opportunities kind* runs the scan /arbitrage runs (=venture_arbitrage_scan_run()=), for the scope's primary organization, with =top= set to the widget's =limit= (5 by default) and =preset_id= to its =record_id=; its =options= are the scan's own option names and are read by the scan's reader when the widget is saved, so a misspelt filter is refused at the save rather than ignored on every render (only while the module is on, as a hidden report's options are let through). Its JSON rows (key, title, net, =net_formatted=, ROI) and its card come from one loop. See [[file:arbitrage.org][Arbitrage]].
 
@@ -98,6 +99,28 @@ Before the viewer has picked anything in the sidebar, the *page* chooses: a dash
 *A report widget passes the report's own options.* Whatever =options= holds that the report declares in its parameter schema -- the schema =GET /api/v1/reports= lists and the assistant's report tool reads -- is forwarded: ={"currency": "TICKET"}= on a =holdings= card, ={"group_by": "category"}= on a =listing_performance= one. The save refuses anything else, so a mistyped option is an error where it was written, not a card that silently ignores it: a name the report does not declare ("The holdings report has no option "character"; it takes location_id, currency, as_of"), a value of the wrong JSON type, a string outside the schema's =enum=, and =organization_id= or =venture_id= outright, because those are the caller's scope and a widget never scopes itself. =tiles= and =table= are the =report= kind's own switches and never reach the report. A report that declares no schema -- most function reports -- takes no options from a widget; a report hidden by its module is checked when it comes back, like a hidden type. A widget saved before this rule keeps rendering: only declared options are forwarded, so an undeclared one is ignored until the widget is next saved. =/dashboard/report-options= pins it.
 
 Every widget is checked at the save, whichever door it came through: the kind must exist, the record type must exist (even one whose module is off — the widget outlives the switch), the report must exist, the options must be a JSON object. A =sum= or =progress= widget's =field=, =options.target_field=, =options.start_field= and =options.date_field= must exist and be the right kind; for a type whose module is off they cannot be read and are checked when the page renders instead. A widget that cannot be answered when the page renders — a report that errored, a module that is off, a record that was deleted — says so in its place. One bad widget never takes the page down.
+
+* The query kind
+
+A =query= widget holds an LQL query in =body= and how to draw its rows in =options=: =chart= is =table= (the default), =bar=, =line= or =pie=; =x= the column along the bottom (a pie's slice labels; the first column when blank); =series= a column whose values split the rows into series; =value= the column drawn, a number, money or =sum_money()='s list (the first such column when blank). The picks are the columns the query's =summarize= wrote:
+
+#+begin_src lql
+fetch ticket | filter status not in ["done", "cancelled"] | summarize n = count(), by: assignee | sort assignee
+#+end_src
+
+with ={"chart": "bar", "x": "assignee", "value": "n"}= is "open tickets by assignee" as bars, and the per-currency invoice query in [[file:lql.org::*Money: one total per currency][LQL]] with ={"chart": "table"}= is "invoices this quarter by status" as a table whose total cell holds one line per currency.
+
+*It runs as the viewer, never the author.* The query goes through the scope's query function (=VentureWidgetScope.query=), which the web layer builds from the request asking for the page -- the page, its refresh fragment and =GET /api/v1/dashboards/:slug= alike -- so it reads through that person's access policy, their record types and the page's organizations. A shared dashboard shows each viewer their own answer: a viewer who cannot read the invoices the author can sees no rows, a viewer refused the type sees the list API's own refusal in place, and nobody sees the author's figures. A scope with no query function -- the assistant's =venture_dashboard=, a plugin rendering a widget with nobody looking -- gets "A query widget runs as the person looking at it, and there is nobody here to run it as" in place rather than rows read as anybody. =/lql/query/widget/runs-as-the-viewer= pins it.
+
+*Money stays per currency.* A money value column draws one series per currency: bars and pies one chart each (=total by status — USD=, =total by status — EUR=), a line one chart per currency holding that currency's series, the table a line per currency in the cell. No axis, bar, slice or cell ever holds two currencies, and two rows with the same =x= add only within one currency. A chart over =VENTURE_WEB_QUERY_CHART_MAX_CHARTS= (8) drawings, a line over four series, or a pie over eight slices or with a negative value is refused with what to do instead.
+
+*A plain =sum()= of money is not caught.* =sum(income_amount.amount)= adds the minor units of every currency into one number, and the widget cannot tell: by the time the value reaches the chart it is an =Int= column, and LQL keeps nothing of where a column came from -- a rename, an =extend= or a =lookup= launders it as easily as the direct spelling. So the renderer draws it as the number it is. Use =sum_money()=, or put the currency in =by:= (=by: {currency = income_amount.currency}=). This is a known limit, not a guarantee the widget keeps.
+
+*It never runs on the main loop.* Every route that draws a query widget answers from a fiber, the query is evaluated on a query worker, and its fetches are read back in the request's own scope ([[file:lql.org::*Where a query runs][LQL: where a query runs]]). A page with three query widgets runs them one after another on workers, its fiber yielded meanwhile.
+
+*It is drawn by one function.* =venture_web_query_chart()= (=src/web/venture-web-query-chart.c=) takes the =venture.query/1= document and the three picks and answers HTML -- the drawings of =venture-web-chart.h=, server-rendered SVG with their data tables, plus a new =venture_web_chart_pie()= -- and, from the same pass, JSON of what it drew (=labels= and =groups=, each with its =currency= and exact values). The card's =data= is the query's document with that JSON as =chart=. The list pages' Chart toggle is to call the same function with the query its bar built.
+
+The save checks what it can without a viewer: the query must parse, =options= may hold only =chart=, =x=, =series= and =value=, each a string, and =chart= must be one of the four. Whether the query's types and columns exist depends on who is looking, so the card says so in place.
 
 * The grid
 

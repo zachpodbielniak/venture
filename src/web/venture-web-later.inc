@@ -178,6 +178,10 @@ venture_web_answer_later(VentureWebServer *self, HtmxRequest *request,
 	later->params = (NULL != params) ? g_hash_table_ref(params) : NULL;
 	later->callback = callback;
 	later->deferred = htmx_response_new_deferred();
+	/* The disconnect hint, where the route can find it from the request
+	 * (venture_web_later_get_cancellable()): a query cancels on it. */
+	g_object_set_data_full(G_OBJECT(request), "venture-web-later-cancellable",
+		g_object_ref(htmx_response_get_cancellable(later->deferred)), g_object_unref);
 	later->reader = venture_access_policy_snapshot(venture_database_get_access_policy(database));
 	later->access = venture_access_state_new();
 	/* For venture_web_later_settle(), in this same dispatch, before the
@@ -199,6 +203,17 @@ venture_web_answer_later(VentureWebServer *self, HtmxRequest *request,
 	g_source_attach(source, NULL);
 	g_source_unref(source);
 	return g_object_ref(later->deferred);
+}
+
+/*
+ * The disconnect hint of a request answered from a fiber: cancelled when
+ * libsoup reports the client gone (htmx_response_get_cancellable(), whose
+ * caveats apply). NULL for a request answered any other way.
+ */
+static GCancellable *
+venture_web_later_get_cancellable(HtmxRequest *request)
+{
+	return g_object_get_data(G_OBJECT(request), "venture-web-later-cancellable");
 }
 
 /* A route that may wait on Stripe, registered to answer from a fiber. */

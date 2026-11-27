@@ -35,6 +35,28 @@
 G_BEGIN_DECLS
 
 /**
+ * VentureWidgetQueryFunc:
+ * @query: the LQL text a query widget holds
+ * @user_data: the data given beside the function
+ * @error: (out) (optional): return location for a #GError
+ *
+ * Runs @query as the person looking at the page -- their access policy,
+ * their record types, their organizations -- and answers the
+ * venture.query/1 document POST /api/v1/query answers (docs/lql.org).
+ * Never as the widget's author: the web layer builds it from the very
+ * request that asked for the page.
+ *
+ * Returns: (transfer full) (nullable): the document, or %NULL with @error
+ *   set (the viewer may not read a type the query names, the query does
+ *   not run, a bound was crossed)
+ */
+typedef JsonNode * (*VentureWidgetQueryFunc) (
+	const gchar	 *query,
+	gpointer	  user_data,
+	GError		**error
+);
+
+/**
  * VentureWidgetScope:
  * @organization_ids: (nullable) (array length=n_organizations): the
  *   entities the viewer has selected, primary first; %NULL for every entity
@@ -42,6 +64,10 @@ G_BEGIN_DECLS
  * @user_id: the viewer's user id, or 0
  * @username: (nullable): the viewer's name, what `{me}` in a filter means
  * @venture_id: a venture to narrow every widget that can be to, or 0
+ * @query: (nullable): runs a query widget's LQL as the viewer; %NULL where
+ *   nobody is looking (the assistant), and a query widget then refuses
+ *   rather than read as anybody else
+ * @query_data: (nullable): passed to @query
  *
  * Who is looking, and at what. Filled by the web layer from the session
  * and the entity picker; by the API and the assistant from the token. A
@@ -50,11 +76,13 @@ G_BEGIN_DECLS
  */
 typedef struct
 {
-	const gint64	*organization_ids;
-	gsize		 n_organizations;
-	gint64		 user_id;
-	const gchar	*username;
-	gint64		 venture_id;
+	const gint64		*organization_ids;
+	gsize			 n_organizations;
+	gint64			 user_id;
+	const gchar		*username;
+	gint64			 venture_id;
+	VentureWidgetQueryFunc	 query;
+	gpointer		 query_data;
 } VentureWidgetScope;
 
 /**

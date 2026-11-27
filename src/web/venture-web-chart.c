@@ -987,6 +987,171 @@ venture_web_chart_bar(const VentureWebChart *chart)
 	return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
+/* --- Pie ------------------------------------------------------------------- */
+
+/*
+ * The point on a circle of @radius about (@cx, @cy) at @fraction of a
+ * turn, clockwise from twelve o'clock.
+ */
+static void
+chart_pie_point(
+	gdouble		 cx,
+	gdouble		 cy,
+	gdouble		 radius,
+	gdouble		 fraction,
+	gdouble		*out_x,
+	gdouble		*out_y
+){
+	gdouble angle = fraction * 2.0 * G_PI;
+
+	*out_x = cx + radius * sin(angle);
+	*out_y = cy - radius * cos(angle);
+}
+
+gchar *
+venture_web_chart_pie(const VentureWebChart *chart)
+{
+	g_autoptr(GString) out = NULL;
+	const VentureWebChartSeries *series;
+	gdouble width;
+	gdouble height;
+	gdouble radius;
+	gdouble cx;
+	gdouble cy;
+	gdouble total = 0.0;
+	gdouble done = 0.0;
+	gsize slice = 0;
+	gsize i;
+
+	out = g_string_new(NULL);
+
+	if ((NULL == chart) || !chart_is_drawable(chart, 1) ||
+	    (chart->n_points > VENTURE_WEB_CHART_MAX_SLICES))
+	{
+		chart_empty(out, (NULL != chart) && (NULL != chart->title) ? chart->title : "Chart");
+		return g_string_free(g_steal_pointer(&out), FALSE);
+	}
+
+	series = &chart->series[0];
+
+	/* A share of a whole: every slice is a part of a positive total, so
+	 * a negative value has no slice to be and the chart is refused. */
+	for (i = 0; i < chart->n_points; i++)
+	{
+		if (!isfinite(series->values[i]))
+			continue;
+
+		if (series->values[i] < 0.0)
+		{
+			chart_empty(out, chart->title);
+			return g_string_free(g_steal_pointer(&out), FALSE);
+		}
+
+		total += series->values[i];
+	}
+
+	if (total <= 0.0)
+	{
+		chart_empty(out, chart->title);
+		return g_string_free(g_steal_pointer(&out), FALSE);
+	}
+
+	width = (0 != chart->width) ? (gdouble)chart->width : CHART_DEFAULT_WIDTH;
+	height = (0 != chart->height) ? (gdouble)chart->height : CHART_DEFAULT_HEIGHT;
+	radius = (height - CHART_MARGIN_TOP * 2.0) / 2.0;
+	cx = CHART_MARGIN_BARE + radius;
+	cy = height / 2.0;
+
+	chart_open(out, "pie", chart->title, chart->summary, width, height);
+
+	for (i = 0; i < chart->n_points; i++)
+	{
+		g_autofree gchar *text = NULL;
+		g_autofree gchar *percent = NULL;
+		gdouble value = series->values[i];
+		gdouble x0;
+		gdouble y0;
+		gdouble x1;
+		gdouble y1;
+
+		if (!isfinite(value) || (value <= 0.0))
+			continue;
+
+		slice++;
+		text = chart_format(series->format, series->format_data, value);
+		percent = venture_web_chart_format_percent(value * 100.0 / total, NULL);
+
+		/* One slice is the whole circle, which an arc cannot draw. */
+		if (value >= total)
+		{
+			g_string_append_printf(out, "<circle class=\"chart-slice chart-slice-%"
+			                       G_GSIZE_FORMAT "\" fill=\"currentColor\" cx=\"", slice);
+			chart_num(out, cx);
+			g_string_append(out, "\" cy=\"");
+			chart_num(out, cy);
+			g_string_append(out, "\" r=\"");
+			chart_num(out, radius);
+			g_string_append(out, "\">");
+		}
+		else
+		{
+			chart_pie_point(cx, cy, radius, done / total, &x0, &y0);
+			chart_pie_point(cx, cy, radius, (done + value) / total, &x1, &y1);
+			g_string_append_printf(out, "<path class=\"chart-slice chart-slice-%"
+			                       G_GSIZE_FORMAT "\" fill=\"currentColor\" d=\"M", slice);
+			chart_num(out, cx);
+			g_string_append_c(out, ' ');
+			chart_num(out, cy);
+			g_string_append(out, " L");
+			chart_num(out, x0);
+			g_string_append_c(out, ' ');
+			chart_num(out, y0);
+			g_string_append(out, " A");
+			chart_num(out, radius);
+			g_string_append_c(out, ' ');
+			chart_num(out, radius);
+			g_string_append_printf(out, " 0 %d 1 ", (value * 2.0 > total) ? 1 : 0);
+			chart_num(out, x1);
+			g_string_append_c(out, ' ');
+			chart_num(out, y1);
+			g_string_append(out, " Z\">");
+		}
+
+		g_string_append(out, "<title>");
+		venture_html_escape_append(out, (NULL != chart->labels) ? chart->labels[i] : "");
+		g_string_append(out, ": ");
+		venture_html_escape_append(out, text);
+		g_string_append(out, " (");
+		venture_html_escape_append(out, percent);
+		g_string_append_printf(out, ")</title></%s>", (value >= total) ? "circle" : "path");
+
+		/* The key, beside the circle: the slice's mark, label, value
+		 * and share, so the picture reads without hovering. */
+		g_string_append_printf(out, "<rect class=\"chart-slice chart-slice-%" G_GSIZE_FORMAT
+		                       "\" fill=\"currentColor\" x=\"", slice);
+		chart_num(out, cx + radius + 24.0);
+		g_string_append(out, "\" y=\"");
+		chart_num(out, CHART_MARGIN_TOP + 18.0 * (gdouble)(slice - 1));
+		g_string_append(out, "\" width=\"10\" height=\"10\"></rect>");
+		{
+			g_autofree gchar *key = NULL;
+
+			key = g_strdup_printf("%s  %s  %s",
+			                      (NULL != chart->labels) ? chart->labels[i] : "", text, percent);
+			chart_text(out, "chart-axis", cx + radius + 40.0,
+			           CHART_MARGIN_TOP + 9.0 + 18.0 * (gdouble)(slice - 1), "start", key);
+		}
+
+		done += value;
+	}
+
+	g_string_append(out, "</svg>");
+	chart_table(out, chart, 1);
+	g_string_append(out, "</figure>");
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
 /* --- Sparkline ------------------------------------------------------------- */
 
 gchar *

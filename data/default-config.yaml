@@ -464,9 +464,13 @@ query:
   # the bound rather than answering with a silently truncated list. It is
   # also the most rows any later stage may hold. timeout_ms is the longest
   # one query may run. Neither can be switched off: 1..1000000 rows and
-  # 1..600000 milliseconds.
+  # 1..600000 milliseconds. max_bytes is the most memory one query may
+  # create in strings and arrays (64 MiB; 1048576..1073741824), so one
+  # query that builds huge strings is refused instead of exhausting the
+  # process (VENTURE #44). It cannot be switched off either.
   max_rows: 10000
   timeout_ms: 5000
+  max_bytes: 67108864
 
 logging:
   # error | warning | info | debug

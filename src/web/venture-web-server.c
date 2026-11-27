@@ -4348,6 +4348,37 @@ venture_web_lql_gate(
 	                                    VENTURE_USER_ROLE_VIEWER, error);
 }
 
+/*
+ * An environment for the caller @request carries, scoped to
+ * @organizations (the business picked and everything beneath it; none
+ * for every business the caller may read), with every record type gated
+ * by the list API's own role check. Admitted exactly as
+ * venture_web_api_list() admits a reader.
+ */
+static LqlEnvironment *
+venture_web_lql_environment_for(
+	VentureWebServer	 *server,
+	HtmxRequest		 *request,
+	const gint64		 *organizations,
+	gsize			  n_organizations,
+	GError			**error
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	VentureWebLqlGate gate;
+
+	principal = venture_auth_authenticate(server->auth, request);
+
+	if (!venture_web_hosted_auth_require(server, request, principal, VENTURE_USER_ROLE_VIEWER,
+	                                     error))
+		return NULL;
+
+	gate.server = server;
+	gate.principal = principal;
+
+	return venture_lql_environment_new(server->context, principal,
+		organizations, n_organizations, venture_web_lql_gate, &gate, error);
+}
+
 /* Declared in lql/venture-lql.h, which says what it guarantees. */
 LqlEnvironment *
 venture_web_server_new_lql_environment(
@@ -4355,30 +4386,18 @@ venture_web_server_new_lql_environment(
 	HtmxRequest		 *request,
 	GError			**error
 ){
-	g_autoptr(VentureAuthPrincipal) principal = NULL;
 	g_autoptr(GArray) tree = NULL;
-	VentureWebLqlGate gate;
 
 	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(server), NULL);
 	g_return_val_if_fail(HTMX_IS_REQUEST(request), NULL);
-
-	/* Admitted exactly as venture_web_api_list() admits a reader. */
-	principal = venture_auth_authenticate(server->auth, request);
-
-	if (!venture_web_hosted_auth_require(server, request, principal, VENTURE_USER_ROLE_VIEWER,
-	                                     error))
-		return NULL;
 
 	/* The business selected in the browser and everything beneath it,
 	 * as venture_web_scope_to_active_organization() scopes a list. */
 	tree = venture_web_organization_tree(server,
 		venture_web_active_organization(server, request));
 
-	gate.server = server;
-	gate.principal = principal;
-
-	return venture_lql_environment_new(server->context, principal,
-		(const gint64 *)tree->data, tree->len, venture_web_lql_gate, &gate, error);
+	return venture_web_lql_environment_for(server, request,
+		(const gint64 *)tree->data, tree->len, error);
 }
 
 static HtmxResponse *
@@ -6365,6 +6384,7 @@ venture_web_stripe_webhook(HtmxRequest *request, GHashTable *params, gpointer us
 	return response;
 }
 #include "venture-web-later.inc"
+#include "venture-web-query.inc"
 #include "stripe/venture-stripe-web.inc"
 #include "stripe/venture-stripe-connect-web.inc"
 #include "ai/venture-ai-settings-web.inc"
@@ -29715,6 +29735,8 @@ venture_web_dashboard_scope(
 	scope->username = principal->name;
 	scope->venture_id = 0;
 	g_object_get(dashboard, "venture-id", &scope->venture_id, NULL);
+	scope->query = NULL;
+	scope->query_data = NULL;
 
 	active = venture_web_dashboard_unpicked_organization(self, request, dashboard);
 
@@ -29893,6 +29915,7 @@ venture_web_append_dashboard_grid(
 	g_autoptr(GPtrArray) placements = NULL;
 	g_autoptr(GArray) tree = NULL;
 	g_autofree gchar *slug = NULL;
+	g_auto(VentureWebWidgetQuery) runner = { NULL, NULL, NULL, 0, NULL, NULL };
 	VentureWidgetScope scope;
 	VentureDashboardLayout layout;
 	guint columns;
@@ -29903,6 +29926,7 @@ venture_web_append_dashboard_grid(
 	columns = venture_dashboard_layout_get_columns(layout);
 	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
 	                            &tree);
+	venture_web_widget_query_bind(self, request, &scope, &runner);
 
 	/*
 	 * The sidebar names the default entity until something is picked, so
@@ -30523,6 +30547,7 @@ venture_web_ui_dashboard_widget(
 	g_autoptr(GArray) tree = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *slug = NULL;
+	g_auto(VentureWebWidgetQuery) runner = { NULL, NULL, NULL, 0, NULL, NULL };
 	VentureWidgetScope scope;
 	HtmxResponse *gate;
 	gint64 dashboard_id = 0;
@@ -30556,6 +30581,7 @@ venture_web_ui_dashboard_widget(
 	g_object_get(dashboard, "slug", &slug, NULL);
 	venture_web_dashboard_scope(self, request, principal, dashboard, &scope,
 	                            &tree);
+	venture_web_widget_query_bind(self, request, &scope, &runner);
 	result = venture_dashboard_render_widget(self->context,
 		VENTURE_DASHBOARD_WIDGET(widget), &scope);
 
@@ -31506,6 +31532,8 @@ venture_web_api_dashboard_scope(
 	scope->username = principal->name;
 	scope->venture_id = 0;
 	g_object_get(dashboard, "venture-id", &scope->venture_id, NULL);
+	scope->query = NULL;
+	scope->query_data = NULL;
 	*tree = NULL;
 
 	organization = htmx_request_get_query_param(request, "organization_id");
@@ -31595,6 +31623,7 @@ venture_web_api_dashboard(
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GArray) tree = NULL;
 	g_autoptr(GError) error = NULL;
+	g_auto(VentureWebWidgetQuery) runner = { NULL, NULL, NULL, 0, NULL, NULL };
 	VentureWidgetScope scope;
 	HtmxResponse *gate;
 	const gchar *data;
@@ -31608,6 +31637,7 @@ venture_web_api_dashboard(
 
 	venture_web_api_dashboard_scope(self, request, principal, dashboard,
 	                                &scope, &tree);
+	venture_web_widget_query_bind(self, request, &scope, &runner);
 	data = htmx_request_get_query_param(request, "data");
 	node = venture_dashboard_describe(self->context, dashboard, &scope,
 		(NULL == data) || (0 != g_strcmp0(data, "0")), &error);
@@ -31617,6 +31647,19 @@ venture_web_api_dashboard(
 
 	return venture_web_json_response(node, 200);
 }
+
+/*
+ * Every route that can run a query widget answers from a fiber, so the
+ * query is evaluated on a worker with the page's request yielded meanwhile
+ * (venture-web-query.inc, "Where a query runs"). All of them are
+ * VENTURE_HOSTED_ROUTE_NONE: no support capability is admitted, so the
+ * fiber's plain tenant request scope is the one the pipeline gives them.
+ */
+VENTURE_WEB_LATER_ROUTE(venture_web_ui_dashboard_later, venture_web_ui_dashboard)
+VENTURE_WEB_LATER_ROUTE(venture_web_ui_dashboard_view_later, venture_web_ui_dashboard_view)
+VENTURE_WEB_LATER_ROUTE(venture_web_ui_dashboard_edit_later, venture_web_ui_dashboard_edit)
+VENTURE_WEB_LATER_ROUTE(venture_web_ui_dashboard_widget_later, venture_web_ui_dashboard_widget)
+VENTURE_WEB_LATER_ROUTE(venture_web_api_dashboard_later, venture_web_api_dashboard)
 
 /*
  * GET /api/v1/dashboards/:slug/export
@@ -36979,7 +37022,7 @@ venture_web_server_new(
 	                NULL);
 
 	/* UI */
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/overview", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_overview, self);
 
 	/* Dashboards. The literal paths go before the :slug ones, because the
@@ -36987,14 +37030,14 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboards, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_create, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/import", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_import, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_view, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_view_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_update, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_edit, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_edit_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_export, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_delete, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/new", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_form, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_save, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/dashboards/:slug/widgets/:id/edit", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_form, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_save, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/dashboards/:slug/widgets/:id/delete", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_dashboard_widget_delete, self);
@@ -37364,13 +37407,16 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboard-templates", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_templates, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboards, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/dashboards/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_import, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards/:slug", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/dashboards/:slug/export", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_dashboard_export, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/schema", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_describe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/schema/:type", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_describe, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/journals/:id/post", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_orgaccess_post, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/reports", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_reports, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/reports/:name", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_report, self);
+	/* LQL, read-only, as the caller (docs/api.org, "POST /api/v1/query");
+	 * before /api/v1/:type so "query" is never read as a record type. */
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/query", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_query_later, self);
 
 	/* Minting a token and deciding an AI change are registered before the
 	 * generic record routes, so their paths are not swallowed by

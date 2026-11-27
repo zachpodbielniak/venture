@@ -1683,7 +1683,7 @@ venture_ai_tool_dashboard(
 
 	{
 		g_autoptr(VentureDashboard) dashboard = NULL;
-		VentureWidgetScope scope = { NULL, 0, 0, NULL, 0 };
+		VentureWidgetScope scope = { NULL, 0, 0, NULL, 0, NULL, NULL };
 
 		dashboard = venture_dashboard_find_by_slug(
 			venture_context_get_database(self->context), slug, &local_error);

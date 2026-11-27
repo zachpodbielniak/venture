@@ -13,6 +13,7 @@
  */
 
 #include "venture.h"
+#include "lql/venture-lql.h"
 
 #include <string.h>
 #include <math.h>
@@ -5492,6 +5493,7 @@ static const gchar *const venture_widget_uses_forms[] = {
 	"record_id", "field", "period", "options", NULL
 };
 #include "venture-dashboard-forms.inc"
+#include "venture-dashboard-query.inc"
 
 static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 	{ "form_responses", "Responses over time", "Daily submitted response counts, split by published version.",
@@ -5672,6 +5674,13 @@ static const VentureWidgetKindInfo venture_widget_builtin_kinds[] = {
 		"options: data_source_id, account_key.",
 		"marketdata", venture_widget_uses_external_pnl,
 		venture_widget_kind_external_pnl
+	},
+	{
+		"query", "Query",
+		"An LQL query, run as whoever is looking, drawn as a table, bars, "
+		"a line or a pie: body holds the query, options.chart, x, series "
+		"and value how to draw it. Money is one series per currency.",
+		NULL, venture_widget_uses_query, venture_widget_kind_query
 	},
 	{
 		"opportunities", "Opportunities",
@@ -5921,7 +5930,7 @@ venture_dashboard_render_widget(
 	VentureDashboardWidget		*widget,
 	const VentureWidgetScope	*scope
 ){
-	static const VentureWidgetScope nobody = { NULL, 0, 0, NULL, 0 };
+	static const VentureWidgetScope nobody = { NULL, 0, 0, NULL, 0, NULL, NULL };
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *kind_name = NULL;
 	g_autofree gchar *title = NULL;
@@ -8410,6 +8419,11 @@ venture_dashboard_validate_widget(
 			return FALSE;
 		}
 	}
+
+	/* A query widget: a query that parses, options it reads. */
+	if ((0 == g_strcmp0(kind, "query")) &&
+	    !venture_dashboard_validate_query(widget, options, error))
+		return FALSE;
 
 	/* The grid hints must at least be sane numbers; whether they fit the
 	 * layout is decided when the page is laid out, because the layout

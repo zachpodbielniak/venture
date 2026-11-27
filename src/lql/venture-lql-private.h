@@ -31,7 +31,17 @@ G_BEGIN_DECLS
  *   business beneath it; empty when nothing is selected
  * @readable: GType -> GType: the record types the caller may read
  * @max_rows: query.max_rows
- * @teams: (nullable): what my_teams() answers, read on its first call
+ * @teams: what my_teams() answers, read when the environment is built
+ * @timezone: the operator's calendar (owned reference), captured when the
+ *   environment is built
+ * @fiscal_year_start_month: the month the fiscal year begins, 1-12
+ * @home_thread: the thread that built the environment, the database's
+ *   (not a reference): the only one a source may read on
+ *
+ * Everything a function reads is captured while the environment is built,
+ * on the database's thread: a query is evaluated on a worker
+ * (docs/lql.org, "Where a query runs"), and no worker may touch the
+ * database, the configuration or the context.
  *
  * Reference counted with g_rc_box; venture_lql_caller_ref() and
  * venture_lql_caller_unref() below.
@@ -48,6 +58,9 @@ typedef struct
 	GHashTable		*readable;
 	gint64			 max_rows;
 	LqlValue		*teams;
+	GTimeZone		*timezone;
+	gint			 fiscal_year_start_month;
+	GThread			*home_thread;
 } VentureLqlCaller;
 
 /* Takes a reference. */
@@ -73,6 +86,13 @@ venture_lql_source_new(
 	GType			 entity_type,
 	const gchar		*name
 );
+
+/*
+ * Builds @self's schema now, on the database's thread, so a worker that
+ * evaluates a query never reaches the entity registry.
+ */
+void
+venture_lql_source_prepare(VentureLqlSource *self);
 
 /* Registers me(), my_teams(), today(), period() and organization(). */
 gboolean
