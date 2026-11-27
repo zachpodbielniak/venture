@@ -438,6 +438,76 @@ test_fiber_wake_waits_for_transaction(Fixture *f, gconstpointer data)
 	fiber_call_clear(&call);
 }
 
+/* Whether a timer on the default context is due within 50 ms: what a wake
+ * that polls for the transaction's end would leave behind. The fixture's
+ * own context keeps a timer seconds away, which this does not count. */
+static gboolean
+stripe_default_context_has_timer(void)
+{
+	GMainContext *context = g_main_context_default();
+	GPollFD fds[32];
+	gint priority = 0, timeout = -1;
+
+	g_assert_true(g_main_context_acquire(context));
+	g_main_context_prepare(context, &priority);
+	g_main_context_query(context, priority, &timeout, fds, G_N_ELEMENTS(fds));
+	g_main_context_check(context, priority, fds, 0);
+	g_main_context_release(context);
+	return timeout >= 0 && timeout <= 50;
+}
+
+/* Runs whatever the default context has ready for half a second. */
+static void
+spin_half_second(void)
+{
+	gint64 give_up = g_get_monotonic_time() + G_USEC_PER_SEC / 2;
+
+	while (g_get_monotonic_time() < give_up)
+		g_main_context_iteration(NULL, FALSE);
+}
+
+/*
+ * An answer that arrives inside somebody else's transaction waits for the
+ * database to say the transaction has ended: no timer looks again
+ * meanwhile. An inner rollback ends nothing; the fiber is resumed at the
+ * outermost end.
+ */
+static void
+test_fiber_wake_on_transaction_end(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	FakeTransport *fake = (FakeTransport *)transport;
+	FiberCall call = { 0 };
+	VentureFiber *fiber;
+	(void)data;
+	venture_fiber_init();
+	fake_hold(fake, 1);
+	call.client = stub_client(f, NULL, 30, fake);
+	fiber = venture_fiber_new(fiber_call_run, nested_done, NULL, &call);
+	venture_fiber_wake(fiber);
+	fake_wait_held(fake, 1);
+	g_assert_true(venture_database_begin(f->database, NULL));
+	g_assert_true(venture_database_begin(f->database, NULL));
+	fake_release_all(fake);
+	spin_half_second();
+	g_assert_false(call.done);
+	g_assert_false(stripe_default_context_has_timer());
+
+	venture_database_rollback(f->database);
+	spin_half_second();
+	g_assert_false(call.done);
+	g_assert_false(stripe_default_context_has_timer());
+
+	venture_database_rollback(f->database);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_assert_true(call.done);
+	g_assert_no_error(call.error);
+	g_assert_nonnull(call.result);
+	g_assert_false(stripe_default_context_has_timer());
+	fiber_call_clear(&call);
+}
+
 /* A fiber is counted from its making to its end, which is what a stop
  * waits on. */
 static void

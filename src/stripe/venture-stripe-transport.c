@@ -70,9 +70,6 @@
  * thread rather than each starting one. */
 #define VENTURE_STRIPE_THREADS (8)
 
-/* How soon a wake that found a transaction open looks again. */
-#define VENTURE_STRIPE_REARM_MS (10u)
-
 typedef struct
 {
 	GObject		 parent;
@@ -133,13 +130,33 @@ typedef struct
 	VentureFiber	*fiber;
 	VentureDatabase	*database;
 	GMainContext	*context;
+	gulong		 finished;	/* waiting for that transaction's end */
+	gboolean	 kept;		/* holds a reference on @database */
 } Waiter;
+
+static void waiter_schedule(Waiter *waiter, guint delay_ms);
+
+/* The database's transaction-finished: asked again once it has ended. An
+ * inner rollback says so too, with the outer level still open; the wake
+ * then finds it open and waits on. */
+static void
+waiter_transaction_finished(VentureDatabase *database, gboolean committed, gpointer data)
+{
+	Waiter *waiter = data;
+
+	(void)committed;
+	g_signal_handler_disconnect(database, waiter->finished);
+	waiter->finished = 0;
+	waiter_schedule(waiter, 0);
+}
 
 /*
  * Wakes the waiting fiber from the main loop -- unless a transaction is open
  * there. A nested main loop elsewhere (a bank feed sync, a webhook test)
  * may be the one dispatching this, inside its caller's transaction, and a
- * fiber resumed there would write into it. It looks again shortly instead.
+ * fiber resumed there would write into it. It waits for the database to say
+ * the transaction has finished instead, keeping the database meanwhile so a
+ * stop cannot free it under the wait.
  */
 static gboolean
 waiter_wake(gpointer data)
@@ -149,14 +166,19 @@ waiter_wake(gpointer data)
 
 	if (NULL != waiter->database && venture_database_has_transaction(waiter->database))
 	{
-		GSource *again = g_timeout_source_new(VENTURE_STRIPE_REARM_MS);
-
-		g_source_set_priority(again, G_PRIORITY_DEFAULT);
-		g_source_set_callback(again, waiter_wake, waiter, NULL);
-		g_source_set_static_name(again, "venture-stripe-wake");
-		g_source_attach(again, waiter->context);
-		g_source_unref(again);
+		if (!waiter->kept)
+		{
+			g_object_ref(waiter->database);
+			waiter->kept = TRUE;
+		}
+		waiter->finished = g_signal_connect(waiter->database, "transaction-finished",
+			G_CALLBACK(waiter_transaction_finished), waiter);
 		return G_SOURCE_REMOVE;
+	}
+	if (waiter->kept)
+	{
+		waiter->kept = FALSE;
+		g_object_unref(waiter->database);
 	}
 	venture_fiber_wake(fiber);
 	return G_SOURCE_REMOVE;
@@ -298,6 +320,7 @@ pause_retry(VentureStripeTransport *self, VentureFiber *fiber, guint delay_ms,
 	{
 		Waiter waiter;
 
+		memset(&waiter, 0, sizeof waiter);
 		waiter.fiber = fiber;
 		waiter.database = self->database;
 		waiter.context = g_main_context_default();

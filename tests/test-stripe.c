@@ -1624,6 +1624,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/fiber/deadline", Fixture, NULL, set_up, test_fiber_deadline, tear_down);
 	g_test_add("/stripe/fiber/transaction-blocks", Fixture, NULL, set_up, test_fiber_transaction_blocks, tear_down);
 	g_test_add("/stripe/fiber/wake-waits-for-transaction", Fixture, NULL, set_up, test_fiber_wake_waits_for_transaction, tear_down);
+	g_test_add("/stripe/fiber/wake-on-transaction-end", Fixture, NULL, set_up, test_fiber_wake_on_transaction_end, tear_down);
 	g_test_add("/stripe/fiber/count", Fixture, NULL, set_up, test_fiber_count, tear_down);
 	g_test_add("/stripe/hosted-money-back-late", Fixture, "money-back-late", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/connect/create", Fixture, NULL, set_up, test_connect_create, tear_down);

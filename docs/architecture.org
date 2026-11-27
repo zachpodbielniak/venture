@@ -143,7 +143,7 @@ stripe-glib's client is synchronous: it calls its transport on the caller's stac
 
 There is no nested main loop anywhere in this. A non-fiber caller that spun the default context while it waited would dispatch the next HTTP request while its own handler was still on the stack -- the re-entrancy VENTURE has already rejected (=src/automation/venture-automation.c=). Only fibers yield.
 
-A wake does not resume a fiber inside somebody else's transaction. Some nested default-context loops exist elsewhere (the bank feed sync, the webhook test, the feeds service, the federation client) and may dispatch the source that wakes a fiber. If a transaction is open when the wake runs, it re-arms itself ten milliseconds later instead; the fiber resumes once the transaction has ended.
+A wake does not resume a fiber inside somebody else's transaction. Some nested default-context loops exist elsewhere (the bank feed sync, the webhook test, the feeds service, the federation client) and may dispatch the source that wakes a fiber. If a transaction is open when the wake runs, it waits for the database's =transaction-finished= instead and asks again then; the fiber resumes once the outermost transaction has ended. Nothing polls meanwhile.
 
 *** What runs as a fiber
 
