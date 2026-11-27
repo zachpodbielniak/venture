@@ -95,7 +95,27 @@ A =limit= that follows only EXACT filters is given to the database.
 
 =tests/test-lql.c= runs every form above both right after the fetch and after a =sort= (where LQL alone evaluates it) and holds the rows equal.
 
-One caveat no pushdown can repair: a column holding SQL NULL where the record reads a default (an integer or enum column added by a migration, on rows older than it) reads as the default in the row and the list API alike, while the filter compares the stored NULL. Rows VENTURE writes never hold such a NULL.
+** Columns that are NULL but read as a value
+
+A column a later migration added holds SQL NULL in every row older than it, but the record does not always read NULL there: an unset enum reads its zero member (=ticket.priority= reads ="low"=), an integer 0, a boolean FALSE. The row LQL sees and the list API's JSON both show that value, so every filter the source pushes compares the value as read, not the stored column (=venture_query_add_filter_as_read()=, VENTURE #45):
+
+| On a field whose NULL reads as =D=      | The database is asked                         |
+|-----------------------------------------+-----------------------------------------------|
+| =is_null(f)=                            | nothing matches (=1 = 0=)                     |
+| =is_not_null(f)=                        | everything matches (=1 = 1=)                  |
+| a comparison =D= passes (=f == D=, =f != X=, =f in [D, ...]=, =f >= 0= with =D= = 0, ...) | =(f OP c OR f IS NULL)= |
+| a comparison =D= fails                  | =f OP c=, which leaves NULL out already       |
+| =m.currency == "X"=                     | =m= not NULL and its currency =X=; for the default currency also a NULL or empty currency column, which reads as the default |
+
+What a NULL column reads as is taken from one source: a record of the type freshly constructed, nothing loaded into it, read through =g_object_get_property()=. That is exactly what loading a row leaves when the column is NULL (=venture_schema_populate_property()= skips it). It is not taken from the =GParamSpec= default (an unset declared field reads its GType's zero value, whatever the default says) nor from a field spec's =default=, which only seeds new forms. Plugin types are covered the same way, and so is any column added later, with nothing to declare.
+
+The identity spine every record has (=id=, =uuid=, =organization_id=, =created_at=, =updated_at=, =deleted_at=, =version=) is compared as stored: it has been in every table since the table was made and every save writes it, so it never holds a legacy NULL. (=created_at= and =updated_at= on a fresh record are the time it was made, which no filter could match; without this every "Created this week" chip would stay LQL's.)
+
+Two cases stay LQL's (NONE) rather than be answered wrongly: a value that is not fixed (two fresh records disagree, or it is a time other than =created_at= and =updated_at=, which every table has had since it was created and every save writes, so they compare as stored), and a text match (=contains= and the rest) on a text field that reads a value, since SQL =LIKE= of it cannot be decided here. Rows VENTURE writes hold no such NULL; nothing here changes for them.
+
+The =?field== URL filters still compare the stored column until their own VENTURE ticket lands: =GET /api/v1/ticket?priority=low= leaves out a row whose priority column is NULL, though that row reads ="low"=.
+
+Not covered: stored text that the reader rewrites. An enum column holding text that is not a canonical nick (hand-edited SQL; VENTURE always writes the nick) reads as the matching member, case- and dash-insensitively, or as the zero member when nothing matches; a currency stored in lower case reads in upper case. The filter compares the stored text there.
 
 * VENTURE's functions
 

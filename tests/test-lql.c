@@ -620,6 +620,268 @@ test_money(
 	}
 }
 
+/* --- Legacy NULL columns (VENTURE #45) ------------------------------------ */
+
+/* Runs @statement, which must succeed; printf-style. */
+static void
+legacy_sql(
+	Fixture		*f,
+	const gchar	*format,
+	...
+) G_GNUC_PRINTF(2, 3);
+
+static void
+legacy_sql(
+	Fixture		*f,
+	const gchar	*format,
+	...
+){
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *statement = NULL;
+	va_list args;
+
+	va_start(args, format);
+	statement = g_strdup_vprintf(format, args);
+	va_end(args);
+
+	g_assert_true(venture_database_execute(f->db, statement, NULL, &error));
+	g_assert_no_error(error);
+}
+
+/* The table @type is stored in. */
+static gchar *
+legacy_table(GType type)
+{
+	g_autoptr(VentureEntity) prototype = g_object_new(type, NULL);
+
+	return g_strdup(venture_entity_get_table_name(prototype));
+}
+
+/*
+ * Each filter of @cases on @type, pushed (right after the fetch) and
+ * LQL-only (after a sort), must give the same rows and be taken as the
+ * case says. Every case is run before failing, so a regression names all
+ * the cases it breaks at once.
+ */
+static void
+legacy_check(
+	LqlEnvironment		*environment,
+	const gchar		*type,
+	const PushdownCase	*cases,
+	guint			 n_cases
+){
+	g_autoptr(GString) failures = g_string_new(NULL);
+	guint i;
+
+	for (i = 0; i < n_cases; i++)
+	{
+		g_autofree gchar *pushed_text = g_strdup_printf("fetch %s | filter %s | sort id",
+			type, cases[i].filter);
+		g_autofree gchar *local_text = g_strdup_printf("fetch %s | sort id | filter %s",
+			type, cases[i].filter);
+		g_autofree gchar *taken = pushdowns(environment, pushed_text);
+		g_autoptr(LqlTable) pushed = run(environment, pushed_text);
+		g_autoptr(LqlTable) local = run(environment, local_text);
+		g_autofree gchar *pushed_ids = row_ids(pushed);
+		g_autofree gchar *local_ids = row_ids(local);
+
+		g_test_message("%s: %s -> pushed [%s], LQL-only [%s]", cases[i].filter, taken,
+		               pushed_ids, local_ids);
+
+		if (0 != g_strcmp0(taken, cases[i].taken))
+			g_string_append_printf(failures, "\n  %s: taken %s, expected %s",
+			                       cases[i].filter, taken, cases[i].taken);
+		if (0 != g_strcmp0(pushed_ids, local_ids))
+			g_string_append_printf(failures, "\n  %s: pushed [%s] != LQL-only [%s]",
+			                       cases[i].filter, pushed_ids, local_ids);
+	}
+
+	g_assert_cmpstr(failures->str, ==, "");
+}
+
+/*
+ * A column a later migration added is NULL in every older row, but the
+ * record reads a value there: priority (an enum) reads "low", its zero
+ * member; story_points and company_id (integers) read 0; estimate_hours
+ * (a double) 0; sla_breached (a boolean) FALSE. A filter pushed to the
+ * database must keep exactly the rows LQL keeps from what the rows read:
+ * is_null is never true, `priority == "low"` takes the NULL row too, and
+ * `!=` and `not in` take it unless they exclude the value it reads as.
+ *
+ * A money value: a NULL currency column under an amount reads as the
+ * default currency, and a NULL amount is a NULL money whatever its
+ * currency column says.
+ *
+ * Breaks if the source pushes the stored-column filter for these again
+ * (the cases that move a NULL row fail at edd58bd7), or if the value a
+ * NULL column reads as is taken from anywhere but what loading a row
+ * leaves.
+ *
+ * The list API's ?priority=low is deliberately unchanged: it compares the
+ * stored column, so it still leaves the NULL row out.
+ */
+static void
+test_legacy_null_columns(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	static const PushdownCase ticket_cases[] = {
+		{ "is_null(priority)", "E" },
+		{ "is_not_null(priority)", "E" },
+		{ "priority == \"low\"", "E" },
+		{ "priority != \"low\"", "E" },
+		{ "priority == \"high\"", "E" },
+		{ "priority != \"high\"", "E" },
+		{ "priority in [\"low\", \"high\"]", "E" },
+		{ "priority in [\"normal\", \"high\"]", "E" },
+		{ "priority not in [\"low\"]", "E" },
+		{ "priority not in [\"normal\", \"high\"]", "E" },
+		{ "is_null(story_points)", "E" },
+		{ "is_not_null(story_points)", "E" },
+		{ "story_points == 0", "E" },
+		{ "story_points != 0", "E" },
+		{ "story_points != 3", "E" },
+		{ "story_points in [0, 3]", "E" },
+		{ "story_points not in [3]", "E" },
+		{ "story_points < 1", "E" },
+		{ "story_points >= 1", "E" },
+		{ "between(story_points, 0, 2)", "E" },
+		{ "is_null(company_id)", "E" },
+		{ "company_id == 0", "E" },
+		{ "is_null(estimate_hours)", "E" },
+		{ "estimate_hours == 0", "E" },
+		{ "estimate_hours <= 1.5", "E" },
+		{ "estimate_hours > 1", "E" },
+		{ "is_null(sla_breached)", "E" },
+		{ "sla_breached == FALSE", "E" },
+		{ "sla_breached != TRUE", "E" },
+		{ "sla_breached == TRUE", "E" },
+		{ "is_null(due_at)", "E" },
+		{ "created_at >= period(\"this_week\").start", "E" },
+		{ "updated_at < now()", "E" },
+		{ "priority == \"low\" and is_not_null(story_points)", "EE" },
+	};
+	g_autofree gchar *tickets = legacy_table(VENTURE_TYPE_TICKET);
+	g_autofree gchar *deals = legacy_table(VENTURE_TYPE_DEAL);
+	g_autofree gchar *book = g_ascii_strup(venture_money_get_default_currency(), -1);
+	g_autofree gchar *book_case = g_strdup_printf("value.currency == \"%s\"", book);
+	g_autoptr(LqlEnvironment) environment = NULL;
+	gint64 legacy = g_array_index(f->tickets, gint64, 1);
+	gint64 deal_ids[4];
+	guint i;
+
+	(void)data;
+
+	/* Some tickets have points, and one is breached, so the NULL row is
+	 * not the only one either side of each comparison. */
+	legacy_sql(f, "UPDATE \"%s\" SET \"story_points\" = 3 WHERE \"id\" IN (%" G_GINT64_FORMAT
+	           ", %" G_GINT64_FORMAT ")", tickets,
+	           g_array_index(f->tickets, gint64, 2), g_array_index(f->tickets, gint64, 3));
+	legacy_sql(f, "UPDATE \"%s\" SET \"sla_breached\" = 1 WHERE \"id\" = %" G_GINT64_FORMAT,
+	           tickets, g_array_index(f->tickets, gint64, 4));
+
+	/* Ticket 1 (priority "normal" as written) as a row older than every
+	 * one of these columns. */
+	legacy_sql(f, "UPDATE \"%s\" SET \"priority\" = NULL, \"story_points\" = NULL, "
+	           "\"company_id\" = NULL, \"estimate_hours\" = NULL, \"sla_breached\" = NULL "
+	           "WHERE \"id\" = %" G_GINT64_FORMAT, tickets, legacy);
+
+	/* Four deals: USD; EUR; USD whose currency column goes NULL (reads as
+	 * the default); EUR whose amount goes NULL (a NULL money). */
+	{
+		static const gchar * const values[] = { "100 USD", "50 EUR", "70 USD", "20 EUR" };
+
+		for (i = 0; i < G_N_ELEMENTS(values); i++)
+		{
+			g_autoptr(VentureEntity) deal = NULL;
+			g_autoptr(GError) error = NULL;
+			g_autofree gchar *name = g_strdup_printf("Legacy %u", i);
+
+			deal = g_object_new(VENTURE_TYPE_DEAL, "organization-id", f->org, "name", name, NULL);
+			g_assert_true(venture_entity_set_field_from_string(deal, "value", values[i], &error));
+			g_assert_true(venture_database_save(f->db, deal, NULL, &error));
+			g_assert_no_error(error);
+			deal_ids[i] = venture_entity_get_id(deal);
+		}
+	}
+	legacy_sql(f, "UPDATE \"%s\" SET \"value_currency\" = NULL WHERE \"id\" = %" G_GINT64_FORMAT,
+	           deals, deal_ids[2]);
+	legacy_sql(f, "UPDATE \"%s\" SET \"value_amount\" = NULL WHERE \"id\" = %" G_GINT64_FORMAT,
+	           deals, deal_ids[3]);
+
+	environment = environment_for(f, &f->admin);
+
+	/* The legacy row reads the values the cases rely on. */
+	{
+		g_autofree gchar *text = g_strdup_printf("fetch ticket | filter id == %" G_GINT64_FORMAT, legacy);
+		g_autoptr(LqlTable) row = run(environment, text);
+		LqlRecord *record;
+
+		g_assert_cmpuint(lql_table_get_n_rows(row), ==, 1);
+		record = lql_table_get_row(row, 0);
+		g_assert_cmpstr(lql_value_get_string(lql_record_get(record, "priority")), ==, "low");
+		g_assert_cmpint(lql_value_get_int(lql_record_get(record, "story_points")), ==, 0);
+		g_assert_cmpint(lql_value_get_int(lql_record_get(record, "company_id")), ==, 0);
+		g_assert_false(lql_value_get_boolean(lql_record_get(record, "sla_breached")));
+	}
+
+	legacy_check(environment, "ticket", ticket_cases, G_N_ELEMENTS(ticket_cases));
+
+	/* Not vacuous: the NULL row is in `priority == "low"` (four written,
+	 * plus it), and is_null finds nothing. */
+	{
+		g_autoptr(LqlTable) low = run(environment, "fetch ticket | filter priority == \"low\"");
+		g_autoptr(LqlTable) none = run(environment, "fetch ticket | filter is_null(priority)");
+
+		g_assert_cmpuint(lql_table_get_n_rows(low), ==, 5);
+		g_assert_cmpuint(lql_table_get_n_rows(none), ==, 0);
+	}
+
+	/* Money. */
+	{
+		static const PushdownCase deal_cases[] = {
+			{ "value.currency == \"EUR\"", "E" },
+			{ "is_null(value)", "E" },
+			{ "is_not_null(value)", "E" },
+			{ "value.amount > 0", "E" },
+		};
+		g_autofree gchar *book_text = g_strdup_printf("fetch deal | filter %s", book_case);
+		g_autoptr(LqlTable) book_rows = NULL;
+		g_autoptr(LqlTable) euros = NULL;
+		guint in_book = 1;	/* the deal with no currency column */
+		PushdownCase book_check;
+
+		legacy_check(environment, "deal", deal_cases, G_N_ELEMENTS(deal_cases));
+		book_check.filter = book_case;
+		book_check.taken = "E";
+		legacy_check(environment, "deal", &book_check, 1);
+
+		/* The deal with no currency column is in the default currency's
+		 * rows; the one with no amount is in no currency's. */
+		in_book += (0 == g_strcmp0(book, "USD")) ? 1 : 0;
+		in_book += (0 == g_strcmp0(book, "EUR")) ? 1 : 0;
+		book_rows = run(environment, book_text);
+		g_assert_cmpuint(lql_table_get_n_rows(book_rows), ==, in_book);
+		euros = run(environment, "fetch deal | filter value.currency == \"EUR\"");
+		g_assert_cmpuint(lql_table_get_n_rows(euros), ==,
+		                 1 + ((0 == g_strcmp0(book, "EUR")) ? 1 : 0));
+	}
+
+	/* The list API's ?priority=low still compares the stored column
+	 * (docs/lql.org): four rows, not the five the records read. */
+	{
+		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_TICKET);
+		g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);
+		g_autoptr(GError) error = NULL;
+
+		g_hash_table_insert(params, (gpointer)"priority", (gpointer)"low");
+		g_assert_true(venture_query_apply_query_string(query, params, &error));
+		g_assert_no_error(error);
+		venture_query_set_organization(query, f->org);
+		g_assert_cmpint(venture_database_count(f->db, query, NULL), ==, 4);
+	}
+}
+
 /* --- Schema --------------------------------------------------------------- */
 
 /*
@@ -1254,6 +1516,7 @@ main(
 	ADD("/lql/pushdown/same-rows-as-lql-alone", test_pushdown_same_rows, NULL);
 	ADD("/lql/nulls/three-valued", test_nulls, NULL);
 	ADD("/lql/money/record-with-int-amount", test_money, NULL);
+	ADD("/lql/pushdown/legacy-null-reads-as-default", test_legacy_null_columns, NULL);
 	ADD("/lql/schema/no-sensitive-fields", test_no_sensitive_fields, NULL);
 	ADD("/lql/schema/labels-and-deleted", test_labels_and_deleted, NULL);
 	ADD("/lql/access/module-off-is-no-source", test_module_off, "goals");

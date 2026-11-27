@@ -792,12 +792,12 @@ venture_lql_map_comparison(
 	if (target.currency)
 	{
 		if ((VENTURE_FILTER_OP_EQ != op) ||
-		    !venture_query_add_money_currency(query, venture_lql_target_property(&target), text, NULL))
+		    !venture_query_add_money_currency_as_read(query, venture_lql_target_property(&target), text, NULL))
 			return LQL_PUSHDOWN_NONE;
 		return LQL_PUSHDOWN_EXACT;
 	}
 
-	if (!venture_query_add_filter_string(query, venture_lql_target_property(&target), op, text, NULL))
+	if (!venture_query_add_filter_string_as_read(query, venture_lql_target_property(&target), op, text, NULL))
 		return LQL_PUSHDOWN_NONE;
 
 	/* `organization_id == N` is what ?organization_id=N is to the list
@@ -852,7 +852,7 @@ venture_lql_map_in(
 		g_ptr_array_add(texts, text);
 	}
 
-	if (!venture_query_add_filter(query, venture_lql_target_property(&target),
+	if (!venture_query_add_filter_as_read(query, venture_lql_target_property(&target),
 	        lql_node_get_negated(node) ? VENTURE_FILTER_OP_NOT_IN : VENTURE_FILTER_OP_IN,
 	        texts, NULL))
 		return LQL_PUSHDOWN_NONE;
@@ -902,7 +902,7 @@ venture_lql_map_call(
 	 * its columns at once, so the amount column answers for it. */
 	if ((1 == n) && ((0 == g_strcmp0(name, "is_null")) || (0 == g_strcmp0(name, "is_not_null"))))
 	{
-		if (!venture_query_add_filter(query, venture_lql_target_property(&target),
+		if (!venture_query_add_filter_as_read(query, venture_lql_target_property(&target),
 		        (0 == g_strcmp0(name, "is_null")) ? VENTURE_FILTER_OP_IS_NULL : VENTURE_FILTER_OP_NOT_NULL,
 		        NULL, NULL))
 			return LQL_PUSHDOWN_NONE;
@@ -941,8 +941,8 @@ venture_lql_map_call(
 		g_ptr_array_add(texts, low_text);
 		g_ptr_array_add(texts, high_text);
 
-		if (!venture_query_add_filter(query, venture_lql_target_property(&target),
-		                              VENTURE_FILTER_OP_BETWEEN, texts, NULL))
+		if (!venture_query_add_filter_as_read(query, venture_lql_target_property(&target),
+		                                      VENTURE_FILTER_OP_BETWEEN, texts, NULL))
 			return LQL_PUSHDOWN_NONE;
 		return LQL_PUSHDOWN_EXACT;
 	}
@@ -978,8 +978,8 @@ venture_lql_map_call(
 		else
 			pattern = g_strdup(text);
 
-		if (!venture_query_add_filter_string(query, venture_lql_target_property(&target),
-		                                     VENTURE_FILTER_OP_LIKE, pattern, NULL))
+		if (!venture_query_add_filter_string_as_read(query, venture_lql_target_property(&target),
+		                                             VENTURE_FILTER_OP_LIKE, pattern, NULL))
 			return LQL_PUSHDOWN_NONE;
 		return LQL_PUSHDOWN_HINT;
 	}
@@ -1010,6 +1010,17 @@ venture_lql_map_call(
  * a $parameter, now() - 7d, me(), period("this_month").start, ...) whose
  * value is of f's own type (venture_lql_operand_text()). Everything else
  * -- `or`, `not`, other functions, labels, display_name -- is NONE.
+ *
+ * Every filter is added as read (venture_query_add_filter_as_read()): it
+ * compares what the row holds, not the stored column. They differ where a
+ * column is NULL but the record reads a value -- a column a later
+ * migration added, NULL in every older row, on an enum (its zero member),
+ * an integer (0) or a boolean (FALSE). Then is_null(f) matches nothing,
+ * is_not_null(f) everything, and a comparison the read value passes keeps
+ * the NULL rows too; m.currency == the default currency keeps a money
+ * whose currency column is NULL. Where the read value is not fixed, or
+ * the database cannot decide a comparison of it (LIKE on a text field
+ * that reads a value), the conjunct is NONE.
  *
  * Returns: how the conjunct was taken
  */
