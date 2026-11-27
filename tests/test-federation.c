@@ -29,15 +29,22 @@ typedef struct
 	gint64 peer[2];
 	VentureEntity *record;
 	VentureEntity *grant;
+	gint64 started;
 } Fixture;
+
+/* Every case, setup and teardown included, must finish inside this. A case
+ * once paid two full schema migrations and took 2.5 s; 270 such binaries
+ * ran the whole suite past its 40-minute limit. */
+#define FEDERATION_CASE_BUDGET_US (G_USEC_PER_SEC)
+/* Reconnect rounds in a test; the configured interval is never under 5 s. */
+#define FEDERATION_TEST_SYNC_MS 20
 
 static void
 save(Fixture *fixture, guint server, VentureEntity *record)
 {
 	g_autoptr(GError) error = NULL;
 	venture_entity_set_organization_id(record, venture_context_get_default_organization_id(fixture->context[server]));
-	g_assert_true(venture_database_save(fixture->database[server], record, NULL, &error));
-	g_assert_no_error(error);
+	if (!venture_database_save(fixture->database[server], record, NULL, &error)) g_error("save: %s", error->message);
 }
 
 static void
@@ -55,6 +62,67 @@ make_key(const gchar *path)
 	EVP_PKEY_free(key);
 }
 
+/* Migrated databases, built once per process and copied for every server
+ * of every case. Migrating the whole schema is over a second of CPU and each
+ * case needs two servers; a copy is a millisecond. The private one is an
+ * install from before federation was switched on; the federated one is that
+ * install upgraded, as every server below runs it. */
+static gchar *template_directory;
+
+static void
+migrate_template(const gchar *path, gboolean federation)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureConfig) config = venture_config_new();
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureContext) context = NULL;
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s", path);
+	g_autofree gchar *wal = g_strconcat(path, "-wal", NULL);
+
+	g_object_set(config, "state-dir", template_directory, "federation-enabled", federation, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
+	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
+	g_assert_no_error(error);
+	/* Closing the last connection folds the write-ahead log into the file. */
+	g_clear_object(&context);
+	g_clear_object(&database);
+	g_assert_false(g_file_test(wal, G_FILE_TEST_EXISTS));
+}
+
+static void copy_template(const gchar *template, const gchar *destination);
+
+static const gchar *
+migrated_template(gboolean federation)
+{
+	static gchar *private_path;
+	static gchar *federated_path;
+	g_autoptr(GError) error = NULL;
+
+	if (!private_path)
+	{
+		template_directory = g_dir_make_tmp("venture-federation-template-XXXXXX", &error);
+		g_assert_no_error(error);
+		private_path = g_build_filename(template_directory, "private.db", NULL);
+		federated_path = g_build_filename(template_directory, "federated.db", NULL);
+		migrate_template(private_path, FALSE);
+		copy_template(private_path, federated_path);
+		migrate_template(federated_path, TRUE);
+	}
+	return federation ? federated_path : private_path;
+}
+
+static void
+copy_template(const gchar *template, const gchar *destination)
+{
+	g_autoptr(GFile) from = g_file_new_for_path(template);
+	g_autoptr(GFile) to = g_file_new_for_path(destination);
+	g_autoptr(GError) error = NULL;
+	g_assert_true(g_file_copy(from, to, G_FILE_COPY_NONE, NULL, NULL, NULL, &error));
+	g_assert_no_error(error);
+}
+
 static void
 setup(Fixture *fixture, gconstpointer data)
 {
@@ -63,14 +131,19 @@ setup(Fixture *fixture, gconstpointer data)
 	g_autofree gchar *tls_key = g_canonicalize_filename("tests/fixtures/federation/tls-key.pem", NULL);
 	guint i;
 	(void)data;
+	/* The template is built once per process, outside every case's budget. */
+	migrated_template(TRUE);
+	fixture->started = g_get_monotonic_time();
 	fixture->directory = g_dir_make_tmp("venture-federation-XXXXXX", &error);
 	g_assert_no_error(error);
 	for (i = 0; i < 2; i++)
 	{
 		g_autofree gchar *state = g_strdup_printf("%s/server-%u", fixture->directory, i);
-		g_autofree gchar *uri = g_strdup_printf("sqlite://%s/records.db", state);
+		g_autofree gchar *records = g_build_filename(state, "records.db", NULL);
+		g_autofree gchar *uri = g_strdup_printf("sqlite://%s", records);
 		g_autoptr(JsonNode) identity = NULL;
 		g_assert_cmpint(g_mkdir_with_parents(state, 0700), ==, 0);
+		copy_template(migrated_template(TRUE), records);
 		fixture->key_path[i] = g_build_filename(state, "identity.pem", NULL);
 		make_key(fixture->key_path[i]);
 		fixture->config[i] = venture_config_new();
@@ -81,9 +154,9 @@ setup(Fixture *fixture, gconstpointer data)
 			"server-base-url", "https://normal-web.example", NULL);
 		fixture->database[i] = venture_database_new(uri, &error);
 		g_assert_no_error(error);
+		/* Not migrated again: the copy is the migrated schema already, and
+		 * checking every table of it costs more than the rest of a case. */
 		fixture->context[i] = venture_context_new(fixture->config[i], fixture->database[i]);
-		g_assert_true(venture_database_migrate(fixture->database[i], venture_entity_registry_get_default(), &error));
-		g_assert_no_error(error);
 		fixture->server[i] = venture_web_server_new(fixture->context[i], &error);
 		g_assert_no_error(error);
 		g_assert_true(venture_web_server_start(fixture->server[i], &error));
@@ -134,6 +207,7 @@ teardown(Fixture *fixture, gconstpointer data)
 	}
 	venture_test_remove_tree(fixture->directory);
 	g_free(fixture->directory);
+	g_assert_cmpint(g_get_monotonic_time() - fixture->started, <, FEDERATION_CASE_BUDGET_US);
 }
 
 static JsonNode *
@@ -380,11 +454,10 @@ test_scheduler(Fixture *fixture, gconstpointer data)
 	g_autoptr(VentureEntity) replica = pull(fixture);
 	g_autoptr(VentureEntity) edited = edit(fixture, replica, "{\"name\":\"Scheduled edit\"}");
 	g_autoptr(VentureEntity) current = NULL;
-	gint64 deadline = g_get_monotonic_time() + 12 * G_TIME_SPAN_SECOND;
+	gint64 deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
 	gboolean clean = FALSE;
 	(void)data;
-	g_object_set(fixture->config[1], "federation-sync-interval", (gint64)5, NULL);
-	venture_federation_sync_start(fixture->context[1]);
+	venture_federation_sync_start_every(fixture->context[1], FEDERATION_TEST_SYNC_MS);
 	while (!clean && g_get_monotonic_time() < deadline)
 	{
 		g_autofree gchar *status = NULL;
@@ -498,12 +571,12 @@ test_hosted_outbound(Fixture *fixture, gconstpointer data)
 	g_assert_no_error(error);
 	{
 		g_autoptr(VentureTenantMaintenance) maintenance = venture_tenant_service_enter_maintenance(tenant, "Explicit federation review", &error);
-		gint64 deadline = g_get_monotonic_time() + 7 * G_TIME_SPAN_SECOND;
+		/* Long enough for several rounds; any one of them would show. */
+		gint64 deadline = g_get_monotonic_time() + 10 * FEDERATION_TEST_SYNC_MS * 1000;
 		g_assert_no_error(error);
 		/* An unrelated timer dispatched by an operator's nested main loop
 		 * must not inherit that operator's privileged maintenance scope. */
-		g_object_set(fixture->config[1], "federation-sync-interval", (gint64)5, NULL);
-		venture_federation_sync_start(fixture->context[1]);
+		venture_federation_sync_start_every(fixture->context[1], FEDERATION_TEST_SYNC_MS);
 		while (g_get_monotonic_time() < deadline) {
 			while (g_main_context_iteration(NULL, FALSE)) {}
 			g_usleep(10000);
@@ -1037,17 +1110,25 @@ test_future_type(Fixture *fixture, gconstpointer data)
 static void
 test_upgrade_stays_private(void)
 {
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *directory = g_dir_make_tmp("venture-federation-upgrade-XXXXXX", &error);
+	g_autofree gchar *path = g_build_filename(directory, "records.db", NULL);
+	g_autofree gchar *uri = g_strdup_printf("sqlite://%s", path);
 	g_autoptr(VentureConfig) config = venture_config_new();
-	g_autoptr(VentureDatabase) database = venture_database_new("sqlite://:memory:", NULL);
-	g_autoptr(VentureContext) context = venture_context_new(config, database);
+	g_autoptr(VentureDatabase) database = NULL;
+	g_autoptr(VentureContext) context = NULL;
 	g_autoptr(VentureEntity) record = VENTURE_ENTITY(venture_venture_new());
 	g_autoptr(VentureEntity) reloaded = NULL;
 	g_autoptr(VentureQuery) query = NULL;
 	g_autoptr(GPtrArray) grants = NULL;
-	g_autoptr(GError) error = NULL;
 	g_autofree gchar *name = NULL;
-	g_assert_true(venture_database_migrate(database, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
+	/* An install migrated before federation was switched on. */
+	copy_template(migrated_template(FALSE), path);
+	g_object_set(config, "state-dir", directory, NULL);
+	database = venture_database_new(uri, &error);
+	g_assert_no_error(error);
+	context = venture_context_new(config, database);
 	g_object_set(record, "name", "Historical private venture", NULL);
 	venture_entity_set_organization_id(record, venture_context_get_default_organization_id(context));
 	g_assert_true(venture_database_save(database, record, NULL, &error));
@@ -1065,6 +1146,9 @@ test_upgrade_stays_private(void)
 	g_assert_no_error(error);
 	g_object_get(reloaded, "name", &name, NULL);
 	g_assert_cmpstr(name, ==, "Historical private venture");
+	g_clear_object(&context);
+	g_clear_object(&database);
+	venture_test_remove_tree(directory);
 }
 
 int
@@ -1105,5 +1189,11 @@ main(int argc, char **argv)
 	g_test_add("/federation/collection", Fixture, NULL, setup, test_collection, teardown);
 	g_test_add("/federation/future-type", Fixture, NULL, setup, test_future_type, teardown);
 	g_test_add_func("/federation/upgrade-private", test_upgrade_stays_private);
-	return g_test_run();
+	{
+		int status = g_test_run();
+		if (template_directory)
+			venture_test_remove_tree(template_directory);
+		g_free(template_directory);
+		return status;
+	}
 }
