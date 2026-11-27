@@ -351,7 +351,9 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	 * the rest of a call runs alone. */
 	GMutex hold_lock; GCond hold_cond; gboolean holding, hold_times_out; gint hold_limit, held; guint released;
 	/* Each customer after the first its own id, for two businesses at once. */
-	gboolean distinct_customers; } FakeTransport;
+	gboolean distinct_customers;
+	/* Requests refused because their idempotency key was still in flight. */
+	gint keys_refused; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -369,6 +371,7 @@ fake_setup_free(gpointer data)
 }
 static StripeResponse *fake_connect_send(FakeTransport *self, const StripeHttpRequest *request);
 static StripeResponse *fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **error);
+static StripeResponse *fake_send_held(FakeTransport *self, const StripeHttpRequest *request, GCancellable *cancellable, GError **error);
 static void assert_route_unblocked(VentureWebServer *server, FakeTransport *transport, const gchar *method,
 	const gchar *path, const gchar *content_type, const gchar *body, const gchar *host,
 	const gchar *origin, const gchar *auth, guint expected);
@@ -381,8 +384,39 @@ static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	GCancellable *cancellable, GError **error)
 {
-	static GMutex alone;
+	/* Stripe refuses a request whose idempotency key another request
+	 * still in progress carries; this fake does too. */
+	static GMutex keys_lock;
+	static GHashTable *keys_in_flight;
 	FakeTransport *self = (FakeTransport *)transport;
+	const gchar *key = request->idempotency_key;
+	StripeResponse *response;
+	if (key && *key) {
+		gboolean in_use;
+		g_mutex_lock(&keys_lock);
+		if (!keys_in_flight) keys_in_flight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+		in_use = g_hash_table_contains(keys_in_flight, key);
+		if (!in_use) g_hash_table_add(keys_in_flight, g_strdup(key));
+		g_mutex_unlock(&keys_lock);
+		if (in_use) {
+			g_atomic_int_inc(&self->keys_refused);
+			return stripe_response_new(409, "{\"error\":{\"type\":\"idempotency_error\",\"message\":"
+				"\"There is currently another in-progress request using this Idempotent Key\"}}", NULL, NULL);
+		}
+	}
+	response = fake_send_held(self, request, cancellable, error);
+	if (key && *key) {
+		g_mutex_lock(&keys_lock);
+		g_hash_table_remove(keys_in_flight, key);
+		g_mutex_unlock(&keys_lock);
+	}
+	return response;
+}
+static StripeResponse *
+fake_send_held(FakeTransport *self, const StripeHttpRequest *request,
+	GCancellable *cancellable, GError **error)
+{
+	static GMutex alone;
 	StripeResponse *response;
 	gboolean was_held = FALSE;
 	(void)cancellable;
@@ -1361,6 +1395,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/payment-link/slow-hosted", Fixture, "slow-hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/slow-email", Fixture, "slow-email", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/slow-email-hosted", Fixture, "slow-email-hosted", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/race-invoice", Fixture, "race-invoice", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/race-customer", Fixture, "race-customer", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);

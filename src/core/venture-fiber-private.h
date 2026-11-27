@@ -65,6 +65,24 @@ venture_fiber_yield(void);
 guint
 venture_fiber_count(void);
 
+/*
+ * One stack at a time for whatever a key names: see venture_fiber_hold()
+ * in venture-fiber.c. %NULL is "not held": go on unguarded.
+ */
+typedef struct _VentureFiberHold VentureFiberHold;
+
+/* Whether a fiber handed a hold may be resumed now; asked again shortly
+ * if not. */
+typedef gboolean (*VentureFiberReadyFunc)(gpointer data);
+
+VentureFiberHold *
+venture_fiber_hold(const gchar *key, VentureFiberReadyFunc ready, gpointer ready_data);
+
+void
+venture_fiber_release(VentureFiberHold *hold);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureFiberHold, venture_fiber_release)
+
 G_END_DECLS
 
 #endif /* VENTURE_FIBER_PRIVATE_H */

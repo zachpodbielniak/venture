@@ -157,6 +157,150 @@ test_deep_stack(void)
 	g_assert_true(ok);
 }
 
+/* Holds: a log of who held "key" when, and a yield to stand in for a
+ * wait on Stripe while holding it. */
+typedef struct
+{
+	GString		*log;
+	VentureFiber	*parked;	/* the holder, yielded */
+	gchar		 name;
+	gint		 done;
+} Holder;
+
+static void
+holder_run(gpointer data)
+{
+	Holder *holder = data;
+	g_autoptr(VentureFiberHold) hold = venture_fiber_hold("key", NULL, NULL);
+	g_autoptr(VentureFiberHold) again = venture_fiber_hold("key", NULL, NULL);
+
+	g_assert_nonnull(hold);
+	g_assert_true(again == hold);	/* the holder may take it again */
+	g_string_append_c(holder->log, holder->name);
+	holder->parked = venture_fiber_current();
+	venture_fiber_yield();
+	holder->parked = NULL;
+	g_string_append_c(holder->log, g_ascii_toupper(holder->name));
+}
+
+static void
+holder_done(gpointer data)
+{
+	((Holder *)data)->done++;
+}
+
+/* Wakes whichever holder is parked, from the main loop, until all are done. */
+static void
+holders_finish(Holder *holders, guint n)
+{
+	guint i, done;
+
+	for (;;)
+	{
+		for (done = 0, i = 0; i < n; i++)
+		{
+			done += holders[i].done;
+			if (NULL != holders[i].parked)
+				venture_fiber_wake(holders[i].parked);
+		}
+		if (done == n)
+			break;
+		g_main_context_iteration(NULL, FALSE);
+	}
+}
+
+/*
+ * Fibers that ask for a key another holds wait for it, and hold it in
+ * the order they asked: each one's turn starts after the last one's has
+ * ended, though each yields part-way. Without the hold this is "abcABC".
+ */
+static void
+test_hold_one_at_a_time(void)
+{
+	Holder holders[3];
+	guint i;
+	g_autoptr(GString) log = g_string_new(NULL);
+
+	for (i = 0; i < G_N_ELEMENTS(holders); i++)
+	{
+		holders[i].log = log;
+		holders[i].parked = NULL;
+		holders[i].name = (gchar)('a' + i);
+		holders[i].done = 0;
+	}
+	for (i = 0; i < G_N_ELEMENTS(holders); i++)
+		venture_fiber_wake(venture_fiber_new(holder_run, holder_done, NULL, &holders[i]));
+	holders_finish(holders, G_N_ELEMENTS(holders));
+	g_assert_cmpstr(log->str, ==, "aAbBcC");
+}
+
+static gboolean
+not_yet(gpointer data)
+{
+	gint *asked = data;
+
+	return ++*asked > 3;
+}
+
+static void
+ready_holder_run(gpointer data)
+{
+	gint *asked = data;
+	g_autoptr(VentureFiberHold) hold = venture_fiber_hold("key", not_yet, asked);
+
+	g_assert_nonnull(hold);
+}
+
+static void
+count_done(gpointer data)
+{
+	(void)data;
+}
+
+/* A fiber handed the key is resumed only once its ready function says
+ * it may be: asked again until then. */
+static void
+test_hold_waits_until_ready(void)
+{
+	VentureFiberHold *hold;
+	VentureFiber *fiber;
+	gint asked = 0;
+	guint before = venture_fiber_count();
+
+	/* Held by this plain stack, at depth 0, so the fiber queues. */
+	hold = venture_fiber_hold("key", NULL, NULL);
+	g_assert_nonnull(hold);
+	fiber = venture_fiber_new(ready_holder_run, count_done, NULL, &asked);
+	venture_fiber_wake(fiber);
+	g_assert_cmpuint(venture_fiber_count(), ==, before + 1);
+	venture_fiber_release(hold);
+	while (venture_fiber_count() > before)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_cmpint(asked, ==, 4);
+}
+
+/* A plain stack never waits for a key a yielded fiber holds: it gets no
+ * hold and goes on, as it would have without holds. */
+static void
+test_hold_plain_does_not_wait(void)
+{
+	g_autoptr(GString) log = g_string_new(NULL);
+	Holder holder = { NULL, NULL, 'a', 0 };
+
+	holder.log = log;
+	venture_fiber_wake(venture_fiber_new(holder_run, holder_done, NULL, &holder));
+	g_assert_nonnull(holder.parked);
+	g_assert_null(venture_fiber_hold("key", NULL, NULL));
+	holders_finish(&holder, 1);
+	g_assert_cmpstr(log->str, ==, "aA");
+	/* Let go: free again for anybody. */
+	{
+		VentureFiberHold *hold = venture_fiber_hold("key", NULL, NULL);
+		g_assert_nonnull(hold);
+		venture_fiber_release(hold);
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -167,5 +311,8 @@ main(int argc, char **argv)
 	g_test_add_func("/fiber/count", test_count);
 	g_test_add_func("/fiber/current-on-another-thread", test_current_on_another_thread);
 	g_test_add_func("/fiber/deep-stack", test_deep_stack);
+	g_test_add_func("/fiber/hold/one-at-a-time", test_hold_one_at_a_time);
+	g_test_add_func("/fiber/hold/waits-until-ready", test_hold_waits_until_ready);
+	g_test_add_func("/fiber/hold/plain-does-not-wait", test_hold_plain_does_not_wait);
 	return g_test_run();
 }

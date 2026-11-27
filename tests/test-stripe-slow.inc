@@ -98,6 +98,7 @@ typedef struct {
 	GCancellable *cancel;	/* set: the client may give up; a failure is expected */
 	guint status;
 	gchar *reply;
+	gchar *location;	/* the answer's Location header, if any */
 	gint done;
 	GThread *thread;
 } SlowCall;
@@ -123,6 +124,7 @@ slow_call_run(gpointer data)
 	if (!call->cancel)
 		g_assert_no_error(error);
 	call->status = soup_message_get_status(message);
+	call->location = g_strdup(soup_message_headers_get_one(soup_message_get_response_headers(message), "Location"));
 	if (reply)
 		call->reply = g_strndup(g_bytes_get_data(reply, NULL), g_bytes_get_size(reply));
 	g_atomic_int_set(&call->done, 1);
@@ -158,6 +160,7 @@ static void
 slow_call_clear(SlowCall *call)
 {
 	g_clear_pointer(&call->reply, g_free);
+	g_clear_pointer(&call->location, g_free);
 	g_clear_object(&call->cancel);
 }
 

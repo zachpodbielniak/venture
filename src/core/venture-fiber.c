@@ -277,3 +277,164 @@ venture_fiber_yield(void)
 	swapcontext(&self->context, &self->caller);
 	fiber_asan_entered(self);
 }
+
+/*
+ * Holds: one stack at a time for whatever a key names.
+ *
+ * Two fibers may each be part-way through the same piece of work -- two
+ * Checkouts for one customer, say -- because each yields while it waits
+ * on Stripe and the other runs meanwhile. Before fibers the second could
+ * not start until the first had finished. A hold puts that back for the
+ * work that needs it: whoever holds a key goes on, and a fiber that asks
+ * for it meanwhile yields until the holder lets go, then holds it in turn,
+ * in the order they asked.
+ *
+ * A plain stack takes a free key as a fiber does, and while it holds one
+ * nothing else runs: it blocks rather than yields. It is never made to
+ * wait for a key a yielded fiber holds -- waiting would mean a nested main
+ * loop, which VENTURE does not run -- and goes on unguarded, as it would
+ * have without holds. So does anything off the fibers' thread.
+ *
+ * The stack that holds a key may take it again; each take is released.
+ */
+typedef struct
+{
+	VentureFiber		*fiber;
+	VentureFiberReadyFunc	 ready;
+	gpointer		 ready_data;
+} HoldWaiter;	/* on the waiting fiber's stack, mapped until it is woken */
+
+struct _VentureFiberHold
+{
+	gchar			*key;
+	VentureFiber		*owner;		/* %NULL: a plain stack */
+	gint			 depth;		/* a plain owner's g_main_depth() */
+	guint			 count;
+	GQueue			 waiters;	/* HoldWaiter, first asked first */
+};
+
+static GHashTable	*fiber_holds;
+
+/* How soon a waiter that may not be resumed yet is asked again. */
+#define VENTURE_FIBER_HOLD_REARM_MS (10u)
+
+/* Whether the calling stack is the one holding @hold. */
+static gboolean
+hold_is_mine(const VentureFiberHold *hold)
+{
+	VentureFiber *self = venture_fiber_current();
+
+	if (NULL != hold->owner)
+		return hold->owner == self;
+	return NULL == self && NULL == fiber_current && hold->depth == g_main_depth();
+}
+
+static gboolean
+hold_wake(gpointer data)
+{
+	HoldWaiter *waiter = data;
+
+	if (NULL != waiter->ready && !waiter->ready(waiter->ready_data))
+	{
+		GSource *again = g_timeout_source_new(VENTURE_FIBER_HOLD_REARM_MS);
+
+		g_source_set_priority(again, G_PRIORITY_DEFAULT);
+		g_source_set_callback(again, hold_wake, waiter, NULL);
+		g_source_set_static_name(again, "venture-fiber-hold");
+		g_source_attach(again, g_main_context_default());
+		g_source_unref(again);
+		return G_SOURCE_REMOVE;
+	}
+	venture_fiber_wake(waiter->fiber);
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Takes @key for the calling stack. A fiber waits for it as above; once
+ * handed it, it is resumed from the main loop when @ready (if given)
+ * says it may be -- the Stripe service asks that no database transaction
+ * be open there. Returns the hold to give venture_fiber_release(), or
+ * %NULL where the caller cannot have it (and so goes on unguarded).
+ * Never call it with a transaction open: a fiber that waits here yields,
+ * and whatever runs meanwhile would write inside it.
+ */
+VentureFiberHold *
+venture_fiber_hold(const gchar *key, VentureFiberReadyFunc ready, gpointer ready_data)
+{
+	VentureFiberHold *hold;
+	VentureFiber *self;
+
+	g_return_val_if_fail(NULL != key, NULL);
+	if (NULL == fiber_owner() || g_thread_self() != fiber_owner())
+		return NULL;
+	if (NULL == fiber_holds)
+		fiber_holds = g_hash_table_new(g_str_hash, g_str_equal);
+
+	self = venture_fiber_current();
+	hold = g_hash_table_lookup(fiber_holds, key);
+	if (NULL != hold && hold_is_mine(hold))
+	{
+		hold->count++;
+		return hold;
+	}
+	if (NULL != hold)
+	{
+		HoldWaiter waiter;
+
+		/* A plain stack, or a fiber's nested frame: no waiting. */
+		if (NULL == self)
+			return NULL;
+		/* venture_fiber_release() hands it over, then wakes this. */
+		waiter.fiber = self;
+		waiter.ready = ready;
+		waiter.ready_data = ready_data;
+		g_queue_push_tail(&hold->waiters, &waiter);
+		venture_fiber_yield();
+		g_warn_if_fail(hold->owner == self);
+		return hold;
+	}
+
+	hold = g_new0(VentureFiberHold, 1);
+	hold->key = g_strdup(key);
+	hold->owner = self;
+	hold->depth = g_main_depth();
+	hold->count = 1;
+	g_queue_init(&hold->waiters);
+	g_hash_table_insert(fiber_holds, hold->key, hold);
+	return hold;
+}
+
+/* Lets @hold go: to the first fiber waiting for it, if one is. */
+void
+venture_fiber_release(VentureFiberHold *hold)
+{
+	HoldWaiter *next;
+
+	if (NULL == hold)
+		return;
+	g_return_if_fail(hold->count > 0);
+	if (--hold->count > 0)
+		return;
+
+	next = g_queue_pop_head(&hold->waiters);
+	if (NULL != next)
+	{
+		/* Woken from the main loop, not from here: the releaser may be
+		 * deep in its own stack, and the next holder starts its turn. At
+		 * the default priority, as requests are, so a busy loop cannot
+		 * starve it. */
+		GSource *source = g_idle_source_new();
+
+		hold->owner = next->fiber;
+		hold->count = 1;
+		g_source_set_priority(source, G_PRIORITY_DEFAULT);
+		g_source_set_callback(source, hold_wake, next, NULL);
+		g_source_set_static_name(source, "venture-fiber-hold");
+		g_source_attach(source, g_main_context_default());
+		g_source_unref(source);
+		return;
+	}
+	g_hash_table_remove(fiber_holds, hold->key);
+	g_free(hold->key);
+	g_free(hold);
+}

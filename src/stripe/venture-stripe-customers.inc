@@ -1,4 +1,51 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
+/*
+ * One Stripe customer's Checkouts, and the customer itself, are made one
+ * at a time. A request that waits on Stripe yields to the others
+ * (core/venture-fiber.c), so two clicks of one Pay now link, or two of a
+ * new customer's invoices paid at once, would otherwise both be part-way
+ * through: the second reusing the first one's idempotency key while it
+ * is still in flight, which Stripe refuses, or saving a second link to
+ * the customer the first one is creating. Held by the paying party, the
+ * one thing both cases share: the second waits for the first and then
+ * finds its session, or its customer, already there.
+ *
+ * Not taken with a transaction open (a fiber does not yield inside one),
+ * nor by a plain stack while a fiber holds it (a plain stack never waits);
+ * the caller then goes on as before.
+ */
+/* A fiber handed the hold is resumed only outside a transaction: a nested
+ * loop elsewhere may be dispatching it, inside its caller's. */
+static gboolean
+stripe_hold_ready(gpointer database)
+{
+	return !venture_database_has_transaction(database);
+}
+
+static VentureFiberHold *
+stripe_party_hold(VentureStripeService *self, gint64 company_id, gint64 contact_id)
+{
+	g_autofree gchar *key = NULL;
+	if ((!company_id && !contact_id) || venture_database_has_transaction(self->database)) return NULL;
+	key = g_strdup_printf("venture-stripe-party:%" G_GINT64_FORMAT ":%s:%" G_GINT64_FORMAT, self->organization_id,
+		company_id ? "company" : "contact", company_id ? company_id : contact_id);
+	return venture_fiber_hold(key, stripe_hold_ready, self->database);
+}
+
+/* The same, for the party @invoice_id bills; none for an unreadable one,
+ * which the caller then refuses. */
+static VentureFiberHold *
+stripe_invoice_hold(VentureStripeService *self, gint64 invoice_id)
+{
+	g_autoptr(VentureEntity) invoice = NULL;
+	gint64 company_id = 0, contact_id = 0;
+	if (venture_database_has_transaction(self->database)) return NULL;
+	invoice = venture_database_get(self->database, VENTURE_TYPE_INVOICE, invoice_id, NULL);
+	if (!invoice) return NULL;
+	g_object_get(invoice, "company-id", &company_id, "contact-id", &contact_id, NULL);
+	return stripe_party_hold(self, company_id, contact_id);
+}
+
 static gchar *
 stripe_customer(VentureStripeService *self, gint64 company_id, gint64 contact_id,
 	const VentureActor *actor, GError **error)
@@ -11,8 +58,10 @@ stripe_customer(VentureStripeService *self, gint64 company_id, gint64 contact_id
 	g_autoptr(StripeRequest) request = NULL;
 	g_autoptr(StripeResource) resource = NULL;
 	g_autoptr(VentureStripeCustomerLink) link = NULL;
+	g_autoptr(VentureFiberHold) hold = NULL;
 	gchar *customer_id = NULL;
 	if (!customer) return NULL;
+	hold = stripe_party_hold(self, company_id, contact_id);
 	links = find_id(self, VENTURE_TYPE_STRIPE_CUSTOMER_LINK, field, party_id, error);
 	if (!links) return NULL;
 	if (links->len)

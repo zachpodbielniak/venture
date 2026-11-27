@@ -58,11 +58,15 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 	g_autofree gchar *customer_id = NULL;
 	g_autofree gchar *success_url = NULL;
 	g_autofree gchar *cancel_url = NULL;
+	g_autoptr(VentureFiberHold) hold = NULL;
 	gint64 company_id, contact_id, checkout_id;
 	gboolean transaction = FALSE;
 	gboolean ach = FALSE;
 	guint i;
 
+	/* Before anything is read: a second Checkout for this customer waits
+	 * here for the first, then finds its session (stripe_party_hold()). */
+	hold = stripe_invoice_hold(self, invoice_id);
 	/* No remote effect may be nested in another writer's rollback scope. */
 	if (!venture_database_begin_serializable(self->database, error)) return NULL;
 	transaction = TRUE;

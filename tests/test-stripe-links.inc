@@ -1,6 +1,17 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* A copied URL is a narrowly bound capability, not an invoice selector or a
  * persisted bearer secret. Expiry, revocation and invoice edits invalidate it. */
+/* The second of two concurrent Pay now requests has either answered or
+ * is waiting in a fiber beside the first one's. */
+typedef struct { SlowCall *second; guint fibers; } PayRace;
+
+static gboolean
+pay_race_settled(gpointer data)
+{
+	PayRace *race = data;
+	return g_atomic_int_get(&race->second->done) || venture_fiber_count() >= race->fibers;
+}
+
 static void
 test_payment_link(Fixture *f, gconstpointer data)
 {
@@ -154,6 +165,77 @@ test_payment_link(Fixture *f, gconstpointer data)
 			g_autofree gchar *checkout_path = g_strdup_printf("%s/checkout", path);
 			assert_route_unblocked(server, (FakeTransport *)transport, "GET", checkout_path, NULL,
 				NULL, hosted ? "venture.example" : NULL, NULL, NULL, 303);
+			venture_web_server_stop(server);
+			venture_test_remove_tree(state_directory);
+			return;
+		}
+		if (!g_strcmp0(mode, "race-invoice") || !g_strcmp0(mode, "race-customer"))
+		{
+			/* Two Pay now clicks at once: a double click, or a mail
+			 * scanner opening the link before the customer does. The
+			 * first is held on Stripe creating the new customer, and the
+			 * second arrives meanwhile. race-invoice: both are the same
+			 * invoice's, and both get the first one's session, from one
+			 * Stripe customer and one Checkout. race-customer: each is a
+			 * different invoice of the same new customer, and the
+			 * customer is created once. Neither second request may reuse
+			 * an idempotency key still in flight, nor leave an
+			 * uncertain-creation exception behind. */
+			gboolean same = !g_strcmp0(mode, "race-invoice");
+			g_autoptr(VentureEntity) other = same ? NULL : invoice_new(f, "LINK-2", "2026-01-01", "50 USD");
+			g_autoptr(VentureStripePaymentLink) second = NULL;
+			g_autofree gchar *second_url = NULL, *first_path = g_strdup_printf("%s/checkout", path), *second_path = NULL;
+			g_autoptr(GPtrArray) exceptions = NULL;
+			g_autoptr(GPtrArray) customers = NULL;
+			SlowCall first_call = { 0 }, second_call = { 0 };
+			PayRace race;
+			FakeTransport *fake = (FakeTransport *)transport;
+			guint fibers = venture_fiber_count();
+			if (same)
+				second_path = g_strdup(first_path);
+			else
+			{
+				second = venture_stripe_service_create_payment_link(service, venture_entity_get_id(other),
+					"https://venture.example", expires, NULL, &error);
+				g_assert_no_error(error); g_assert_nonnull(second);
+				g_object_get(second, "url", &second_url, NULL);
+				second_path = g_strdup_printf("/pay/%s/checkout", second_url + strlen("https://venture.example/pay/"));
+			}
+			g_assert_cmpuint(fake->customers, ==, 0);
+			g_assert_cmpuint(fake->checkouts, ==, 0);
+			fake_hold(fake, 1);
+			slow_call_start(&first_call, server, first_path);
+			fake_wait_held(fake, 1);
+			/* The second is either waiting for the first -- its fiber is
+			 * alive beside the first one's -- or has already answered. */
+			slow_call_start(&second_call, server, second_path);
+			race.second = &second_call; race.fibers = fibers + 2;
+			run_until(pay_race_settled, &race);
+			fake_release_all(fake);
+			slow_call_finish(&first_call);
+			slow_call_finish(&second_call);
+			g_test_message("first: %u %s; second: %u %s; customers %u, checkouts %u, keys refused %d",
+				first_call.status, first_call.location, second_call.status, second_call.location,
+				fake->customers, fake->checkouts, g_atomic_int_get(&fake->keys_refused));
+			g_assert_cmpuint(first_call.status, ==, 303);
+			g_assert_cmpuint(second_call.status, ==, 303);
+			g_assert_cmpint(g_atomic_int_get(&fake->keys_refused), ==, 0);
+			g_assert_cmpuint(fake->customers, ==, 1);
+			customers = rows(f, "stripe_customer_link");
+			g_assert_cmpuint(customers->len, ==, 1);
+			if (same)
+			{
+				g_assert_cmpuint(fake->checkouts, ==, 1);
+				g_assert_cmpstr(second_call.location, ==, first_call.location);
+			}
+			else
+			{
+				g_assert_cmpuint(fake->checkouts, ==, 2);
+				g_assert_cmpstr(second_call.location, !=, first_call.location);
+			}
+			exceptions = rows(f, "processor_exception");
+			g_assert_cmpuint(exceptions->len, ==, 0);
+			slow_call_clear(&first_call); slow_call_clear(&second_call);
 			venture_web_server_stop(server);
 			venture_test_remove_tree(state_directory);
 			return;

@@ -353,9 +353,21 @@ venture_stripe_service_pay_link(VentureStripeService *self,
 	g_autoptr(GDateTime) now = clock ? g_date_time_ref(clock) : venture_time_now();
 	g_autoptr(GDateTime) expires = NULL;
 	g_autoptr(GDateTime) maximum = g_date_time_add_hours(now, 23);
+	g_autoptr(VentureFiberHold) hold = NULL;
 	gint64 invoice_id, binding;
 	link = venture_stripe_service_resolve_payment_link(self->database, token, now, error);
 	if (!link) return NULL;
+	/* Held before the link is read for good: a second click waits for the
+	 * first, then reads the link as the first one left it, and is not
+	 * refused as a changed capability (stripe_party_hold()). */
+	g_object_get(link, "invoice-id", &invoice_id, NULL);
+	hold = stripe_invoice_hold(self, invoice_id);
+	if (hold)
+	{
+		g_clear_object(&link);
+		link = venture_stripe_service_resolve_payment_link(self->database, token, now, error);
+		if (!link) return NULL;
+	}
 	g_object_get(link, "connection-id", &binding, "invoice-id", &invoice_id, "expires-at", &expires, NULL);
 	if (binding != self->connection_id || venture_entity_get_organization_id(VENTURE_ENTITY(link)) != self->organization_id)
 	{ refuse(error, "Payment link belongs to another Stripe account"); return NULL; }
