@@ -14,14 +14,32 @@
 
 #include "venture.h"
 
+#include <math.h>
 #include <string.h>
 
+/*
+ * One filter.
+ *
+ * @as_read: compare the value a record reads back as, not the stored
+ *   column (venture_query_add_filter_as_read())
+ * @read_default: (nullable): for @as_read, what a NULL column reads as,
+ *   in operand text; NULL when it reads NULL, in which case the filter is
+ *   the ordinary one
+ * @default_passes: for @as_read with a @read_default, whether that value
+ *   passes the filter, decided once when the filter is added
+ * @amount_column: (nullable): for a currency filter as read, the money's
+ *   amount column (a NULL amount is a NULL money, with no currency)
+ */
 typedef struct
 {
 	gchar		*column;
 	GType		 value_type;
 	VentureFilterOp	 op;
 	GPtrArray	*values;
+	gboolean	 as_read;
+	gchar		*read_default;
+	gboolean	 default_passes;
+	gchar		*amount_column;
 } VentureQueryFilterEntry;
 
 typedef struct
@@ -63,6 +81,8 @@ venture_query_filter_entry_free(gpointer data)
 
 	g_free(entry->column);
 	g_clear_pointer(&entry->values, g_ptr_array_unref);
+	g_free(entry->read_default);
+	g_free(entry->amount_column);
 	g_free(entry);
 }
 
@@ -173,6 +193,10 @@ venture_query_copy(VentureQuery *self)
 		dup->column = g_strdup(entry->column);
 		dup->value_type = entry->value_type;
 		dup->op = entry->op;
+		dup->as_read = entry->as_read;
+		dup->read_default = g_strdup(entry->read_default);
+		dup->default_passes = entry->default_passes;
+		dup->amount_column = g_strdup(entry->amount_column);
 		if (NULL != entry->values)
 		{
 			dup->values = g_ptr_array_new_with_free_func(g_free);
@@ -499,6 +523,410 @@ venture_query_add_filter_int(
 	text = g_strdup_printf("%" G_GINT64_FORMAT, value);
 
 	return venture_query_add_filter_string(self, field, op, text, error);
+}
+
+/* --- Filters on the value as read ---------------------------------------- */
+
+/* What a boolean operand's text means, as it is bound. */
+static gboolean
+venture_query_text_is_true(const gchar *text)
+{
+	return (0 == g_ascii_strcasecmp(text, "true")) ||
+	       (0 == g_strcmp0(text, "1")) ||
+	       (0 == g_ascii_strcasecmp(text, "yes"));
+}
+
+/*
+ * @value as the operand text a filter on its column would carry
+ * (venture_query_bind_value() binds it back): NULL for a NULL value. A
+ * money value stands for its amount column, which is what a filter on a
+ * money field compares. *out_known is FALSE for a value that is not NULL
+ * and that no operand stands for: a time, a list, any other boxed value,
+ * an unsigned or flags property (none of which a filter binds as such).
+ */
+static gchar *
+venture_query_value_text(
+	const GValue	*value,
+	gboolean	*out_known
+){
+	GType value_type;
+
+	value_type = G_VALUE_TYPE(value);
+	*out_known = TRUE;
+
+	if (G_TYPE_STRING == value_type)
+		return g_value_dup_string(value);
+
+	if (G_TYPE_BOOLEAN == value_type)
+		return g_strdup(g_value_get_boolean(value) ? "true" : "false");
+
+	if (G_TYPE_INT == value_type)
+		return g_strdup_printf("%d", g_value_get_int(value));
+
+	if (G_TYPE_INT64 == value_type)
+		return g_strdup_printf("%" G_GINT64_FORMAT, g_value_get_int64(value));
+
+	if (G_TYPE_DOUBLE == value_type)
+	{
+		gchar buffer[G_ASCII_DTOSTR_BUF_SIZE];
+
+		return g_strdup(g_ascii_dtostr(buffer, sizeof buffer, g_value_get_double(value)));
+	}
+
+	/* The nick the serialiser writes; an ordinal with no member reads
+	 * as JSON null (venture_json_node_from_value()), so as NULL here. */
+	if (G_TYPE_IS_ENUM(value_type))
+		return g_strdup(venture_enum_to_nick(value_type, g_value_get_enum(value)));
+
+	if (VENTURE_TYPE_MONEY == value_type)
+	{
+		const VentureMoney *money;
+
+		money = g_value_get_boxed(value);
+
+		if (NULL == money)
+			return NULL;
+
+		return g_strdup_printf("%" G_GINT64_FORMAT, venture_money_get_amount(money));
+	}
+
+	if (G_TYPE_IS_BOXED(value_type) && (NULL == g_value_get_boxed(value)))
+		return NULL;
+
+	*out_known = FALSE;
+	return NULL;
+}
+
+/*
+ * How operand text @a orders against @b for a column of @value_type, the
+ * way the database orders the bound values: *out_order is negative, zero
+ * or positive. Numbers and booleans compare as numbers; text compares
+ * only for equality (both backends compare = byte for byte, but order by
+ * collation), so FALSE for an @ordering question on text.
+ */
+static gboolean
+venture_query_compare_operands(
+	GType		 value_type,
+	const gchar	*a,
+	const gchar	*b,
+	gboolean	 ordering,
+	gint		*out_order
+){
+	if ((G_TYPE_INT64 == value_type) || (G_TYPE_INT == value_type))
+	{
+		gint64 x = g_ascii_strtoll(a, NULL, 10);
+		gint64 y = g_ascii_strtoll(b, NULL, 10);
+
+		*out_order = (x < y) ? -1 : ((x > y) ? 1 : 0);
+		return TRUE;
+	}
+
+	if (G_TYPE_DOUBLE == value_type)
+	{
+		gdouble x = g_ascii_strtod(a, NULL);
+		gdouble y = g_ascii_strtod(b, NULL);
+
+		if (isnan(x) || isnan(y))
+			return FALSE;
+
+		*out_order = (x < y) ? -1 : ((x > y) ? 1 : 0);
+		return TRUE;
+	}
+
+	if (G_TYPE_BOOLEAN == value_type)
+	{
+		gint x = venture_query_text_is_true(a) ? 1 : 0;
+		gint y = venture_query_text_is_true(b) ? 1 : 0;
+
+		*out_order = x - y;
+		return TRUE;
+	}
+
+	if (ordering)
+		return FALSE;
+
+	*out_order = (0 == g_strcmp0(a, b)) ? 0 : 1;
+	return TRUE;
+}
+
+/*
+ * Whether a row whose column is NULL, and so reads as @entry's
+ * read_default, passes @entry. FALSE when that is not decidable the way
+ * the database would decide it for a stored value: LIKE, an ordering of
+ * text, a missing operand, or an empty text operand (which the stored
+ * filter takes to mean "NULL or blank", a different question).
+ */
+static gboolean
+venture_query_default_passes(
+	const VentureQueryFilterEntry	*entry,
+	gboolean			*out_passes
+){
+	const gchar *value;
+	const gchar *operand;
+	gboolean found;
+	gint order = 0;
+	gint high = 0;
+	guint i;
+
+	value = entry->read_default;
+	operand = (entry->values->len > 0) ? g_ptr_array_index(entry->values, 0) : NULL;
+
+	switch (entry->op)
+	{
+	case VENTURE_FILTER_OP_IS_NULL:
+		*out_passes = FALSE;
+		return TRUE;
+
+	case VENTURE_FILTER_OP_NOT_NULL:
+		*out_passes = TRUE;
+		return TRUE;
+
+	case VENTURE_FILTER_OP_EQ:
+	case VENTURE_FILTER_OP_NE:
+		if ((NULL == operand) ||
+		    ((G_TYPE_STRING == entry->value_type) && ('\0' == operand[0])) ||
+		    !venture_query_compare_operands(entry->value_type, value, operand, FALSE, &order))
+			return FALSE;
+		*out_passes = (VENTURE_FILTER_OP_EQ == entry->op) ? (0 == order) : (0 != order);
+		return TRUE;
+
+	case VENTURE_FILTER_OP_LT:
+	case VENTURE_FILTER_OP_LTE:
+	case VENTURE_FILTER_OP_GT:
+	case VENTURE_FILTER_OP_GTE:
+		if ((NULL == operand) ||
+		    !venture_query_compare_operands(entry->value_type, value, operand, TRUE, &order))
+			return FALSE;
+		switch (entry->op)
+		{
+		case VENTURE_FILTER_OP_LT:  *out_passes = (order < 0); break;
+		case VENTURE_FILTER_OP_LTE: *out_passes = (order <= 0); break;
+		case VENTURE_FILTER_OP_GT:  *out_passes = (order > 0); break;
+		default:                    *out_passes = (order >= 0); break;
+		}
+		return TRUE;
+
+	case VENTURE_FILTER_OP_BETWEEN:
+		if ((entry->values->len < 2) ||
+		    !venture_query_compare_operands(entry->value_type, value,
+		        g_ptr_array_index(entry->values, 0), TRUE, &order) ||
+		    !venture_query_compare_operands(entry->value_type, value,
+		        g_ptr_array_index(entry->values, 1), TRUE, &high))
+			return FALSE;
+		*out_passes = (order >= 0) && (high <= 0);
+		return TRUE;
+
+	case VENTURE_FILTER_OP_IN:
+	case VENTURE_FILTER_OP_NOT_IN:
+		found = FALSE;
+		for (i = 0; i < entry->values->len; i++)
+		{
+			const gchar *item = g_ptr_array_index(entry->values, i);
+
+			if ((NULL == item) ||
+			    !venture_query_compare_operands(entry->value_type, value, item, FALSE, &order))
+				return FALSE;
+			if (0 == order)
+				found = TRUE;
+		}
+		*out_passes = (VENTURE_FILTER_OP_IN == entry->op) ? found : !found;
+		return TRUE;
+
+	default:
+		return FALSE;
+	}
+}
+
+/*
+ * The single source of truth for what a NULL column reads as: the value
+ * of @pspec on a record of @entity_type that nothing was loaded into.
+ *
+ * That is exactly what a NULL column leaves behind:
+ * venture_database_find() makes each record with g_object_new() and
+ * venture_schema_populate_property() returns without setting a property
+ * whose column is NULL. It is not taken from the GParamSpec default: an
+ * unset declared field reads its GType's zero value whatever that says
+ * (venture_entity_get_property() leaves the reset GValue alone), so
+ * ticket.priority reads "low", the enum's zero member; nor from a field
+ * spec's `default`, which only seeds new forms. Reading it through
+ * g_object_get_property() is what the list API's JSON, and so LQL, does.
+ *
+ * Two records are made and compared, so a value made fresh on each read
+ * (a generated uuid) is caught as not fixed; a time is never taken as
+ * fixed, since two records made within one clock tick would agree.
+ *
+ * The identity spine's time stamps are the one exception: created-at and
+ * updated-at are declared on #VentureEntity, so they are in every table's
+ * CREATE TABLE rather than added by a later migration, and every save
+ * writes them. Their column never holds the legacy NULL this guards
+ * against, so they compare as stored (*@out_text is left %NULL), although
+ * a fresh record stamps them with the current time.
+ */
+static gboolean
+venture_query_read_default(
+	GType		  entity_type,
+	GParamSpec	 *pspec,
+	gchar		**out_text,
+	GError		**error
+){
+	g_autoptr(GObject) first = NULL;
+	g_autoptr(GObject) second = NULL;
+	g_auto(GValue) first_value = G_VALUE_INIT;
+	g_auto(GValue) second_value = G_VALUE_INIT;
+	g_autofree gchar *first_text = NULL;
+	g_autofree gchar *second_text = NULL;
+	gboolean first_known;
+	gboolean second_known;
+
+	/* The spine's stamps: see above. */
+	if ((VENTURE_TYPE_ENTITY == pspec->owner_type) &&
+	    (G_TYPE_DATE_TIME == pspec->value_type))
+		return TRUE;
+
+	first = g_object_new(entity_type, NULL);
+	second = g_object_new(entity_type, NULL);
+
+	g_value_init(&first_value, pspec->value_type);
+	g_value_init(&second_value, pspec->value_type);
+	g_object_get_property(first, pspec->name, &first_value);
+	g_object_get_property(second, pspec->name, &second_value);
+
+	first_text = venture_query_value_text(&first_value, &first_known);
+	second_text = venture_query_value_text(&second_value, &second_known);
+
+	if (!first_known || !second_known || (0 != g_strcmp0(first_text, second_text)))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "\"%s\" has no fixed value when its column is NULL, so the "
+		            "database cannot filter it as it reads", pspec->name);
+		return FALSE;
+	}
+
+	*out_text = g_steal_pointer(&first_text);
+	return TRUE;
+}
+
+gboolean
+venture_query_add_filter_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	VentureFilterOp	  op,
+	GPtrArray	 *values,
+	GError		**error
+){
+	g_autoptr(VentureEntityClass) klass = NULL;
+	g_autofree gchar *property_name = NULL;
+	g_autofree gchar *read_default = NULL;
+	VentureQueryFilterEntry *entry;
+	GParamSpec *pspec;
+
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+	g_return_val_if_fail(NULL != field, FALSE);
+
+	/* The field and the operand count are checked by the ordinary path;
+	 * a field it accepted is a property of the type. */
+	if (!venture_query_add_filter(self, field, op, values, error))
+		return FALSE;
+
+	entry = g_ptr_array_index(self->filters, self->filters->len - 1);
+	entry->as_read = TRUE;
+
+	property_name = venture_entity_column_to_property(field);
+	klass = g_type_class_ref(self->entity_type);
+	pspec = g_object_class_find_property(G_OBJECT_CLASS(klass), property_name);
+
+	/*
+	 * The identity spine -- VentureEntity's own id, uuid, organization_id,
+	 * created_at, updated_at, deleted_at, version -- is in every table's
+	 * CREATE TABLE and has been since the first commit (6b6bf63b), and
+	 * every save writes it, so none of it is ever a column added under
+	 * older rows: the stored filter means what the record reads. It has
+	 * to be said rather than worked out, because created_at and
+	 * updated_at start as the time the record is made, which no filter
+	 * could match and would refuse every "Created this week" chip.
+	 */
+	if ((NULL != pspec) && (VENTURE_TYPE_ENTITY == pspec->owner_type))
+		return TRUE;
+
+	if ((NULL == pspec) ||
+	    !venture_query_read_default(self->entity_type, pspec, &read_default, error))
+	{
+		if (NULL == pspec)
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "No field \"%s\"", field);
+		g_ptr_array_remove_index(self->filters, self->filters->len - 1);
+		return FALSE;
+	}
+
+	/* A NULL column that reads NULL: the stored filter means the same. */
+	if (NULL == read_default)
+		return TRUE;
+
+	entry->read_default = g_steal_pointer(&read_default);
+
+	if (!venture_query_default_passes(entry, &entry->default_passes))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "The \"%s\" comparison on %s cannot be answered by the database "
+		            "for rows where it is NULL, which read as %s",
+		            venture_enum_to_nick(VENTURE_TYPE_FILTER_OP, (gint)op),
+		            field, entry->read_default);
+		g_ptr_array_remove_index(self->filters, self->filters->len - 1);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+gboolean
+venture_query_add_filter_string_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	VentureFilterOp	  op,
+	const gchar	 *value,
+	GError		**error
+){
+	g_autoptr(GPtrArray) values = NULL;
+
+	values = g_ptr_array_new();
+
+	if (NULL != value)
+		g_ptr_array_add(values, (gpointer)value);
+
+	return venture_query_add_filter_as_read(self, field, op, values, error);
+}
+
+gboolean
+venture_query_add_money_currency_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	const gchar	 *currency,
+	GError		**error
+){
+	g_autofree gchar *property_name = NULL;
+	g_autofree gchar *column = NULL;
+	g_autofree gchar *book = NULL;
+	VentureQueryFilterEntry *entry;
+
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+	g_return_val_if_fail(NULL != field, FALSE);
+	g_return_val_if_fail(NULL != currency, FALSE);
+
+	if (!venture_query_add_money_currency(self, field, currency, error))
+		return FALSE;
+
+	entry = g_ptr_array_index(self->filters, self->filters->len - 1);
+	property_name = venture_entity_column_to_property(field);
+	column = venture_entity_property_to_column(property_name);
+
+	entry->as_read = TRUE;
+	entry->amount_column = g_strconcat(column, VENTURE_SCHEMA_MONEY_AMOUNT_SUFFIX, NULL);
+
+	/* venture_money_store_currency()'s spelling of the default. */
+	book = g_ascii_strup(venture_money_get_default_currency(), -1);
+	entry->default_passes = (0 == g_strcmp0(currency, book));
+
+	return TRUE;
 }
 
 gboolean
@@ -1031,11 +1459,7 @@ venture_query_bind_value(
 		return orm_value_new_null();
 
 	if (G_TYPE_BOOLEAN == value_type)
-	{
-		return orm_value_new_boolean((0 == g_ascii_strcasecmp(text, "true")) ||
-		                             (0 == g_strcmp0(text, "1")) ||
-		                             (0 == g_ascii_strcasecmp(text, "yes")));
-	}
+		return orm_value_new_boolean(venture_query_text_is_true(text));
 
 	if ((G_TYPE_INT64 == value_type) || (G_TYPE_INT == value_type))
 		return orm_value_new_integer(g_ascii_strtoll(text, NULL, 10));
@@ -1155,8 +1579,10 @@ venture_query_bind_time(const gchar *text)
 	return orm_value_new_string(padded);
 }
 
+/* The filter on the stored column, as every caller had it before
+ * venture_query_add_filter_as_read(). */
 static void
-venture_query_append_filter(
+venture_query_append_stored_filter(
 	VentureQuery			*self,
 	const VentureQueryFilterEntry	*entry,
 	GString				*sql,
@@ -1165,6 +1591,8 @@ venture_query_append_filter(
 	GList				**params
 ){
 	g_autofree gchar *quoted = NULL;
+
+	(void)self;
 
 	quoted = venture_schema_quote_identifier(entry->column);
 
@@ -1321,6 +1749,79 @@ venture_query_append_filter(
 					: NULL));
 		return;
 	}
+}
+
+/*
+ * One filter. An ordinary one compares the stored column. One added as
+ * read (venture_query_add_filter_as_read()) compares what a loaded record
+ * holds, which differs only where the column is NULL:
+ *
+ *   is_null      a NULL column reads as a value, so no row is NULL: 1 = 0
+ *   not_null     and every row is not NULL: 1 = 1
+ *   others       when the value a NULL column reads as passes the filter,
+ *                (<stored filter> OR column IS NULL); when it does not,
+ *                the stored filter, which leaves NULL out already (every
+ *                comparison with NULL is NULL)
+ *
+ * A currency as read is the stored match on a money that is not NULL (a
+ * NULL amount is a NULL money), and, asking for the default currency, a
+ * currency column that is NULL or empty: venture_money_new() reads either
+ * as the default.
+ *
+ * Every extra fragment is fixed text around the quoted column; no operand
+ * is added, so the bound parameters are those of the stored filter.
+ */
+static void
+venture_query_append_filter(
+	VentureQuery			*self,
+	const VentureQueryFilterEntry	*entry,
+	GString				*sql,
+	OrmDialectType			 dialect,
+	guint				*index,
+	GList				**params
+){
+	g_autofree gchar *quoted = NULL;
+
+	if (!entry->as_read ||
+	    ((NULL == entry->read_default) && (NULL == entry->amount_column)))
+	{
+		venture_query_append_stored_filter(self, entry, sql, dialect, index, params);
+		return;
+	}
+
+	quoted = venture_schema_quote_identifier(entry->column);
+
+	if (NULL != entry->amount_column)
+	{
+		g_autofree gchar *amount = NULL;
+
+		amount = venture_schema_quote_identifier(entry->amount_column);
+		g_string_append_printf(sql, "(%s IS NOT NULL AND (", amount);
+		venture_query_append_stored_filter(self, entry, sql, dialect, index, params);
+
+		if (entry->default_passes)
+			g_string_append_printf(sql, " OR %s IS NULL OR %s = ''", quoted, quoted);
+
+		g_string_append(sql, "))");
+		return;
+	}
+
+	if ((VENTURE_FILTER_OP_IS_NULL == entry->op) ||
+	    (VENTURE_FILTER_OP_NOT_NULL == entry->op))
+	{
+		g_string_append(sql, entry->default_passes ? "1 = 1" : "1 = 0");
+		return;
+	}
+
+	if (!entry->default_passes)
+	{
+		venture_query_append_stored_filter(self, entry, sql, dialect, index, params);
+		return;
+	}
+
+	g_string_append_c(sql, '(');
+	venture_query_append_stored_filter(self, entry, sql, dialect, index, params);
+	g_string_append_printf(sql, " OR %s IS NULL)", quoted);
 }
 
 /*

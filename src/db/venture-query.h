@@ -160,6 +160,93 @@ venture_query_add_money_currency(
 );
 
 /**
+ * venture_query_add_filter_as_read:
+ * @self: a #VentureQuery
+ * @field: a field name, in either property or column spelling
+ * @op: the comparison
+ * @values: (nullable) (element-type utf8): the operand values as text
+ * @error: (out) (optional): return location for a #GError
+ *
+ * As venture_query_add_filter(), but the filter compares the value a
+ * record reads back as rather than the stored column. The two differ for
+ * a column that holds NULL -- typically one a later migration added, so
+ * every older row has NULL in it -- on a field whose loaded record does
+ * not read NULL there: an enum reads its zero member ("low" for
+ * ticket.priority), an integer 0, a boolean FALSE.
+ *
+ * What a NULL column reads as is taken from a freshly constructed record
+ * of the type, which is exactly what loading a row leaves in place when
+ * the column is NULL. A filter that would hold for that value also keeps
+ * the NULL rows; is_null on such a field matches no row and not_null
+ * every row. Where that value is NULL the filter is the same SQL
+ * venture_query_add_filter() writes.
+ *
+ * Refused, with nothing added, when the database cannot answer the
+ * question as read: the NULL value is not fixed (it differs between two
+ * fresh records, or is a time), or it is compared by an operator whose
+ * outcome for it is not decidable here (an ordering of text, LIKE, an
+ * empty-text match). The caller should then evaluate the condition
+ * itself.
+ *
+ * The ?field= list filters (venture_query_apply_query_string()) do not
+ * use this; they compare stored columns.
+ *
+ * Returns: %TRUE if the filter was accepted
+ */
+gboolean
+venture_query_add_filter_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	VentureFilterOp	  op,
+	GPtrArray	 *values,
+	GError		**error
+);
+
+/**
+ * venture_query_add_filter_string_as_read:
+ * @self: a #VentureQuery
+ * @field: a field name
+ * @op: the comparison
+ * @value: (nullable): the single operand
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_query_add_filter_as_read() with at most one operand.
+ *
+ * Returns: %TRUE if the filter was accepted
+ */
+gboolean
+venture_query_add_filter_string_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	VentureFilterOp	  op,
+	const gchar	 *value,
+	GError		**error
+);
+
+/**
+ * venture_query_add_money_currency_as_read:
+ * @self: a #VentureQuery
+ * @field: a money property in property or column spelling
+ * @currency: the currency, as a loaded money value spells it (upper case)
+ * @error: (out) (optional): return location for a #GError
+ *
+ * As venture_query_add_money_currency(), but on the currency a loaded
+ * record reads: a money value whose amount is NULL is NULL and has no
+ * currency, and one whose currency column is NULL or empty reads as the
+ * default currency (venture_money_get_default_currency()), so asking for
+ * that currency keeps those rows too.
+ *
+ * Returns: %TRUE if the filter was accepted
+ */
+gboolean
+venture_query_add_money_currency_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	const gchar	 *currency,
+	GError		**error
+);
+
+/**
  * venture_query_add_filter_int:
  * @self: a #VentureQuery
  * @field: a field name
