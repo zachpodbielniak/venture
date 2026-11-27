@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-29]
-#+updated: [2026-11-12]
-#+version: 0.6.0
+#+updated: [2026-11-27]
+#+version: 0.7.0
 
 * venturectl mcp
 
@@ -48,7 +48,7 @@ This follows from what the API already promises: it is generated from the record
 
 Concretely: register a record type in a plugin, restart both, and it is in the =type= enumeration of every tool that takes one. =tests/test-mcp.c= pins this with two schema fixtures differing by a single entry.
 
-*** Nineteen tools
+*** Twenty tools
 
 | Tool                    | What it does                                             |
 |-------------------------+----------------------------------------------------------|
@@ -60,6 +60,7 @@ Concretely: register a record type in a plugin, restart both, and it is in the =
 | =venture_delete=        | soft-delete one                                          |
 | =venture_reports=       | what reports there are                                   |
 | =venture_report=        | run one; the =aggregate=, market, production, sessions, goals and forms reports' options (=product_id=, =source=, =venture_id=, =price_source=, =category_id=, =group_by=, =category_depth=, =status=, =goal_id=, =include_on_hand=, =form_id=) are arguments |
+| =venture_query=         | run an LQL query as the caller: the rows =POST /api/v1/query= answers, as the =venture.query/1= document or CSV; =organization_id= scopes an unqualified fetch; read-only, and annotated so |
 | =venture_confirmations= | list, approve or reject anything waiting for a decision   |
 | =venture_modules=       | which modules the server runs, and why any is off        |
 | =venture_links=         | every link touching one record                           |
@@ -169,6 +170,12 @@ a change as awaiting approval when it is already in the books would send
 whoever read it to look for a decision nobody has to make, while the figure
 sits in the accounts.
 
+** Queries, and the one tool marked read-only
+
+=venture_query= takes ={"query": "fetch ticket | summarize n = count(), by: assignee"}= (and =format=: =json= or =csv=, =explain=, =organization_id=) and posts it to =POST /api/v1/query= as the session's caller, so its answer is the API's body untouched: the same rows, for the same token, that =curl= and =venturectl query= get, which =tests/test-lql-query.c= holds byte for byte. A type the token may not list is refused with the list API's own message, and nothing that reads a file, runs a program or talks SQL exists to reach; see [[file:lql.org][LQL]].
+
+It is listed with MCP's tool annotations, ={"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}=, so a client that asks before every write can run it without asking. The flag is =TOOL_FLAG_READ_ONLY= in =src/mcp/venture-mcp-catalog.c=; it is set on =venture_query= alone for now, because the ticket that added it asked for that one, and marking the other reads is a separate, reviewable change.
+
 ** A report says which content type it returned
 
 =?format=csv= returns =text/csv=, not JSON. So =venture_report= prefixes its answer with the =Content-Type= the server actually sent and a plain statement of what the body is:
@@ -256,7 +263,7 @@ curl -s https://venture.example.com/mcp \
 
 *** What it is
 
-The same nineteen tools as =venturectl mcp=, from the same code. The POST body goes to the same =VentureMcpServer= the stdio command runs; only its transport differs. Where the stdio command sends its requests across the network to =VENTURE_URL=, the HTTP door sends them back into the server that received the POST, with the caller's own bearer token. So a tool call *is* an API request by the caller: the same validators, access policy, staging and audit line, naming the same token. Nothing reachable through =/mcp= is out of reach of the same token and =curl=, which is what makes the door safe to open by default.
+The same twenty tools as =venturectl mcp=, from the same code. The POST body goes to the same =VentureMcpServer= the stdio command runs; only its transport differs. Where the stdio command sends its requests across the network to =VENTURE_URL=, the HTTP door sends them back into the server that received the POST, with the caller's own bearer token. So a tool call *is* an API request by the caller: the same validators, access policy, staging and audit line, naming the same token. Nothing reachable through =/mcp= is out of reach of the same token and =curl=, which is what makes the door safe to open by default.
 
 Details that follow from that:
 

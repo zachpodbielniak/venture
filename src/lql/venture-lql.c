@@ -41,6 +41,7 @@ venture_lql_caller_clear(gpointer data)
 	g_clear_pointer(&caller->organizations, g_array_unref);
 	g_clear_pointer(&caller->readable, g_hash_table_unref);
 	g_clear_pointer(&caller->teams, lql_value_unref);
+	g_clear_pointer(&caller->timezone, g_time_zone_unref);
 }
 
 VentureLqlCaller *
@@ -132,24 +133,17 @@ venture_lql_fn_me(
 }
 
 /*
- * my_teams() -> Array: the ids of the teams the caller is an active member
- * of, for `team_id in my_teams()`. Read once per environment, with
- * internal authority (they are the caller's own memberships), and empty
- * when the teams module is off.
+ * The ids of the teams the caller is an active member of, read once while
+ * the environment is built (on the database's thread), with internal
+ * authority: they are the caller's own memberships. Empty when the teams
+ * module is off or the principal has no account.
  */
 static LqlValue *
-venture_lql_fn_my_teams(
-	LqlFunctionCall	 *call,
-	gpointer	  user_data,
-	GError		**error
+venture_lql_caller_read_teams(
+	VentureLqlCaller	 *caller,
+	GError			**error
 ){
-	VentureLqlCaller *caller = user_data;
 	g_autoptr(GPtrArray) items = NULL;
-
-	(void)call;
-
-	if (NULL != caller->teams)
-		return lql_value_ref(caller->teams);
 
 	items = g_ptr_array_new_with_free_func((GDestroyNotify)lql_value_unref);
 
@@ -188,7 +182,24 @@ venture_lql_fn_my_teams(
 		}
 	}
 
-	caller->teams = lql_value_new_array(items);
+	return lql_value_new_array(items);
+}
+
+/*
+ * my_teams() -> Array: the ids of the teams the caller is an active member
+ * of, for `team_id in my_teams()` (venture_lql_caller_read_teams()). Pure:
+ * it may be evaluated on a query worker.
+ */
+static LqlValue *
+venture_lql_fn_my_teams(
+	LqlFunctionCall	 *call,
+	gpointer	  user_data,
+	GError		**error
+){
+	VentureLqlCaller *caller = user_data;
+
+	(void)call;
+	(void)error;
 
 	return lql_value_ref(caller->teams);
 }
@@ -209,10 +220,10 @@ venture_lql_period(
 	g_autoptr(GError) local_error = NULL;
 	VentureDateRange *range;
 
-	range = venture_date_range_parse_at(text,
-		venture_context_get_timezone(caller->context),
-		venture_context_get_fiscal_year_start_month(caller->context),
-		now, &local_error);
+	/* The calendar captured with the environment, not the context's:
+	 * this may run on a query worker. */
+	range = venture_date_range_parse_at(text, caller->timezone,
+		caller->fiscal_year_start_month, now, &local_error);
 
 	if (NULL == range)
 	{
@@ -303,6 +314,129 @@ venture_lql_fn_organization(
 	return lql_value_new_int(g_array_index(caller->organizations, gint64, 0));
 }
 
+/* --- Money ---------------------------------------------------------------- */
+
+/*
+ * An LQL money record -- {amount, currency, exponent, formatted}, as every
+ * money field reads -- back as a #VentureMoney, through the API's own JSON
+ * decoder so a record that is not money is refused the way the API
+ * refuses it.
+ */
+static VentureMoney *
+venture_lql_money_from_value(
+	LqlValue	 *value,
+	GError		**error
+){
+	g_autofree gchar *text = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GError) local_error = NULL;
+	VentureMoney *money;
+
+	if (LQL_VALUE_TYPE_RECORD != lql_value_get_value_type(value))
+	{
+		g_set_error(error, LQL_ERROR, LQL_ERROR_TYPE,
+		            "sum_money() adds money fields ({amount, currency, exponent}), "
+		            "not %s; for a number use sum()",
+		            lql_value_type_to_string(lql_value_get_value_type(value)));
+		return NULL;
+	}
+
+	text = lql_value_to_json(value);
+	node = venture_json_parse(text, NULL);
+	money = (NULL != node) && JSON_NODE_HOLDS_OBJECT(node) &&
+	        json_object_has_member(json_node_get_object(node), "currency")
+		? venture_money_from_json(node, NULL, &local_error) : NULL;
+
+	if (NULL == money)
+	{
+		g_set_error(error, LQL_ERROR, LQL_ERROR_TYPE,
+		            "sum_money() adds money fields ({amount, currency, exponent}); "
+		            "this record is not money%s%s",
+		            (NULL != local_error) ? ": " : "",
+		            (NULL != local_error) ? local_error->message : "");
+		return NULL;
+	}
+
+	return money;
+}
+
+/* A #VentureMoney as the LQL record a money field reads as. */
+static LqlValue *
+venture_lql_money_to_value(
+	const VentureMoney	 *money,
+	GError			**error
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *text = NULL;
+
+	node = venture_money_to_json(money);
+	text = venture_json_to_string(node, FALSE);
+
+	return lql_json_parse(text, -1, error);
+}
+
+/*
+ * sum_money(value: Record) -> Array: the total of a money field, one per
+ * currency, never added across two. It is the reports' accumulator
+ * (venture_money_totals_add(), what the sum widget and the aggregate
+ * report keep apart with): dollars and gold are two totals, and the
+ * array holds both, sorted by currency code. NULL is skipped; no money at
+ * all is an empty array, because nothing has no currency to be zero in.
+ */
+static LqlValue *
+venture_lql_fn_sum_money(
+	LqlAggregateCall	 *call,
+	gpointer		  user_data,
+	GError			**error
+){
+	g_autoptr(GPtrArray) totals = NULL;
+	g_autoptr(GPtrArray) items = NULL;
+	guint i;
+
+	(void)user_data;
+
+	totals = venture_money_totals_new();
+
+	for (i = 0; i < lql_aggregate_call_get_n_rows(call); i++)
+	{
+		LqlValue *value = lql_aggregate_call_get_arg(call, i, 0);
+		g_autoptr(VentureMoney) money = NULL;
+		g_autoptr(GError) local_error = NULL;
+
+		if ((NULL == value) || lql_value_is_null(value))
+			continue;
+
+		money = venture_lql_money_from_value(value, error);
+
+		if (NULL == money)
+			return NULL;
+
+		if (!venture_money_totals_add(totals, money, &local_error))
+		{
+			g_set_error(error, LQL_ERROR, LQL_ERROR_EVALUATION,
+			            "sum_money(): %s", local_error->message);
+			return NULL;
+		}
+	}
+
+	venture_money_totals_sort(totals, NULL);
+	items = g_ptr_array_new_with_free_func((GDestroyNotify)lql_value_unref);
+
+	for (i = 0; i < totals->len; i++)
+	{
+		LqlValue *item;
+
+		item = venture_lql_money_to_value(g_ptr_array_index(totals, i), error);
+
+		if (NULL == item)
+			return NULL;
+
+		g_ptr_array_add(items, item);
+	}
+
+	return lql_value_new_array(items);
+}
+
 /* One VENTURE function, registered with its documentation. */
 static gboolean
 venture_lql_register_function(
@@ -327,6 +461,29 @@ venture_lql_register_function(
 		(n_args > 0) ? string_arg : NULL, n_args);
 	lql_function_set_flags(function, flags);
 	lql_function_set_doc(function, signature, description);
+	lql_function_set_category(function, "venture");
+
+	return lql_environment_register_function(environment, function, error);
+}
+
+/*
+ * sum_money(), an aggregate: one total per currency (see
+ * venture_lql_fn_sum_money()).
+ */
+static gboolean
+venture_lql_register_sum_money(
+	LqlEnvironment	 *environment,
+	GError		**error
+){
+	static const LqlValueType record_arg[] = { LQL_VALUE_TYPE_ANY };
+	g_autoptr(LqlFunction) function = NULL;
+
+	function = lql_function_new_aggregate("sum_money", LQL_VALUE_TYPE_ARRAY,
+		venture_lql_fn_sum_money, NULL, NULL);
+	lql_function_set_arguments(function, 1, 1, record_arg, 1);
+	lql_function_set_doc(function, "sum_money(value: Record) -> Array",
+		"The total of a money field, one {amount, currency, exponent, formatted} "
+		"per currency, never added across two.");
 	lql_function_set_category(function, "venture");
 
 	return lql_environment_register_function(environment, function, error);
@@ -357,10 +514,87 @@ venture_lql_register_functions(
 		"\"ytd\", \"2026-03\", ...); end is exclusive.", error) &&
 	       venture_lql_register_function(environment, caller, "organization",
 		LQL_VALUE_TYPE_INT, venture_lql_fn_organization, 0, 0, "organization() -> Int",
-		"The id of the business selected in the sidebar; NULL for all.", error);
+		"The id of the business selected in the sidebar; NULL for all.", error) &&
+	       venture_lql_register_sum_money(environment, error);
 }
 
 /* --- The environment ------------------------------------------------------ */
+
+/* Where an environment keeps its refusals: type name -> GError. */
+static GQuark
+venture_lql_refusals_quark(void)
+{
+	return g_quark_from_static_string("venture-lql-refusals");
+}
+
+/* Declared in lql/venture-lql.h. */
+const GError *
+venture_lql_environment_get_refusal(
+	LqlEnvironment	*environment,
+	const gchar	*name
+){
+	GHashTable *refusals;
+
+	g_return_val_if_fail(LQL_IS_ENVIRONMENT(environment), NULL);
+
+	if (NULL == name)
+		return NULL;
+
+	refusals = g_object_get_qdata(G_OBJECT(environment), venture_lql_refusals_quark());
+
+	return (NULL != refusals) ? g_hash_table_lookup(refusals, name) : NULL;
+}
+
+/* The host's extension (venture_lql_set_environment_hook()); main thread. */
+static VentureLqlEnvironmentHook venture_lql_environment_hook;
+static gpointer venture_lql_environment_hook_data;
+
+/* Declared in lql/venture-lql.h. */
+void
+venture_lql_set_environment_hook(
+	VentureLqlEnvironmentHook	hook,
+	gpointer			user_data
+){
+	venture_lql_environment_hook = hook;
+	venture_lql_environment_hook_data = user_data;
+}
+
+/* Where an environment keeps query.max_bytes until LQL takes it (#44). */
+static GQuark
+venture_lql_max_bytes_quark(void)
+{
+	return g_quark_from_static_string("venture-lql-max-bytes");
+}
+
+/* Declared in lql/venture-lql.h. */
+gint64
+venture_lql_environment_get_max_bytes(LqlEnvironment *environment)
+{
+	g_return_val_if_fail(LQL_IS_ENVIRONMENT(environment), 0);
+
+	return (gint64)GPOINTER_TO_SIZE(g_object_get_qdata(G_OBJECT(environment),
+	                                                   venture_lql_max_bytes_quark()));
+}
+
+/* Declared in lql/venture-lql.h. */
+void
+venture_lql_environment_prepare_sources(LqlEnvironment *environment)
+{
+	g_auto(GStrv) names = NULL;
+	guint i;
+
+	g_return_if_fail(LQL_IS_ENVIRONMENT(environment));
+
+	names = lql_environment_list_sources(environment);
+
+	for (i = 0; (NULL != names) && (NULL != names[i]); i++)
+	{
+		LqlSource *source = lql_environment_lookup_source(environment, names[i]);
+
+		if (VENTURE_IS_LQL_SOURCE(source))
+			venture_lql_source_prepare(VENTURE_LQL_SOURCE(source));
+	}
+}
 
 LqlEnvironment *
 venture_lql_environment_new(
@@ -373,10 +607,12 @@ venture_lql_environment_new(
 	GError				**error
 ){
 	g_autoptr(LqlEnvironment) environment = NULL;
+	g_autoptr(GHashTable) refusals = NULL;
 	g_auto(GStrv) names = NULL;
 	VentureLqlCaller *caller;
 	VentureAccessPolicy *policy;
 	gint64 timeout_ms = VENTURE_LQL_DEFAULT_TIMEOUT_MS;
+	gint64 max_bytes = VENTURE_LQL_DEFAULT_MAX_BYTES;
 	gsize i;
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
@@ -400,13 +636,15 @@ venture_lql_environment_new(
 	caller->organizations = g_array_new(FALSE, FALSE, sizeof(gint64));
 	caller->readable = g_hash_table_new(g_direct_hash, g_direct_equal);
 	caller->max_rows = VENTURE_LQL_DEFAULT_MAX_ROWS;
+	caller->home_thread = g_thread_self();
 
 	if (n_organizations > 0)
 		g_array_append_vals(caller->organizations, organizations, (guint)n_organizations);
 
 	g_object_get(venture_context_get_config(context),
 	             "query-max-rows", &caller->max_rows,
-	             "query-timeout-ms", &timeout_ms, NULL);
+	             "query-timeout-ms", &timeout_ms,
+	             "query-max-bytes", &max_bytes, NULL);
 
 	/*
 	 * The reader every fetch is judged as: the principal, inside whatever
@@ -422,10 +660,28 @@ venture_lql_environment_new(
 
 	caller->username = venture_lql_caller_username(caller->database, principal);
 
+	/* What the functions answer, captured here on the database's thread
+	 * so they are pure where the query is evaluated: on a worker. */
+	{
+		GTimeZone *timezone = venture_context_get_timezone(context);
+
+		caller->timezone = (NULL != timezone) ? g_time_zone_ref(timezone) : NULL;
+	}
+	caller->fiscal_year_start_month = venture_context_get_fiscal_year_start_month(context);
+	caller->teams = venture_lql_caller_read_teams(caller, error);
+
+	if (NULL == caller->teams)
+	{
+		venture_lql_caller_unref(caller);
+		return NULL;
+	}
+
 	/* --- which record types are sources ------------------------------ */
 	/* list_names() hides the types of a module that is off; the gate is
 	 * the list API's own role check for the rest. */
 	names = venture_entity_registry_list_names(caller->registry);
+	refusals = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+	                                 (GDestroyNotify)g_error_free);
 
 	for (i = 0; NULL != names[i]; i++)
 	{
@@ -434,12 +690,27 @@ venture_lql_environment_new(
 		if (G_TYPE_INVALID == entity_type)
 			continue;
 
-		if (gate(entity_type, gate_data, NULL))
-			g_hash_table_add(caller->readable, GSIZE_TO_POINTER(entity_type));
+		{
+			GError *refusal = NULL;
+
+			if (gate(entity_type, gate_data, &refusal))
+				g_hash_table_add(caller->readable, GSIZE_TO_POINTER(entity_type));
+			else
+				g_hash_table_insert(refusals, g_strdup(names[i]),
+					(NULL != refusal) ? refusal
+					                  : g_error_new(VENTURE_ERROR, VENTURE_ERROR_PERMISSION_DENIED,
+					                                "You may not read %s records", names[i]));
+		}
 	}
 
 	/* --- the environment ---------------------------------------------- */
 	environment = lql_environment_new();
+
+	/* What the gate said, kept with the environment, so a query that
+	 * names a refused type is answered with the list API's own refusal
+	 * (venture_lql_environment_get_refusal()). */
+	g_object_set_qdata_full(G_OBJECT(environment), venture_lql_refusals_quark(),
+	                        g_steal_pointer(&refusals), (GDestroyNotify)g_hash_table_unref);
 
 	for (i = 0; NULL != names[i]; i++)
 	{
@@ -468,6 +739,30 @@ venture_lql_environment_new(
 	 * bound for every later stage, and the configured time limit. */
 	lql_environment_set_limit(environment, LQL_LIMIT_MAX_ROWS, caller->max_rows);
 	lql_environment_set_limit(environment, LQL_LIMIT_TIMEOUT_MS, timeout_ms);
+
+	/*
+	 * The memory budget, query.max_bytes. TODO(VENTURE #44): LQL has no
+	 * byte limit yet; once libre-query-language has LQL_LIMIT_MAX_BYTES,
+	 * pass it here --
+	 *
+	 *   lql_environment_set_limit(environment, LQL_LIMIT_MAX_BYTES, max_bytes);
+	 *
+	 * -- and have venture_lql_environment_get_max_bytes() read it back
+	 * with lql_environment_get_limit(). Until then the configured value
+	 * is kept with the environment, so it is read and validated at the
+	 * one place it will be handed over, and nothing may treat a query
+	 * as unbounded in memory: a query surface must not merge without it.
+	 */
+	g_object_set_qdata(G_OBJECT(environment), venture_lql_max_bytes_quark(),
+	                   GSIZE_TO_POINTER((gsize)max_bytes));
+
+	/* What the host adds, last, so it can see everything above. */
+	if ((NULL != venture_lql_environment_hook) &&
+	    !venture_lql_environment_hook(environment, venture_lql_environment_hook_data, error))
+	{
+		venture_lql_caller_unref(caller);
+		return NULL;
+	}
 
 	venture_lql_caller_unref(caller);
 

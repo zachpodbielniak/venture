@@ -538,7 +538,7 @@ test_widget_sources(Fixture *f, gconstpointer data)
 	g_autoptr(VentureWidgetResult) result = NULL;
 	g_autoptr(GDateTime) due = venture_time_now();
 	gint64 organization = 1;
-	VentureWidgetScope scope = { &organization, 1, 1, "local", 0 };
+	VentureWidgetScope scope = { &organization, 1, 1, "local", 0, NULL, NULL };
 	g_object_set(row, "due-at", due, NULL);
 	g_assert_true(venture_database_save(f->database, row, NULL, NULL));
 	g_object_set(widget, "kind", "count", "entity-type", "activity", "filter", "status=planned&owner={me}", NULL);

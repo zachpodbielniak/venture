@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-10-09]
-#+version: 0.7.0
+#+updated: [2026-11-27]
+#+version: 0.8.0
 
 
 * For an AI agent
@@ -82,6 +82,7 @@ venturectl create TYPE field=value ...   # create; attributes.NAME=value fills t
 venturectl update TYPE ID field=value    # change named fields
 venturectl delete TYPE ID                # soft delete
 venturectl report [NAME] [PERIOD]        # list reports, or run one
+venturectl query 'LQL' [explain=true] [organization_id=N]  # an LQL query through POST /api/v1/query
 venturectl links TYPE ID                 # every link touching a record
 venturectl link TYPE ID TYPE ID [kind=K] # link two records; note=... too
 venturectl modules                       # which modules the server runs
@@ -155,10 +156,19 @@ venturectl report pnl this_quarter
 venturectl report categories fy        # by genre, over the fiscal year
 venturectl -f csv report receivables > aging.csv
 
+venturectl query 'fetch ticket | summarize n = count(), by: {status}'
+venturectl -f json query 'fetch ticket | filter assignee == me() | fields id, title, due_at'
+venturectl -f csv query 'fetch invoice | fields number, status, due_at | sort due_at' > invoices.csv
+venturectl query 'fetch invoice_line | summarize total = sum_money(income_amount)' organization_id=2
+
 venturectl dashboard create factory
 venturectl dashboard factory           # every widget, with its answer
 venturectl dashboard export factory > factory.json
 #+end_src
+
+* Queries
+
+=venturectl query 'LQL'= posts the query to =POST /api/v1/query= ([[file:api.org::*Queries: POST /api/v1/query][Queries]]) as the token, so it answers with exactly the API's rows: the table prints them (=(no rows)= for none), =-f json= prints the =venture.query/1= document as the server sent it, =-f yaml= the same as YAML, and =-f csv= asks the server for its CSV and prints it untouched -- the file is the API's own, byte for byte. Quote the query as one argument; after it, =explain=true= prints the plan instead of running it and =organization_id=N= scopes an unqualified =fetch= to that business (a token has no sidebar, so without it a fetch reads the default business). A refusal or a query error exits with the code of its error, as every command does. The language is in [[file:lql.org][LQL]].
 
 * Periods
 

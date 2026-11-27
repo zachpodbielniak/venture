@@ -236,6 +236,15 @@ venture_lql_source_ensure_fields(VentureLqlSource *self)
 	if (NULL != self->fields)
 		return;
 
+	/* The schema is read from the entity registry, which belongs to the
+	 * database's thread: a query worker finds it already built
+	 * (venture_lql_source_prepare(), from venture_lql_query_prepare()).
+	 * Getting here on a worker is a source the preparation missed. */
+	if (G_UNLIKELY(g_thread_self() != self->caller->home_thread))
+		g_critical("The fields of LQL source %s were built off the database's "
+		           "thread; venture_lql_query_prepare() should have built them",
+		           self->name);
+
 	self->fields = g_ptr_array_new_with_free_func(venture_lql_field_free);
 	self->by_name = g_hash_table_new(g_str_hash, g_str_equal);
 
@@ -1341,6 +1350,104 @@ venture_lql_source_read(
 	return table;
 }
 
+/* --- Where a fetch is read ------------------------------------------------ */
+
+/*
+ * One fetch waiting to be read on the database's thread: the task the
+ * executor waits on (whose callback runs in the executor's own context),
+ * the source and LQL's request. The fetching thread does nothing with
+ * either until the task returns.
+ */
+struct _VentureLqlRead
+{
+	GTask			*task;		/* owned */
+	VentureLqlSource	*source;	/* owned */
+	LqlFetchRequest		*request;	/* owned */
+	gboolean		 returned;	/* the task has its answer */
+};
+
+/* The calling thread's dispatch, if it has one. */
+typedef struct
+{
+	VentureLqlReadDispatch	 dispatch;
+	gpointer		 user_data;
+} VentureLqlReadHook;
+
+static GPrivate venture_lql_read_hook = G_PRIVATE_INIT(g_free);
+
+/* Declared in lql/venture-lql.h. */
+void
+venture_lql_set_read_dispatch(
+	VentureLqlReadDispatch	dispatch,
+	gpointer		user_data
+){
+	VentureLqlReadHook *hook = NULL;
+
+	if (NULL != dispatch)
+	{
+		hook = g_new0(VentureLqlReadHook, 1);
+		hook->dispatch = dispatch;
+		hook->user_data = user_data;
+	}
+
+	/* g_private_replace() frees the hook it replaces. */
+	g_private_replace(&venture_lql_read_hook, hook);
+}
+
+/* Declared in lql/venture-lql.h. */
+void
+venture_lql_read_perform(VentureLqlRead *read)
+{
+	GError *error = NULL;
+	LqlTable *table;
+
+	g_return_if_fail(NULL != read);
+
+	/* Cancelled while it waited: the executor is told so, nothing is read. */
+	if (!g_task_return_error_if_cancelled(read->task))
+	{
+		table = venture_lql_source_read(read->source, read->request, &error);
+
+		if (NULL == table)
+			g_task_return_error(read->task, error);
+		else
+			g_task_return_pointer(read->task, table, (GDestroyNotify)lql_table_unref);
+	}
+
+	read->returned = TRUE;
+	venture_lql_read_free(read);
+}
+
+/* Declared in lql/venture-lql.h. */
+GCancellable *
+venture_lql_read_get_cancellable(VentureLqlRead *read)
+{
+	g_return_val_if_fail(NULL != read, NULL);
+
+	return g_task_get_cancellable(read->task);
+}
+
+/* Declared in lql/venture-lql.h. */
+void
+venture_lql_read_free(VentureLqlRead *read)
+{
+	if (NULL == read)
+		return;
+
+	/* A read dropped unperformed (its query given up) still answers the
+	 * executor, so nothing waits on it for ever. */
+	if (!read->returned)
+	{
+		g_task_return_new_error(read->task, LQL_ERROR, LQL_ERROR_CANCELLED,
+		                        "the query was cancelled");
+	}
+
+	g_clear_object(&read->task);
+	g_clear_object(&read->source);
+	g_clear_pointer(&read->request, lql_fetch_request_unref);
+	g_free(read);
+}
+
 static void
 venture_lql_source_fetch_async(
 	LqlSource		*source,
@@ -1350,6 +1457,7 @@ venture_lql_source_fetch_async(
 	gpointer		 user_data
 ){
 	VentureLqlSource *self = VENTURE_LQL_SOURCE(source);
+	VentureLqlReadHook *hook;
 	g_autoptr(GTask) task = NULL;
 	GError *error = NULL;
 	LqlTable *table;
@@ -1360,13 +1468,50 @@ venture_lql_source_fetch_async(
 	if (g_task_return_error_if_cancelled(task))
 		return;
 
-	/* The database is read on the calling thread, as every list is. */
+	/*
+	 * A query evaluated on a worker never reads the database there: the
+	 * worker's dispatch hands the read to the database's thread, inside
+	 * the request it belongs to, and the task returns to this thread's
+	 * context when it has been read (docs/lql.org, "Where a query runs").
+	 */
+	hook = g_private_get(&venture_lql_read_hook);
+
+	if (NULL != hook)
+	{
+		VentureLqlRead *read = g_new0(VentureLqlRead, 1);
+
+		read->task = g_steal_pointer(&task);
+		read->source = g_object_ref(self);
+		read->request = lql_fetch_request_ref(request);
+		hook->dispatch(read, hook->user_data);
+		return;
+	}
+
+	/* Without one, on the database's own thread, as every list is. */
+	if (G_UNLIKELY(g_thread_self() != self->caller->home_thread))
+	{
+		g_task_return_new_error(task, VENTURE_ERROR, VENTURE_ERROR_FAILED,
+		                        "fetch %s ran on a thread that may not read the "
+		                        "database, with no way to hand the read back",
+		                        self->name);
+		return;
+	}
+
 	table = venture_lql_source_read(self, request, &error);
 
 	if (NULL == table)
 		g_task_return_error(task, error);
 	else
 		g_task_return_pointer(task, table, (GDestroyNotify)lql_table_unref);
+}
+
+/* Declared in lql/venture-lql-private.h. */
+void
+venture_lql_source_prepare(VentureLqlSource *self)
+{
+	g_return_if_fail(VENTURE_IS_LQL_SOURCE(self));
+
+	venture_lql_source_ensure_fields(self);
 }
 
 static LqlTable *

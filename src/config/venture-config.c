@@ -27,6 +27,13 @@
 #define VENTURE_CONFIG_QUERY_MAX_ROWS_CEILING (1000000)
 #define VENTURE_CONFIG_QUERY_TIMEOUT_CEILING (600000)
 
+/* The range of query.max_bytes (docs/lql.org, "Bounds"): one query's
+ * memory budget, from a mebibyte to a gibibyte. Below the floor an
+ * ordinary bounded fetch could not be held; above the ceiling the budget
+ * no longer protects a server from one query. */
+#define VENTURE_CONFIG_QUERY_MAX_BYTES_FLOOR (1048576)
+#define VENTURE_CONFIG_QUERY_MAX_BYTES_CEILING (1073741824)
+
 /*
  * One configuration setting.
  *
@@ -489,6 +496,11 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Most rows one LQL fetch may read, 1..1000000; more is an error"),
 	VC_INT ("query-timeout-ms", "query", "timeout_ms", 5000,
 	        "Longest an LQL query may run in milliseconds, 1..600000"),
+	/* One query's memory budget (VENTURE #44). Read and validated now;
+	 * handed to LQL once libre-query-language has LQL_LIMIT_MAX_BYTES
+	 * (see venture_lql_environment_new()). */
+	VC_INT ("query-max-bytes", "query", "max_bytes", 67108864,
+	        "Most bytes one LQL query may allocate, 1048576..1073741824"),
 	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
 	VC_BOOL("ui-chat-dock-expanded", "ui", "chat_dock_expanded", FALSE,
 	        "Start the chat dock expanded"),
@@ -1910,9 +1922,11 @@ venture_config_validate(
 	{
 		gint64 max_rows;
 		gint64 timeout_ms;
+		gint64 max_bytes;
 
 		g_object_get(self, "query-max-rows", &max_rows,
-		             "query-timeout-ms", &timeout_ms, NULL);
+		             "query-timeout-ms", &timeout_ms,
+		             "query-max-bytes", &max_bytes, NULL);
 
 		if ((max_rows < 1) || (max_rows > VENTURE_CONFIG_QUERY_MAX_ROWS_CEILING))
 		{
@@ -1929,6 +1943,18 @@ venture_config_validate(
 			            "query.timeout_ms must be between 1 and %d, not %"
 			            G_GINT64_FORMAT, VENTURE_CONFIG_QUERY_TIMEOUT_CEILING,
 			            timeout_ms);
+			return FALSE;
+		}
+
+		/* The memory budget cannot be switched off either: one query
+		 * that concatenates large strings must not take the process. */
+		if ((max_bytes < VENTURE_CONFIG_QUERY_MAX_BYTES_FLOOR) ||
+		    (max_bytes > VENTURE_CONFIG_QUERY_MAX_BYTES_CEILING))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "query.max_bytes must be between %d and %d, not %"
+			            G_GINT64_FORMAT, VENTURE_CONFIG_QUERY_MAX_BYTES_FLOOR,
+			            VENTURE_CONFIG_QUERY_MAX_BYTES_CEILING, max_bytes);
 			return FALSE;
 		}
 	}

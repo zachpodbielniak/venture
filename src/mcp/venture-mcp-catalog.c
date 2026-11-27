@@ -70,7 +70,11 @@ typedef enum
 	TOOL_FLAG_ID		= 1 << 2,
 
 	/* Carries a required free-form `values` object. */
-	TOOL_FLAG_VALUES	= 1 << 3
+	TOOL_FLAG_VALUES	= 1 << 3,
+
+	/* Reads and never writes: listed with the MCP annotation
+	 * readOnlyHint, so a client may run it without asking. */
+	TOOL_FLAG_READ_ONLY	= 1 << 4
 } VentureMcpToolFlags;
 
 typedef struct
@@ -138,6 +142,19 @@ static const VentureMcpToolDef tool_defs[] = {
 		"type came back, because `format: csv` returns CSV rather than "
 		"JSON and reading one as the other silently produces nonsense.",
 		TOOL_FLAG_NONE
+	},
+	{
+		"venture_query",
+		"Run an LQL query (a pipeline: fetch TYPE | filter ... | fields ... "
+		"| sort ... | summarize ... | limit N, with lookup across types) "
+		"as this session's caller and get a table back: the same rows "
+		"POST /api/v1/query and venturectl query answer. Read-only: a type "
+		"you may not list is refused as the list API refuses it, and no "
+		"file, program or SQL can be reached. Money is {amount, currency, "
+		"exponent, formatted}; total it with sum_money(field), one figure "
+		"per currency. Example: fetch ticket | filter status not in "
+		"[\"done\", \"cancelled\"] | summarize n = count(), by: assignee",
+		TOOL_FLAG_READ_ONLY
 	},
 	{
 		"venture_confirmations",
@@ -790,6 +807,26 @@ venture_mcp_catalog_add_tool_extras(
 		return;
 	}
 
+	if (0 == g_strcmp0(tool_name, "venture_query"))
+	{
+		static const gchar *const formats[] = { "json", "csv", NULL };
+
+		venture_mcp_catalog_add_string_property(builder, "query",
+			"The LQL query, such as fetch invoice | summarize n = count(), "
+			"total = sum_money(shipping_amount), by: status.");
+		venture_mcp_catalog_add_enum_property(builder, "format",
+			"json (the default): the venture.query/1 document with columns "
+			"and rows; csv: the rows as CSV.", formats);
+		venture_mcp_catalog_add_boolean_property(builder, "explain",
+			"Plan the query without running it: what reaches the database "
+			"and what LQL evaluates. Defaults to false.");
+		venture_mcp_catalog_add_integer_property(builder, "organization_id",
+			"The business an unqualified fetch reads, with everything beneath "
+			"it. A token has no sidebar, so without it a fetch reads the "
+			"default business.");
+		return;
+	}
+
 	if (0 == g_strcmp0(tool_name, "venture_report"))
 	{
 		venture_mcp_catalog_add_string_property(builder, "name",
@@ -1092,6 +1129,9 @@ venture_mcp_catalog_add_required(
 	if (0 == g_strcmp0(def->name, "venture_report"))
 		json_builder_add_string_value(builder, "name");
 
+	if (0 == g_strcmp0(def->name, "venture_query"))
+		json_builder_add_string_value(builder, "query");
+
 	if (0 == g_strcmp0(def->name, "venture_dashboard"))
 		json_builder_add_string_value(builder, "slug");
 
@@ -1166,6 +1206,23 @@ venture_mcp_catalog_get_tools(VentureMcpCatalog *self)
 		venture_mcp_catalog_add_required(builder, def);
 
 		json_builder_end_object(builder);
+
+		/* MCP's tool annotations: a read-only tool says so. */
+		if (0 != (def->flags & TOOL_FLAG_READ_ONLY))
+		{
+			json_builder_set_member_name(builder, "annotations");
+			json_builder_begin_object(builder);
+			json_builder_set_member_name(builder, "readOnlyHint");
+			json_builder_add_boolean_value(builder, TRUE);
+			json_builder_set_member_name(builder, "destructiveHint");
+			json_builder_add_boolean_value(builder, FALSE);
+			json_builder_set_member_name(builder, "idempotentHint");
+			json_builder_add_boolean_value(builder, TRUE);
+			json_builder_set_member_name(builder, "openWorldHint");
+			json_builder_add_boolean_value(builder, FALSE);
+			json_builder_end_object(builder);
+		}
+
 		json_builder_end_object(builder);
 	}
 

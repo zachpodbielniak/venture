@@ -6170,6 +6170,17 @@ table[data-client-sort] th[aria-sort="descending"] > button.th-sort::after { con
 .plot-area { fill-opacity: 0.12; }
 .chart-bar, .plot-col { color: color-mix(in srgb, var(--series-1) 75%, transparent); }
 .chart-bar:hover { color: var(--series-1); }
+/* A pie's slices: the four series hues, then the same four paler, so
+ * eight slices are eight marks and a ninth is refused rather than reused. */
+.chart-slice-1 { color: var(--series-1); }
+.chart-slice-2 { color: var(--series-2); }
+.chart-slice-3 { color: var(--series-3); }
+.chart-slice-4 { color: var(--series-4); }
+.chart-slice-5 { color: color-mix(in srgb, var(--series-1) 50%, transparent); }
+.chart-slice-6 { color: color-mix(in srgb, var(--series-2) 50%, transparent); }
+.chart-slice-7 { color: color-mix(in srgb, var(--series-3) 50%, transparent); }
+.chart-slice-8 { color: color-mix(in srgb, var(--series-4) 50%, transparent); }
+.chart-pie .chart-svg { max-height: 260px; }
 .chart-heat-cell:not(.chart-heat-empty) { color: var(--series-1); }
 
 /* A sparkline coloured by which way it went over its window. */

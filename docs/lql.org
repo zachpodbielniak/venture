@@ -4,17 +4,17 @@
 #+categories: projects docs
 #+created: [2026-11-27]
 #+updated: [2026-11-27]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * LQL in VENTURE
 
-[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation: the dependency, the record source and its guarantees. Nothing user-visible ships with it yet; the query bar, the generic list pages and =/api/v1/query= build on it.
+[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation: the dependency, the record source and its guarantees. The query bar and the generic list pages build on it; =POST /api/v1/query=, =venturectl query=, the MCP tool =venture_query= and the dashboard's query widget run on it today ([[*Running a query][Running a query]]).
 
 The whole of what a query can name is built by =venture_lql_environment_new()= (=src/lql/=), once per caller:
 
 - LQL's built-in commands and functions, which compute on rows and never touch a file, a program or the network;
 - one source per record type the caller may read (=fetch ticket=, =fetch invoice=, ...);
-- VENTURE's functions: =me()=, =my_teams()=, =today()=, =period()=, =organization()=.
+- VENTURE's functions: =me()=, =my_teams()=, =today()=, =period()=, =organization()=, and the aggregate =sum_money()=.
 
 Nothing else. See [[*What is deliberately not registered][What is deliberately not registered]].
 
@@ -115,7 +115,20 @@ fetch ticket
 | summarize n = count(), by: status
 #+end_src
 
-All five functions are evaluated without a row, so a comparison with them reaches the database.
+All five are evaluated without a row, so a comparison with them reaches the database.
+
+** Money: one total per currency
+
+=sum(total.amount)= would add dollars to gold. =sum_money(field)= is the aggregate that does not: it is the reports' accumulator (=venture_money_totals_add()=, what the =sum= widget and the =aggregate= report keep currencies apart with), and it answers an =Array= of money records, one per currency, sorted by code:
+
+#+begin_src lql
+fetch invoice_line
+| lookup (fetch invoice), on: invoice_id == id, prefix: "invoice_"
+| filter invoice_issued_at >= period("this_quarter").start and invoice_issued_at < period("this_quarter").end
+| summarize invoices = count_distinct(invoice_id), total = sum_money(income_amount), by: {status = invoice_status}
+#+end_src
+
+A sent quarter of 1500.00 USD and 300.00 EUR is =total: [{amount: 30000, currency: "EUR", ...}, {amount: 150000, currency: "USD", ...}]=: two figures, never 1800 of nothing. NULL is skipped, no money at all is an empty array, and a value that is not money (=sum_money(id)=) is refused. An invoice has no stored total; its amounts are frozen on its lines (=income_amount=, =tax_amount=) when it is issued, so the query reads the lines, and a draft, which has no =issued_at=, is in no quarter. Everything that shows a query -- the CSV, the table, every chart -- keeps the array's figures apart in turn.
 
 * Bounds
 
@@ -123,14 +136,58 @@ All five functions are evaluated without a row, so a comparison with them reache
 |--------------------+---------+-------------+------------------------------------------------------------------------------------------|
 | =query.max_rows=   |  10000  | 1..1000000  | the most rows one =fetch= may read, after the access policy and the pushed filters; also the most rows any later stage may hold |
 | =query.timeout_ms= |   5000  | 1..600000   | the longest one query may run                                                            |
+| =query.max_bytes=  | 67108864 | 1048576..1073741824 | the most memory one query may allocate (64 MiB); read and validated, enforced once LQL has a byte limit (VENTURE #44) |
 
 A =fetch= that would read more than =query.max_rows= fails with an error that names the bound; it never answers with a silently shorter list. The source reads one row past the bound to tell the two apart. Filter on stored fields right after the =fetch=, so the database narrows the read, or add =| limit N=. Neither bound can be switched off: zero means "none" to LQL, so the configuration refuses it.
 
 The timeout is LQL's own =timeout_ms=: it bounds evaluation between stages and cannot interrupt a database read in progress, which =query.max_rows= bounds instead.
 
+=query.max_bytes= is the memory budget of one query: a query that concatenates large strings, nested, would otherwise allocate without bound and take the whole process with it (VENTURE #44). libre-query-language has no byte limit yet. The setting is read and range-checked now, and =venture_lql_environment_new()= keeps it with the environment (=venture_lql_environment_get_max_bytes()=) at the one marked place it will be handed to LQL as =LQL_LIMIT_MAX_BYTES=. Until that lands a query is not bounded in memory, and no query surface may treat that as acceptable: it does not merge without the byte limit.
+
+* Running a query
+
+=venture_lql_query_run()= (=src/lql/venture-lql-query.c=) runs one query in a caller's environment and answers the =venture.query/1= document: =columns= (name and LQL type), =rows= (one object per row in column order), =row_count=, =explain= and =elapsed_ms=, the shape [[file:api.org::*Queries: POST /api/v1/query][POST /api/v1/query]] documents. Every surface goes through it:
+
+| Surface                      | Who it runs as                     | Reads the document by                       |
+|------------------------------+------------------------------------+---------------------------------------------|
+| =POST /api/v1/query=         | the request's token or session     | writing it, or its rows as CSV              |
+| =venturectl query 'LQL'=     | =VENTURE_TOKEN=                    | posting to the API and printing the answer  |
+| MCP =venture_query=          | the MCP session's caller           | posting to the API, answer untouched        |
+| the dashboard =query= widget | whoever is looking at the page     | drawing it ([[file:dashboards.org::*The query kind][The query kind]]) |
+
+So the API, the CLI and the MCP tool answer with the same rows by construction, and =tests/test-lql-query.c= holds them equal for "open tickets by assignee" and "invoices this quarter by status", CSV included.
+
+Before a query runs, every =fetch= in it -- the main pipeline and every sub-pipeline of a =lookup= or =append= -- is checked against the types the gate refused when the environment was built (=venture_lql_environment_get_refusal()=); one of them fails with the gate's own error, which is what =GET /api/v1/<type>= says to the same caller (=This needs the admin role or higher=, a 403). A type of a module that is off, or a name that is no type, stays LQL's =no source named= (400).
+
+Then LQL's errors become VENTURE's, keeping LQL's =LINE:COLUMN:= prefix: a query that does not parse, check or evaluate is =invalid_argument= (400), a bound -- =query.max_rows=, LQL's stage and depth limits -- is =validation= (422), and the time limit is =timeout= (504) with a message naming =query.timeout_ms=.
+
+=venture_lql_query_to_csv()= writes the document's rows as CSV. Both are declared in =venture-lql.h=, outside the GIR like the rest of it.
+
+* Where a query runs
+
+A query is the one request a caller can make arbitrarily expensive without writing anything, so no query is evaluated on the main loop. The pieces, in =src/web/venture-web-query.inc=:
+
+- *A fiber per request.* =POST /api/v1/query=, =GET /api/v1/dashboards/:slug=, =/dashboards/:slug/widgets/:id= and every page that draws a dashboard grid (=/=, =/dashboards/:slug=, =/dashboards/:slug/edit=) answer from a fiber of the main loop (=venture_web_answer_later()=, as the Stripe routes do). The fiber keeps the request's own access snapshot, its hosted admission, its tenant request scope and the hosted finish check. All of those routes are =VENTURE_HOSTED_ROUTE_NONE=, so no support capability is admitted, and the fiber's plain tenant scope is the one the pipeline would give them.
+- *Prepared in the request's scope.* The caller's environment is built inside that fiber, in the request's access scope -- the viewer's policy and, in hosted mode, the workspace -- and the query is prepared there (=venture_lql_query_prepare()=): parsed within LQL's limits, every =fetch= checked against the caller's refusals, the schema of every source it names built from the entity registry, and the functions' inputs captured (=my_teams()=, the calendar of =today()= and =period()=).
+- *Evaluated on a worker.* =venture_lql_query_execute()= runs on a query worker -- a bounded pool of four threads (=VENTURE_WEB_QUERY_THREADS=); more queries wait in its queue -- with a =GCancellable=, while the fiber yields and the main loop serves everybody else.
+- *Read on the main thread.* No worker touches the database (AGENTS.md, the thread list). Each fetch the evaluation needs is handed back to the fiber (=venture_lql_set_read_dispatch()=), which wakes, reads it on the main thread inside the request's own scopes as the caller's snapshot (=venture_lql_read_perform()=), hands the rows to the worker and yields again.
+- *Cancelled.* The query's deadline -- =query.timeout_ms= plus a second's grace; LQL's own =timeout_ms= normally answers first -- and a client that goes away both cancel it. The evaluation stops at its next step, and a fetch handed back but not yet read is never read. A cancelled query answers =timeout= (504).
+
+What this does not do: one fetch is still one main-thread read of up to =query.max_rows= + 1 rows, what one page of a record list costs, and the main loop runs only between two of them. A query of sixty-four fetches is sixty-four such reads with other requests served in between, not one long block. The client's going away is a hint: libsoup does not watch a paused connection, so it may be noticed only when the answer is written, and then the deadline is what stops the query.
+
+The helper is one and generic: =venture_web_query_off_loop(server, request, environment, work, data, cancellable, error)= runs any LQL work -- a query, the ids a filter keeps, checking or completing a person's text -- on a worker, with its fetches read back in the fiber. Given the environment, it first builds the schema of every source in it (=venture_lql_environment_prepare_sources()=), so work that asks any source for its columns stays off the registry; the work itself may touch LQL and nothing else. =POST /api/v1/query= and the query widget call it through =venture_web_query_run()=, which prepares the query first and so builds only the sources it names.
+
+Off a fiber -- a stack that cannot yield, a nested main loop, an open transaction -- the worker still evaluates and the calling stack waits for it, reading its fetches meanwhile: the main loop is blocked for as long as the query takes, bounded by the same deadline. No query route takes that path.
+
+A host can add pure functions to every environment with =venture_lql_set_environment_hook()=; they are evaluated on a worker, so they must not touch the database, a registry, the configuration or the context. The tests use it to add a =nap()= that takes time.
+
+=tests/test-lql-query.c= pins the worker (=/lql/query/runs/main-loop-stays-responsive=: a second query and a record list are answered while the first is evaluated), the deadline (=/lql/query/runs/deadline-stops-the-query=) and the cancellation (=/lql/query/runs/cancel-mid-query=, including the fetch that is never read). =tests/test-lql-query-hosted.c= runs two hosted workspaces in one process and holds each one's queries -- through the API and through a query widget, two at once on workers -- to its own rows.
+
+The web layer has two doors. =venture_web_server_new_lql_environment()= scopes to the business picked in the browser; =POST /api/v1/query= also takes =?organization_id=N=. A query widget's environment is built from the very request that asked for the page, scoped to the page's organizations, the first time a query widget on the page runs, and kept for the rest of that page.
+
 * What is deliberately not registered
 
-LQL can read files (=read=), run programs (=exec= and command definitions), talk SQL (=sql=, =sqlite=, =postgres=), read git history, the systemd journal and Kubernetes. Each is a provider a host has to add; VENTURE adds none. Every one of them would read around the one reader path and its access policy: a =sql= source would answer any question about any table, whatever the caller may see. =tests/test-lql.c= holds =read "/etc/passwd"=, =sql ...=, =sqlite=, =postgres=, =exec=, =git_log=, =k8s= and =journal= to "unknown command", and checks that every =fetch= name is a record source.
+LQL can read files (=read=), run programs (=exec= and command definitions), talk SQL (=sql=, =sqlite=, =postgres=), read git history, the systemd journal and Kubernetes. Each is a provider a host has to add; VENTURE adds none. Every one of them would read around the one reader path and its access policy: a =sql= source would answer any question about any table, whatever the caller may see. =tests/test-lql.c= holds =read "/etc/passwd"=, =sql ...=, =sqlite=, =postgres=, =exec=, =git_log=, =k8s= and =journal= to "unknown command", and checks that every =fetch= name is a record source. =tests/test-lql-query.c= holds the same commands to a 400 through =POST /api/v1/query=, as an administrator, so no door reaches them either.
 
 LQL scripts (=.include= of other files) are a host API (=lql_script_load()=) that no query can reach, and VENTURE does not use it.
 

@@ -341,6 +341,7 @@
 
 #include "web/venture-web-server.h"
 #include "web/venture-web-chart.h"
+#include "web/venture-web-query-chart.h"
 #include "assets/venture-asset-service.h"
 #include "budgets/venture-budget-service.h"
 #include "equity/venture-equity-service.h"

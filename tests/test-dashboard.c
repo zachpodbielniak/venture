@@ -439,7 +439,7 @@ test_dashboard_count_list_breakdown(
 	g_autoptr(VentureDashboardWidget) list = NULL;
 	g_autoptr(VentureDashboardWidget) breakdown = NULL;
 	g_autoptr(VentureWidgetResult) result = NULL;
-	VentureWidgetScope scope = { NULL, 0, 7, "zach", 0 };
+	VentureWidgetScope scope = { NULL, 0, 7, "zach", 0, NULL, NULL };
 	JsonObject *data;
 
 	(void)user_data;
@@ -476,7 +476,7 @@ test_dashboard_count_list_breakdown(
 		json_node_get_object(result->data), "count"), ==, 2);
 
 	{
-		VentureWidgetScope other = { NULL, 0, 8, "someone", 0 };
+		VentureWidgetScope other = { NULL, 0, 8, "someone", 0, NULL, NULL };
 
 		g_clear_pointer(&result, venture_widget_result_free);
 		result = venture_dashboard_render_widget(fixture->context, mine,
@@ -569,7 +569,7 @@ test_dashboard_note_and_actions(
 	g_autoptr(VentureDashboardWidget) note = NULL;
 	g_autoptr(VentureDashboardWidget) actions = NULL;
 	g_autoptr(VentureWidgetResult) result = NULL;
-	VentureWidgetScope scope = { NULL, 0, 3, "zach", 0 };
+	VentureWidgetScope scope = { NULL, 0, 3, "zach", 0, NULL, NULL };
 
 	(void)user_data;
 
@@ -684,7 +684,7 @@ test_dashboard_report_scope(
 	g_autoptr(VentureWidgetResult) result = NULL;
 	g_autoptr(GDateTime) when = NULL;
 	g_autoptr(GError) error = NULL;
-	VentureWidgetScope scope = { NULL, 0, 0, NULL, 0 };
+	VentureWidgetScope scope = { NULL, 0, 0, NULL, 0, NULL, NULL };
 	gint64 trading;
 
 	(void)user_data;

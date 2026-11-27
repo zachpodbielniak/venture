@@ -1184,6 +1184,140 @@ venture_cli_command_forge(
 	return -1;
 }
 
+/*
+ * `query LQL [explain=true] [organization_id=N]` - one LQL query, through
+ * POST /api/v1/query, so the rows are exactly the API's (docs/lql.org).
+ *
+ * -f json prints the venture.query/1 document as the server sent it; -f
+ * csv asks the server for its CSV and prints it untouched, so the file is
+ * the API's own; -f yaml is the document as YAML; the table prints the
+ * rows (or the plan, with explain=true).
+ */
+static gint
+venture_cli_command_query(
+	VentureCli	 *cli,
+	gchar		**args,
+	GError		**error
+){
+	g_autoptr(JsonBuilder) builder = NULL;
+	g_autoptr(JsonNode) body = NULL;
+	g_autoptr(JsonNode) node = NULL;
+	g_autoptr(GString) path = NULL;
+	gboolean explain = FALSE;
+	gboolean csv;
+	guint i;
+
+	if ((NULL == args[1]) || ('\0' == args[1][0]))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "Which query? venturectl query 'fetch ticket | summarize "
+		                    "n = count(), by: {status}'");
+		return -1;
+	}
+
+	path = g_string_new("/api/v1/query");
+
+	/* key=value after the query, as every other command takes options. */
+	for (i = 2; NULL != args[i]; i++)
+	{
+		if (0 == g_strcmp0(args[i], "explain=true"))
+		{
+			explain = TRUE;
+		}
+		else if (g_str_has_prefix(args[i], "organization_id="))
+		{
+			g_string_append(path, "?organization_id=");
+			g_string_append_uri_escaped(path, args[i] + strlen("organization_id="), NULL, FALSE);
+		}
+		else
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			            "\"%s\" is not a query option; query takes explain=true and "
+			            "organization_id=N after the query (quote the query as one argument)",
+			            args[i]);
+			return -1;
+		}
+	}
+
+	csv = (VENTURE_OUTPUT_FORMAT_CSV == cli->format) && !explain;
+
+	builder = json_builder_new();
+	json_builder_begin_object(builder);
+	json_builder_set_member_name(builder, "query");
+	json_builder_add_string_value(builder, args[1]);
+	json_builder_set_member_name(builder, "format");
+	json_builder_add_string_value(builder, csv ? "csv" : "json");
+	json_builder_set_member_name(builder, "explain");
+	json_builder_add_boolean_value(builder, explain);
+	json_builder_end_object(builder);
+	body = json_builder_get_root(builder);
+
+	/* CSV is the server's rendering, printed as it came. */
+	if (csv)
+	{
+		g_autoptr(GBytes) response = NULL;
+		g_autofree gchar *text = NULL;
+		guint status = 0;
+
+		response = venture_cli_send(cli, "POST", path->str, body, &status, error);
+
+		if (NULL == response)
+			return -1;
+
+		text = g_strndup(g_bytes_get_data(response, NULL), g_bytes_get_size(response));
+
+		if (status >= 400)
+		{
+			venture_cli_error_from_body(text, error);
+			return -1;
+		}
+
+		g_print("%s", text);
+		return 0;
+	}
+
+	node = venture_cli_request(cli, "POST", path->str, body, error);
+
+	if (NULL == node)
+		return -1;
+
+	if (VENTURE_OUTPUT_FORMAT_TABLE != cli->format)
+	{
+		venture_cli_output(cli, node);
+		return 0;
+	}
+
+	/* The table: the plan, or the rows as records with their columns. */
+	{
+		JsonObject *root = json_node_get_object(node);
+		g_autoptr(JsonObject) wrapped = json_object_new();
+		g_autoptr(JsonNode) records = NULL;
+		JsonArray *rows;
+
+		if (explain && json_object_has_member(root, "explain") &&
+		    !json_object_get_null_member(root, "explain"))
+		{
+			g_print("%s\n", json_object_get_string_member(root, "explain"));
+			return 0;
+		}
+
+		rows = json_object_get_array_member(root, "rows");
+
+		if (0 == json_array_get_length(rows))
+		{
+			g_print("(no rows)\n");
+			return 0;
+		}
+
+		json_object_set_array_member(wrapped, "records", json_array_ref(rows));
+		records = json_node_new(JSON_NODE_OBJECT);
+		json_node_set_object(records, wrapped);
+		venture_cli_print_records(cli, records);
+	}
+
+	return 0;
+}
+
 static gint venture_cli_command_report_packs(VentureCli *cli, gchar **args, GError **error);
 
 static gint
@@ -4557,6 +4691,9 @@ main(
 		"  forge settings ID            encrypted settings operation (JSON stdin)\n"
 		"  forge set-token|set-secret    retired; use encrypted settings\n"
 		"  forge verify ID              record which account the token is\n"
+		"  query LQL [explain=true] [organization_id=N]\n"
+		"                               run an LQL query (docs/lql.org) through\n"
+		"                               POST /api/v1/query; -f json|csv|yaml|table\n"
 		"  report [NAME] [PERIOD]       run (PERIOD may be left out before options: this_month); options: as_of, organization_id, customer_id, currency, venture_id, group_by, vendor_id, pipeline_id, owner, days, by, weeks, band, sort, bucket;\n"
 		"                               aggregate takes type, measure, aggregate, date_field, filter, per, category_depth\n"
 		"                               price_history takes product_id, source, bucket;\n"
@@ -4789,6 +4926,9 @@ main(
 		"                     venture_id=3 occurred_at=2026-03-14\n"
 		"  venturectl update venture 3 status=paused\n"
 		"  venturectl report pnl this_quarter\n"
+		"  venturectl query 'fetch ticket | summarize n = count(), by: {status}'\n"
+		"  venturectl -f csv query 'fetch invoice | filter status == \"sent\" | fields number, due_at' > sent.csv\n"
+		"  venturectl query 'fetch ticket | filter assignee == me() | limit 5' explain=true\n"
 		"  venturectl report aggregate 2026 type=sale measure=gross group_by=product_id.category_id date_field=occurred_at bucket=month\n"		"  venturectl report listing_performance this_quarter group_by=category category_depth=0\n"
 		"  venturectl report price_history last_30_days product_id=12 source=\"market value\" bucket=week\n"
 		"  venturectl report recipe_margin all price_source=\"market value\" category_id=4\n"
@@ -5023,6 +5163,8 @@ main(
 		result = venture_cli_command_restore(&cli, args, &error);
 	else if (0 == g_strcmp0(args[0], "report"))
 		result = venture_cli_command_report(&cli, args, &error);
+	else if (0 == g_strcmp0(args[0], "query"))
+		result = venture_cli_command_query(&cli, args, &error);
 	else if ((0 == g_strcmp0(args[0], "types")) ||
 	         (0 == g_strcmp0(args[0], "schema")) ||
 	         (0 == g_strcmp0(args[0], "describe")))

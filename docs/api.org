@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-08-14]
-#+updated: [2026-11-26]
-#+version: 0.7.0
+#+updated: [2026-11-27]
+#+version: 0.8.0
 
 * REST API
 
@@ -189,6 +189,7 @@ falls back rather than guesses.
 | =DELETE= | =/api/v1/:type/:id=                 | soft delete                          |
 | =GET=    | =/api/v1/reports=                   | list reports                         |
 | =GET=    | =/api/v1/reports/:name=             | run one; =?format=csv= for CSV       |
+| =POST=   | =/api/v1/query=                     | run an LQL query, read-only, as the caller ([[*Queries: POST /api/v1/query][Queries]]) |
 | =POST=   | =/api/v1/tokens=                    | mint an API token                    |
 | =PUT=    | =/api/v1/account/avatar=            | set your picture: the raw image, or multipart =file= ([[file:avatars.org][Profile pictures]]) |
 | =DELETE= | =/api/v1/account/avatar=            | remove your picture                  |
@@ -286,6 +287,72 @@ Everything else about the factory is the generic routes: =/api/v1/milestone=, =r
 A widget's place on the grid is four fields, =grid_col=, =grid_row=, =grid_width= and =grid_height=, zero meaning "wherever fits"; the checked way to move one is the editor's =POST /dashboards/:slug/widgets/:id/place=, which refuses a taken cell with 409. See [[file:dashboards.org][Dashboards]].
 
 =GET /api/v1/dashboards/:slug= returns a dashboard with every widget evaluated: each widget's settings, its resolved title, its link, an =error= when it could not be answered, and =data= in a shape its kind decides. =?data=0= lists the widgets without evaluating them; =?organization_id=N= narrows every widget to that entity and authorized descendants; membership is still required for each organization. A personal dashboard belonging to somebody else answers 404. The generic routes =/api/v1/dashboard= and =/api/v1/dashboard_widget= work like any other type's, and a widget written through them is held to the same checks as one made in the editor. See [[file:dashboards.org][Dashboards]].
+
+** Queries: POST /api/v1/query
+
+Runs one [[file:lql.org][LQL]] query -- =fetch=, =filter=, =fields=, =sort=, =summarize=, =limit=, =lookup= across the types the caller may read -- and answers its table. The document is modelled on libresearch's =/api/v1/query=; it is a =POST= because a query is a document of its own and outgrows a URL long before a filter does.
+
+The request is a JSON object, and every member it may carry is listed here; any other is a =400= rather than ignored:
+
+| Member    | Type    | Default | Means                                                                   |
+|-----------+---------+---------+-------------------------------------------------------------------------|
+| =query=   | string  | --      | the LQL text (required)                                                 |
+| =format=  | string  | =json=  | =json= for the document, =csv= for its rows as =text/csv=; =?format=csv= does the same |
+| =explain= | boolean | =false= | plan the query without running it: =explain= holds the plan, =rows= is empty |
+
+=?organization_id=N= is the business an unqualified =fetch= reads, with everything beneath it, as =GET /api/v1/<type>?organization_id=N= is; without it the business picked in the browser, which for a token is the default one. =organization_id == N= in the query replaces that scope, as in a list.
+
+#+begin_src sh
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"query": "fetch ticket | summarize n = count(), by: {status}"}' \
+     "$VENTURE_URL/api/v1/query" | jq '.rows'
+curl -s -H "Authorization: Bearer $VENTURE_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"query": "fetch invoice | fields number, status, due_at | sort due_at", "format": "csv"}' \
+     "$VENTURE_URL/api/v1/query" > invoices.csv
+#+end_src
+
+The answer (=venture.query/1=):
+
+#+begin_src json
+{
+  "schema": "venture.query/1",
+  "query": "fetch ticket | summarize n = count(), by: {status}",
+  "columns": [{"name": "status", "type": "String"}, {"name": "n", "type": "Int"}],
+  "rows": [{"status": "todo", "n": 4}, {"status": "done", "n": 9}],
+  "row_count": 2,
+  "explain": null,
+  "elapsed_ms": 3
+}
+#+end_src
+
+| Member       | Meaning                                                                                    |
+|--------------+--------------------------------------------------------------------------------------------|
+| =schema=     | always =venture.query/1=; additions are backwards compatible                               |
+| =query=      | the text that ran                                                                          |
+| =columns=    | the output columns in order, each =name= and its LQL =type= (=String=, =Int=, =Double=, =Boolean=, =Timestamp=, =Duration=, =Array=, =Record=, =Any=) |
+| =rows=       | one object per row, every column a member, in column order; NULL is =null=, a Timestamp ISO 8601 text, a Duration its LQL literal (="1h30m"=), money ={amount, currency, exponent, formatted}= with =amount= in minor units, and =sum_money()='s per-currency totals an array of those |
+| =row_count=  | how many rows                                                                              |
+| =explain=    | the plan with =explain: true=, else =null=                                                 |
+| =elapsed_ms= | how long the query took                                                                    |
+
+The CSV is the document's rows: a header of every column, one CRLF line per row, text defused against spreadsheet formulas as every export is, money as =1234.56 USD= and a list of money as each total joined by =; = (=300.00 EUR; 1500.00 USD=), never one figure.
+
+Who may ask, and what they see, is the list API's: the caller is admitted as =GET /api/v1/<type>= admits a reader (a session or a token, a viewer at least), every row is read through the access policy as that caller, and a token minted for one organization reads only it. A =fetch= of a type the list API refuses the caller -- =user=, =api_token=, =plugin_config= for a non-owner -- gets the very refusal =GET /api/v1/<type>= gives, status and message, also inside a =lookup=. LQL's file, program, SQL, git, journal and Kubernetes commands do not exist here: =read=, =sql=, =exec= and the rest are an unknown command. Nothing a query does writes.
+
+Errors are the standard body (=error=, =message=, =code=) plus where in the query: =line= and =column= (=null= when the error has no place) and =detail=, LQL's excerpt with a caret.
+
+| HTTP | =error=              | When                                                                            |
+|------+----------------------+---------------------------------------------------------------------------------|
+| 400  | =serialization=      | the body is not a JSON object                                                   |
+| 400  | =invalid_argument=   | no =query=, an unknown member, a bad =format=; a query that does not parse, check or evaluate; an unknown command or source |
+| 401  | =unauthenticated=    | no credential                                                                   |
+| 403  | =permission_denied=  | a type the list API refuses the caller (its message)                            |
+| 422  | =validation=         | over =query.max_rows= (an error, never a shorter answer) or another LQL bound    |
+| 504  | =timeout=            | longer than =query.timeout_ms=, or cancelled                                    |
+
+=venturectl query= and the MCP tool =venture_query= post here and print the answer, so the three give the same rows; =tests/test-lql-query.c= holds them equal.
+
+The query is never evaluated on the server's main loop: the request answers from a fiber, the evaluation runs on a query worker with its fetches read back in the request's own access scope, and the deadline (=query.timeout_ms= and a second's grace) or the client going away cancels it ([[file:lql.org::*Where a query runs][LQL: where a query runs]]). Other requests are served while a query runs. The MCP tool reaches the same route over HTTP from both doors (=venturectl mcp= and =POST /mcp=), so it runs the same way.
 
 ** The workdesk
 
