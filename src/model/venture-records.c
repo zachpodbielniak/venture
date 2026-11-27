@@ -2415,8 +2415,39 @@ static const VentureFieldDecl venture_saved_view_fields[] = {
 	              VENTURE_FIELD_KIND_INTEGER, VENTURE_COLUMN_FLAG_NONE)
 };
 
-VENTURE_DEFINE_ENTITY(VentureSavedView, venture_saved_view,
-                      venture_saved_view_fields)
+static gboolean venture_saved_view_validate(VentureEntity *entity, GError **error);
+
+VENTURE_DEFINE_ENTITY_WITH_CODE(VentureSavedView, venture_saved_view, venture_saved_view_fields,
+	VENTURE_ENTITY_CLASS(klass)->validate = venture_saved_view_validate;)
+
+/*
+ * A saved view's own check, whichever door saved it (the save-view form,
+ * /e/saved_view, the API): its LQL filter must be UTF-8, since it is
+ * opened as ?q= and handed to LQL, whose lexer reads UTF-8 alone. The
+ * words are VENTURE_LQL_NOT_UTF8_MESSAGE's (src/lql/venture-lql.h, which
+ * this shared model code cannot include), and the class the same 400.
+ */
+static gboolean
+venture_saved_view_validate(
+	VentureEntity	 *entity,
+	GError		**error
+){
+	g_autofree gchar *lql = NULL;
+
+	if (!VENTURE_ENTITY_CLASS(venture_saved_view_parent_class)->validate(entity, error))
+		return FALSE;
+
+	g_object_get(entity, "lql", &lql, NULL);
+
+	if ((NULL != lql) && !g_utf8_validate(lql, -1, NULL))
+	{
+		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		                    "The filter is not UTF-8");
+		return FALSE;
+	}
+
+	return TRUE;
+}
 
 /*
  * A person following a record. Polymorphic like a record link, because

@@ -102,6 +102,47 @@ venture_web_query_off_loop(
 	GError			**error
 );
 
+/*
+ * A problem with the filter as a whole, with no place in its text: what
+ * the bar draws for text that is not UTF-8, a busy query pool or a query
+ * that waited past its deadline. Classed as @error is when it is
+ * VENTURE's, INVALID_ARGUMENT otherwise.
+ */
+static VentureLqlProblem *
+venture_web_lql_problem_from_error(const GError *error)
+{
+	VentureLqlProblem *problem;
+
+	problem = g_new0(VentureLqlProblem, 1);
+	problem->message = g_strdup(error->message);
+	problem->code = (VENTURE_ERROR == error->domain) ? (VentureError)error->code
+	                                                 : VENTURE_ERROR_INVALID_ARGUMENT;
+
+	return problem;
+}
+
+/*
+ * A page whose bar has @problem answers with: 400, or for a busy query
+ * pool (VENTURE_ERROR_BUSY) 503 with Retry-After, so a browser or a
+ * script told to come back can. Takes @response; returns it.
+ */
+static HtmxResponse *
+venture_web_lql_problem_status(
+	HtmxResponse			*response,
+	const VentureLqlProblem		*problem
+){
+	if ((NULL != problem) && (VENTURE_ERROR_BUSY == problem->code))
+	{
+		htmx_response_set_status(response, 503);
+		htmx_response_add_header(response, "Retry-After", VENTURE_WEB_BUSY_RETRY_AFTER);
+		htmx_response_add_header(response, "Cache-Control", "no-store");
+		return response;
+	}
+
+	htmx_response_set_status(response, 400);
+	return response;
+}
+
 /* Whether @request carries a filter (a non-blank q) to run. */
 static gboolean
 venture_web_has_lql(HtmxRequest *request)
@@ -209,6 +250,24 @@ venture_web_apply_lql_filter(
 	VentureWebLqlFind find;
 	guint i;
 
+	/* Text that is not UTF-8 never reaches LQL, whose lexer reads UTF-8
+	 * alone (venture_lql_text_check_utf8()): refused here, before any
+	 * work is handed to a worker, with nothing evaluated. The bar's own
+	 * text (@recheck) is checked too, since a problem is placed in it. */
+	{
+		g_autoptr(GError) refusal = NULL;
+
+		if (!venture_lql_text_check_utf8(text, &refusal) ||
+		    !venture_lql_text_check_utf8(recheck, &refusal))
+		{
+			if (NULL != out_problem)
+				*out_problem = venture_web_lql_problem_from_error(refusal);
+
+			g_propagate_error(error, g_steal_pointer(&refusal));
+			return FALSE;
+		}
+	}
+
 	type_name = venture_web_type_name(self, entity_type);
 
 	if (NULL == type_name)
@@ -246,9 +305,21 @@ venture_web_apply_lql_filter(
 	find.include_deleted = include_deleted;
 	find.cancellable = cancellable;
 
-	if (!venture_web_query_off_loop(self, request, NULL, venture_web_lql_find, &find,
-	                                cancellable, error))
-		return FALSE;
+	/* No worker to be had (busy: 503), or none before the deadline
+	 * (TIMEOUT): a problem of the whole filter, for the bar to draw. */
+	{
+		g_autoptr(GError) refusal = NULL;
+
+		if (!venture_web_query_off_loop(self, request, NULL, venture_web_lql_find, &find,
+		                                cancellable, &refusal))
+		{
+			if (NULL != out_problem)
+				*out_problem = venture_web_lql_problem_from_error(refusal);
+
+			g_propagate_error(error, g_steal_pointer(&refusal));
+			return FALSE;
+		}
+	}
 
 	ids = find.ids;
 	problem = find.problem;
@@ -532,7 +603,17 @@ venture_web_append_query_bar(
 ){
 	g_autoptr(GString) base = NULL;
 	g_autofree gchar *id = NULL;
+	g_autofree gchar *shown = NULL;
 	gsize i;
+
+	/* Text that is not UTF-8 (refused before it ran) is drawn with its bad
+	 * bytes as U+FFFD: the chips and the status line below hand the text
+	 * to LQL's lexer, which must never see the original. */
+	if ((NULL != text) && !g_utf8_validate(text, -1, NULL))
+	{
+		shown = g_utf8_make_valid(text, -1);
+		text = shown;
+	}
 
 	id = g_strdup_printf("%s-query", type_name);
 
@@ -819,12 +900,8 @@ venture_web_ui_lql_assist(
 		return venture_web_error_response(error);
 	}
 
-	if (!g_utf8_validate(text, -1, NULL))
-	{
-		g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-		                    "The filter is not UTF-8");
+	if (!venture_lql_text_check_utf8(text, &error))
 		return venture_web_error_response(error);
-	}
 
 	environment = venture_web_server_new_lql_environment(self, request, &error);
 

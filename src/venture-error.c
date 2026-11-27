@@ -41,6 +41,7 @@ static const gchar *const venture_error_slugs[] = {
 	"mail_permanent",
 	"docs_broken_link",
 	"docs_unlinked",
+	"busy",
 	NULL
 };
 
@@ -70,6 +71,7 @@ static const GEnumValue venture_error_values[] = {
 	{ VENTURE_ERROR_MAIL_PERMANENT, "VENTURE_ERROR_MAIL_PERMANENT", "mail_permanent" },
 	{ VENTURE_ERROR_DOCS_BROKEN_LINK, "VENTURE_ERROR_DOCS_BROKEN_LINK", "docs_broken_link" },
 	{ VENTURE_ERROR_DOCS_UNLINKED, "VENTURE_ERROR_DOCS_UNLINKED", "docs_unlinked" },
+	{ VENTURE_ERROR_BUSY,                     "VENTURE_ERROR_BUSY",                     "busy" },
 	{ 0, NULL, NULL }
 };
 
@@ -135,6 +137,10 @@ venture_error_to_http_status(VentureError code)
 	case VENTURE_ERROR_NETWORK:
 		return 502;
 
+	/* At capacity, not broken: the client may retry (Retry-After). */
+	case VENTURE_ERROR_BUSY:
+		return 503;
+
 	case VENTURE_ERROR_TIMEOUT:
 		return 504;
 
@@ -156,7 +162,7 @@ venture_error_to_exit_code(VentureError code)
 	/* Small, stable exit codes so a shell script can branch:
 	 *   1 general failure   2 usage      3 not found
 	 *   4 conflict          5 auth       6 unsupported
-	 *   7 network/timeout   8 validation                       */
+	 *   7 network/timeout/busy  8 validation                  */
 	switch (code)
 	{
 	case VENTURE_ERROR_INVALID_ARGUMENT:
@@ -178,6 +184,7 @@ venture_error_to_exit_code(VentureError code)
 
 	case VENTURE_ERROR_NETWORK:
 	case VENTURE_ERROR_TIMEOUT:
+	case VENTURE_ERROR_BUSY:
 		return 7;
 
 	case VENTURE_ERROR_VALIDATION:

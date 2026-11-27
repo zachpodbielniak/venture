@@ -230,6 +230,37 @@ venture_lql_query_run(
 	GError		**error
 );
 
+/*
+ * What every surface answers text that is not UTF-8 with, word for word:
+ * GET /lql/assist said it first. VentureSavedView's own check
+ * (src/model/venture-records.c, which cannot include this header) says
+ * the same.
+ */
+#define VENTURE_LQL_NOT_UTF8_MESSAGE "The filter is not UTF-8"
+
+/**
+ * venture_lql_text_check_utf8:
+ * @text: (nullable): text a caller wrote, bound for LQL
+ * @error: (out) (optional): return location for a #GError
+ *
+ * The check every piece of caller text passes before LQL sees it: a
+ * filter bar's q, a chart's picks and the URL filters it turns into LQL,
+ * a saved view's filter, a query, a query widget's text. LQL's lexer
+ * reads its input as UTF-8 and steps over a multi-byte sequence by its
+ * lead byte, so a truncated sequence at the end of the text (q=%FC) walks
+ * past the terminator (VENTURE #53 is the library's half). Refused here,
+ * the text never reaches it.
+ *
+ * Returns: %TRUE when @text is %NULL or valid UTF-8; %FALSE with @error
+ *   set to %VENTURE_ERROR_INVALID_ARGUMENT, VENTURE_LQL_NOT_UTF8_MESSAGE,
+ *   otherwise
+ */
+gboolean
+venture_lql_text_check_utf8(
+	const gchar	 *text,
+	GError		**error
+);
+
 /**
  * VentureLqlPrepared:
  *

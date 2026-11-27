@@ -56,6 +56,9 @@ G_BEGIN_DECLS
  * @VENTURE_ERROR_NETWORK: a transport-level failure talking to the server
  *   or to an external service
  * @VENTURE_ERROR_BALANCE: a double-entry transaction does not balance
+ * @VENTURE_ERROR_BUSY: the server is at capacity for this work right now
+ *   (every query worker a caller may have is taken); nothing was done, and
+ *   the same request later can succeed. HTTP 503 with Retry-After
  *
  * Error codes in the %VENTURE_ERROR domain.
  */
@@ -85,7 +88,8 @@ typedef enum
 	VENTURE_ERROR_MAIL_TRANSIENT,
 	VENTURE_ERROR_MAIL_PERMANENT,
 	VENTURE_ERROR_DOCS_BROKEN_LINK,
-	VENTURE_ERROR_DOCS_UNLINKED
+	VENTURE_ERROR_DOCS_UNLINKED,
+	VENTURE_ERROR_BUSY
 } VentureError;
 
 #define VENTURE_TYPE_ERROR (venture_error_get_type())

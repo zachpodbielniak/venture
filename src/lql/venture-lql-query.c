@@ -508,6 +508,19 @@ venture_lql_prepared_free(VentureLqlPrepared *prepared)
 	g_free(prepared);
 }
 
+gboolean
+venture_lql_text_check_utf8(
+	const gchar	 *text,
+	GError		**error
+){
+	if ((NULL == text) || g_utf8_validate(text, -1, NULL))
+		return TRUE;
+
+	g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+	                    VENTURE_LQL_NOT_UTF8_MESSAGE);
+	return FALSE;
+}
+
 VentureLqlPrepared *
 venture_lql_query_prepare(
 	LqlEnvironment	 *environment,
@@ -521,6 +534,11 @@ venture_lql_query_prepare(
 	VentureLqlPrepared *prepared;
 
 	g_return_val_if_fail(LQL_IS_ENVIRONMENT(environment), NULL);
+
+	/* Before anything parses it: LQL's lexer reads UTF-8 alone. The
+	 * surfaces refuse it first; this is the floor under all of them. */
+	if (!venture_lql_text_check_utf8(text, error))
+		return NULL;
 
 	/* Nothing but white space is no query either. */
 	trimmed = (NULL != text) ? g_strstrip(g_strdup(text)) : NULL;

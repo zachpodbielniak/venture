@@ -649,12 +649,37 @@ venture_web_list_chart_draw(
 	*out_total = 0;
 	*out_problem = NULL;
 
-	/* --- the picks ------------------------------------------------------ */
-	groups = venture_web_chart_groups(entity_type);
-	sums = venture_web_chart_sums(entity_type);
 	by = htmx_request_get_query_param(request, "chart_by");
 	value = htmx_request_get_query_param(request, "chart_value");
 	kind = htmx_request_get_query_param(request, "chart_kind");
+
+	/* --- UTF-8, before anything reaches LQL ---------------------------- */
+	/* The picks, the URL's filters as LQL (their values are quoted into
+	 * it as they came) and the bar's q all end up in the query text, and
+	 * LQL's lexer reads UTF-8 alone (venture_lql_text_check_utf8()). */
+	{
+		const gchar *texts[5];
+		gsize t;
+
+		texts[0] = by;
+		texts[1] = value;
+		texts[2] = kind;
+		texts[3] = url_filter;
+		texts[4] = q;
+
+		for (t = 0; t < G_N_ELEMENTS(texts); t++)
+		{
+			if (!venture_lql_text_check_utf8(texts[t], &error))
+			{
+				*out_problem = venture_web_chart_problem_from_error(error);
+				return FALSE;
+			}
+		}
+	}
+
+	/* --- the picks ------------------------------------------------------ */
+	groups = venture_web_chart_groups(entity_type);
+	sums = venture_web_chart_sums(entity_type);
 
 	if (venture_string_is_empty(value))
 		value = "count";

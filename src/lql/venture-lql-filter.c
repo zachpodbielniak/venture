@@ -216,6 +216,20 @@ venture_lql_filter_check(
 	if (venture_lql_filter_blank(text))
 		return NULL;
 
+	/* Never handed to LQL's lexer, which reads UTF-8 alone
+	 * (venture_lql_text_check_utf8()). A problem of the whole text, with
+	 * no place in it: there is no character to put a caret under. */
+	if (!g_utf8_validate(text, -1, NULL))
+	{
+		VentureLqlProblem *problem;
+
+		problem = g_new0(VentureLqlProblem, 1);
+		problem->message = g_strdup(VENTURE_LQL_NOT_UTF8_MESSAGE);
+		problem->code = VENTURE_ERROR_INVALID_ARGUMENT;
+
+		return problem;
+	}
+
 	length = (guint)strlen(text);
 	query = venture_lql_filter_build(type_name, text, FALSE, &prefix);
 
@@ -412,6 +426,16 @@ venture_lql_filter_highlight(
 
 	if (NULL == text)
 		return g_string_free(g_steal_pointer(&html), FALSE);
+
+	/* Not lexed (venture_lql_text_check_utf8()): shown plain, its bad
+	 * bytes as U+FFFD, so the page stays UTF-8 too. */
+	if (!g_utf8_validate(text, -1, NULL))
+	{
+		g_autofree gchar *shown = g_utf8_make_valid(text, -1);
+
+		venture_html_escape_append(html, shown);
+		return g_string_free(g_steal_pointer(&html), FALSE);
+	}
 
 	length = (guint)strlen(text);
 	query = venture_lql_filter_build(type_name, text, FALSE, &prefix);
@@ -859,6 +883,11 @@ venture_lql_filter_complete(
 	if (NULL == text)
 		text = "";
 
+	/* Nothing to complete in text LQL may not lex
+	 * (venture_lql_text_check_utf8()). */
+	if (!g_utf8_validate(text, -1, NULL))
+		return out;
+
 	length = (guint)strlen(text);
 	offset = MIN(offset, length);
 	query = venture_lql_filter_build(type_name, text, FALSE, &prefix);
@@ -1198,6 +1227,15 @@ venture_lql_filter_terms(
 
 	if (venture_lql_filter_blank(text))
 		return terms;
+
+	/* Text LQL may not lex (venture_lql_text_check_utf8()) is one term
+	 * as it stands: no chip matches it, and an `and` keeps it whole. */
+	if (!g_utf8_validate(text, -1, NULL))
+	{
+		g_ptr_array_add(terms, g_strstrip(g_strdup(text)));
+		*out_has_or = TRUE;
+		return terms;
+	}
 
 	/* Any type name will do: only the shape of the text is read. */
 	query = venture_lql_filter_build("ticket", text, FALSE, &prefix);

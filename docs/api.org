@@ -344,15 +344,16 @@ Errors are the standard body (=error=, =message=, =code=) plus where in the quer
 | HTTP | =error=              | When                                                                            |
 |------+----------------------+---------------------------------------------------------------------------------|
 | 400  | =serialization=      | the body is not a JSON object                                                   |
-| 400  | =invalid_argument=   | no =query=, an unknown member, a bad =format=; a query that does not parse, check or evaluate; an unknown command or source |
+| 400  | =invalid_argument=   | no =query=, an unknown member, a bad =format=; a query that does not parse, check or evaluate; an unknown command or source; a query that is not UTF-8 ("The filter is not UTF-8", before anything is evaluated) |
 | 401  | =unauthenticated=    | no credential                                                                   |
 | 403  | =permission_denied=  | a type the list API refuses the caller (its message)                            |
 | 422  | =validation=         | over =query.max_rows= (an error, never a shorter answer) or another LQL bound    |
-| 504  | =timeout=            | longer than =query.timeout_ms=, or cancelled                                    |
+| 503  | =busy=               | every query worker the caller may have is taken (per workspace, per person, or the queue is full); =Retry-After= says when to come back |
+| 504  | =timeout=            | longer than =query.timeout_ms=, or cancelled; or no worker was free before that deadline (the query never ran) |
 
 =venturectl query= and the MCP tool =venture_query= post here and print the answer, so the three give the same rows; =tests/test-lql-query.c= holds them equal.
 
-The query is never evaluated on the server's main loop: the request answers from a fiber, the evaluation runs on a query worker with its fetches read back in the request's own access scope, and the deadline (=query.timeout_ms= and a second's grace) or the client going away cancels it ([[file:lql.org::*Where a query runs][LQL: where a query runs]]). Other requests are served while a query runs. The MCP tool reaches the same route over HTTP from both doors (=venturectl mcp= and =POST /mcp=), so it runs the same way.
+The query is never evaluated on the server's main loop: the request answers from a fiber, the evaluation runs on a query worker with its fetches read back in the request's own access scope, and the deadline (=query.timeout_ms= and a second's grace) or the client going away cancels it ([[file:lql.org::*Where a query runs][LQL: where a query runs]]). Other requests are served while a query runs. The workers are shared, so who may have one is bounded -- a hosted workspace at most three of the four, one person (every token of theirs counted as them) at most two, and sixteen waiting in all -- and a query over a bound is answered at once with =503= =busy= and =Retry-After= rather than queued ([[file:lql.org::*Who may have a worker][LQL: who may have a worker]]). The MCP tool reaches the same route over HTTP from both doors (=venturectl mcp= and =POST /mcp=), so it runs the same way.
 
 ** The workdesk
 
@@ -643,7 +644,7 @@ GET /api/v1/ticket?q=status%20not%20in%20%5B%22done%22%2C%20%22cancelled%22%5D
 # q = status not in ["done", "cancelled"] and assignee == me()
 #+end_src
 
-It runs as the caller, through the same access policy and business scope as the list itself, and selects records; everything else about the request -- the other filters, =order=, =limit=, =offset=, =total= -- works as it always did on the records it selected. It is bounded like any query (=query.max_rows=, =query.timeout_ms=, =query.max_bytes=), and one filter may select at most 30000 records. A filter that cannot run is a 400 =invalid_argument= naming the column: ="q, column 22: unknown field 'staus' (did you mean 'status'?)"=. A filter over a bound is classed as =POST /api/v1/query= classes it: over =query.max_rows=, =query.max_bytes= or the 30000 records is a 422 =validation=, over =query.timeout_ms= a 504 =timeout=. A field the record does not have is refused rather than matching nothing. See [[file:lql.org::*Filter bars][Filter bars]].
+It runs as the caller, through the same access policy and business scope as the list itself, and selects records; everything else about the request -- the other filters, =order=, =limit=, =offset=, =total= -- works as it always did on the records it selected. It is bounded like any query (=query.max_rows=, =query.timeout_ms=, =query.max_bytes=), and one filter may select at most 30000 records. A filter that cannot run is a 400 =invalid_argument= naming the column: ="q, column 22: unknown field 'staus' (did you mean 'status'?)"=. A filter over a bound is classed as =POST /api/v1/query= classes it: over =query.max_rows=, =query.max_bytes= or the 30000 records is a 422 =validation=, over =query.timeout_ms= a 504 =timeout=. A filter that is not UTF-8 is a 400 =invalid_argument=, "The filter is not UTF-8", before anything is evaluated; with every query worker the caller may have taken it is a 503 =busy= with =Retry-After=. A field the record does not have is refused rather than matching nothing. See [[file:lql.org::*Filter bars][Filter bars]].
 
 * Bodies
 

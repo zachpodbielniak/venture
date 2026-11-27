@@ -323,9 +323,15 @@ venture_web_json_response(
 	return response;
 }
 
+/* Seconds a client refused with VENTURE_ERROR_BUSY (503) is told to wait:
+ * the work that holds the capacity is bounded by query.timeout_ms, and a
+ * typical query takes milliseconds. */
+#define VENTURE_WEB_BUSY_RETRY_AFTER "2"
+
 /*
  * Renders a #GError as the standard JSON error body with the HTTP status the
- * error domain maps to, so every failure looks the same to a client.
+ * error domain maps to, so every failure looks the same to a client. A
+ * VENTURE_ERROR_BUSY refusal (503) says when to come back: Retry-After.
  */
 static HtmxResponse *
 venture_web_error_response(const GError *error)
@@ -357,6 +363,14 @@ venture_web_error_response(const GError *error)
 			(NULL != error) ? g_error_copy(error)
 			                : g_error_new_literal(VENTURE_ERROR, VENTURE_ERROR_FAILED, "Unknown error"),
 			(GDestroyNotify)g_error_free);
+
+		if ((NULL != error) && (VENTURE_ERROR == error->domain) &&
+		    (VENTURE_ERROR_BUSY == error->code))
+		{
+			htmx_response_add_header(response, "Retry-After", VENTURE_WEB_BUSY_RETRY_AFTER);
+			htmx_response_add_header(response, "Cache-Control", "no-store");
+		}
+
 		return response;
 	}
 }
@@ -5607,6 +5621,8 @@ venture_web_error_title(const GError *error)
 		return "You don\xe2\x80\x99t have access to do that";
 	case VENTURE_ERROR_BALANCE:
 		return "Those figures don\xe2\x80\x99t balance";
+	case VENTURE_ERROR_BUSY:
+		return "Busy right now \xe2\x80\x94 try again in a moment";
 	default:
 		return "Something went wrong";
 	}
@@ -8731,11 +8747,12 @@ venture_web_ui_list(
 
 	venture_web_append_list_filters(self, request, content, path, entity_type, specs);
 
+	/* 400, or 503 with Retry-After when the query pool was busy. */
 	if (NULL != problem)
 	{
-		return venture_web_html_response(
+		return venture_web_lql_problem_status(venture_web_html_response(
 			venture_web_page(self, request, (NULL != view) ? view_path : path, heading,
-			                 content->str), 400);
+			                 content->str), 400), problem);
 	}
 
 	/* The chart in place of the table: no row actions, no bulk bar, no
@@ -15356,11 +15373,24 @@ venture_web_ui_tickets(
 	 */
 	lql = htmx_request_get_query_param(request, "q");
 	legacy = venture_lql_filter_from_query_string(VENTURE_TYPE_TICKET, filters);
-	bar = venture_lql_filter_and(legacy, lql);
+
+	/* Joining the two reads them with LQL's lexer, which reads UTF-8
+	 * alone (venture_lql_text_check_utf8()): text that is not is the
+	 * bar's problem before anything is read or run, and the bar shows q
+	 * alone. */
+	if (!venture_lql_text_check_utf8(lql, &error) ||
+	    !venture_lql_text_check_utf8(legacy, &error))
+	{
+		problem = venture_web_lql_problem_from_error(error);
+		g_clear_error(&error);
+		bar = g_strdup((NULL != lql) ? lql : "");
+	}
+	else
+		bar = venture_lql_filter_and(legacy, lql);
 
 	/* A problem is placed in the bar's text, which can hold the URL's
 	 * filters ahead of q. */
-	if (!venture_web_lql_blank(lql) &&
+	if ((NULL == problem) && !venture_web_lql_blank(lql) &&
 	    !venture_web_apply_lql_filter(self, request, VENTURE_TYPE_TICKET, query, lql, FALSE,
 	                                  environment, bar, &problem, &error) &&
 	    (NULL == problem))
@@ -15589,11 +15619,12 @@ venture_web_ui_tickets(
 	g_string_append(content, "</nav>");
 
 	/* A filter that cannot run draws its problem in the bar and no
-	 * board: an empty board would read as "no such tickets". */
+	 * board: an empty board would read as "no such tickets". 400, or 503
+	 * with Retry-After when the query pool was busy. */
 	if (NULL != problem)
-		return venture_web_html_response(
+		return venture_web_lql_problem_status(venture_web_html_response(
 			venture_web_page(self, request, "/tickets", "Tickets", content->str),
-			400);
+			400), problem);
 
 	/* The chart in place of the board or the list. */
 	if (chart)

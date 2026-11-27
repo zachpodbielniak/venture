@@ -139,6 +139,11 @@ venture_dashboard_validate_query(
 		return FALSE;
 	}
 
+	/* Before LQL parses it: its lexer reads UTF-8 alone, and the text is
+	 * whatever the author sent (venture_lql_text_check_utf8()). */
+	if (!venture_lql_text_check_utf8(text, error))
+		return FALSE;
+
 	pipeline = lql_parse(text, &parse_error);
 
 	if (NULL == pipeline)
