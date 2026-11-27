@@ -31,3 +31,6 @@
 [submodule "deps/tallow"]
 	path = deps/tallow
 	url = git@git-ssh.podbielniak.com:zachpodbielniak/tallow.git
+[submodule "deps/libre-query-language"]
+	path = deps/libre-query-language
+	url = git@git-ssh.podbielniak.com:zachpodbielniak/libre-query-language.git
