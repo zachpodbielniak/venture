@@ -230,7 +230,15 @@ audit_event(StripeClient *client, const gchar *name, JsonObject *payload, gpoint
 	g_object_set(entry, "actor", "stripe", "source", name,
 		"occurred-at", now, "diff", json, NULL);
 	venture_entity_set_organization_id(VENTURE_ENTITY(entry), self->organization_id);
-	venture_database_save(self->database, VENTURE_ENTITY(entry), NULL, NULL);
+	{
+		/* The service's own record of what the provider said, whoever's
+		 * request it was made in. Under a signed-in member's scope the
+		 * policy judged it as that member's audit excerpt -- one with no
+		 * target -- refused it, and warned. */
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(
+			venture_database_get_access_policy(self->database), NULL);
+		venture_database_save(self->database, VENTURE_ENTITY(entry), NULL, NULL);
+	}
 }
 
 #include "venture-stripe-settings.inc"
