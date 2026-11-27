@@ -27,6 +27,7 @@ main(int argc, char **argv)
 	g_test_init(&argc, &argv, NULL);
 	g_test_add_data_func("/ui-script/inline-forms", "tests/ui-inline-forms.cjs", test_script);
 	g_test_add_data_func("/ui-script/filter-race", "tests/ui-filter-race.cjs", test_script);
+	g_test_add_data_func("/ui-script/poll-leak", "tests/ui-poll-leak.cjs", test_script);
 	g_test_add_data_func("/ui-script/filter-focus", "tests/ui-filter-focus.cjs", test_script);
 	g_test_add_data_func("/ui-script/navigation", "tests/ui-navigation.cjs", test_script);
 	return g_test_run();
