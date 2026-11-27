@@ -20,15 +20,19 @@ G_BEGIN_DECLS
 /*
  * venture_web_query_get_counts:
  * @out_admitted: (out) (optional): jobs admitted and not yet done with:
- *   running, or queued for a worker (one a request gave up on included,
- *   until a worker skips it)
- * @out_running: (out) (optional): jobs a worker is running now
- * @out_holders: (out) (optional): workspaces and principals holding at
- *   least one admitted job; zero once every count is back to zero
+ *   running, or waiting in line for a worker. A job its request gave up
+ *   on while it waited leaves the line at once; one given up after it was
+ *   handed to a worker counts as running until the worker skips it. So
+ *   @out_admitted - @out_running is how many wait
+ * @out_running: (out) (optional): jobs handed to a worker and not yet
+ *   done with -- what the running caps count
+ * @out_holders: (out) (optional): workspaces and principals with at least
+ *   one job running or waiting; zero once every count is back to zero
  * @out_ran: (out) (optional): jobs whose work a worker ran, since the
  *   process started: unchanged across a request, nothing was evaluated
- * @out_skipped: (out) (optional): queued jobs a worker found cancelled or
- *   given up and skipped without running, since the process started
+ * @out_skipped: (out) (optional): admitted jobs that never ran -- given
+ *   up in line, or found cancelled or given up by the worker and skipped
+ *   -- since the process started
  *
  * Reads the admission counts under their lock. Any thread.
  */

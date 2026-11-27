@@ -18,14 +18,22 @@
  *     a query widget's text when it is saved and when it is drawn.
  *   - The query workers are shared by the whole process, so one hosted
  *     workspace's slow queries could hold every worker for every tenant,
- *     and the queue had no end. A job is now admitted against caps -- per
- *     workspace, per principal, in all -- and refused at once over one
- *     (503, Retry-After); a job that waits past its deadline, or is
- *     cancelled before a worker reaches it, is answered and never run.
+ *     and the queue had no end. How many jobs may run is capped -- per
+ *     workspace, per principal, in all -- and a job over a running cap
+ *     waits its turn; how many may wait is bounded separately, and over
+ *     that a job is refused at once (503, Retry-After). A freed worker
+ *     takes the oldest waiting job that may run. A job that waits past
+ *     its deadline, or is cancelled before a worker reaches it, is
+ *     answered and never run.
  *
- * The workers are held on cue by hold(), an LQL function that waits for
- * the test to open it, so none of this depends on timing. Every test
- * ends with the admission counts back at zero.
+ * mongoose's second pass found the first version of the caps counted
+ * waiting jobs as well as running ones, so two people in one workspace
+ * holding three slots refused every colleague for as long as they kept
+ * at it (/lql/guards/admission/workspace-member-waits).
+ *
+ * The workers are held on cue by hold() and hold_one(), LQL functions
+ * that wait for the test to open them, so none of this depends on
+ * timing. Every test ends with the admission counts back at zero.
  */
 
 #include <venture.h>
@@ -43,6 +51,14 @@
 /* A query that holds its worker until the test opens hold(). */
 #define QUERY_HOLD "data {} | fields z = hold()"
 
+/* A query that holds its worker until the test opens hold_one() alone. */
+#define QUERY_HOLD_ONE "data {} | fields z = hold_one()"
+
+/* The gates: hold() waits on the first, hold_one() on the second. */
+#define GATE_HOLD (0)
+#define GATE_ONE (1)
+#define GATES (2)
+
 /* A query that counts, in marks, every time it is evaluated. */
 #define QUERY_MARK "data {} | fields z = mark()"
 
@@ -53,25 +69,27 @@
 
 static GMutex hold_lock;
 static GCond hold_cond;
-static gint holding;		/* hold() calls waiting now */
-static gboolean hold_open;
+static gint holding;		/* hold() and hold_one() calls waiting now */
+static gboolean hold_open[GATES];
 static gint marks;		/* atomic: mark() calls */
 
+/* hold() and hold_one(): @user_data is the gate waited on. */
 static LqlValue *
 hold(
 	LqlFunctionCall	 *call,
 	gpointer	  user_data,
 	GError		**error
 ){
+	gint gate = GPOINTER_TO_INT(user_data);
+
 	(void)call;
-	(void)user_data;
 	(void)error;
 
 	g_mutex_lock(&hold_lock);
 	holding++;
 	g_cond_broadcast(&hold_cond);
 
-	while (!hold_open)
+	while (!hold_open[gate])
 		g_cond_wait(&hold_cond, &hold_lock);
 
 	holding--;
@@ -96,7 +114,7 @@ mark(
 	return lql_value_new_int(1);
 }
 
-/* A #VentureLqlEnvironmentHook: hold() and mark() everywhere. */
+/* A #VentureLqlEnvironmentHook: hold(), hold_one() and mark() everywhere. */
 static gboolean
 add_functions(
 	LqlEnvironment	 *environment,
@@ -104,39 +122,58 @@ add_functions(
 	GError		**error
 ){
 	g_autoptr(LqlFunction) held = NULL;
+	g_autoptr(LqlFunction) held_one = NULL;
 	g_autoptr(LqlFunction) marked = NULL;
 
 	(void)user_data;
 
-	held = lql_function_new_scalar("hold", LQL_VALUE_TYPE_INT, hold, NULL, NULL);
+	held = lql_function_new_scalar("hold", LQL_VALUE_TYPE_INT, hold,
+	                               GINT_TO_POINTER(GATE_HOLD), NULL);
 	lql_function_set_flags(held, LQL_FUNCTION_FLAG_VOLATILE);
+	held_one = lql_function_new_scalar("hold_one", LQL_VALUE_TYPE_INT, hold,
+	                                   GINT_TO_POINTER(GATE_ONE), NULL);
+	lql_function_set_flags(held_one, LQL_FUNCTION_FLAG_VOLATILE);
 	marked = lql_function_new_scalar("mark", LQL_VALUE_TYPE_INT, mark, NULL, NULL);
 	lql_function_set_flags(marked, LQL_FUNCTION_FLAG_VOLATILE);
 
 	return lql_environment_register_function(environment, held, error) &&
+	       lql_environment_register_function(environment, held_one, error) &&
 	       lql_environment_register_function(environment, marked, error);
 }
 
-/* Closes hold(): the next ones wait. */
+/* Closes both gates: the next hold() and hold_one() wait. */
 static void
 hold_close(void)
 {
+	guint gate;
+
 	g_mutex_lock(&hold_lock);
-	hold_open = FALSE;
+
+	for (gate = 0; gate < GATES; gate++)
+		hold_open[gate] = FALSE;
+
 	g_mutex_unlock(&hold_lock);
 }
 
-/* Opens hold(): every one waiting returns. */
+/* Opens @gate: every call waiting on it returns. */
 static void
-hold_release(void)
+hold_open_gate(gint gate)
 {
 	g_mutex_lock(&hold_lock);
-	hold_open = TRUE;
+	hold_open[gate] = TRUE;
 	g_cond_broadcast(&hold_cond);
 	g_mutex_unlock(&hold_lock);
 }
 
-/* How many hold() calls wait now. */
+/* Opens both gates: every one waiting returns. */
+static void
+hold_release(void)
+{
+	hold_open_gate(GATE_HOLD);
+	hold_open_gate(GATE_ONE);
+}
+
+/* How many hold() and hold_one() calls wait now. */
 static gint
 holding_now(void)
 {
@@ -199,6 +236,15 @@ wait_admitted(guint admitted)
 		g_main_context_iteration(NULL, FALSE);
 		g_usleep(1000);
 	}
+}
+
+/* How many admitted jobs wait in line for a worker. */
+static guint
+waiting_now(void)
+{
+	Counts c = counts();
+
+	return c.admitted - c.running;
 }
 
 /* Every count back at zero: nothing held, nothing queued, nobody. */
@@ -328,6 +374,35 @@ exchange_clear(Exchange *x)
 	g_clear_error(&x->error);
 	g_clear_pointer(&x->text, g_free);
 	g_clear_pointer(&x->retry_after, g_free);
+}
+
+/*
+ * Drives the main loop until @n jobs wait in line, failing loudly -- with
+ * its answer -- if @x is answered meanwhile: it should be one of them.
+ */
+static void
+wait_queued(
+	Exchange	*x,
+	guint		 n
+){
+	gint64 limit = g_get_monotonic_time() + WAIT_LIMIT_S * G_TIME_SPAN_SECOND;
+
+	while (waiting_now() != n)
+	{
+		if (x->done)
+		{
+			exchange_finish(x);
+			g_error("%s %s was answered %u, where it should wait for a worker: %s",
+			        soup_message_get_method(x->message),
+			        g_uri_get_path(soup_message_get_uri(x->message)), x->status, x->text);
+		}
+
+		if (g_get_monotonic_time() > limit)
+			g_error("%u jobs waiting, wanted %u", waiting_now(), n);
+
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
 }
 
 /* {"query": @text} as JSON. */
@@ -762,27 +837,40 @@ test_utf8_widget(
 /* --- 2. Who may have a worker ------------------------------------------------- */
 
 /*
- * One person may have two queries running or waiting: a third, from the
- * API or a page's bar, is refused at once -- 503 with Retry-After, and
- * the bar's problem on the page -- while somebody else is still served.
- * When the two finish, everything held is given back.
+ * One person may have two queries running and four more waiting: a
+ * third waits rather than being refused, and only a seventh -- from the
+ * API, the list API's ?q= or a page's bar -- is refused at once, 503 with
+ * Retry-After and the bar's problem on the page, while somebody else is
+ * still served. When the two finish, the four that waited run, and
+ * everything held is given back.
  */
 static void
-test_principal_cap(
+test_principal_waiting_bound(
 	Fixture		*f,
 	gconstpointer	 data
 ){
 	g_autoptr(JsonNode) refused = NULL;
-	Exchange first;
-	Exchange second;
+	Exchange held[2];
+	Exchange queued[4];
 	Exchange x;
+	guint i;
 
 	(void)data;
 
-	fixture_query_start(f, &first, f->ada_secret, QUERY_HOLD);
-	fixture_query_start(f, &second, f->ada_secret, QUERY_HOLD);
+	fixture_query_start(f, &held[0], f->ada_secret, QUERY_HOLD);
+	fixture_query_start(f, &held[1], f->ada_secret, QUERY_HOLD);
 	wait_holding(2);
-	g_assert_cmpuint(counts().admitted, ==, 2);
+	g_assert_cmpuint(counts().running, ==, 2);
+
+	/* Four more of ada's: over her running cap, so they wait -- with two
+	 * workers free, which are not hers to take. */
+	for (i = 0; i < G_N_ELEMENTS(queued); i++)
+	{
+		fixture_query_start(f, &queued[i], f->ada_secret, QUERY_MARK);
+		wait_queued(&queued[i], i + 1);
+	}
+
+	g_assert_cmpuint(counts().running, ==, 2);
 
 	/* The API: 503 busy, Retry-After. */
 	{
@@ -791,10 +879,11 @@ test_principal_cap(
 		fixture_send(f, &x, "POST", "/api/v1/query", NULL, f->ada_secret, "application/json", body);
 	}
 	refused = venture_json_parse(x.text, NULL);
-	g_test_message("third query: %s", x.text);
+	g_test_message("seventh query: %s", x.text);
 	g_assert_cmpuint(x.status, ==, 503);
 	g_assert_cmpstr(x.retry_after, ==, "2");
 	g_assert_cmpstr(message_of(refused, "error"), ==, "busy");
+	g_assert_nonnull(strstr(message_of(refused, "message"), "4 queries waiting"));
 	g_assert_nonnull(strstr(message_of(refused, "message"), "the most one person may"));
 	exchange_clear(&x);
 
@@ -813,7 +902,8 @@ test_principal_cap(
 	g_assert_nonnull(strstr(x.text, "the most one person may"));
 	exchange_clear(&x);
 
-	/* Nothing of those three ran. Somebody else is served meanwhile. */
+	/* Nothing of ada's past her two ran. Somebody else is served
+	 * meanwhile, by a worker ada's line could not take. */
 	g_assert_cmpint(g_atomic_int_get(&marks), ==, 0);
 	{
 		g_autofree gchar *body = query_body(QUERY_MARK);
@@ -822,15 +912,27 @@ test_principal_cap(
 	}
 	g_assert_cmpuint(x.status, ==, 200);
 	g_assert_cmpint(g_atomic_int_get(&marks), ==, 1);
+	g_assert_cmpuint(waiting_now(), ==, 4);
 	exchange_clear(&x);
 
+	/* ada's two finish; her four run in their turn. */
 	hold_release();
-	exchange_finish(&first);
-	exchange_finish(&second);
-	g_assert_cmpuint(first.status, ==, 200);
-	g_assert_cmpuint(second.status, ==, 200);
-	exchange_clear(&first);
-	exchange_clear(&second);
+
+	for (i = 0; i < G_N_ELEMENTS(held); i++)
+	{
+		exchange_finish(&held[i]);
+		g_assert_cmpuint(held[i].status, ==, 200);
+		exchange_clear(&held[i]);
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(queued); i++)
+	{
+		exchange_finish(&queued[i]);
+		g_assert_cmpuint(queued[i].status, ==, 200);
+		exchange_clear(&queued[i]);
+	}
+
+	g_assert_cmpint(g_atomic_int_get(&marks), ==, 5);
 	assert_idle();
 }
 
@@ -864,9 +966,79 @@ drain_workers(Exchange holders[4])
 }
 
 /*
+ * Fair dispatch: a freed worker goes to the oldest waiting job that may
+ * run, not the head of the line. ada (two running, her cap) asks first,
+ * ana (none running) after her; when one of vee's workers frees, ana's
+ * query takes it and is answered while ada's -- older, but blocked only by
+ * her own two -- still waits, blocking nobody. ada's runs once one of her
+ * own finishes.
+ */
+static void
+test_fair_dispatch(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	Exchange holders[4];
+	Exchange older;
+	Exchange later;
+	guint i;
+
+	(void)data;
+
+	/* All four workers: ada's two, vee's two -- one of vee's on its own
+	 * gate. */
+	fixture_query_start(f, &holders[0], f->ada_secret, QUERY_HOLD);
+	fixture_query_start(f, &holders[1], f->ada_secret, QUERY_HOLD);
+	fixture_query_start(f, &holders[2], f->vee_secret, QUERY_HOLD);
+	fixture_query_start(f, &holders[3], f->vee_secret, QUERY_HOLD_ONE);
+	wait_holding(4);
+	g_assert_cmpuint(counts().running, ==, 4);
+
+	/* ada's third, then ana's: both wait, ada's at the head. */
+	fixture_query_start(f, &older, f->ada_secret, QUERY_MARK);
+	wait_queued(&older, 1);
+	fixture_query_start(f, &later, f->ana_secret, QUERY_MARK);
+	wait_queued(&later, 2);
+
+	/* One of vee's finishes: its worker is ana's, not ada's. */
+	hold_open_gate(GATE_ONE);
+	exchange_finish(&holders[3]);
+	g_assert_cmpuint(holders[3].status, ==, 200);
+	exchange_finish(&later);
+	g_test_message("ana, asked later: %u", later.status);
+	g_assert_cmpuint(later.status, ==, 200);
+	g_assert_cmpint(g_atomic_int_get(&marks), ==, 1);
+
+	/* ada's still waits, behind her own two only: a worker is free. */
+	g_assert_false(older.done);
+	g_assert_cmpuint(waiting_now(), ==, 1);
+	g_assert_cmpuint(counts().running, ==, 3);
+
+	/* Hers finish; then hers runs. */
+	hold_release();
+	exchange_finish(&older);
+	g_assert_cmpuint(older.status, ==, 200);
+	g_assert_cmpint(g_atomic_int_get(&marks), ==, 2);
+
+	for (i = 0; i < 3; i++)
+	{
+		exchange_finish(&holders[i]);
+		g_assert_cmpuint(holders[i].status, ==, 200);
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(holders); i++)
+		exchange_clear(&holders[i]);
+
+	exchange_clear(&older);
+	exchange_clear(&later);
+	assert_idle();
+}
+
+/*
  * A query that is still waiting for a worker at its deadline stops
- * waiting and is answered, 504, without ever running; the worker that
- * reaches it later skips it, and what it held is given back.
+ * waiting and is answered, 504, without ever running: it leaves the
+ * line then, so what it held is given back at once, and no worker ever
+ * sees it.
  */
 static void
 test_deadline_unstarted(
@@ -906,9 +1078,10 @@ test_deadline_unstarted(
 	g_object_set(f->config, "query-timeout-ms", (gint64)60000, NULL);
 
 	/* Answered while the workers are still held: it never started, and
-	 * still holds its place until a worker gets to it. */
+	 * gave its place in line back as it was answered. */
 	g_assert_cmpint(holding_now(), ==, 4);
-	g_assert_cmpuint(counts().admitted, ==, 5);
+	g_assert_cmpuint(counts().admitted, ==, 4);
+	g_assert_cmpuint(counts().skipped, ==, before.skipped + 1);
 
 	drain_workers(holders);
 	assert_idle();
@@ -939,8 +1112,8 @@ cancel_later(gpointer data)
 /*
  * A job cancelled while it waits for a worker -- before it was queued,
  * and while it waits, from another thread -- is answered at once, not at
- * its deadline, and the worker that reaches it skips it: its work never
- * runs, and what it held is given back.
+ * its deadline, and leaves the line: its work never runs, and what it
+ * held is given back then.
  */
 static void
 test_cancelled_unstarted(
@@ -984,8 +1157,9 @@ test_cancelled_unstarted(
 			g_thread_join(thread);
 	}
 
-	/* Both still queued behind the four, holding their places. */
-	g_assert_cmpuint(counts().admitted, ==, 6);
+	/* Neither holds a place behind the four any more. */
+	g_assert_cmpuint(counts().admitted, ==, 4);
+	g_assert_cmpuint(counts().skipped, ==, before.skipped + 2);
 
 	drain_workers(holders);
 	assert_idle();
@@ -1086,6 +1260,11 @@ workspace_setup(
 	g_assert_no_error(error);
 	g_assert_true(venture_database_migrate(w->db, venture_entity_registry_get_default(), &error));
 	g_assert_no_error(error);
+
+	/* Room for a full waiting line: 3 running, 8 waiting and the ones
+	 * refused, past the default eight requests in flight per workspace
+	 * (hosted.http_concurrency), which would answer 429 first. */
+	g_object_set(w->config, "hosted-http-concurrency", (gint64)32, NULL);
 
 	w->service = venture_tenant_service_get(w->db);
 	g_assert_true(venture_tenant_service_configure(w->service, w->config, &error));
@@ -1188,19 +1367,23 @@ hosted_query_start(
 }
 
 /*
- * Workspace A's flood cannot take the pool: A has three queries held, the
- * most one workspace may, and its fourth -- from a member who has none
- * running -- is refused 503 at once; workspace B is answered while A's
- * three still hold their workers, by the worker A cannot reach.
+ * mongoose's scenario: in workspace A one member holds two queries and a
+ * second holds one -- A's running cap. A third member, with nothing
+ * running, asks: the query waits for a worker A may use, and runs once one
+ * of A's frees -- never 503. Meanwhile workspace B is answered by the
+ * worker A cannot reach, and A still cannot take it.
+ *
+ * Before the caps counted running jobs only, this third member was
+ * refused 503 at once, and for as long as the other two kept it up.
  */
 static void
-test_workspace_cap(
+test_workspace_member_waits(
 	Hosted		*h,
 	gconstpointer	 data
 ){
-	g_autoptr(JsonNode) refused = NULL;
 	g_autoptr(JsonNode) answered = NULL;
 	Exchange flood[3];
+	Exchange member;
 	Exchange x;
 	guint i;
 
@@ -1212,18 +1395,13 @@ test_workspace_cap(
 	wait_holding(3);
 	g_assert_cmpuint(counts().running, ==, 3);
 
-	/* A's fourth, from its third member: the workspace's cap. */
-	hosted_query_start(h, &h->a, &x, 2, QUERY_MARK);
-	exchange_finish(&x);
-	refused = venture_json_parse(x.text, NULL);
-	g_test_message("A's fourth: %s", x.text);
-	g_assert_cmpuint(x.status, ==, 503);
-	g_assert_cmpstr(x.retry_after, ==, "2");
-	g_assert_cmpstr(message_of(refused, "error"), ==, "busy");
-	g_assert_nonnull(strstr(message_of(refused, "message"), "the most one workspace may"));
-	exchange_clear(&x);
+	/* A's third member: waits, with a worker free that A may not have. */
+	hosted_query_start(h, &h->a, &member, 2, QUERY_MARK);
+	wait_queued(&member, 1);
+	g_assert_cmpuint(counts().running, ==, 3);
 
-	/* B, while A's three hold: answered, with B's own rows. */
+	/* B, while A's three hold: answered, with B's own rows, by the fourth
+	 * worker -- which A's waiting member does not take. */
 	hosted_query_start(h, &h->b, &x, 0, "fetch ticket | fields title, z = mark()");
 	exchange_finish(&x);
 	answered = venture_json_parse(x.text, NULL);
@@ -1233,6 +1411,87 @@ test_workspace_cap(
 		==, "beta");
 	g_assert_cmpint(holding_now(), ==, 3);
 	g_assert_cmpint(g_atomic_int_get(&marks), ==, 1);
+	g_assert_false(member.done);
+	g_assert_cmpuint(waiting_now(), ==, 1);
+	exchange_clear(&x);
+
+	/* A's frees: the member's query runs, and is answered. */
+	hold_release();
+	exchange_finish(&member);
+	g_test_message("A's third member: %u %s", member.status, member.text);
+	g_assert_cmpuint(member.status, ==, 200);
+	g_assert_cmpint(g_atomic_int_get(&marks), ==, 2);
+	exchange_clear(&member);
+
+	for (i = 0; i < G_N_ELEMENTS(flood); i++)
+	{
+		exchange_finish(&flood[i]);
+		g_assert_cmpuint(flood[i].status, ==, 200);
+		exchange_clear(&flood[i]);
+	}
+
+	assert_idle();
+}
+
+/*
+ * A workspace's line has an end of its own: with A's three running and
+ * eight of A's waiting (two members, four each), A's next query -- from a
+ * member with none waiting -- is refused 503 at once, the workspace's
+ * bound, and a member at their own four is refused by theirs; workspace B
+ * still runs meanwhile. When A's three finish, its eight run.
+ */
+static void
+test_workspace_waiting_bound(
+	Hosted		*h,
+	gconstpointer	 data
+){
+	g_autoptr(JsonNode) refused = NULL;
+	Exchange flood[3];
+	Exchange queued[8];
+	Exchange x;
+	guint i;
+
+	(void)data;
+
+	hosted_query_start(h, &h->a, &flood[0], 0, QUERY_HOLD);
+	hosted_query_start(h, &h->a, &flood[1], 0, QUERY_HOLD);
+	hosted_query_start(h, &h->a, &flood[2], 1, QUERY_HOLD);
+	wait_holding(3);
+
+	/* Eight waiting: members 1 and 2, four each. */
+	for (i = 0; i < G_N_ELEMENTS(queued); i++)
+	{
+		hosted_query_start(h, &h->a, &queued[i], 1 + (i % 2), QUERY_MARK);
+		wait_queued(&queued[i], i + 1);
+	}
+
+	/* Member 0, none waiting: the workspace's bound. */
+	hosted_query_start(h, &h->a, &x, 0, QUERY_MARK);
+	exchange_finish(&x);
+	refused = venture_json_parse(x.text, NULL);
+	g_test_message("A's ninth waiting: %s", x.text);
+	g_assert_cmpuint(x.status, ==, 503);
+	g_assert_cmpstr(x.retry_after, ==, "2");
+	g_assert_cmpstr(message_of(refused, "error"), ==, "busy");
+	g_assert_nonnull(strstr(message_of(refused, "message"), "8 queries waiting"));
+	g_assert_nonnull(strstr(message_of(refused, "message"), "the most one workspace may"));
+	g_clear_pointer(&refused, json_node_unref);
+	exchange_clear(&x);
+
+	/* Member 2, four waiting: their own bound, checked first. */
+	hosted_query_start(h, &h->a, &x, 2, QUERY_MARK);
+	exchange_finish(&x);
+	refused = venture_json_parse(x.text, NULL);
+	g_assert_cmpuint(x.status, ==, 503);
+	g_assert_nonnull(strstr(message_of(refused, "message"), "the most one person may"));
+	exchange_clear(&x);
+
+	/* B runs meanwhile. */
+	hosted_query_start(h, &h->b, &x, 0, QUERY_MARK);
+	exchange_finish(&x);
+	g_assert_cmpuint(x.status, ==, 200);
+	g_assert_cmpint(g_atomic_int_get(&marks), ==, 1);
+	g_assert_cmpuint(waiting_now(), ==, 8);
 	exchange_clear(&x);
 
 	hold_release();
@@ -1244,6 +1503,14 @@ test_workspace_cap(
 		exchange_clear(&flood[i]);
 	}
 
+	for (i = 0; i < G_N_ELEMENTS(queued); i++)
+	{
+		exchange_finish(&queued[i]);
+		g_assert_cmpuint(queued[i].status, ==, 200);
+		exchange_clear(&queued[i]);
+	}
+
+	g_assert_cmpint(g_atomic_int_get(&marks), ==, 9);
 	assert_idle();
 }
 
@@ -1261,10 +1528,12 @@ main(
 
 	ADD("/lql/guards/utf8/refused-everywhere", test_utf8_refused_everywhere);
 	ADD("/lql/guards/utf8/widget", test_utf8_widget);
-	ADD("/lql/guards/admission/principal-cap", test_principal_cap);
+	ADD("/lql/guards/admission/principal-waiting-bound", test_principal_waiting_bound);
+	ADD("/lql/guards/admission/fair-dispatch", test_fair_dispatch);
 	ADD("/lql/guards/admission/deadline-unstarted", test_deadline_unstarted);
 	ADD("/lql/guards/admission/cancelled-unstarted", test_cancelled_unstarted);
-	ADD_HOSTED("/lql/guards/admission/workspace-cap", test_workspace_cap);
+	ADD_HOSTED("/lql/guards/admission/workspace-member-waits", test_workspace_member_waits);
+	ADD_HOSTED("/lql/guards/admission/workspace-waiting-bound", test_workspace_waiting_bound);
 
 #undef ADD
 #undef ADD_HOSTED

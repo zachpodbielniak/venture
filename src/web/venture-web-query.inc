@@ -50,11 +50,13 @@
  * database lives.
  *
  * The workers are shared by every request of the process, so who may
- * have one is bounded ("Who may have a worker" below): per hosted
- * workspace, per principal, and in all. A request over a bound is refused
- * at once (VENTURE_ERROR_BUSY: 503 and Retry-After), and one that waits
- * past its deadline for a worker stops waiting and is answered (TIMEOUT);
- * its job is skipped, never run.
+ * have one is bounded ("Who may have a worker" below): how many jobs may
+ * run per hosted workspace, per principal and in all, and -- separately --
+ * how many may wait. A job over a running cap waits its turn; one over a
+ * waiting bound is refused at once (VENTURE_ERROR_BUSY: 503 and
+ * Retry-After). A freed worker takes the oldest waiting job that may run,
+ * not merely the oldest. One that waits past its deadline for a worker
+ * stops waiting and is answered (TIMEOUT); it never runs.
  */
 
 #include "web/venture-web-query-private.h"
@@ -63,16 +65,22 @@
 #define VENTURE_WEB_QUERY_THREADS (4)
 
 /*
- * Who may have a worker (docs/lql.org, "Who may have a worker"). A job
- * counts from the moment it is admitted until a worker is done with it --
- * running it, or skipping it because it was given up -- so a job holds
- * its place while it waits as much as while it runs.
+ * Who may have a worker (docs/lql.org, "Who may have a worker"). Two
+ * kinds of bound, because a running job and a waiting one cost different
+ * things: a running job holds one of VENTURE_WEB_QUERY_THREADS threads, a
+ * waiting one holds nothing but its place in line (its request's fiber
+ * has yielded). So the caps on who may run count running jobs only, and a
+ * job over one of them waits rather than being refused: refusing an
+ * honest member because a colleague is busy was the bug (epic #5,
+ * mongoose). The queue is bounded on its own, so it is not the attack
+ * instead.
  *
- *   - One hosted workspace: at most VENTURE_WEB_QUERY_PER_WORKSPACE jobs,
- *     one fewer than there are workers, so whatever one workspace does,
- *     a worker is left that it cannot reach. Hosted http_concurrency (8
- *     by default) is higher than the pool, so without this one workspace's
- *     slow queries would hold every worker for every tenant.
+ * Running -- from the moment a job is handed to a worker until the worker
+ * is done with it, running it or skipping it:
+ *
+ *   - One hosted workspace: at most VENTURE_WEB_QUERY_PER_WORKSPACE, one
+ *     fewer than there are workers, so whatever one workspace does, a
+ *     worker is left that it cannot reach.
  *   - One principal -- a user, and every token of theirs, since a token
  *     acts as its user; the same person minting tokens gains nothing --
  *     at most VENTURE_WEB_QUERY_PER_PRINCIPAL, below the workspace's: one
@@ -80,14 +88,35 @@
  *     a chart and a bar run their queries one after another, so one
  *     person's page needs one at a time; two leaves room for a second
  *     tab or the bar's assist while a slow query runs.
- *   - The process: at most VENTURE_WEB_QUERY_THREADS +
- *     VENTURE_WEB_QUERY_QUEUE_MAX jobs, so the queue is bounded however
- *     many principals ask. Sixteen waiting is four rounds of the pool: a
- *     job further back would wait out its deadline behind slow queries
- *     (query.timeout_ms each), and is better told to come back.
+ *   - The process: VENTURE_WEB_QUERY_THREADS, the pool itself.
  *
- * Over any of them a request is refused at once with VENTURE_ERROR_BUSY:
- * 503 and Retry-After for the API, the bar's problem text on a page.
+ * Waiting -- admitted, not yet handed to a worker:
+ *
+ *   - One principal: at most VENTURE_WEB_QUERY_WAIT_PER_PRINCIPAL. Four is
+ *     two more rounds of their own two running: a job further back waits
+ *     for three rounds of the same person's queries, which outlasts its
+ *     own deadline (query.timeout_ms, counted from when it was asked)
+ *     when they are slow, and is better told to come back. It is half the
+ *     workspace's bound, so it takes two people to fill a workspace's
+ *     line, and one person flooding leaves their colleagues room.
+ *   - One hosted workspace: at most VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE,
+ *     half the process's line, so one workspace cannot fill it and refuse
+ *     every other tenant. With the default hosted.http_concurrency (8
+ *     requests in flight per workspace, a waiting fiber included) a
+ *     workspace reaches 3 running and 5 waiting before that limit answers
+ *     429; this bound is what holds when http_concurrency is raised.
+ *   - The process: at most VENTURE_WEB_QUERY_QUEUE_MAX, so the line has an
+ *     end however many principals and workspaces ask. Sixteen is four
+ *     rounds of the pool: a job further back would wait out its deadline
+ *     behind slow queries, and is better told to come back.
+ *
+ * A job that may run when it is admitted is handed to a worker at once;
+ * one that may not waits, unless its principal, its workspace or the
+ * process is at its waiting bound, and then it is refused at once with
+ * VENTURE_ERROR_BUSY: 503 and Retry-After for the API, the bar's problem
+ * text on a page. A job that waits past its deadline is answered TIMEOUT
+ * and never runs.
+ *
  * They are constants, not query.* settings: the query.* settings bound
  * one query, these bound the pool, which is itself a constant -- a cap
  * configured at or above it would reopen the hole it closes.
@@ -95,9 +124,13 @@
 #define VENTURE_WEB_QUERY_PER_WORKSPACE (VENTURE_WEB_QUERY_THREADS - 1)
 #define VENTURE_WEB_QUERY_PER_PRINCIPAL (2)
 #define VENTURE_WEB_QUERY_QUEUE_MAX (16)
+#define VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE (VENTURE_WEB_QUERY_QUEUE_MAX / 2)
+#define VENTURE_WEB_QUERY_WAIT_PER_PRINCIPAL (VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE / 2)
 
 G_STATIC_ASSERT(VENTURE_WEB_QUERY_PER_WORKSPACE < VENTURE_WEB_QUERY_THREADS);
 G_STATIC_ASSERT(VENTURE_WEB_QUERY_PER_PRINCIPAL < VENTURE_WEB_QUERY_PER_WORKSPACE);
+G_STATIC_ASSERT(VENTURE_WEB_QUERY_WAIT_PER_PRINCIPAL < VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE);
+G_STATIC_ASSERT(VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE < VENTURE_WEB_QUERY_QUEUE_MAX);
 
 /* How long past query.timeout_ms a request waits before cancelling its
  * query itself: LQL's own deadline normally answers first. */
@@ -109,55 +142,65 @@ G_STATIC_ASSERT(VENTURE_WEB_QUERY_PER_PRINCIPAL < VENTURE_WEB_QUERY_PER_WORKSPAC
 /* --- Who may have a worker ------------------------------------------------ */
 
 /*
- * The admission counts, process-wide, since the pool is. Touched by the
- * main thread (admitting) and by workers (starting, finishing), so under
- * @lock. A GMutex in static storage needs no initialising.
+ * The admission counts and the waiting line, process-wide, since the pool
+ * is. Touched by the main thread (admitting, giving a waiting job up) and
+ * by workers (finishing, handing the next job on), so under @lock. A
+ * GMutex and a GQueue in static storage need no initialising.
+ *
+ * The one rule that makes dispatch fair is kept under @lock: whenever a
+ * running count falls, the same hold of @lock hands on every waiting job
+ * that may now run (venture_web_query_dispatch_locked()). So outside the
+ * lock no waiting job may run while a worker is free for it, and a job
+ * just admitted that may run can be handed on at once without passing
+ * anybody who waited.
  */
 static struct
 {
 	GMutex		 lock;
-	GHashTable	*held;		/* key -> GUINT_TO_POINTER(jobs); none at 0 */
-	guint		 admitted;	/* running + queued */
-	guint		 running;
+	GHashTable	*running_by;	/* key -> GUINT_TO_POINTER(jobs running); none at 0 */
+	GHashTable	*waiting_by;	/* key -> GUINT_TO_POINTER(jobs waiting); none at 0 */
+	GQueue		 waiting;	/* VentureWebQueryJob, oldest first; a reference each */
+	guint		 running;	/* handed to a worker, not done with */
 	guint64		 ran;		/* jobs whose work ran, ever */
-	guint64		 skipped;	/* jobs skipped unrun, ever */
+	guint64		 skipped;	/* jobs given up or skipped unrun, ever */
 } venture_web_query_admission;
 
-/* How many jobs @key holds, with the lock held. */
+/* How many jobs @key has in @table, with the lock held. */
 static guint
-venture_web_query_held_locked(const gchar *key)
-{
-	if ((NULL == key) || (NULL == venture_web_query_admission.held))
+venture_web_query_held_locked(
+	GHashTable	*table,
+	const gchar	*key
+){
+	if ((NULL == key) || (NULL == table))
 		return 0;
 
-	return GPOINTER_TO_UINT(g_hash_table_lookup(venture_web_query_admission.held, key));
+	return GPOINTER_TO_UINT(g_hash_table_lookup(table, key));
 }
 
-/* Adds @delta (+1 or -1) to @key's jobs, with the lock held; a key that
- * reaches zero is dropped, so an idle server holds nothing. */
+/* Adds @delta (+1 or -1) to @key's jobs in *@table, with the lock held; a
+ * key that reaches zero is dropped, so an idle server holds nothing. */
 static void
 venture_web_query_hold_locked(
-	const gchar	*key,
-	gint		 delta
+	GHashTable	**table,
+	const gchar	 *key,
+	gint		  delta
 ){
 	guint jobs;
 
 	if (NULL == key)
 		return;
 
-	if (NULL == venture_web_query_admission.held)
-		venture_web_query_admission.held = g_hash_table_new_full(g_str_hash, g_str_equal,
-		                                                         g_free, NULL);
+	if (NULL == *table)
+		*table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
-	jobs = venture_web_query_held_locked(key);
+	jobs = venture_web_query_held_locked(*table, key);
 	g_return_if_fail((delta > 0) || (jobs > 0));
 	jobs = (guint)((gint)jobs + delta);
 
 	if (0 == jobs)
-		g_hash_table_remove(venture_web_query_admission.held, key);
+		g_hash_table_remove(*table, key);
 	else
-		g_hash_table_insert(venture_web_query_admission.held, g_strdup(key),
-		                    GUINT_TO_POINTER(jobs));
+		g_hash_table_insert(*table, g_strdup(key), GUINT_TO_POINTER(jobs));
 }
 
 void
@@ -171,14 +214,34 @@ venture_web_query_get_counts(
 	g_mutex_lock(&venture_web_query_admission.lock);
 
 	if (NULL != out_admitted)
-		*out_admitted = venture_web_query_admission.admitted;
+		*out_admitted = venture_web_query_admission.running +
+		                venture_web_query_admission.waiting.length;
 
 	if (NULL != out_running)
 		*out_running = venture_web_query_admission.running;
 
 	if (NULL != out_holders)
-		*out_holders = (NULL != venture_web_query_admission.held)
-			? g_hash_table_size(venture_web_query_admission.held) : 0;
+	{
+		GHashTable *running_by = venture_web_query_admission.running_by;
+		GHashTable *waiting_by = venture_web_query_admission.waiting_by;
+		GHashTableIter iter;
+		gpointer key;
+		guint holders;
+
+		/* Every key with a job running or waiting, each once. */
+		holders = (NULL != running_by) ? g_hash_table_size(running_by) : 0;
+
+		if (NULL != waiting_by)
+		{
+			g_hash_table_iter_init(&iter, waiting_by);
+
+			while (g_hash_table_iter_next(&iter, &key, NULL))
+				if (0 == venture_web_query_held_locked(running_by, key))
+					holders++;
+		}
+
+		*out_holders = holders;
+	}
 
 	if (NULL != out_ran)
 		*out_ran = venture_web_query_admission.ran;
@@ -246,64 +309,6 @@ venture_web_query_keys(
 	*out_principal = g_strdup(cached);
 }
 
-/*
- * Admits one job for @workspace (nullable) and @principal, or refuses it
- * with VENTURE_ERROR_BUSY saying which cap it met. On the main thread.
- */
-static gboolean
-venture_web_query_admit(
-	const gchar	 *workspace,
-	const gchar	 *principal,
-	GError		**error
-){
-	gboolean admitted = FALSE;
-
-	g_mutex_lock(&venture_web_query_admission.lock);
-
-	if (venture_web_query_held_locked(workspace) >= VENTURE_WEB_QUERY_PER_WORKSPACE)
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
-		            "This workspace already has %d queries running or waiting, the most "
-		            "one workspace may; try again shortly", VENTURE_WEB_QUERY_PER_WORKSPACE);
-	else if (venture_web_query_held_locked(principal) >= VENTURE_WEB_QUERY_PER_PRINCIPAL)
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
-		            "You already have %d queries running or waiting, the most one person "
-		            "may; try again shortly", VENTURE_WEB_QUERY_PER_PRINCIPAL);
-	else if (venture_web_query_admission.admitted >=
-	         VENTURE_WEB_QUERY_THREADS + VENTURE_WEB_QUERY_QUEUE_MAX)
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
-		            "Every query worker is taken and %d queries are waiting; try again "
-		            "shortly", VENTURE_WEB_QUERY_QUEUE_MAX);
-	else
-	{
-		venture_web_query_hold_locked(workspace, 1);
-		venture_web_query_hold_locked(principal, 1);
-		venture_web_query_admission.admitted++;
-		admitted = TRUE;
-	}
-
-	g_mutex_unlock(&venture_web_query_admission.lock);
-
-	return admitted;
-}
-
-/* Gives back what venture_web_query_admit() took. Any thread. */
-static void
-venture_web_query_release(
-	const gchar	*workspace,
-	const gchar	*principal
-){
-	g_mutex_lock(&venture_web_query_admission.lock);
-	venture_web_query_hold_locked(workspace, -1);
-	venture_web_query_hold_locked(principal, -1);
-
-	if (venture_web_query_admission.admitted > 0)
-		venture_web_query_admission.admitted--;
-	else
-		g_critical("venture: a query job was released twice");
-
-	g_mutex_unlock(&venture_web_query_admission.lock);
-}
-
 /* --- One query on a worker ------------------------------------------------ */
 
 /*
@@ -331,6 +336,9 @@ typedef struct
 	GCancellable		*cancellable;	/* owned; never NULL */
 	gchar			*workspace;	/* admission key; nullable */
 	gchar			*principal;	/* admission key */
+
+	/* Under venture_web_query_admission.lock, never @lock. */
+	gboolean		 waiting;	/* in the waiting line */
 
 	/* Under @lock. */
 	GQueue			 reads;		/* VentureLqlRead, to read on main */
@@ -445,6 +453,259 @@ venture_web_query_job_wake(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* --- Admitted, waiting, handed on --------------------------------------- */
+
+/*
+ * The two locks are never held together: venture_web_query_admission.lock
+ * guards the counts, the line and each job's @waiting; a job's own @lock
+ * guards what its waiter and its worker share. Nothing below takes one
+ * while holding the other.
+ */
+
+static GThreadPool *venture_web_query_pool(GError **error);
+
+/* Whether a job of @workspace (nullable) and @principal may be handed to a
+ * worker now: a worker is free, and neither is at its running cap. With
+ * the admission lock held. */
+static gboolean
+venture_web_query_may_run_locked(
+	const gchar	*workspace,
+	const gchar	*principal
+){
+	return (venture_web_query_admission.running < VENTURE_WEB_QUERY_THREADS) &&
+	       (venture_web_query_held_locked(venture_web_query_admission.running_by, workspace) <
+	        VENTURE_WEB_QUERY_PER_WORKSPACE) &&
+	       (venture_web_query_held_locked(venture_web_query_admission.running_by, principal) <
+	        VENTURE_WEB_QUERY_PER_PRINCIPAL);
+}
+
+/* Counts @job as running, with the admission lock held: it goes to a
+ * worker next. */
+static void
+venture_web_query_start_locked(VentureWebQueryJob *job)
+{
+	venture_web_query_hold_locked(&venture_web_query_admission.running_by, job->workspace, 1);
+	venture_web_query_hold_locked(&venture_web_query_admission.running_by, job->principal, 1);
+	venture_web_query_admission.running++;
+}
+
+/* Takes @job out of the line and gives back its place, with the admission
+ * lock held. The line's reference is the caller's now. */
+static void
+venture_web_query_unqueue_locked(
+	VentureWebQueryJob	*job,
+	GList			*link
+){
+	if (NULL != link)
+		g_queue_delete_link(&venture_web_query_admission.waiting, link);
+	else
+		g_queue_remove(&venture_web_query_admission.waiting, job);
+
+	job->waiting = FALSE;
+	venture_web_query_hold_locked(&venture_web_query_admission.waiting_by, job->workspace, -1);
+	venture_web_query_hold_locked(&venture_web_query_admission.waiting_by, job->principal, -1);
+}
+
+/*
+ * Hands on, with the admission lock held, every waiting job that may run
+ * now, oldest first: each is counted running and put on @out, carrying the
+ * line's reference, to be pushed to the pool once the lock is let go.
+ *
+ * Fair: a freed worker goes to the oldest job whose principal and
+ * workspace are under their running caps, not to the head of the line.
+ * A job blocked only by its own principal's or workspace's running jobs
+ * is stepped over, so it blocks nobody else; a principal with two running
+ * cannot hold back a principal with none who asked after it.
+ *
+ * Why a waiting job J always runs, or is answered at its deadline. This
+ * is called whenever a running count falls (a worker is done), so J is
+ * considered every time a worker frees, and new jobs join the line behind
+ * J. Only jobs ahead of J are ever preferred to it while J may run: at
+ * most VENTURE_WEB_QUERY_QUEUE_MAX of them, a set that only shrinks. A job
+ * behind J takes a worker only while J may not run. A job behind J of J's
+ * own principal has J's keys exactly (a principal's key names its
+ * workspace), so it may run exactly when J may and is reached after J:
+ * J's principal gains running jobs only from ahead of J. Every running job
+ * ends by its deadline (query.timeout_ms and a grace, then it is
+ * cancelled), and when one of J's principal's ends, the worker, the
+ * principal's slot and the workspace's slot it held all come free in the
+ * same hold of the lock -- so once nothing of J's principal is ahead of J,
+ * the first of its running jobs to end hands its worker to J, unless a job
+ * ahead of J takes it. A job blocked only by its workspace's cap gets the
+ * next of that workspace's slots the same way. Or J's own deadline answers
+ * it first (TIMEOUT), and it gives its place up. Either way it does not
+ * wait for ever.
+ */
+static void
+venture_web_query_dispatch_locked(GQueue *out)
+{
+	GList *link = venture_web_query_admission.waiting.head;
+
+	while ((NULL != link) && (venture_web_query_admission.running < VENTURE_WEB_QUERY_THREADS))
+	{
+		GList *next = link->next;
+		VentureWebQueryJob *job = link->data;
+
+		if (venture_web_query_may_run_locked(job->workspace, job->principal))
+		{
+			venture_web_query_unqueue_locked(job, link);
+			venture_web_query_start_locked(job);
+			g_queue_push_tail(out, job);
+		}
+
+		link = next;
+	}
+}
+
+/*
+ * Pushes every job on @jobs to @pool, each with the reference it carries,
+ * the admission lock not held. An exclusive pool starts no thread in
+ * g_thread_pool_push(), so FALSE cannot happen; were it to, GLib has
+ * queued the job all the same (see venture_web_query_pool()), a worker
+ * will run it and drop that reference, and so it is waited for as queued.
+ */
+static void
+venture_web_query_push(
+	GThreadPool	*pool,
+	GQueue		*jobs
+){
+	VentureWebQueryJob *job;
+
+	while (NULL != (job = g_queue_pop_head(jobs)))
+	{
+		g_autoptr(GError) push_error = NULL;
+
+		if (!g_thread_pool_push(pool, job, &push_error))
+			g_warning("venture: a query worker could not be started (the query is queued): %s",
+			          (NULL != push_error) ? push_error->message : "unknown");
+	}
+}
+
+/*
+ * Admits @job: handed to a worker at once when it may run, put in the line
+ * when it may not and nobody is at a waiting bound, or refused with
+ * VENTURE_ERROR_BUSY saying which bound it met. On the main thread.
+ *
+ * Handing a job that may run straight on passes nobody: a waiting job that
+ * could have used the free worker would already have been handed on
+ * (venture_web_query_dispatch_locked()).
+ */
+static gboolean
+venture_web_query_admit(
+	GThreadPool		 *pool,
+	VentureWebQueryJob	 *job,
+	GError			**error
+){
+	GQueue start = G_QUEUE_INIT;
+	gboolean admitted = TRUE;
+
+	g_mutex_lock(&venture_web_query_admission.lock);
+
+	if (venture_web_query_may_run_locked(job->workspace, job->principal))
+	{
+		venture_web_query_start_locked(job);
+		g_queue_push_tail(&start, venture_web_query_job_ref(job));
+	}
+	else if (venture_web_query_held_locked(venture_web_query_admission.waiting_by,
+	                                       job->principal) >= VENTURE_WEB_QUERY_WAIT_PER_PRINCIPAL)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
+		            "You already have %d queries waiting for a query worker, the most one "
+		            "person may; try again shortly", VENTURE_WEB_QUERY_WAIT_PER_PRINCIPAL);
+		admitted = FALSE;
+	}
+	else if (venture_web_query_held_locked(venture_web_query_admission.waiting_by,
+	                                       job->workspace) >= VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
+		            "This workspace already has %d queries waiting for a query worker, the "
+		            "most one workspace may; try again shortly",
+		            VENTURE_WEB_QUERY_WAIT_PER_WORKSPACE);
+		admitted = FALSE;
+	}
+	else if (venture_web_query_admission.waiting.length >= VENTURE_WEB_QUERY_QUEUE_MAX)
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
+		            "Every query worker is taken and %d queries are waiting; try again "
+		            "shortly", VENTURE_WEB_QUERY_QUEUE_MAX);
+		admitted = FALSE;
+	}
+	else
+	{
+		/* The line's reference, which goes on to the worker. */
+		job->waiting = TRUE;
+		venture_web_query_hold_locked(&venture_web_query_admission.waiting_by, job->workspace, 1);
+		venture_web_query_hold_locked(&venture_web_query_admission.waiting_by, job->principal, 1);
+		g_queue_push_tail(&venture_web_query_admission.waiting, venture_web_query_job_ref(job));
+	}
+
+	g_mutex_unlock(&venture_web_query_admission.lock);
+
+	venture_web_query_push(pool, &start);
+
+	return admitted;
+}
+
+/*
+ * The waiter gave @job up before a worker started it: if it is still in
+ * the line it is taken out and its place given back now, and no worker
+ * ever sees it. If it was handed to a worker already, that worker skips it
+ * and gives back what it holds (venture_web_query_finish()). Exactly one
+ * of the two, decided under the admission lock. Main thread.
+ */
+static void
+venture_web_query_withdraw(VentureWebQueryJob *job)
+{
+	gboolean withdrawn = FALSE;
+
+	g_mutex_lock(&venture_web_query_admission.lock);
+
+	if (job->waiting)
+	{
+		venture_web_query_unqueue_locked(job, NULL);
+		venture_web_query_admission.skipped++;
+		withdrawn = TRUE;
+	}
+
+	g_mutex_unlock(&venture_web_query_admission.lock);
+
+	/* The line's reference; the waiter still holds its own. */
+	if (withdrawn)
+		venture_web_query_job_unref(job);
+}
+
+/*
+ * A worker is done with @job, having run it or (@skipped) not: its running
+ * counts are given back and, under the same hold of the lock, every
+ * waiting job that may run now is handed on. On the worker.
+ */
+static void
+venture_web_query_finish(
+	VentureWebQueryJob	*job,
+	gboolean		 skipped
+){
+	GQueue start = G_QUEUE_INIT;
+
+	g_mutex_lock(&venture_web_query_admission.lock);
+	venture_web_query_hold_locked(&venture_web_query_admission.running_by, job->workspace, -1);
+	venture_web_query_hold_locked(&venture_web_query_admission.running_by, job->principal, -1);
+
+	if (venture_web_query_admission.running > 0)
+		venture_web_query_admission.running--;
+	else
+		g_critical("venture: a query job was released twice");
+
+	if (skipped)
+		venture_web_query_admission.skipped++;
+
+	venture_web_query_dispatch_locked(&start);
+	g_mutex_unlock(&venture_web_query_admission.lock);
+
+	/* The pool this worker came from: made already, so never NULL here. */
+	if (!g_queue_is_empty(&start))
+		venture_web_query_push(venture_web_query_pool(NULL), &start);
+}
+
 /* A #VentureLqlReadDispatch, on the worker: the read goes to the waiter. */
 static void
 venture_web_query_job_dispatch(
@@ -464,11 +725,12 @@ venture_web_query_job_dispatch(
  * so. The work touches no database, registry or configuration: what it
  * needs of them was done on the main thread first.
  *
- * A job given up while it waited (its stack has gone, @data with it) or
- * cancelled before it started -- the deadline, the client leaving -- is
- * skipped: @work never runs. Either way the job's admission is given
- * back here, before the waiter hears it is done, so a request that has
- * been answered holds nothing.
+ * A job given up after it was handed on but before a worker reached it
+ * (its stack has gone, @data with it), or cancelled before it started --
+ * the deadline, the client leaving -- is skipped: @work never runs.
+ * Either way the job's running counts are given back here, and the next
+ * waiting job that may run handed on, before the waiter hears it is done,
+ * so a request that has been answered holds nothing.
  */
 static void
 venture_web_query_worker(
@@ -485,29 +747,18 @@ venture_web_query_worker(
 	job->started = !skip;
 	g_mutex_unlock(&job->lock);
 
-	if (skip)
+	if (!skip)
 	{
 		g_mutex_lock(&venture_web_query_admission.lock);
-		venture_web_query_admission.skipped++;
-		g_mutex_unlock(&venture_web_query_admission.lock);
-	}
-	else
-	{
-		g_mutex_lock(&venture_web_query_admission.lock);
-		venture_web_query_admission.running++;
 		venture_web_query_admission.ran++;
 		g_mutex_unlock(&venture_web_query_admission.lock);
 
 		venture_lql_set_read_dispatch(venture_web_query_job_dispatch, job);
 		job->work(job->data);
 		venture_lql_set_read_dispatch(NULL, NULL);
-
-		g_mutex_lock(&venture_web_query_admission.lock);
-		venture_web_query_admission.running--;
-		g_mutex_unlock(&venture_web_query_admission.lock);
 	}
 
-	venture_web_query_release(job->workspace, job->principal);
+	venture_web_query_finish(job, skip);
 
 	g_mutex_lock(&job->lock);
 	job->finished = TRUE;
@@ -634,10 +885,14 @@ venture_web_query_job_abandoned(
  * schema are taken care of; anything else @work needs of the database is
  * read before the call or after it.
  *
- * The job is admitted first ("Who may have a worker" above): over a cap
- * it is refused at once, VENTURE_ERROR_BUSY. One still waiting for a
- * worker at its deadline, or whose client went away, is given up --
- * VENTURE_ERROR_TIMEOUT -- and the worker that reaches it skips it.
+ * The job is admitted first ("Who may have a worker" above): handed to a
+ * worker when its principal and workspace are under their running caps
+ * and a worker is free, put in the line when they are not, and refused at
+ * once, VENTURE_ERROR_BUSY, only when the line is full for its principal,
+ * its workspace or the process. One still waiting for a worker at its
+ * deadline, or whose client went away, is given up --
+ * VENTURE_ERROR_TIMEOUT -- and taken out of the line, or skipped by the
+ * worker it was already handed to.
  *
  * Returns: %FALSE, with @error set, when @work did not run (refused,
  *   given up, or skipped); %TRUE once @work has returned
@@ -653,7 +908,6 @@ venture_web_query_off_loop(
 	GError			**error
 ){
 	g_autoptr(GError) pool_error = NULL;
-	g_autoptr(GError) push_error = NULL;
 	g_autofree gchar *workspace = NULL;
 	g_autofree gchar *principal = NULL;
 	VentureWebQueryJob *job;
@@ -668,27 +922,24 @@ venture_web_query_off_loop(
 	gint64 timeout_ms = VENTURE_LQL_DEFAULT_TIMEOUT_MS;
 	gint64 deadline_at;
 
-	/* --- admitted, or refused at once -------------------------------- */
+	/* --- a worker to be had ------------------------------------------ */
 	venture_web_query_keys(self, request, &workspace, &principal);
-
-	if (!venture_web_query_admit(workspace, principal, error))
-		return FALSE;
-
 	pool = venture_web_query_pool(&pool_error);
 
 	if (NULL == pool)
 	{
 		/* No thread to be had. Not run here instead: refused, as busy,
-		 * and the next query tries to make the pool again. */
+		 * before anything is admitted, and the next query tries to make
+		 * the pool again. */
 		g_warning("venture: the query workers could not be started: %s",
 		          pool_error->message);
-		venture_web_query_release(workspace, principal);
 		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_BUSY,
 		            "No query worker could be started; try again shortly");
 		return FALSE;
 	}
 
-	/* Every schema the work could reach, from the registry, here. */
+	/* Every schema the work could reach, from the registry, here: before
+	 * the job is admitted, since a worker may take it at once. */
 	if (NULL != environment)
 		venture_lql_environment_prepare_sources(environment);
 
@@ -711,7 +962,8 @@ venture_web_query_off_loop(
 
 	/* A fiber yields while it waits; anything else blocks, and so does a
 	 * fiber with a transaction open (a request served meanwhile would
-	 * read inside it). */
+	 * read inside it). Fixed before the job is admitted: the worker
+	 * reads @blocking to tell the waiter. */
 	fiber = venture_fiber_current();
 
 	if ((NULL != fiber) && venture_database_has_transaction(job->database))
@@ -720,7 +972,19 @@ venture_web_query_off_loop(
 	job->fiber = fiber;
 	job->blocking = (NULL == fiber);
 
+	/* --- admitted: to a worker, or in line; or refused at once ------- */
+	if (!venture_web_query_admit(pool, job, error))
+	{
+		job->fiber = NULL;
+		venture_web_query_job_unref(job);
+		return FALSE;
+	}
+
 	/* --- what cancels it --------------------------------------------- */
+	/* Connected once the job is admitted: a worker may already have it,
+	 * which is no matter -- a job cancelled before these are connected is
+	 * heard of at once (g_cancellable_connect() on a cancelled one calls
+	 * back there and then), and one finished is seen by the loop below. */
 	deadline_at = g_get_monotonic_time() +
 		(timeout_ms + VENTURE_WEB_QUERY_GRACE_MS) * G_TIME_SPAN_MILLISECOND;
 	deadline = g_timeout_source_new((guint)(timeout_ms + VENTURE_WEB_QUERY_GRACE_MS));
@@ -742,15 +1006,6 @@ venture_web_query_off_loop(
 	cancelled = g_cancellable_connect(job->cancellable,
 		G_CALLBACK(venture_web_query_job_cancelled),
 		venture_web_query_job_ref(job), venture_web_query_job_unref);
-
-	/* --- to a worker ----------------------------------------------------- */
-	/* The worker's reference goes with the job. An exclusive pool starts
-	 * no thread here, so FALSE cannot happen; were it to, GLib has queued
-	 * the job all the same (see venture_web_query_pool()), a worker will
-	 * run it and drop that reference, and so it is waited for as queued. */
-	if (!g_thread_pool_push(pool, venture_web_query_job_ref(job), &push_error))
-		g_warning("venture: a query worker could not be started (the query is queued): %s",
-		          (NULL != push_error) ? push_error->message : "unknown");
 
 	/* --- wait, reading what the worker asks for -------------------------- */
 	for (;;)
@@ -794,7 +1049,8 @@ venture_web_query_off_loop(
 		}
 
 		/* Not yet on a worker and cancelled (the deadline, the client):
-		 * given up here. The worker that reaches it skips it. */
+		 * given up here. Still in line, it is taken out below; handed to
+		 * a worker already, the worker skips it. */
 		give_up = !job->started && !job->finished &&
 		          g_cancellable_is_cancelled(job->cancellable);
 
@@ -807,6 +1063,11 @@ venture_web_query_off_loop(
 		skipped = job->skipped;
 		expired = job->expired;
 		g_mutex_unlock(&job->lock);
+
+		/* Its place in line given back now, not when a worker would have
+		 * reached it; not under @lock (the two locks are never nested). */
+		if (give_up)
+			venture_web_query_withdraw(job);
 
 		/* Read here: the request's own stack and scopes, the caller's
 		 * snapshot (venture_lql_read_perform()). The worker cannot have
