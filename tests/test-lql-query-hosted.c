@@ -23,8 +23,18 @@
 #include <venture.h>
 #include <libsoup/soup.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #include "lql/venture-lql.h"
 #include "venture-test-util.h"
+
+/* VENTURE #44's query: nested concats of 16 MiB strings, 8 GiB at the end. */
+#define QUERY_44 \
+	"data {} | fields_add a = repeat(\"x\", 16777216), b = concat(a,a,a,a,a,a,a,a), " \
+	"c = concat(b,b,b,b,b,b,b,b), d = concat(c,c,c,c,c,c,c,c) | fields n = length(d)"
+
+/* A 2 MiB string: inside every per-result cap, over a 1 MiB budget. */
+#define QUERY_2_MIB "data {} | fields_add a = repeat(\"x\", 2097152) | fields n = length(a)"
 
 #define WORKSPACE_A "3d6f4c1e-2a7b-4c3d-9e8f-0a1b2c3d4e5f"
 #define WORKSPACE_B "7b2e9d40-5c61-4f8a-8b9c-1d2e3f405162"
@@ -535,6 +545,97 @@ test_widget_isolated(
 	g_assert_cmpstr(b_titles, ==, "beta-1,beta-2");
 }
 
+/*
+ * Caps this process's address space at what it maps now plus @headroom,
+ * so an allocation without bound fails at once -- g_malloc() aborts --
+ * instead of paging the machine to death. Called in a test's subprocess
+ * only.
+ */
+static void
+cap_address_space(guint64 headroom)
+{
+	g_autofree gchar *statm = NULL;
+	struct rlimit limit;
+	guint64 pages;
+
+	g_assert_true(g_file_get_contents("/proc/self/statm", &statm, NULL, NULL));
+	pages = g_ascii_strtoull(statm, NULL, 10);
+	limit.rlim_cur = (rlim_t)(pages * (guint64)sysconf(_SC_PAGESIZE) + headroom);
+	limit.rlim_max = limit.rlim_cur;
+	g_assert_cmpint(setrlimit(RLIMIT_AS, &limit), ==, 0);
+}
+
+/*
+ * Hosted mode has no read workers, so a query's fetches are read on the
+ * main thread between its steps on a query worker; the memory budget
+ * holds there too. VENTURE #44's query in workspace A is a refused query
+ * (422), A and B both answer after it, and A's 1 MiB budget refuses a
+ * 2 MiB string while B's default budget lets it through. In a capped
+ * subprocess, as in test-lql-query.c.
+ */
+static void
+test_max_bytes_refuses(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	g_autoptr(JsonNode) refused = NULL;
+	g_autoptr(JsonNode) a = NULL;
+	g_autoptr(JsonNode) b = NULL;
+	g_autoptr(JsonNode) budget = NULL;
+	g_autoptr(JsonNode) roomy = NULL;
+	g_autofree gchar *a_titles = NULL;
+	g_autofree gchar *b_titles = NULL;
+	const gchar *message;
+	Exchange x;
+	guint status = 0;
+
+	(void)data;
+
+	if (!g_test_subprocess())
+	{
+		g_test_trap_subprocess(NULL, 120 * G_USEC_PER_SEC, G_TEST_SUBPROCESS_DEFAULT);
+		g_test_trap_assert_passed();
+		return;
+	}
+
+	cap_address_space((guint64)3 * 1073741824);
+
+	query_start(f, &f->a, &x, f->a.member_secret, QUERY_44);
+	refused = exchange_finish(&x, &status);
+	message = json_object_get_string_member(json_node_get_object(refused), "message");
+	g_test_message("#44 in A -> %u %s", status, message);
+	g_assert_cmpuint(status, ==, 422);
+	g_assert_true((NULL != strstr(message, "would exceed 16 MiB")) ||
+	              (NULL != strstr(message, "(max_bytes)")));
+
+	/* Both workspaces still answer. */
+	query_start(f, &f->a, &x, f->a.member_secret, QUERY_TITLES);
+	a = exchange_finish(&x, &status);
+	g_assert_cmpuint(status, ==, 200);
+	a_titles = titles_of(json_node_get_object(a));
+	g_assert_cmpstr(a_titles, ==, "alpha-1,alpha-2");
+	query_start(f, &f->b, &x, f->b.member_secret, QUERY_TITLES);
+	b = exchange_finish(&x, &status);
+	g_assert_cmpuint(status, ==, 200);
+	b_titles = titles_of(json_node_get_object(b));
+	g_assert_cmpstr(b_titles, ==, "beta-1,beta-2");
+
+	/* Each workspace's own budget. */
+	g_object_set(f->a.config, "query-max-bytes", (gint64)1048576, NULL);
+	query_start(f, &f->a, &x, f->a.member_secret, QUERY_2_MIB);
+	budget = exchange_finish(&x, &status);
+	message = json_object_get_string_member(json_node_get_object(budget), "message");
+	g_test_message("2 MiB in A under 1 MiB -> %u %s", status, message);
+	g_assert_cmpuint(status, ==, 422);
+	g_assert_nonnull(strstr(message, "query.max_bytes (1048576)"));
+
+	query_start(f, &f->b, &x, f->b.member_secret, QUERY_2_MIB);
+	roomy = exchange_finish(&x, &status);
+	g_assert_cmpuint(status, ==, 200);
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(
+		json_object_get_array_member(json_node_get_object(roomy), "rows"), 0), "n"), ==, 2097152);
+}
+
 int
 main(
 	int	  argc,
@@ -547,6 +648,7 @@ main(
 
 	ADD("/lql/query-hosted/api/two-workspaces", test_api_isolated);
 	ADD("/lql/query-hosted/widget/two-workspaces", test_widget_isolated);
+	ADD("/lql/query-hosted/bounds/max-bytes-refuses", test_max_bytes_refuses);
 
 #undef ADD
 

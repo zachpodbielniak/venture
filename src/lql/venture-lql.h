@@ -75,9 +75,9 @@ G_DECLARE_FINAL_TYPE(VentureLqlSource, venture_lql_source, VENTURE, LQL_SOURCE, 
  * Builds the environment one caller's queries run in. It holds LQL's
  * built-in commands and functions, one source per record type the caller
  * may read (named as the type is: `fetch ticket`), and VENTURE's
- * functions. Limits come from query.max_rows and query.timeout_ms;
- * query.max_bytes is read here too and handed to LQL once it has a byte
- * limit (VENTURE #44; venture_lql_environment_get_max_bytes()).
+ * functions. Limits come from query.max_rows, query.timeout_ms and
+ * query.max_bytes (LQL_LIMIT_MAX_BYTES, the string and array bytes one
+ * execution may create; VENTURE #44).
  *
  * The caller's reader -- principal, any organization pin and narrowing
  * of the scope this is called in -- is captured here, and every fetch
@@ -141,19 +141,6 @@ venture_lql_set_environment_hook(
  */
 void
 venture_lql_environment_prepare_sources(LqlEnvironment *environment);
-
-/**
- * venture_lql_environment_get_max_bytes:
- * @environment: an environment from venture_lql_environment_new()
- *
- * The memory budget the environment was built with, query.max_bytes.
- * LQL does not enforce it yet (VENTURE #44): venture_lql_environment_new()
- * marks the one place it is to be passed as LQL_LIMIT_MAX_BYTES.
- *
- * Returns: the budget in bytes
- */
-gint64
-venture_lql_environment_get_max_bytes(LqlEnvironment *environment);
 
 /**
  * venture_lql_source_get_entity_type:

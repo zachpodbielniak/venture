@@ -559,23 +559,6 @@ venture_lql_set_environment_hook(
 	venture_lql_environment_hook_data = user_data;
 }
 
-/* Where an environment keeps query.max_bytes until LQL takes it (#44). */
-static GQuark
-venture_lql_max_bytes_quark(void)
-{
-	return g_quark_from_static_string("venture-lql-max-bytes");
-}
-
-/* Declared in lql/venture-lql.h. */
-gint64
-venture_lql_environment_get_max_bytes(LqlEnvironment *environment)
-{
-	g_return_val_if_fail(LQL_IS_ENVIRONMENT(environment), 0);
-
-	return (gint64)GPOINTER_TO_SIZE(g_object_get_qdata(G_OBJECT(environment),
-	                                                   venture_lql_max_bytes_quark()));
-}
-
 /* Declared in lql/venture-lql.h. */
 void
 venture_lql_environment_prepare_sources(LqlEnvironment *environment)
@@ -735,26 +718,15 @@ venture_lql_environment_new(
 		return NULL;
 	}
 
-	/* A page load cannot scan everything, nor run for ever: the same row
-	 * bound for every later stage, and the configured time limit. */
+	/* A page load cannot scan everything, nor run for ever, nor take
+	 * the process's memory: the same row bound for every later stage,
+	 * the configured time limit, and the memory budget (VENTURE #44) --
+	 * the string and array bytes one execution may create, counted while
+	 * LQL evaluates. The configuration never lets the budget be 0, which
+	 * to LQL would mean "none". */
 	lql_environment_set_limit(environment, LQL_LIMIT_MAX_ROWS, caller->max_rows);
 	lql_environment_set_limit(environment, LQL_LIMIT_TIMEOUT_MS, timeout_ms);
-
-	/*
-	 * The memory budget, query.max_bytes. TODO(VENTURE #44): LQL has no
-	 * byte limit yet; once libre-query-language has LQL_LIMIT_MAX_BYTES,
-	 * pass it here --
-	 *
-	 *   lql_environment_set_limit(environment, LQL_LIMIT_MAX_BYTES, max_bytes);
-	 *
-	 * -- and have venture_lql_environment_get_max_bytes() read it back
-	 * with lql_environment_get_limit(). Until then the configured value
-	 * is kept with the environment, so it is read and validated at the
-	 * one place it will be handed over, and nothing may treat a query
-	 * as unbounded in memory: a query surface must not merge without it.
-	 */
-	g_object_set_qdata(G_OBJECT(environment), venture_lql_max_bytes_quark(),
-	                   GSIZE_TO_POINTER((gsize)max_bytes));
+	lql_environment_set_limit(environment, LQL_LIMIT_MAX_BYTES, max_bytes);
 
 	/* What the host adds, last, so it can see everything above. */
 	if ((NULL != venture_lql_environment_hook) &&

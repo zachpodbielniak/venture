@@ -27,9 +27,19 @@
 #include <venture.h>
 #include <libsoup/soup.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #include "lql/venture-lql.h"
 #include "venture-test-util.h"
 #include "venture-test-member.h"
+
+/* VENTURE #44's query: nested concats of 16 MiB strings, 8 GiB at the end. */
+#define QUERY_44 \
+	"data {} | fields_add a = repeat(\"x\", 16777216), b = concat(a,a,a,a,a,a,a,a), " \
+	"c = concat(b,b,b,b,b,b,b,b), d = concat(c,c,c,c,c,c,c,c) | fields n = length(d)"
+
+/* A 2 MiB string: inside every per-result cap, over a 1 MiB budget. */
+#define QUERY_2_MIB "data {} | fields_add a = repeat(\"x\", 2097152) | fields n = length(a)"
 
 /* "open tickets by assignee", the first acceptance query. */
 #define QUERY_OPEN_BY_ASSIGNEE \
@@ -870,9 +880,8 @@ test_timeout(
 /* --- query.max_bytes (VENTURE #44) ----------------------------------------- */
 
 /*
- * The memory budget is a setting now, read where the environment is built
- * and refused outside its range, though LQL does not enforce it yet: the
- * value reaches the one place it is to be handed to LQL.
+ * The memory budget is a setting, refused outside its range, and the
+ * value is the environment's LQL_LIMIT_MAX_BYTES.
  */
 static void
 test_max_bytes(void)
@@ -918,7 +927,92 @@ test_max_bytes(void)
 	environment = venture_lql_environment_new(context, &admin, NULL, 0,
 		allow_every_type, NULL, &error);
 	g_assert_no_error(error);
-	g_assert_cmpint(venture_lql_environment_get_max_bytes(environment), ==, 2097152);
+	g_assert_cmpint(lql_environment_get_limit(environment, LQL_LIMIT_MAX_BYTES), ==, 2097152);
+}
+
+/*
+ * Caps this process's address space at what it maps now plus @headroom,
+ * so an allocation without bound fails at once -- g_malloc() aborts --
+ * instead of paging the machine to death. Called in a test's subprocess
+ * only.
+ */
+static void
+cap_address_space(guint64 headroom)
+{
+	g_autofree gchar *statm = NULL;
+	struct rlimit limit;
+	guint64 pages;
+
+	g_assert_true(g_file_get_contents("/proc/self/statm", &statm, NULL, NULL));
+	pages = g_ascii_strtoull(statm, NULL, 10);
+	limit.rlim_cur = (rlim_t)(pages * (guint64)sysconf(_SC_PAGESIZE) + headroom);
+	limit.rlim_max = limit.rlim_cur;
+	g_assert_cmpint(setrlimit(RLIMIT_AS, &limit), ==, 0);
+}
+
+/*
+ * VENTURE #44's query is a refused query, not a dead process: a 422 with
+ * LQL's limit message, and the next query answers. With query.max_bytes
+ * at 1 MiB a 2 MiB string is refused with the budget's message. Run in a
+ * subprocess whose address space is capped, so on a libre-query-language
+ * without the budget (v0.15.0) the child aborts in g_malloc() and the
+ * test fails rather than taking the machine down.
+ */
+static void
+test_max_bytes_refuses(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	g_autoptr(JsonNode) refused = NULL;
+	g_autoptr(JsonNode) after = NULL;
+	g_autoptr(JsonNode) budget = NULL;
+	g_autoptr(JsonNode) small = NULL;
+	const gchar *message;
+	guint status = 0;
+
+	(void)data;
+
+	if (!g_test_subprocess())
+	{
+		g_test_trap_subprocess(NULL, 120 * G_USEC_PER_SEC, G_TEST_SUBPROCESS_DEFAULT);
+		g_test_trap_assert_passed();
+		return;
+	}
+
+	cap_address_space((guint64)3 * 1073741824);
+
+	/* The #44 query: refused, by the per-result cap or the budget. */
+	refused = api_query(f, f->admin_secret, QUERY_44, &status);
+	message = json_object_get_string_member(json_node_get_object(refused), "message");
+	g_test_message("#44 -> %u %s", status, message);
+	g_assert_cmpuint(status, ==, 422);
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(refused), "error"), ==,
+	                "validation");
+	g_assert_true((NULL != strstr(message, "would exceed 16 MiB")) ||
+	              (NULL != strstr(message, "(max_bytes)")));
+	g_assert_false(json_object_has_member(json_node_get_object(refused), "rows"));
+
+	/* The server is still there. */
+	after = api_query(f, f->admin_secret, "fetch ticket | fields id | limit 1", &status);
+	g_assert_cmpuint(status, ==, 200);
+	g_assert_cmpuint(json_array_get_length(json_object_get_array_member(
+		json_node_get_object(after), "rows")), ==, 1);
+
+	/* A 1 MiB budget refuses a 2 MiB string, naming the setting. */
+	g_object_set(f->config, "query-max-bytes", (gint64)1048576, NULL);
+	budget = api_query(f, f->admin_secret, QUERY_2_MIB, &status);
+	message = json_object_get_string_member(json_node_get_object(budget), "message");
+	g_test_message("2 MiB under a 1 MiB budget -> %u %s", status, message);
+	g_assert_cmpuint(status, ==, 422);
+	g_assert_nonnull(strstr(message, "(max_bytes)"));
+	g_assert_nonnull(strstr(message, "query.max_bytes (1048576)"));
+
+	/* And something small still answers under it. */
+	small = api_query(f, f->admin_secret, "data {} | fields_add a = repeat(\"x\", 1024) "
+	                  "| fields n = length(a)", &status);
+	g_assert_cmpuint(status, ==, 200);
+	g_assert_cmpint(json_object_get_int_member(json_array_get_object_element(
+		json_object_get_array_member(json_node_get_object(small), "rows"), 0), "n"), ==, 1024);
 }
 
 /* --- Where a query runs ------------------------------------------------------ */
@@ -1938,6 +2032,7 @@ main(
 	ADD("/lql/query/runs/deadline-stops-the-query", test_deadline_stops_the_query);
 	ADD("/lql/query/runs/cancel-mid-query", test_cancel_mid_query);
 	g_test_add_func("/lql/query/bounds/max-bytes-setting", test_max_bytes);
+	ADD("/lql/query/bounds/max-bytes-refuses", test_max_bytes_refuses);
 	ADD("/lql/query/csv", test_csv);
 	ADD("/lql/query/money/one-figure-per-currency", test_per_currency);
 	ADD("/lql/query/widget/runs-as-the-viewer", test_widget_scope);

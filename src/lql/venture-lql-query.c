@@ -24,7 +24,7 @@
  *     was built (venture_lql_environment_get_refusal());
  *   - LQL's errors become VENTURE errors: a query that does not parse,
  *     check or evaluate is invalid_argument (400), a bound
- *     (query.max_rows, LQL's own limits) is validation (422) and the time
+ *     (query.max_rows, query.max_bytes, LQL's own limits) is validation (422) and the time
  *     limit is timeout (504), with a message that names query.timeout_ms.
  */
 
@@ -211,6 +211,17 @@ venture_lql_query_set_error(
 			            " ms); filter on stored fields right after the fetch, or "
 			            "add | limit N",
 			            lql_environment_get_limit(environment, LQL_LIMIT_TIMEOUT_MS));
+			return;
+		}
+
+		/* The memory budget (VENTURE #44) is LQL's max_bytes, set from
+		 * query.max_bytes; say which setting it is. */
+		if (NULL != strstr(lql_error->message, "(max_bytes)"))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_VALIDATION,
+			            "%s: over query.max_bytes (%" G_GINT64_FORMAT ")",
+			            lql_error->message,
+			            lql_environment_get_limit(environment, LQL_LIMIT_MAX_BYTES));
 			return;
 		}
 

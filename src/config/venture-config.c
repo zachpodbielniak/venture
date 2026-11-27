@@ -496,9 +496,8 @@ static const VentureConfigSetting venture_config_settings[] = {
 	        "Most rows one LQL fetch may read, 1..1000000; more is an error"),
 	VC_INT ("query-timeout-ms", "query", "timeout_ms", 5000,
 	        "Longest an LQL query may run in milliseconds, 1..600000"),
-	/* One query's memory budget (VENTURE #44). Read and validated now;
-	 * handed to LQL once libre-query-language has LQL_LIMIT_MAX_BYTES
-	 * (see venture_lql_environment_new()). */
+	/* One query's memory budget (VENTURE #44), LQL_LIMIT_MAX_BYTES:
+	 * set on every environment by venture_lql_environment_new(). */
 	VC_INT ("query-max-bytes", "query", "max_bytes", 67108864,
 	        "Most bytes one LQL query may allocate, 1048576..1073741824"),
 	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
