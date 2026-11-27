@@ -604,6 +604,26 @@ venture_lql_environment_prepare_sources(LqlEnvironment *environment)
 	}
 }
 
+/* Declared in lql/venture-lql.h. */
+gboolean
+venture_lql_environment_prepare_source(
+	LqlEnvironment	*environment,
+	const gchar	*name
+){
+	LqlSource *source;
+
+	g_return_val_if_fail(LQL_IS_ENVIRONMENT(environment), FALSE);
+	g_return_val_if_fail(NULL != name, FALSE);
+
+	source = lql_environment_lookup_source(environment, name);
+
+	if (!VENTURE_IS_LQL_SOURCE(source))
+		return FALSE;
+
+	venture_lql_source_prepare(VENTURE_LQL_SOURCE(source));
+	return TRUE;
+}
+
 LqlEnvironment *
 venture_lql_environment_new(
 	VentureContext			 *context,
@@ -761,14 +781,7 @@ venture_lql_environment_new(
 		return NULL;
 	}
 
-	/*
-	 * VENTURE #44, the byte budget: query.max_bytes, set here as
-	 * LQL_LIMIT_MAX_BYTES once the libre-query-language pin carries it.
-	 * Until then one query's memory (a nested concat) is bounded by
-	 * nothing but the row bound and the time limit above.
-	 */
-
-	venture_lql_caller_unref(caller);
+		venture_lql_caller_unref(caller);
 
 	return g_steal_pointer(&environment);
 }

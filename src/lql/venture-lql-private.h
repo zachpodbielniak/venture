@@ -94,11 +94,27 @@ venture_lql_source_new(
 void
 venture_lql_source_prepare(VentureLqlSource *self);
 
-/* Registers me(), my_teams(), today(), period() and organization(). */
+/* Registers me(), my_id(), my_teams(), today(), period(),
+ * organization() and sum_money(). */
 gboolean
 venture_lql_register_functions(
 	LqlEnvironment		 *environment,
 	VentureLqlCaller	 *caller,
+	GError			**error
+);
+
+/*
+ * An error from running LQL in @environment as a VENTURE one: a bound
+ * (query.max_rows, query.max_bytes, LQL's own limits) is
+ * VENTURE_ERROR_VALIDATION, the time limit and a cancelled run
+ * VENTURE_ERROR_TIMEOUT, anything about the text
+ * VENTURE_ERROR_INVALID_ARGUMENT. LQL's "LINE:COLUMN: " prefix is kept.
+ * Defined in venture-lql-query.c; the filter bars share it.
+ */
+void
+venture_lql_query_set_error(
+	LqlEnvironment		 *environment,
+	const GError		 *lql_error,
 	GError			**error
 );
 

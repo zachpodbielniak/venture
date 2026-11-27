@@ -643,7 +643,7 @@ GET /api/v1/ticket?q=status%20not%20in%20%5B%22done%22%2C%20%22cancelled%22%5D
 # q = status not in ["done", "cancelled"] and assignee == me()
 #+end_src
 
-It runs as the caller, through the same access policy and business scope as the list itself, and selects records; everything else about the request -- the other filters, =order=, =limit=, =offset=, =total= -- works as it always did on the records it selected. It is bounded like any query (=query.max_rows=, =query.timeout_ms=), and one filter may select at most 30000 records. A filter that cannot run is a 400 =invalid_argument= naming the column: ="q, column 22: unknown field 'staus' (did you mean 'status'?)"=. A field the record does not have is refused rather than matching nothing. See [[file:lql.org::*Filter bars][Filter bars]].
+It runs as the caller, through the same access policy and business scope as the list itself, and selects records; everything else about the request -- the other filters, =order=, =limit=, =offset=, =total= -- works as it always did on the records it selected. It is bounded like any query (=query.max_rows=, =query.timeout_ms=, =query.max_bytes=), and one filter may select at most 30000 records. A filter that cannot run is a 400 =invalid_argument= naming the column: ="q, column 22: unknown field 'staus' (did you mean 'status'?)"=. A filter over a bound is classed as =POST /api/v1/query= classes it: over =query.max_rows=, =query.max_bytes= or the 30000 records is a 422 =validation=, over =query.timeout_ms= a 504 =timeout=. A field the record does not have is refused rather than matching nothing. See [[file:lql.org::*Filter bars][Filter bars]].
 
 * Bodies
 

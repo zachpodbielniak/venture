@@ -23,6 +23,12 @@
  *     policy, and refuses a bad filter naming the column.
  *   - GET /lql/assist completes field names and enumeration values, and
  *     counts in UTF-16 units, as a browser does.
+ *   - query.max_bytes holds for a bar's filter as for POST /api/v1/query:
+ *     a filter that blows the budget is the bar's problem on the page and
+ *     a 422 on the list API, and the server carries on.
+ *   - A filter is evaluated off the main loop whether or not the server
+ *     has read workers: while a slow one runs, other requests are
+ *     answered.
  */
 
 #include <venture.h>
@@ -976,11 +982,11 @@ test_api_q(
 
 		not_done = api(f, f->ada_secret, path, 200);
 
-		/* With read workers the filter ran on one; without, nowhere. */
-		if (data == (gconstpointer)with_workers)
-			g_assert_cmpuint(venture_parallel_get_jobs_run(), >, before);
-		else
-			g_assert_cmpuint(venture_parallel_get_jobs_run(), ==, before);
+		/* Either way the filter ran on a query worker
+		 * (venture_web_query_off_loop()), never a read worker: its
+		 * fetches are read back on the main thread. Off the main loop
+		 * is what /lql-bar/runs/main-loop-stays-responsive pins. */
+		g_assert_cmpuint(venture_parallel_get_jobs_run(), ==, before);
 	}
 	{
 		g_autofree gchar *on = listed(not_done);
@@ -1248,6 +1254,177 @@ test_highlight_and_check(
 
 /* --- main ----------------------------------------------------------------------------- */
 
+/* --- Bounds and where a filter runs ------------------------------------------- */
+
+/*
+ * A filter that allocates per row: every ticket's title with 600 KB of
+ * padding, so a 1 MiB budget is gone by the second ticket. Not a constant,
+ * so nothing can fold it away or push it to the database.
+ */
+#define FILTER_OVER_BUDGET "length(concat(title, repeat(\"x\", 600000))) > 0"
+
+/*
+ * query.max_bytes (VENTURE #44) bounds a bar's filter as it bounds
+ * POST /api/v1/query: the page draws the problem in the bar and lists
+ * nothing (400), the list API refuses it as a bound (422 validation,
+ * naming the setting), and the next request is answered as usual.
+ */
+static void
+test_max_bytes(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	g_autofree gchar *q = escaped(FILTER_OVER_BUDGET);
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *html = NULL;
+	g_autofree gchar *after = NULL;
+	g_autoptr(JsonNode) refused = NULL;
+	g_autoptr(JsonNode) small = NULL;
+	const gchar *message;
+	const gchar *code;
+
+	(void)data;
+
+	g_object_set(f->config, "query-max-bytes", (gint64)1048576, NULL);
+
+	/* The page: the problem in the bar, no table. */
+	path = g_strconcat("/e/ticket?q=", q, NULL);
+	html = page(f, path, 400);
+	g_assert_nonnull(strstr(html, "lql-problem"));
+	g_assert_nonnull(strstr(html, "(max_bytes)"));
+	g_assert_nonnull(strstr(html, "query.max_bytes"));
+	{
+		g_autofree gchar *on = shown(html);
+
+		g_assert_cmpstr(on, ==, "0000000");
+	}
+
+	/* The list API: a bound, as POST /api/v1/query calls it. */
+	g_free(path);
+	path = g_strconcat("/api/v1/ticket?q=", q, NULL);
+	refused = api(f, f->ada_secret, path, 422);
+	message = json_object_get_string_member(json_node_get_object(refused), "message");
+	code = json_object_get_string_member(json_node_get_object(refused), "error");
+	g_test_message("over budget -> %s: %s", code, message);
+	g_assert_cmpstr(code, ==, "validation");
+	g_assert_nonnull(strstr(message, "(max_bytes)"));
+	g_assert_nonnull(strstr(message, "query.max_bytes (1048576)"));
+
+	/* The server is still there, and a small filter runs under the
+	 * same budget. */
+	after = page(f, "/e/ticket", 200);
+	small = api(f, f->ada_secret, "/api/v1/ticket?q=status%20%3D%3D%20%22todo%22", 200);
+	{
+		g_autofree gchar *on = listed(small);
+
+		g_assert_cmpstr(on, ==, "1000000");
+	}
+}
+
+/* How long nap() sleeps, on whichever thread evaluates the filter. */
+#define NAP_MICROSECONDS (100000)
+
+/* nap() -> Int: sleeps NAP_MICROSECONDS, then answers 1. */
+static LqlValue *
+nap(
+	LqlFunctionCall	 *call,
+	gpointer	  user_data,
+	GError		**error
+){
+	(void)call;
+	(void)user_data;
+	(void)error;
+
+	g_usleep(NAP_MICROSECONDS);
+
+	return lql_value_new_int(1);
+}
+
+/* A #VentureLqlEnvironmentHook: nap() in every environment the server
+ * builds. Volatile, so it is evaluated once per row and never folded. */
+static gboolean
+add_nap(
+	LqlEnvironment	 *environment,
+	gpointer	  user_data,
+	GError		**error
+){
+	g_autoptr(LqlFunction) slow = NULL;
+
+	(void)user_data;
+
+	slow = lql_function_new_scalar("nap", LQL_VALUE_TYPE_INT, nap, NULL, NULL);
+	lql_function_set_flags(slow, LQL_FUNCTION_FLAG_VOLATILE);
+
+	return lql_environment_register_function(environment, slow, error);
+}
+
+/*
+ * While one list's filter is evaluated -- seven tickets, a tenth of a
+ * second of nap() each -- the server goes on answering: the list API and
+ * a second filtered page are both answered before the first page is.
+ * Registered both ways; without read workers (an in-memory database, as a
+ * hosted install has none) is the case that used to run the filter in
+ * the fiber and block the main loop for all of it.
+ */
+static void
+test_main_loop_responsive(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	g_autoptr(SoupMessage) message = NULL;
+	g_autofree gchar *url = NULL;
+	g_autofree gchar *q = escaped("nap() > 0");
+	g_autofree gchar *quick = NULL;
+	g_autofree gchar *slow_page = NULL;
+	g_autoptr(JsonNode) listed_quick = NULL;
+	Outcome slow = { FALSE, NULL, NULL };
+	gint64 until;
+
+	(void)data;
+
+	venture_lql_set_environment_hook(add_nap, NULL);
+	g_object_set(f->config, "query-timeout-ms", (gint64)60000, NULL);
+
+	/* The slow page, not waited for. */
+	url = g_strconcat(venture_web_server_get_base_url(f->server), "/e/ticket?q=", q, NULL);
+	message = soup_message_new("GET", url);
+	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
+	soup_message_headers_append(soup_message_get_request_headers(message), "Cookie", f->cookie);
+	soup_session_send_and_read_async(f->session, message, G_PRIORITY_DEFAULT, NULL,
+	                                 request_done, &slow);
+
+	/* Long enough for its filter to be on a worker. */
+	until = g_get_monotonic_time() + 100 * G_TIME_SPAN_MILLISECOND;
+
+	while (g_get_monotonic_time() < until)
+		g_main_context_iteration(NULL, FALSE);
+
+	g_assert_false(slow.done);
+
+	/* Answered meanwhile: the list API, and another filtered page. */
+	listed_quick = api(f, f->ada_secret, "/api/v1/ticket?limit=1", 200);
+	quick = page(f, "/e/ticket?q=status%20%3D%3D%20%22todo%22", 200);
+	g_assert_nonnull(strstr(quick, "Crash on save"));
+
+	/* The slow one is still being evaluated. */
+	g_assert_false(slow.done);
+
+	while (!slow.done)
+		g_main_context_iteration(NULL, TRUE);
+
+	g_assert_no_error(slow.error);
+	g_assert_cmpuint(soup_message_get_status(message), ==, 200);
+	slow_page = g_strndup(g_bytes_get_data(slow.body, NULL), g_bytes_get_size(slow.body));
+	g_bytes_unref(slow.body);
+	{
+		g_autofree gchar *on = shown(slow_page);
+
+		g_assert_cmpstr(on, ==, "1111111");
+	}
+
+	venture_lql_set_environment_hook(NULL, NULL);
+}
+
 int
 main(
 	int	  argc,
@@ -1268,6 +1445,8 @@ main(
 	ADD("/lql-bar/api/q", test_api_q);
 	ADD("/lql-bar/assist/complete-and-place", test_assist);
 	ADD("/lql-bar/filter/highlight-and-check", test_highlight_and_check);
+	ADD("/lql-bar/bounds/max-bytes", test_max_bytes);
+	ADD("/lql-bar/runs/main-loop-stays-responsive", test_main_loop_responsive);
 
 #undef ADD
 

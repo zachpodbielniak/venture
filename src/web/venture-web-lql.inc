@@ -18,21 +18,20 @@
  *     problem, and the completions at the cursor.
  *
  * A person's query never runs on the main loop. Every route that runs
- * one answers from a fiber (venture_web_answer_later()), and the fiber
- * hands the LQL work to a read worker (venture_web_lql_off_loop()) and
- * yields until it is done, so the listener and every other request go on
- * meanwhile. The environment is built first, in the fiber, under the
- * request's own access and tenant scopes: the reader it captures is the
- * one every read on the worker is judged by. Where the server has no read
- * workers -- hosted installs, which keep every request on the main thread
- * for their per-workspace scopes, and an in-memory database -- the work
- * runs in the fiber itself.
+ * one answers from a fiber (venture_web_answer_later()). The fiber builds
+ * the environment first, under the request's own access and tenant
+ * scopes, and hands the LQL work to the one helper every LQL caller uses,
+ * venture_web_query_off_loop() (venture-web-query.inc): evaluated on a
+ * query worker with a GCancellable, every fetch read back in the fiber on
+ * the main thread inside the request's scopes, the fiber yielded in
+ * between. That holds with read workers and without them -- hosted
+ * installs and an in-memory database, which have none, included.
  */
 
 #include "core/venture-fiber-private.h"
 #include "web/venture-web-later-private.h"
 
-/* --- Names --------------------------------------------------------------- */
+/* --- Names ---------------------------------------------------------------- */
 
 /* The registry name of @entity_type ("ticket"); NULL when unregistered. */
 static gchar *
@@ -89,162 +88,19 @@ venture_web_lql_column(
 	return (guint)g_utf8_strlen(line, (text + offset) - line) + 1;
 }
 
-/* --- Off the main loop --------------------------------------------------------- */
+/* --- Off the main loop ---------------------------------------------------- */
 
-/* How long past query.timeout_ms a run is cancelled outright. */
-#define VENTURE_WEB_LQL_CANCEL_GRACE_MS (1000)
-
-/* While a transaction is open below a nested loop, wake again after this. */
-#define VENTURE_WEB_LQL_REARM_MS (10)
-
-/*
- * One piece of LQL work for a read worker. Lives on the waiting fiber's
- * stack, which outlives it: the fiber does not go on until @done.
- */
-typedef struct
-{
-	VentureDatabase		*database;	/* not a reference */
-	VentureAccessSnapshot	*reader;
-	VentureFiber		*fiber;
-	VentureParallelFunc	 work;
-	gpointer		 data;
-	GError			*error;
-	gint			 done;
-} VentureWebLqlJob;
-
-/* On the worker, inside the gate: a read lease, the caller's reader. */
-static void
-venture_web_lql_job_run(gpointer data)
-{
-	VentureWebLqlJob *job = data;
-	VentureAccessPolicy *policy = venture_database_get_access_policy(job->database);
-
-	venture_access_policy_bind_thread(policy);
-
-	if (venture_database_reader_begin(job->database, &job->error))
-	{
-		g_autoptr(VentureAccessScope) scope = venture_access_policy_enter_snapshot(policy, job->reader);
-
-		job->work(job->data);
-		g_clear_object(&scope);
-		venture_database_reader_end(job->database);
-	}
-
-	venture_access_policy_unbind_thread(policy);
-}
-
-/*
- * Wakes the waiting fiber -- but not inside somebody else's transaction:
- * a nested main loop below a writer may be the one dispatching this, and
- * the fiber resumed there would run inside it. It looks again shortly
- * instead, as the Stripe transport's waiter does.
- */
+/* venture-web-query.inc, included later: the one off-loop helper. */
 static gboolean
-venture_web_lql_job_wake(gpointer data)
-{
-	VentureWebLqlJob *job = data;
-
-	if (venture_database_has_transaction(job->database))
-	{
-		GSource *again = g_timeout_source_new(VENTURE_WEB_LQL_REARM_MS);
-
-		g_source_set_priority(again, G_PRIORITY_DEFAULT);
-		g_source_set_callback(again, venture_web_lql_job_wake, job, NULL);
-		g_source_set_static_name(again, "venture-lql-wake");
-		g_source_attach(again, NULL);
-		g_source_unref(again);
-		return G_SOURCE_REMOVE;
-	}
-
-	venture_fiber_wake(job->fiber);
-	return G_SOURCE_REMOVE;
-}
-
-/* Back on the main thread, the work done. */
-static void
-venture_web_lql_job_done(gpointer data)
-{
-	VentureWebLqlJob *job = data;
-
-	g_atomic_int_set(&job->done, 1);
-	(void)venture_web_lql_job_wake(job);
-}
-
-/* The backstop: a run still going well past its time limit is cancelled. */
-static gboolean
-venture_web_lql_cancel(gpointer data)
-{
-	g_cancellable_cancel(G_CANCELLABLE(data));
-	return G_SOURCE_REMOVE;
-}
-
-/*
- * Runs @work(@data) off the main loop: on a read worker, under a read
- * lease and the reader of the request the calling fiber answers, while
- * the fiber yields. @cancellable (which @work passes to LQL) is cancelled
- * once query.timeout_ms and a grace have passed, in case the run outlasts
- * LQL's own limit, which is only looked at between stages.
- *
- * Outside a fiber, or with no read workers, @work runs here.
- *
- * Returns: %FALSE, with @error set, when no read lease could be had
- */
-static gboolean
-venture_web_lql_off_loop(
+venture_web_query_off_loop(
 	VentureWebServer	 *self,
+	HtmxRequest		 *request,
+	LqlEnvironment		 *environment,
 	VentureParallelFunc	  work,
 	gpointer		  data,
 	GCancellable		 *cancellable,
 	GError			**error
-){
-	VentureDatabase *database = venture_context_get_database(self->context);
-	VentureWebLqlJob job;
-	VentureFiber *fiber;
-	gint64 timeout_ms = VENTURE_LQL_DEFAULT_TIMEOUT_MS;
-	guint timer = 0;
-
-	fiber = venture_fiber_current();
-
-	if (!self->parallel_reads || (NULL == fiber))
-	{
-		work(data);
-		return TRUE;
-	}
-
-	g_object_get(venture_context_get_config(self->context),
-	             "query-timeout-ms", &timeout_ms, NULL);
-
-	if (NULL != cancellable)
-		timer = g_timeout_add_full(G_PRIORITY_DEFAULT,
-			(guint)MIN(timeout_ms + VENTURE_WEB_LQL_CANCEL_GRACE_MS, (gint64)G_MAXUINT),
-			venture_web_lql_cancel, g_object_ref(cancellable), g_object_unref);
-
-	memset(&job, 0, sizeof job);
-	job.database = database;
-	job.reader = venture_access_policy_snapshot(venture_database_get_access_policy(database));
-	job.fiber = fiber;
-	job.work = work;
-	job.data = data;
-
-	/* Exactly one wake comes, from venture_web_lql_job_wake(), once the
-	 * worker is done with the job. */
-	venture_parallel_submit(venture_web_lql_job_run, NULL, venture_web_lql_job_done, &job);
-	venture_fiber_yield();
-	g_warn_if_fail(g_atomic_int_get(&job.done));
-
-	if (0 != timer)
-		g_source_remove(timer);
-
-	venture_access_snapshot_free(job.reader);
-
-	if (NULL != job.error)
-	{
-		g_propagate_error(error, job.error);
-		return FALSE;
-	}
-
-	return TRUE;
-}
+);
 
 /* Whether @request carries a filter (a non-blank q) to run. */
 static gboolean
@@ -276,9 +132,9 @@ venture_web_lql_later(
 	return venture_web_answer_later(self, request, params, route);
 }
 
-/* --- ?q= on a list --------------------------------------------------------- */
+/* --- ?q= on a list -------------------------------------------------------- */
 
-/* venture_lql_filter_find_ids() as read-worker work. */
+/* venture_lql_filter_find_ids() as query-worker work: LQL alone. */
 typedef struct
 {
 	LqlEnvironment		*environment;
@@ -320,12 +176,14 @@ venture_web_lql_find(gpointer data)
 
 /*
  * Narrows @query to the records the LQL filter @text keeps, read as the
- * request's caller, off the main loop (venture_web_lql_off_loop()). A
+ * request's caller, off the main loop (venture_web_query_off_loop()). A
  * problem with the text is an INVALID_ARGUMENT error naming the column,
  * "q, column 8: unknown field 'staus' (did you mean 'status'?)", and
  * *out_problem (when given) holds it placed in the text -- in @recheck
  * instead, when given: the text a bar shows, which can hold more than
- * @text.
+ * @text. A problem of the query as a whole has its own class, as
+ * POST /api/v1/query gives it: a bound (query.max_rows, query.max_bytes)
+ * is VALIDATION (422), the time limit TIMEOUT (504).
  *
  * Returns: %TRUE when @query was narrowed
  */
@@ -370,6 +228,15 @@ venture_web_apply_lql_filter(
 		environment = owned;
 	}
 
+	/* The work names one source; its schema is built here, on the main
+	 * thread, since the worker touches no registry. */
+	if (!venture_lql_environment_prepare_source(environment, type_name))
+	{
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
+		            "no source named '%s'", type_name);
+		return FALSE;
+	}
+
 	cancellable = g_cancellable_new();
 	memset(&find, 0, sizeof find);
 	find.environment = environment;
@@ -379,7 +246,8 @@ venture_web_apply_lql_filter(
 	find.include_deleted = include_deleted;
 	find.cancellable = cancellable;
 
-	if (!venture_web_lql_off_loop(self, venture_web_lql_find, &find, cancellable, error))
+	if (!venture_web_query_off_loop(self, request, NULL, venture_web_lql_find, &find,
+	                                cancellable, error))
 		return FALSE;
 
 	ids = find.ids;
@@ -388,12 +256,12 @@ venture_web_apply_lql_filter(
 	if (NULL == ids)
 	{
 		if (problem->positioned)
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			g_set_error(error, VENTURE_ERROR, problem->code,
 			            "q, column %u: %s",
 			            venture_web_lql_column(find.rechecked ? recheck : text, problem->offset),
 			            problem->message);
 		else
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+			g_set_error(error, VENTURE_ERROR, problem->code,
 			            "q: %s", problem->message);
 
 		if (NULL != out_problem)
@@ -469,7 +337,7 @@ venture_web_query_without(
 	return g_string_free(g_steal_pointer(&out), FALSE);
 }
 
-/* --- Drawing a problem ------------------------------------------------------- */
+/* --- Drawing a problem ---------------------------------------------------- */
 
 /*
  * @text with [@offset, @offset + @length) replaced by @with: what a "did
@@ -615,7 +483,7 @@ venture_web_append_lql_status(
 	g_string_append(html, "</div>");
 }
 
-/* --- The bar ------------------------------------------------------------------- */
+/* --- The bar -------------------------------------------------------------- */
 
 /*
  * A quick chip: a label and the term it adds to (or takes out of) the
@@ -781,7 +649,7 @@ venture_web_append_query_bar(
 	g_string_append(html, "</div></div>");
 }
 
-/* --- A generic list's bar ------------------------------------------------------- */
+/* --- A generic list's bar ------------------------------------------------- */
 
 /*
  * The bar over a generic list, /e/@type_name: the chips its field table
@@ -855,12 +723,12 @@ venture_web_append_list_query_bar(
 		htmx_request_get_query_param(request, "q"), problem);
 }
 
-/* --- GET /lql/assist ---------------------------------------------------------- */
+/* --- GET /lql/assist ------------------------------------------------------ */
 
 /*
- * GET /lql/assist?type=ticket&q=TEXT&at=N[&base=URL] - what the bar's script draws
- * while a person types. N is the cursor in UTF-16 units, as a browser
- * counts it, and every offset answered is too:
+ * GET /lql/assist?type=ticket&q=TEXT&at=N[&base=URL] - what the bar's
+ * script draws while a person types. N is the cursor in UTF-16 units, as
+ * a browser counts it, and every offset answered is too:
  *
  *   {
  *     "status": "<the status line's HTML, as the page would draw it>",
@@ -871,7 +739,7 @@ venture_web_append_list_query_bar(
  * Read as the caller, through the same environment a filter runs in, so a
  * value offered (a repository's name) is one they may read.
  */
-/* What GET /lql/assist works out, as read-worker work. */
+/* What GET /lql/assist works out, as query-worker work. */
 typedef struct
 {
 	LqlEnvironment		*environment;
@@ -882,12 +750,13 @@ typedef struct
 	VentureLqlProblem	*problem;
 	GPtrArray		*completions;
 	GString			*status;
+	GCancellable		*cancellable;
 } VentureWebLqlAssist;
 
 /*
  * Preparing runs the person's text too (an operand is evaluated while the
- * query is planned, and completion reads the repositories), so all of it
- * is worker work.
+ * query is planned, and completion fetches the repositories, which is
+ * read back on the main thread), so all of it is worker work.
  */
 static void
 venture_web_lql_assist_work(gpointer data)
@@ -896,7 +765,8 @@ venture_web_lql_assist_work(gpointer data)
 
 	assist->problem = venture_lql_filter_check(assist->environment, assist->type_name, assist->text);
 	assist->completions = venture_lql_filter_complete(assist->environment, assist->type_name,
-	                                                  assist->text, assist->cursor);
+	                                                  assist->text, assist->cursor,
+	                                                  assist->cancellable);
 	assist->status = g_string_new(NULL);
 	venture_web_append_lql_status(assist->status, assist->environment, assist->type_name,
 	                              assist->text, assist->problem, assist->base);
@@ -916,6 +786,7 @@ venture_web_ui_lql_assist(
 	g_autoptr(GString) status = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(JsonNode) root = NULL;
+	g_autoptr(GCancellable) cancellable = NULL;
 	VentureWebLqlAssist assist;
 	HtmxResponse *later;
 	const gchar *type_name;
@@ -925,7 +796,7 @@ venture_web_ui_lql_assist(
 	guint cursor;
 	guint i;
 
-	/* Always from a fiber, its work on a read worker: preparing runs
+	/* Always from a fiber, its work on a query worker: preparing runs
 	 * what the person typed. */
 	later = venture_web_lql_later(self, request, params, venture_web_ui_lql_assist, TRUE);
 
@@ -973,14 +844,22 @@ venture_web_ui_lql_assist(
 	if ((NULL == base) || ('/' != base[0]) || ('/' == base[1]) || ('\\' == base[1]))
 		base = NULL;
 
+	/* The sources the work may ask for columns: the bar's own type, and
+	 * the repositories a repo_id or repo_label completes from. */
+	venture_lql_environment_prepare_source(environment, type_name);
+	venture_lql_environment_prepare_source(environment, "forge_repo");
+
+	cancellable = g_cancellable_new();
 	memset(&assist, 0, sizeof assist);
 	assist.environment = environment;
 	assist.type_name = type_name;
 	assist.text = text;
 	assist.base = base;
 	assist.cursor = cursor;
+	assist.cancellable = cancellable;
 
-	if (!venture_web_lql_off_loop(self, venture_web_lql_assist_work, &assist, NULL, &error))
+	if (!venture_web_query_off_loop(self, request, NULL, venture_web_lql_assist_work, &assist,
+	                                cancellable, &error))
 		return venture_web_error_response(error);
 
 	problem = assist.problem;

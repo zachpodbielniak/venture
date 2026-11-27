@@ -24,8 +24,10 @@
  *     was built (venture_lql_environment_get_refusal());
  *   - LQL's errors become VENTURE errors: a query that does not parse,
  *     check or evaluate is invalid_argument (400), a bound
- *     (query.max_rows, query.max_bytes, LQL's own limits) is validation (422) and the time
- *     limit is timeout (504), with a message that names query.timeout_ms.
+ *     (query.max_rows, query.max_bytes, LQL's own limits) is validation
+ *     (422) and the time limit is timeout (504), with a message that
+ *     names query.timeout_ms. A filter bar's run is mapped the same way
+ *     (venture_lql_query_set_error()).
  */
 
 #include "lql/venture-lql-private.h"
@@ -170,9 +172,10 @@ venture_lql_query_check_pipeline(
 
 /*
  * An LQL error as a VENTURE one, keeping LQL's "LINE:COLUMN: " prefix so
- * venture_lql_query_error_position() can find the place again.
+ * venture_lql_query_error_position() can find the place again. Declared
+ * in lql/venture-lql-private.h: a filter bar's run is mapped the same way.
  */
-static void
+void
 venture_lql_query_set_error(
 	LqlEnvironment		 *environment,
 	const GError		 *lql_error,

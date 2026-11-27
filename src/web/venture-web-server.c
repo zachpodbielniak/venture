@@ -4276,7 +4276,7 @@ venture_web_api_list(
 	self = user_data;
 
 	/* ?q= is a person's query: answered from a fiber, the query on a
-	 * read worker (venture-web-lql.inc). */
+	 * query worker (venture_web_query_off_loop(), venture-web-lql.inc). */
 	{
 		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_api_list, FALSE);
 
@@ -7491,7 +7491,7 @@ venture_web_ui_export(
 	self = user_data;
 
 	/* ?q= is a person's query: answered from a fiber, the query on a
-	 * read worker (venture-web-lql.inc). */
+	 * query worker (venture_web_query_off_loop(), venture-web-lql.inc). */
 	{
 		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_ui_export, FALSE);
 
@@ -8446,7 +8446,7 @@ venture_web_ui_list(
 	self = user_data;
 
 	/* ?q= is a person's query: answered from a fiber, the query on a
-	 * read worker (venture-web-lql.inc). */
+	 * query worker (venture_web_query_off_loop(), venture-web-lql.inc). */
 	{
 		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_ui_list, FALSE);
 
@@ -15207,7 +15207,7 @@ venture_web_ui_tickets(
 	self = user_data;
 
 	/* A filter is a person's query: the page answers from a fiber, and
-	 * the query runs on a read worker (venture-web-lql.inc). */
+	 * the query runs on a query worker (venture-web-lql.inc). */
 	redirect = venture_web_lql_later(self, request, params, venture_web_ui_tickets, FALSE);
 
 	if (NULL != redirect)

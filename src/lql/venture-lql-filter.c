@@ -165,6 +165,11 @@ venture_lql_problem_from_diagnostic(
 	problem->name = g_strdup(diagnostic->name);
 	problem->suggestions = g_strdupv(diagnostic->suggestions);
 
+	/* Preparing can go over a bound too (an operand evaluated while the
+	 * query is planned): that is a bound, not a typo. */
+	problem->code = (LQL_ERROR_LIMIT == diagnostic->code) ? VENTURE_ERROR_VALIDATION
+	                                                      : VENTURE_ERROR_INVALID_ARGUMENT;
+
 	return problem;
 }
 
@@ -231,6 +236,7 @@ venture_lql_filter_check(
 
 		problem = g_new0(VentureLqlProblem, 1);
 		problem->message = g_strdup("this holds one filter, so '|' cannot start another stage here");
+		problem->code = VENTURE_ERROR_INVALID_ARGUMENT;
 		problem->positioned = TRUE;
 		problem->offset = span->offset - prefix;
 		problem->length = span->length;
@@ -304,12 +310,20 @@ venture_lql_filter_find_ids(
 
 		if (NULL == table)
 		{
+			g_autoptr(GError) refusal = NULL;
+
+			/* Worded and classed as POST /api/v1/query words and classes
+			 * it: a bound (rows, bytes) is VALIDATION, the time limit or a
+			 * cancel TIMEOUT, the rest INVALID_ARGUMENT. */
+			venture_lql_query_set_error(environment, error, &refusal);
 			problem = g_new0(VentureLqlProblem, 1);
-			problem->message = g_strdup(error->message);
+			problem->message = g_strdup(refusal->message);
+			problem->code = (VentureError)refusal->code;
 		}
 		else if (lql_table_get_n_rows(table) > VENTURE_LQL_FILTER_MAX_IDS)
 		{
 			problem = g_new0(VentureLqlProblem, 1);
+			problem->code = VENTURE_ERROR_VALIDATION;
 			problem->message = g_strdup_printf(
 				"the filter keeps %u records, more than the %d one list can "
 				"show; narrow it", lql_table_get_n_rows(table),
@@ -709,6 +723,7 @@ venture_lql_add_values(
 	const gchar	*typed,
 	guint		 start,
 	guint		 end,
+	GCancellable	*cancellable,
 	GPtrArray	*out
 ){
 	g_autoptr(VentureEntityClass) klass = NULL;
@@ -717,12 +732,17 @@ venture_lql_add_values(
 	gboolean by_name;
 	const gchar *reference;
 	GParamSpec *pspec;
+	LqlSource *source;
 	GType entity_type;
 
-	entity_type = venture_entity_registry_lookup(venture_entity_registry_get_default(), type_name);
+	/* The record type from the environment's own source, not the entity
+	 * registry: this runs on a query worker, which touches no registry. */
+	source = lql_environment_lookup_source(environment, type_name);
 
-	if (G_TYPE_INVALID == entity_type)
+	if (!VENTURE_IS_LQL_SOURCE(source))
 		return;
+
+	entity_type = venture_lql_source_get_entity_type(VENTURE_LQL_SOURCE(source));
 
 	klass = g_type_class_ref(entity_type);
 
@@ -778,7 +798,7 @@ venture_lql_add_values(
 		 * caller may not read repositories) offers none. */
 		repos = lql_environment_run_sync(environment,
 			"fetch forge_repo | fields id, display_name | sort display_name | limit 100",
-			NULL, NULL, NULL);
+			NULL, cancellable, NULL);
 
 		for (i = 0; (NULL != repos) && (i < lql_table_get_n_rows(repos)); i++)
 		{
@@ -816,7 +836,8 @@ venture_lql_filter_complete(
 	LqlEnvironment	*environment,
 	const gchar	*type_name,
 	const gchar	*text,
-	guint		 offset
+	guint		 offset,
+	GCancellable	*cancellable
 ){
 	g_autoptr(GPtrArray) spans = NULL;
 	g_autoptr(GPtrArray) candidates = NULL;
@@ -850,7 +871,7 @@ venture_lql_filter_complete(
 
 	if (NULL != field)
 		venture_lql_add_values(environment, type_name, field, typed,
-		                       start - prefix, MIN(end - prefix, length), out);
+		                       start - prefix, MIN(end - prefix, length), cancellable, out);
 
 	/* Then LQL's. A command or a source cannot appear inside a filter,
 	 * and a value inside a string is only ever the field's. */

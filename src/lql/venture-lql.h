@@ -143,6 +143,23 @@ void
 venture_lql_environment_prepare_sources(LqlEnvironment *environment);
 
 /**
+ * venture_lql_environment_prepare_source:
+ * @environment: an environment from venture_lql_environment_new()
+ * @name: a source name, as `fetch NAME` writes it
+ *
+ * Builds the schema of the one source @name now, on the database's
+ * thread, for work on a query worker that names no other source (a
+ * filter bar's text, which runs as `fetch NAME | filter TEXT`).
+ *
+ * Returns: %TRUE when @environment has a record source called @name
+ */
+gboolean
+venture_lql_environment_prepare_source(
+	LqlEnvironment	*environment,
+	const gchar	*name
+);
+
+/**
  * venture_lql_source_get_entity_type:
  * @self: a #VentureLqlSource
  *
@@ -423,6 +440,11 @@ venture_web_server_new_lql_environment(
  * @name: (nullable): the unknown name it is about ("staus")
  * @suggestions: (nullable) (array zero-terminated=1): what may have been
  *   meant, best first ("status")
+ * @code: the #VentureError a request answers it with, as
+ *   POST /api/v1/query would: %VENTURE_ERROR_INVALID_ARGUMENT for the
+ *   text, %VENTURE_ERROR_VALIDATION for a bound (query.max_rows,
+ *   query.max_bytes, the records one list may show),
+ *   %VENTURE_ERROR_TIMEOUT for the time limit or a cancelled run
  *
  * Why a filter bar's text cannot run, placed in the text the person
  * typed rather than in the query it becomes.
@@ -435,6 +457,7 @@ typedef struct
 	guint		 length;
 	gchar		*name;
 	GStrv		 suggestions;
+	VentureError	 code;
 } VentureLqlProblem;
 
 void
@@ -544,6 +567,8 @@ venture_lql_filter_highlight(
  * @type_name: the record type
  * @text: the filter text
  * @offset: the cursor, a byte offset into @text
+ * @cancellable: (nullable): stops the repository read a reference's
+ *   values need (the deadline of the request asking)
  *
  * What can be typed at @offset: LQL's own candidates (fields, functions,
  * keywords, constants), and first, where a field is being compared
@@ -559,7 +584,8 @@ venture_lql_filter_complete(
 	LqlEnvironment	*environment,
 	const gchar	*type_name,
 	const gchar	*text,
-	guint		 offset
+	guint		 offset,
+	GCancellable	*cancellable
 );
 
 /**

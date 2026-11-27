@@ -1293,12 +1293,14 @@ test_scale_pushdown(
 
 		start = g_get_monotonic_time();
 		body = page(f, path, 200);
+		g_test_message("%s: %" G_GINT64_FORMAT " ms", path, elapsed_ms(start));
 		g_assert_cmpint(elapsed_ms(start), <, SCALE_TIMEOUT_MS);
 		count = g_strdup_printf("%u records", SCALE_ROWS / SCALE_ADA_EVERY + 2);
 		g_assert_nonnull(strstr(body, count));
 
 		start = g_get_monotonic_time();
 		answer = api(f, f->ada_secret, api_path, 200);
+		g_test_message("%s: %" G_GINT64_FORMAT " ms", api_path, elapsed_ms(start));
 		g_assert_cmpint(elapsed_ms(start), <, SCALE_TIMEOUT_MS);
 		g_assert_cmpint(json_object_get_int_member(json_node_get_object(answer), "total"), ==,
 		                SCALE_ROWS / SCALE_ADA_EVERY + 2);
@@ -1320,6 +1322,8 @@ test_scale_pushdown(
 		g_assert_null(ids);
 		g_assert_nonnull(problem);
 		g_assert_false(problem->positioned);
+		/* A bound, as POST /api/v1/query classes it: 422, not 400. */
+		g_assert_cmpint(problem->code, ==, VENTURE_ERROR_VALIDATION);
 		g_test_message("unpushed: %s (%" G_GINT64_FORMAT " ms)", problem->message,
 		               elapsed_ms(start));
 		g_assert_cmpint(elapsed_ms(start), <, SCALE_TIMEOUT_MS);
