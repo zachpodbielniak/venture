@@ -362,7 +362,7 @@ venture_stripe_connect_start(VentureDatabase *database, gint64 organization_id,
 		/* One business, one account, however often this is retried. */
 		g_free(create->idempotency_key);
 		create->idempotency_key = g_strdup_printf("venture-connect-account-%s", venture_entity_get_uuid(organization));
-		made = stripe_client_execute(client, create, NULL, NULL);
+		made = venture_stripe_execute(client, create, NULL, NULL);
 		if (!made) return connect_provider_failed(error, "create the connected account");
 		account = g_strdup(stripe_resource_get_string(made, "id"));
 		if (!connect_account_valid(account)) return connect_provider_failed(error, "return a connected account");
@@ -385,7 +385,7 @@ venture_stripe_connect_start(VentureDatabase *database, gint64 organization_id,
 	link->return_url = g_strdup(return_url);
 	link->refresh_url = g_strdup(refresh_url);
 	g_clear_pointer(&made, stripe_resource_free);
-	made = stripe_client_execute(client, link, NULL, NULL);
+	made = venture_stripe_execute(client, link, NULL, NULL);
 	url = made ? stripe_resource_get_string(made, "url") : NULL;
 	if (!url || !g_str_has_prefix(url, "https://")) return connect_provider_failed(error, "create an onboarding link");
 	return connect_answer(state, "connect", url);
@@ -420,7 +420,7 @@ venture_stripe_connect_status(VentureDatabase *database, gint64 organization_id,
 	if (!connect_same_environment(environment, settings_string(object, "environment"), error)) return NULL;
 	read = stripe_request_new(STRIPE_CONNECT_ACCOUNT_RETRIEVE);
 	read->id = g_strdup(settings_string(object, "account"));
-	account = stripe_client_execute(client, read, NULL, NULL);
+	account = venture_stripe_execute(client, read, NULL, NULL);
 	if (!account) return connect_provider_failed(error, "answer the account read");
 	details = stripe_resource_get_json(account);
 	state = connect_state(details);

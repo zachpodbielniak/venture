@@ -158,7 +158,7 @@ venture_stripe_service_revoke_payment_link(VentureStripeService *self,
 	request->id = g_strdup(session);
 	g_free(request->idempotency_key);
 	request->idempotency_key = g_strdup_printf("venture-expire-%s", venture_entity_get_uuid(checkout));
-	response = stripe_client_execute(self->client, request, NULL, error);
+	response = venture_stripe_execute(self->client, request, NULL, error);
 	if (!response) return FALSE;
 	if (g_strcmp0(stripe_resource_get_string(response, "id"), session) ||
 		g_strcmp0(stripe_resource_get_string(response, "status"), "expired"))

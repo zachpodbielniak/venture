@@ -187,7 +187,7 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 			g_autoptr(StripeResource) verified = NULL;
 			g_autoptr(VentureMoney) balance = NULL;
 			verify->id = g_strdup(provider_id);
-			verified = stripe_client_execute(self->client, verify, NULL, error);
+			verified = venture_stripe_execute(self->client, verify, NULL, error);
 			if (!verified) goto fail;
 			g_clear_pointer(&provider_invoice, json_object_unref); provider_invoice = stripe_resource_get_json(verified);
 			if (!stripe_collection_invoice_matches(provider_invoice, provider_id, customer, method, expected, venture_entity_get_uuid(VENTURE_ENTITY(checkout)), error) ||
@@ -227,7 +227,7 @@ venture_stripe_service_collect_invoice(VentureStripeService *self, gint64 invoic
 		request->metadata_key = g_strdup("venture_collection_uuid"); request->metadata_value = g_strdup(venture_entity_get_uuid(VENTURE_ENTITY(checkout)));
 		request->unit_amount = (guint64)amount; request->product_name = g_strdup_printf("Venture invoice %s", venture_entity_get_uuid(invoice));
 		g_free(request->idempotency_key); request->idempotency_key = g_strdup_printf("venture-collection-%s-%s", venture_entity_get_uuid(VENTURE_ENTITY(checkout)), step);
-		resource = stripe_client_execute(self->client, request, NULL, error);
+		resource = venture_stripe_execute(self->client, request, NULL, error);
 		if (!resource) goto fail;
 		if (!g_strcmp0(phase, "reserved"))
 		{
@@ -281,7 +281,7 @@ stripe_cancel_collection(VentureStripeService *self, gint64 checkout_id,
 	g_object_get(authorization, "customer-id", &customer, "payment-method-id", &method, NULL);
 	request = stripe_request_new(STRIPE_INVOICE_RETRIEVE); request->id = g_strdup(provider_id);
 	request->expansion = STRIPE_EXPAND_INVOICE_PAYMENT;
-	resource = stripe_client_execute(self->client, request, NULL, &provider_error);
+	resource = venture_stripe_execute(self->client, request, NULL, &provider_error);
 	if (!resource)
 	{
 		if (!g_strcmp0(phase, "deleting") && g_error_matches(provider_error, STRIPE_ERROR, STRIPE_ERROR_NOT_FOUND))
@@ -318,7 +318,7 @@ stripe_cancel_collection(VentureStripeService *self, gint64 checkout_id,
 		request = stripe_request_new(deleted ? STRIPE_INVOICE_DELETE : STRIPE_INVOICE_VOID);
 		request->id = g_strdup(provider_id);
 		g_free(request->idempotency_key); request->idempotency_key = g_strdup_printf("venture-collection-%s-%s", venture_entity_get_uuid(checkout), deleted ? "delete" : "void");
-		resource = stripe_client_execute(self->client, request, NULL, error);
+		resource = venture_stripe_execute(self->client, request, NULL, error);
 		if (!resource) return FALSE;
 		g_clear_pointer(&invoice, json_object_unref); invoice = stripe_resource_get_json(resource);
 		if (deleted)
@@ -331,7 +331,7 @@ stripe_cancel_collection(VentureStripeService *self, gint64 checkout_id,
 		{
 			g_clear_pointer(&request, stripe_request_free); g_clear_pointer(&resource, stripe_resource_free);
 			request = stripe_request_new(STRIPE_INVOICE_RETRIEVE); request->id = g_strdup(provider_id); request->expansion = STRIPE_EXPAND_INVOICE_PAYMENT;
-			resource = stripe_client_execute(self->client, request, NULL, error);
+			resource = venture_stripe_execute(self->client, request, NULL, error);
 			if (!resource) return FALSE;
 			g_clear_pointer(&invoice, json_object_unref); invoice = stripe_resource_get_json(resource); payment = object_member(invoice, "payment_intent");
 			if (g_strcmp0(string_member(invoice, "id"), provider_id) || g_strcmp0(string_member(invoice, "status"), "void") ||

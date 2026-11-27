@@ -533,22 +533,38 @@ Refunds, disputes and accounting remain on the invoice. See
 
 * Provider operation deadlines
 
-The pinned stripe-glib client now treats its default =request_timeout: 30= as a
-whole-operation budget, including headers, bounded response-body reads and all
-retry waits. It refuses a Retry-After/backoff delay that cannot fit; it never
-retries earlier than Stripe requested. A deadline preserves the operation's
-idempotency key and returns a typed timeout. Paid-form intake logs one redacted
-=provider deadline exhausted= cause and retains the invoice/Checkout attempt for
-retry or reconciliation. No provider request runs inside the form transaction.
+Every Stripe client VENTURE makes comes from =venture_stripe_client_new()=: the stripe-glib client with its own retries off (=retry_count: 0=), over =venture_stripe_transport_new()=. The pinned client still treats its default =request_timeout: 30= as a whole-operation budget, including headers and bounded response-body reads; the transport keeps it, retries included.
 
-An individual host workflow can make several Stripe operations (for example
-customer creation then Checkout). Each has its own 30-second budget; this is not
-a global deadline for an entire multi-operation workflow. Default transport I/O
-uses a private GLib context and does not dispatch application/database callbacks.
-Injected transports must obey the supplied deadline and cancellable; arbitrary
-in-process callbacks cannot be forcibly preempted safely. Ordinary transport
-failures remain non-retryable inside stripe-glib. Use the retained durable key
-when the caller explicitly retries an uncertain mutation.
+** Retries
+
+stripe-glib would sleep between retries on the caller's stack, which for a web request is the main thread: a 429 with =Retry-After: 30= froze the whole server. The transport retries instead, with the library's policy unchanged:
+
+- only a 429 or a 5xx, at most twice;
+- from 200 ms, doubling, with up to as much again in jitter, and never sooner than =Retry-After= (seconds or an HTTP date);
+- a =Retry-After= over ten minutes ends the retries and returns that answer;
+- a pause that cannot fit before the deadline ends the operation with a typed timeout ("Provider deadline exhausted"), keeping its idempotency key.
+
+A fiber (a route that answers from one, see [[file:architecture.org][Waiting on Stripe]]) waits out the pause yielded on a timeout source, so the server keeps serving; a plain caller, or a fiber with a transaction open, sleeps through it as before. stripe-glib's =StripeResponse= is opaque, so the network send is VENTURE's own (=src/stripe/venture-stripe-http.inc=): a copy of the library's soup transport (=src/providers/stripe-soup.c= at stripe-glib commit =c15395e49831574ff488f40d278af967e8d95241=, the one =deps/stripe-glib= is pinned to), unchanged in what it sends and bounds (private context, one absolute timer at the deadline, no redirects, at most 4 MiB of body, no NUL), with the status and =Retry-After= kept for the retries. It exists only until stripe-glib exports a status and a =Retry-After= getter on =StripeResponse=; then it is deleted and the send goes through =stripe_soup_transport_new()= again. An injected transport -- a test's offline one -- answers opaquely and is never retried.
+
+Each retry is still announced as stripe-glib announced its own: =stripe.request.retried= on the client's =event= signal, with the same fields (=operation=, =status=, =duration_ms=, =response_bytes=, =attempt=, and =request_id= when safe), so the audit log records it as before. Every Stripe call VENTURE makes goes through =venture_stripe_execute()=, which tells the transport the operation it is carrying.
+
+** Where a call waits
+
+| Caller | Waiting on Stripe |
+|--------+-------------------|
+| A fiber route, no transaction open | On a pooled thread (at most eight at once); the fiber yields and the server serves everybody |
+| A fiber route with a transaction open | On its own stack, blocking, as before |
+| Every other caller | On its own stack, blocking, exactly as before; no nested main loop runs |
+
+The fiber routes: Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (=POST /api/v1/invoices/:id/checkout= and the form); =POST /pay/:token=; the Stripe settings operations (configure, statement name, key test); Connect status and start.
+
+Still synchronous, holding the server for as long as Stripe takes: the record actions (=POST /api/v1/:type/:id/actions/:action=, including =checkout= and =refund=), the customer portal's pay button, paid forms, the Stripe webhook routes, and the timers (collection, reconciliation, prepaid installments).
+
+Paid-form intake logs one redacted =provider deadline exhausted= cause and retains the invoice/Checkout attempt for retry or reconciliation. No provider request runs inside the form transaction.
+
+An individual host workflow can make several Stripe operations (for example customer creation then Checkout). Each has its own 30-second budget; this is not a global deadline for an entire multi-operation workflow. Injected transports must obey the supplied deadline and cancellable; arbitrary in-process callbacks cannot be forcibly preempted safely. Ordinary transport failures are not retried. Use the retained durable key when the caller explicitly retries an uncertain mutation.
+
+A stop waits up to 35 seconds for fiber routes still waiting on Stripe, so a call that ends on time is answered and recorded; a second signal stops at once.
 
 A declined intent can have no current payment method. For a verified failure,
 the pinned invoice read must instead retain the authorized attempted method in

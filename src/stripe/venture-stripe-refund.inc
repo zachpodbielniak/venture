@@ -29,7 +29,7 @@ venture_stripe_service_refund_payment(VentureStripeService *self, gint64 payment
 	currency = g_ascii_strdown(venture_money_get_currency(amount), -1);
 	lookup = stripe_request_new(STRIPE_REFUND_LIST);
 	lookup->id = g_strdup(intent);
-	found = stripe_client_execute(self->client, lookup, NULL, error);
+	found = venture_stripe_execute(self->client, lookup, NULL, error);
 	if (!found) return FALSE;
 	list = stripe_resource_get_json(found);
 	if (!stripe_json_boolean(list, "has_more", FALSE) || !json_object_has_member(list, "data") ||
@@ -50,7 +50,7 @@ venture_stripe_service_refund_payment(VentureStripeService *self, gint64 payment
 		g_autoptr(StripeRequest) create = stripe_request_new(STRIPE_REFUND_CREATE);
 		create->id = g_strdup(intent);
 		g_free(create->idempotency_key); create->idempotency_key = g_strdup(key);
-		made = stripe_client_execute(self->client, create, NULL, error);
+		made = venture_stripe_execute(self->client, create, NULL, error);
 		if (!made) return FALSE;
 		remote = stripe_resource_get_json(made);
 		if (!stripe_identifier(string_member(remote, "id"), "re_") || g_strcmp0(string_member(remote, "payment_intent"), intent) ||

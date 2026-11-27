@@ -27,7 +27,7 @@ stripe_customer(VentureStripeService *self, gint64 company_id, gint64 contact_id
 	g_free(request->idempotency_key);
 	request->idempotency_key = g_strdup_printf("venture-customer-%s-%s",
 		self->connection_uuid ? self->connection_uuid : "fixture", venture_entity_get_uuid(customer));
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) return NULL;
 	customer_id = g_strdup(stripe_resource_get_string(resource, "id"));
 	if (!customer_id || !g_str_has_prefix(customer_id, "cus_"))

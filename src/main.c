@@ -18,6 +18,7 @@
 
 #include "venture.h"
 #include "web/venture-http-limits-private.h"
+#include "core/venture-fiber-private.h"
 
 #include <glib-unix.h>
 #include <stdlib.h>
@@ -66,27 +67,41 @@ venture_read_tenant_password(const gchar *path, GError **error)
 	return g_string_free(g_steal_pointer(&input), FALSE);
 }
 
+/* How long a stop waits for requests still waiting on Stripe: past the
+ * provider's own thirty-second deadline, so a call that ends on time is
+ * answered rather than cut off. */
+#define VENTURE_SHUTDOWN_DRAIN_SECONDS (35)
+
+/* How often the drain looks. */
+#define VENTURE_SHUTDOWN_DRAIN_TICK_MS (50)
+
 typedef struct
 {
 	GMainLoop		*loop;
 	VentureWebServer	*server;
 	VentureAutomation	*automation;
 	VentureContext		*context;
+	gint64			 drain_until;	/* monotonic; 0 when not draining */
+	guint			 drain;		/* the drain's timeout source */
+	gboolean		 stopping;
 } VentureServerMain;
 
 /*
- * Handles SIGINT and SIGTERM. Stopping the loop rather than exiting outright
- * lets in-flight requests finish and the database close cleanly, which for
- * SQLite means the write-ahead log is checkpointed rather than left behind.
+ * Stops everything and the loop. Stopping the loop rather than exiting
+ * outright lets the database close cleanly, which for SQLite means the
+ * write-ahead log is checkpointed rather than left behind.
  */
-static gboolean
-venture_on_signal(gpointer user_data)
+static void
+venture_server_stop(VentureServerMain *application)
 {
-	VentureServerMain *application;
-
-	application = user_data;
-
-	g_message("Shutting down");
+	if (application->stopping)
+		return;
+	application->stopping = TRUE;
+	if (0 != application->drain)
+	{
+		g_source_remove(application->drain);
+		application->drain = 0;
+	}
 
 #ifdef VENTURE_HAVE_SQLITE
 	/* First, while the loop runs and automation still listens: the last
@@ -103,8 +118,62 @@ venture_on_signal(gpointer user_data)
 		venture_web_server_stop(application->server);
 
 	g_main_loop_quit(application->loop);
+}
 
+/*
+ * While a stop waits: a request suspended on Stripe is a fiber, and quitting
+ * the loop now would abandon it mid-call, with its client unanswered and
+ * whatever it was about to record unrecorded. Everything keeps running --
+ * the server too, since the answers go out through it -- until none is
+ * left or the deadline passes.
+ */
+static gboolean
+venture_on_drain(gpointer user_data)
+{
+	VentureServerMain *application = user_data;
+	guint waiting = venture_fiber_count();
+
+	if (0 != waiting && g_get_monotonic_time() < application->drain_until)
+		return G_SOURCE_CONTINUE;
+	if (0 != waiting)
+		g_warning("Stopping with %u request(s) still waiting on Stripe", waiting);
+	application->drain = 0;
+	venture_server_stop(application);
 	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Handles SIGINT and SIGTERM. With no request waiting on Stripe it stops at
+ * once; otherwise it waits for them (venture_on_drain()), and a second
+ * signal stops without waiting.
+ */
+static gboolean
+venture_on_signal(gpointer user_data)
+{
+	VentureServerMain *application = user_data;
+	guint waiting;
+
+	if (application->stopping)
+		return G_SOURCE_REMOVE;
+	if (0 != application->drain)
+	{
+		g_message("Shutting down without waiting");
+		venture_server_stop(application);
+		return G_SOURCE_REMOVE;
+	}
+	g_message("Shutting down");
+	waiting = venture_fiber_count();
+	if (0 == waiting)
+	{
+		venture_server_stop(application);
+		return G_SOURCE_REMOVE;
+	}
+	g_message("Waiting up to %d s for %u request(s) waiting on Stripe; signal again to stop now",
+		VENTURE_SHUTDOWN_DRAIN_SECONDS, waiting);
+	application->drain_until = g_get_monotonic_time() + (gint64)VENTURE_SHUTDOWN_DRAIN_SECONDS * G_USEC_PER_SEC;
+	application->drain = g_timeout_add(VENTURE_SHUTDOWN_DRAIN_TICK_MS, venture_on_drain, application);
+	/* Kept, so a second signal reaches this handler instead of killing. */
+	return G_SOURCE_CONTINUE;
 }
 
 /*
@@ -227,7 +296,7 @@ main(
 	g_autoptr(VenturePluginManager) plugins = NULL;
 	g_autoptr(VentureAutomation) automation = NULL;
 	g_autoptr(GError) error = NULL;
-	VentureServerMain application = { NULL, NULL, NULL, NULL };
+	VentureServerMain application = { NULL, NULL, NULL, NULL, 0, 0, FALSE };
 	g_autofree gchar *config_path = NULL;
 	g_autofree gchar *database_uri = NULL;
 	g_autofree gchar *state_dir = NULL;

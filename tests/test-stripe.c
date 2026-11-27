@@ -6,6 +6,8 @@
 #include "venture-test-util.h"
 #include "venture-test-accounting.h"
 #include "db/venture-migrations.h"
+#include "core/venture-fiber-private.h"
+#include "stripe/venture-stripe-transport-private.h"
 
 typedef struct
 {
@@ -339,12 +341,15 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	const gchar *connect_id; guint account_creates, account_reads, account_links; gboolean charges_enabled;
 	gchar *create_body, *create_key, *create_version, *create_type, *create_authorization, *read_header, *read_authorization;
 	gchar *link_body, *link_header, *last_account, *checkout_account, *checkout_authorization, *checkout_fee;
-	/* A provider that does not answer: calls take their waits from
-	 * stalls_us in the order they arrive (stall_next), and stalled counts
-	 * the waits begun, read from another thread. With stall_times_out a
-	 * call that waited then fails as a provider deadline does. Calls may
-	 * arrive on several threads at once; the rest of a call runs alone. */
-	guint stalls_us[4]; gint stall_next; gint stalled; gboolean stall_times_out;
+	/* A provider that does not answer until the test says so (fake_hold()):
+	 * the next hold_limit calls each take a ticket in the order they arrive
+	 * (held counts them) and wait until the test releases that ticket
+	 * (fake_release()) or all of them (fake_release_all()); later calls pass.
+	 * With hold_times_out a held call then fails as a provider deadline
+	 * does. Nothing here measures time: tests assert what was answered
+	 * while a call was held. Calls may arrive on several threads at once;
+	 * the rest of a call runs alone. */
+	GMutex hold_lock; GCond hold_cond; gboolean holding, hold_times_out; gint hold_limit, held; guint released;
 	/* Each customer after the first its own id, for two businesses at once. */
 	gboolean distinct_customers; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
@@ -370,22 +375,30 @@ static void assert_route_unblocked(VentureWebServer *server, FakeTransport *tran
 static void assert_route_unblocked_by(VentureWebServer *server, FakeTransport *transport, const gchar *method,
 	const gchar *path, const gchar *content_type, const gchar *body, const gchar *host,
 	const gchar *origin, const gchar *auth, guint expected, const gchar *probe);
+static void test_fiber_isolation(Fixture *f, VentureStripeService *service, FakeTransport *fake, VentureEntity *invoice);
+static void test_fiber_disconnect(Fixture *f, VentureStripeService *service, FakeTransport *fake, VentureEntity *invoice);
 static StripeResponse *
 fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	GCancellable *cancellable, GError **error)
 {
 	static GMutex alone;
 	FakeTransport *self = (FakeTransport *)transport;
-	gint turn = g_atomic_int_add(&self->stall_next, 1);
 	StripeResponse *response;
+	gboolean was_held = FALSE;
 	(void)cancellable;
-	if (turn >= 0 && turn < (gint)G_N_ELEMENTS(self->stalls_us) && self->stalls_us[turn]) {
-		g_atomic_int_inc(&self->stalled);
-		g_usleep(self->stalls_us[turn]);
-		if (self->stall_times_out) {
-			g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Provider deadline exhausted");
-			return NULL;
-		}
+	g_mutex_lock(&self->hold_lock);
+	if (self->holding && self->held < self->hold_limit) {
+		gint ticket = self->held++;
+		was_held = TRUE;
+		/* The test may be waiting in the main loop for this ticket. */
+		g_main_context_wakeup(NULL);
+		while (self->holding && !(self->released & (1u << ticket)))
+			g_cond_wait(&self->hold_cond, &self->hold_lock);
+	}
+	g_mutex_unlock(&self->hold_lock);
+	if (was_held && self->hold_times_out) {
+		g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Provider deadline exhausted");
+		return NULL;
 	}
 	g_mutex_lock(&alone);
 	response = fake_send_alone(self, request, error);
@@ -554,6 +567,8 @@ fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **
 static void fake_iface(StripeTransportInterface *iface) { iface->send = fake_send; }
 static void fake_finalize(GObject *object)
 {
+	g_mutex_clear(&((FakeTransport *)object)->hold_lock);
+	g_cond_clear(&((FakeTransport *)object)->hold_cond);
 	g_free(((FakeTransport *)object)->key);
 	g_free(((FakeTransport *)object)->deadline);
 	g_free(((FakeTransport *)object)->setup_reference);
@@ -577,7 +592,7 @@ static void fake_finalize(GObject *object)
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
-static void fake_transport_init(FakeTransport *self) { (void)self; }
+static void fake_transport_init(FakeTransport *self) { g_mutex_init(&self->hold_lock); g_cond_init(&self->hold_cond); }
 
 /* A hosted test shortens one session's stored expiry and still expects that
  * session, not whichever Setup was created last, to verify on its own. */
@@ -734,6 +749,16 @@ test_flow(Fixture *f, gconstpointer data)
 		venture_web_server_stop(server);
 		g_clear_object(&server);
 		venture_test_remove_tree(state_dir);
+		return;
+	}
+	if (!g_strcmp0(mode, "isolation"))
+	{
+		test_fiber_isolation(f, service, (FakeTransport *)transport, invoice);
+		return;
+	}
+	if (!g_strcmp0(mode, "disconnect"))
+	{
+		test_fiber_disconnect(f, service, (FakeTransport *)transport, invoice);
 		return;
 	}
 	if (!g_strcmp0(mode, "slow"))
@@ -1286,6 +1311,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-automatic.inc"
 #include "test-hosted-stripe.inc"
 #include "test-stripe-connect.inc"
+#include "test-stripe-fiber.inc"
 
 int
 main(int argc, char **argv)
@@ -1392,7 +1418,7 @@ main(int argc, char **argv)
 
 	g_test_add_func("/stripe/missing-key", test_missing_key);
 	{
-		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback", "virtual-currency", "slow", "slow-reads" };
+		static const gchar *const cases[] = { "checkout", "portal", "customer-reuse", "surfaces", "module-off", "immutable", "completed-duplicate", "unknown-session", "amount-mismatch", "precision-mismatch", "overflow-mismatch", "currency-mismatch", "bad-signature", "rollback", "virtual-currency", "slow", "slow-reads", "isolation", "disconnect" };
 		guint i;
 		for (i = 0; i < G_N_ELEMENTS(cases); i++)
 		{
@@ -1435,6 +1461,13 @@ main(int argc, char **argv)
 	g_test_add("/stripe/hosted-slow-provider", Fixture, NULL, set_up, test_hosted_slow_provider, tear_down);
 	g_test_add("/stripe/hosted-slow-provider-fails", Fixture, "fails", set_up, test_hosted_slow_provider, tear_down);
 	g_test_add("/stripe/hosted-slow-provider-order", Fixture, NULL, set_up, test_hosted_slow_provider_order, tear_down);
+	g_test_add("/stripe/hosted-concurrent", Fixture, "concurrent", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/fiber/retry-after", Fixture, NULL, set_up, test_fiber_retry_after, tear_down);
+	g_test_add("/stripe/fiber/retry-budget", Fixture, NULL, set_up, test_fiber_retry_budget, tear_down);
+	g_test_add("/stripe/fiber/deadline", Fixture, NULL, set_up, test_fiber_deadline, tear_down);
+	g_test_add("/stripe/fiber/transaction-blocks", Fixture, NULL, set_up, test_fiber_transaction_blocks, tear_down);
+	g_test_add("/stripe/fiber/wake-waits-for-transaction", Fixture, NULL, set_up, test_fiber_wake_waits_for_transaction, tear_down);
+	g_test_add("/stripe/fiber/count", Fixture, NULL, set_up, test_fiber_count, tear_down);
 	g_test_add("/stripe/hosted-money-back-late", Fixture, "money-back-late", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/connect/create", Fixture, NULL, set_up, test_connect_create, tear_down);
 	g_test_add("/stripe/connect/refuse-keys", Fixture, "keys", set_up, test_connect_refusals, tear_down);

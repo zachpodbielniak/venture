@@ -136,7 +136,7 @@ static gchar *
 settings_verify_account(VentureStripeService *self, GError **error)
 {
 	g_autoptr(StripeRequest) request = stripe_request_new(STRIPE_ACCOUNT_RETRIEVE);
-	g_autoptr(StripeResource) resource = stripe_client_execute(self->client, request, NULL, NULL);
+	g_autoptr(StripeResource) resource = venture_stripe_execute(self->client, request, NULL, NULL);
 	g_autoptr(JsonObject) details = NULL;
 	const gchar *account;
 	if (!resource)

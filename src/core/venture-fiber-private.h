@@ -17,6 +17,28 @@ typedef struct _VentureFiber VentureFiber;
 
 typedef void (*VentureFiberFunc)(gpointer data);
 
+/*
+ * venture_fiber_init:
+ *
+ * Makes the calling thread the one fibers run on. Call it once, on the
+ * main thread, before any fiber is made and before any other thread can
+ * ask venture_fiber_current() (the web server does, as it starts). Later
+ * calls change nothing.
+ */
+void
+venture_fiber_init(void);
+
+/*
+ * venture_fiber_new:
+ * @func: the work, run on the fiber's own stack
+ * @done: (nullable): run on the waker's stack once @func has returned
+ * @swap: (nullable): exchanges main-thread state with the fiber's own copy,
+ *   called on the way in and again on the way out of every turn
+ * @data: for all three
+ *
+ * Returns: (nullable): a fiber not yet started, or %NULL when its stack
+ *   cannot be mapped (the caller answers "busy" instead of aborting)
+ */
 VentureFiber *
 venture_fiber_new(
 	VentureFiberFunc	 func,
@@ -33,6 +55,15 @@ venture_fiber_current(void);
 
 void
 venture_fiber_yield(void);
+
+/*
+ * venture_fiber_count:
+ *
+ * Returns: how many fibers have been made and not yet finished, started
+ *   or not; shutdown waits for this to reach zero
+ */
+guint
+venture_fiber_count(void);
 
 G_END_DECLS
 

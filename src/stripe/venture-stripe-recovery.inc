@@ -28,7 +28,7 @@ venture_stripe_service_reconcile_collection(VentureStripeService *self, gint64 c
 	if (!authorization) return NULL;
 	g_object_get(authorization, "customer-id", &customer, "payment-method-id", &method, NULL);
 	request->id = g_strdup(provider_invoice_id); request->expansion = STRIPE_EXPAND_INVOICE_PAYMENT;
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) return NULL;
 	object = stripe_resource_get_json(resource); currency = string_member(object, "currency");
 	if (g_strcmp0(string_member(object, "id"), provider_invoice_id) ||

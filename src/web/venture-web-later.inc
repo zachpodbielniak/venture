@@ -10,7 +10,7 @@
  * main loop ends only after every wait that started inside it.
  *
  * So a route that may wait on Stripe answers with a placeholder and runs
- * from an idle source a moment later, as a fiber (core/venture-fiber.c):
+ * from a source a moment later, as a fiber (core/venture-fiber.c):
  * still on the main thread, with the database and every handler where
  * they belong, but on a stack of its own. When the Stripe transport has
  * to wait it yields, the loop goes on serving everybody, and the fiber is
@@ -40,6 +40,7 @@ typedef struct
 	VentureAccessSnapshot		*reader;
 	VentureAccessState		*access;
 	VentureTenantSupportScope	*support;	/* not a reference */
+	VentureFiber			*fiber;		/* until it is started */
 	guint				 maintenance_depth;
 	gboolean			 admitted;
 } VentureWebLater;
@@ -110,8 +111,12 @@ venture_web_later_done(gpointer data)
 static gboolean
 venture_web_later_start(gpointer data)
 {
-	venture_fiber_wake(venture_fiber_new(venture_web_later_run, venture_web_later_done,
-		venture_web_later_swap, data));
+	VentureWebLater *later = data;
+	VentureFiber *fiber = later->fiber;
+
+	/* The fiber may finish, and free @later, before this returns. */
+	later->fiber = NULL;
+	venture_fiber_wake(fiber);
 	return G_SOURCE_REMOVE;
 }
 
@@ -126,7 +131,22 @@ venture_web_answer_later(VentureWebServer *self, HtmxRequest *request,
 {
 	VentureDatabase *database = venture_context_get_database(self->context);
 	VentureWebLater *later = g_new0(VentureWebLater, 1);
+	GSource *source;
 
+	/* Made now, so it is counted from the moment the request is taken
+	 * (shutdown waits for it) and a stack that cannot be had is a
+	 * refusal here, not an abort or a hung client later. */
+	later->fiber = venture_fiber_new(venture_web_later_run, venture_web_later_done,
+		venture_web_later_swap, later);
+	if (NULL == later->fiber)
+	{
+		HtmxResponse *busy = htmx_response_new_with_content("<p>The server is busy. Try again shortly.</p>");
+
+		g_free(later);
+		htmx_response_set_status(busy, 503);
+		htmx_response_add_header(busy, "Retry-After", "5");
+		return busy;
+	}
 	later->server = g_object_ref(self);
 	later->request = g_object_ref(request);
 	later->params = (NULL != params) ? g_hash_table_ref(params) : NULL;
@@ -141,7 +161,14 @@ venture_web_answer_later(VentureWebServer *self, HtmxRequest *request,
 		self->workspace_http_active++;
 		later->admitted = TRUE;
 	}
-	g_idle_add(venture_web_later_start, later);
+	/* Default priority, as every other request's dispatch: an idle source
+	 * would wait behind all of them and starve on a busy server. */
+	source = g_idle_source_new();
+	g_source_set_priority(source, G_PRIORITY_DEFAULT);
+	g_source_set_callback(source, venture_web_later_start, later, NULL);
+	g_source_set_static_name(source, "venture-web-later");
+	g_source_attach(source, NULL);
+	g_source_unref(source);
 	return g_object_ref(later->deferred);
 }
 

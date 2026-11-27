@@ -54,7 +54,7 @@ stripe_prepare_invoice_evidence(VentureStripeService *self, VentureStripeEvent *
 		return refuse(error, "Signed invoice evidence differs from the reserved customer, currency or amount");
 	request->id = g_strdup(id); request->expansion = STRIPE_EXPAND_INVOICE_PAYMENT;
 	configuration_version = self->connection_version;
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) return FALSE;
 	invoice = stripe_resource_get_json(resource); payment = object_member(invoice, "payment_intent");
 	verified_intent = string_member(payment, "id");

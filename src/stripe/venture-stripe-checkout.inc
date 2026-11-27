@@ -217,7 +217,7 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 	request->statement_descriptor_suffix = g_strdup(self->descriptor_suffix);
 	g_free(request->idempotency_key);
 	request->idempotency_key = g_strdup_printf("venture-checkout-%s", venture_entity_get_uuid(VENTURE_ENTITY(checkout)));
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) goto fail;
 	if (!stripe_resource_get_string(resource, "id") || !stripe_resource_get_string(resource, "url"))
 	{

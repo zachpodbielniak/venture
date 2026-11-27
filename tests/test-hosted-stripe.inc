@@ -484,6 +484,54 @@ hosted_enrolled(Fixture *f, GObject *transport, VentureStripeService **provider,
 	return business;
 }
 
+/* --- Two requests for one business at once ----------------------------------- */
+
+typedef struct { SlowCall *call; FakeTransport *fake; } RaceWait;
+
+static gboolean
+race_settled(gpointer data)
+{
+	RaceWait *wait = data;
+	return g_atomic_int_get(&wait->call->done) || fake_held(wait->fake) >= 2;
+}
+
+/*
+ * POSTs @first for @business, and once its first Stripe call is held --
+ * suspended in its fiber, mid-operation -- POSTs @second for the same
+ * business. The second runs to its own first Stripe call or to its answer
+ * while the first is still suspended. Then Stripe answers both. Before
+ * fibers the second could never have started until the first was done.
+ */
+static void
+hosted_race(Fixture *f, FakeTransport *fake, gint64 business, const gchar *secret,
+	const gchar *first_path, const gchar *second_path, SlowCall *first, SlowCall *second)
+{
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_dir = NULL, *body = NULL, *auth = NULL;
+	RaceWait wait = { second, fake };
+	g_object_set(f->config, "lightsite-billing-organization-id", f->organization_id, NULL);
+	server = start_server(f, &state_dir);
+	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", business);
+	auth = g_strconcat("Bearer ", secret, NULL);
+	first->body = second->body = body;
+	first->content_type = second->content_type = "application/json";
+	first->auth = second->auth = auth;
+	first->host = second->host = "example.test";
+	fake_hold(fake, 2);
+	slow_call_start(first, server, first_path);
+	fake_wait_held(fake, 1);
+	slow_call_start(second, server, second_path);
+	run_until(race_settled, &wait);
+	fake_release_all(fake);
+	slow_call_finish(first);
+	slow_call_finish(second);
+	g_test_message("%s and %s at once: %u and %u", first_path, second_path, first->status, second->status);
+	first->body = second->body = NULL;
+	first->auth = second->auth = NULL;
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
+}
+
 static void
 test_hosted_saved_card(Fixture *f, gconstpointer data)
 {
@@ -581,7 +629,23 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		g_test_message("Day 31 unpublished with a saved card: zero invoices, zero provider requests, state expired");
 		g_clear_object(&internal);
 	}
-	charged = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, TRUE, &error);
+	if (data && !g_strcmp0(data, "concurrent")) {
+		/* Publication and the first charge for one business at once:
+		 * one invoice, one collection, one charge at Stripe. */
+		SlowCall publish = { 0 }, first = { 0 };
+		g_autoptr(JsonParser) parser = json_parser_new();
+		hosted_race(f, (FakeTransport *)transport, business, secret,
+			"/api/v1/lightsite/billing/publish", "/api/v1/lightsite/billing/first-charge", &publish, &first);
+		g_assert_cmpuint(publish.status, ==, 200);
+		g_assert_cmpuint(first.status, <, 500);
+		g_assert_true(json_parser_load_from_data(parser, publish.reply, -1, &error)); g_assert_no_error(error);
+		charged = json_node_copy(json_parser_get_root(parser));
+		g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);
+		slow_call_clear(&publish);
+		slow_call_clear(&first);
+	}
+	else
+		charged = venture_lightsite_billing_first_charge(f->context, f->organization_id, business, TRUE, &error);
 	g_assert_no_error(error); g_assert_nonnull(charged);
 	invoice = json_object_get_int_member(json_node_get_object(charged), "invoice_id"); g_assert_cmpint(invoice, >, 0);
 	if (expired) {
@@ -618,15 +682,32 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		money_back_after_payment(f, (FakeTransport *)transport, business, data);
 		return;
 	}
+	if (data && !g_strcmp0(data, "concurrent")) {
+		/* Money back asked for twice at once: one refund at Stripe, booked once. */
+		SlowCall one = { 0 }, two = { 0 };
+		((FakeTransport *)transport)->refund_amount = 1000;
+		hosted_race(f, (FakeTransport *)transport, business, secret,
+			"/api/v1/lightsite/billing/money-back", "/api/v1/lightsite/billing/money-back", &one, &two);
+		g_assert_cmpuint(one.status, ==, 200);
+		g_assert_cmpuint(two.status, <, 500);
+		g_assert_cmpuint(((FakeTransport *)transport)->refund_creates, ==, 1);
+		{
+			g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+			g_autoptr(GPtrArray) refunds = rows(f, "refund");
+			g_assert_cmpuint(refunds->len, ==, 1);
+		}
+		slow_call_clear(&one);
+		slow_call_clear(&two);
+		return;
+	}
 
 	g_test_message("Hosted enrollment + verified Setup: zero invoices; publish replay: one invoice and one collection; signed fixture settlement: paid");
 }
 
 /* A Stripe call that does not answer delays its own request and nothing
- * else: a health check sent while the card page waits on the provider is
- * answered at once, and the card page is answered when Stripe is. With
- * "fails", Stripe's answer never comes (the call times out) and only the
- * card page says so. */
+ * else: a health check sent while the card page is held on the provider is
+ * answered, and the card page is answered once Stripe is. With "fails",
+ * Stripe's held answer is a deadline, and only the card page says so. */
 static void
 test_hosted_slow_provider(Fixture *f, gconstpointer data)
 {
@@ -637,37 +718,41 @@ test_hosted_slow_provider(Fixture *f, gconstpointer data)
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autofree gchar *secret = NULL, *state_dir = NULL, *body = NULL, *auth = NULL;
 	SlowCall card = { 0 }, health = { 0 };
-	SlowCall *calls[2];
+	FakeTransport *fake = (FakeTransport *)transport;
 	gboolean fails = data && !g_strcmp0(data, "fails");
 	gint64 business = hosted_enrolled(f, transport, &provider, &secret, &scope, &enrolled);
 	g_clear_object(&scope);
-	((FakeTransport *)transport)->stall_times_out = fails;
 	g_object_set(f->config, "lightsite-billing-organization-id", f->organization_id, NULL);
 	server = start_server(f, &state_dir);
 	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", business);
 	auth = g_strconcat("Bearer ", secret, NULL);
 	card.body = body; card.content_type = "application/json"; card.auth = auth; card.host = "example.test";
-	health.host = "example.test"; health.wait_for = (FakeTransport *)transport; health.wait_stalls = 1;
-	slow_provider((FakeTransport *)transport, 3 * G_USEC_PER_SEC, 0);
+	health.host = "example.test";
+	fake_hold(fake, 1);
+	fake->hold_times_out = fails;
 	slow_call_start(&card, server, "/api/v1/lightsite/billing/setup");
+	fake_wait_held(fake, 1);
 	slow_call_start(&health, server, "/api/v1/health");
-	calls[0] = &card; calls[1] = &health;
-	slow_calls_finish(calls, 2);
-	g_test_message("Card page: %u after %" G_GINT64_FORMAT " ms; health: %u after %" G_GINT64_FORMAT " ms",
-		card.status, slow_call_ms(&card), health.status, slow_call_ms(&health));
+	slow_call_finish(&health);
 	g_assert_cmpuint(health.status, ==, 200);
-	g_assert_cmpint(health.ended - health.started, <, G_USEC_PER_SEC);
-	g_assert_cmpint(health.ended, <, card.ended);
+	g_assert_false(g_atomic_int_get(&card.done));
+	/* Released: the held call answers (or times out); the rest pass. */
+	fake_release(fake, 0);
+	slow_call_finish(&card);
+	g_test_message("Card page held on Stripe: health answered %u meanwhile; card page then %u", health.status, card.status);
 	if (fails) g_assert_cmpuint(card.status, >=, 500);
 	else g_assert_cmpuint(card.status, ==, 200);
-	g_assert_cmpint(card.ended - card.started, >=, 3 * G_USEC_PER_SEC);
+	fake_release_all(fake);
+	slow_call_clear(&card);
+	slow_call_clear(&health);
 	venture_web_server_stop(server);
 	venture_test_remove_tree(state_dir);
 }
 
 /* Two card pages waiting on Stripe at once are each answered when their
- * own answer arrives: the first, which Stripe answers after one second,
- * is not held until the second, which it answers after three. */
+ * own answer arrives. The first to wait is answered while the second is
+ * still held: in a nested main loop it would have had to wait for the
+ * second, since a nested wait ends only after every wait begun inside it. */
 static void
 test_hosted_slow_provider_order(Fixture *f, gconstpointer data)
 {
@@ -680,8 +765,8 @@ test_hosted_slow_provider_order(Fixture *f, gconstpointer data)
 	g_autoptr(JsonNode) second = NULL, second_enrolled = NULL;
 	g_autoptr(GError) error = NULL;
 	g_autofree gchar *second_body = NULL;
-	SlowCall slow = { 0 }, quick = { 0 };
-	SlowCall *calls[2];
+	SlowCall first = { 0 }, later = { 0 };
+	FakeTransport *fake = (FakeTransport *)transport;
 	gboolean created = FALSE;
 	gint64 business = hosted_enrolled(f, transport, &provider, &secret, &scope, &enrolled), other;
 	(void)data;
@@ -699,22 +784,27 @@ test_hosted_slow_provider_order(Fixture *f, gconstpointer data)
 	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", business);
 	second_body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", other);
 	auth = g_strconcat("Bearer ", secret, NULL);
-	quick.body = body; slow.body = second_body; slow.content_type = quick.content_type = "application/json";
-	slow.auth = quick.auth = auth; slow.host = quick.host = "example.test";
-	slow.wait_for = (FakeTransport *)transport; slow.wait_stalls = 1;
-	((FakeTransport *)transport)->distinct_customers = TRUE;
-	slow_provider((FakeTransport *)transport, 1 * G_USEC_PER_SEC, 3 * G_USEC_PER_SEC);
-	slow_call_start(&quick, server, "/api/v1/lightsite/billing/setup");
-	slow_call_start(&slow, server, "/api/v1/lightsite/billing/setup");
-	calls[0] = &quick; calls[1] = &slow;
-	slow_calls_finish(calls, 2);
-	g_test_message("First, one-second Stripe call: %u after %" G_GINT64_FORMAT " ms; second, three-second call: %u after %" G_GINT64_FORMAT " ms",
-		quick.status, slow_call_ms(&quick), slow.status, slow_call_ms(&slow));
-	g_assert_cmpuint(quick.status, ==, 200);
-	g_assert_cmpint(quick.ended - quick.started, <, 2 * G_USEC_PER_SEC);
-	g_assert_cmpint(quick.ended, <, slow.ended);
-	g_assert_cmpint(slow.ended - slow.started, >=, 3 * G_USEC_PER_SEC);
-	g_assert_cmpuint(slow.status, ==, 200);
+	first.body = body; later.body = second_body; later.content_type = first.content_type = "application/json";
+	later.auth = first.auth = auth; later.host = first.host = "example.test";
+	fake->distinct_customers = TRUE;
+	/* The first Stripe call of each page is held: ticket 0 is the first
+	 * page's, because the second is sent only once it is held. */
+	fake_hold(fake, 2);
+	slow_call_start(&first, server, "/api/v1/lightsite/billing/setup");
+	fake_wait_held(fake, 1);
+	slow_call_start(&later, server, "/api/v1/lightsite/billing/setup");
+	fake_wait_held(fake, 2);
+	fake_release(fake, 0);
+	slow_call_finish(&first);
+	g_test_message("First page answered %u while the second was still held on Stripe", first.status);
+	g_assert_cmpuint(first.status, ==, 200);
+	g_assert_false(g_atomic_int_get(&later.done));
+	fake_release(fake, 1);
+	slow_call_finish(&later);
+	g_assert_cmpuint(later.status, ==, 200);
+	fake_release_all(fake);
+	slow_call_clear(&first);
+	slow_call_clear(&later);
 	venture_web_server_stop(server);
 	venture_test_remove_tree(state_dir);
 }

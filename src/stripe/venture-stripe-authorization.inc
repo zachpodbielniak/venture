@@ -56,7 +56,7 @@ stripe_authorization_session(VentureStripeService *self, VentureStripeAuthorizat
 	g_object_get(authorization, "success-url", &request->success_url, "cancel-url", &request->cancel_url, "consent-text", &request->consent_text, NULL);
 	g_free(request->idempotency_key);
 	request->idempotency_key = g_strdup_printf("venture-authorization-%s", venture_entity_get_uuid(VENTURE_ENTITY(authorization)));
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) return NULL;
 	session = stripe_resource_get_string(resource, "id"); url = stripe_resource_get_string(resource, "url");
 	if (!session || !g_str_has_prefix(session, "cs_") || !url || !g_str_has_prefix(url, "https://checkout.stripe.com/"))
@@ -431,7 +431,7 @@ venture_stripe_service_verify_authorization(VentureStripeService *self,
 		return refuse(error, "Hosted setup identity is incomplete; retry creation with its retained key");
 	request->expansion = STRIPE_EXPAND_CHECKOUT_SETUP;
 	config_version = self->connection_version;
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) return FALSE;
 	remote = stripe_resource_get_json(resource);
 	setup = object_member(remote, "setup_intent");

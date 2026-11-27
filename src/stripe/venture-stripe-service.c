@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
 #include <stripe-glib.h>
+#include "stripe/venture-stripe-transport-private.h"
 #include <math.h>
 #include <string.h>
 
@@ -27,13 +28,12 @@ G_DEFINE_TYPE(VentureStripeService, venture_stripe_service, G_TYPE_OBJECT)
 enum { PROP_0, PROP_DATABASE, PROP_ORGANIZATION, N_PROPS };
 
 /* A client on @transport (a test's offline one, or %NULL for the network)
- * through a transport that keeps the main loop serving while Stripe
- * answers (venture-stripe-transport.c). */
+ * through a transport that keeps the main loop serving while a fiber waits
+ * on Stripe, and that does the retries (venture-stripe-transport.c). */
 static StripeClient *
 stripe_client_on(VentureDatabase *database, const gchar *yaml, StripeTransport *transport, GError **error)
 {
-	g_autoptr(StripeTransport) waiting = venture_stripe_transport_new(database, transport);
-	return stripe_client_new(yaml, waiting, NULL, error);
+	return venture_stripe_client_new(database, yaml, transport, error);
 }
 
 /* Sorting equality warns and returns zero on rescaling overflow. Financial
@@ -419,7 +419,7 @@ check_price(VentureStripeService *self, VentureEntity *price, guint quantity,
 	JsonNode *active, *transform;
 
 	g_object_get(price, "stripe-price-id", &request->id, NULL);
-	resource = stripe_client_execute(self->client, request, NULL, error);
+	resource = venture_stripe_execute(self->client, request, NULL, error);
 	if (!resource) return FALSE;
 	object = stripe_resource_get_json(resource);
 	active = json_object_get_member(object, "active");

@@ -176,7 +176,7 @@ prepay_setup_leg(VentureStripeService *self, VentureEntity *group, JsonNode *jou
 		request->cancel_url = g_strdup(self->cancel_url); request->client_reference_id = g_strdup(reference);
 		request->payment_methods = !strcmp(path, "ach") ? STRIPE_CHECKOUT_US_BANK : STRIPE_CHECKOUT_CARD;
 		request->consent_text = g_strdup(consent); request->expires_at = json_object_get_int_member(leg, "setup_expires");
-		response = stripe_client_execute(self->client, request, NULL, error);
+		response = venture_stripe_execute(self->client, request, NULL, error);
 		if (!response) return FALSE;
 		remote = stripe_resource_get_json(response);
 		session = string_member(remote, "id");
@@ -188,7 +188,7 @@ prepay_setup_leg(VentureStripeService *self, VentureEntity *group, JsonNode *jou
 	}
 	request = stripe_request_new(STRIPE_CHECKOUT_RETRIEVE); request->id = g_strdup(session);
 	request->expansion = STRIPE_EXPAND_CHECKOUT_SETUP;
-	response = stripe_client_execute(self->client, request, NULL, error);
+	response = venture_stripe_execute(self->client, request, NULL, error);
 	if (!response) return FALSE;
 	remote = stripe_resource_get_json(response);
 	if (g_strcmp0(string_member(remote, "id"), session) || g_strcmp0(string_member(remote, "customer"), customer) ||
@@ -277,7 +277,7 @@ prepay_leg(VentureStripeService *self, VentureEntity *group, JsonNode *journal, 
 		request->manual_capture = !strcmp(path, "split");
 		request->metadata_key = g_strdup("prepayment");
 		request->metadata_value = g_strdup_printf("%s:%u", venture_entity_get_uuid(group), slot);
-		response = stripe_client_execute(self->client, request, NULL, error);
+		response = venture_stripe_execute(self->client, request, NULL, error);
 		if (!response) return -1;
 		remote = stripe_resource_get_json(response);
 		if (!prepay_intent_matches(self, group, slot, leg, remote, customer, currency, error)) return -1;
@@ -286,7 +286,7 @@ prepay_leg(VentureStripeService *self, VentureEntity *group, JsonNode *journal, 
 		g_clear_pointer(&request, stripe_request_free); g_clear_pointer(&response, stripe_resource_free); g_clear_pointer(&remote, json_object_unref);
 	}
 	request = stripe_request_new(STRIPE_INTENT_RETRIEVE); request->id = g_strdup(string_member(leg, "intent"));
-	response = stripe_client_execute(self->client, request, NULL, error);
+	response = venture_stripe_execute(self->client, request, NULL, error);
 	if (!response) return -1;
 	remote = stripe_resource_get_json(response);
 inspect:
@@ -336,7 +336,7 @@ inspect:
 	}
 	request->id = g_strdup(string_member(leg, "intent"));
 	g_clear_pointer(&response, stripe_resource_free); g_clear_pointer(&remote, json_object_unref);
-	response = stripe_client_execute(self->client, request, NULL, error);
+	response = venture_stripe_execute(self->client, request, NULL, error);
 	if (!response) {
 		if (error && *error && g_error_matches(*error, STRIPE_ERROR, STRIPE_ERROR_CARD_DECLINED)) { g_clear_error(error); return 2; }
 		return -1;
@@ -360,7 +360,7 @@ prepay_compensate(VentureStripeService *self, VentureEntity *group, JsonNode *jo
 		const gchar *status;
 		if (!string_member(leg, "intent") || (json_object_has_member(leg, "reversed") && json_object_get_boolean_member(leg, "reversed"))) continue;
 		request->id = g_strdup(string_member(leg, "intent"));
-		response = stripe_client_execute(self->client, request, NULL, error); if (!response) return FALSE;
+		response = venture_stripe_execute(self->client, request, NULL, error); if (!response) return FALSE;
 		remote = stripe_resource_get_json(response);
 		if (!prepay_intent_matches(self, group, i, leg, remote, customer, currency, error)) return FALSE;
 		status = string_member(remote, "status");
@@ -374,7 +374,7 @@ prepay_compensate(VentureStripeService *self, VentureEntity *group, JsonNode *jo
 				JsonArray *refunds;
 				guint j;
 				lookup->id = g_strdup(string_member(leg, "intent"));
-				found = stripe_client_execute(self->client, lookup, NULL, error); if (!found) return FALSE;
+				found = venture_stripe_execute(self->client, lookup, NULL, error); if (!found) return FALSE;
 				list = stripe_resource_get_json(found);
 				if (!stripe_json_boolean(list, "has_more", FALSE) || !json_object_has_member(list, "data") ||
 					!JSON_NODE_HOLDS_ARRAY(json_object_get_member(list, "data")))
@@ -398,7 +398,7 @@ prepay_compensate(VentureStripeService *self, VentureEntity *group, JsonNode *jo
 				g_free(request->id); request->id = g_strdup(string_member(leg, "refund"));
 			}
 			g_clear_pointer(&response, stripe_resource_free); g_clear_pointer(&remote, json_object_unref);
-			response = stripe_client_execute(self->client, request, NULL, error); if (!response) return FALSE;
+			response = venture_stripe_execute(self->client, request, NULL, error); if (!response) return FALSE;
 			remote = stripe_resource_get_json(response);
 			if (refund) {
 				if (!stripe_identifier(string_member(remote, "id"), "re_") ||

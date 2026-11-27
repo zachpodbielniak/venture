@@ -36565,6 +36565,10 @@ venture_web_server_new(
 
 	g_return_val_if_fail(VENTURE_IS_CONTEXT(context), NULL);
 
+	/* Routes that wait on Stripe run as fibers of this, the main, thread;
+	 * fixed now, before any other thread can ask which thread that is. */
+	venture_fiber_init();
+
 	if (!venture_http_limits_validate(venture_context_get_config(context), error))
 		return NULL;
 

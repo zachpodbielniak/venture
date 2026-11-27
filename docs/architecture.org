@@ -119,11 +119,70 @@ The two paths share one body (=venture_web_api_list_fetch()= / =_render()=, =ven
 
 Hosted installs keep every request on the main thread (workspace admission and support scopes wrap the handler), and so does an in-memory SQLite database (each of its connections is a different, empty database).
 
-*Waiting on Stripe.* stripe-glib's client is synchronous, and VENTURE's database and handlers belong to the main thread. Every client the Stripe service makes sends through =venture_stripe_transport_new()= (=src/stripe/venture-stripe-transport.c=), which makes the HTTP call on a thread of its own. A route that may wait on Stripe answers with a deferred response and runs from an idle source as a /fiber/ (=src/core/venture-fiber.c=, =src/web/venture-web-later.inc=): still on the main thread, on a stack of its own. While the call is out the fiber yields and the main loop serves everybody, from its outermost level, so the read workers' gate opens as usual; the fiber is woken when its own answer arrives, so two waits end in the order their answers come. It runs under the reader the pipeline authenticated (a snapshot, as the read workers use), its own plain tenant request scope, the pipeline's admission until it is answered, and the same hosted lifecycle check and browser error page before the answer escapes. Between turns the access policy state and the tenant request scope are the fiber's own (=venture_access_policy_exchange()=, =venture_tenant_service_exchange_request()=). The routes: Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (API and form); =POST /pay/:token=; the Stripe settings operations; Connect status and start. A plain caller inside the main loop -- a timer, a sweep -- waits in a nested loop instead, which serves requests on open connections but ends only after every wait begun inside it. Either way it waits so only with no transaction open, and blocks as before otherwise. The call's deadline (=request_timeout=, 30 seconds by default, retries included) bounds the wait, and a failure is the caller's alone. =tests/test-stripe.c= holds a health check to milliseconds while each of those routes waits two seconds on Stripe (=/stripe/slow=, =/stripe/payment-link/slow*=, =/stripe/binding-settings-slow=, =/stripe/connect/slow=, =/stripe/hosted-slow-provider*=), answers two waits in the order Stripe does (=/stripe/hosted-slow-provider-order=), and keeps a worker's record read to milliseconds during one (=/stripe/slow-reads=).
-
 What it buys depends on how long a read takes against the main thread's fixed share of each request (parsing, authentication, the query, writing the answer). Measured on a loaded 24-thread machine, 16 clients, release build: a fifty-row page of companies went from 385 to about 625 requests a second with four workers, and a two-hundred-row page from 115 to 215. More workers than four bought nothing there: the main thread's share is the limit.
 
 Lost updates are prevented at the record level instead: every entity carries a version, an update's =WHERE= clause names the version the caller last saw, and a mismatch affects no rows and raises =VENTURE_ERROR_CONFLICT=.
+
+** Waiting on Stripe
+
+stripe-glib's client is synchronous: it calls its transport on the caller's stack, and between retries it sleeps there too. VENTURE's database, registries and signal handlers belong to the main thread. A Stripe call made from a request handler used to be the whole server's wait: thirty seconds for a provider that did not answer, or as long as a 429's =Retry-After= asked, with every other request held behind it.
+
+*** The pieces
+
+- *Fibers* (=src/core/venture-fiber.c=, private API in =venture-fiber-private.h=). A fiber is work on a stack of its own -- 8 MiB, with a 64 KiB guard below it that is never mapped readable -- still on the main thread. It runs until it yields; whoever it waits on wakes it from the main loop. One thread runs one stack at a time, so nothing ever runs beside main-thread code. The thread fibers belong to is fixed once, by =venture_fiber_init()=, which =venture_web_server_new()= calls; =venture_fiber_current()= is asked from any thread and answers =NULL= anywhere but there.
+- *Deferred routes* (=src/web/venture-web-later.inc=). A route that may wait on Stripe is registered with =VENTURE_WEB_LATER_ROUTE()=. It answers with an htmx-glib deferred response, makes its fiber at once (a stack that cannot be mapped is a =503= with =Retry-After: 5=, not an abort) and starts it from a default-priority source a moment later, outside the listener's dispatch.
+- *The transport* (=src/stripe/venture-stripe-transport.c=). Every Stripe client VENTURE makes comes from =venture_stripe_client_new()=: stripe-glib's own retries off (=retry_count: 0=) and =venture_stripe_transport_new()= as its transport. Called from a fiber with no transaction open, the transport sends on a pooled thread (at most eight at once) and yields until the answer is in. It also retries a 429 or a 5xx itself -- at most twice, from 200 ms doubling with jitter, never sooner than =Retry-After=, never past the request's deadline -- announcing each retry as stripe-glib did (=stripe.request.retried=), and a fiber waits out that pause yielded on a timeout source. To see a status at all it sends through its own copy of stripe-glib's soup transport (=venture-stripe-http.inc=), kept only until stripe-glib exports getters on =StripeResponse= (see [[file:stripe.org][Provider operation deadlines]]).
+
+*** Who waits how
+
+| Caller | What a Stripe call does |
+|--------+-------------------------|
+| A fiber, no transaction open | Sends on a pooled thread and yields; retry pauses yield on a timeout source |
+| A fiber with a transaction open | Sends on its own stack and blocks, as before; retry pauses sleep |
+| Anything else: a plain route, a timer, a sweep, another thread | Sends on its own stack and blocks, exactly as before; retry pauses sleep |
+
+There is no nested main loop anywhere in this. A non-fiber caller that spun the default context while it waited would dispatch the next HTTP request while its own handler was still on the stack -- the re-entrancy VENTURE has already rejected (=src/automation/venture-automation.c=). Only fibers yield.
+
+A wake does not resume a fiber inside somebody else's transaction. Some nested default-context loops exist elsewhere (the bank feed sync, the webhook test, the feeds service, the federation client) and may dispatch the source that wakes a fiber. If a transaction is open when the wake runs, it re-arms itself ten milliseconds later instead; the fiber resumes once the transaction has ended.
+
+*** What runs as a fiber
+
+Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (API and form); =POST /pay/:token=; the Stripe settings operations (configure, the statement name, the key test); Connect status and start.
+
+Still synchronous, blocking the main loop for as long as Stripe takes: the record action route =POST /api/v1/:type/:id/actions/:action= (every Stripe action, =checkout= and =refund= among them), the customer portal's pay button, paid forms, the Stripe timers (collection, reconciliation, prepaid installments) and the Stripe webhook routes. Moving one is registering it with =VENTURE_WEB_LATER_ROUTE()= and following the rules below.
+
+*** What a fiber carries across a yield
+
+The main thread keeps request state in a few shared places. A fiber's swap function (=venture_web_later_swap()=) exchanges each with the fiber's own copy on every way in and every way out, so a fiber that yields leaves the loop as it found it and finds its own as it left it:
+
+- the access policy's per-thread reader state: actor, organization pin, list caches (=venture_access_policy_exchange()=);
+- the tenant service's request scope and maintenance depth (=venture_tenant_service_exchange_request()=).
+
+It runs under the reader the request pipeline authenticated (a snapshot, the same thing the read workers judge by), a plain tenant request scope (none of these routes admits a support capability), and the pipeline's workspace admission until it is answered. Before its answer escapes, the hosted lifecycle is checked again and a browser error becomes a page, as the pipeline does for a synchronous route. =/stripe/isolation= holds an anonymous read of a signed-in route refused, and a second business's member to its own records, while one user's checkout is suspended, and that checkout's writes after the wait still carry its own audit actor.
+
+*** Rules for fiber authors
+
+Anything else of the main thread's is shared with whatever the loop runs while the fiber is suspended. So a fiber must never yield:
+
+- inside a signal emission -- the emission's state stays on the fiber's stack while other code emits on the same object;
+- while holding a mutex -- the main thread would deadlock on it the next time it takes it, with the holder suspended;
+- in the middle of iterating a statement, a query result or a hash table -- whatever the loop runs meanwhile may change the database or the table underneath;
+- with a transaction open -- the transport refuses to, and blocks instead, but other waits must check for themselves;
+- from inside a main loop it runs itself -- =venture_fiber_current()= answers =NULL= there, and the transport then blocks.
+
+New per-request state on the main thread needs a place in the swap function, or it leaks from one request into another across a yield.
+
+*** Deadlines, shutdown and failure
+
+Each Stripe call's deadline is stripe-glib's =request_timeout= (30 seconds; VENTURE does not change it). It bounds every attempt and every retry pause: a pause that cannot fit ends the call with a timeout, which keeps the operation's idempotency key for a retry. A failure is the caller's alone. A client that disconnects during the wait gets nothing written; the fiber finishes anyway, so what Stripe did is recorded (=/stripe/disconnect=).
+
+A stop (=SIGINT= or =SIGTERM=) does not quit the loop while a fiber is suspended: the server keeps running until none is left or 35 seconds have passed, then stops as before. A second signal stops at once. =venture_fiber_count()= is what it waits on.
+
+Under AddressSanitizer (gcc defines =__SANITIZE_ADDRESS__= for =-fsanitize=address=) every stack switch is announced with =__sanitizer_start_switch_fiber()= / =__sanitizer_finish_switch_fiber()=. Nothing is architecture-specific: =ucontext= is glibc's on x86_64 and aarch64 alike, and both grow their stacks down, which is where the guard sits.
+
+*** Tests
+
+The fake provider in =tests/test-stripe.c= holds a call until the test releases it, so the tests assert what was answered while a call was held, never how long anything took. =/stripe/slow=, =/stripe/payment-link/slow*=, =/stripe/binding-settings-slow=, =/stripe/connect/slow= and =/stripe/hosted-slow-provider*= answer a health check while each route is held; =/stripe/hosted-slow-provider-order= answers the first of two held pages while the second is still held; =/stripe/slow-reads= keeps the read workers answering during one. =/stripe/fiber/*= cover a 429 whose pause is yielded (=retry-after=), a pause that cannot fit (=retry-budget=), the real request deadline against a stub that never answers (=deadline=), a transaction that keeps a fiber blocking (=transaction-blocks=), a wake inside another transaction (=wake-waits-for-transaction=) and the fiber count. =/stripe/hosted-concurrent= sends publication and the first charge, and later two money-back requests, for one business at once, and Stripe is charged once and refunds once. =tests/test-venture-fiber.c= covers the fiber primitives.
 
 ** Dependencies
 

@@ -20,6 +20,7 @@ G_BEGIN_DECLS
  */
 #ifndef __GI_SCANNER__
 typedef struct _StripeTransport StripeTransport;
+typedef struct _StripeClient StripeClient;
 #endif
 #define VENTURE_TYPE_STRIPE_SERVICE (venture_stripe_service_get_type())
 G_DECLARE_FINAL_TYPE(VentureStripeService, venture_stripe_service, VENTURE, STRIPE_SERVICE, GObject)
@@ -127,20 +128,43 @@ gboolean venture_stripe_settings_test(VentureDatabase *database, gint64 organiza
  * Returns: (transfer none) (nullable): the injected offline transport, or %NULL for the network
  */
 StripeTransport *venture_stripe_service_get_transport(VentureStripeService *self);
+#ifndef __GI_SCANNER__
 /**
  * venture_stripe_transport_new: (skip)
  * @database: (nullable): the database whose open transaction keeps the wait blocking
- * @inner: (nullable): the transport that talks to Stripe; %NULL for the network
+ * @inner: (nullable): the transport that talks to Stripe; %NULL for VENTURE's own network send
  *
- * A transport that sends through @inner on a thread of its own and, when
- * called inside the default main loop on its thread with no transaction
- * open on @database, keeps that loop serving other work while it waits.
- * Elsewhere it waits as @inner does. Every client the Stripe service
- * makes uses one, around the network or a test's offline transport.
+ * A transport for a fiber's Stripe calls. Called from a fiber with no
+ * transaction open on @database, it sends through @inner on a pooled
+ * thread and yields until the answer is in. Called anywhere else -- a
+ * plain stack, a fiber with a transaction open, another thread -- it sends
+ * on the caller's stack and blocks. It never runs a nested main loop.
+ *
+ * It also retries a 429 or a 5xx from the network (at most twice, from
+ * 200 ms with jitter, never sooner than Retry-After, never past the
+ * request's deadline), pausing yielded on a timeout source when it may
+ * yield and asleep otherwise. An injected @inner's answers are opaque and
+ * never retried. Use it with stripe-glib's retries off, as
+ * venture_stripe_client_new() does.
  *
  * Returns: (transfer full): the transport
  */
 StripeTransport *venture_stripe_transport_new(VentureDatabase *database, StripeTransport *inner);
+/**
+ * venture_stripe_client_new: (skip)
+ * @database: (nullable): passed to venture_stripe_transport_new()
+ * @yaml: stripe-glib client configuration, without retry_count
+ * @transport: (nullable): passed to venture_stripe_transport_new() as @inner
+ * @error: (out) (optional): configuration error
+ *
+ * The one way VENTURE makes a Stripe client: @yaml with retry_count 0 and
+ * a transport from venture_stripe_transport_new(), which retries instead.
+ *
+ * Returns: (transfer full) (nullable): the client
+ */
+StripeClient *venture_stripe_client_new(VentureDatabase *database, const gchar *yaml,
+	StripeTransport *transport, GError **error);
+#endif
 /**
  * venture_stripe_connect_start: (skip)
  * @database: storage
