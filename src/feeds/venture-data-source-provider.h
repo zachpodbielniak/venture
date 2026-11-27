@@ -457,8 +457,8 @@ venture_feed_request_read_file(
  *   value... added to the request
  * @cost: what the request costs against the source's hourly budget;
  *   0 counts as 1
- * @callback: (scope async): called on the calling thread's context
- * @user_data: (closure): data for @callback
+ * @callback: (scope async) (closure user_data): called on the calling thread's context
+ * @user_data: data for @callback
  *
  * GETs @url the way every feed fetch must: only from an origin on the
  * frozen allowlist, compared again on the final address; never following
@@ -479,7 +479,7 @@ venture_feed_request_http_get_async(
 );
 
 /**
- * venture_feed_request_http_get_finish:
+ * venture_feed_request_http_get_finish: (skip)
  * @self: a request
  * @result: the result
  * @error: (out) (optional): return location for a #GError
@@ -496,7 +496,7 @@ venture_feed_request_http_get_finish(
 );
 
 /**
- * venture_feed_request_http_get:
+ * venture_feed_request_http_get: (skip)
  * @self: a request
  * @url: an absolute http or https address
  * @headers: (nullable) (array zero-terminated=1): name, value pairs
@@ -529,8 +529,8 @@ venture_feed_request_http_get(
  *   "application/x-www-form-urlencoded"
  * @cost: the request's cost against the source's hourly budget; 0 is 1
  * @flags: how the request is made
- * @callback: (scope async): called on the calling thread's context
- * @user_data: (closure): data for @callback
+ * @callback: (scope async) (closure user_data): called on the calling thread's context
+ * @user_data: data for @callback
  *
  * The general form of venture_feed_request_http_get_async(), under the
  * same rules -- the allowlist, no redirects, the pinned address, the body
@@ -552,7 +552,7 @@ venture_feed_request_http_send_async(
 );
 
 /**
- * venture_feed_request_http_send_finish:
+ * venture_feed_request_http_send_finish: (skip)
  * @self: a request
  * @result: the result
  * @error: (out) (optional): return location for a #GError
@@ -567,7 +567,7 @@ venture_feed_request_http_send_finish(
 );
 
 /**
- * venture_feed_request_http_send:
+ * venture_feed_request_http_send: (skip)
  * @self: a request
  * @method: "GET" or "POST"
  * @url: an absolute http or https address
@@ -799,8 +799,8 @@ venture_data_source_provider_list_units(
  * @self: a provider
  * @request: what to fetch
  * @cancellable: (nullable): a #GCancellable
- * @callback: (scope async): called on the calling thread's context
- * @user_data: (closure): data for @callback
+ * @callback: (scope async) (closure user_data): called on the calling thread's context
+ * @user_data: data for @callback
  */
 void
 venture_data_source_provider_fetch_async(
@@ -851,8 +851,8 @@ typedef VentureFeedBatch *(*VentureFuncDataSourceFetch) (
  * @name: the registry key
  * @label: (nullable): what a person reads
  * @settings_schema_json: (nullable): a JSON schema object, as text
- * @fetch: (scope notified): the fetch
- * @user_data: (closure): data for @fetch, shared by every thread
+ * @fetch: (scope notified) (closure user_data) (destroy destroy): the fetch
+ * @user_data: data for @fetch, shared by every thread
  * @destroy: (nullable): frees @user_data with the provider
  *
  * A provider without the GObject boilerplate, for a crispy script or a

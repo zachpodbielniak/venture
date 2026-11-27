@@ -294,6 +294,46 @@ podman generate systemd --new --files --name venture
 
 and convert it into =~/.config/containers/systemd/venture.container=.
 
+** Image decode and SELinux
+
+GdkPixbuf on Fedora decodes through glycin, which runs every loader in a
+=bwrap --unshare-all --die-with-parent ... --dev /dev ...= sandbox. =--dev
+/dev= mounts devpts on =/dev/pts=, and SELinux's default container type,
+=container_t=, refuses that mount ("Can't mount devpts on /dev/pts: Permission
+denied"). GdkPixbuf then reports "Loader process exited early with status
+'1'". User namespaces and seccomp are not the problem. Without the fix the
+server runs, but profile picture uploads and local OCR of images are refused
+with glycin's reason.
+
+The fix is to run the container under =container_engine_t=, which allows the
+mount and is still SELinux-confined. It needs no =--privileged=, no
+=label=disable= and no =unmask=. glycin and bubblewrap are already in the
+image: =gdk-pixbuf2= requires =glycin-libs=, which requires =glycin-loaders=
+and =bubblewrap=.
+
+#+begin_src bash
+podman run --security-opt label=type:container_engine_t ... quay.io/zachpodbielniak/venture
+#+end_src
+
+compose (=compose.yaml= and =compose.deploy.yaml= already carry it):
+
+#+begin_src yaml
+services:
+  venture:
+    security_opt:
+      - label=type:container_engine_t
+#+end_src
+
+quadlet (=~/.config/containers/systemd/venture.container=):
+
+#+begin_src
+[Container]
+SecurityLabelType=container_engine_t
+#+end_src
+
+=bwrap --proc /proc= would additionally need =--security-opt unmask=/proc/*=,
+but glycin does not use =--proc=, so do not add it.
+
 * Packages
 
 Anything that needs to build VENTURE outside a container needs these Fedora
@@ -371,9 +411,8 @@ Notes on the test-only and optional ones:
   the codepage (it used to print a silently shortened string), and the
   CP437/CP858 printing goldens skip with that reason.
 - The OCR and avatar decode tests skip, with the reason, where image decode
-  is unavailable. A container that refuses =bwrap --dev /dev= (glycin's
-  sandbox, which gdk-pixbuf uses for loaders) is the usual cause; it is not
-  fixed by a package.
+  is unavailable. The usual cause is SELinux refusing glycin's sandbox
+  (see [[*Image decode and SELinux]]); it is not fixed by a package.
 
 Runtime, if you are installing rather than containerising:
 

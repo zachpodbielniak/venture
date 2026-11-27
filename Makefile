@@ -692,6 +692,20 @@ kernels-native-check: $(OUTDIR)/$(LIB_CORE_STATIC) $(OUTDIR)/$(LIB_STATIC)
 	fi
 
 test: kernels-check
+test: gir-check
+
+# The GIR is not part of `all` unless BUILD_GIR=1, which is why a warning
+# in a doc comment used to rot until somebody built introspection by hand.
+# `make test` builds it when g-ir-scanner is installed. Without that
+# package the check prints a SKIP line and succeeds; `make gir` itself
+# still fails, because that target is the request to scan.
+.PHONY: gir-check
+ifeq ($(shell command -v g-ir-scanner >/dev/null 2>&1 && echo yes),yes)
+gir-check: gir
+else
+gir-check:
+	@echo "  SKIP    gir-check: gobject-introspection-devel (g-ir-scanner) not installed"
+endif
 
 # Run one test binary verbosely: make test-one T=test-money
 .PHONY: test-one
@@ -857,7 +871,8 @@ help:
 	@echo "  compose-down      Stop it"
 	@echo ""
 	@echo "Test targets:"
-	@echo "  test              Build and run the whole GTest suite"
+	@echo "  test              Build and run the whole GTest suite, and gir-check"
+	@echo "  gir-check         Build the GIR; SKIP without gobject-introspection-devel"
 	@echo "  test-one T=name   Run one test binary verbosely"
 	@echo "  test-valgrind     Run the suite under valgrind"
 	@echo ""

@@ -40,7 +40,7 @@ G_BEGIN_DECLS
 typedef struct _VentureActorNames VentureActorNames;
 
 /**
- * venture_actor_names_new:
+ * venture_actor_names_new: (skip)
  * @database: the repository
  *
  * Starts a cache for one render. Make it inside the reader's access scope

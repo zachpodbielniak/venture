@@ -792,12 +792,17 @@ due queue) =days=. Definitions are in each report's notes and
 Editor actions: =POST /api/v1/mail/send= (message fields, returns 202),
 =/api/v1/mail/test= (=to=), =/api/v1/mail/deliver= (=organization_id=,
 =limit=), =/api/v1/mail_messages/:id/retry=, and
-=/api/v1/invoices/:id/send=. =POST /api/v1/mail/connect= is the owner or
+=/api/v1/invoices/:id/send= and =/api/v1/invoices/:id/resend=.
+=POST /api/v1/mail/connect= is the owner or
 admin path that turns a business's mail on from the address customers
 should see; the body is only =organization_id= and =from=, and the response
 is ={"connected":true}=. The owner can retry it or change the address from
 the same screen. Sending an invoice issues a draft and atomically
-queues the rendered document and an invoice event. Listing messages and
+queues the rendered document and an invoice event. Resend is the same
+enqueue for an invoice that was already emailed and then changed: one new
+message per version (=invoice:<uuid>:v<version>=), and the same 202. A
+second Send with no edit still returns the first message. =?stage= is
+refused for both. Listing messages and
 templates uses the generic record API. See [[file:mail.org][mail delivery]]
 for the distinction between =failed=, =dead= and =uncertain=.
 

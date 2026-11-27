@@ -124,6 +124,12 @@ venture_web_later_start(gpointer data)
 	VentureWebLater *later = data;
 	VentureFiber *fiber = later->fiber;
 
+	/* venture_web_later_settle() took this pointer in the dispatch that
+	 * made the placeholder, if the pipeline called it. If not, the request
+	 * still names @later, which the fiber frees when it finishes: let go
+	 * of it first, so nothing that settles the request later -- a nested
+	 * loop after the route, say -- writes into freed memory. */
+	(void)g_object_steal_data(G_OBJECT(later->request), "venture-web-later");
 	/* The fiber may finish, and free @later, before this returns. */
 	later->fiber = NULL;
 	venture_fiber_wake(fiber);

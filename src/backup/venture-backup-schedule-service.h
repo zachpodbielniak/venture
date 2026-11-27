@@ -132,8 +132,8 @@ typedef void (*VentureBackupCompanionFunc)(VentureBackupScheduleService *self, V
  * venture_backup_schedule_service_add_companion:
  * @self: the service
  * @name: the companion's name; adding one under a name already held replaces it
- * @func: (scope notified): called after each installation copy
- * @user_data: (closure): passed to @func
+ * @func: (scope notified) (closure user_data) (destroy destroy): called after each installation copy
+ * @user_data: passed to @func
  * @destroy: (nullable): frees @user_data
  *
  * Registers files an installation backup also covers. The backup module

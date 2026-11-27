@@ -350,6 +350,163 @@ fail:
 	return NULL;
 }
 
+/* The queued message for @key, deleted rows included, or %NULL when there
+ * is none. A query failure sets @error. */
+static VentureEntity *
+invoice_mail_by_key(VentureDatabase *db, gint64 org, const gchar *key, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_MAIL_MESSAGE);
+	venture_query_set_organization(query, org);
+	venture_query_set_include_deleted(query, TRUE);
+	if (!venture_query_add_filter_string(query, "idempotency-key", VENTURE_FILTER_OP_EQ, key, error))
+		return NULL;
+	return venture_database_find_one(db, query, error);
+}
+
+/* *@any_email is an emailed Pay now link for @invoice. *@current is an
+ * enabled one bound to this version or a newer one, so the button in the
+ * last email still matches the invoice. */
+static gboolean
+invoice_email_link_state(VentureDatabase *db, VentureEntity *invoice,
+	gboolean *any_email, gboolean *current, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
+	g_autoptr(GPtrArray) rows = NULL;
+	gint64 version = venture_entity_get_version(invoice);
+	guint i;
+	*any_email = FALSE;
+	*current = FALSE;
+	venture_query_set_limit(query, 0);
+	venture_query_set_organization(query, venture_entity_get_organization_id(invoice));
+	if (!venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ,
+		venture_entity_get_id(invoice), error))
+		return FALSE;
+	rows = venture_database_find(db, query, error);
+	if (!rows)
+		return FALSE;
+	for (i = 0; i < rows->len; i++)
+	{
+		gint origin;
+		gboolean enabled;
+		gint64 link_version;
+		g_object_get(g_ptr_array_index(rows, i), "origin", &origin, "enabled", &enabled,
+			"invoice-version", &link_version, NULL);
+		if (origin != VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL)
+			continue;
+		*any_email = TRUE;
+		if (enabled && link_version >= version)
+			*current = TRUE;
+	}
+	return TRUE;
+}
+
+gboolean
+venture_mail_invoice_resend_due(VentureContext *context, VentureEntity *invoice, GError **error)
+{
+	VentureDatabase *db;
+	g_autoptr(VentureEntity) prior = NULL;
+	g_autofree gchar *key = NULL;
+	gboolean any_email = FALSE;
+	gboolean current = FALSE;
+	gint status = 0;
+	if (!context || !VENTURE_IS_ENTITY(invoice))
+		return FALSE;
+	g_object_get(invoice, "status", &status, NULL);
+	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+		return FALSE;
+	db = venture_context_get_database(context);
+	key = g_strdup_printf("invoice:%s", venture_entity_get_uuid(invoice));
+	prior = invoice_mail_by_key(db, venture_entity_get_organization_id(invoice), key, error);
+	if ((error && *error) || !prior)
+		return FALSE;
+	if (!invoice_email_link_state(db, invoice, &any_email, &current, error))
+		return FALSE;
+	return any_email && !current;
+}
+
+VentureMailMessage *
+venture_mail_resend_invoice(VentureContext *context, gint64 org, gint64 invoice_id,
+	const VentureActor *actor, GError **error)
+{
+	VentureDatabase *db = venture_context_get_database(context);
+	VentureMailOutbox *outbox = venture_context_get_mail_outbox(context);
+	VentureSettlementService *settlement = venture_settlement_service_get(db);
+	g_autoptr(VentureEntity) invoice = NULL, prior = NULL, existing = NULL;
+	g_autoptr(VentureMailMessage) message = NULL, queued = NULL;
+	g_autofree gchar *plain = NULL, *versioned = NULL, *pay_url = NULL;
+	gint64 version;
+	gint status;
+	if (!outbox || !venture_context_module_enabled(context, "invoicing"))
+	{
+		venture_set_error_validation(error, "mail", "Mail and invoicing modules must be enabled");
+		return NULL;
+	}
+	if (!venture_database_begin(db, error))
+		return NULL;
+	invoice = venture_database_get(db, VENTURE_TYPE_INVOICE, invoice_id, error);
+	if (!invoice || venture_entity_is_deleted(invoice) || org <= 0 ||
+		venture_entity_get_organization_id(invoice) != org)
+	{
+		if (!error || !*error)
+			g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Invoice not found");
+		goto fail;
+	}
+	/* The version the new button and the new key both bind to. Read it
+	 * before minting, and do not issue again: Send already did. */
+	g_object_get(invoice, "status", &status, NULL);
+	version = venture_entity_get_version(invoice);
+	plain = g_strdup_printf("invoice:%s", venture_entity_get_uuid(invoice));
+	versioned = g_strdup_printf("invoice:%s:v%" G_GINT64_FORMAT, venture_entity_get_uuid(invoice), version);
+	existing = invoice_mail_by_key(db, org, versioned, error);
+	if (error && *error)
+		goto fail;
+	if (existing)
+	{
+		if (!venture_database_commit(db, error))
+			return NULL;
+		return VENTURE_MAIL_MESSAGE(g_steal_pointer(&existing));
+	}
+	prior = invoice_mail_by_key(db, org, plain, error);
+	if (error && *error)
+		goto fail;
+	if (!prior)
+	{
+		venture_set_error_validation(error, "invoice", "Send the invoice before sending it again");
+		goto fail;
+	}
+	if (status != VENTURE_INVOICE_STATUS_SENT && status != VENTURE_INVOICE_STATUS_PARTIALLY_PAID)
+	{
+		venture_set_error_validation(error, "invoice", "Send again is for an issued invoice that is still open");
+		goto fail;
+	}
+	if (!venture_mail_invoice_resend_due(context, invoice, error))
+	{
+		if (!error || !*error)
+			venture_set_error_validation(error, "invoice",
+				"This invoice's emailed Pay now link is already current");
+		goto fail;
+	}
+	/* Same retire-and-mint as a first Send, inside this transaction, so a
+	 * failed enqueue puts the old button back. No error and no URL means
+	 * Checkout cannot take it: the email still goes, without a button. */
+	pay_url = invoice_pay_url(context, invoice, actor, error);
+	if (!pay_url && error && *error)
+		goto fail;
+	message = invoice_message_build(context, invoice, pay_url, error);
+	if (!message)
+		goto fail;
+	g_object_set(message, "idempotency-key", versioned, NULL);
+	queued = venture_mail_outbox_enqueue(outbox, message, actor, error);
+	if (!queued || !venture_settlement_service_record_mail(settlement, VENTURE_INVOICE(invoice), actor, error))
+		goto fail;
+	if (!venture_database_commit(db, error))
+		return NULL;
+	return g_steal_pointer(&queued);
+fail:
+	venture_database_rollback(db);
+	return NULL;
+}
+
 /* --- Previews ---------------------------------------------------------------- */
 
 static VentureEntity *preview_source(VentureContext *context, GType type, gint64 org, gint64 id, const gchar *what, GError **error)

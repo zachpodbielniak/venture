@@ -94,10 +94,10 @@ typedef void (*VentureFeedsHookRunFunc) (
  * venture_feeds_add_hook:
  * @context: the context
  * @name: the hook's name: lower case, unique; also the payload's name
- * @freeze: (nullable) (scope notified): main thread, per source
- * @commit: (nullable) (scope notified): worker thread, per unit committed
- * @run: (nullable) (scope notified): main thread, per run written
- * @user_data: (closure): read from both threads; must not change
+ * @freeze: (nullable) (scope notified) (closure user_data) (destroy destroy): main thread, per source
+ * @commit: (nullable) (scope notified) (closure user_data) (destroy destroy): worker thread, per unit committed
+ * @run: (nullable) (scope notified) (closure user_data) (destroy destroy): main thread, per run written
+ * @user_data: read from both threads; must not change
  * @destroy: (nullable): frees @user_data with the context
  *
  * Registers a hook on every source's runs. Sources are frozen again, so a

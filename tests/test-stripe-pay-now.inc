@@ -636,6 +636,206 @@ test_pay_now_resend(Fixture *f, gconstpointer data)
 	pay_now_clear(&p);
 }
 
+static guint
+pay_now_messages(Fixture *f)
+{
+	g_autoptr(GPtrArray) mail = rows(f, "mail_message");
+	return mail->len;
+}
+
+/* The bearer in a queued message's private body, or NULL. */
+static gchar *
+pay_now_message_token(VentureMailMessage *message)
+{
+	g_autofree gchar *private_html = NULL;
+	const gchar *at;
+	g_object_get(message, "private-html-body", &private_html, NULL);
+	at = private_html ? strstr(private_html, "https://venture.example/pay/") : NULL;
+	if (!at)
+		return NULL;
+	return g_strndup(at + strlen("https://venture.example/pay/"), 101);
+}
+
+/* The message queued for this invoice version, if Send again made one. */
+static VentureMailMessage *
+pay_now_version_message(Fixture *f, VentureEntity *invoice)
+{
+	g_autoptr(GPtrArray) mail = rows(f, "mail_message");
+	g_autofree gchar *key = g_strdup_printf("invoice:%s:v%" G_GINT64_FORMAT,
+		venture_entity_get_uuid(invoice), venture_entity_get_version(invoice));
+	guint i;
+	for (i = 0; i < mail->len; i++)
+	{
+		g_autofree gchar *stored = NULL;
+		g_object_get(g_ptr_array_index(mail, i), "idempotency-key", &stored, NULL);
+		if (!g_strcmp0(stored, key))
+			return g_object_ref(g_ptr_array_index(mail, i));
+	}
+	return NULL;
+}
+
+/* Send, then a late fee (the legal way an issued invoice's open balance
+ * moves; lines are frozen), then Send again. Checkout is for the new
+ * balance. The first link says the invoice changed. */
+static void
+test_pay_now_edited_resend(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) invoice = NULL, organization = NULL;
+	g_autoptr(VentureEntity) fee = NULL;
+	g_autoptr(VentureMoney) extra = NULL;
+	g_autoptr(VentureMailMessage) again = NULL, third = NULL, plain = NULL;
+	g_autoptr(GDateTime) fee_at = NULL;
+	g_autofree gchar *state_directory = NULL, *page = NULL, *resend = NULL, *send = NULL;
+	g_autofree gchar *old_checkout = NULL, *new_token = NULL, *new_checkout = NULL, *body = NULL;
+	g_autofree gchar *shared = NULL, *stage = NULL;
+	gint64 id, first_id, version_before;
+	(void)data;
+	pay_now_send(f, &p, TRUE, FALSE);
+	g_assert_nonnull(p.token);
+	shared = pay_now_share(f, &p);
+	id = venture_entity_get_id(p.invoice);
+	first_id = venture_entity_get_id(VENTURE_ENTITY(p.message));
+	organization = venture_database_get(f->database, VENTURE_TYPE_ORGANIZATION, f->organization_id, &error);
+	g_assert_no_error(error);
+	g_object_set(organization, "name", "Acme & Books", NULL);
+	save(f, organization);
+	page = g_strdup_printf("/e/invoice/%" G_GINT64_FORMAT, id);
+	send = g_strdup_printf("/api/v1/invoices/%" G_GINT64_FORMAT "/send", id);
+	resend = g_strdup_printf("/api/v1/invoices/%" G_GINT64_FORMAT "/resend", id);
+	server = pay_now_server(f, &state_directory, FALSE);
+	g_assert_cmpuint(http_request(server, "GET", page, NULL, NULL, &body), ==, 200);
+	g_assert_null(strstr(body, "Send again (invoice changed)"));
+	g_clear_pointer(&body, g_free);
+	/* A second Send, with no edit, queues nothing. */
+	g_assert_cmpuint(http_request(server, "POST", send, NULL, NULL, NULL), ==, 202);
+	g_assert_cmpuint(pay_now_messages(f), ==, 1);
+	/* The button is not due yet, so Send again refuses and mints nothing. */
+	g_assert_cmpuint(http_request(server, "POST", resend, NULL, NULL, &body), ==, 422);
+	g_assert_nonnull(strstr(body, "already current"));
+	g_assert_cmpuint(pay_now_messages(f), ==, 1);
+	g_assert_true(pay_now_resolves(f, p.token));
+	g_clear_pointer(&body, g_free);
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	version_before = venture_entity_get_version(invoice);
+	/* Lines on an issued invoice are frozen. A late fee is the settlement
+	 * path that changes the open balance, and it does not bump the invoice
+	 * version, so the emailed button stays current until an edit does. */
+	extra = venture_money_new(500, "USD", 2);
+	fee_at = venture_time_now();
+	fee = venture_settlement_service_add_late_fee(venture_settlement_service_get(f->database),
+		id, extra, fee_at, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(fee);
+	g_clear_object(&invoice);
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_version(invoice), ==, version_before);
+	g_assert_false(venture_mail_invoice_resend_due(f->context, invoice, &error));
+	g_assert_no_error(error);
+	g_object_set(invoice, "notes", "Revised terms", NULL);
+	save(f, invoice);
+	g_clear_object(&invoice);
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_version(invoice), >, version_before);
+	g_assert_true(venture_mail_invoice_resend_due(f->context, invoice, &error));
+	g_assert_no_error(error);
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http_request(server, "GET", page, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "Send again (invoice changed)"));
+	g_assert_nonnull(strstr(body, resend + strlen("/api/v1")));
+	g_clear_pointer(&body, g_free);
+	/* Still enabled, so the old email is the bare refusal, not the
+	 * changed page. */
+	old_checkout = g_strdup_printf("/pay/%s/checkout", p.token);
+	g_assert_cmpuint(http_request(server, "GET", old_checkout, NULL, NULL, &body), ==, 404);
+	g_assert_cmpstr(body, ==, "Payment link is unavailable");
+	g_assert_null(strstr(body, "has changed"));
+	g_assert_cmpuint(((FakeTransport *)p.transport)->checkouts, ==, 0);
+	g_clear_pointer(&body, g_free);
+	stage = g_strdup_printf("%s?stage=1", resend);
+	g_assert_cmpuint(http_request(server, "POST", stage, NULL, NULL, NULL), ==, 422);
+	g_assert_cmpuint(pay_now_messages(f), ==, 1);
+	g_assert_cmpuint(http_request(server, "POST", resend, NULL, NULL, NULL), ==, 202);
+	g_assert_cmpuint(pay_now_messages(f), ==, 2);
+	again = pay_now_version_message(f, invoice);
+	g_assert_nonnull(again);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(again)), !=, first_id);
+	new_token = pay_now_message_token(again);
+	g_assert_nonnull(new_token);
+	g_assert_cmpstr(new_token, !=, p.token);
+	new_checkout = g_strdup_printf("/pay/%s/checkout", new_token);
+	g_assert_cmpuint(http_request(server, "GET", new_checkout, NULL, NULL, NULL), ==, 303);
+	g_assert_cmpuint(((FakeTransport *)p.transport)->checkouts, ==, 1);
+	g_assert_cmpint(((FakeTransport *)p.transport)->checkout_unit_amount, ==, 10500);
+	g_assert_cmpuint(http_request(server, "GET", old_checkout, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "This invoice has changed since this email was sent. Use the newer email, or contact Acme &amp; Books."));
+	g_assert_cmpuint(((FakeTransport *)p.transport)->checkouts, ==, 1);
+	g_clear_pointer(&body, g_free);
+	{
+		g_autofree gchar *old_page = g_strdup_printf("/pay/%s", p.token);
+		g_assert_cmpuint(http_request(server, "GET", old_page, NULL, NULL, &body), ==, 200);
+		g_assert_nonnull(strstr(body, "This invoice has changed since this email was sent. Use the newer email, or contact Acme &amp; Books."));
+		g_clear_pointer(&body, g_free);
+	}
+	/* Twice for one version is one message, and the shared link stays. */
+	g_assert_cmpuint(http_request(server, "POST", resend, NULL, NULL, NULL), ==, 202);
+	g_assert_cmpuint(pay_now_messages(f), ==, 2);
+	third = pay_now_version_message(f, invoice);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(third)), ==, venture_entity_get_id(VENTURE_ENTITY(again)));
+	g_assert_cmpuint(pay_now_enabled(f, VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL), ==, 1);
+	g_assert_cmpuint(pay_now_enabled(f, VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_SHARED), ==, 1);
+	g_assert_false(pay_now_resolves(f, p.token));
+	g_assert_true(pay_now_resolves(f, new_token));
+	plain = venture_mail_send_invoice(f->context, f->organization_id, id, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_cmpint(venture_entity_get_id(VENTURE_ENTITY(plain)), ==, first_id);
+	g_assert_cmpuint(pay_now_messages(f), ==, 2);
+	g_clear_object(&invoice);
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	g_assert_false(venture_mail_invoice_resend_due(f->context, invoice, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(http_request(server, "GET", page, NULL, NULL, &body), ==, 200);
+	g_assert_null(strstr(body, "Send again (invoice changed)"));
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+}
+
+/* A viewer has no Send, so no Send again either. */
+static void
+test_pay_now_resend_viewer(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureApiToken) token = NULL;
+	g_autofree gchar *state_directory = NULL, *secret = NULL, *path = NULL, *body = NULL;
+	(void)data;
+	pay_now_send(f, &p, TRUE, FALSE);
+	token = venture_api_token_new();
+	venture_entity_set_organization_id(VENTURE_ENTITY(token), f->organization_id);
+	g_object_set(token, "name", "viewer", "role", VENTURE_USER_ROLE_VIEWER, "user-id", (gint64)0, NULL);
+	secret = venture_api_token_generate(token);
+	g_assert_nonnull(secret);
+	save(f, VENTURE_ENTITY(token));
+	path = g_strdup_printf("/api/v1/invoices/%" G_GINT64_FORMAT "/resend", venture_entity_get_id(p.invoice));
+	server = start_server_auth(f, &state_directory);
+	g_assert_cmpuint(http_request(server, "POST", path, NULL, NULL, NULL), ==, 401);
+	g_assert_cmpuint(http_request_bearer(server, "POST", path, NULL, NULL, &body, secret), ==, 403);
+	g_assert_cmpuint(pay_now_messages(f), ==, 1);
+	g_assert_true(pay_now_resolves(f, p.token));
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+	(void)error;
+}
+
 static gint64
 pay_now_count(Fixture *f, const gchar *sql)
 {

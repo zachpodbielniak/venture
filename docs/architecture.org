@@ -147,9 +147,9 @@ A wake does not resume a fiber inside somebody else's transaction. Some nested d
 
 *** What runs as a fiber
 
-Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (API and form); =POST /pay/:token= and the Pay now button =GET /pay/:token/checkout= (the page and the invoice email); the Stripe settings operations (configure, the statement name, the key test); Connect status and start.
+Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (API and form); =POST /pay/:token= and the Pay now button =GET /pay/:token/checkout= (the page and the invoice email); the customer portal's pay button (=POST /portal/:token=, after the token has been looked up in the dispatch: an unknown one is a =404= there); every public form post (=POST /pub/form/:token=, paid or not: whether a response is paid depends on the version its answers name, known only once they are read); the Stripe settings operations (configure, the statement name, the key test); Connect status and start.
 
-Still synchronous, blocking the main loop for as long as Stripe takes: the record action route =POST /api/v1/:type/:id/actions/:action= (every Stripe action, =checkout= and =refund= among them), the customer portal's pay button, paid forms, the Stripe timers (collection, reconciliation, prepaid installments) and the Stripe webhook routes. Moving one is registering it with =VENTURE_WEB_LATER_ROUTE()= and following the rules below.
+Still synchronous, blocking the main loop for as long as Stripe takes: the record action route =POST /api/v1/:type/:id/actions/:action= (every Stripe action, =checkout= and =refund= among them), the Stripe timers (collection, reconciliation, prepaid installments) and the Stripe webhook routes. Moving one is registering it with =VENTURE_WEB_LATER_ROUTE()= (or answering with =venture_web_answer_later()= from the route, as the portal does) and following the rules below.
 
 *** What a fiber carries across a yield
 
@@ -163,6 +163,25 @@ It runs under the reader the request pipeline authenticated (a snapshot, the sam
 *** One customer's Checkouts, one at a time
 
 Fibers let a second request start while the first waits on Stripe, so two clicks of one Pay now link (or a mail scanner opening it first), or two of a new customer's invoices paid at once, would both be part-way through: the second reusing the first one's idempotency key while it is still in flight, which Stripe refuses, or linking the customer the first is still creating. The Stripe service takes a /hold/ (=venture_fiber_hold()=) on the paying party -- the invoice's company or contact -- around creating a Checkout, reading a Pay now link and creating a Stripe customer. A fiber that asks for a held key yields until the holder lets go, then takes it, in the order they asked; the second click then finds the first one's open session and answers its URL, and the second invoice finds the customer already linked. A plain stack takes a free key, and blocks while it holds it, as it always has; it never waits for a key a yielded fiber holds (that would take a nested loop) and goes on unguarded instead. No hold is taken with a transaction open, and a fiber handed one is resumed only outside a transaction: if one is open when its turn comes, it waits for the database's =transaction-finished= and resumes once the outermost level has ended (an inner rollback ends nothing, so the outermost end of that transaction says =FALSE= again). Nothing polls. Tests: =/stripe/payment-link/race-invoice=, =/stripe/payment-link/race-customer= (the fake Stripe also refuses a key still in flight, as Stripe does), =/fiber/hold/*=. A route whose placeholder the pipeline replaced with a refusal never runs (=/stripe/later-refused=).
+
+*** One Checkout per party
+
+The hold orders fibers only. Two requests for one paying party -- the same invoice, or two of one new customer's -- get one Stripe customer and one Checkout per invoice, and the second is answered with the first one's session, when both run as fibers. A plain stack still goes on unguarded beside a fiber that holds the party: it never waits, so it can reuse a reservation, and its idempotency key, that the fiber is still sending. Two plain stacks cannot race at all: each blocks the main loop for the whole Stripe call.
+
+These entry points create a Checkout for an invoice and run as fibers, so the guarantee holds between any two of them:
+
+| Entry point | Route | Path to the Checkout |
+|-------------+-------+----------------------|
+| Invoice checkout (staff, API) | =POST /invoices/:id/checkout=, =POST /api/v1/invoices/:id/checkout= | =venture_stripe_service_checkout()= |
+| Pay now (shared link, the invoice email's button) | =POST /pay/:token=, =GET /pay/:token/checkout= | =venture_stripe_service_pay_link()= |
+| Customer portal pay button | =POST /portal/:token= | =venture_portal_service_checkout()= |
+| Paid form, first post and every retry of it | =POST /pub/form/:token= (single- and multi-page) | =forms_payment_checkout()= → =venture_stripe_service_checkout_until()= |
+
+A paid form's retry -- the same answers under the same payment identity, which "Retry this form without changing its answers" asks for after an uncertain attempt -- reuses its invoice's reservation, so it races a Pay now click or portal payment for that invoice, and a double click races itself; both wait now. Nothing reaches the form's Checkout outside a request: relay and double opt-in forms refuse payment, and =reconcile_payment= never asks Stripe.
+
+Not covered, because they are still plain stacks (see "What runs as a fiber"): the record action route's =checkout= action, which can race a fiber for the same invoice exactly as the portal could; and the Stripe timers and the prepaid and authorization paths that create a Stripe customer for a company, which take the same party hold but go on without it while a fiber has it. Moving the action route to a fiber closes the first.
+
+Tests: =/stripe/race/paynow-portal= (a Pay now click held on creating the customer, the portal's pay button meanwhile), =/stripe/race/paynow-form= (a Pay now click for a paid form's invoice held on its Checkout, the form's retry meanwhile), =/stripe/race/portal-form= and =/stripe/race/form-form= (two fibers that could not race before; seen failing with the hold disabled). Each waits until the second request is queued behind the hold (=venture_fiber_hold_waiting()=), or has answered, before the first is let go, so a fix that is missing fails the same way every run.
 
 *** Rules for fiber authors
 

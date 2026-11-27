@@ -107,13 +107,13 @@ typedef gboolean (*VentureLedgerPostableFunc)(VentureEntity *entity, gpointer us
  * @rule_name: the posting rule, looked up by name in the service's rule
  *   registry on every save, so a plugin that replaces the rule replaces
  *   what the save posts; journals carry it as `rule-name`
- * @postable: (scope notified) (nullable): whether a version posts; %NULL
+ * @postable: (scope notified) (nullable) (closure user_data) (destroy destroy): whether a version posts; %NULL
  *   means every version does
  * @date_property: (nullable): a #GDateTime property of @type giving the
  *   accounting date; when %NULL, or unset on a record, the record's
  *   creation time is the stable date
  * @flags: what a save that stops the record posting does
- * @user_data: (closure postable): passed to @postable
+ * @user_data: passed to @postable
  * @destroy: (nullable): frees @user_data when the database goes
  *
  * Makes every save of @type, through any door, a posting: the record and

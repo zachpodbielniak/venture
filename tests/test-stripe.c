@@ -175,8 +175,8 @@ static gchar *signature(const gchar *body);
 static gchar *binding_signature(const gchar *body, const gchar *secret);
 
 static guint
-http_request_origin(VentureWebServer *server, const gchar *method, const gchar *path,
-	const gchar *content_type, const gchar *body, gchar **out, const gchar *host, const gchar *origin, const gchar *referrer_policy)
+http_request_origin_auth(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out, const gchar *host, const gchar *origin, const gchar *referrer_policy, const gchar *authorization)
 {
 	g_autoptr(SoupSession) session = NULL;
 	g_autoptr(SoupMessage) message = NULL;
@@ -191,6 +191,7 @@ http_request_origin(VentureWebServer *server, const gchar *method, const gchar *
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	if (host) soup_message_headers_replace(soup_message_get_request_headers(message), "Host", host);
 	if (origin) soup_message_headers_replace(soup_message_get_request_headers(message), "Origin", origin);
+	if (authorization) soup_message_headers_replace(soup_message_get_request_headers(message), "Authorization", authorization);
 	if (body && (!g_strcmp0(path, "/webhooks/stripe") || g_str_has_prefix(path, "/webhooks/stripe/")))
 	{
 		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : (!g_strcmp0(path, "/webhooks/stripe") ? signature(body) : binding_signature(body, "whsec_original"));
@@ -221,7 +222,19 @@ static guint
 http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	const gchar *content_type, const gchar *body, gchar **out)
 {
-	return http_request_origin(server, method, path, content_type, body, out, NULL, NULL, NULL);
+	return http_request_origin_auth(server, method, path, content_type, body, out, NULL, NULL, NULL, NULL);
+}
+
+/* The includes below keep the old nine-argument call. */
+#define http_request_origin(server, method, path, content_type, body, out, host, origin, policy) \
+	http_request_origin_auth(server, method, path, content_type, body, out, host, origin, policy, NULL)
+
+static guint
+http_request_bearer(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out, const gchar *bearer)
+{
+	g_autofree gchar *authorization = g_strdup_printf("Bearer %s", bearer);
+	return http_request_origin_auth(server, method, path, content_type, body, out, NULL, NULL, NULL, authorization);
 }
 
 static void
@@ -292,6 +305,25 @@ start_server(Fixture *f, gchar **state_dir)
 	return server;
 }
 
+/* Authentication on, without hosted mode, so a viewer token is a viewer. */
+static VentureWebServer *
+start_server_auth(Fixture *f, gchar **state_dir)
+{
+	g_autoptr(GError) error = NULL;
+	VentureWebServer *server;
+	guint16 port = 0;
+
+	*state_dir = g_dir_make_tmp("venture-stripe-XXXXXX", &error);
+	g_assert_no_error(error);
+	g_object_set(f->config, "state-dir", *state_dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", TRUE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	return server;
+}
+
 static void
 test_records(void)
 {
@@ -353,8 +385,12 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	GMutex hold_lock; GCond hold_cond; gboolean holding, hold_times_out; gint hold_limit, held; guint released;
 	/* Each customer after the first its own id, for two businesses at once. */
 	gboolean distinct_customers;
-	/* Requests refused because their idempotency key was still in flight. */
-	gint keys_refused; } FakeTransport;
+	/* Requests refused because their idempotency key was still in flight,
+	 * and the keys in flight: this transport's own, as Stripe's are one
+	 * account's, so a test's leftovers never reach the next one's. */
+	gint keys_refused; GMutex keys_lock; GHashTable *keys_in_flight;
+	/* Minor units of the last Checkout this transport was asked to open. */
+	gint64 checkout_unit_amount; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -387,18 +423,15 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 {
 	/* Stripe refuses a request whose idempotency key another request
 	 * still in progress carries; this fake does too. */
-	static GMutex keys_lock;
-	static GHashTable *keys_in_flight;
 	FakeTransport *self = (FakeTransport *)transport;
 	const gchar *key = request->idempotency_key;
 	StripeResponse *response;
 	if (key && *key) {
 		gboolean in_use;
-		g_mutex_lock(&keys_lock);
-		if (!keys_in_flight) keys_in_flight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-		in_use = g_hash_table_contains(keys_in_flight, key);
-		if (!in_use) g_hash_table_add(keys_in_flight, g_strdup(key));
-		g_mutex_unlock(&keys_lock);
+		g_mutex_lock(&self->keys_lock);
+		in_use = g_hash_table_contains(self->keys_in_flight, key);
+		if (!in_use) g_hash_table_add(self->keys_in_flight, g_strdup(key));
+		g_mutex_unlock(&self->keys_lock);
 		if (in_use) {
 			g_atomic_int_inc(&self->keys_refused);
 			return stripe_response_new(409, "{\"error\":{\"type\":\"idempotency_error\",\"message\":"
@@ -407,9 +440,9 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	response = fake_send_held(self, request, cancellable, error);
 	if (key && *key) {
-		g_mutex_lock(&keys_lock);
-		g_hash_table_remove(keys_in_flight, key);
-		g_mutex_unlock(&keys_lock);
+		g_mutex_lock(&self->keys_lock);
+		g_hash_table_remove(self->keys_in_flight, key);
+		g_mutex_unlock(&self->keys_lock);
 	}
 	return response;
 }
@@ -578,6 +611,11 @@ fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **
 		self->checkout_suffix = g_strdup(g_hash_table_lookup(form, "payment_intent_data[statement_descriptor_suffix]"));
 		g_free(self->deadline);
 		self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
+		{
+			const gchar *unit = g_hash_table_lookup(form, "line_items[0][price_data][unit_amount]");
+			if (unit)
+				self->checkout_unit_amount = g_ascii_strtoll(unit, NULL, 10);
+		}
 		if (self->early_service)
 		{
 			const gchar *reference = g_hash_table_lookup(form, "client_reference_id");
@@ -604,6 +642,8 @@ static void fake_finalize(GObject *object)
 {
 	g_mutex_clear(&((FakeTransport *)object)->hold_lock);
 	g_cond_clear(&((FakeTransport *)object)->hold_cond);
+	g_mutex_clear(&((FakeTransport *)object)->keys_lock);
+	g_clear_pointer(&((FakeTransport *)object)->keys_in_flight, g_hash_table_unref);
 	g_free(((FakeTransport *)object)->key);
 	g_free(((FakeTransport *)object)->deadline);
 	g_free(((FakeTransport *)object)->setup_reference);
@@ -627,7 +667,12 @@ static void fake_finalize(GObject *object)
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
-static void fake_transport_init(FakeTransport *self) { g_mutex_init(&self->hold_lock); g_cond_init(&self->hold_cond); }
+static void fake_transport_init(FakeTransport *self)
+{
+	g_mutex_init(&self->hold_lock); g_cond_init(&self->hold_cond);
+	g_mutex_init(&self->keys_lock);
+	self->keys_in_flight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+}
 
 /* A hosted test shortens one session's stored expiry and still expects that
  * session, not whichever Setup was created last, to verify on its own. */
@@ -1343,6 +1388,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
 #include "test-stripe-pay-now.inc"
+#include "test-stripe-race.inc"
 #include "test-stripe-automatic.inc"
 #include "test-hosted-stripe.inc"
 #include "test-stripe-connect.inc"
@@ -1389,6 +1435,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/shared-then-send", Fixture, NULL, set_up, test_pay_now_shared_then_send, tear_down);
 	g_test_add("/stripe/pay-now/send-then-share", Fixture, NULL, set_up, test_pay_now_send_then_share, tear_down);
 	g_test_add("/stripe/pay-now/resend", Fixture, NULL, set_up, test_pay_now_resend, tear_down);
+	g_test_add("/stripe/pay-now/edited-resend", Fixture, NULL, set_up, test_pay_now_edited_resend, tear_down);
+	g_test_add("/stripe/pay-now/resend-viewer", Fixture, NULL, set_up, test_pay_now_resend_viewer, tear_down);
 	g_test_add("/stripe/pay-now/origin-migration", Fixture, NULL, set_up, test_pay_now_origin_migration, tear_down);
 	g_test_add("/stripe/pay-now/expired-session", Fixture, NULL, set_up, test_pay_now_expired_session, tear_down);
 	g_test_add("/stripe/pay-now/production-click", Fixture, NULL, set_up, test_pay_now_production_click, tear_down);
@@ -1398,6 +1446,10 @@ main(int argc, char **argv)
 	g_test_add("/stripe/payment-link/slow-email-hosted", Fixture, "slow-email-hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/race-invoice", Fixture, "race-invoice", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/race-customer", Fixture, "race-customer", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/race/paynow-portal", Fixture, "paynow-portal", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/paynow-form", Fixture, "paynow-form", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/portal-form", Fixture, "portal-form", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/form-form", Fixture, "form-form", set_up, test_checkout_race, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);

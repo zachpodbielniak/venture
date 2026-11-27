@@ -54,7 +54,11 @@ venturectl create payment customer_id=8 invoice_id=5 'amount=40 USD' date=2026-0
 - Applied cash creates its sale in the same transaction; void reverses an
   unpaid invoice; a refund reopens the balance. `POST
   /api/v1/invoices/:id/send` issues a draft and queues the rendered
-  document by mail in one transaction. `/invoices/:id/print` renders it.
+  document by mail in one transaction. A second send returns that message.
+  `POST /api/v1/invoices/:id/resend` (page: `POST /invoices/:id/resend`,
+  button "Send again (invoice changed)") queues one new message for the
+  current version after the invoice changed, and retires the emailed Pay
+  now link. `/invoices/:id/print` renders it.
 - A line is taxed by a rate record (`tax_code_id`; the rate is made at
   `/tax-rates/new` from a percent and stored as an exact fraction); a quote
   line too, so the accepted quote copies it onto the invoice. The exemption

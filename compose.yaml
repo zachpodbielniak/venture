@@ -49,6 +49,15 @@ services:
     # without looking anything up.
     container_name: venture-dev
 
+    # glycin (GdkPixbuf's image decoder on Fedora) starts each codec in a
+    # bwrap sandbox that mounts devpts on /dev/pts. SELinux's default
+    # container_t refuses that mount, so without this line the server runs
+    # but picture uploads and OCR of images are refused with glycin's
+    # reason. container_engine_t allows it and is still SELinux-confined;
+    # this is not label=disable. See docs/containers.org.
+    security_opt:
+      - label=type:container_engine_t
+
     # Loopback only. Not a formality: this API answers questions about your
     # income, and a laptop joins networks you do not control.
     ports:

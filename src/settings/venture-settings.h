@@ -66,7 +66,7 @@ typedef struct
 } VentureSettingMember;
 
 /**
- * venture_setting_member_new:
+ * venture_setting_member_new: (skip)
  * @id: the record's id
  * @label: (nullable): its name
  *
@@ -263,7 +263,7 @@ gboolean venture_settings_validate(const VentureSettingInfo *info, const gchar *
 GPtrArray *venture_settings_list(VentureContext *context, gint64 organization_id, GError **error);
 
 /**
- * venture_settings_get:
+ * venture_settings_get: (skip)
  * @context: the context
  * @organization_id: the organization
  * @key: the key
@@ -291,7 +291,7 @@ gboolean venture_settings_require_manager(VentureDatabase *database, const Ventu
 	gint64 organization_id, GError **error);
 
 /**
- * venture_settings_set:
+ * venture_settings_set: (skip)
  * @context: the context
  * @organization_id: the organization
  * @key: the key
@@ -309,7 +309,7 @@ VentureSettingValue *venture_settings_set(VentureContext *context, gint64 organi
 	const gchar *value, const VentureActor *actor, GError **error);
 
 /**
- * venture_settings_reset:
+ * venture_settings_reset: (skip)
  * @context: the context
  * @organization_id: the organization
  * @key: the key

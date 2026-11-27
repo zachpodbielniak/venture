@@ -42,7 +42,7 @@ typedef gboolean (*VentureSequenceChannelExecute)(VentureDatabase *database, Ven
 /**
  * venture_sequence_channel_register:
  * @channel: a #VentureSequenceChannel value
- * @execute: what it does
+ * @execute: (scope forever) (closure data): what it does
  * @data: (nullable): passed to @execute
  *
  * Replaces the built-in behaviour of a non-email, non-branch channel, or
@@ -76,7 +76,7 @@ typedef gboolean (*VentureSequenceEmailGate)(VentureDatabase *database, VentureE
 /**
  * venture_sequence_add_email_gate:
  * @database: repository
- * @gate: the gate
+ * @gate: (scope forever) (closure data): the gate
  * @data: (nullable): passed to @gate
  */
 void venture_sequence_add_email_gate(VentureDatabase *database, VentureSequenceEmailGate gate, gpointer data);

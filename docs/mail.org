@@ -219,8 +219,11 @@ When the business has Stripe connected and =server.base_url= is set, the
 email also carries a big *Pay now* button. It opens Stripe Checkout for that
 one invoice in one click, with no sign-in. The link lives only in the
 private bodies the transport sends; the stored public copy has no button.
-An invoice Checkout cannot take is sent without one. See "Pay now" in
-=docs/stripe.org=.
+An invoice Checkout cannot take is sent without one. A second Send of the
+same invoice queues nothing. After the invoice changes, *Send again
+(invoice changed)* on the invoice page (and =POST /api/v1/invoices/:id/resend=)
+queues one new message for that version, with a Pay now button for the
+invoice as it is now. See "Pay now" in =docs/stripe.org=.
 
 A recorded customer payment is answered with a receipt. Once the
 transaction that saved the payment and its allocations commits, the

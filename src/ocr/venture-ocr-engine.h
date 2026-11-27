@@ -24,9 +24,10 @@ G_DECLARE_INTERFACE(VentureOcrEngine, venture_ocr_engine, VENTURE, OCR_ENGINE, G
  */
 struct _VentureOcrEngineInterface {
 	GTypeInterface parent_iface;
-	guint (*inspect)(VentureOcrEngine *, GBytes *, const gchar *, GError **);
-	gchar *(*extract)(VentureOcrEngine *, GBytes *, const gchar *, guint, const gchar *, GCancellable *, GError **);
-	const gchar *(*describe)(VentureOcrEngine *);
+	guint (*inspect)(VentureOcrEngine *self, GBytes *bytes, const gchar *mime, GError **error);
+	gchar *(*extract)(VentureOcrEngine *self, GBytes *bytes, const gchar *mime, guint page,
+		const gchar *language, GCancellable *cancellable, GError **error);
+	const gchar *(*describe)(VentureOcrEngine *self);
 	/* Reserved for compatible provider interface extensions. */
 	gpointer padding[8];
 };

@@ -135,7 +135,7 @@ typedef struct {
 	gchar *error;
 } VentureTelephonyEvent;
 /**
- * venture_telephony_event_new:
+ * venture_telephony_event_new: (skip)
  * @kind: what happened
  * Returns: (transfer full): an empty event
  */
@@ -325,7 +325,7 @@ gchar **venture_telephony_provider_ids(void);
 	static void get_type_func##_register(void) { venture_telephony_provider_register(get_type_func); }
 
 /**
- * venture_telephony_link_new:
+ * venture_telephony_link_new: (skip)
  * @base_url: the provider's origin; HTTPS, or loopback HTTP when allowed
  * @settings: (nullable): decrypted settings; copied
  * @number: (nullable): the line's own number

@@ -1,17 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* A copied URL is a narrowly bound capability, not an invoice selector or a
  * persisted bearer secret. Expiry, revocation and invoice edits invalidate it. */
-/* The second of two concurrent Pay now requests has either answered or
- * is waiting in a fiber beside the first one's. */
-typedef struct { SlowCall *second; guint fibers; } PayRace;
-
-static gboolean
-pay_race_settled(gpointer data)
-{
-	PayRace *race = data;
-	return g_atomic_int_get(&race->second->done) || venture_fiber_count() >= race->fibers;
-}
-
 static void
 test_payment_link(Fixture *f, gconstpointer data)
 {
@@ -187,10 +176,9 @@ test_payment_link(Fixture *f, gconstpointer data)
 			g_autofree gchar *second_url = NULL, *first_path = g_strdup_printf("%s/checkout", path), *second_path = NULL;
 			g_autoptr(GPtrArray) exceptions = NULL;
 			g_autoptr(GPtrArray) customers = NULL;
+			g_autofree gchar *party = party_key(f, venture_entity_get_id(invoice));
 			SlowCall first_call = { 0 }, second_call = { 0 };
-			PayRace race;
 			FakeTransport *fake = (FakeTransport *)transport;
-			guint fibers = venture_fiber_count();
 			if (same)
 				second_path = g_strdup(first_path);
 			else
@@ -206,11 +194,9 @@ test_payment_link(Fixture *f, gconstpointer data)
 			fake_hold(fake, 1);
 			slow_call_start(&first_call, server, first_path);
 			fake_wait_held(fake, 1);
-			/* The second is either waiting for the first -- its fiber is
-			 * alive beside the first one's -- or has already answered. */
-			slow_call_start(&second_call, server, second_path);
-			race.second = &second_call; race.fibers = fibers + 2;
-			run_until(pay_race_settled, &race);
+			/* The second is either queued behind the first one's hold on
+			 * their customer or has already answered. */
+			hold_race_start(&second_call, server, second_path, party);
 			fake_release_all(fake);
 			slow_call_finish(&first_call);
 			slow_call_finish(&second_call);

@@ -184,7 +184,7 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 	g_autoptr(GString) html = g_string_new("<!doctype html><html><head><meta charset=\"utf-8\">"
 		"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Invoice payment</title></head>"
 		"<body style=\"font-family:sans-serif;max-width:32rem;margin:2rem auto;padding:0 1rem\"><h1>Invoice payment</h1>");
-	g_autofree gchar *amount = NULL, *url = NULL, *state = NULL;
+	g_autofree gchar *amount = NULL, *url = NULL, *state = NULL, *business = NULL;
 	const gchar *token = g_hash_table_lookup(params, "token");
 	const gchar *closed;
 	gboolean pay = htmx_request_get_method(request) == HTMX_METHOD_POST ||
@@ -196,7 +196,19 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 	{
 		/* Paid or voided says so, and never reaches Stripe. */
 		closed = venture_stripe_service_payment_link_closed(database, token, NULL);
-		if (!closed) goto unavailable;
+		if (!closed)
+		{
+			/* Retired by Send again, not merely out of date while still
+			 * enabled: that one stays the bare unavailable page. */
+			business = venture_stripe_service_payment_link_replaced(database, token, NULL);
+			if (!business) goto unavailable;
+			g_string_append(html, "<p>This invoice has changed since this email was sent. Use the newer email, or contact ");
+			venture_html_escape_append(html, business[0] != '\0' ? business : "the business");
+			g_string_append(html, ".</p>");
+			g_string_append(html, "</body></html>");
+			response = htmx_response_new_with_content(html->str);
+			goto headers;
+		}
 		g_string_append(html, !g_strcmp0(closed, "paid") ?
 			"<p>This invoice is paid. Thank you. Nothing more is due.</p>" :
 			"<p>This invoice was voided. Nothing is due.</p>");

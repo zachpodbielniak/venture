@@ -908,6 +908,23 @@ venture_web_forms_public(HtmxRequest *request, GHashTable *params, gpointer data
 	}
 }
 
+/*
+ * POST /pub/form/:token answers from a fiber (venture_web_answer_later()).
+ * A paid form's answers end in a Stripe Checkout for the response's
+ * invoice, and a plain stack takes no hold on the paying party while a
+ * fiber has it: a retry of the same form (a double click, or "Retry this
+ * form without changing its answers") would reuse the reservation, and
+ * its idempotency key, while a Pay now click or portal payment for that
+ * invoice was still waiting on Stripe. As a fiber it waits for the other
+ * and answers its session. Every post is deferred, paid or not: which
+ * version, and so whether payment is due, is known only once the answers
+ * have been read, and a post to a free form costs one stack it gives back
+ * when it answers. The checks in front of the work -- size, origin, rate,
+ * receipt replay -- run in the fiber as they did in the dispatch, before
+ * anything is written.
+ */
+VENTURE_WEB_LATER_ROUTE(venture_web_forms_public_later, venture_web_forms_public)
+
 /* ==========================================================================
  * The builder panel on a form's page
  * ========================================================================== */

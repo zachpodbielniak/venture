@@ -79,7 +79,7 @@ typedef struct {
 } VentureDeliverabilityEvent;
 
 /**
- * venture_deliverability_event_new:
+ * venture_deliverability_event_new: (skip)
  * @kind: what happened
  * Returns: (transfer full): an empty event of @kind
  */
@@ -446,7 +446,7 @@ typedef struct {
 } VentureMarketingSendReport;
 
 /**
- * venture_marketing_send_report:
+ * venture_marketing_send_report: (skip)
  * @database: repository
  * @organization_id: the send's organization
  * @send_id: a send

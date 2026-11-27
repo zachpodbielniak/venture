@@ -164,6 +164,48 @@ slow_call_clear(SlowCall *call)
 	g_clear_object(&call->cancel);
 }
 
+/* --- Two requests for one paying party ------------------------------------ */
+
+/* The key the Stripe service holds for @invoice_id's paying party, in the
+ * form stripe_party_hold() (src/stripe/venture-stripe-customers.inc)
+ * makes it. A test that got it wrong waits until run_until() gives up. */
+static gchar *
+party_key(Fixture *f, gint64 invoice_id)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, invoice_id, &error);
+	gint64 company_id = 0, contact_id = 0;
+	g_assert_no_error(error);
+	g_assert_nonnull(invoice);
+	g_object_get(invoice, "company-id", &company_id, "contact-id", &contact_id, NULL);
+	return g_strdup_printf("venture-stripe-party:%" G_GINT64_FORMAT ":%s:%" G_GINT64_FORMAT, f->organization_id,
+		company_id ? "company" : "contact", company_id ? company_id : contact_id);
+}
+
+/* The second of two requests for one party has either answered -- it took
+ * no hold, which is the bug -- or is queued behind the first one's. Either
+ * is decided by what happened, not by how long anything took, so the test
+ * that waits on this fails the same way every run when the fix is gone. */
+typedef struct { SlowCall *second; const gchar *key; } HoldRace;
+
+static gboolean
+hold_race_settled(gpointer data)
+{
+	HoldRace *race = data;
+	return g_atomic_int_get(&race->second->done) || venture_fiber_hold_waiting(race->key) >= 1;
+}
+
+/* Starts @second while the first request for its party is held on Stripe,
+ * and serves until it is decided as above. */
+static void
+hold_race_start(SlowCall *second, VentureWebServer *server, const gchar *path, const gchar *key)
+{
+	HoldRace race;
+	slow_call_start(second, server, path);
+	race.second = second; race.key = key;
+	run_until(hold_race_settled, &race);
+}
+
 /*
  * @method @path on @server waits on @transport's next call; a GET of
  * @probe sent while that call is held is answered 200 before the route is,

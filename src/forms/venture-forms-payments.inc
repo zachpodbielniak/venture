@@ -179,6 +179,15 @@ static VentureEntity *forms_payment_invoice(VentureDatabase *database, VentureEn
 	return g_steal_pointer(&invoice);
 }
 
+/* The Checkout for a pending paid response. Its only way in is a public
+ * form post (POST /pub/form/:token, single- or multi-page), which answers
+ * from a fiber, so the Stripe service's hold on the paying party orders it
+ * against a Pay now click, a portal payment or a second post for the same
+ * invoice. Nothing else reaches it: relay and double opt-in forms refuse
+ * payment, and reconcile_payment never asks Stripe. A caller added
+ * outside a request would run on a plain stack, which never waits for a
+ * hold a fiber has, and would race those as before (docs/architecture.org,
+ * "One Checkout per party"). */
 static gboolean forms_payment_checkout(VentureDatabase *database, VentureEntity *pending,
 	VentureEntity *response, GError **error)
 {

@@ -55,6 +55,37 @@
 	}
 
 	/*
+	 * True only when the element is known to be detached from the
+	 * document. Nodes without an isConnected property count as live so
+	 * that nothing changes for them.
+	 */
+	function isDetached(el) {
+		return !!el && el.isConnected === false;
+	}
+
+	/*
+	 * Stops every timer an element owns: its "every" intervals and a
+	 * pending delayed trigger. Called when the element leaves the
+	 * document, so a replaced poller does not keep polling from the grave.
+	 */
+	function clearTimers(el) {
+		var i;
+
+		if (el.ventureHxEvery) {
+			for (i = 0; i < el.ventureHxEvery.length; i++) {
+				window.clearInterval(el.ventureHxEvery[i]);
+			}
+
+			el.ventureHxEvery = null;
+		}
+
+		if (el.ventureHxDelay) {
+			window.clearTimeout(el.ventureHxDelay);
+			el.ventureHxDelay = null;
+		}
+	}
+
+	/*
 	 * Looks up an attribute on the element or, failing that, on the nearest
 	 * ancestor that has it. htmx inherits most attributes down the tree,
 	 * which is what lets a single hx-target on a container apply to every
@@ -324,6 +355,13 @@
 			return inserted;
 		}
 
+		/* A target that left the document cannot be swapped into; the
+		 * insert would be a silent no-op and the parsed nodes would be
+		 * bound (and, for pollers, start timers) while detached. */
+		if (isDetached(target)) {
+			return inserted;
+		}
+
 		if (swapSpec.style === "none") {
 			return inserted;
 		}
@@ -371,7 +409,8 @@
 		}
 
 		for (i = 0; i < inserted.length; i++) {
-			if (inserted[i].nodeType === 1) {
+			/* Only process nodes that really reached the document. */
+			if (inserted[i].nodeType === 1 && !isDetached(inserted[i])) {
 				inserted[i].classList.add("swapped-in");
 				process(inserted[i]);
 			}
@@ -615,6 +654,11 @@
 		var controller = new AbortController();
 		var existing = inFlight.get(el);
 
+		/* An element removed from the document must not issue requests. */
+		if (isDetached(el)) {
+			return;
+		}
+
 		if (confirmMessage && !window.confirm(confirmMessage)) {
 			return;
 		}
@@ -731,6 +775,11 @@
 				finalSwap = parseSwapSpec(h.get("HX-Reswap"));
 			}
 
+			/* The target was removed while the request was in flight. */
+			if (isDetached(finalTarget)) {
+				return;
+			}
+
 			if (!response.ok) {
 				/*
 				 * A 4xx or 5xx still carries a rendered error fragment
@@ -758,6 +807,10 @@
 			}
 
 			var doSwap = function () {
+				if (isDetached(finalTarget)) {
+					return;
+				}
+
 				performSwap(finalTarget, text, finalSwap);
 				trigger(el, "htmx:afterSwap", { target: finalTarget });
 				fireHeaderTriggers(h.get("HX-Trigger"));
@@ -910,6 +963,12 @@
 			var fire = function (event) {
 				var now = Date.now();
 
+				/* load, revealed, delayed and polling triggers can fire
+				 * after the element was removed. */
+				if (isDetached(el)) {
+					return;
+				}
+
 				if (spec.once && fired) {
 					return;
 				}
@@ -957,6 +1016,10 @@
 				}
 
 				var go = function () {
+					if (isDetached(el)) {
+						return;
+					}
+
 					issueRequest(el, request.verb, request.url, event);
 				};
 
@@ -974,8 +1037,21 @@
 			}
 
 			if (spec.event === "every") {
-				window.setInterval(function () { fire(null); },
-				                   spec.every || 1000);
+				var intervalId = window.setInterval(function () {
+					/* The element was swapped out or removed: stop. */
+					if (isDetached(el)) {
+						window.clearInterval(intervalId);
+						return;
+					}
+
+					fire(null);
+				}, spec.every || 1000);
+
+				if (!el.ventureHxEvery) {
+					el.ventureHxEvery = [];
+				}
+
+				el.ventureHxEvery.push(intervalId);
 				return;
 			}
 
@@ -1137,6 +1213,20 @@
 
 					if (removed.nodeType === 1 && removed.ventureSseClose) {
 						removed.ventureSseClose();
+					}
+
+					/* Stop pollers and delayed triggers of the removed
+					 * subtree; a node that was merely moved is connected
+					 * again by now and keeps its timers. */
+					if (removed.nodeType === 1 && isDetached(removed)) {
+						var owners = removed.querySelectorAll("[hx-trigger]");
+						var k;
+
+						clearTimers(removed);
+
+						for (k = 0; k < owners.length; k++) {
+							clearTimers(owners[k]);
+						}
 					}
 				}
 			}

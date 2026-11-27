@@ -413,8 +413,8 @@ typedef gboolean (*VentureDatabaseEachFunc)(VentureEntity *entity, gpointer user
  * venture_database_find_each:
  * @self: a #VentureDatabase
  * @query: the query to run
- * @func: (scope call): called with each matching record, in order
- * @user_data: (closure func): data for @func
+ * @func: (scope call) (closure user_data): called with each matching record, in order
+ * @user_data: data for @func
  * @error: (out) (optional): return location for a #GError
  *
  * Streams the records @query matches from one cursor, stopping as soon as

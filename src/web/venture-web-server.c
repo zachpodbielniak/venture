@@ -2840,12 +2840,6 @@ static const struct
 	{ "link", VENTURE_ICON("<path d=\"M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1\"/><path d=\"M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1\"/>") },
 };
 
-/**
- * venture_web_server_nav_icon_names:
- *
- * Returns: (transfer full) (array zero-terminated=1): the icon names
- *   venture_web_server_add_nav_link() accepts
- */
 gchar **
 venture_web_server_nav_icon_names(void)
 {
@@ -13996,9 +13990,17 @@ venture_web_append_invoice_block(
 		"/print\" target=\"_blank\">Print</a>", id, id);
 
 	if (venture_context_module_enabled(self->context, "mail"))
+	{
 		g_string_append_printf(content,
 			"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
 			"/send\"><button class=\"btn\" type=\"submit\">Send</button></form>", id);
+		/* Same post as Send, and only once the emailed button is behind
+		 * the invoice. A query failure leaves the page without the button. */
+		if (venture_mail_invoice_resend_due(self->context, record, NULL))
+			g_string_append_printf(content,
+				"<form method=\"post\" action=\"/invoices/%" G_GINT64_FORMAT
+				"/resend\"><button class=\"btn\" type=\"submit\">Send again (invoice changed)</button></form>", id);
+	}
 
 
 	if (VENTURE_INVOICE_STATUS_DRAFT == status)
@@ -37478,7 +37480,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/ui/:version/:name", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_asset, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/forms.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/resume/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_resume, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token/resume/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_resume, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);
@@ -37655,6 +37657,7 @@ venture_web_server_new(
 
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/reconciliation/suggest", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_reconciliation_suggest, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/send", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_invoice_ui, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/invoices/:id/resend", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_invoice_resend_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail/:action", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail_messages/:id/retry", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_action, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/mail/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_sync, self);
@@ -37666,6 +37669,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_unmatched_senders/:id/dismiss", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_unmatched_dismiss_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/mail_accounts/:id/sync", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_account_sync_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/send", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_invoice, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/invoices/:id/resend", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_mail_invoice_resend, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/api/v1/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/deals/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deal_move_ui, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/deals", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_deals_board, self);
@@ -37699,6 +37703,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/api/v1/mail/preview/:kind/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_api_mail_preview, self);
 	htmx_router_post(router, "/api/v1/reconciliation/suggest", venture_web_api_reconciliation_suggest, self);
 	htmx_router_post(router, "/invoices/:id/send", venture_web_mail_invoice_ui, self);
+	htmx_router_post(router, "/invoices/:id/resend", venture_web_mail_invoice_resend_ui, self);
 	htmx_router_post(router, "/api/v1/mail/:action", venture_web_mail_action, self);
 	htmx_router_post(router, "/api/v1/mail_messages/:id/retry", venture_web_mail_action, self);
 	htmx_router_post(router, "/api/v1/mail/sync", venture_web_mail_sync, self);
@@ -37710,6 +37715,7 @@ venture_web_server_new(
 	htmx_router_post(router, "/mail_unmatched_senders/:id/dismiss", venture_web_mail_unmatched_dismiss_ui, self);
 	htmx_router_post(router, "/mail_accounts/:id/sync", venture_web_mail_account_sync_ui, self);
 	htmx_router_post(router, "/api/v1/invoices/:id/send", venture_web_mail_invoice, self);
+	htmx_router_post(router, "/api/v1/invoices/:id/resend", venture_web_mail_invoice_resend, self);
 	htmx_router_post(router, "/api/v1/deals/:id/move", venture_web_deal_move, self);
 	htmx_router_post(router, "/deals/:id/move", venture_web_deal_move_ui, self);
 	htmx_router_get(router, "/deals", venture_web_deals_board, self);

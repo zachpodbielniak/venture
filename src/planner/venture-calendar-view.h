@@ -90,7 +90,7 @@ typedef struct
 } VentureCalendarItem;
 
 /**
- * venture_calendar_item_new:
+ * venture_calendar_item_new: (skip)
  * @kind: the source name
  * @title: the title
  * @start: (transfer none): the start
@@ -198,7 +198,7 @@ typedef struct
 } VentureCalendarResult;
 
 /**
- * venture_calendar_result_new:
+ * venture_calendar_result_new: (skip)
  *
  * Returns: (transfer full): an empty result
  */
@@ -282,9 +282,9 @@ typedef gboolean (*VentureCalendarFetchFunc)(
  *   hidden the source is skipped
  * @module: (nullable): a module that must also be on
  * @flags: what it can be narrowed by
- * @fetch: (scope notified): the function that reads it
- * @user_data: (closure): data for @fetch
- * @destroy: (destroy user_data) (nullable): frees @user_data
+ * @fetch: (scope notified) (closure user_data) (destroy destroy): the function that reads it
+ * @user_data: data for @fetch
+ * @destroy: (nullable): frees @user_data
  *
  * Registers a calendar source. The built-in ones are registered when the
  * planner module installs; a plugin adds its own the same way.
@@ -370,7 +370,7 @@ venture_calendar_view_range(
 );
 
 /**
- * venture_calendar_view_fetch:
+ * venture_calendar_view_fetch: (skip)
  * @context: the context
  * @query: what is asked
  * @error: (out) (optional): the error

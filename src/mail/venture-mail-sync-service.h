@@ -150,7 +150,7 @@ void venture_mail_sync_install_validators(VentureDatabase *database);
 typedef gboolean (*VentureMailInboundHook)(VentureDatabase *database, gint64 organization_id, GBytes *raw, GError **error);
 /**
  * venture_mail_sync_add_inbound_hook:
- * @hook: called for every new message; adding one twice adds it once
+ * @hook: (scope forever): called for every new message; adding one twice adds it once
  *
  * How a feature reads synced mail without the sync knowing it exists:
  * marketing reads delivery status notifications this way.

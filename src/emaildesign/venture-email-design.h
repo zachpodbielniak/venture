@@ -94,7 +94,7 @@ typedef struct {
 } VentureEmailLook;
 
 /**
- * venture_email_look_new_default:
+ * venture_email_look_new_default: (skip)
  * @name: (nullable): the business name
  *
  * The plain look used when an organization has no brand: neutral colours,
@@ -252,7 +252,7 @@ GBytes *venture_hosted_image_read(VentureContext *context, gint64 organization_i
 	const gchar **content_type, GError **error);
 
 /**
- * venture_email_look_load:
+ * venture_email_look_load: (skip)
  * @context: the application context
  * @organization_id: an organization
  *
@@ -327,7 +327,7 @@ void venture_email_design_result_free(VentureEmailDesignResult *result);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureEmailDesignResult, venture_email_design_result_free)
 
 /**
- * venture_email_design_from_brief:
+ * venture_email_design_from_brief: (skip)
  * @context: the application context
  * @organization_id: the organization
  * @template_id: a template to redesign, or 0 for a new one
@@ -348,7 +348,7 @@ VentureEmailDesignResult *venture_email_design_from_brief(VentureContext *contex
 	gint64 template_id, const gchar *name, const gchar *brief, const VentureActor *actor, GError **error);
 
 /**
- * venture_email_design_edit:
+ * venture_email_design_edit: (skip)
  * @context: the application context
  * @organization_id: exact organization
  * @template_id: a template with a design
