@@ -278,6 +278,9 @@ SERVER_ONLY_SRCS += $(filter-out src/inbox/venture-inbox-records.c,$(wildcard sr
 CORE_SRCS += src/aimessages/venture-ai-messages-records.c
 SERVER_ONLY_SRCS += $(filter-out src/aimessages/venture-ai-messages-records.c,$(wildcard src/aimessages/*.c))
 SERVER_ONLY_SRCS += $(wildcard src/settings/*.c)
+# The LQL record source and functions (docs/lql.org): server only, since
+# they read through the database's access policy and link liblql.
+SERVER_ONLY_SRCS += $(wildcard src/lql/*.c)
 SERVER_SRCS := $(CORE_SRCS) $(SERVER_ONLY_SRCS)
 
 CLI_SRCS := $(wildcard src/cli/*.c)
@@ -735,7 +738,7 @@ check-deps:
 	@echo ""
 	@echo "Checking vendored dependencies..."
 	@for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
-	          $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(TALLOW_DIR); do \
+	          $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(TALLOW_DIR) $(LQL_DIR); do \
 		if [ -f "$$d/Makefile" ]; then \
 			printf "  %-20s OK\n" "$$(basename $$d)"; \
 		else \
@@ -904,6 +907,7 @@ deps: $(MAIL_GLIB_LIB) $(MAIL_OTEL_LIB)
 deps: $(OIDC_GLIB_LIB)
 deps: $(LIBREVENTORY_LIB)
 deps: $(TALLOW_RT_LIB) $(TALLOW_SUET_LIB) $(TALLOWC)
+deps: $(LQL_LIB)
 
 $(OUTDIR)/tests/test-mail-surfaces: | $(OUTDIR)/venturectl
 $(OUTDIR)/tests/test-lead-routing: | $(OUTDIR)/venturectl

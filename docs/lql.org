@@ -1,0 +1,137 @@
+#+title: LQL: querying records
+#+description: The libre-query-language dependency and VENTURE's record source: one access-checked LQL source per record type, what reaches the database, VENTURE's functions, the row and time bounds, and what is deliberately not there
+#+authors: Zach Podbielniak
+#+categories: projects docs
+#+created: [2026-11-27]
+#+updated: [2026-11-27]
+#+version: 0.1.0
+
+* LQL in VENTURE
+
+[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation: the dependency, the record source and its guarantees. Nothing user-visible ships with it yet; the query bar, the generic list pages and =/api/v1/query= build on it.
+
+The whole of what a query can name is built by =venture_lql_environment_new()= (=src/lql/=), once per caller:
+
+- LQL's built-in commands and functions, which compute on rows and never touch a file, a program or the network;
+- one source per record type the caller may read (=fetch ticket=, =fetch invoice=, ...);
+- VENTURE's functions: =me()=, =my_teams()=, =today()=, =period()=, =organization()=.
+
+Nothing else. See [[*What is deliberately not registered][What is deliberately not registered]].
+
+* The dependency
+
+=deps/libre-query-language= is a git submodule pinned to a tag (v0.15.0). VENTURE builds only its library archive, =make -C deps/libre-query-language static=, into =deps/libre-query-language/build/<type>/liblql-1.0.a=, and links it into the server, the shared library and the tests like every other vendored archive (=LQL_DIR=, =LQL_LIB=, =dep-lql= in =config.mk= and =rules.mk=). =venturectl= never sees it.
+
+The library needs GLib alone (=glib-2.0=, =gobject-2.0=, =gio-2.0= and =libm=), which VENTURE already requires, so it adds *no Fedora build package*: =glib2-devel= is already in =make list-deps=. LQL's command line program needs json-glib, libyaml, libxml2, zstd, xz and bzip2, and its own vendored yaml-glib; none of that is built here, and the nested =deps/yaml-glib= submodule is never initialised.
+
+=src/lql/venture-lql.h= is outside =<venture.h>= and outside the GIR: its API speaks LQL's own types, and only server code links the archive. =make clean-deps= removes LQL's build tree with the others.
+
+* The record source
+
+=VentureLqlSource= reads one record type the way =GET /api/v1/<type>= does.
+
+** Which types are sources
+
+A type is a source when its module is on (=venture_entity_registry_list_names()= hides the types of a module that is off) and the caller passes the type gate. The web layer's gate is the list API's own role check, =venture_web_require_for_type()=, so the owner-only types (=user=, =api_token=, chat, notifications, comments, webhooks, ...) and the tenant data-class rules hold: a type =GET /api/v1/<type>= refuses the caller is not a source at all, and =fetch user= is "no source named 'user'". The source is named as the type is, in the singular.
+
+** Which rows
+
+Every fetch builds a =VentureQuery= and calls =venture_database_find()= inside =venture_access_policy_enter_snapshot()= with the caller's reader, captured when the environment was built (=venture_access_policy_snapshot()=). That is exactly how a read worker answers =GET /api/v1/<type>=, so the access policy decides every row the same way: organization membership, role-scoped visibility (sales, support and viewer members see assigned records only: assigned to them, owned by them, or on their team), personal records.
+
+An unqualified fetch is scoped to the business selected in the browser and every business beneath it, as =venture_web_scope_to_active_organization()= scopes a list; =organization_id == N= replaces that scope, as =?organization_id=N= does. Businesses themselves and workspace administration records are never scoped.
+
+Soft-deleted rows are left out; =fetch ticket, include_deleted: TRUE= reads them too, as =?include_deleted=true= does. Any other argument or parameter is an error.
+
+The web layer's door is =venture_web_server_new_lql_environment(server, request, &error)=: it authenticates the request, admits it as the list API admits a reader, scopes it to the selected business and gates every type. =tests/test-lql.c= holds a viewer's =fetch ticket= to their =GET /api/v1/ticket=, row for row and field for field.
+
+** Which fields
+
+The fields of a row are the members of the list API's own JSON for the record, =venture_serializable_to_json(record, FALSE)=, and the schema LQL sees (=get_columns=, which completion and hover read) is built from the same persistent properties. A sensitive field is not merely empty: it is not a field.
+
+| VENTURE field          | LQL value                                                                     |
+|------------------------+-------------------------------------------------------------------------------|
+| string, text, enum     | String (an enum is its name: ="in_progress"=)                                 |
+| integer, reference     | Int                                                                           |
+| double                 | Double                                                                        |
+| boolean                | Boolean                                                                       |
+| date, date and time    | Timestamp (a date is midnight UTC of that day, as VENTURE stores it)          |
+| money                  | Record ={amount, currency, exponent, formatted}=, =amount= an Int in minor units |
+| JSON                   | String, as the API sends it                                                    |
+| =display_name=         | String: the record's name as lists show it                                    |
+| =attributes=           | Record of custom attributes; NULL when there are none                          |
+
+Money is never a Double: =value.amount= is =10000= for 100.00 USD, and =value.formatted= is the text. Compare amounts within one currency (=value.currency == "USD" and value.amount > 10000=).
+
+Every reference is an id and also =<ref>_label=, the display name of what it points at (=company_id= and =company_label=). Labels are read through the same reader, a batch of ids at a time; a record the caller may not read, or of a type they may not open, leaves its label NULL, so a label never names more than the record would.
+
+* What reaches the database
+
+LQL offers the source each conjunct (each term joined by =and=) of the =filter= stages right after the =fetch=. Those that mean exactly what a VENTURE filter means become filters of the query, and LQL does not evaluate them again (EXACT); the text matches narrow the read and LQL still checks every row (HINT); everything else is LQL's. One table decides both the plan and the read (=venture_lql_source_map()=), and =lql_query_explain()= shows the query that runs.
+
+| LQL                                               | VENTURE filter                    | How      |
+|---------------------------------------------------+-----------------------------------+----------|
+| =f == c=, =!=, =<=, =<==, =>=, =>==                 | =eq= =ne= =lt= =lte= =gt= =gte=   | EXACT    |
+| =f in [c, ...]=, =f not in [c, ...]=              | =in=, =not_in=                    | EXACT    |
+| =is_null(f)=, =is_not_null(f)=                    | =is_null=, =not_null=             | EXACT    |
+| =between(f, lo, hi)=                              | =between=                         | EXACT    |
+| =m.amount OP c=, =m.currency == "X"=               | the money amount; its currency    | EXACT    |
+| =organization_id == N=                            | =eq=, replacing the business scope | EXACT   |
+| =contains=, =starts_with=, =ends_with=, =like= (case-sensitive) | =like=              | HINT     |
+| =or=, =not=, other functions, labels, =display_name= | none                           | LQL      |
+
+=f= is a stored field and =c= any expression without a field: a literal, a =$parameter=, =now() - 7d=, =me()=, =my_teams()=, =period("this_month").start=. The value has to be of the field's own type, because LQL answers ~==~ between types FALSE and ~!=~ TRUE, which no SQL comparison reproduces. Within that:
+
+- A string or enum compares with ~==~ and ~!=~ only (PostgreSQL orders text by collation, LQL by bytes), and never with the empty string, which a VENTURE filter reads as "NULL or empty".
+- A Timestamp compares with =<= =<== =>= =>== and =between= only: stored times omit a zero fraction, and only the range operators compare them by instant.
+- A boolean compares with ~==~ and ~!=~.
+- A NULL anywhere in an =in= list keeps the conjunct LQL's.
+- The text matches are HINT, not EXACT: SQL =LIKE= is case-insensitive for ASCII on SQLite and reads =%= and =_= in the text as wildcards, so it can only keep more rows. A pattern with a backslash, or a case-insensitive match (=contains(f, "x", TRUE)=), stays LQL's entirely. The =ilike= filter is never used: SQL and LQL fold case differently outside ASCII, and pushing it could drop rows.
+
+NULL is three-valued on both paths: =due_at < X= and =not (due_at < X)= both leave out a ticket with no due date, as SQL does; =filter_out= keeps it.
+
+A conjunct the plan took as EXACT is applied when the query runs; if it no longer maps then (an operand of another type at run time), the source checks it row by row itself rather than return a row LQL was promised it would not.
+
+A =limit= that follows only EXACT filters is given to the database.
+
+=tests/test-lql.c= runs every form above both right after the fetch and after a =sort= (where LQL alone evaluates it) and holds the rows equal.
+
+One caveat no pushdown can repair: a column holding SQL NULL where the record reads a default (an integer or enum column added by a migration, on rows older than it) reads as the default in the row and the list API alike, while the filter compares the stored NULL. Rows VENTURE writes never hold such a NULL.
+
+* VENTURE's functions
+
+| Function                          | Gives                                                                                              |
+|-----------------------------------+----------------------------------------------------------------------------------------------------|
+| =me() -> String=                  | your username: what =assignee= holds. =assignee == me()=                                           |
+| =my_teams() -> Array=             | the ids of the teams you are an active member of. =team_id in my_teams()=                          |
+| =today() -> Timestamp=            | the start of today on the business calendar (=locale.timezone=), as dates are stored              |
+| =period(name: String) -> Record=  | ={start, end, label}= of a report period; =end= is exclusive; ="all"= has NULL ends                |
+| =organization() -> Int=           | the business selected in the sidebar; NULL when all are                                            |
+
+=period()= takes the report period names (=venture_context_parse_period()=): =today=, =yesterday=, =this_week=, =last_week=, =this_month=, =last_month=, =this_quarter=, =last_quarter=, =this_year=, =last_year=, =ytd=, =mtd=, =qtd=, =fy=, =fy_2026=, =last_7_days=, =last_30_days=, =last_90_days=, =last_365_days=, =2026=, =2026-03=, =2026-Q2=, =2026-01-01..2026-03-31=, =all=. It reads them on the business calendar and fiscal year at the query's =now()=, so every row of one query, and every period in it, sees the same instant:
+
+#+begin_src lql
+fetch ticket
+| filter updated_at >= period("this_week").start and updated_at < period("this_week").end
+| summarize n = count(), by: status
+#+end_src
+
+All five functions are evaluated without a row, so a comparison with them reaches the database.
+
+* Bounds
+
+| Setting            | Default | Range       | Means                                                                                    |
+|--------------------+---------+-------------+------------------------------------------------------------------------------------------|
+| =query.max_rows=   |  10000  | 1..1000000  | the most rows one =fetch= may read, after the access policy and the pushed filters; also the most rows any later stage may hold |
+| =query.timeout_ms= |   5000  | 1..600000   | the longest one query may run                                                            |
+
+A =fetch= that would read more than =query.max_rows= fails with an error that names the bound; it never answers with a silently shorter list. The source reads one row past the bound to tell the two apart. Filter on stored fields right after the =fetch=, so the database narrows the read, or add =| limit N=. Neither bound can be switched off: zero means "none" to LQL, so the configuration refuses it.
+
+The timeout is LQL's own =timeout_ms=: it bounds evaluation between stages and cannot interrupt a database read in progress, which =query.max_rows= bounds instead.
+
+* What is deliberately not registered
+
+LQL can read files (=read=), run programs (=exec= and command definitions), talk SQL (=sql=, =sqlite=, =postgres=), read git history, the systemd journal and Kubernetes. Each is a provider a host has to add; VENTURE adds none. Every one of them would read around the one reader path and its access policy: a =sql= source would answer any question about any table, whatever the caller may see. =tests/test-lql.c= holds =read "/etc/passwd"=, =sql ...=, =sqlite=, =postgres=, =exec=, =git_log=, =k8s= and =journal= to "unknown command", and checks that every =fetch= name is a record source.
+
+LQL scripts (=.include= of other files) are a host API (=lql_script_load()=) that no query can reach, and VENTURE does not use it.
+
+LQL here is read-only. Writes from a query result are a later story, through the existing bulk route and its validators.

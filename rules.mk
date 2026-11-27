@@ -282,6 +282,8 @@ $(AI_GLIB_GIR): $(AI_GLIB_SHARED)
 $(HTMX_GLIB_GIR): $(HTMX_GLIB_SHARED)
 	$(Q)$(MAKE) --no-print-directory -C $(HTMX_GLIB_DIR) DEBUG=$(DEBUG) $(HTMX_GLIB_SUBMAKE) GIR=1 gir
 
+# src/lql/ is left out: its API speaks LQL's own types (LqlEnvironment,
+# LqlSource), and LQL's GIR is not among the uninstalled ones included.
 $(OUTDIR)/$(GIR_FILE): $(OUTDIR)/$(LIB_SHARED_FULL) $(VENDOR_GIR_FILES) $(PUBLIC_HDRS) Makefile config.mk rules.mk
 	@echo "  GIR     $@"
 	$(Q)$(GIR_SCANNER) \
@@ -297,7 +299,7 @@ $(OUTDIR)/$(GIR_FILE): $(OUTDIR)/$(LIB_SHARED_FULL) $(VENDOR_GIR_FILES) $(PUBLIC
 		--identifier-prefix=Venture --symbol-prefix=venture \
 		--output=$@ --warn-all --warn-error -Isrc \
 		--cflags-begin $(CFLAGS) --cflags-end \
-		src/venture.h $(filter-out src/venture.h,$(PUBLIC_HDRS)) $(SERVER_SRCS)
+		src/venture.h $(filter-out src/venture.h,$(PUBLIC_HDRS)) $(filter-out src/lql/%,$(SERVER_SRCS))
 
 $(OUTDIR)/$(TYPELIB_FILE): $(OUTDIR)/$(GIR_FILE)
 	@echo "  GIR     $@"
@@ -383,6 +385,18 @@ dep-libreventory: dep-htmx-glib
 		$(LIBREVENTORY_SUBMAKE) core
 
 $(LIBREVENTORY_LIB): dep-libreventory
+
+# LQL's library archive only (`static`): never `all`, `cli` or `deps`,
+# which build its command line program and its own vendored yaml-glib
+# and need json-glib, libyaml, libxml2 and the compressors besides.
+# The archive's objects wait on its generated lql-version.h, so this one
+# target also writes the header src/lql/ includes.
+.PHONY: dep-lql
+dep-lql:
+	$(Q)$(MAKE) --no-print-directory -C $(LQL_DIR) DEBUG=$(DEBUG) static
+$(LQL_LIB): dep-lql
+	@test -f $@
+
 $(YAML_GLIB_LIB): dep-yaml-glib
 $(HTMX_GLIB_LIB): dep-htmx-glib
 $(AI_GLIB_LIB): dep-ai-glib
@@ -419,7 +433,7 @@ clean-deps:
 	$(Q)for d in $(YAML_GLIB_DIR) $(HTMX_GLIB_DIR) $(AI_GLIB_DIR) \
 	             $(CRISPY_DIR) $(PODOMATION_DIR) $(ORM_GLIB_DIR) $(STRIPE_GLIB_DIR) \
 	             $(OTEL_GLIB_DIR) $(MAIL_GLIB_DIR) $(MAIL_GLIB_DIR)/deps/otel-glib $(OIDC_GLIB_DIR) \
-	             $(LIBREVENTORY_DIR) $(TALLOW_DIR); do \
+	             $(LIBREVENTORY_DIR) $(TALLOW_DIR) $(LQL_DIR); do \
 		rm -rf $$d/build; \
 	done
 
@@ -734,6 +748,10 @@ $(KERNELS_OBJ): $(KERNELS_C) $(KERNELS_H) | $(TALLOW_RT_LIB)
 # Everything that includes <vk-kernels.h> needs it generated first.
 $(CORE_OBJS) $(SERVER_OBJS) $(CLI_OBJS) $(MAIN_OBJ) $(TEST_OBJS): | $(KERNELS_H) $(TALLOW_RT_LIB)
 $(SERVER_OBJS) $(MAIN_OBJ) $(TEST_OBJS): | $(TALLOW_SUET_LIB)
+
+# src/lql/ and the tests include <lql.h>, which includes the version
+# header LQL's own build generates (dep-lql).
+$(filter $(OBJDIR)/server/lql/%,$(SERVER_OBJS)) $(TEST_OBJS): | $(LQL_LIB)
 
 # The runtime is linked through LDFLAGS (whole, for the VM), so it is not
 # in VENDOR_LIBS_SERVER; name it as a prerequisite of every server link.

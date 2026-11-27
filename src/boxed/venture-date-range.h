@@ -227,6 +227,32 @@ venture_date_range_parse(
 );
 
 /**
+ * venture_date_range_parse_at:
+ * @text: the period expression to parse
+ * @timezone: (nullable): the operator's calendar; %NULL means local time
+ * @fiscal_year_start_month: the month the fiscal year begins, 1-12
+ * @reference: (nullable): the instant "today", "this month" and the rest
+ *   are read from; %NULL means the clock
+ * @error: (out) (optional): return location for a #GError
+ *
+ * venture_date_range_parse() with the current instant given rather than
+ * read from the clock, for a caller whose own "now" is fixed for the
+ * length of its work: an LQL query reads every period, and now(), at one
+ * instant, and a test pins it to a known date. @reference is read in
+ * @timezone.
+ *
+ * Returns: (transfer full) (nullable): the parsed range, or %NULL on error
+ */
+VentureDateRange *
+venture_date_range_parse_at(
+	const gchar	 *text,
+	GTimeZone	 *timezone,
+	gint		  fiscal_year_start_month,
+	GDateTime	 *reference,
+	GError		**error
+);
+
+/**
  * venture_date_range_copy:
  * @self: (nullable): a #VentureDateRange
  *

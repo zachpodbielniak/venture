@@ -15,6 +15,7 @@
 #include "quotes/venture-document-print-style.h"
 #include "quotes/venture-quote-mail.h"
 #include "statements/venture-statements-private.h"
+#include "lql/venture-lql.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -4250,6 +4251,65 @@ venture_web_api_list(
 
 	body = venture_web_api_list_render(records, total);
 	return venture_web_json_body_response(body, 200);
+}
+
+/* --- LQL: the list API's admission, scope and type gate, for queries --- */
+
+/* What venture_web_lql_gate() needs: the server and the caller. */
+typedef struct
+{
+	VentureWebServer	*server;
+	VentureAuthPrincipal	*principal;
+} VentureWebLqlGate;
+
+/*
+ * The type gate of a query environment: the very role check GET
+ * /api/v1/<type> makes before it lists (venture_web_require_for_type()),
+ * so a type that list refuses the caller is not a source.
+ */
+static gboolean
+venture_web_lql_gate(
+	GType		  entity_type,
+	gpointer	  user_data,
+	GError		**error
+){
+	VentureWebLqlGate *gate = user_data;
+
+	return venture_web_require_for_type(gate->server, gate->principal, entity_type,
+	                                    VENTURE_USER_ROLE_VIEWER, error);
+}
+
+/* Declared in lql/venture-lql.h, which says what it guarantees. */
+LqlEnvironment *
+venture_web_server_new_lql_environment(
+	VentureWebServer	 *server,
+	HtmxRequest		 *request,
+	GError			**error
+){
+	g_autoptr(VentureAuthPrincipal) principal = NULL;
+	g_autoptr(GArray) tree = NULL;
+	VentureWebLqlGate gate;
+
+	g_return_val_if_fail(VENTURE_IS_WEB_SERVER(server), NULL);
+	g_return_val_if_fail(HTMX_IS_REQUEST(request), NULL);
+
+	/* Admitted exactly as venture_web_api_list() admits a reader. */
+	principal = venture_auth_authenticate(server->auth, request);
+
+	if (!venture_web_hosted_auth_require(server, request, principal, VENTURE_USER_ROLE_VIEWER,
+	                                     error))
+		return NULL;
+
+	/* The business selected in the browser and everything beneath it,
+	 * as venture_web_scope_to_active_organization() scopes a list. */
+	tree = venture_web_organization_tree(server,
+		venture_web_active_organization(server, request));
+
+	gate.server = server;
+	gate.principal = principal;
+
+	return venture_lql_environment_new(server->context, principal,
+		(const gint64 *)tree->data, tree->len, venture_web_lql_gate, &gate, error);
 }
 
 static HtmxResponse *

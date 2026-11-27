@@ -22,6 +22,11 @@
 
 #include "venture-default-config.h"
 
+/* The largest query.max_rows and query.timeout_ms accepted (docs/lql.org):
+ * a million rows and ten minutes, past which a "bound" bounds nothing. */
+#define VENTURE_CONFIG_QUERY_MAX_ROWS_CEILING (1000000)
+#define VENTURE_CONFIG_QUERY_TIMEOUT_CEILING (600000)
+
 /*
  * One configuration setting.
  *
@@ -477,6 +482,13 @@ static const VentureConfigSetting venture_config_settings[] = {
 	VC_STR ("ui-accent", "ui", "accent", "",
 	        "Accent colour; empty means the look's own"),
 	VC_INT ("ui-page-size", "ui", "page_size", 50, "Rows per page"),
+
+	/* LQL queries (docs/lql.org): how many rows one fetch may read, and
+	 * how long one query may run, so a page load cannot scan a table. */
+	VC_INT ("query-max-rows", "query", "max_rows", 10000,
+	        "Most rows one LQL fetch may read, 1..1000000; more is an error"),
+	VC_INT ("query-timeout-ms", "query", "timeout_ms", 5000,
+	        "Longest an LQL query may run in milliseconds, 1..600000"),
 	VC_BOOL("ui-chat-dock", "ui", "chat_dock", TRUE, "Show the AI chat dock"),
 	VC_BOOL("ui-chat-dock-expanded", "ui", "chat_dock_expanded", FALSE,
 	        "Start the chat dock expanded"),
@@ -1886,6 +1898,37 @@ venture_config_validate(
 			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
 			            "ui.look must be classic or industrial, not \"%s\"",
 			            (NULL != look) ? look : "");
+			return FALSE;
+		}
+	}
+
+	/*
+	 * The LQL bounds are what stop a query from scanning a whole table or
+	 * holding the server, so neither may be switched off: zero would mean
+	 * "no limit" to LQL itself.
+	 */
+	{
+		gint64 max_rows;
+		gint64 timeout_ms;
+
+		g_object_get(self, "query-max-rows", &max_rows,
+		             "query-timeout-ms", &timeout_ms, NULL);
+
+		if ((max_rows < 1) || (max_rows > VENTURE_CONFIG_QUERY_MAX_ROWS_CEILING))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "query.max_rows must be between 1 and %d, not %"
+			            G_GINT64_FORMAT, VENTURE_CONFIG_QUERY_MAX_ROWS_CEILING,
+			            max_rows);
+			return FALSE;
+		}
+
+		if ((timeout_ms < 1) || (timeout_ms > VENTURE_CONFIG_QUERY_TIMEOUT_CEILING))
+		{
+			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_CONFIG,
+			            "query.timeout_ms must be between 1 and %d, not %"
+			            G_GINT64_FORMAT, VENTURE_CONFIG_QUERY_TIMEOUT_CEILING,
+			            timeout_ms);
 			return FALSE;
 		}
 	}

@@ -651,6 +651,21 @@ LIBREVENTORY_SUBMAKE = CORE_DEP_CFLAGS="$(CFLAGS_ORM_GLIB) $(CFLAGS_YAML_GLIB) $
 CFLAGS += -I$(LIBREVENTORY_DIR)/include
 TEST_CFLAGS += -I$(LIBREVENTORY_DIR)/include
 
+# The query language: libre-query-language (LQL, AGPL-3.0-or-later),
+# its library archive only. The library needs GLib alone (glib-2.0,
+# gobject-2.0, gio-2.0 and libm, all of which VENTURE already links);
+# json-glib, libyaml, libxml2, zstd, xz and bzip2 are its command line
+# program's, which is never built here, and so is its vendored yaml-glib,
+# which stays uninitialised. Its version header is generated into its
+# own build tree, hence the second include path. Server and tests only:
+# src/lql/ is server code, and venturectl never sees the archive.
+# See docs/lql.org.
+LQL_DIR := $(DEPS_DIR)/libre-query-language
+LQL_OUT := $(LQL_DIR)/build/$(BUILD_TYPE)
+LQL_LIB := $(LQL_OUT)/liblql-1.0.a
+CFLAGS += -I$(LQL_DIR)/src -I$(LQL_OUT)/include
+VENDOR_LIBS_SERVER += $(LQL_LIB)
+
 # The recovery GTest uses real authenticated archives, not a fake encryptor.
 FEDORA_DEPS += jq gnupg2
 DEBIAN_DEPS += jq gnupg

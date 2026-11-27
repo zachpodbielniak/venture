@@ -304,6 +304,18 @@ venture_date_range_parse(
 	gint		  fiscal_year_start_month,
 	GError		**error
 ){
+	return venture_date_range_parse_at(text, timezone, fiscal_year_start_month,
+	                                   NULL, error);
+}
+
+VentureDateRange *
+venture_date_range_parse_at(
+	const gchar	 *text,
+	GTimeZone	 *timezone,
+	gint		  fiscal_year_start_month,
+	GDateTime	 *reference,
+	GError		**error
+){
 	g_autoptr(GTimeZone) tz = NULL;
 	g_autoptr(GTimeZone) utc = NULL;
 	g_autoptr(GDateTime) now = NULL;
@@ -321,7 +333,10 @@ venture_date_range_parse(
 		fiscal_year_start_month = 1;
 
 	tz = venture_date_range_resolve_tz(timezone);
-	now = g_date_time_new_now(tz);
+
+	/* The caller's instant, read on the operator's calendar, or the clock. */
+	now = (NULL != reference) ? g_date_time_to_timezone(reference, tz)
+	                          : g_date_time_new_now(tz);
 
 	/*
 	 * Two zones with two jobs. @timezone is the operator's calendar and
