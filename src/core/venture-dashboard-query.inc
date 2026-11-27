@@ -18,7 +18,7 @@
  * looking) gets a refusal in place, never somebody else's rows.
  *
  * The drawing is venture_web_query_chart(), the same function the list
- * pages' Chart toggle will call, and the card's JSON is the query's own
+ * pages' Chart toggle calls, and the card's JSON is the query's own
  * document with what was drawn beside it, from that one pass.
  */
 

@@ -221,5 +221,10 @@ out from the field table (Open and Closed, Mine, this week and this month of
 the record's date). Each panel carries the other's filter along. See
 [[file:lql.org::*Generic lists][Generic lists]] and [[file:lql.org::*Quick chips][Quick chips]].
 
+Beside Export, /Table/ and /Chart/ switch the page between the records and a
+chart of them (=?view=chart=): the same filters, split by a field picked from
+the field table, counted or totalled per currency, drawn as bars, a table, a
+line or a pie. See [[file:lql.org::*Charts on list pages][Charts on list pages]].
+
 Live search retains keyboard focus and the selection after refreshing results.
 A cancelled or slower earlier search cannot replace a newer search result.

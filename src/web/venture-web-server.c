@@ -3862,6 +3862,89 @@ venture_web_wants_deleted(HtmxRequest *request)
  * left for the caller, which applies it itself to place a problem in its
  * query bar (venture_web_ui_list()).
  */
+/* The chart's own controls (venture-web-list-chart.inc): never a filter. */
+static gboolean
+venture_web_list_chart_control(const gchar *name);
+
+/*
+ * The parameters of a list request that its filters are read from: the
+ * URL's, with the list form's blank controls dropped and its money signs
+ * spelled as comparisons (?list_filters=1), and without the parameters
+ * that are the page's rather than a field's -- the bar's q, and the Chart
+ * toggle's view=chart and chart_by, chart_value, chart_kind.
+ *
+ * Returns: (transfer full) (nullable): the parameters, %NULL for none
+ */
+static GHashTable *
+venture_web_list_url_filters(
+	HtmxRequest	*request,
+	GType		 entity_type
+){
+	g_autoptr(VentureEntityClass) klass = NULL;
+	GHashTable *url_params;
+	GHashTable *out;
+	GHashTableIter iter;
+	gpointer key, value;
+	gboolean form;
+	gboolean chart;
+
+	url_params = htmx_request_get_query_params(request);
+
+	if (NULL == url_params)
+		return NULL;
+
+	klass = g_type_class_ref(entity_type);
+
+	/* Blank controls mean "any" only in this list form. An ordinary
+	 * API filter with an empty value still means an empty field. */
+	form = (0 == g_strcmp0(htmx_request_get_query_param(request, "list_filters"), "1"));
+	chart = (0 == g_strcmp0(htmx_request_get_query_param(request, "view"), "chart"));
+	out = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_hash_table_iter_init(&iter, url_params);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		/*
+		 * q is an LQL filter (docs/lql.org, "Filter bars"), never a
+		 * field: applied by the caller as the set of ids it keeps.
+		 * The chart's controls are the page's, as is view=chart.
+		 */
+		if ((0 == g_strcmp0(key, "q")) || venture_web_list_chart_control(key) ||
+		    (chart && (0 == g_strcmp0(key, "view"))))
+			continue;
+
+		if (form)
+		{
+			g_autofree gchar *property = NULL;
+			GParamSpec *spec;
+
+			if (0 == g_strcmp0(key, "list_filters") || venture_string_is_empty(value))
+				continue;
+
+			property = venture_entity_column_to_property(key);
+			spec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
+
+			/* A sign comparison is meaningful across currencies; a
+			 * decimal threshold without a currency would not be. */
+			if (spec && spec->value_type == VENTURE_TYPE_MONEY &&
+			    (0 == g_strcmp0(value, "positive") || 0 == g_strcmp0(value, "zero") ||
+			     0 == g_strcmp0(value, "negative")))
+			{
+				const gchar *op = 0 == g_strcmp0(value, "positive") ? "gt" :
+					0 == g_strcmp0(value, "negative") ? "lt" : "eq";
+
+				g_hash_table_insert(out, g_strdup_printf("%s__%s", (gchar *)key, op),
+				                    g_strdup("0"));
+				continue;
+			}
+		}
+
+		g_hash_table_insert(out, g_strdup(key), g_strdup(value));
+	}
+
+	return out;
+}
+
 static VentureQuery *
 venture_web_build_query_full(
 	VentureWebServer	 *self,
@@ -3871,69 +3954,12 @@ venture_web_build_query_full(
 	GError			**error
 ){
 	g_autoptr(VentureQuery) query = NULL;
-	GHashTable *url_params;
-	g_autoptr(GHashTable) controls = NULL;
-	g_autoptr(GHashTable) without_q = NULL;
+	g_autoptr(GHashTable) url_params = NULL;
 	const gchar *lql;
 
 	query = venture_query_new(entity_type);
-	url_params = htmx_request_get_query_params(request);
+	url_params = venture_web_list_url_filters(request, entity_type);
 	lql = htmx_request_get_query_param(request, "q");
-
-	/* Blank controls mean "any" only in this list form. An ordinary
-	 * API filter with an empty value still means an empty field. */
-	if (0 == g_strcmp0(htmx_request_get_query_param(request, "list_filters"), "1"))
-	{
-		GHashTableIter iter;
-		gpointer key, value;
-		g_autoptr(VentureEntityClass) klass = g_type_class_ref(entity_type);
-
-		controls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-		g_hash_table_iter_init(&iter, url_params);
-		while (g_hash_table_iter_next(&iter, &key, &value))
-		{
-			GParamSpec *spec;
-			g_autofree gchar *property = NULL;
-
-			if (0 == g_strcmp0(key, "list_filters") || venture_string_is_empty(value))
-				continue;
-			property = venture_entity_column_to_property(key);
-			spec = g_object_class_find_property(G_OBJECT_CLASS(klass), property);
-			/* A sign comparison is meaningful across currencies; a
-			 * decimal threshold without a currency would not be. */
-			if (spec && spec->value_type == VENTURE_TYPE_MONEY &&
-			    (0 == g_strcmp0(value, "positive") || 0 == g_strcmp0(value, "zero") ||
-			     0 == g_strcmp0(value, "negative")))
-			{
-				const gchar *op = 0 == g_strcmp0(value, "positive") ? "gt" :
-					0 == g_strcmp0(value, "negative") ? "lt" : "eq";
-				g_hash_table_insert(controls, g_strdup_printf("%s__%s", (gchar *)key, op), g_strdup("0"));
-			}
-			else
-				g_hash_table_insert(controls, g_strdup(key), g_strdup(value));
-		}
-		url_params = controls;
-	}
-
-	/*
-	 * q is an LQL filter (docs/lql.org, "Filter bars"), never a field:
-	 * taken out of the parameters every other filter is read from, and
-	 * applied below as the set of ids it keeps.
-	 */
-	if ((NULL != url_params) && g_hash_table_contains(url_params, "q"))
-	{
-		GHashTableIter iter;
-		gpointer key, value;
-
-		without_q = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-		g_hash_table_iter_init(&iter, url_params);
-
-		while (g_hash_table_iter_next(&iter, &key, &value))
-			if (0 != g_strcmp0(key, "q"))
-				g_hash_table_insert(without_q, g_strdup(key), g_strdup(value));
-
-		url_params = without_q;
-	}
 
 	if (!venture_query_apply_query_string(query, url_params, error))
 		return NULL;
@@ -8410,6 +8436,9 @@ venture_web_append_list_filters(VentureWebServer *self, HtmxRequest *request,
 	g_string_append_printf(html, "<a class=\"btn\" href=\"%s\">Clear filters</a></form>", path);
 }
 
+/* The Chart toggle on list pages: ?view=chart. */
+#include "venture-web-list-chart.inc"
+
 static HtmxResponse *
 venture_web_ui_list(
 	HtmxRequest	*request,
@@ -8436,7 +8465,9 @@ venture_web_ui_list(
 	g_autofree gchar *view_path = NULL;
 	g_autoptr(LqlEnvironment) environment = NULL;
 	g_autoptr(VentureLqlProblem) problem = NULL;
+	g_autoptr(GString) chart_html = NULL;
 	const gchar *lql;
+	gboolean chart;
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
@@ -8444,11 +8475,14 @@ venture_web_ui_list(
 	guint j;
 
 	self = user_data;
+	chart = venture_web_list_wants_chart(request);
 
-	/* ?q= is a person's query: answered from a fiber, the query on a
-	 * query worker (venture_web_query_off_loop(), venture-web-lql.inc). */
+	/* ?q= is a person's query, and a chart always runs one: answered
+	 * from a fiber, the query on a query worker
+	 * (venture_web_query_off_loop(), venture-web-lql.inc). */
 	{
-		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_ui_list, FALSE);
+		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_ui_list,
+		                                            chart);
 
 		if (NULL != later)
 			return later;
@@ -8496,7 +8530,34 @@ venture_web_ui_list(
 	query = venture_web_build_query_full(self, entity_type, request, FALSE, &error);
 	lql = htmx_request_get_query_param(request, "q");
 
-	if ((NULL != query) && !venture_web_lql_blank(lql))
+	/*
+	 * A chart: the page's URL filters and the bar's q, summarized
+	 * (venture-web-list-chart.inc) in place of the table. Run as the
+	 * list's caller in the environment the bar runs in; a problem is
+	 * drawn in the bar, as the list's own is.
+	 */
+	if ((NULL != query) && chart)
+	{
+		g_autoptr(GHashTable) filters = NULL;
+		g_autofree gchar *url_filter = NULL;
+		g_autofree gchar *action = NULL;
+
+		environment = venture_web_server_new_lql_environment(self, request, &error);
+
+		if (NULL == environment)
+			return venture_web_error_response(error);
+
+		filters = venture_web_list_url_filters(request, entity_type);
+		url_filter = venture_web_list_chart_url_filter(entity_type, filters, &problem);
+		action = g_strdup_printf("/e/%s", type_name);
+		chart_html = g_string_new(NULL);
+
+		if (NULL == problem)
+			venture_web_list_chart_draw(self, request, environment, entity_type, type_name,
+			                            action, url_filter, lql, TRUE, chart_html, &total,
+			                            &problem);
+	}
+	else if ((NULL != query) && !venture_web_lql_blank(lql))
 	{
 		/* The caller's environment: what the filter runs in, and what the
 		 * bar highlights it against. Not built for a page with no
@@ -8546,8 +8607,9 @@ venture_web_ui_list(
 	}
 
 	/* A filter that cannot run lists nothing: the page draws its problem
-	 * in the bar, and no table that would read as "no such records". */
-	if (NULL != problem)
+	 * in the bar, and no table that would read as "no such records". A
+	 * chart reads no page of records: it counted its own. */
+	if ((NULL != problem) || chart)
 		records = g_ptr_array_new_with_free_func(g_object_unref);
 	else
 		records = venture_database_find(venture_context_get_database(self->context),
@@ -8569,8 +8631,10 @@ venture_web_ui_list(
 
 	/* The whole filtered set, not this page of it: "Page 2 of 9" and the
 	 * subtitle's count both need the real number. */
-	total = (NULL != problem) ? 0 : venture_database_count(venture_context_get_database(self->context),
-	                                                      query, NULL);
+	if (NULL != problem)
+		total = 0;
+	else if (!chart)
+		total = venture_database_count(venture_context_get_database(self->context), query, NULL);
 
 	if (total < 0)
 		total = (gint64)records->len;
@@ -8595,6 +8659,23 @@ venture_web_ui_list(
 	g_string_append_printf(content, "%" G_GINT64_FORMAT " record%s", total,
 	                       (1 == total) ? "" : "s");
 	g_string_append(content, "</span></div><div class=\"page-actions\">");
+
+	/* Table or Chart: the same records, the toggle a plain link that
+	 * keeps every filter (venture-web-list-chart.inc). */
+	{
+		g_autofree gchar *table_href = NULL;
+		g_autofree gchar *chart_href = NULL;
+
+		venture_web_list_chart_toggle_hrefs(request, &table_href, &chart_href);
+		g_string_append_printf(content,
+			"<div class=\"segmented\" role=\"group\" aria-label=\"Show as\">"
+			"<a class=\"seg%s\" href=\"/e/%s%s\"%s>Table</a>"
+			"<a class=\"seg%s\" href=\"/e/%s%s\"%s data-chart-toggle>Chart</a></div>",
+			chart ? "" : " active", type_name, table_href,
+			chart ? "" : " aria-current=\"true\"",
+			chart ? " active" : "", type_name, chart_href,
+			chart ? " aria-current=\"true\"" : "");
+	}
 
 	{
 		g_autofree gchar *suffix = NULL;
@@ -8655,6 +8736,17 @@ venture_web_ui_list(
 		return venture_web_html_response(
 			venture_web_page(self, request, (NULL != view) ? view_path : path, heading,
 			                 content->str), 400);
+	}
+
+	/* The chart in place of the table: no row actions, no bulk bar, no
+	 * pager, since it lists no rows. */
+	if (chart)
+	{
+		g_string_append(content, chart_html->str);
+
+		return venture_web_html_response(
+			venture_web_page(self, request, (NULL != view) ? view_path : path, heading,
+			                 content->str), 200);
 	}
 
 	/* The registry prototype is one process-wide object per type; a
@@ -15152,13 +15244,13 @@ static gchar *
 venture_web_ticket_url(
 	const gchar	*kind,
 	const gchar	*issue_type,
-	gboolean	 board,
+	const gchar	*mode,
 	const gchar	*lql
 ){
 	g_autoptr(GString) url = NULL;
 
 	url = g_string_new("/tickets?view=");
-	g_string_append(url, board ? "board" : "list");
+	g_string_append(url, mode);
 
 	g_string_append(url, "&kind=");
 	g_string_append_uri_escaped(url,
@@ -15197,18 +15289,23 @@ venture_web_ui_tickets(
 	g_autoptr(VentureLqlProblem) problem = NULL;
 	g_autofree gchar *legacy = NULL;
 	g_autofree gchar *bar = NULL;
+	g_autoptr(GString) chart_html = NULL;
 	HtmxResponse *redirect;
 	const gchar *view;
 	const gchar *kind;
 	const gchar *issue_type;
 	const gchar *lql;
+	const gchar *mode;
 	gboolean board;
+	gboolean chart;
 
 	self = user_data;
+	chart = venture_web_list_wants_chart(request);
 
-	/* A filter is a person's query: the page answers from a fiber, and
-	 * the query runs on a query worker (venture-web-lql.inc). */
-	redirect = venture_web_lql_later(self, request, params, venture_web_ui_tickets, FALSE);
+	/* A filter is a person's query, and a chart always runs one: the
+	 * page answers from a fiber, and the query runs on a query worker
+	 * (venture-web-lql.inc). */
+	redirect = venture_web_lql_later(self, request, params, venture_web_ui_tickets, chart);
 
 	if (NULL != redirect)
 		return redirect;
@@ -15287,7 +15384,24 @@ venture_web_ui_tickets(
 	view = htmx_request_get_query_param(request, "view");
 	kind = htmx_request_get_query_param(request, "kind");
 	issue_type = htmx_request_get_query_param(request, "issue_type");
-	board = (0 != g_strcmp0(view, "list"));
+	board = !chart && (0 != g_strcmp0(view, "list"));
+	mode = chart ? VENTURE_WEB_LIST_CHART_VIEW : board ? "board" : "list";
+
+	/*
+	 * The chart: the same tickets -- the URL's filters as the bar shows
+	 * them, then q, which the page has checked already -- summarized
+	 * (venture-web-list-chart.inc). Drawn before the bar, so a problem
+	 * with it is the bar's to show.
+	 */
+	if (chart && (NULL == problem))
+	{
+		gint64 counted = 0;
+
+		chart_html = g_string_new(NULL);
+		venture_web_list_chart_draw(self, request, environment, VENTURE_TYPE_TICKET, "ticket",
+		                            "/tickets", legacy, lql, FALSE, chart_html, &counted,
+		                            &problem);
+	}
 
 	/*
 	 * The head says how the queue stands in one line -- how many are
@@ -15335,9 +15449,25 @@ venture_web_ui_tickets(
 	/* The query bar: the filter the page shows, in LQL, and the chips
 	 * that write the common ones. */
 	{
-		const gchar *hidden[] = { "view", NULL, NULL };
+		const gchar *hidden[] = { "view", NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+		guint n_hidden = 2;
+		gsize c;
 
-		hidden[1] = board ? "board" : "list";
+		hidden[1] = mode;
+
+		/* A chart's picks go along with a new filter. */
+		for (c = 0; chart && (NULL != venture_web_list_chart_controls[c]); c++)
+		{
+			const gchar *pick = htmx_request_get_query_param(request,
+			                                                 venture_web_list_chart_controls[c]);
+
+			if (NULL == pick)
+				continue;
+
+			hidden[n_hidden++] = venture_web_list_chart_controls[c];
+			hidden[n_hidden++] = pick;
+		}
+
 		venture_web_append_query_bar(content, environment, "ticket", "Filter tickets",
 		                             "/tickets", hidden, venture_web_ticket_chips,
 		                             G_N_ELEMENTS(venture_web_ticket_chips),
@@ -15372,7 +15502,7 @@ venture_web_ui_tickets(
 				? (venture_string_is_empty(kind) ||
 				   (0 == g_strcmp0(kind, "all")))
 				: (0 == g_strcmp0(kind, kinds[i].value));
-			url = venture_web_ticket_url(kinds[i].value, issue_type, board, lql);
+			url = venture_web_ticket_url(kinds[i].value, issue_type, mode, lql);
 
 			g_string_append_printf(content,
 				"<a class=\"seg%s\" href=\"%s\"%s>%s</a>",
@@ -15398,7 +15528,7 @@ venture_web_ui_tickets(
 		guint i;
 
 		types = g_type_class_ref(VENTURE_TYPE_ISSUE_TYPE);
-		all_url = venture_web_ticket_url(kind, "all", board, lql);
+		all_url = venture_web_ticket_url(kind, "all", mode, lql);
 		any = venture_string_is_empty(issue_type) ||
 		      (0 == g_strcmp0(issue_type, "all"));
 		current = any ? g_strdup("Any type")
@@ -15419,7 +15549,7 @@ venture_web_ui_tickets(
 			const gchar *nick;
 
 			nick = types->values[i].value_nick;
-			url = venture_web_ticket_url(kind, nick, board, lql);
+			url = venture_web_ticket_url(kind, nick, mode, lql);
 			label = venture_web_label_from_name(nick);
 
 			g_string_append_printf(content, "<a href=\"%s\"%s>", url,
@@ -15434,19 +15564,25 @@ venture_web_ui_tickets(
 	{
 		g_autofree gchar *board_url = NULL;
 		g_autofree gchar *list_url = NULL;
+		g_autofree gchar *chart_url = NULL;
+		gboolean listed = !board && !chart;
 
-		board_url = venture_web_ticket_url(kind, issue_type, TRUE, lql);
-		list_url = venture_web_ticket_url(kind, issue_type, FALSE, lql);
+		board_url = venture_web_ticket_url(kind, issue_type, "board", lql);
+		list_url = venture_web_ticket_url(kind, issue_type, "list", lql);
+		chart_url = venture_web_ticket_url(kind, issue_type, VENTURE_WEB_LIST_CHART_VIEW, lql);
 
 		g_string_append_printf(content,
 			"<div class=\"segmented\" role=\"group\" aria-label=\"Show as\">"
 			"<a class=\"seg%s\" href=\"%s\"%s>Board</a>"
 			"<a class=\"seg%s\" href=\"%s\"%s>List</a>"
+			"<a class=\"seg%s\" href=\"%s\"%s data-chart-toggle>Chart</a>"
 			"</div>",
 			board ? " active" : "", board_url,
 			board ? " aria-current=\"true\"" : "",
-			board ? "" : " active", list_url,
-			board ? "" : " aria-current=\"true\"");
+			listed ? " active" : "", list_url,
+			listed ? " aria-current=\"true\"" : "",
+			chart ? " active" : "", chart_url,
+			chart ? " aria-current=\"true\"" : "");
 	}
 
 	venture_web_append_save_view_form(content, request, "ticket", board);
@@ -15458,6 +15594,15 @@ venture_web_ui_tickets(
 		return venture_web_html_response(
 			venture_web_page(self, request, "/tickets", "Tickets", content->str),
 			400);
+
+	/* The chart in place of the board or the list. */
+	if (chart)
+	{
+		g_string_append(content, chart_html->str);
+
+		return venture_web_html_response(
+			venture_web_page(self, request, "/tickets", "Tickets", content->str), 200);
+	}
 
 	{
 		g_autoptr(VentureActorNames) viewer = NULL;

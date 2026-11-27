@@ -7,7 +7,7 @@
  * One function turns a venture.query/1 document (what POST /api/v1/query
  * answers) and three column picks -- along the bottom, the series, the
  * value -- into server-rendered HTML and SVG, through the drawings in
- * venture-web-chart.h. The dashboard's query widget calls it; so will the
+ * venture-web-chart.h. The dashboard's query widget calls it, and so does the
  * Chart toggle on a list page, with the query its bar built.
  *
  * Money is never added across currencies: a money value column draws one

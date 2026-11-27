@@ -310,6 +310,7 @@ The filter is only as cheap as what the database narrows. =tests/test-lql-lists.
 | =venturectl query 'LQL'=     | =VENTURE_TOKEN=                    | posting to the API and printing the answer  |
 | MCP =venture_query=          | the MCP session's caller           | posting to the API, answer untouched        |
 | the dashboard =query= widget | whoever is looking at the page     | drawing it ([[file:dashboards.org::*The query kind][The query kind]]) |
+| a list page's Chart toggle   | whoever is looking at the list     | drawing it ([[*Charts on list pages][Charts on list pages]]) |
 
 So the API, the CLI and the MCP tool answer with the same rows by construction, and =tests/test-lql-query.c= holds them equal for "open tickets by assignee" and "invoices this quarter by status", CSV included.
 
@@ -318,6 +319,82 @@ Before a query runs, every =fetch= in it -- the main pipeline and every sub-pipe
 Then LQL's errors become VENTURE's, keeping LQL's =LINE:COLUMN:= prefix: a query that does not parse, check or evaluate is =invalid_argument= (400), a bound -- =query.max_rows=, LQL's stage and depth limits -- is =validation= (422), and the time limit is =timeout= (504) with a message naming =query.timeout_ms=.
 
 =venture_lql_query_to_csv()= writes the document's rows as CSV. Both are declared in =venture-lql.h=, outside the GIR like the rest of it.
+
+* Charts on list pages
+
+Every generic list, =/e/<type>=, and the ticket page, =/tickets=, can show the records it lists as a chart instead of a table. The toggle is a link beside the page's other controls -- /Table/ and /Chart/ on a generic list, /Board/, /List/ and /Chart/ on =/tickets= -- and the chart is a page of its own, drawn on the server, so it works with scripting off:
+
+#+begin_src text
+/e/ticket?view=chart&chart_by=status&chart_value=count&chart_kind=bar
+/e/invoice?view=chart&chart_by=status&chart_value=sum:shipping_amount&chart_kind=table
+/tickets?view=chart&chart_by=assignee&q=status%20!%3D%20%22done%22
+#+end_src
+
+| Parameter     | Means                                                                 | Default                          |
+|---------------+-----------------------------------------------------------------------+----------------------------------|
+| =view=chart=  | draw the chart in place of the table (the board, the list)            | the table                        |
+| =chart_by=    | the field the records are split by (below)                            | the lifecycle field, else the first one offered |
+| =chart_value= | =count=, or =sum:FIELD= for a money field                             | =count=                          |
+| =chart_kind=  | =bar=, =table=, =line= or =pie=                                       | =bar=                            |
+
+The parameters are =chart_by=, =chart_value= and =chart_kind= rather than a bare =by=, =value= and =kind=: those three are field names on real types (a ticket's =kind=, a sales credit's =value=, a pipeline entry's =by=), and a list reads every other parameter as a field filter.
+
+** What a chart counts
+
+The chart is the page's own query plus a summarize, run as one LQL query (=venture_web_list_chart_draw()=, =src/web/venture-web-list-chart.inc=):
+
+#+begin_src lql
+fetch ticket
+| filter priority == "high"            // the URL's field filters, as the bar shows them
+| filter assignee == "ada"             // the bar's q
+| summarize n = count(), by: {status}
+| sort n DESC, status
+#+end_src
+
+The URL's field filters become the LQL they mean (=venture_lql_filter_from_query_string()=, as the ticket board's bar shows them), and the bar's =q= follows as it stands -- an expression, or a =filter= or =filter_out= stage. =?include_deleted=true= is the fetch's =include_deleted: TRUE=. Paging and the sort are the table's and are not read: a chart counts every record the filters keep, and the page's subtitle is that count.
+
+A parameter the list reads as a filter but LQL cannot say is refused rather than dropped, so the chart never counts records the table would not show: the free-text =search= (it matches phone digits and the names of references, which LQL has no words for), =period= and =period_field=, and a money threshold (the Filters panel's positive, zero and negative). The problem says to write it in the bar instead. On =/tickets= every parameter the board reads is a ticket field (=venture_web_ticket_url_filters()=), so all of it carries.
+
+** What a chart splits by
+
+The picker is worked out from the type's field table, as the bar's chips are, so a plugin's type gets it with no code (=venture_web_chart_groups()=):
+
+| Pick                         | When                                                                                   | =chart_by=              |
+|------------------------------+----------------------------------------------------------------------------------------+-------------------------|
+| the lifecycle, first         | an enumeration with the status role (=status=, =stage=, =state=)                       | =status=                |
+| every other enumeration      | =priority=, =kind=, =issue_type=, ...                                                  | =priority=              |
+| who it is assigned to        | the string the access policy reads as "assigned to" (=VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME=) | =assignee=, =owner= |
+| a reference                  | any reference that is not machinery (=owner_user_id=, =company_id=, =repo_id=, ...)   | =company_id=            |
+| a date, by day, week, month or year | every timestamp field that is not machinery, and =created_at= always         | =due_at:month=, =created_at:week= |
+
+A technical field is never offered. A record with no value for the field -- an unassigned ticket, an invoice never issued -- is a group of its own, drawn =(none)=. A date bucket is labelled =2026-11-27= (day), the Monday of the week (week, =start_of_week()=), =2026-11= (month) or =2026= (year), in UTC, and read in time order; every other split reads biggest first. A reference is labelled with the id it holds, not the name of what it points at: naming it would read a second type, which the caller may not be allowed to (a user, for a reference to one).
+
+** Money
+
+=chart_value=sum:FIELD= totals a money field with =sum_money()=, beside the count: =summarize n = count(), total = sum_money(shipping_amount), by: {status}=. The picker offers every money field of the type that is not machinery, as "Total /label/". =venture_web_query_chart()= draws one series per currency -- for bars and pies a drawing each, for a line one drawing per currency -- and a table shows each currency's figure on a line of its own in the one cell, so dollars and euros never share an axis and are never added. A number field is not offered: =chart_value= takes a count or money.
+
+** Problems and bounds
+
+Everything that can go wrong is drawn in the bar, as a list's filter problem is, and the page answers 400 with the bar, the chips and the Filters panel still there and no chart:
+
+- a pick the chart does not offer (=chart_by=nonsense=, =chart_by=title=, =chart_value=sum:title=, =chart_kind=donut=), naming what it offers -- a pick is looked up, never written into the query, so nothing in the URL becomes LQL text but =q= and the field filters;
+- a =q= that does not prepare, placed in the bar's text with its caret and "did you mean", checked on a query worker before the chart runs;
+- a URL filter the chart cannot apply (above);
+- the query's own bounds: =query.max_rows= (a chart reads every record its filters keep, so a chart over more rows than the bound is refused), =query.max_bytes= and =query.timeout_ms=, with the messages =POST /api/v1/query= gives.
+
+A field filter the list itself refuses (=?staus=todo=) is refused the same way, with the list's own status.
+
+** Where it runs
+
+A chart is a person's query, so the page answers from a fiber whenever =view=chart= is there, with or without a =q= (=venture_web_lql_later()=): the environment is built in the request's own access scope by =venture_web_server_new_lql_environment()= -- the list's caller, its business and everything beneath, every type gated by the list API's role check -- the bar's text is checked on a query worker, and the query runs through =venture_web_query_run()= and =venture_web_query_off_loop()= like every other LQL caller (see [[*Where a query runs][Where a query runs]]). The module gate and the list's role check run first, as for the table: a type the table refuses, the chart refuses with the same answer, and a member who is not in finance charts no invoice, as the table lists none.
+
+** With scripting off
+
+Under the toggle is the chart's own form, a plain =GET= to the page: it carries every other parameter of the page -- =view=chart=, the bar's =q=, the field filters -- as hidden fields, and picks /Split by/, /Show/ and /As/ with the current picks selected. The bar's form and the Filters panel carry =view=chart= and the picks along in turn, so a new filter stays a chart, and the /Table/ link keeps the filters and drops the picks. On =/tickets=, the kind and type links keep the chart and start its picks over.
+
+What was drawn is on the page as JSON, =<script type="application/json" data-chart-data>=: =venture_web_query_chart()='s own account of it (=chart=, =x=, =value=, =labels=, and =groups= with each one's =currency= and =values=, money as its exact JSON), for a script, or a test, to read.
+
+=tests/test-lql-chart.c= holds it, with and without read workers: the counts are the list's rows, =q= and a field filter both narrow it (on =/tickets= too), two currencies are two series, a member outside finance charts nothing, bad picks and both bounds are the bar's problem, and the form comes back as the same chart.
 
 * Where a query runs
 
