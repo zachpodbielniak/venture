@@ -284,13 +284,21 @@ test_hold_waits_for_transaction_end(void)
 	TransactionHolder holder = { NULL, FALSE };
 	VentureFiberHold *hold;
 	guint before = venture_fiber_count();
+	guint refs;
 
 	g_assert_nonnull(database);
 	holder.database = database;
 	/* Held by this plain stack, at depth 0, so the fiber queues. */
 	hold = venture_fiber_hold("key", NULL);
 	g_assert_nonnull(hold);
+	g_assert_cmpuint(venture_fiber_hold_waiting("key"), ==, 0);
+	refs = (guint)g_atomic_int_get(&G_OBJECT(database)->ref_count);
 	venture_fiber_wake(venture_fiber_new(transaction_holder_run, count_done, NULL, &holder));
+	/* Queued, and keeping the database it is to be resumed outside of
+	 * until it has been: a stop that dropped the last other reference
+	 * meanwhile would otherwise leave the wake reading a freed object. */
+	g_assert_cmpuint(venture_fiber_hold_waiting("key"), ==, 1);
+	g_assert_cmpuint((guint)g_atomic_int_get(&G_OBJECT(database)->ref_count), ==, refs + 1);
 	g_assert_true(venture_database_begin(database, &error));
 	g_assert_no_error(error);
 	venture_fiber_release(hold);
@@ -306,6 +314,8 @@ test_hold_waits_for_transaction_end(void)
 	g_assert_true(holder.held);
 	g_assert_cmpuint(venture_fiber_count(), ==, before);
 	g_assert_false(default_context_has_timer());
+	g_assert_cmpuint(venture_fiber_hold_waiting("key"), ==, 0);
+	g_assert_cmpuint((guint)g_atomic_int_get(&G_OBJECT(database)->ref_count), ==, refs);
 }
 
 /* An inner rollback ends nothing: the outer transaction is still open,

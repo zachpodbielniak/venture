@@ -353,8 +353,10 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	GMutex hold_lock; GCond hold_cond; gboolean holding, hold_times_out; gint hold_limit, held; guint released;
 	/* Each customer after the first its own id, for two businesses at once. */
 	gboolean distinct_customers;
-	/* Requests refused because their idempotency key was still in flight. */
-	gint keys_refused; } FakeTransport;
+	/* Requests refused because their idempotency key was still in flight,
+	 * and the keys in flight: this transport's own, as Stripe's are one
+	 * account's, so a test's leftovers never reach the next one's. */
+	gint keys_refused; GMutex keys_lock; GHashTable *keys_in_flight; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -387,18 +389,15 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 {
 	/* Stripe refuses a request whose idempotency key another request
 	 * still in progress carries; this fake does too. */
-	static GMutex keys_lock;
-	static GHashTable *keys_in_flight;
 	FakeTransport *self = (FakeTransport *)transport;
 	const gchar *key = request->idempotency_key;
 	StripeResponse *response;
 	if (key && *key) {
 		gboolean in_use;
-		g_mutex_lock(&keys_lock);
-		if (!keys_in_flight) keys_in_flight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-		in_use = g_hash_table_contains(keys_in_flight, key);
-		if (!in_use) g_hash_table_add(keys_in_flight, g_strdup(key));
-		g_mutex_unlock(&keys_lock);
+		g_mutex_lock(&self->keys_lock);
+		in_use = g_hash_table_contains(self->keys_in_flight, key);
+		if (!in_use) g_hash_table_add(self->keys_in_flight, g_strdup(key));
+		g_mutex_unlock(&self->keys_lock);
 		if (in_use) {
 			g_atomic_int_inc(&self->keys_refused);
 			return stripe_response_new(409, "{\"error\":{\"type\":\"idempotency_error\",\"message\":"
@@ -407,9 +406,9 @@ fake_send(StripeTransport *transport, const StripeHttpRequest *request,
 	}
 	response = fake_send_held(self, request, cancellable, error);
 	if (key && *key) {
-		g_mutex_lock(&keys_lock);
-		g_hash_table_remove(keys_in_flight, key);
-		g_mutex_unlock(&keys_lock);
+		g_mutex_lock(&self->keys_lock);
+		g_hash_table_remove(self->keys_in_flight, key);
+		g_mutex_unlock(&self->keys_lock);
 	}
 	return response;
 }
@@ -604,6 +603,8 @@ static void fake_finalize(GObject *object)
 {
 	g_mutex_clear(&((FakeTransport *)object)->hold_lock);
 	g_cond_clear(&((FakeTransport *)object)->hold_cond);
+	g_mutex_clear(&((FakeTransport *)object)->keys_lock);
+	g_clear_pointer(&((FakeTransport *)object)->keys_in_flight, g_hash_table_unref);
 	g_free(((FakeTransport *)object)->key);
 	g_free(((FakeTransport *)object)->deadline);
 	g_free(((FakeTransport *)object)->setup_reference);
@@ -627,7 +628,12 @@ static void fake_finalize(GObject *object)
 	G_OBJECT_CLASS(fake_transport_parent_class)->finalize(object);
 }
 static void fake_transport_class_init(FakeTransportClass *klass) { G_OBJECT_CLASS(klass)->finalize = fake_finalize; }
-static void fake_transport_init(FakeTransport *self) { g_mutex_init(&self->hold_lock); g_cond_init(&self->hold_cond); }
+static void fake_transport_init(FakeTransport *self)
+{
+	g_mutex_init(&self->hold_lock); g_cond_init(&self->hold_cond);
+	g_mutex_init(&self->keys_lock);
+	self->keys_in_flight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+}
 
 /* A hosted test shortens one session's stored expiry and still expects that
  * session, not whichever Setup was created last, to verify on its own. */

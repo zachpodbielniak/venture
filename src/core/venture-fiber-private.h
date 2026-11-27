@@ -78,6 +78,17 @@ venture_fiber_hold(const gchar *key, VentureDatabase *database);
 void
 venture_fiber_release(VentureFiberHold *hold);
 
+/*
+ * venture_fiber_hold_waiting:
+ * @key: a key venture_fiber_hold() was given
+ *
+ * Returns: how many fibers are queued for @key behind its holder; 0 when
+ *   nobody holds it. For tests, which wait on this rather than on
+ *   venture_fiber_count() so a race is set up by what it proves.
+ */
+guint
+venture_fiber_hold_waiting(const gchar *key);
+
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureFiberHold, venture_fiber_release)
 
 G_END_DECLS

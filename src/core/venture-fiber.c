@@ -300,7 +300,7 @@ venture_fiber_yield(void)
 typedef struct
 {
 	VentureFiber		*fiber;
-	VentureDatabase		*database;	/* resumed outside its transaction */
+	VentureDatabase		*database;	/* (owned): resumed outside its transaction */
 	gulong			 finished;	/* waiting for that transaction's end */
 } HoldWaiter;	/* on the waiting fiber's stack, mapped until it is woken */
 
@@ -407,12 +407,18 @@ venture_fiber_hold(const gchar *key, VentureDatabase *database)
 		/* A plain stack, or a fiber's nested frame: no waiting. */
 		if (NULL == self)
 			return NULL;
-		/* venture_fiber_release() hands it over, then wakes this. */
+		/* venture_fiber_release() hands it over, then wakes this. The
+		 * database is kept for as long as the waiter may be scheduled or
+		 * connected to it: a stop that finalizes it meanwhile would
+		 * otherwise leave hold_wake() reading a freed object. A waiter
+		 * a stop never wakes keeps it: a reference left at exit rather
+		 * than a use after free. */
 		waiter.fiber = self;
-		waiter.database = database;
+		waiter.database = (NULL != database) ? g_object_ref(database) : NULL;
 		waiter.finished = 0;
 		g_queue_push_tail(&hold->waiters, &waiter);
 		venture_fiber_yield();
+		g_clear_object(&waiter.database);
 		g_warn_if_fail(hold->owner == self);
 		return hold;
 	}
@@ -425,6 +431,24 @@ venture_fiber_hold(const gchar *key, VentureDatabase *database)
 	g_queue_init(&hold->waiters);
 	g_hash_table_insert(fiber_holds, hold->key, hold);
 	return hold;
+}
+
+/*
+ * How many fibers are waiting for @key, not counting its holder. For
+ * tests: a race is set up by waiting until the second stack is queued
+ * here, which is the one moment that proves it is waiting -- a count of
+ * live fibers says only that it exists.
+ */
+guint
+venture_fiber_hold_waiting(const gchar *key)
+{
+	VentureFiberHold *hold;
+
+	g_return_val_if_fail(NULL != key, 0);
+	if (NULL == fiber_holds)
+		return 0;
+	hold = g_hash_table_lookup(fiber_holds, key);
+	return (NULL != hold) ? g_queue_get_length(&hold->waiters) : 0;
 }
 
 /* Lets @hold go: to the first fiber waiting for it, if one is. */
