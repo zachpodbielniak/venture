@@ -2599,6 +2599,227 @@
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* The LQL query bar (docs/lql.org, "Filter bars")                     */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * The bar is a plain GET form, and works as one with scripting off:
+	 * the server checks the filter and draws any problem under it. This
+	 * adds the editor help while typing: GET <data-lql-assist>&q=&at=
+	 * answers the status line as the page would draw it (the filter
+	 * highlighted, or the problem with its caret) and the completions at
+	 * the cursor, which open in a listbox under the input.
+	 *
+	 * Offsets are the browser's own, UTF-16 units: the cursor goes out as
+	 * selectionStart and every start and end comes back the same way.
+	 */
+	function wireQueryBar(input) {
+		var assist = input.getAttribute("data-lql-assist");
+		var base = input.getAttribute("data-lql-base") || "";
+		var list = document.getElementById(input.getAttribute("aria-controls"));
+		var status = document.getElementById(input.getAttribute("aria-describedby"));
+		var timer = null;
+		var pending = null;
+		var items = [];
+		var active = -1;
+		var wantList = false;
+
+		if (!assist || !list || !status) {
+			return;
+		}
+
+		function close() {
+			list.hidden = true;
+			list.textContent = "";
+			items = [];
+			active = -1;
+			input.setAttribute("aria-expanded", "false");
+			input.removeAttribute("aria-activedescendant");
+		}
+
+		function highlight(index) {
+			var options = list.querySelectorAll("[role=option]");
+			var i;
+
+			active = index;
+
+			for (i = 0; i < options.length; i++) {
+				options[i].setAttribute("aria-selected", i === index ? "true" : "false");
+			}
+
+			if (index >= 0 && options[index]) {
+				input.setAttribute("aria-activedescendant", options[index].id);
+				options[index].scrollIntoView({ block: "nearest" });
+			} else {
+				input.removeAttribute("aria-activedescendant");
+			}
+		}
+
+		/* Writes a candidate over the range it replaces, and asks again:
+		 * after a field, the operators and values come next. */
+		function accept(index) {
+			var item = items[index];
+			var text = input.value;
+			var caret;
+
+			if (!item) {
+				return;
+			}
+
+			input.value = text.slice(0, item.start) + item.insert + text.slice(item.end);
+			caret = item.start + item.insert.length;
+			input.focus();
+			input.setSelectionRange(caret, caret);
+			close();
+			wantList = true;
+			schedule(0);
+		}
+
+		function render(completions) {
+			var i;
+
+			close();
+			items = completions || [];
+
+			if (items.length === 0) {
+				return;
+			}
+
+			for (i = 0; i < items.length; i++) {
+				var option = document.createElement("li");
+				var label = document.createElement("span");
+				var kind = document.createElement("span");
+				var detail = document.createElement("span");
+
+				option.id = input.id + "-option-" + i;
+				option.className = "query-bar-option";
+				option.setAttribute("role", "option");
+				option.setAttribute("aria-selected", "false");
+				label.className = "label";
+				label.textContent = items[i].label;
+				kind.className = "kind";
+				kind.textContent = items[i].kind;
+				option.appendChild(kind);
+				option.appendChild(label);
+
+				if (items[i].detail) {
+					detail.className = "detail";
+					detail.textContent = items[i].detail;
+					option.appendChild(detail);
+				}
+
+				/* mousedown, so the input keeps focus and its caret. */
+				option.addEventListener("mousedown", (function (index) {
+					return function (event) {
+						event.preventDefault();
+						accept(index);
+					};
+				}(i)));
+				list.appendChild(option);
+			}
+
+			list.hidden = false;
+			input.setAttribute("aria-expanded", "true");
+		}
+
+		function ask() {
+			var url = assist
+				+ "&q=" + encodeURIComponent(input.value)
+				+ "&at=" + (input.selectionStart === null ? input.value.length : input.selectionStart)
+				+ "&base=" + encodeURIComponent(base);
+			var mine = {};
+
+			pending = mine;
+			window.fetch(url, {
+				credentials: "same-origin",
+				headers: { "Accept": "application/json" }
+			}).then(function (response) {
+				return response.ok ? response.json() : null;
+			}).then(function (answer) {
+				/* Only the latest answer: an older one arriving late
+				 * would draw a problem the text no longer has. */
+				if (!answer || pending !== mine) {
+					return;
+				}
+
+				status.innerHTML = answer.status;
+				input.classList.toggle("has-problem", !!answer.problem);
+
+				if (answer.problem) {
+					input.setAttribute("aria-invalid", "true");
+				} else {
+					input.removeAttribute("aria-invalid");
+				}
+
+				if (wantList && document.activeElement === input) {
+					render(answer.completions);
+				}
+			}).catch(function () {
+				/* Help, not function: the form still submits. */
+			});
+		}
+
+		function schedule(delay) {
+			window.clearTimeout(timer);
+			timer = window.setTimeout(ask, delay);
+		}
+
+		input.addEventListener("input", function () {
+			wantList = true;
+			schedule(150);
+		});
+
+		input.addEventListener("keydown", function (event) {
+			var open = !list.hidden && items.length > 0;
+
+			if (event.key === " " && event.ctrlKey) {
+				event.preventDefault();
+				wantList = true;
+				schedule(0);
+				return;
+			}
+
+			if (!open) {
+				return;
+			}
+
+			if (event.key === "ArrowDown") {
+				event.preventDefault();
+				highlight((active + 1) % items.length);
+			} else if (event.key === "ArrowUp") {
+				event.preventDefault();
+				highlight(active <= 0 ? items.length - 1 : active - 1);
+			} else if ((event.key === "Enter" || event.key === "Tab") && active >= 0) {
+				/* Enter with nothing chosen submits the form, as it
+				 * would without the list. */
+				event.preventDefault();
+				accept(active);
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				event.stopPropagation();
+				wantList = false;
+				close();
+			}
+		});
+
+		input.addEventListener("blur", function () {
+			wantList = false;
+			window.setTimeout(close, 120);
+		});
+	}
+
+	function wireQueryBars(root) {
+		root.querySelectorAll("[data-lql-bar]").forEach(function (input) {
+			if (input.getAttribute("data-lql-wired") === "1") {
+				return;
+			}
+
+			input.setAttribute("data-lql-wired", "1");
+			wireQueryBar(input);
+		});
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* Keyboard shortcuts                                                  */
 	/* ------------------------------------------------------------------ */
 
@@ -4209,6 +4430,7 @@
 		wireRecordPickers(document);
 		wireHarness(document);
 		wireProviderFields(document);
+		wireQueryBars(document);
 
 		document.addEventListener("mousedown", function (event) {
 			if (openPicker && !openPicker.wrap.contains(event.target)) {

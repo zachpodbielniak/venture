@@ -3,8 +3,8 @@
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-09-12]
-#+updated: [2026-10-04]
-#+version: 0.6.0
+#+updated: [2026-11-27]
+#+version: 0.7.0
 
 * What this is
 
@@ -46,6 +46,8 @@ Nothing here sends mail. The inbox is the delivery; an [[file:automation.org][au
 * Saved views
 
 Every list URL was already a bookmark; a saved view is that bookmark with a name. On any list — =/e/<type>= or the ticket board — filter, sort and search as you like, then press *Save view*: the page's query string is kept under a name, pinned to the sidebar if you want it there, and personal if only you should see it. =/views= lists them; each opens at its list. A view is an ordinary record, so =venturectl list saved_view= works and an agent can make one with =venture_create=.
+
+A view keeps its LQL filter apart from the rest: =saved_view.lql= holds the query bar's filter (=status not in ["done", "cancelled"] and assignee == me()=) and =saved_view.query= the other parameters (=view=board=). It opens at =<list>?<query>&q=<lql>=. A view saved before views held LQL has no =lql= and opens at its query string exactly as it did, so old views keep working unchanged; one made through the API or =venture_create= may set either or both. =/views= shows the LQL first. See [[file:lql.org::*Filter bars][Filter bars]].
 
 * Service levels
 
@@ -155,6 +157,7 @@ Pull requests are counted once each, by repository and number: three follow-up r
 | =/inbox=                   | what you have been told; =?show=all= includes what was read    |
 | =/views=                   | the saved views you may see                                    |
 | =/views/:id=               | opens one at its list                                          |
+| =/lql/assist=              | the query bar's editor help, for its script (JSON)             |
 | =/sprints=                 | every sprint with its burn                                     |
 | =/runs=                    | mission control; =?state=running= narrows it                   |
 | a ticket's page            | the Desk card: clocks, macros, time, Assign to me              |
@@ -166,6 +169,8 @@ Pull requests are counted once each, by repository and number: three follow-up r
 * The board
 
 =/tickets= is the board unless =?view=list=. Its head says how the queue stands -- how many are open, how many wait to triage, how many are past a promise. Each card shows the number, the priority in words when it is urgent or high, the service-level clock, the title, whose it is (the company, else the person who raised it, else "Internal"), who has it or "Unassigned", how long ago it was opened, its due date and points, and up to three tags. A card moves by dragging it or, from the keyboard and with scripting off, with its own *Move to* control, which posts the same =/tickets/:id/move=. The filters are one toolbar: whose tickets (all, internal, customers), a *Type* menu, board or list, and *Save view*; each is a link, so every combination is a URL.
+
+Above them is the query bar: an LQL filter with =fetch ticket= implied, such as =status not in ["done", "cancelled"]=, =assignee == me() or team_id in my_teams()= or =issue_type == "bug" and priority in ["high", "urgent"] and updated_at > ago(7d)=. The lanes stay grouped by status and show only the matching cards; the list shows the same tickets. The chips under it write the common filters for you -- *Not done*, *Mine*, *Unassigned*, *Bugs*, *Updated this week* -- each a link that adds its term to the bar, or takes it off again when it is already there. The filter lives in the URL as =?q==, so a filtered board is a link. A filter that cannot run draws its problem under the bar, with the faulty part marked, a caret under it and "did you mean" links, and no board: never an empty board that reads as "no such tickets". The URL filters the board always took (=kind=, =issue_type=, =assignee=, =venture_id=, =sprint_id=) and any other =field__op=value= on a ticket field (=status__not_in=done,cancelled=) still filter it, and the bar shows them as the LQL they mean. Everything about the bar -- what it accepts, the editor help, the API -- is in [[file:lql.org::*Filter bars][Filter bars]].
 
 * The keyboard
 

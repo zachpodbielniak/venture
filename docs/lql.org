@@ -1,14 +1,14 @@
 #+title: LQL: querying records
-#+description: The libre-query-language dependency and VENTURE's record source: one access-checked LQL source per record type, what reaches the database, VENTURE's functions, the row and time bounds, and what is deliberately not there
+#+description: The libre-query-language dependency and VENTURE's record source: one access-checked LQL source per record type, what reaches the database, VENTURE's functions, the row and time bounds, filter bars and ?q=, and what is deliberately not there
 #+authors: Zach Podbielniak
 #+categories: projects docs
 #+created: [2026-11-27]
 #+updated: [2026-11-27]
-#+version: 0.1.0
+#+version: 0.2.0
 
 * LQL in VENTURE
 
-[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation: the dependency, the record source and its guarantees. Nothing user-visible ships with it yet; the query bar, the generic list pages and =/api/v1/query= build on it.
+[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation -- the dependency, the record source and its guarantees -- and the first thing built on it, the filter bar over the ticket board and list and the =?q== parameter of every list (see [[*Filter bars][Filter bars]]). The generic list pages and =/api/v1/query= build on the same.
 
 The whole of what a query can name is built by =venture_lql_environment_new()= (=src/lql/=), once per caller:
 
@@ -127,6 +127,89 @@ All five functions are evaluated without a row, so a comparison with them reache
 A =fetch= that would read more than =query.max_rows= fails with an error that names the bound; it never answers with a silently shorter list. The source reads one row past the bound to tell the two apart. Filter on stored fields right after the =fetch=, so the database narrows the read, or add =| limit N=. Neither bound can be switched off: zero means "none" to LQL, so the configuration refuses it.
 
 The timeout is LQL's own =timeout_ms=: it bounds evaluation between stages and cannot interrupt a database read in progress, which =query.max_rows= bounds instead.
+
+* Filter bars
+
+A filter bar holds one LQL filter over one record type: the part of a query after =fetch TYPE | filter=. The ticket board and list have one (=/tickets=), and every list takes the same filter as =?q== (=GET /api/v1/ticket?q=...=, =/e/ticket?q=...=).
+
+** What the bar takes
+
+The text is a filter expression, or a =filter= or =filter_out= stage of its own:
+
+#+begin_src lql
+status not in ["done", "cancelled"]
+assignee == me() or team_id in my_teams()
+issue_type == "bug" and priority in ["high", "urgent"] and updated_at > ago(7d)
+not (issue_type == "bug")
+filter_out due_at < now()
+#+end_src
+
+It becomes =fetch ticket\n| filter TEXT= (or =| TEXT=), run as the caller in the environment of =venture_web_server_new_lql_environment()=, so it sees exactly the rows and fields the list API would. Nothing else can ride along: a =|= in the text is refused (the bar holds one filter, not a pipeline -- a =summarize= has no cards), and the environment has no source but the records. A =$parameter= is refused too, since nothing supplies one.
+
+A field the record does not have is refused with "did you mean" (=lql_assist_lint()=). LQL itself would run =staus == "todo"= and match nothing -- a missing field is NULL -- which in a bar is always a typo, and an empty board is the worst way to say so.
+
+=assignee in my_teams()= is valid LQL that never matches: =assignee= is a username and =my_teams()= gives team ids. Mine-or-my-team's is =assignee == me() or team_id in my_teams()=.
+
+** How a list applies it
+
+=venture_lql_filter_find_ids()= runs the filter with =| fields id= and gives the ids it kept; the list adds =id in [...]= to its own query, which then reads, orders, pages and counts as it always did. Only the selection is LQL's, so a list's JSON, its =total= and its sorting are unchanged, and the database still narrows the read where the filter allows (see [[*What reaches the database][What reaches the database]]). The read is bounded by =query.max_rows= and =query.timeout_ms=, and one filter may keep at most =VENTURE_LQL_FILTER_MAX_IDS= (30000) records, below what SQLite and PostgreSQL bind in one statement. A filter that keeps nothing selects nothing (an =id IS NULL= no row passes), never everything.
+
+** Where it runs
+
+A person's query never runs on the main loop. Every route that runs one -- =/tickets= with =q=, a list or export with =q=, =GET /api/v1/<type>?q==, and =GET /lql/assist= (preparing evaluates what was typed, and completion reads repositories) -- answers from a fiber (=venture_web_answer_later()=, as the Stripe routes do). The fiber builds the environment first, under the request's own access and tenant scopes, so the reader it captures -- the one every read is judged by -- is the request's, hosted per-workspace restriction included. It then hands the LQL work to a read worker (=venture_parallel_submit()=, with a read lease and that reader) and yields; the listener and every other request go on meanwhile, and the fiber is woken when the work is done (not inside somebody else's transaction). The run carries a =GCancellable=, cancelled a second past =query.timeout_ms= in case it outlasts LQL's own limit, which is only looked at between stages.
+
+Where the server has no read workers -- a hosted install keeps every request on the main thread for its per-workspace scopes, and an in-memory database has no read connections -- the work runs in the fiber itself. =tests/test-lql-bar.c= runs every test both ways.
+
+The byte budget (VENTURE #44) is not there yet: a query's memory is bounded only by the row bound and the time limit until the libre-query-language pin carries =LQL_LIMIT_MAX_BYTES=. =venture_lql_environment_new()= marks where =query.max_bytes= is set.
+
+** Problems
+
+=venture_lql_filter_check()= prepares the query without reading anything and places what is wrong in the text the person typed, not in the query it became: an offset and length, the unknown name and the suggestions (=VentureLqlProblem=). The board draws it on the server, so it works with scripting off: the message, the text highlighted with the faulty part in a =<mark class="lql-mark">=, a caret line under it, and a "did you mean" link per suggestion that writes it in. It draws no board, and answers 400. The list API answers 400 =invalid_argument= with "q, column N: MESSAGE". A problem of the query as a whole (the row bound, the time limit) has no place and is shown as a message.
+
+** The board's URL filters
+
+The board always read =kind=, =issue_type=, =assignee=, =venture_id= and =sprint_id= (blank, and for kind and type =all=, meaning "any"). It now reads any other =field__op=value= on a ticket field as the list API does, so =/tickets?status__not_in=done,cancelled= -- what dashboards link to -- filters the board too; parameters that name no ticket field are still ignored. All of them go through =venture_query_apply_query_string()=, one route.
+
+The bar shows them as the LQL they mean (=venture_lql_filter_from_query_string()=), joined with the bar's own =q=: =status__not_in=done,cancelled= is =status not in ["done", "cancelled"]=, =assignee== is =(is_null(assignee) or assignee == "")= (blank means "null or empty" to a URL filter), a date is =timestamp("2026-01-01")=, =like= and =ilike= are =like(f, "%x%", TRUE)=. Submitting the bar carries the lot on as =q= alone, which is how an old link becomes a query. While they are URL filters they are applied as URL filters; =tests/test-lql-bar.c= holds the translation to the same tickets.
+
+** Quick chips
+
+Each chip is a link that adds its term to the bar with =and=, or takes it off when it is already one of the bar's top-level terms (=venture_lql_filter_toggle()=); a bar whose text has a top-level =or= is bracketed first. A person never has to learn the syntax for these.
+
+| Chip              | Term                                         |
+|-------------------+----------------------------------------------|
+| Not done          | =status not in ["done", "cancelled"]=        |
+| Mine              | =assignee == me()=                           |
+| Unassigned        | =(is_null(assignee) or assignee == "")=      |
+| Bugs              | =issue_type == "bug"=                        |
+| Updated this week | =updated_at >= period("this_week").start=    |
+
+"This week" is the calendar week on the business calendar (=locale.timezone=), not the last seven days; =updated_at > ago(7d)= is that.
+
+** Editor help
+
+With scripting on, =venture.js= asks =GET /lql/assist?type=ticket&q=TEXT&at=N[&base=URL]= as you type (150 ms after the last key, only the latest answer drawn). =N= is the cursor in UTF-16 units, as a browser counts, and every offset in the answer is too:
+
+#+begin_src json
+{
+  "status": "<the line under the bar, as the page would draw it>",
+  "problem": null,
+  "completions": [
+    {"label": "in_progress", "kind": "value", "detail": "VentureTicketStatus",
+     "insert": "\"in_progress\"", "start": 10, "end": 10}
+  ]
+}
+#+end_src
+
+Completion (=venture_lql_filter_complete()=) offers LQL's own candidates -- field names, functions, keywords, constants -- and first, where a field is being compared (=status == =, =priority == "hi=, =issue_type == bu=, =status not in ["done", =), the values that field takes: an enumeration's names (=status=, =priority=, =issue_type=, =kind=, ...), or for a reference to a forge repository its ids (=repo_id=, the name as detail) or names (=repo_label=), read as the caller, so a repository they cannot read is never offered. The list is a listbox under the input: arrows move, Enter or Tab takes one, Escape closes, Ctrl+Space asks. Enter with nothing chosen submits the form as it would without the list.
+
+** Highlighting
+
+=venture_lql_filter_highlight()= draws the text as =<span class="lql-KIND">= per token (LQL's highlight kinds), escaped. Both looks' stylesheets carry the rules, and point each =--lql-*= variable at a role of the look's palette (=--lql-string: var(--positive)=, =--lql-keyword: var(--accent)=, =--lql-error: var(--negative)=, ...) rather than at a colour, so light and dark and an organisation's accent apply to a query for free. =lql_highlight_get_css()= is not used: the rules are in the stylesheets, served once.
+
+** Saved views
+
+A view saved from a filtered list keeps =q= in =saved_view.lql= and the rest of the query string in =saved_view.query=, and opens at =<list>?<query>&q=<lql>=. A view without =lql= (every view saved before) opens as it always did. Migration =001083_saved_view_lql= checks the column, which reconciliation adds from the field table.
 
 * What is deliberately not registered
 

@@ -3802,6 +3802,9 @@ venture_web_page(
 	return g_string_free(g_steal_pointer(&html), FALSE);
 }
 
+/* Filter bars: ?q= on lists, the query bar, GET /lql/assist. */
+#include "venture-web-lql.inc"
+
 /* ==========================================================================
  * Generic REST handlers
  * ========================================================================== */
@@ -3856,9 +3859,12 @@ venture_web_build_query(
 	g_autoptr(VentureQuery) query = NULL;
 	GHashTable *url_params;
 	g_autoptr(GHashTable) controls = NULL;
+	g_autoptr(GHashTable) without_q = NULL;
+	const gchar *lql;
 
 	query = venture_query_new(entity_type);
 	url_params = htmx_request_get_query_params(request);
+	lql = htmx_request_get_query_param(request, "q");
 
 	/* Blank controls mean "any" only in this list form. An ordinary
 	 * API filter with an empty value still means an empty field. */
@@ -3895,8 +3901,41 @@ venture_web_build_query(
 		url_params = controls;
 	}
 
+	/*
+	 * q is an LQL filter (docs/lql.org, "Filter bars"), never a field:
+	 * taken out of the parameters every other filter is read from, and
+	 * applied below as the set of ids it keeps.
+	 */
+	if ((NULL != url_params) && g_hash_table_contains(url_params, "q"))
+	{
+		GHashTableIter iter;
+		gpointer key, value;
+
+		without_q = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		g_hash_table_iter_init(&iter, url_params);
+
+		while (g_hash_table_iter_next(&iter, &key, &value))
+			if (0 != g_strcmp0(key, "q"))
+				g_hash_table_insert(without_q, g_strdup(key), g_strdup(value));
+
+		url_params = without_q;
+	}
+
 	if (!venture_query_apply_query_string(query, url_params, error))
 		return NULL;
+
+	if (!venture_web_lql_blank(lql))
+	{
+		const gchar *deleted;
+
+		deleted = htmx_request_get_query_param(request, "include_deleted");
+
+		if (!venture_web_apply_lql_filter(self, request, entity_type, query, lql,
+		                                  (0 == g_strcmp0(deleted, "true")) ||
+		                                  (0 == g_strcmp0(deleted, "1")),
+		                                  NULL, NULL, NULL, error))
+			return NULL;
+	}
 
 	/*
 	 * Scoped to whichever entity the browser has selected, and to every
@@ -4217,6 +4256,16 @@ venture_web_api_list(
 	gint64 total = 0;
 
 	self = user_data;
+
+	/* ?q= is a person's query: answered from a fiber, the query on a
+	 * read worker (venture-web-lql.inc). */
+	{
+		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_api_list, FALSE);
+
+		if (NULL != later)
+			return later;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
@@ -4235,7 +4284,9 @@ venture_web_api_list(
 	if (NULL == query)
 		return venture_web_error_response(error);
 
-	if (self->parallel_reads)
+	/* Not from a fiber: its answer is the route's, not a placeholder of
+	 * a placeholder. The page is bounded and the filter already ran. */
+	if (self->parallel_reads && (NULL == venture_fiber_current()))
 	{
 		VentureWebRead *job = g_new0(VentureWebRead, 1);
 
@@ -7400,6 +7451,16 @@ venture_web_ui_export(
 	guint j;
 
 	self = user_data;
+
+	/* ?q= is a person's query: answered from a fiber, the query on a
+	 * read worker (venture-web-lql.inc). */
+	{
+		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_ui_export, FALSE);
+
+		if (NULL != later)
+			return later;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!venture_web_hosted_auth_require(self, request, principal, VENTURE_USER_ROLE_VIEWER,
@@ -8342,6 +8403,16 @@ venture_web_ui_list(
 	guint j;
 
 	self = user_data;
+
+	/* ?q= is a person's query: answered from a fiber, the query on a
+	 * read worker (venture-web-lql.inc). */
+	{
+		HtmxResponse *later = venture_web_lql_later(self, request, params, venture_web_ui_list, FALSE);
+
+		if (NULL != later)
+			return later;
+	}
+
 	principal = venture_auth_authenticate(self->auth, request);
 
 	if (!principal->authenticated)
@@ -14640,91 +14711,99 @@ static const VentureTicketStatus venture_web_board_columns[] = {
 };
 
 /*
- * Builds the query behind both ticket views, applying whichever filters the
- * URL carries so that the board and the list always agree about what they
- * are showing.
+ * The board's own filters. Each was always read with blank (and, for kind
+ * and issue type, "all") meaning "any", which a generic URL filter does
+ * not: there `assignee=` means "nobody has it".
+ */
+static const gchar * const venture_web_ticket_own_filters[] = {
+	"kind", "issue_type", "assignee", "venture_id", "sprint_id"
+};
+
+/*
+ * The URL filters the ticket views apply, as venture_query_apply_query_string()
+ * reads them: the board's own (kind, issue_type, assignee, venture_id,
+ * sprint_id) unless they say "any", and any other `field[__op]=value` on a
+ * ticket field, so `/tickets?status__not_in=done,cancelled` -- the
+ * spelling dashboards and the list API use -- filters the board too.
+ * Parameters that name no ticket field (view, q, order, a tracking tag)
+ * are not filters and are left out, as they always were.
+ */
+static GHashTable *
+venture_web_ticket_url_filters(HtmxRequest *request)
+{
+	g_autoptr(VentureEntityClass) klass = NULL;
+	GHashTable *filters;
+	GHashTable *url_params;
+	GHashTableIter iter;
+	gpointer key;
+	gpointer value;
+
+	filters = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	url_params = htmx_request_get_query_params(request);
+
+	if (NULL == url_params)
+		return filters;
+
+	klass = g_type_class_ref(VENTURE_TYPE_TICKET);
+	g_hash_table_iter_init(&iter, url_params);
+
+	while (g_hash_table_iter_next(&iter, &key, &value))
+	{
+		g_autofree gchar *field = NULL;
+		g_autofree gchar *property = NULL;
+		const gchar *separator;
+		gboolean own = FALSE;
+		gsize i;
+
+		for (i = 0; i < G_N_ELEMENTS(venture_web_ticket_own_filters); i++)
+			own = own || (0 == g_strcmp0(key, venture_web_ticket_own_filters[i]));
+
+		if (own)
+		{
+			if (!venture_string_is_empty(value) && (0 != g_strcmp0(value, "all")))
+				g_hash_table_insert(filters, g_strdup(key), g_strdup(value));
+			continue;
+		}
+
+		if (0 == g_strcmp0(key, "q"))
+			continue;
+
+		separator = strstr(key, "__");
+		field = (NULL != separator) ? g_strndup(key, (gsize)(separator - (const gchar *)key))
+		                            : g_strdup(key);
+		property = venture_entity_column_to_property(field);
+
+		if (NULL != g_object_class_find_property(G_OBJECT_CLASS(klass), property))
+			g_hash_table_insert(filters, g_strdup(key), g_strdup(value));
+	}
+
+	return filters;
+}
+
+/*
+ * Builds the query behind both ticket views from @filters
+ * (venture_web_ticket_url_filters()), so that the board and the list
+ * always agree about what they are showing.
+ *
+ * Every filter arrives by the one route, venture_query_apply_query_string():
+ * having some of the board's filters read by hand and others generically
+ * is how one of them ends up quietly not applying.
  */
 static VentureQuery *
 venture_web_ticket_query(
 	VentureWebServer	 *self,
 	HtmxRequest		 *request,
+	GHashTable		 *filters,
 	GError			**error
 ){
 	g_autoptr(VentureQuery) query = NULL;
-	const gchar *kind;
-	const gchar *issue_type;
-	const gchar *assignee;
-	const gchar *venture;
 
 	query = venture_query_new(VENTURE_TYPE_TICKET);
 	venture_query_set_limit(query, 0);
 	venture_web_scope_to_active_organization(self, request, query);
 
-	kind = htmx_request_get_query_param(request, "kind");
-
-	if (!venture_string_is_empty(kind) && (0 != g_strcmp0(kind, "all")))
-	{
-		if (!venture_query_add_filter_string(query, "kind",
-		                                     VENTURE_FILTER_OP_EQ, kind,
-		                                     error))
-			return NULL;
-	}
-
-	assignee = htmx_request_get_query_param(request, "assignee");
-
-	if (!venture_string_is_empty(assignee))
-	{
-		if (!venture_query_add_filter_string(query, "assignee",
-		                                     VENTURE_FILTER_OP_EQ, assignee,
-		                                     error))
-			return NULL;
-	}
-
-	/*
-	 * The board's filters are applied here rather than left to
-	 * venture_query_apply_query_string(), which is what the generic list
-	 * pages use. Both would work -- issue_type is a real column -- but
-	 * the board already builds its own query for kind and assignee, and
-	 * having two of its four filters arrive by different routes is how
-	 * one of them ends up quietly not applying.
-	 */
-	issue_type = htmx_request_get_query_param(request, "issue_type");
-
-	if (!venture_string_is_empty(issue_type) &&
-	    (0 != g_strcmp0(issue_type, "all")))
-	{
-		if (!venture_query_add_filter_string(query, "issue-type",
-		                                     VENTURE_FILTER_OP_EQ,
-		                                     issue_type, error))
-			return NULL;
-	}
-
-	venture = htmx_request_get_query_param(request, "venture_id");
-
-	if (!venture_string_is_empty(venture))
-	{
-		if (!venture_query_add_filter_int(query, "venture-id",
-		                                  VENTURE_FILTER_OP_EQ,
-		                                  g_ascii_strtoll(venture, NULL, 10),
-		                                  error))
-			return NULL;
-	}
-
-	/* A sprint's board: the same columns, only what is planned into it. */
-	{
-		const gchar *sprint;
-
-		sprint = htmx_request_get_query_param(request, "sprint_id");
-
-		if (!venture_string_is_empty(sprint))
-		{
-			if (!venture_query_add_filter_int(query, "sprint-id",
-			                                  VENTURE_FILTER_OP_EQ,
-			                                  g_ascii_strtoll(sprint, NULL, 10),
-			                                  error))
-				return NULL;
-		}
-	}
+	if (!venture_query_apply_query_string(query, filters, error))
+		return NULL;
 
 	return g_steal_pointer(&query);
 }
@@ -14989,7 +15068,8 @@ static gchar *
 venture_web_ticket_url(
 	const gchar	*kind,
 	const gchar	*issue_type,
-	gboolean	 board
+	gboolean	 board,
+	const gchar	*lql
 ){
 	g_autoptr(GString) url = NULL;
 
@@ -15004,6 +15084,14 @@ venture_web_ticket_url(
 	g_string_append_uri_escaped(url,
 		venture_string_is_empty(issue_type) ? "all" : issue_type, NULL,
 		FALSE);
+
+	/* The query bar's filter goes along too, or picking a kind would
+	 * silently drop what was typed. */
+	if (!venture_web_lql_blank(lql))
+	{
+		g_string_append(url, "&q=");
+		g_string_append_uri_escaped(url, lql, NULL, FALSE);
+	}
 
 	return g_string_free(g_steal_pointer(&url), FALSE);
 }
@@ -15020,13 +15108,26 @@ venture_web_ui_tickets(
 	g_autoptr(GPtrArray) tickets = NULL;
 	g_autoptr(GString) content = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autoptr(GHashTable) filters = NULL;
+	g_autoptr(LqlEnvironment) environment = NULL;
+	g_autoptr(VentureLqlProblem) problem = NULL;
+	g_autofree gchar *legacy = NULL;
+	g_autofree gchar *bar = NULL;
 	HtmxResponse *redirect;
 	const gchar *view;
 	const gchar *kind;
 	const gchar *issue_type;
+	const gchar *lql;
 	gboolean board;
 
 	self = user_data;
+
+	/* A filter is a person's query: the page answers from a fiber, and
+	 * the query runs on a read worker (venture-web-lql.inc). */
+	redirect = venture_web_lql_later(self, request, params, venture_web_ui_tickets, FALSE);
+
+	if (NULL != redirect)
+		return redirect;
 
 	{
 		HtmxResponse *gate;
@@ -15054,20 +15155,50 @@ venture_web_ui_tickets(
 	activity_lazy_sweep(self, request);
 	planner_lazy_sweep(self);
 
-	query = venture_web_ticket_query(self, request, &error);
+	filters = venture_web_ticket_url_filters(request);
+	query = venture_web_ticket_query(self, request, filters, &error);
 
 	if (NULL == query)
 		return venture_web_error_response(error);
 
-	/* Sorted by board position, so the columns render in the order cards
-	 * were left in rather than by identifier. */
-	venture_query_add_order(query, "board-order", VENTURE_SORT_ASCENDING, NULL);
+	/* The caller's query environment: what the bar's filter runs in, and
+	 * what it is highlighted and completed against. */
+	environment = venture_web_server_new_lql_environment(self, request, &error);
 
-	tickets = venture_database_find(venture_context_get_database(self->context),
-	                                query, &error);
-
-	if (NULL == tickets)
+	if (NULL == environment)
 		return venture_web_error_response(error);
+
+	/*
+	 * The bar shows everything the page filters by: the URL's filters
+	 * as the LQL they mean, and the bar's own q. Submitting it carries
+	 * all of it on as q alone, which is how an old link becomes a query.
+	 */
+	lql = htmx_request_get_query_param(request, "q");
+	legacy = venture_lql_filter_from_query_string(VENTURE_TYPE_TICKET, filters);
+	bar = venture_lql_filter_and(legacy, lql);
+
+	/* A problem is placed in the bar's text, which can hold the URL's
+	 * filters ahead of q. */
+	if (!venture_web_lql_blank(lql) &&
+	    !venture_web_apply_lql_filter(self, request, VENTURE_TYPE_TICKET, query, lql, FALSE,
+	                                  environment, bar, &problem, &error) &&
+	    (NULL == problem))
+		return venture_web_error_response(error);
+
+	if (NULL == problem)
+	{
+		/* Sorted by board position, so the columns render in the order
+		 * cards were left in rather than by identifier. */
+		venture_query_add_order(query, "board-order", VENTURE_SORT_ASCENDING, NULL);
+
+		tickets = venture_database_find(venture_context_get_database(self->context),
+		                                query, &error);
+
+		if (NULL == tickets)
+			return venture_web_error_response(error);
+	}
+	else
+		tickets = g_ptr_array_new_with_free_func(g_object_unref);
 
 	view = htmx_request_get_query_param(request, "view");
 	kind = htmx_request_get_query_param(request, "kind");
@@ -15117,6 +15248,17 @@ venture_web_ui_tickets(
 			"</div></div>");
 	}
 
+	/* The query bar: the filter the page shows, in LQL, and the chips
+	 * that write the common ones. */
+	{
+		const gchar *hidden[] = { "view", NULL, NULL };
+
+		hidden[1] = board ? "board" : "list";
+		venture_web_append_query_bar(content, environment, "ticket", "Filter tickets",
+		                             "/tickets", hidden, venture_web_ticket_chips,
+		                             G_N_ELEMENTS(venture_web_ticket_chips), bar, problem);
+	}
+
 	/* The filters, as links rather than a form: each is a URL you can
 	 * bookmark, which is what people actually want from a saved view. */
 	g_string_append(content, "<nav class=\"board-toolbar\" aria-label=\"Ticket filters\">");
@@ -15144,7 +15286,7 @@ venture_web_ui_tickets(
 				? (venture_string_is_empty(kind) ||
 				   (0 == g_strcmp0(kind, "all")))
 				: (0 == g_strcmp0(kind, kinds[i].value));
-			url = venture_web_ticket_url(kinds[i].value, issue_type, board);
+			url = venture_web_ticket_url(kinds[i].value, issue_type, board, lql);
 
 			g_string_append_printf(content,
 				"<a class=\"seg%s\" href=\"%s\"%s>%s</a>",
@@ -15170,7 +15312,7 @@ venture_web_ui_tickets(
 		guint i;
 
 		types = g_type_class_ref(VENTURE_TYPE_ISSUE_TYPE);
-		all_url = venture_web_ticket_url(kind, "all", board);
+		all_url = venture_web_ticket_url(kind, "all", board, lql);
 		any = venture_string_is_empty(issue_type) ||
 		      (0 == g_strcmp0(issue_type, "all"));
 		current = any ? g_strdup("Any type")
@@ -15191,7 +15333,7 @@ venture_web_ui_tickets(
 			const gchar *nick;
 
 			nick = types->values[i].value_nick;
-			url = venture_web_ticket_url(kind, nick, board);
+			url = venture_web_ticket_url(kind, nick, board, lql);
 			label = venture_web_label_from_name(nick);
 
 			g_string_append_printf(content, "<a href=\"%s\"%s>", url,
@@ -15207,8 +15349,8 @@ venture_web_ui_tickets(
 		g_autofree gchar *board_url = NULL;
 		g_autofree gchar *list_url = NULL;
 
-		board_url = venture_web_ticket_url(kind, issue_type, TRUE);
-		list_url = venture_web_ticket_url(kind, issue_type, FALSE);
+		board_url = venture_web_ticket_url(kind, issue_type, TRUE, lql);
+		list_url = venture_web_ticket_url(kind, issue_type, FALSE, lql);
 
 		g_string_append_printf(content,
 			"<div class=\"segmented\" role=\"group\" aria-label=\"Show as\">"
@@ -15223,6 +15365,13 @@ venture_web_ui_tickets(
 
 	venture_web_append_save_view_form(content, request, "ticket", board);
 	g_string_append(content, "</nav>");
+
+	/* A filter that cannot run draws its problem in the bar and no
+	 * board: an empty board would read as "no such tickets". */
+	if (NULL != problem)
+		return venture_web_html_response(
+			venture_web_page(self, request, "/tickets", "Tickets", content->str),
+			400);
 
 	{
 		g_autoptr(VentureActorNames) viewer = NULL;
@@ -31797,19 +31946,36 @@ venture_web_saved_view_url(VentureEntity *view)
 {
 	g_autofree gchar *entity_type = NULL;
 	g_autofree gchar *query = NULL;
+	g_autofree gchar *lql = NULL;
+	g_autoptr(GString) url = NULL;
 	gboolean board = FALSE;
 
 	g_object_get(view, "entity-type", &entity_type, "query", &query,
-	             "board", &board, NULL);
+	             "lql", &lql, "board", &board, NULL);
 
 	if (board && (0 == g_strcmp0(entity_type, "ticket")))
-		return g_strdup_printf("/tickets%s%s",
-		                       venture_string_is_empty(query) ? "" : "?",
-		                       venture_string_is_empty(query) ? "" : query);
+		url = g_string_new("/tickets");
+	else
+	{
+		url = g_string_new("/e/");
+		g_string_append(url, entity_type);
+	}
 
-	return g_strdup_printf("/e/%s%s%s", entity_type,
-	                       venture_string_is_empty(query) ? "" : "?",
-	                       venture_string_is_empty(query) ? "" : query);
+	/* The query string as it was saved, then the LQL filter as q: a
+	 * view saved before views held LQL has none and opens as it did. */
+	if (!venture_string_is_empty(query))
+	{
+		g_string_append_c(url, '?');
+		g_string_append(url, query);
+	}
+
+	if (!venture_web_lql_blank(lql))
+	{
+		g_string_append(url, venture_string_is_empty(query) ? "?q=" : "&q=");
+		g_string_append_uri_escaped(url, lql, NULL, FALSE);
+	}
+
+	return g_string_free(g_steal_pointer(&url), FALSE);
 }
 
 /*
@@ -31915,9 +32081,15 @@ venture_web_append_save_view_form(
 	const gchar	*entity_type,
 	gboolean	 board
 ){
-	const gchar *query;
+	static const gchar * const apart[] = { "q", NULL };
+	g_autofree gchar *query = NULL;
+	const gchar *lql;
 
-	query = htmx_request_get_query(request);
+	/* The URL's other parameters as they are, and the LQL filter in a
+	 * field of its own (saved_view.lql), so a saved view says its filter
+	 * in the language and not as a URL-escaped string. */
+	query = venture_web_query_without(request, apart);
+	lql = htmx_request_get_query_param(request, "q");
 
 	g_string_append(content,
 		"<details class=\"save-view\"><summary class=\"btn\" "
@@ -31930,6 +32102,11 @@ venture_web_append_save_view_form(
 
 	if (!venture_string_is_empty(query))
 		venture_html_escape_append(content, query);
+
+	g_string_append(content, "\"><input type=\"hidden\" name=\"lql\" value=\"");
+
+	if (!venture_web_lql_blank(lql))
+		venture_html_escape_append(content, lql);
 
 	g_string_append_printf(content,
 		"\"><input type=\"hidden\" name=\"board\" value=\"%s\">"
@@ -32000,6 +32177,7 @@ venture_web_ui_views(
 			g_autofree gchar *name = NULL;
 			g_autofree gchar *entity_type = NULL;
 			g_autofree gchar *query = NULL;
+			g_autofree gchar *lql = NULL;
 			g_autofree gchar *url = NULL;
 			gboolean personal = FALSE;
 			gboolean pinned = FALSE;
@@ -32007,7 +32185,7 @@ venture_web_ui_views(
 
 			view = g_ptr_array_index(views, i);
 			g_object_get(view, "name", &name, "entity-type", &entity_type,
-			             "query", &query, "personal", &personal,
+			             "query", &query, "lql", &lql, "personal", &personal,
 			             "pinned", &pinned, "owner-user-id", &owner, NULL);
 			url = venture_web_saved_view_url(view);
 
@@ -32017,10 +32195,25 @@ venture_web_ui_views(
 			venture_html_escape_append(content, name);
 			g_string_append(content, "</a></td><td>");
 			venture_html_escape_append(content, entity_type);
-			g_string_append(content, "</td><td class=\"muted\"><code>");
-			venture_html_escape_append(content,
-				venture_string_is_empty(query) ? "everything" : query);
-			g_string_append_printf(content, "</code></td><td>%s</td><td>%s</td>",
+			g_string_append(content, "</td><td class=\"muted\">");
+
+			/* The LQL filter first: it is what a person reads. */
+			if (!venture_web_lql_blank(lql))
+			{
+				g_string_append(content, "<code class=\"lql-code\">");
+				venture_html_escape_append(content, lql);
+				g_string_append(content, "</code>");
+			}
+
+			if (!venture_string_is_empty(query) || venture_web_lql_blank(lql))
+			{
+				g_string_append(content, venture_web_lql_blank(lql) ? "<code>" : " <code>");
+				venture_html_escape_append(content,
+					venture_string_is_empty(query) ? "everything" : query);
+				g_string_append(content, "</code>");
+			}
+
+			g_string_append_printf(content, "</td><td>%s</td><td>%s</td>",
 				personal ? "Only me" : "Everybody",
 				pinned ? "yes" : "");
 			g_string_append_printf(content,
@@ -32061,6 +32254,7 @@ venture_web_ui_view_create(
 	const gchar *name;
 	const gchar *entity_type;
 	const gchar *query;
+	const gchar *lql;
 	const gchar *board;
 	GType type;
 
@@ -32080,6 +32274,7 @@ venture_web_ui_view_create(
 	name = htmx_request_get_form_value(request, "name");
 	entity_type = htmx_request_get_form_value(request, "entity_type");
 	query = htmx_request_get_form_value(request, "query");
+	lql = htmx_request_get_form_value(request, "lql");
 	board = htmx_request_get_form_value(request, "board");
 
 	if (venture_string_is_empty(name) || venture_string_is_empty(entity_type))
@@ -32105,6 +32300,7 @@ venture_web_ui_view_create(
 	             "name", name,
 	             "entity-type", entity_type,
 	             "query", (NULL != query) ? query : "",
+	             "lql", venture_web_lql_blank(lql) ? NULL : lql,
 	             "board", (0 == g_strcmp0(board, "1")),
 	             "personal", (NULL != htmx_request_get_form_value(request,
 	                                                              "personal")),
@@ -36841,6 +37037,7 @@ venture_web_server_new(
 	venture_custom_fields_web_register(router, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/entity/:id", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_switch_entity, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/tickets", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_tickets, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/lql/assist", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_lql_assist, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/tickets/:id/move", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_ticket_move, self);
 	/* Forge actions on a ticket, with the other ticket actions so they
 	 * precede /e/:type/:id. */

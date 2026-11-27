@@ -6151,3 +6151,81 @@ body.navigation-pending, body.navigation-pending a { cursor: progress; }
 .capture-receipt-image { display: block; max-width: 100%; max-height: 320px; width: auto; height: auto; object-fit: contain; margin: var(--space-3) 0; }
 .capture-receipt-preview { max-height: 180px; }
 .capture-receipt-preview:not([src]) { display: none; }
+
+/* --- The LQL query bar (docs/lql.org, "Filter bars") -----------------------
+ *
+ * LQL's highlighting classes (lql-KIND) take their colours from the
+ * --lql-* variables (deps/libre-query-language/docs/editor/theming.org).
+ * Each is pointed at a role of this look's palette rather than given a
+ * colour, so light and dark, and an organisation's accent, apply to a
+ * query for free.
+ */
+:root {
+	--lql-font: var(--font-mono);
+	--lql-command: var(--accent);
+	--lql-source: var(--accent);
+	--lql-function: var(--info);
+	--lql-keyword: var(--accent);
+	--lql-constant: var(--warning);
+	--lql-type: var(--warning);
+	--lql-field: var(--text);
+	--lql-parameter-name: var(--info);
+	--lql-parameter: var(--warning);
+	--lql-string: var(--positive);
+	--lql-number: var(--warning);
+	--lql-duration: var(--warning);
+	--lql-operator: var(--text-muted);
+	--lql-pipe: var(--text-muted);
+	--lql-punctuation: var(--text-faint);
+	--lql-comment: var(--text-faint);
+	--lql-error: var(--negative);
+}
+
+.lql-code { font-family: var(--lql-font, ui-monospace, "JetBrains Mono", monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.lql-command { color: var(--lql-command); font-weight: 600; }
+.lql-source { color: var(--lql-source); }
+.lql-function { color: var(--lql-function); }
+.lql-keyword { color: var(--lql-keyword); font-weight: 600; }
+.lql-constant { color: var(--lql-constant); }
+.lql-type { color: var(--lql-type); }
+.lql-field { color: var(--lql-field); }
+.lql-parameter-name { color: var(--lql-parameter-name); }
+.lql-parameter { color: var(--lql-parameter); }
+.lql-string { color: var(--lql-string); }
+.lql-number { color: var(--lql-number); }
+.lql-duration { color: var(--lql-duration); }
+.lql-operator { color: var(--lql-operator); }
+.lql-pipe { color: var(--lql-pipe); font-weight: 700; }
+.lql-punctuation { color: var(--lql-punctuation); }
+.lql-comment { color: var(--lql-comment); font-style: italic; }
+.lql-error { color: var(--lql-error); text-decoration: underline wavy; }
+
+/* What a problem is about, in the text: marked, and a place when it is
+ * the end of the text (an unfinished query). */
+.lql-mark { background: var(--negative-soft); color: inherit; text-decoration: underline wavy var(--negative); }
+.lql-mark-empty { display: inline-block; width: 0.6em; height: 1em; vertical-align: text-bottom; background: none; border-bottom: 2px solid var(--negative); }
+
+.query-bar { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; }
+.query-bar-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 0; }
+.query-bar-field { position: relative; flex: 1 1 24rem; min-width: 0; }
+.query-bar-input { width: 100%; font-size: 13px; }
+.query-bar-input.has-problem { border-color: var(--negative); }
+.query-bar-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 2px); max-height: 18rem; overflow-y: auto; margin: 0; padding: 4px 0; list-style: none; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
+.query-bar-list[hidden] { display: none; }
+.query-bar-option { display: flex; gap: 8px; align-items: baseline; padding: 4px 10px; cursor: pointer; font-family: var(--font-mono); font-size: 12.5px; color: var(--text); }
+.query-bar-option[aria-selected="true"], .query-bar-option:hover { background: var(--surface-hover); }
+.query-bar-option .kind { min-width: 5.5em; color: var(--text-faint); font-size: 11px; }
+.query-bar-option .detail { max-width: 50%; margin-left: auto; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.query-bar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.query-chip { display: inline-flex; align-items: center; padding: 3px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: var(--surface); color: var(--text-muted); font-size: 12px; text-decoration: none; }
+.query-chip:hover { border-color: var(--text-muted); color: var(--text); }
+.query-chip.active { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
+.query-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.query-bar-status:empty { display: none; }
+.lql-preview { margin: 0; color: var(--text-muted); font-size: 12px; }
+.lql-problem { padding: 8px 12px; border: 1px solid var(--negative); border-radius: var(--radius); background: var(--negative-soft); }
+.lql-problem-message { margin: 0 0 6px; color: var(--negative); }
+/* No wrapping here: the caret line has to stay under its column. */
+.lql-caret { margin: 0; padding: 6px 8px; overflow-x: auto; border-radius: var(--radius-sm); background: var(--surface); font-size: 13px; white-space: pre; }
+.lql-caret-line { color: var(--negative); font-weight: 700; }
+.lql-suggest { margin: 6px 0 0; }

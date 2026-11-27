@@ -469,6 +469,13 @@ venture_lql_environment_new(
 	lql_environment_set_limit(environment, LQL_LIMIT_MAX_ROWS, caller->max_rows);
 	lql_environment_set_limit(environment, LQL_LIMIT_TIMEOUT_MS, timeout_ms);
 
+	/*
+	 * VENTURE #44, the byte budget: query.max_bytes, set here as
+	 * LQL_LIMIT_MAX_BYTES once the libre-query-language pin carries it.
+	 * Until then one query's memory (a nested concat) is bounded by
+	 * nothing but the row bound and the time limit above.
+	 */
+
 	venture_lql_caller_unref(caller);
 
 	return g_steal_pointer(&environment);

@@ -129,6 +129,245 @@ venture_web_server_new_lql_environment(
 	GError			**error
 );
 
+/* --- Filter bars (venture-lql-filter.c) ----------------------------------- */
+
+/*
+ * The most records one filter may select. Its ids go to the database as
+ * one IN list, and SQLite and PostgreSQL bound the parameters of one
+ * statement (32766 and 65535); this stays clear of both with a count
+ * query beside it.
+ */
+#define VENTURE_LQL_FILTER_MAX_IDS (30000)
+
+/**
+ * VentureLqlProblem:
+ * @message: what is wrong, as LQL words it, without a position
+ * @positioned: whether @offset and @length point into the filter text;
+ *   %FALSE for a problem with the query as a whole (the row bound, the
+ *   time limit)
+ * @offset: byte offset into the filter text of what is wrong
+ * @length: its byte length; 0 at the end of the text
+ * @name: (nullable): the unknown name it is about ("staus")
+ * @suggestions: (nullable) (array zero-terminated=1): what may have been
+ *   meant, best first ("status")
+ *
+ * Why a filter bar's text cannot run, placed in the text the person
+ * typed rather than in the query it becomes.
+ */
+typedef struct
+{
+	gchar		*message;
+	gboolean	 positioned;
+	guint		 offset;
+	guint		 length;
+	gchar		*name;
+	GStrv		 suggestions;
+} VentureLqlProblem;
+
+void
+venture_lql_problem_free(VentureLqlProblem *problem);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureLqlProblem, venture_lql_problem_free)
+
+/**
+ * VentureLqlCompletion:
+ * @label: what the list shows ("status", "in_progress")
+ * @kind: what it is: LQL's kind names ("field", "function", "keyword",
+ *   ...) or "value" for a value of the field being compared
+ * @detail: (nullable): one line: a type, a signature, a record's name
+ * @insert_text: what replaces the range ("\"in_progress\"")
+ * @offset: byte offset into the filter text of the text it replaces
+ * @length: byte length of the text it replaces
+ */
+typedef struct
+{
+	gchar	*label;
+	gchar	*kind;
+	gchar	*detail;
+	gchar	*insert_text;
+	guint	 offset;
+	guint	 length;
+} VentureLqlCompletion;
+
+void
+venture_lql_completion_free(VentureLqlCompletion *completion);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureLqlCompletion, venture_lql_completion_free)
+
+/**
+ * venture_lql_filter_check:
+ * @environment: the caller's environment
+ * @type_name: the record type the bar filters ("ticket")
+ * @text: (nullable): what the bar holds: a filter expression, or a
+ *   `filter` (or `filter_out`) stage
+ *
+ * Prepares `fetch TYPE | filter TEXT` without reading anything and says
+ * what is wrong with it: a syntax error, an unknown function, a `|` (the
+ * bar holds one filter, not a pipeline), a `$parameter`, or a field the
+ * record does not have -- which LQL would accept and match nothing, so
+ * the bar refuses it instead of drawing an empty board.
+ *
+ * Returns: (transfer full) (nullable): the problem, or %NULL when @text is
+ *   blank or prepares
+ */
+VentureLqlProblem *
+venture_lql_filter_check(
+	LqlEnvironment	*environment,
+	const gchar	*type_name,
+	const gchar	*text
+);
+
+/**
+ * venture_lql_filter_find_ids:
+ * @environment: the caller's environment
+ * @type_name: the record type
+ * @text: the filter text; must not be blank
+ * @include_deleted: read soft-deleted records too
+ * @cancellable: (nullable): stops the run between stages and rows
+ * @out_problem: (out) (transfer full) (optional): why not, on failure
+ *
+ * Runs `fetch TYPE | filter TEXT` as the caller and gives the ids of the
+ * records it keeps, in no particular order. Fails with a problem when the
+ * text does not prepare, when the read passes query.max_rows or the time
+ * limit, or when it keeps more than %VENTURE_LQL_FILTER_MAX_IDS records.
+ *
+ * Returns: (transfer full) (nullable) (element-type gint64): the ids, or
+ *   %NULL with @out_problem set
+ */
+GArray *
+venture_lql_filter_find_ids(
+	LqlEnvironment		 *environment,
+	const gchar		 *type_name,
+	const gchar		 *text,
+	gboolean		  include_deleted,
+	GCancellable		 *cancellable,
+	VentureLqlProblem	**out_problem
+);
+
+/**
+ * venture_lql_filter_highlight:
+ * @environment: the caller's environment
+ * @type_name: the record type
+ * @text: the filter text
+ * @problem: (nullable): a positioned problem to mark
+ *
+ * The filter text as HTML: every token in a `<span class="lql-KIND">`
+ * (the classes lql_highlight_get_css() styles), escaped, and the range of
+ * @problem in a `<mark class="lql-mark">`.
+ *
+ * Returns: (transfer full): the HTML
+ */
+gchar *
+venture_lql_filter_highlight(
+	LqlEnvironment			*environment,
+	const gchar			*type_name,
+	const gchar			*text,
+	const VentureLqlProblem		*problem
+);
+
+/**
+ * venture_lql_filter_complete:
+ * @environment: the caller's environment
+ * @type_name: the record type
+ * @text: the filter text
+ * @offset: the cursor, a byte offset into @text
+ *
+ * What can be typed at @offset: LQL's own candidates (fields, functions,
+ * keywords, constants), and first, where a field is being compared
+ * (`status == `, `priority in ["hi`), the values that field takes: the
+ * names of an enumeration, or the forge repositories a reference to one
+ * may name.
+ *
+ * Returns: (transfer full) (element-type VentureLqlCompletion): the
+ *   candidates, best first
+ */
+GPtrArray *
+venture_lql_filter_complete(
+	LqlEnvironment	*environment,
+	const gchar	*type_name,
+	const gchar	*text,
+	guint		 offset
+);
+
+/**
+ * venture_lql_filter_from_query_string:
+ * @entity_type: the record type
+ * @params: (element-type utf8 utf8): decoded URL parameters
+ *
+ * The LQL that means what @params' filters mean to
+ * venture_query_apply_query_string(): `status__not_in=done,cancelled` is
+ * `status not in ["done", "cancelled"]`. Parameters that are not a filter
+ * on a field of @entity_type (paging, order, search, unknown names) are
+ * left out, as is a filter with no LQL equivalent (a money amount).
+ * Conjuncts are in parameter-name order.
+ *
+ * Returns: (transfer full) (nullable): the LQL, or %NULL when no parameter
+ *   is such a filter
+ */
+gchar *
+venture_lql_filter_from_query_string(
+	GType		 entity_type,
+	GHashTable	*params
+);
+
+/**
+ * venture_lql_filter_has_conjunct:
+ * @environment: the caller's environment
+ * @type_name: the record type
+ * @text: (nullable): the filter text
+ * @clause: a filter expression
+ *
+ * Whether @clause is one of the terms @text joins with a top-level
+ * `and` (white space aside): whether a quick chip is on.
+ *
+ * Returns: %TRUE when it is
+ */
+gboolean
+venture_lql_filter_has_conjunct(
+	LqlEnvironment	*environment,
+	const gchar	*type_name,
+	const gchar	*text,
+	const gchar	*clause
+);
+
+/**
+ * venture_lql_filter_toggle:
+ * @environment: the caller's environment
+ * @type_name: the record type
+ * @text: (nullable): the filter text
+ * @clause: a filter expression
+ *
+ * @text without @clause when it is one of its top-level terms, else
+ * @text with `and @clause` added (@text parenthesised when it has a
+ * top-level `or`): what pressing a quick chip writes into the bar.
+ *
+ * Returns: (transfer full): the new filter text, "" when nothing is left
+ */
+gchar *
+venture_lql_filter_toggle(
+	LqlEnvironment	*environment,
+	const gchar	*type_name,
+	const gchar	*text,
+	const gchar	*clause
+);
+
+/**
+ * venture_lql_filter_and:
+ * @left: (nullable): a filter expression
+ * @right: (nullable): another
+ *
+ * Both, as one filter: `LEFT and RIGHT`, each parenthesised when it has a
+ * top-level `or`. A blank side is dropped, and the other is returned as
+ * it is, trimmed: the bar shows a person's own filter as they typed it.
+ *
+ * Returns: (transfer full): the conjunction, "" when both are blank
+ */
+gchar *
+venture_lql_filter_and(
+	const gchar	*left,
+	const gchar	*right
+);
+
 G_END_DECLS
 
 #endif /* VENTURE_LQL_H */

@@ -2382,9 +2382,10 @@ VENTURE_DEFINE_ENTITY(VentureDashboardWidget, venture_dashboard_widget,
 
 /*
  * A list somebody wants back: a record type plus the query string that
- * filtered, sorted and searched it. The URL was always bookmarkable; this
- * is the bookmark with a name, shared or kept, and pinned into the sidebar
- * when it is looked at every day.
+ * filtered, sorted and searched it, and the LQL filter its query bar
+ * showed (lql, opened as ?q=), kept apart from the query string. The URL
+ * was always bookmarkable; this is the bookmark with a name, shared or
+ * kept, and pinned into the sidebar when it is looked at every day.
  */
 static const VentureFieldDecl venture_saved_view_fields[] = {
 	VENTURE_FIELD_NAME("name", "Name", "e.g. My urgent tickets, Unpaid invoices"),
@@ -2394,6 +2395,10 @@ static const VentureFieldDecl venture_saved_view_fields[] = {
 	              VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),
 	VENTURE_FIELD("query", "Query",
 	              "The list's query string: field filters, order, search",
+	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD("lql", "LQL filter",
+	              "The list's LQL filter, what follows fetch TYPE | filter, e.g. "
+	              "status not in [\"done\", \"cancelled\"]; opened as ?q=",
 	              VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("board", "Board",
 	              "Open as the ticket board rather than a list",
