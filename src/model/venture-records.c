@@ -2952,9 +2952,11 @@ static const VentureFieldDecl venture_forge_repo_fields[] = {
 	 * repository that takes reports from outside users sets external,
 	 * and its issues then reach the support queue.
 	 *
-	 * The default is the enum's zero value, and it has to stay that way:
-	 * the column is added to a table that already has rows, every one of
-	 * them NULL here, and NULL reads back as zero.
+	 * The default is the enum's zero value, internal, and a new
+	 * repository stores it explicitly: its column is never NULL. NULL
+	 * only means a row enrolled before the column existed, which
+	 * migration 001082 sets to external, what such a repository was
+	 * filing as.
 	 */
 	VENTURE_FIELD_ENUM("issue-kind", "File accepted issues as",
 	                   "Internal: your own project work. External: a "

@@ -2481,24 +2481,65 @@ test_factory_forge_issue_kind_refuses_an_unknown_value(
 }
 
 /*
- * A repository enrolled before issue_kind existed has NULL in the column,
- * and NULL reads as internal. The fixture saves its repository after the
- * column was added, so it stores a value; this one is put back to what an
- * old row holds.
- *
- * What breaks if this regresses: the column's NULL reads as something
- * other than zero, and every repository enrolled before the upgrade starts
- * filing its issues as support requests, or stops filing them at all.
+ * Applies migration 001082 to the fixture's database, as the upgrade
+ * would: the script is run as shipped.
  */
 static void
-test_factory_forge_issue_kind_null_row_is_internal(
+forge_issue_kind_run_backfill(ServerFixture *fixture)
+{
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *script = NULL;
+
+	g_assert_true(g_file_get_contents(
+		"migrations/sqlite/001082_forge_repo_issue_kind_backfill.sql",
+		&script, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_database_execute(fixture->database, script, NULL,
+	                                       &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * The raw issue_kind column of a repository: its stored text, or NULL for
+ * a SQL NULL.
+ */
+static gchar *
+forge_repo_issue_kind_column(
+	ServerFixture	*fixture,
+	gint64		 repo_id
+){
+	g_autoptr(OrmResult) result = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *sql = NULL;
+	const gchar *text;
+
+	sql = g_strdup_printf("SELECT issue_kind FROM forge_repos WHERE id = %"
+	                      G_GINT64_FORMAT, repo_id);
+	result = venture_database_query_raw(fixture->database, sql, NULL, &error);
+	g_assert_no_error(error);
+	g_assert_true(orm_result_next(result));
+	text = orm_row_get_string(orm_result_get_row(result), 0);
+
+	return g_strdup(text);
+}
+
+/*
+ * A repository enrolled before issue_kind existed has NULL in the column
+ * and was filing as external. Migration 001082 says so in the row, and the
+ * webhook then files its issues as external tickets.
+ *
+ * What breaks if this regresses: every repository enrolled before the
+ * upgrade silently flips from support requests to internal work.
+ */
+static void
+test_factory_forge_issue_kind_backfill_makes_a_null_row_external(
 	ServerFixture	*fixture,
 	gconstpointer	 user_data
 ){
 	g_autoptr(GError) error = NULL;
-	g_autoptr(VentureEntity) repo = NULL;
 	g_autofree gchar *statement = NULL;
-	VentureTicketKind kind = VENTURE_TICKET_KIND_EXTERNAL;
+	g_autofree gchar *kind = NULL;
+	g_autofree gchar *column = NULL;
 
 	(void)user_data;
 
@@ -2509,15 +2550,95 @@ test_factory_forge_issue_kind_null_row_is_internal(
 	g_assert_true(venture_database_execute(fixture->database, statement,
 	                                       NULL, &error));
 	g_assert_no_error(error);
+	column = forge_repo_issue_kind_column(fixture, fixture->repo_id);
+	g_assert_null(column);
+	g_clear_pointer(&column, g_free);
 
-	repo = venture_database_get(fixture->database, VENTURE_TYPE_FORGE_REPO,
-	                            fixture->repo_id, &error);
-	g_assert_no_error(error);
-	g_assert_nonnull(repo);
-	g_object_get(repo, "issue-kind", &kind, NULL);
-	g_assert_cmpint(kind, ==, VENTURE_TICKET_KIND_INTERNAL);
+	forge_issue_kind_run_backfill(fixture);
 
-	/* And the webhook files the issue as the NULL row reads. */
+	column = forge_repo_issue_kind_column(fixture, fixture->repo_id);
+	g_assert_cmpstr(column, ==, "external");
+	kind = forge_repo_issue_kind(fixture);
+	g_assert_cmpstr(kind, ==, "external");
+
+	/* And the webhook files the issue as the backfilled row reads. */
+	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
+	                                        forge_issue_opened), <, 300);
+	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
+	                VENTURE_TICKET_KIND_EXTERNAL);
+}
+
+/*
+ * A repository created through the API without an issue_kind reads internal
+ * and stores it: the column is not NULL, so the backfill can never be what
+ * decides a new row.
+ */
+static void
+test_factory_forge_issue_kind_new_repo_stores_internal(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) node = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *json = NULL;
+	g_autofree gchar *column = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *read_back = NULL;
+	gint64 id;
+
+	(void)user_data;
+
+	json = g_strdup_printf("{\"name\":\"zach/another\",\"forge_id\":%"
+	                       G_GINT64_FORMAT ",\"default_branch\":\"main\"}",
+	                       fixture->forge_id);
+	g_assert_cmpuint(server_request_full(fixture, "POST",
+		"/api/v1/forge_repo", "application/json", json, NULL, &body), <, 300);
+	node = venture_json_parse(body, NULL);
+	g_assert_nonnull(node);
+	g_assert_true(JSON_NODE_HOLDS_OBJECT(node));
+	id = json_object_get_int_member(json_node_get_object(node), "id");
+	g_assert_cmpint(id, >, 0);
+
+	column = forge_repo_issue_kind_column(fixture, id);
+	g_assert_cmpstr(column, ==, "internal");
+
+	path = g_strdup_printf("/api/v1/forge_repo/%" G_GINT64_FORMAT, id);
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&node, json_node_unref);
+	g_assert_cmpuint(server_request(fixture, "GET", path, NULL, &body), ==,
+	                 SOUP_STATUS_OK);
+	node = venture_json_parse(body, NULL);
+	g_assert_nonnull(node);
+	read_back = g_strdup(json_object_get_string_member(
+		json_node_get_object(node), "issue_kind"));
+	g_assert_cmpstr(read_back, ==, "internal");
+}
+
+/*
+ * A repository that says internal on purpose is left alone by the
+ * backfill: it only touches NULL.
+ */
+static void
+test_factory_forge_issue_kind_backfill_leaves_an_explicit_internal(
+	ServerFixture	*fixture,
+	gconstpointer	 user_data
+){
+	g_autofree gchar *column = NULL;
+	g_autofree gchar *kind = NULL;
+
+	(void)user_data;
+
+	column = forge_repo_issue_kind_column(fixture, fixture->repo_id);
+	g_assert_cmpstr(column, ==, "internal");
+	g_clear_pointer(&column, g_free);
+
+	forge_issue_kind_run_backfill(fixture);
+
+	column = forge_repo_issue_kind_column(fixture, fixture->repo_id);
+	g_assert_cmpstr(column, ==, "internal");
+	kind = forge_repo_issue_kind(fixture);
+	g_assert_cmpstr(kind, ==, "internal");
+
 	g_assert_cmpuint(server_deliver_webhook(fixture, "issues", "i-1",
 	                                        forge_issue_opened), <, 300);
 	g_assert_cmpint(forge_issue_ticket_kind(fixture), ==,
@@ -2618,8 +2739,12 @@ main(
 	    test_factory_forge_issue_kind_external);
 	ADD("/factory/http/forge-issue-kind-refuses-an-unknown-value",
 	    test_factory_forge_issue_kind_refuses_an_unknown_value);
-	ADD("/factory/http/forge-issue-kind-null-row-is-internal",
-	    test_factory_forge_issue_kind_null_row_is_internal);
+	ADD("/factory/http/forge-issue-kind-backfill-makes-a-null-row-external",
+	    test_factory_forge_issue_kind_backfill_makes_a_null_row_external);
+	ADD("/factory/http/forge-issue-kind-new-repo-stores-internal",
+	    test_factory_forge_issue_kind_new_repo_stores_internal);
+	ADD("/factory/http/forge-issue-kind-backfill-leaves-an-explicit-internal",
+	    test_factory_forge_issue_kind_backfill_leaves_an_explicit_internal);
 	ADD("/factory/http/forge-issue-kind-linked-ticket-keeps-its-kind",
 	    test_factory_forge_issue_kind_linked_ticket_keeps_its_kind);
 	ADD("/factory/http/operations", test_factory_operations_over_http);

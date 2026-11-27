@@ -88,8 +88,10 @@ hidden from the related-records walk).
 - `forge_repo` -- `name` (`owner/repo`), `forge_id`, `default_branch`,
   `branch_prefix`, `push_issues`, `accept_issues`, `issue_kind`
   [internal|external], `workspace_path`. `issue_kind` is what an accepted
-  issue is filed as; the default, and what a NULL column reads as, is
-  `internal` (your own project work); `external` is a support request.
+  issue is filed as; a new repository defaults to
+  `internal` (your own project work), stored explicitly; a repository
+  enrolled before the column existed was backfilled to `external` (a
+  support request) by migration 001082.
 - `forge_rule` -- what may happen automatically: scope (`repo_id` or
   `forge_id`), `issue_type` or `all_issue_types`, `enabled`, `trigger`
   [manual|on_create|on_todo|on_in_progress], `runner` [agent|cli],
