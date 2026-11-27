@@ -14,14 +14,6 @@
  * nor by a plain stack while a fiber holds it (a plain stack never waits);
  * the caller then goes on as before.
  */
-/* A fiber handed the hold is resumed only outside a transaction: a nested
- * loop elsewhere may be dispatching it, inside its caller's. */
-static gboolean
-stripe_hold_ready(gpointer database)
-{
-	return !venture_database_has_transaction(database);
-}
-
 static VentureFiberHold *
 stripe_party_hold(VentureStripeService *self, gint64 company_id, gint64 contact_id)
 {
@@ -29,7 +21,7 @@ stripe_party_hold(VentureStripeService *self, gint64 company_id, gint64 contact_
 	if ((!company_id && !contact_id) || venture_database_has_transaction(self->database)) return NULL;
 	key = g_strdup_printf("venture-stripe-party:%" G_GINT64_FORMAT ":%s:%" G_GINT64_FORMAT, self->organization_id,
 		company_id ? "company" : "contact", company_id ? company_id : contact_id);
-	return venture_fiber_hold(key, stripe_hold_ready, self->database);
+	return venture_fiber_hold(key, self->database);
 }
 
 /* The same, for the party @invoice_id bills; none for an unreadable one,

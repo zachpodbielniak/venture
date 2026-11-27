@@ -71,12 +71,9 @@ venture_fiber_count(void);
  */
 typedef struct _VentureFiberHold VentureFiberHold;
 
-/* Whether a fiber handed a hold may be resumed now; asked again shortly
- * if not. */
-typedef gboolean (*VentureFiberReadyFunc)(gpointer data);
-
+/* Needs VentureDatabase: include <venture.h> first. */
 VentureFiberHold *
-venture_fiber_hold(const gchar *key, VentureFiberReadyFunc ready, gpointer ready_data);
+venture_fiber_hold(const gchar *key, VentureDatabase *database);
 
 void
 venture_fiber_release(VentureFiberHold *hold);

@@ -263,8 +263,10 @@ venture_database_class_init(VentureDatabaseClass *klass)
 	 * @self: the database
 	 * @committed: TRUE only after a successful outermost commit
 	 *
-	 * An inner rollback emits FALSE immediately; an inner commit emits
-	 * nothing. Services use this to publish committed effects only.
+	 * An inner rollback emits FALSE immediately, and the outermost end
+	 * of that transaction emits FALSE again, once none is open; an inner
+	 * commit emits nothing. Services use this to publish committed
+	 * effects only.
 	 */
 	venture_database_signals[SIGNAL_TRANSACTION_FINISHED] =
 		g_signal_new("transaction-finished", G_TYPE_FROM_CLASS(klass),
@@ -913,6 +915,21 @@ venture_database_begin_serializable(VentureDatabase *self, GError **error)
 	return TRUE;
 }
 
+/*
+ * The outermost level of a transaction an inner level already rolled
+ * back has ended. That rollback said FALSE while the outer level was
+ * still open; this says it again now that none is, for whoever waits
+ * for the transaction to be over (core/venture-fiber.c). Listeners that
+ * drop their pending work on FALSE have nothing left to drop.
+ */
+static void
+venture_database_finished_abandoned(VentureDatabase *self)
+{
+	g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(self), NULL);
+
+	g_signal_emit(self, venture_database_signals[SIGNAL_TRANSACTION_FINISHED], 0, FALSE);
+}
+
 gboolean
 venture_database_commit(
 	VentureDatabase	 *self,
@@ -950,6 +967,7 @@ venture_database_commit(
 	{
 		self->transaction_owner = NULL;
 		g_rec_mutex_unlock(&self->lock);
+		venture_database_finished_abandoned(self);
 		g_set_error_literal(error, VENTURE_ERROR, VENTURE_ERROR_DATABASE,
 		                    "The transaction was already rolled back");
 		return FALSE;
@@ -979,6 +997,8 @@ venture_database_commit(
 void
 venture_database_rollback(VentureDatabase *self)
 {
+	gboolean abandoned;
+
 	g_return_if_fail(VENTURE_IS_DATABASE(self));
 
 	if ((0 == self->transaction_depth) ||
@@ -986,6 +1006,7 @@ venture_database_rollback(VentureDatabase *self)
 		return;
 
 	self->transaction_depth--;
+	abandoned = (0 == self->transaction_depth) && (NULL == self->transaction);
 
 	/*
 	 * An inner rollback abandons the whole transaction rather than just
@@ -1006,6 +1027,9 @@ venture_database_rollback(VentureDatabase *self)
 		self->transaction_owner = NULL;
 
 	g_rec_mutex_unlock(&self->lock);
+
+	if (abandoned)
+		venture_database_finished_abandoned(self);
 }
 
 /* --- Audit --------------------------------------------------------------- */

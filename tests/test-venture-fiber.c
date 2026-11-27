@@ -171,8 +171,8 @@ static void
 holder_run(gpointer data)
 {
 	Holder *holder = data;
-	g_autoptr(VentureFiberHold) hold = venture_fiber_hold("key", NULL, NULL);
-	g_autoptr(VentureFiberHold) again = venture_fiber_hold("key", NULL, NULL);
+	g_autoptr(VentureFiberHold) hold = venture_fiber_hold("key", NULL);
+	g_autoptr(VentureFiberHold) again = venture_fiber_hold("key", NULL);
 
 	g_assert_nonnull(hold);
 	g_assert_true(again == hold);	/* the holder may take it again */
@@ -234,21 +234,21 @@ test_hold_one_at_a_time(void)
 	g_assert_cmpstr(log->str, ==, "aAbBcC");
 }
 
-static gboolean
-not_yet(gpointer data)
+typedef struct
 {
-	gint *asked = data;
-
-	return ++*asked > 3;
-}
+	VentureDatabase	*database;
+	gboolean	 held;
+} TransactionHolder;
 
 static void
-ready_holder_run(gpointer data)
+transaction_holder_run(gpointer data)
 {
-	gint *asked = data;
-	g_autoptr(VentureFiberHold) hold = venture_fiber_hold("key", not_yet, asked);
+	TransactionHolder *holder = data;
+	g_autoptr(VentureFiberHold) hold = venture_fiber_hold("key", holder->database);
 
 	g_assert_nonnull(hold);
+	g_assert_false(venture_database_has_transaction(holder->database));
+	holder->held = TRUE;
 }
 
 static void
@@ -257,26 +257,93 @@ count_done(gpointer data)
 	(void)data;
 }
 
-/* A fiber handed the key is resumed only once its ready function says
- * it may be: asked again until then. */
-static void
-test_hold_waits_until_ready(void)
+/* Whether a timer is attached to the default context: what a waiter
+ * that polls for the transaction's end would leave behind. */
+static gboolean
+default_context_has_timer(void)
 {
+	GMainContext *context = g_main_context_default();
+	GPollFD fds[32];
+	gint priority = 0, timeout = -1;
+
+	g_assert_true(g_main_context_acquire(context));
+	g_main_context_prepare(context, &priority);
+	g_main_context_query(context, priority, &timeout, fds, G_N_ELEMENTS(fds));
+	g_main_context_check(context, priority, fds, 0);
+	g_main_context_release(context);
+	return timeout >= 0;
+}
+
+/* A fiber handed the key while a transaction is open resumes once the
+ * transaction ends, woken by its end: nothing polls meanwhile. */
+static void
+test_hold_waits_for_transaction_end(void)
+{
+	g_autoptr(VentureDatabase) database = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(GError) error = NULL;
+	TransactionHolder holder = { NULL, FALSE };
 	VentureFiberHold *hold;
-	VentureFiber *fiber;
-	gint asked = 0;
 	guint before = venture_fiber_count();
 
+	g_assert_nonnull(database);
+	holder.database = database;
 	/* Held by this plain stack, at depth 0, so the fiber queues. */
-	hold = venture_fiber_hold("key", NULL, NULL);
+	hold = venture_fiber_hold("key", NULL);
 	g_assert_nonnull(hold);
-	fiber = venture_fiber_new(ready_holder_run, count_done, NULL, &asked);
-	venture_fiber_wake(fiber);
-	g_assert_cmpuint(venture_fiber_count(), ==, before + 1);
+	venture_fiber_wake(venture_fiber_new(transaction_holder_run, count_done, NULL, &holder));
+	g_assert_true(venture_database_begin(database, &error));
+	g_assert_no_error(error);
 	venture_fiber_release(hold);
-	while (venture_fiber_count() > before)
-		g_main_context_iteration(NULL, TRUE);
-	g_assert_cmpint(asked, ==, 4);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_assert_false(holder.held);
+	g_assert_false(default_context_has_timer());
+
+	g_assert_true(venture_database_commit(database, &error));
+	g_assert_no_error(error);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_assert_true(holder.held);
+	g_assert_cmpuint(venture_fiber_count(), ==, before);
+	g_assert_false(default_context_has_timer());
+}
+
+/* An inner rollback ends nothing: the outer transaction is still open,
+ * and the fiber waits on until that ends too, then resumes at once. */
+static void
+test_hold_waits_for_outermost_end(void)
+{
+	g_autoptr(VentureDatabase) database = venture_database_new("sqlite://:memory:", NULL);
+	g_autoptr(GError) error = NULL;
+	TransactionHolder holder = { NULL, FALSE };
+	VentureFiberHold *hold;
+	guint before = venture_fiber_count();
+
+	g_assert_nonnull(database);
+	holder.database = database;
+	hold = venture_fiber_hold("key", NULL);
+	g_assert_nonnull(hold);
+	venture_fiber_wake(venture_fiber_new(transaction_holder_run, count_done, NULL, &holder));
+	g_assert_true(venture_database_begin(database, &error));
+	g_assert_true(venture_database_begin(database, &error));
+	g_assert_no_error(error);
+	venture_fiber_release(hold);
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_assert_false(holder.held);
+
+	venture_database_rollback(database);	/* the inner level */
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_assert_false(holder.held);
+	g_assert_false(default_context_has_timer());
+
+	venture_database_rollback(database);	/* the outermost */
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	g_assert_true(holder.held);
+	g_assert_cmpuint(venture_fiber_count(), ==, before);
+	g_assert_false(default_context_has_timer());
 }
 
 /* A plain stack never waits for a key a yielded fiber holds: it gets no
@@ -290,12 +357,12 @@ test_hold_plain_does_not_wait(void)
 	holder.log = log;
 	venture_fiber_wake(venture_fiber_new(holder_run, holder_done, NULL, &holder));
 	g_assert_nonnull(holder.parked);
-	g_assert_null(venture_fiber_hold("key", NULL, NULL));
+	g_assert_null(venture_fiber_hold("key", NULL));
 	holders_finish(&holder, 1);
 	g_assert_cmpstr(log->str, ==, "aA");
 	/* Let go: free again for anybody. */
 	{
-		VentureFiberHold *hold = venture_fiber_hold("key", NULL, NULL);
+		VentureFiberHold *hold = venture_fiber_hold("key", NULL);
 		g_assert_nonnull(hold);
 		venture_fiber_release(hold);
 	}
@@ -312,7 +379,8 @@ main(int argc, char **argv)
 	g_test_add_func("/fiber/current-on-another-thread", test_current_on_another_thread);
 	g_test_add_func("/fiber/deep-stack", test_deep_stack);
 	g_test_add_func("/fiber/hold/one-at-a-time", test_hold_one_at_a_time);
-	g_test_add_func("/fiber/hold/waits-until-ready", test_hold_waits_until_ready);
+	g_test_add_func("/fiber/hold/waits-for-transaction-end", test_hold_waits_for_transaction_end);
+	g_test_add_func("/fiber/hold/waits-for-outermost-end", test_hold_waits_for_outermost_end);
 	g_test_add_func("/fiber/hold/plain-does-not-wait", test_hold_plain_does_not_wait);
 	return g_test_run();
 }

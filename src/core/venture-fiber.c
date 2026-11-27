@@ -300,8 +300,8 @@ venture_fiber_yield(void)
 typedef struct
 {
 	VentureFiber		*fiber;
-	VentureFiberReadyFunc	 ready;
-	gpointer		 ready_data;
+	VentureDatabase		*database;	/* resumed outside its transaction */
+	gulong			 finished;	/* waiting for that transaction's end */
 } HoldWaiter;	/* on the waiting fiber's stack, mapped until it is woken */
 
 struct _VentureFiberHold
@@ -315,9 +315,6 @@ struct _VentureFiberHold
 
 static GHashTable	*fiber_holds;
 
-/* How soon a waiter that may not be resumed yet is asked again. */
-#define VENTURE_FIBER_HOLD_REARM_MS (10u)
-
 /* Whether the calling stack is the one holding @hold. */
 static gboolean
 hold_is_mine(const VentureFiberHold *hold)
@@ -329,20 +326,45 @@ hold_is_mine(const VentureFiberHold *hold)
 	return NULL == self && NULL == fiber_current && hold->depth == g_main_depth();
 }
 
+static gboolean hold_wake(gpointer data);
+
+/* Resumes @waiter from the main loop, not from the caller's stack. At the
+ * default priority, as requests are, so a busy loop cannot starve it. */
+static void
+hold_schedule(HoldWaiter *waiter)
+{
+	GSource *source = g_idle_source_new();
+
+	g_source_set_priority(source, G_PRIORITY_DEFAULT);
+	g_source_set_callback(source, hold_wake, waiter, NULL);
+	g_source_set_static_name(source, "venture-fiber-hold");
+	g_source_attach(source, g_main_context_default());
+	g_source_unref(source);
+}
+
+/* The database's transaction-finished: asked again once it has ended. */
+static void
+hold_transaction_finished(VentureDatabase *database, gboolean committed, gpointer data)
+{
+	HoldWaiter *waiter = data;
+
+	(void)committed;
+	g_signal_handler_disconnect(database, waiter->finished);
+	waiter->finished = 0;
+	hold_schedule(waiter);
+}
+
 static gboolean
 hold_wake(gpointer data)
 {
 	HoldWaiter *waiter = data;
 
-	if (NULL != waiter->ready && !waiter->ready(waiter->ready_data))
+	/* A nested loop inside a transaction may be dispatching this: wait
+	 * for the transaction to end, which the database says. */
+	if (NULL != waiter->database && venture_database_has_transaction(waiter->database))
 	{
-		GSource *again = g_timeout_source_new(VENTURE_FIBER_HOLD_REARM_MS);
-
-		g_source_set_priority(again, G_PRIORITY_DEFAULT);
-		g_source_set_callback(again, hold_wake, waiter, NULL);
-		g_source_set_static_name(again, "venture-fiber-hold");
-		g_source_attach(again, g_main_context_default());
-		g_source_unref(again);
+		waiter->finished = g_signal_connect(waiter->database, "transaction-finished",
+			G_CALLBACK(hold_transaction_finished), waiter);
 		return G_SOURCE_REMOVE;
 	}
 	venture_fiber_wake(waiter->fiber);
@@ -351,15 +373,16 @@ hold_wake(gpointer data)
 
 /*
  * Takes @key for the calling stack. A fiber waits for it as above; once
- * handed it, it is resumed from the main loop when @ready (if given)
- * says it may be -- the Stripe service asks that no database transaction
- * be open there. Returns the hold to give venture_fiber_release(), or
+ * handed it, it is resumed from the main loop, and only while no
+ * transaction is open on @database (if given): one that is open when it
+ * is due is waited out, and the waiter resumed when the database says
+ * it has finished. Returns the hold to give venture_fiber_release(), or
  * %NULL where the caller cannot have it (and so goes on unguarded).
  * Never call it with a transaction open: a fiber that waits here yields,
  * and whatever runs meanwhile would write inside it.
  */
 VentureFiberHold *
-venture_fiber_hold(const gchar *key, VentureFiberReadyFunc ready, gpointer ready_data)
+venture_fiber_hold(const gchar *key, VentureDatabase *database)
 {
 	VentureFiberHold *hold;
 	VentureFiber *self;
@@ -386,8 +409,8 @@ venture_fiber_hold(const gchar *key, VentureFiberReadyFunc ready, gpointer ready
 			return NULL;
 		/* venture_fiber_release() hands it over, then wakes this. */
 		waiter.fiber = self;
-		waiter.ready = ready;
-		waiter.ready_data = ready_data;
+		waiter.database = database;
+		waiter.finished = 0;
 		g_queue_push_tail(&hold->waiters, &waiter);
 		venture_fiber_yield();
 		g_warn_if_fail(hold->owner == self);
@@ -420,18 +443,10 @@ venture_fiber_release(VentureFiberHold *hold)
 	if (NULL != next)
 	{
 		/* Woken from the main loop, not from here: the releaser may be
-		 * deep in its own stack, and the next holder starts its turn. At
-		 * the default priority, as requests are, so a busy loop cannot
-		 * starve it. */
-		GSource *source = g_idle_source_new();
-
+		 * deep in its own stack, and the next holder starts its turn. */
 		hold->owner = next->fiber;
 		hold->count = 1;
-		g_source_set_priority(source, G_PRIORITY_DEFAULT);
-		g_source_set_callback(source, hold_wake, next, NULL);
-		g_source_set_static_name(source, "venture-fiber-hold");
-		g_source_attach(source, g_main_context_default());
-		g_source_unref(source);
+		hold_schedule(next);
 		return;
 	}
 	g_hash_table_remove(fiber_holds, hold->key);
