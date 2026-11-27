@@ -60,7 +60,7 @@ in the repository lists today's.
 | Route | venturectl |
 |---|---|
 | `POST /invoices/compose`, `POST /quotes/compose` | `compose invoice\|quote JSON`; API `organization_id` selects the business; a sent quote's reply has `acceptance_url` when `server-base-url` is set |
-| `POST /invoices/:id/send`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID` |
+| `POST /invoices/:id/send`, `POST /invoices/:id/resend`, `POST /invoices/:id/checkout` | (mail) `invoice checkout ID`; resend is the changed-invoice email |
 | `POST /quotes/:id/:action` (send, accept, decline, revise, remind, start-subscription) | `quote ACTION ID` |
 | `POST /invoice/:id/actions/remind` (editor, stageable) | `act invoice ID remind` |
 | `POST /deals/:id/move`, `POST /deals/:id/quote` | `deal move\|quote` |

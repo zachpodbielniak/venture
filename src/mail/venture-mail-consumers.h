@@ -17,6 +17,40 @@ gboolean venture_mail_support_save_comment(VentureDatabase *database,
  */
 VentureMailMessage *venture_mail_send_invoice(VentureContext *context, gint64 organization_id, gint64 invoice_id, const VentureActor *actor, GError **error);
 /**
+ * venture_mail_invoice_resend_due:
+ * @context: application context
+ * @invoice: the invoice as stored
+ * @error: (out) (optional): a read that failed
+ *
+ * Whether the invoice page should offer "Send again (invoice changed)":
+ * an email was already queued for this invoice, it is still open (sent or
+ * partially paid), an emailed Pay now link exists, and no enabled emailed
+ * link is bound to this version or a later one. A retired emailed link
+ * counts. No emailed link (Stripe was off at send) does not.
+ *
+ * Returns: %TRUE when a resend would mint a new button
+ */
+gboolean venture_mail_invoice_resend_due(VentureContext *context, VentureEntity *invoice, GError **error);
+/**
+ * venture_mail_resend_invoice:
+ * @context: application context
+ * @organization_id: exact organization
+ * @invoice_id: an invoice already sent by venture_mail_send_invoice()
+ * @actor: (nullable): audit actor
+ * @error: (out) (optional): validation or persistence failure
+ *
+ * Queues a new invoice email after the invoice changed. Retires the emailed
+ * Pay now link and mints one for the current version, in this transaction,
+ * through venture_stripe_service_invoice_pay_url(). The message key is
+ * "invoice:" plus the uuid plus ":v" plus the version, so a second call
+ * for the same version returns the message already queued and mints
+ * nothing. venture_mail_send_invoice() is unchanged: a second Send still
+ * returns the first message.
+ *
+ * Returns: (transfer full) (nullable): the queued message
+ */
+VentureMailMessage *venture_mail_resend_invoice(VentureContext *context, gint64 organization_id, gint64 invoice_id, const VentureActor *actor, GError **error);
+/**
  * venture_mail_save_user:
  * @outbox: canonical outbox
  * @user: proposed user write

@@ -38,6 +38,35 @@ stripe_link_nonce(GError **error)
 	return result;
 }
 
+/* The row whose digest matches @token, or %NULL. Format, constant-time
+ * digest and not-deleted only: enabled and expiry are the caller's. A
+ * token that does not match is %NULL with no error. A failed read sets
+ * @error. */
+static VentureEntity *
+link_lookup(VentureDatabase *database, const gchar *token, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
+	g_autoptr(GPtrArray) rows = NULL;
+	g_autofree gchar *uuid = NULL, *digest = NULL, *stored = NULL;
+	VentureEntity *link;
+	guint i;
+	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_payment_link") == G_TYPE_INVALID)
+		return NULL;
+	if (!token || strlen(token) != 101 || token[36] != '.') return NULL;
+	uuid = g_strndup(token, 36);
+	if (!g_uuid_string_is_valid(uuid)) return NULL;
+	for (i = 37; i < 101; i++) if (!g_ascii_isxdigit(token[i])) return NULL;
+	if (!venture_query_add_filter_string(query, "uuid", VENTURE_FILTER_OP_EQ, uuid, error)) return NULL;
+	rows = venture_database_find(database, query, error);
+	if (!rows || rows->len != 1) return NULL;
+	link = g_ptr_array_index(rows, 0);
+	g_object_get(link, "token-hash", &stored, NULL);
+	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
+	if (!stored || !venture_constant_time_equal(stored, digest) || venture_entity_is_deleted(link))
+		return NULL;
+	return g_object_ref(link);
+}
+
 /* The capability alone: format, constant-time digest, enabled, unexpired,
  * not deleted. Says nothing about whether its invoice can be paid. On
  * success *@link_out and *@invoice_out are owned by the caller; a link that
@@ -46,31 +75,16 @@ static gboolean
 link_authentic(VentureDatabase *database, const gchar *token, GDateTime *now,
 	VentureEntity **link_out, VentureEntity **invoice_out, GError **error)
 {
-	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
-	g_autoptr(GPtrArray) rows = NULL;
+	g_autoptr(VentureEntity) link = NULL;
 	g_autoptr(GDateTime) expires = NULL;
-	g_autofree gchar *uuid = NULL, *digest = NULL, *stored = NULL;
-	VentureEntity *link;
 	gint64 invoice_id;
 	gboolean enabled;
-	guint i;
 	*link_out = NULL;
 	*invoice_out = NULL;
-	if (venture_entity_registry_lookup(venture_entity_registry_get_default(), "stripe_payment_link") == G_TYPE_INVALID)
-		return FALSE;
-	if (!token || strlen(token) != 101 || token[36] != '.') return FALSE;
-	uuid = g_strndup(token, 36);
-	if (!g_uuid_string_is_valid(uuid)) return FALSE;
-	for (i = 37; i < 101; i++) if (!g_ascii_isxdigit(token[i])) return FALSE;
-	if (!venture_query_add_filter_string(query, "uuid", VENTURE_FILTER_OP_EQ, uuid, error)) return FALSE;
-	rows = venture_database_find(database, query, error);
-	if (!rows || rows->len != 1) return FALSE;
-	link = g_ptr_array_index(rows, 0);
-	g_object_get(link, "token-hash", &stored, "expires-at", &expires, "enabled", &enabled,
-		"invoice-id", &invoice_id, NULL);
-	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, token, -1);
-	if (!stored || !venture_constant_time_equal(stored, digest) || !enabled || !expires ||
-		g_date_time_compare(now, expires) >= 0 || venture_entity_is_deleted(link)) return FALSE;
+	link = link_lookup(database, token, error);
+	if (!link) return FALSE;
+	g_object_get(link, "expires-at", &expires, "enabled", &enabled, "invoice-id", &invoice_id, NULL);
+	if (!enabled || !expires || g_date_time_compare(now, expires) >= 0) return FALSE;
 	*invoice_out = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, error);
 	if (!*invoice_out) return FALSE;
 	if (venture_entity_is_deleted(*invoice_out) ||
@@ -79,7 +93,7 @@ link_authentic(VentureDatabase *database, const gchar *token, GDateTime *now,
 		g_clear_object(invoice_out);
 		return FALSE;
 	}
-	*link_out = g_object_ref(link);
+	*link_out = g_steal_pointer(&link);
 	return TRUE;
 }
 
@@ -95,6 +109,40 @@ venture_stripe_service_payment_link_closed(VentureDatabase *database, const gcha
 	if (status == VENTURE_INVOICE_STATUS_PAID) return "paid";
 	if (status == VENTURE_INVOICE_STATUS_VOID) return "void";
 	return NULL;
+}
+
+gchar *
+venture_stripe_service_payment_link_replaced(VentureDatabase *database, const gchar *token, GDateTime *clock)
+{
+	g_autoptr(VentureEntity) link = NULL, invoice = NULL, organization = NULL;
+	g_autoptr(GDateTime) now = clock ? g_date_time_ref(clock) : venture_time_now();
+	g_autoptr(GDateTime) expires = NULL;
+	g_autofree gchar *name = NULL;
+	gint origin, status;
+	gboolean enabled;
+	gint64 invoice_id;
+	/* A still-enabled link, a shared link and a token that does not
+	 * match stay on the ordinary refusal. Only a retired emailed button
+	 * tells the customer the invoice moved. */
+	link = link_lookup(database, token, NULL);
+	if (!link) return NULL;
+	g_object_get(link, "origin", &origin, "enabled", &enabled, "expires-at", &expires,
+		"invoice-id", &invoice_id, NULL);
+	if (enabled || origin != VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL || !expires ||
+		g_date_time_compare(now, expires) >= 0)
+		return NULL;
+	invoice = venture_database_get(database, VENTURE_TYPE_INVOICE, invoice_id, NULL);
+	if (!invoice || venture_entity_is_deleted(invoice) ||
+		venture_entity_get_organization_id(invoice) != venture_entity_get_organization_id(link))
+		return NULL;
+	g_object_get(invoice, "status", &status, NULL);
+	if (status == VENTURE_INVOICE_STATUS_PAID || status == VENTURE_INVOICE_STATUS_VOID)
+		return NULL;
+	organization = venture_database_get(database, VENTURE_TYPE_ORGANIZATION,
+		venture_entity_get_organization_id(link), NULL);
+	if (!organization) return NULL;
+	g_object_get(organization, "name", &name, NULL);
+	return (name && name[0]) ? g_steal_pointer(&name) : g_strdup("");
 }
 
 VentureStripePaymentLink *

@@ -281,11 +281,19 @@ still needs write access to the invoice. The button is an =email= link and a
 shared link is a =shared= one (see "Link origins"): sending works while a
 shared link is enabled, and sharing a link afterwards leaves the button
 working. Send is idempotent per invoice: a second Send returns the message
-already queued and mints nothing, so an invoice edited after its email has no
-way through Send to a working button; *Create payment link* is the way to give
-the customer one. =venture_stripe_service_invoice_pay_url()= called again
-replaces the emailed button. Sending makes no Stripe call. An invoice Checkout
-cannot take, no account or no public origin sends the email without a button.
+already queued and mints nothing. When an email was already sent and the
+invoice version is newer than the version its emailed Pay now link was
+minted for (or that link was retired), the invoice page shows *Send again
+(invoice changed)*. It posts =/invoices/:id/resend=, and the API posts
+=POST /api/v1/invoices/:id/resend=, with the same editor gate as Send and
+the same refusal of =?stage=. That retires the emailed button, mints one
+for the invoice as it is now, and queues a new message keyed
+=invoice:<uuid>:v<version>=. Pressing it twice for one version queues one
+message. A second Send with no edit still queues nothing.
+=venture_stripe_service_invoice_pay_url()= is what that resend calls;
+calling it directly still replaces the emailed button. Sending makes no
+Stripe call. An invoice Checkout cannot take, no account or no public
+origin sends the email without a button.
 
 The button is =GET /pay/<capability>/checkout=. It goes straight to
 Checkout for the outstanding balance, cards always and ACH debit where the
@@ -299,7 +307,12 @@ A paid invoice answers "This invoice is paid" and a voided one "This
 invoice was voided", on both addresses, and neither reaches Stripe. Only
 an authentic, unexpired, unrevoked link learns that; every other failure
 is still the same unavailable page. A link to an invoice changed after the
-email, including by a partial payment, is unavailable, as above.
+email, including by a partial payment, is unavailable while that link is
+still enabled. Once *Send again (invoice changed)* has retired the emailed
+link, both =/pay/<capability>= and its checkout address say "This invoice
+has changed since this email was sent. Use the newer email, or contact
+<business>." A paid or voided invoice, an expired link, a disabled shared
+link and a bad token stay on the pages they already had.
 
 The bearer link is in the message's private bodies only. The stored public
 body, the API and previews never show it.

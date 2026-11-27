@@ -193,7 +193,7 @@ static HtmxResponse *venture_web_mail_action(HtmxRequest *request, GHashTable *p
 	json_builder_begin_object(result); json_builder_set_member_name(result, "ok"); json_builder_add_boolean_value(result, TRUE); json_builder_end_object(result);
 	node = json_builder_get_root(result); return venture_web_json_response(node, 200);
 }
-static HtmxResponse *venture_web_mail_invoice(HtmxRequest *request, GHashTable *params, gpointer data)
+static HtmxResponse *venture_web_mail_invoice_send(HtmxRequest *request, GHashTable *params, gpointer data, gboolean resend)
 {
 	VentureWebServer *self = data;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
@@ -218,20 +218,32 @@ static HtmxResponse *venture_web_mail_invoice(HtmxRequest *request, GHashTable *
 		if (!error) g_set_error_literal(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "Invoice not found");
 		return venture_web_error_response(error);
 	}
-	message = venture_mail_send_invoice(self->context, venture_entity_get_organization_id(invoice), venture_entity_get_id(invoice), &actor, &error);
+	message = resend
+		? venture_mail_resend_invoice(self->context, venture_entity_get_organization_id(invoice), venture_entity_get_id(invoice), &actor, &error)
+		: venture_mail_send_invoice(self->context, venture_entity_get_organization_id(invoice), venture_entity_get_id(invoice), &actor, &error);
 	if (!message) return venture_web_error_response(error);
 	node = venture_serializable_to_json(VENTURE_SERIALIZABLE(message), FALSE);
 	return venture_web_json_response(node, 202);
 }
 
-static HtmxResponse *venture_web_mail_invoice_ui(HtmxRequest *request, GHashTable *params, gpointer data)
+static HtmxResponse *venture_web_mail_invoice(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	return venture_web_mail_invoice_send(request, params, data, FALSE);
+}
+
+static HtmxResponse *venture_web_mail_invoice_resend(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	return venture_web_mail_invoice_send(request, params, data, TRUE);
+}
+
+static HtmxResponse *venture_web_mail_invoice_ui_send(HtmxRequest *request, GHashTable *params, gpointer data, gboolean resend)
 {
 	VentureWebServer *self = data;
 	HtmxResponse *gate = venture_web_ui_require_session(self, request);
 	HtmxResponse *response;
 	g_autofree gchar *path = NULL;
 	if (gate) return gate;
-	response = venture_web_mail_invoice(request, params, data);
+	response = venture_web_mail_invoice_send(request, params, data, resend);
 	if (htmx_response_get_status(response) != 202) return response;
 	g_object_unref(response);
 	path = g_strdup_printf("/e/invoice/%s", (gchar *)g_hash_table_lookup(params, "id"));
@@ -239,6 +251,16 @@ static HtmxResponse *venture_web_mail_invoice_ui(HtmxRequest *request, GHashTabl
 	htmx_response_set_status(response, 303);
 	htmx_response_add_header(response, "Location", path);
 	return response;
+}
+
+static HtmxResponse *venture_web_mail_invoice_ui(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	return venture_web_mail_invoice_ui_send(request, params, data, FALSE);
+}
+
+static HtmxResponse *venture_web_mail_invoice_resend_ui(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	return venture_web_mail_invoice_ui_send(request, params, data, TRUE);
 }
 
 /* Inbound sync. A fresh service per request: the sweep is bounded by its

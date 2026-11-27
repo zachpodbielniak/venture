@@ -349,9 +349,10 @@ VentureStripePaymentLink *venture_stripe_service_resolve_payment_link(VentureDat
  * valid for %VENTURE_STRIPE_INVOICE_PAY_DAYS days, whose
  * =/pay/<token>/checkout= address opens Checkout in one click. It writes
  * inside the caller's transaction and makes no Stripe call. @actor needs
- * write access to @invoice. An invoice has one enabled link, so a link
- * made later with venture_stripe_service_create_payment_link() replaces
- * this one.
+ * write access to @invoice. An invoice has one enabled link of each origin.
+ * This retires only the emailed one. venture_mail_resend_invoice() calls it
+ * after the invoice changes. venture_stripe_service_create_payment_link()
+ * replaces a shared link and leaves the emailed one.
  *
  * Returns: (transfer full) (nullable): the bearer URL, shown only to the
  *   mail transport; %NULL with no error when Checkout cannot take the
@@ -372,6 +373,24 @@ gchar *venture_stripe_service_invoice_pay_url(VentureStripeService *self, Ventur
  *   including a link that does not authenticate
  */
 const gchar *venture_stripe_service_payment_link_closed(VentureDatabase *database,
+	const gchar *token, GDateTime *now);
+/**
+ * venture_stripe_service_payment_link_replaced:
+ * @database: repository
+ * @token: complete opaque path capability
+ * @now: (nullable): lookup clock, defaults to current UTC time
+ *
+ * The business to name when an emailed Pay now link was retired because
+ * the invoice changed. The digest must match, the link must be an
+ * unexpired, not-deleted =email= link that is disabled, and the invoice
+ * must not be paid or void. Every other token, including a still-enabled
+ * link whose invoice version moved, an expired link, a disabled shared
+ * link, and a bad token, is %NULL so the caller keeps its usual refusal.
+ *
+ * Returns: (transfer full) (nullable): the organization's name, or an
+ *   empty string when it has none; %NULL when this is not that case
+ */
+gchar *venture_stripe_service_payment_link_replaced(VentureDatabase *database,
 	const gchar *token, GDateTime *now);
 /**
  * venture_stripe_service_pay_link:

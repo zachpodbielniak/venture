@@ -175,8 +175,8 @@ static gchar *signature(const gchar *body);
 static gchar *binding_signature(const gchar *body, const gchar *secret);
 
 static guint
-http_request_origin(VentureWebServer *server, const gchar *method, const gchar *path,
-	const gchar *content_type, const gchar *body, gchar **out, const gchar *host, const gchar *origin, const gchar *referrer_policy)
+http_request_origin_auth(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out, const gchar *host, const gchar *origin, const gchar *referrer_policy, const gchar *authorization)
 {
 	g_autoptr(SoupSession) session = NULL;
 	g_autoptr(SoupMessage) message = NULL;
@@ -191,6 +191,7 @@ http_request_origin(VentureWebServer *server, const gchar *method, const gchar *
 	soup_message_set_flags(message, SOUP_MESSAGE_NO_REDIRECT);
 	if (host) soup_message_headers_replace(soup_message_get_request_headers(message), "Host", host);
 	if (origin) soup_message_headers_replace(soup_message_get_request_headers(message), "Origin", origin);
+	if (authorization) soup_message_headers_replace(soup_message_get_request_headers(message), "Authorization", authorization);
 	if (body && (!g_strcmp0(path, "/webhooks/stripe") || g_str_has_prefix(path, "/webhooks/stripe/")))
 	{
 		g_autofree gchar *sig = !g_strcmp0(body, "{}") ? g_strdup("t=0,v1=invalid") : (!g_strcmp0(path, "/webhooks/stripe") ? signature(body) : binding_signature(body, "whsec_original"));
@@ -221,7 +222,19 @@ static guint
 http_request(VentureWebServer *server, const gchar *method, const gchar *path,
 	const gchar *content_type, const gchar *body, gchar **out)
 {
-	return http_request_origin(server, method, path, content_type, body, out, NULL, NULL, NULL);
+	return http_request_origin_auth(server, method, path, content_type, body, out, NULL, NULL, NULL, NULL);
+}
+
+/* The includes below keep the old nine-argument call. */
+#define http_request_origin(server, method, path, content_type, body, out, host, origin, policy) \
+	http_request_origin_auth(server, method, path, content_type, body, out, host, origin, policy, NULL)
+
+static guint
+http_request_bearer(VentureWebServer *server, const gchar *method, const gchar *path,
+	const gchar *content_type, const gchar *body, gchar **out, const gchar *bearer)
+{
+	g_autofree gchar *authorization = g_strdup_printf("Bearer %s", bearer);
+	return http_request_origin_auth(server, method, path, content_type, body, out, NULL, NULL, NULL, authorization);
 }
 
 static void
@@ -292,6 +305,25 @@ start_server(Fixture *f, gchar **state_dir)
 	return server;
 }
 
+/* Authentication on, without hosted mode, so a viewer token is a viewer. */
+static VentureWebServer *
+start_server_auth(Fixture *f, gchar **state_dir)
+{
+	g_autoptr(GError) error = NULL;
+	VentureWebServer *server;
+	guint16 port = 0;
+
+	*state_dir = g_dir_make_tmp("venture-stripe-XXXXXX", &error);
+	g_assert_no_error(error);
+	g_object_set(f->config, "state-dir", *state_dir, "server-bind-address", "127.0.0.1",
+		"server-port", (gint64)port, "security-require-auth", TRUE, NULL);
+	server = venture_web_server_new(f->context, &error);
+	g_assert_no_error(error);
+	g_assert_true(venture_web_server_start(server, &error));
+	g_assert_no_error(error);
+	return server;
+}
+
 static void
 test_records(void)
 {
@@ -356,7 +388,9 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	/* Requests refused because their idempotency key was still in flight,
 	 * and the keys in flight: this transport's own, as Stripe's are one
 	 * account's, so a test's leftovers never reach the next one's. */
-	gint keys_refused; GMutex keys_lock; GHashTable *keys_in_flight; } FakeTransport;
+	gint keys_refused; GMutex keys_lock; GHashTable *keys_in_flight;
+	/* Minor units of the last Checkout this transport was asked to open. */
+	gint64 checkout_unit_amount; } FakeTransport;
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -577,6 +611,11 @@ fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **
 		self->checkout_suffix = g_strdup(g_hash_table_lookup(form, "payment_intent_data[statement_descriptor_suffix]"));
 		g_free(self->deadline);
 		self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
+		{
+			const gchar *unit = g_hash_table_lookup(form, "line_items[0][price_data][unit_amount]");
+			if (unit)
+				self->checkout_unit_amount = g_ascii_strtoll(unit, NULL, 10);
+		}
 		if (self->early_service)
 		{
 			const gchar *reference = g_hash_table_lookup(form, "client_reference_id");
@@ -1396,6 +1435,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/shared-then-send", Fixture, NULL, set_up, test_pay_now_shared_then_send, tear_down);
 	g_test_add("/stripe/pay-now/send-then-share", Fixture, NULL, set_up, test_pay_now_send_then_share, tear_down);
 	g_test_add("/stripe/pay-now/resend", Fixture, NULL, set_up, test_pay_now_resend, tear_down);
+	g_test_add("/stripe/pay-now/edited-resend", Fixture, NULL, set_up, test_pay_now_edited_resend, tear_down);
+	g_test_add("/stripe/pay-now/resend-viewer", Fixture, NULL, set_up, test_pay_now_resend_viewer, tear_down);
 	g_test_add("/stripe/pay-now/origin-migration", Fixture, NULL, set_up, test_pay_now_origin_migration, tear_down);
 	g_test_add("/stripe/pay-now/expired-session", Fixture, NULL, set_up, test_pay_now_expired_session, tear_down);
 	g_test_add("/stripe/pay-now/production-click", Fixture, NULL, set_up, test_pay_now_production_click, tear_down);
