@@ -203,3 +203,72 @@ assert_route_unblocked(VentureWebServer *server, FakeTransport *transport, const
 	assert_route_unblocked_by(server, transport, method, path, content_type, body, host, origin, auth,
 		expected, "/api/v1/health");
 }
+
+/* A route answered from a fiber whose placeholder the pipeline replaced:
+ * the route below suspends the workspace before answering, so the hosted
+ * lifecycle check after it refuses the request. */
+static guint later_refused_runs;
+
+static HtmxResponse *
+later_refused_work(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	(void)request; (void)params; (void)data;
+	later_refused_runs++;
+	return htmx_response_new_with_content("done");
+}
+
+static HtmxResponse *
+later_refused_route(HtmxRequest *request, GHashTable *params, gpointer data)
+{
+	VentureWebServer *server = data;
+	VentureTenantService *tenant = venture_tenant_service_get(
+		venture_context_get_database(venture_web_server_get_context(server)));
+	g_autoptr(GError) error = NULL;
+	HtmxResponse *placeholder = venture_web_answer_later(server, request, params, later_refused_work);
+	gboolean ok = venture_tenant_service_set_state_operator(tenant, "suspended", "Refused after the route", &error);
+	g_assert_no_error(error); g_assert_true(ok);
+	return placeholder;
+}
+
+static gboolean
+no_fibers_beyond(gpointer data)
+{
+	return venture_fiber_count() <= GPOINTER_TO_UINT(data);
+}
+
+/* Its work is never done: the client has its refusal, and the work would
+ * ask Stripe for an answer nobody is waiting for. */
+static void
+test_later_refused(Fixture *f, gconstpointer data)
+{
+	VentureTenantService *tenant = venture_tenant_service_get(f->database);
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *state_dir = NULL;
+	SlowCall call = { 0 };
+	guint fibers = venture_fiber_count();
+	(void)data;
+	g_object_set(f->config, "hosted-enabled", TRUE,
+		"hosted-workspace-id", "8f062b79-1d2b-4d7f-99e5-bd3bf588e05a",
+		"hosted-origin", "https://venture.example", NULL);
+	g_assert_true(venture_tenant_service_configure(tenant, f->config, &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_tenant_service_initialize(tenant, &error));
+	g_assert_no_error(error);
+	server = start_server(f, &state_dir);
+	venture_web_server_add_classified_route(server, HTMX_METHOD_GET, "/test/later-refused",
+		VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, later_refused_route, server);
+	later_refused_runs = 0;
+	call.host = "venture.example";
+	slow_call_start(&call, server, "/test/later-refused");
+	slow_call_finish(&call);
+	/* The fiber is made with the placeholder; once it has ended, the work
+	 * either ran or never will. */
+	run_until(no_fibers_beyond, GUINT_TO_POINTER(fibers));
+	g_test_message("refused after the route: %u; the route's work ran %u times", call.status, later_refused_runs);
+	g_assert_cmpuint(call.status, ==, 403);
+	g_assert_cmpuint(later_refused_runs, ==, 0);
+	slow_call_clear(&call);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
+}

@@ -28,6 +28,7 @@
  */
 
 #include "core/venture-fiber-private.h"
+#include "web/venture-web-later-private.h"
 
 typedef struct
 {
@@ -43,6 +44,7 @@ typedef struct
 	VentureFiber			*fiber;		/* until it is started */
 	guint				 maintenance_depth;
 	gboolean			 admitted;
+	gboolean			 refused;	/* the pipeline answered otherwise */
 } VentureWebLater;
 
 static void
@@ -80,9 +82,17 @@ venture_web_later_run(gpointer data)
 	VentureTenantService *tenant = venture_tenant_service_get(database);
 	g_autoptr(VentureTenantSupportScope) support_scope = NULL;
 	g_autoptr(VentureAccessScope) scope = NULL;
-	g_autoptr(HtmxContext) http = htmx_context_new(later->request);
+	g_autoptr(HtmxContext) http = NULL;
 	HtmxResponse *response;
 
+	/* The client already has its refusal (venture_web_later_settle()):
+	 * the work is not to be done, and what it would answer goes nowhere. */
+	if (later->refused)
+	{
+		later->response = htmx_response_new();
+		return;
+	}
+	http = htmx_context_new(later->request);
 	if (venture_tenant_service_is_enabled(tenant))
 		support_scope = venture_tenant_service_enter_request(tenant, NULL, NULL,
 			htmx_request_get_path(later->request), NULL);
@@ -121,11 +131,27 @@ venture_web_later_start(gpointer data)
 }
 
 /*
+ * Called by the outermost middleware with the response @request is to be
+ * answered with. If the pipeline put something else in the placeholder's
+ * place after the route -- the hosted lifecycle check refusing it, say --
+ * the route's work is never done: it would reach Stripe for an answer
+ * nobody is waiting for.
+ */
+static void
+venture_web_later_settle(HtmxRequest *request, HtmxResponse *response)
+{
+	VentureWebLater *later = g_object_steal_data(G_OBJECT(request), "venture-web-later");
+
+	if (NULL != later && response != later->deferred)
+		later->refused = TRUE;
+}
+
+/*
  * Answers @request with @callback from a fiber of the main loop, after
  * this dispatch has returned. Returns the placeholder the route answers
  * with. Call it from the route, inside the request pipeline.
  */
-static HtmxResponse *
+HtmxResponse *
 venture_web_answer_later(VentureWebServer *self, HtmxRequest *request,
 	GHashTable *params, HtmxRouteCallback callback)
 {
@@ -154,6 +180,9 @@ venture_web_answer_later(VentureWebServer *self, HtmxRequest *request,
 	later->deferred = htmx_response_new_deferred();
 	later->reader = venture_access_policy_snapshot(venture_database_get_access_policy(database));
 	later->access = venture_access_state_new();
+	/* For venture_web_later_settle(), in this same dispatch, before the
+	 * fiber starts. */
+	g_object_set_data(G_OBJECT(request), "venture-web-later", later);
 	/* The request pipeline lets go of its admission when this returns;
 	 * the work is still to come, so it holds one of its own. */
 	if (NULL != self->workspace_limiter)

@@ -18932,6 +18932,9 @@ venture_web_metrics_middleware(
 	next(context, next_data);
 
 	response = htmx_context_get_response(context);
+	/* This is the answer: a route answered from a fiber runs only if it
+	 * is still that route's placeholder. */
+	venture_web_later_settle(htmx_context_get_request(context), response);
 
 	/* Answered later by a read worker: count it when it is answered. */
 	if (NULL != response && htmx_response_is_deferred(response))

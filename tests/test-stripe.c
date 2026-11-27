@@ -8,6 +8,7 @@
 #include "db/venture-migrations.h"
 #include "core/venture-fiber-private.h"
 #include "stripe/venture-stripe-transport-private.h"
+#include "web/venture-web-later-private.h"
 
 typedef struct
 {
@@ -1497,6 +1498,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/hosted-money-back", Fixture, "money-back", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-lost", Fixture, "money-back-lost", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-slow-provider", Fixture, NULL, set_up, test_hosted_slow_provider, tear_down);
+	g_test_add("/stripe/later-refused", Fixture, NULL, set_up, test_later_refused, tear_down);
 	g_test_add("/stripe/hosted-slow-provider-fails", Fixture, "fails", set_up, test_hosted_slow_provider, tear_down);
 	g_test_add("/stripe/hosted-slow-provider-order", Fixture, NULL, set_up, test_hosted_slow_provider_order, tear_down);
 	g_test_add("/stripe/hosted-concurrent", Fixture, "concurrent", set_up, test_hosted_saved_card, tear_down);
