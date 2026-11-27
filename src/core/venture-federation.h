@@ -161,6 +161,16 @@ JsonNode *venture_federation_collection_pull(VentureContext *context, gint64 pee
  */
 void venture_federation_sync_start(VentureContext *context);
 /**
+ * venture_federation_sync_start_every:
+ * @context: local server
+ * @interval_ms: time between reconnect rounds, in milliseconds
+ *
+ * The same reconnect rounds as venture_federation_sync_start(), at an interval
+ * the caller chooses rather than the configured one, which is never below
+ * five seconds. Does nothing when federation is off or a schedule already runs.
+ */
+void venture_federation_sync_start_every(VentureContext *context, guint interval_ms);
+/**
  * venture_federation_sync_stop:
  * @context: local server
  * Stops scheduling reconnect work; in-flight operations retain their context.

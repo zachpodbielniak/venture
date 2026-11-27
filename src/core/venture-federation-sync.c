@@ -583,13 +583,26 @@ venture_federation_sync_start(VentureContext *context)
 {
 	gint64 interval;
 	gboolean enabled;
-	guint source;
-	if (g_object_get_data(G_OBJECT(context), "federation-sync-source")) return;
 	g_object_get(venture_context_get_config(context), "federation-enabled", &enabled,
 		"federation-sync-interval", &interval, NULL);
 	if (!enabled || interval <= 0) return;
+	/* The configured floor keeps a peer from being asked every second. */
 	interval = CLAMP(interval, 5, 86400);
-	source = g_timeout_add_seconds((guint)interval, sync_tick, context);
+	venture_federation_sync_start_every(context, (guint)interval * 1000);
+}
+
+void
+venture_federation_sync_start_every(VentureContext *context, guint interval_ms)
+{
+	gboolean enabled;
+	guint source;
+	g_return_if_fail(interval_ms > 0);
+	if (g_object_get_data(G_OBJECT(context), "federation-sync-source")) return;
+	g_object_get(venture_context_get_config(context), "federation-enabled", &enabled, NULL);
+	if (!enabled) return;
+	source = interval_ms % 1000 == 0
+		? g_timeout_add_seconds(interval_ms / 1000, sync_tick, context)
+		: g_timeout_add(interval_ms, sync_tick, context);
 	g_object_set_data_full(G_OBJECT(context), "federation-sync-source", GUINT_TO_POINTER(source), sync_source_free);
 }
 
