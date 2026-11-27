@@ -1387,3 +1387,301 @@ venture_lql_filter_and(
 
 	return g_string_free(g_steal_pointer(&out), FALSE);
 }
+
+/* --- Quick chips, from the field table ------------------------------------------ */
+
+void
+venture_lql_chip_free(VentureLqlChip *chip)
+{
+	if (NULL == chip)
+		return;
+
+	g_free(chip->label);
+	g_free(chip->clause);
+	g_free(chip);
+}
+
+/*
+ * The states a record's life ends in, whatever its type calls them: a
+ * status in this list is "closed", any other "open". Words rather than a
+ * table per type, as the status badge's tones are: a new type with a
+ * `cancelled` or `paid` state gets the right chips with no code.
+ *
+ * Kept out on purpose: "sent" (an invoice sent is still owed), "published"
+ * and "active" (a live article or subscription is not over) and "posted"
+ * (a scheduled entry's only state that has happened): each reads better
+ * as open, "not over yet".
+ */
+static const gchar * const venture_lql_closed_states[] = {
+	"done", "cancelled", "canceled", "closed", "closed_won", "closed_lost",
+	"completed", "complete", "resolved", "won", "lost", "paid", "void",
+	"voided", "rejected", "declined", "expired", "superseded", "converted",
+	"accepted", "unqualified", "disqualified", "abandoned", "achieved", "archived",
+	"disposed", "written_off", "unsubscribed", "bounced", "complained",
+	"exited", "succeeded", "failed", "refused", "interrupted", "rolled_back",
+	"yanked", "released", "discarded", "refunded", "reversed", "skipped",
+	"skipped_closed", "revoked", "promoted", "invoiced", "executed",
+	"applied", "locked", "churned", "finished", "ended", "merged", "retired",
+	"withdrawn", "deleted"
+};
+
+/*
+ * Date fields that are machinery of a schedule or a credential rather
+ * than when the record happened: a pause, a lease, an expiry, the last or
+ * next run. A list's date chips are never about these.
+ */
+static gboolean
+venture_lql_chip_date_is_schedule(const gchar *name)
+{
+	return g_str_has_suffix(name, "-until") || g_str_has_suffix(name, "expires-at") ||
+	       g_str_has_suffix(name, "-set-at") || g_str_has_prefix(name, "last-") ||
+	       g_str_has_prefix(name, "next-") || g_str_has_prefix(name, "remind") ||
+	       g_str_has_prefix(name, "lease-") || (0 == g_strcmp0(name, "deleted-at")) ||
+	       (0 == g_strcmp0(name, "updated-at"));
+}
+
+/* A new chip, both strings taken. */
+static VentureLqlChip *
+venture_lql_chip_take(
+	gchar	*label,
+	gchar	*clause
+){
+	VentureLqlChip *chip = g_new0(VentureLqlChip, 1);
+
+	chip->label = label;
+	chip->clause = clause;
+
+	return chip;
+}
+
+/* @values as an LQL list of strings: ["done", "cancelled"]. */
+static gchar *
+venture_lql_chip_list(GPtrArray *values)
+{
+	g_autoptr(GString) out = NULL;
+	guint i;
+
+	out = g_string_new("[");
+
+	for (i = 0; i < values->len; i++)
+	{
+		g_autofree gchar *quoted = venture_lql_quote(g_ptr_array_index(values, i));
+
+		if (i > 0)
+			g_string_append(out, ", ");
+
+		g_string_append(out, quoted);
+	}
+
+	g_string_append_c(out, ']');
+
+	return g_string_free(g_steal_pointer(&out), FALSE);
+}
+
+/*
+ * Open and Closed: the type's lifecycle enumeration split by
+ * venture_lql_closed_states. Only when the enumeration has both kinds: a
+ * type whose every state is final (a reward applied, failed or revoked)
+ * or none is (a workspace active or suspended) has no such chips.
+ */
+static void
+venture_lql_chips_status(
+	GPtrArray	*chips,
+	GObjectClass	*klass,
+	GPtrArray	*specs
+){
+	guint i;
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		const gchar *const *choices;
+		g_autoptr(GPtrArray) closed = NULL;
+		g_autofree gchar *column = NULL;
+		g_autofree gchar *list = NULL;
+		guint n_open = 0;
+		guint j;
+
+		if ((VENTURE_FIELD_ROLE_STATUS != venture_field_spec_get_role(spec)) ||
+		    (VENTURE_FIELD_KIND_ENUM != venture_field_spec_get_kind(spec)) ||
+		    (NULL == g_object_class_find_property(klass, venture_field_spec_get_name(spec))))
+			continue;
+
+		choices = venture_field_spec_get_choices(spec);
+		closed = g_ptr_array_new_with_free_func(g_free);
+
+		for (j = 0; (NULL != choices) && (NULL != choices[j]); j++)
+		{
+			gboolean final = FALSE;
+			gsize k;
+
+			for (k = 0; k < G_N_ELEMENTS(venture_lql_closed_states); k++)
+				final = final || (0 == g_strcmp0(choices[j], venture_lql_closed_states[k]));
+
+			if (final)
+				g_ptr_array_add(closed, g_strdup(choices[j]));
+			else
+				n_open++;
+		}
+
+		/* The first lifecycle field is the record's; a second (a
+		 * payment state beside a status) is not what "open" means. */
+		if ((0 == closed->len) || (0 == n_open))
+			return;
+
+		column = venture_entity_property_to_column(venture_field_spec_get_name(spec));
+		list = venture_lql_chip_list(closed);
+		g_ptr_array_add(chips, venture_lql_chip_take(g_strdup("Open"),
+			g_strdup_printf("%s not in %s", column, list)));
+		g_ptr_array_add(chips, venture_lql_chip_take(g_strdup("Closed"),
+			g_strdup_printf("%s in %s", column, list)));
+		return;
+	}
+}
+
+/*
+ * Mine: the field that says whose the record is. First the one the access
+ * policy itself reads as "assigned to" (VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME,
+ * a username: `assignee == me()`), then a reference to the owning user
+ * (owner_user_id, owner_id: `owner_user_id == my_id()`).
+ */
+static void
+venture_lql_chips_mine(
+	GPtrArray	*chips,
+	GObjectClass	*klass,
+	GPtrArray	*specs
+){
+	static const gchar * const owners[] = { "owner-user-id", "owner-id" };
+	gsize k;
+	guint i;
+
+	for (i = 0; i < specs->len; i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		g_autofree gchar *column = NULL;
+
+		if ((VENTURE_FIELD_KIND_STRING != venture_field_spec_get_kind(spec)) ||
+		    (0 == (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME)) ||
+		    (NULL == g_object_class_find_property(klass, venture_field_spec_get_name(spec))))
+			continue;
+
+		column = venture_entity_property_to_column(venture_field_spec_get_name(spec));
+		g_ptr_array_add(chips, venture_lql_chip_take(g_strdup("Mine"),
+			g_strdup_printf("%s == me()", column)));
+		return;
+	}
+
+	for (k = 0; k < G_N_ELEMENTS(owners); k++)
+	{
+		for (i = 0; i < specs->len; i++)
+		{
+			VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+			g_autofree gchar *column = NULL;
+
+			if ((0 != g_strcmp0(venture_field_spec_get_name(spec), owners[k])) ||
+			    (VENTURE_FIELD_KIND_REFERENCE != venture_field_spec_get_kind(spec)) ||
+			    (0 != g_strcmp0(venture_field_spec_get_reference_type(spec), "user")) ||
+			    (NULL == g_object_class_find_property(klass, owners[k])))
+				continue;
+
+			column = venture_entity_property_to_column(owners[k]);
+			g_ptr_array_add(chips, venture_lql_chip_take(g_strdup("Mine"),
+				g_strdup_printf("%s == my_id()", column)));
+			return;
+		}
+	}
+}
+
+/*
+ * The date windows: this week and this month of the record's primary
+ * date -- the first date field the table declares that says when the
+ * record happened (issued, occurred, starts, due), not a schedule's
+ * machinery (venture_lql_chip_date_is_schedule()) -- or, with none, when
+ * it was created. Each window is one bracketed term, so a chip toggles as
+ * one, and both of its ends push down to SQL.
+ */
+static void
+venture_lql_chips_dates(
+	GPtrArray	*chips,
+	GObjectClass	*klass,
+	GPtrArray	*specs
+){
+	static const struct
+	{
+		const gchar	*period;
+		const gchar	*words;
+	} windows[] = {
+		{ "this_week",  "this week"  },
+		{ "this_month", "this month" }
+	};
+	g_autofree gchar *column = NULL;
+	g_autofree gchar *label = NULL;
+	gsize w;
+	guint i;
+
+	for (i = 0; (NULL == column) && (i < specs->len); i++)
+	{
+		VentureFieldSpec *spec = g_ptr_array_index(specs, i);
+		VentureFieldKind kind = venture_field_spec_get_kind(spec);
+		const gchar *name = venture_field_spec_get_name(spec);
+		GParamSpec *pspec;
+
+		if (((VENTURE_FIELD_KIND_DATE != kind) && (VENTURE_FIELD_KIND_DATETIME != kind)) ||
+		    (VENTURE_FIELD_ROLE_TECHNICAL == venture_field_spec_get_role(spec)) ||
+		    venture_lql_chip_date_is_schedule(name))
+			continue;
+
+		/* A timestamp property, or LQL has no Timestamp to compare. */
+		pspec = g_object_class_find_property(klass, name);
+
+		if ((NULL == pspec) || (G_TYPE_DATE_TIME != pspec->value_type))
+			continue;
+
+		column = venture_entity_property_to_column(name);
+		label = g_strdup(venture_field_spec_get_label(spec));
+
+		/* "Issued at" reads "Issued this week" on a chip. */
+		if (g_str_has_suffix(label, " at"))
+			label[strlen(label) - 3] = '\0';
+	}
+
+	if (NULL == column)
+	{
+		GParamSpec *pspec = g_object_class_find_property(klass, "created-at");
+
+		if ((NULL == pspec) || (G_TYPE_DATE_TIME != pspec->value_type))
+			return;
+
+		column = g_strdup("created_at");
+		label = g_strdup("Created");
+	}
+
+	for (w = 0; w < G_N_ELEMENTS(windows); w++)
+		g_ptr_array_add(chips, venture_lql_chip_take(
+			g_strdup_printf("%s %s", label, windows[w].words),
+			g_strdup_printf("(%s >= period(\"%s\").start and %s < period(\"%s\").end)",
+			                column, windows[w].period, column, windows[w].period)));
+}
+
+GPtrArray *
+venture_lql_filter_chips(GType entity_type)
+{
+	g_autoptr(VentureEntity) prototype = NULL;
+	g_autoptr(GPtrArray) specs = NULL;
+	GObjectClass *klass;
+	GPtrArray *chips;
+
+	g_return_val_if_fail(g_type_is_a(entity_type, VENTURE_TYPE_ENTITY), NULL);
+
+	chips = g_ptr_array_new_with_free_func((GDestroyNotify)venture_lql_chip_free);
+	prototype = g_object_new(entity_type, NULL);
+	specs = venture_entity_get_field_specs(prototype);
+	klass = G_OBJECT_GET_CLASS(prototype);
+
+	/* In the order a person reaches for them: where it is, whose, when. */
+	venture_lql_chips_status(chips, klass, specs);
+	venture_lql_chips_mine(chips, klass, specs);
+	venture_lql_chips_dates(chips, klass, specs);
+
+	return chips;
+}

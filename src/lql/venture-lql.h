@@ -368,6 +368,49 @@ venture_lql_filter_and(
 	const gchar	*right
 );
 
+/**
+ * VentureLqlChip:
+ * @label: what the chip says ("Open", "Mine", "Issued this month")
+ * @clause: the term it writes into the bar, or takes out of it
+ *   (venture_lql_filter_toggle())
+ *
+ * A quick filter on a list's bar.
+ */
+typedef struct
+{
+	gchar	*label;
+	gchar	*clause;
+} VentureLqlChip;
+
+void
+venture_lql_chip_free(VentureLqlChip *chip);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureLqlChip, venture_lql_chip_free)
+
+/**
+ * venture_lql_filter_chips:
+ * @entity_type: a #VentureEntity subtype
+ *
+ * The quick chips a generic list of @entity_type offers, worked out from
+ * its field table rather than written per page (docs/lql.org, "Quick
+ * chips"):
+ *
+ *   - Open and Closed, when its lifecycle field (status, stage, state) is
+ *     an enumeration with both final and unfinished states;
+ *   - Mine, when a field says whose it is: the assigned username
+ *     (`assignee == me()`) or the owning user (`owner_user_id == my_id()`);
+ *   - this week and this month of its primary date, the first date the
+ *     table declares that says when the record happened (else created_at).
+ *
+ * Every clause is a single top-level term, and every one pushes down to
+ * SQL in full.
+ *
+ * Returns: (transfer full) (element-type VentureLqlChip): the chips, in
+ *   the order the bar shows them; empty for a type with none
+ */
+GPtrArray *
+venture_lql_filter_chips(GType entity_type);
+
 G_END_DECLS
 
 #endif /* VENTURE_LQL_H */

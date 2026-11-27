@@ -3845,15 +3845,29 @@ venture_web_resolve_type(
 	return TRUE;
 }
 
+/* Whether @request asks for soft-deleted records too (?include_deleted=true). */
+static gboolean
+venture_web_wants_deleted(HtmxRequest *request)
+{
+	const gchar *deleted;
+
+	deleted = htmx_request_get_query_param(request, "include_deleted");
+
+	return (0 == g_strcmp0(deleted, "true")) || (0 == g_strcmp0(deleted, "1"));
+}
+
 /*
  * Builds a query from the request's URL parameters, scoped to the caller's
- * organisation.
+ * organisation. With @with_lql, the LQL filter `q` too; without, `q` is
+ * left for the caller, which applies it itself to place a problem in its
+ * query bar (venture_web_ui_list()).
  */
 static VentureQuery *
-venture_web_build_query(
+venture_web_build_query_full(
 	VentureWebServer	 *self,
 	GType			  entity_type,
 	HtmxRequest		 *request,
+	gboolean		  with_lql,
 	GError			**error
 ){
 	g_autoptr(VentureQuery) query = NULL;
@@ -3924,18 +3938,11 @@ venture_web_build_query(
 	if (!venture_query_apply_query_string(query, url_params, error))
 		return NULL;
 
-	if (!venture_web_lql_blank(lql))
-	{
-		const gchar *deleted;
-
-		deleted = htmx_request_get_query_param(request, "include_deleted");
-
-		if (!venture_web_apply_lql_filter(self, request, entity_type, query, lql,
-		                                  (0 == g_strcmp0(deleted, "true")) ||
-		                                  (0 == g_strcmp0(deleted, "1")),
-		                                  NULL, NULL, NULL, error))
-			return NULL;
-	}
+	if (with_lql && !venture_web_lql_blank(lql) &&
+	    !venture_web_apply_lql_filter(self, request, entity_type, query, lql,
+	                                  venture_web_wants_deleted(request),
+	                                  NULL, NULL, NULL, error))
+		return NULL;
 
 	/*
 	 * Scoped to whichever entity the browser has selected, and to every
@@ -3960,6 +3967,17 @@ venture_web_build_query(
 	}
 
 	return g_steal_pointer(&query);
+}
+
+/* venture_web_build_query_full() with the LQL filter `q` applied. */
+static VentureQuery *
+venture_web_build_query(
+	VentureWebServer	 *self,
+	GType			  entity_type,
+	HtmxRequest		 *request,
+	GError			**error
+){
+	return venture_web_build_query_full(self, entity_type, request, TRUE, error);
 }
 
 /* --- Record reads, on the main thread or a read worker ---------------- */
@@ -8396,6 +8414,9 @@ venture_web_ui_list(
 	GPtrArray *views;
 	const VentureEntityListView *view;
 	g_autofree gchar *view_path = NULL;
+	g_autoptr(LqlEnvironment) environment = NULL;
+	g_autoptr(VentureLqlProblem) problem = NULL;
+	const gchar *lql;
 	gint64 total;
 	gint64 page;
 	gint64 page_size;
@@ -8449,7 +8470,28 @@ venture_web_ui_list(
 	prototype = venture_entity_registry_get_prototype(
 		venture_context_get_entity_registry(self->context), type_name);
 
-	query = venture_web_build_query(self, entity_type, request, &error);
+	/* The field filters first; the bar's LQL filter is applied here, below,
+	 * so that a problem with it is drawn in the bar rather than as a bare
+	 * refusal. */
+	query = venture_web_build_query_full(self, entity_type, request, FALSE, &error);
+	lql = htmx_request_get_query_param(request, "q");
+
+	if ((NULL != query) && !venture_web_lql_blank(lql))
+	{
+		/* The caller's environment: what the filter runs in, and what the
+		 * bar highlights it against. Not built for a page with no
+		 * filter, whose bar needs none. */
+		environment = venture_web_server_new_lql_environment(self, request, &error);
+
+		if (NULL == environment)
+			return venture_web_error_response(error);
+
+		if (!venture_web_apply_lql_filter(self, request, entity_type, query, lql,
+		                                  venture_web_wants_deleted(request), environment,
+		                                  NULL, &problem, &error) &&
+		    (NULL == problem))
+			g_clear_object(&query);
+	}
 
 	if (NULL == query)
 	{
@@ -8483,8 +8525,13 @@ venture_web_ui_list(
 				(guint)((page - 1) * page_size));
 	}
 
-	records = venture_database_find(venture_context_get_database(self->context),
-	                                query, &error);
+	/* A filter that cannot run lists nothing: the page draws its problem
+	 * in the bar, and no table that would read as "no such records". */
+	if (NULL != problem)
+		records = g_ptr_array_new_with_free_func(g_object_unref);
+	else
+		records = venture_database_find(venture_context_get_database(self->context),
+		                                query, &error);
 
 	if (NULL == records)
 	{
@@ -8502,8 +8549,8 @@ venture_web_ui_list(
 
 	/* The whole filtered set, not this page of it: "Page 2 of 9" and the
 	 * subtitle's count both need the real number. */
-	total = venture_database_count(venture_context_get_database(self->context),
-	                               query, NULL);
+	total = (NULL != problem) ? 0 : venture_database_count(venture_context_get_database(self->context),
+	                                                      query, NULL);
 
 	if (total < 0)
 		total = (gint64)records->len;
@@ -8571,7 +8618,24 @@ venture_web_ui_list(
 
 		venture_web_append_list_views(content, type_name, all_label, views, view);
 	}
+
+	/* The query bar: an LQL filter on top of whatever else the page
+	 * filters by, and the chips this type's field table gives. */
+	{
+		g_autofree gchar *bar_label = g_strdup_printf("Filter %s", heading);
+
+		venture_web_append_list_query_bar(content, environment, entity_type, type_name,
+		                                  bar_label, request, problem);
+	}
+
 	venture_web_append_list_filters(self, request, content, path, entity_type, specs);
+
+	if (NULL != problem)
+	{
+		return venture_web_html_response(
+			venture_web_page(self, request, (NULL != view) ? view_path : path, heading,
+			                 content->str), 400);
+	}
 
 	/* The registry prototype is one process-wide object per type; a
 	 * request's active organization must not linger on it for the next
@@ -15256,7 +15320,9 @@ venture_web_ui_tickets(
 		hidden[1] = board ? "board" : "list";
 		venture_web_append_query_bar(content, environment, "ticket", "Filter tickets",
 		                             "/tickets", hidden, venture_web_ticket_chips,
-		                             G_N_ELEMENTS(venture_web_ticket_chips), bar, problem);
+		                             G_N_ELEMENTS(venture_web_ticket_chips),
+		                             "status not in [\"done\", \"cancelled\"] and assignee == me()",
+		                             bar, problem);
 	}
 
 	/* The filters, as links rather than a form: each is a URL you can
@@ -31979,8 +32045,37 @@ venture_web_saved_view_url(VentureEntity *view)
 }
 
 /*
+ * Whether @principal may open the list a saved view of @entity_type is:
+ * the type exists here (its module is on) and passes the list's own role
+ * check. A view of a type they cannot open is neither offered nor saved,
+ * so the sidebar never links to a refusal.
+ */
+static gboolean
+venture_web_saved_view_type_open(
+	VentureWebServer	 *self,
+	VentureAuthPrincipal	 *principal,
+	const gchar		 *entity_type,
+	GError			**error
+){
+	GType type;
+
+	type = venture_entity_registry_lookup(
+		venture_context_get_entity_registry(self->context), entity_type);
+
+	if (G_TYPE_INVALID == type)
+	{
+		/* Says "disabled module" or "no such type", whichever it is. */
+		venture_entity_registry_set_unknown_type_error(
+			venture_context_get_entity_registry(self->context), entity_type, error);
+		return FALSE;
+	}
+
+	return venture_web_require_for_type(self, principal, type, VENTURE_USER_ROLE_VIEWER, error);
+}
+
+/*
  * The saved views a user may see: everybody's shared ones and their own
- * personal ones, in position order.
+ * personal ones, in position order, of the types they may open.
  */
 static GPtrArray *
 venture_web_saved_views_for(
@@ -32018,6 +32113,15 @@ venture_web_saved_views_for(
 
 		if (personal && (owner != principal->user_id))
 			continue;
+
+		{
+			g_autofree gchar *entity_type = NULL;
+
+			g_object_get(view, "entity-type", &entity_type, NULL);
+
+			if (!venture_web_saved_view_type_open(self, principal, entity_type, NULL))
+				continue;
+		}
 
 		g_ptr_array_add(visible, g_object_ref(view));
 	}
@@ -32256,7 +32360,6 @@ venture_web_ui_view_create(
 	const gchar *query;
 	const gchar *lql;
 	const gchar *board;
-	GType type;
 
 	(void)params;
 
@@ -32285,15 +32388,10 @@ venture_web_ui_view_create(
 		return venture_web_error_response(error);
 	}
 
-	type = venture_entity_registry_lookup(
-		venture_context_get_entity_registry(self->context), entity_type);
-
-	if (G_TYPE_INVALID == type)
-	{
-		g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND,
-		            "There is no record type called \"%s\"", entity_type);
+	/* Only a list the caller may open is kept: with its module off, or a
+	 * type their role does not list, there is nothing to save. */
+	if (!venture_web_saved_view_type_open(self, principal, entity_type, &error))
 		return venture_web_error_response(error);
-	}
 
 	view = venture_saved_view_new();
 	g_object_set(view,

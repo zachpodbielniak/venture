@@ -640,7 +640,10 @@ static const VentureWebLqlChip venture_web_ticket_chips[] = {
  * @hidden name, value pairs, %NULL-terminated, such as the board's view)
  * to @action; the quick @chips, each a link that writes its term into the
  * bar; and the status line (a problem, or the filter highlighted).
+ * @placeholder is the example the empty input shows.
  *
+ * @environment may be %NULL while @text is blank: nothing is highlighted
+ * then, and the chips' terms are read from their text alone.
  * The input carries data-lql-assist, which the script reads to ask GET
  * /lql/assist for completions and highlighting while typing; without the
  * script the form submits as it is and the server draws everything.
@@ -655,6 +658,7 @@ venture_web_append_query_bar(
 	const gchar * const		*hidden,
 	const VentureWebLqlChip		*chips,
 	gsize				 n_chips,
+	const gchar			*placeholder,
 	const gchar			*text,
 	const VentureLqlProblem		*problem
 ){
@@ -704,12 +708,12 @@ venture_web_append_query_bar(
 	g_string_append_printf(html,
 		"<input id=\"%s\" class=\"query-bar-input lql-code%s\" type=\"text\" name=\"q\" "
 		"autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\" "
-		"placeholder=\"status not in [&quot;done&quot;, &quot;cancelled&quot;] and assignee == me()\" "
 		"role=\"combobox\" aria-autocomplete=\"list\" aria-expanded=\"false\" "
-		"aria-controls=\"%s-list\" aria-describedby=\"%s-status\"%s "
-		"data-lql-bar data-lql-assist=\"/lql/assist?type=",
+		"aria-controls=\"%s-list\" aria-describedby=\"%s-status\"%s placeholder=\"",
 		id, (NULL != problem) ? " has-problem" : "", id, id,
 		(NULL != problem) ? " aria-invalid=\"true\"" : "");
+	venture_html_escape_append(html, placeholder);
+	g_string_append(html, "\" data-lql-bar data-lql-assist=\"/lql/assist?type=");
 	venture_html_escape_append(html, type_name);
 	g_string_append(html, "\" data-lql-base=\"");
 	venture_html_escape_append(html, base->str);
@@ -775,6 +779,80 @@ venture_web_append_query_bar(
 	                             "data-lql-status aria-live=\"polite\">", id);
 	venture_web_append_lql_status(html, environment, type_name, text, problem, base->str);
 	g_string_append(html, "</div></div>");
+}
+
+/* --- A generic list's bar ------------------------------------------------------- */
+
+/*
+ * The bar over a generic list, /e/@type_name: the chips its field table
+ * gives (venture_lql_filter_chips()), and every other parameter of the
+ * page -- field filters, a named view, the sort, a search -- carried
+ * along as it is, so the bar narrows what the page shows rather than
+ * replacing it. Paging is dropped: a new filter starts at page one.
+ *
+ * @environment may be %NULL when the page has no filter (see
+ * venture_web_append_query_bar()).
+ */
+static void
+venture_web_append_list_query_bar(
+	GString			*html,
+	LqlEnvironment		*environment,
+	GType			 entity_type,
+	const gchar		*type_name,
+	const gchar		*label,
+	HtmxRequest		*request,
+	const VentureLqlProblem	*problem
+){
+	g_autoptr(GPtrArray) chips = NULL;
+	g_autoptr(GPtrArray) hidden = NULL;
+	g_autofree VentureWebLqlChip *borrowed = NULL;
+	g_autofree gchar *action = NULL;
+	GHashTable *params;
+	GList *keys;
+	GList *item;
+	guint i;
+
+	chips = venture_lql_filter_chips(entity_type);
+	action = g_strdup_printf("/e/%s", type_name);
+
+	/* The page's other parameters, name then value, in name order so the
+	 * links the bar draws are the same for the same page. */
+	hidden = g_ptr_array_new();
+	params = htmx_request_get_query_params(request);
+	keys = (NULL != params) ? g_list_sort(g_hash_table_get_keys(params), (GCompareFunc)g_strcmp0)
+	                        : NULL;
+
+	for (item = keys; NULL != item; item = item->next)
+	{
+		const gchar *name = item->data;
+
+		if ((0 == g_strcmp0(name, "q")) || (0 == g_strcmp0(name, "page")) ||
+		    (0 == g_strcmp0(name, "offset")))
+			continue;
+
+		g_ptr_array_add(hidden, item->data);
+		g_ptr_array_add(hidden, g_hash_table_lookup(params, name));
+	}
+
+	g_list_free(keys);
+	g_ptr_array_add(hidden, NULL);
+
+	/* The chips as the bar takes them, borrowing their strings. */
+	borrowed = g_new0(VentureWebLqlChip, MAX(chips->len, 1u));
+
+	for (i = 0; i < chips->len; i++)
+	{
+		const VentureLqlChip *chip = g_ptr_array_index(chips, i);
+
+		borrowed[i].label = chip->label;
+		borrowed[i].clause = chip->clause;
+	}
+
+	venture_web_append_query_bar(html, environment, type_name, label, action,
+		(const gchar * const *)hidden->pdata, borrowed, chips->len,
+		(chips->len > 0) ? ((const VentureLqlChip *)g_ptr_array_index(chips, 0))->clause
+		                 : "id > 100",
+		htmx_request_get_query_param(request, "q"), problem);
 }
 
 /* --- GET /lql/assist ---------------------------------------------------------- */

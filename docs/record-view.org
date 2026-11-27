@@ -215,5 +215,11 @@ list. Technical and sensitive fields are never offered as controls.
 Applying filters also updates the browser address, so reloading, bookmarking
 or sharing the page keeps the selected filters.
 
+Above the Filters panel is the query bar: an LQL filter on top of everything
+else the page filters by, kept in the URL as =?q==, with quick chips worked
+out from the field table (Open and Closed, Mine, this week and this month of
+the record's date). Each panel carries the other's filter along. See
+[[file:lql.org::*Generic lists][Generic lists]] and [[file:lql.org::*Quick chips][Quick chips]].
+
 Live search retains keyboard focus and the selection after refreshing results.
 A cancelled or slower earlier search cannot replace a newer search result.

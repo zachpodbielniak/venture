@@ -132,6 +132,28 @@ venture_lql_fn_me(
 }
 
 /*
+ * my_id() -> Int: the caller's user id, the value an owning-user reference
+ * holds, so `owner_user_id == my_id()` reads "owned by me". NULL for a
+ * caller with no account (sign-in off), which matches nothing.
+ */
+static LqlValue *
+venture_lql_fn_my_id(
+	LqlFunctionCall	 *call,
+	gpointer	  user_data,
+	GError		**error
+){
+	VentureLqlCaller *caller = user_data;
+
+	(void)call;
+	(void)error;
+
+	if (caller->principal->user_id <= 0)
+		return lql_value_new_null();
+
+	return lql_value_new_int(caller->principal->user_id);
+}
+
+/*
  * my_teams() -> Array: the ids of the teams the caller is an active member
  * of, for `team_id in my_teams()`. Read once per environment, with
  * internal authority (they are the caller's own memberships), and empty
@@ -343,6 +365,9 @@ venture_lql_register_functions(
 	return venture_lql_register_function(environment, caller, "me",
 		LQL_VALUE_TYPE_STRING, venture_lql_fn_me, 0, 0, "me() -> String",
 		"Your username: what an assignee field holds.", error) &&
+	       venture_lql_register_function(environment, caller, "my_id",
+		LQL_VALUE_TYPE_INT, venture_lql_fn_my_id, 0, 0, "my_id() -> Int",
+		"Your user id: what an owner_user_id field holds.", error) &&
 	       venture_lql_register_function(environment, caller, "my_teams",
 		LQL_VALUE_TYPE_ARRAY, venture_lql_fn_my_teams, 0, 0, "my_teams() -> Array",
 		"The ids of the teams you are an active member of.", error) &&

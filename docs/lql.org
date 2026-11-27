@@ -8,13 +8,13 @@
 
 * LQL in VENTURE
 
-[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation -- the dependency, the record source and its guarantees -- and the first thing built on it, the filter bar over the ticket board and list and the =?q== parameter of every list (see [[*Filter bars][Filter bars]]). The generic list pages and =/api/v1/query= build on the same.
+[[file:../deps/libre-query-language/README.org][LQL]] (libre-query-language) is a pipeline query language: =fetch ticket | filter status not in ["done", "cancelled"] and assignee == me() | summarize n = count(), by: priority=. VENTURE embeds its library so that one language can filter every list page, drive charts and answer the API, the CLI and MCP (the LQL epic). This page covers the foundation -- the dependency, the record source and its guarantees -- and what is built on it: the filter bar over the ticket board and list, the same bar over every generic list page (=/e/<type>=), and the =?q== parameter of every list (see [[*Filter bars][Filter bars]]). =/api/v1/query= builds on the same.
 
 The whole of what a query can name is built by =venture_lql_environment_new()= (=src/lql/=), once per caller:
 
 - LQL's built-in commands and functions, which compute on rows and never touch a file, a program or the network;
 - one source per record type the caller may read (=fetch ticket=, =fetch invoice=, ...);
-- VENTURE's functions: =me()=, =my_teams()=, =today()=, =period()=, =organization()=.
+- VENTURE's functions: =me()=, =my_id()=, =my_teams()=, =today()=, =period()=, =organization()=.
 
 Nothing else. See [[*What is deliberately not registered][What is deliberately not registered]].
 
@@ -102,6 +102,7 @@ One caveat no pushdown can repair: a column holding SQL NULL where the record re
 | Function                          | Gives                                                                                              |
 |-----------------------------------+----------------------------------------------------------------------------------------------------|
 | =me() -> String=                  | your username: what =assignee= holds. =assignee == me()=                                           |
+| =my_id() -> Int=                  | your user id: what =owner_user_id= holds. =owner_user_id == my_id()=; NULL with sign-in off        |
 | =my_teams() -> Array=             | the ids of the teams you are an active member of. =team_id in my_teams()=                          |
 | =today() -> Timestamp=            | the start of today on the business calendar (=locale.timezone=), as dates are stored              |
 | =period(name: String) -> Record=  | ={start, end, label}= of a report period; =end= is exclusive; ="all"= has NULL ends                |
@@ -115,7 +116,7 @@ fetch ticket
 | summarize n = count(), by: status
 #+end_src
 
-All five functions are evaluated without a row, so a comparison with them reaches the database.
+All six functions are evaluated without a row, so a comparison with them reaches the database.
 
 * Bounds
 
@@ -130,7 +131,7 @@ The timeout is LQL's own =timeout_ms=: it bounds evaluation between stages and c
 
 * Filter bars
 
-A filter bar holds one LQL filter over one record type: the part of a query after =fetch TYPE | filter=. The ticket board and list have one (=/tickets=), and every list takes the same filter as =?q== (=GET /api/v1/ticket?q=...=, =/e/ticket?q=...=).
+A filter bar holds one LQL filter over one record type: the part of a query after =fetch TYPE | filter=. The ticket board and list have one (=/tickets=), every generic list page has one (=/e/<type>=, see [[*Generic lists][Generic lists]]), and every list takes the same filter as =?q== (=GET /api/v1/ticket?q=...=, =/e/ticket?q=...=).
 
 ** What the bar takes
 
@@ -172,9 +173,36 @@ The board always read =kind=, =issue_type=, =assignee=, =venture_id= and =sprint
 
 The bar shows them as the LQL they mean (=venture_lql_filter_from_query_string()=), joined with the bar's own =q=: =status__not_in=done,cancelled= is =status not in ["done", "cancelled"]=, =assignee== is =(is_null(assignee) or assignee == "")= (blank means "null or empty" to a URL filter), a date is =timestamp("2026-01-01")=, =like= and =ilike= are =like(f, "%x%", TRUE)=. Submitting the bar carries the lot on as =q= alone, which is how an old link becomes a query. While they are URL filters they are applied as URL filters; =tests/test-lql-bar.c= holds the translation to the same tickets.
 
+** Generic lists
+
+Every list page generated from a field table, =/e/<type>= -- companies, contacts, deals, leads, invoices, bills, expenses, products, inventory, forge repositories, releases and every other registered type, a plugin's included -- draws the same bar above its table, with the chips its field table gives (see [[*Quick chips][Quick chips]]). Nothing is written per page: =venture_web_ui_list()= draws it for whichever type it lists.
+
+The bar narrows what the page already shows. Every other parameter of the page -- the Filters panel's field filters, a named view's tab (=customer=true=), the search, the sort -- stays in the URL and is carried along by the bar's form and by every chip and "did you mean" link; paging is dropped, so a new filter starts on page one. The Filters panel carries =q= along the same way. =?q== filters the page, its CSV export and the list API alike, and sorting and paging links keep it.
+
+A filter that cannot run draws its problem in the bar, as on the board -- message, marked text, caret, "did you mean" -- and the page answers 400 with no table, so a typo never reads as "no such records". The page builds a query environment only when it has a filter to run; an unfiltered page's chips are worked out from their own text.
+
+** Pages with a layout of their own
+
+A page with its own layout is in only where it already draws a generic list; the rest keep their own controls, and their records are all reachable, with the bar, at =/e/<type>=.
+
+| Page                                                      | Bar | Why                                                               |
+|-----------------------------------------------------------+-----+-------------------------------------------------------------------|
+| =/tickets= (board and list)                               | in  | the ticket bar, with its own chips (ticket #7)                     |
+| /Trades/ in the Trading sidebar (=/e/arbitrage_trade=)    | in  | it is the generic list                                             |
+| =/deals= (the pipeline board)                             | out | a board by stage; =/e/deal= has the bar                            |
+| =/books= and the accounting pages                         | out | ledgers and statements, not record lists; =/e/journal=, =/e/invoice=, =/e/vendor_bill= have it |
+| =/arbitrage=, crafting, the flip planner, =/accounts=     | out | the Trading pages: scans and calculators over market data          |
+| =/calendar=                                               | out | a calendar; =/e/calendar_event= has the bar                        |
+| =/payables=, =/purchasing=, =/sales-orders=, =/claims=    | out | workbenches: queues with actions, each type's list is =/e/<type>=  |
+| =/tax-filings=, =/budgets=, =/late-fees=, =/capture=      | out | the same                                                          |
+| =/kb=, =/sprints=, =/worklist=, =/inbox=, =/conversations= | out | their own layouts                                                 |
+| =/dashboards=, =/reports=, =/search=, =/views=            | out | not a list of one type                                            |
+
 ** Quick chips
 
 Each chip is a link that adds its term to the bar with =and=, or takes it off when it is already one of the bar's top-level terms (=venture_lql_filter_toggle()=); a bar whose text has a top-level =or= is bracketed first. A person never has to learn the syntax for these.
+
+The ticket board's chips are its own:
 
 | Chip              | Term                                         |
 |-------------------+----------------------------------------------|
@@ -185,6 +213,21 @@ Each chip is a link that adds its term to the bar with =and=, or takes it off wh
 | Updated this week | =updated_at >= period("this_week").start=    |
 
 "This week" is the calendar week on the business calendar (=locale.timezone=), not the last seven days; =updated_at > ago(7d)= is that.
+
+A generic list's chips are worked out from its field table (=venture_lql_filter_chips()=), so a new type, or a plugin's, gets them with no code:
+
+| Chip                       | When                                                                                       | Term                                                    |
+|----------------------------+--------------------------------------------------------------------------------------------+---------------------------------------------------------|
+| Open, Closed               | the type's lifecycle field (=status=, =stage=, =state=) is an enumeration with both final and unfinished states | =status not in [...]=, =status in [...]=        |
+| Mine                       | a string field the access policy reads as "assigned to" (=VENTURE_COLUMN_FLAG_ASSIGNED_USERNAME=) | =assignee == me()=, =owner == me()=       |
+| Mine                       | else a reference to the owning user, =owner_user_id= or =owner_id=                          | =owner_user_id == my_id()=                              |
+| /Date/ this week, this month | the first date the table declares that says when the record happened, else =created_at=  | =(issued_at >= period("this_week").start and issued_at < period("this_week").end)= |
+
+A state is final when its name is one of the words a life ends in -- =done=, =cancelled=, =closed=, =completed=, =resolved=, =won=, =lost=, =paid=, =void=, =accepted=, =declined=, =expired=, =converted=, =archived=, =released=, =failed=, ... (=venture_lql_closed_states= in =venture-lql-filter.c=) -- words rather than a table per type, as the status badge's tones are. =sent=, =active=, =published= and =posted= are deliberately not final: an invoice sent is still owed. An invoice's Open is =status not in ["paid", "void"]=, a deal's =stage not in ["won", "lost"]=, a quote's =status not in ["accepted", "declined", "expired", "superseded"]=. A type whose lifecycle is a plain string (a bill's, a purchase order's) or that has none (an expense) has no Open and Closed.
+
+The primary date skips a schedule's machinery -- a pause or lease (=-until=), an expiry, =last-= and =next-= runs, reminders -- so a company, whose first dates are a dunning pause and a late-fee pause, gets =created_at=. An invoice gets =issued_at=, an expense =occurred_at=, a bill =bill_date=, a deal =expected_close_at=, a ticket =due_at=. A window is one bracketed term, so it toggles as one, and both bounds push down.
+
+Every chip of every registered type checks, runs, and is taken by the source in full (EXACT): =tests/test-lql-lists.c= goes through them all, so a chip is never a table scan.
 
 ** Editor help
 
@@ -209,7 +252,19 @@ Completion (=venture_lql_filter_complete()=) offers LQL's own candidates -- fiel
 
 ** Saved views
 
-A view saved from a filtered list keeps =q= in =saved_view.lql= and the rest of the query string in =saved_view.query=, and opens at =<list>?<query>&q=<lql>=. A view without =lql= (every view saved before) opens as it always did. Migration =001083_saved_view_lql= checks the column, which reconciliation adds from the field table.
+A view saved from a filtered list keeps =q= in =saved_view.lql= and the rest of the query string in =saved_view.query=, and opens at =<list>?<query>&q=<lql>=. A view without =lql= (every view saved before) opens as it always did. Migration =001083_saved_view_lql= checks the column, which reconciliation adds from the field table. Every generic list has the *Save view* control, so a view can be of any type.
+
+A view is saved and offered only for a type the caller may open: =POST /views= refuses a type whose module is off (404, the module named) or that the list's role check refuses (403, =user=, =api_token=, ...), and the sidebar and =/views= leave such views out -- one kept from before its module was turned off included -- so a link never leads to a refusal.
+
+** The module gate
+
+A type whose module is off is no source at all (=venture_entity_registry_list_names()= hides it), so it is not fetchable from its list page, from =?q== on its list API, from =/lql/assist=, or from a saved view; those answer 404. Nor can another list's filter reach it, or any second type: a sub-pipeline is only ever a command's argument (=append=, =lookup=), and a command needs the =|= the bar refuses, so the one source a bar's filter reads is its own list's type.
+
+A financial type (one of the finance module's, or of a module requiring it) stays the finance roles' to read: the source reads through the access policy, so a member who is not owner, admin or finance filters invoices to nothing, on the page and the list API alike, exactly as the unfiltered list shows them nothing. =tests/test-lql-lists.c= holds both, with expense claims (module =claims= off) and invoices.
+
+** At scale
+
+The filter is only as cheap as what the database narrows. =tests/test-lql-lists.c= fills a company table with fifty thousand rows, ten times a =query.max_rows= of 5000: the Mine chip, a date window, an equality and a conjunction of them read only what they keep and answer in milliseconds, as the filter alone, as =/e/company?q== and as the list API; =lower(name) == "..."=, which the source cannot take, passes the bound and is refused with the bound's message rather than scanning.
 
 * What is deliberately not registered
 
