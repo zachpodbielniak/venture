@@ -147,7 +147,7 @@ A wake does not resume a fiber inside somebody else's transaction. Some nested d
 
 *** What runs as a fiber
 
-Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (API and form); =POST /pay/:token=; the Stripe settings operations (configure, the statement name, the key test); Connect status and start.
+Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (API and form); =POST /pay/:token= and the Pay now button =GET /pay/:token/checkout= (the page and the invoice email); the Stripe settings operations (configure, the statement name, the key test); Connect status and start.
 
 Still synchronous, blocking the main loop for as long as Stripe takes: the record action route =POST /api/v1/:type/:id/actions/:action= (every Stripe action, =checkout= and =refund= among them), the customer portal's pay button, paid forms, the Stripe timers (collection, reconciliation, prepaid installments) and the Stripe webhook routes. Moving one is registering it with =VENTURE_WEB_LATER_ROUTE()= and following the rules below.
 

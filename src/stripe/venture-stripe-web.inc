@@ -258,8 +258,9 @@ headers:
 
 /*
  * What asks Stripe answers from a fiber, so nobody else waits on it
- * (venture-web-later.inc): checkout, the customer's payment (its GET page
- * does not ask), and the settings operations (configure, the statement
+ * (venture-web-later.inc): checkout, the customer's payment (POST, and the
+ * Pay now button GET /pay/<token>/checkout the invoice email carries; the
+ * plain GET page does not ask), and the settings operations (configure, the statement
  * name and the key test; the page itself does not ask).
  */
 VENTURE_WEB_LATER_ROUTE(venture_web_stripe_checkout_later, venture_web_stripe_checkout)

@@ -132,7 +132,7 @@ test_payment_link(Fixture *f, gconstpointer data)
 		g_autoptr(VentureWebServer) server = NULL;
 		g_autofree gchar *state_directory = NULL, *path = g_strdup_printf("/pay/%s", token), *body = NULL;
 		venture_context_set_stripe_service(f->context, service);
-		if (!g_strcmp0(mode, "hosted") || !g_strcmp0(mode, "slow-hosted"))
+		if (!g_strcmp0(mode, "hosted") || !g_strcmp0(mode, "slow-hosted") || !g_strcmp0(mode, "slow-email-hosted"))
 		{
 			VentureTenantService *tenant = venture_tenant_service_get(f->database);
 			g_object_set(f->config, "hosted-enabled", TRUE,
@@ -144,6 +144,20 @@ test_payment_link(Fixture *f, gconstpointer data)
 			g_assert_no_error(error);
 		}
 		server = start_server(f, &state_directory);
+		if (!g_strcmp0(mode, "slow-email") || !g_strcmp0(mode, "slow-email-hosted"))
+		{
+			/* So does the Pay now button the invoice email carries: a
+			 * plain GET a mail client opens with no Origin. Only its
+			 * first click asks Stripe (later ones reuse the open
+			 * Checkout), so it is a case of its own. */
+			gboolean hosted = !g_strcmp0(mode, "slow-email-hosted");
+			g_autofree gchar *checkout_path = g_strdup_printf("%s/checkout", path);
+			assert_route_unblocked(server, (FakeTransport *)transport, "GET", checkout_path, NULL,
+				NULL, hosted ? "venture.example" : NULL, NULL, NULL, 303);
+			venture_web_server_stop(server);
+			venture_test_remove_tree(state_directory);
+			return;
+		}
 		if (!g_strcmp0(mode, "slow") || !g_strcmp0(mode, "slow-hosted"))
 		{
 			/* The customer's payment waits on Stripe without holding

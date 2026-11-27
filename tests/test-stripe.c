@@ -1359,6 +1359,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/production-click", Fixture, NULL, set_up, test_pay_now_production_click, tear_down);
 	g_test_add("/stripe/payment-link/slow", Fixture, "slow", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/slow-hosted", Fixture, "slow-hosted", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/slow-email", Fixture, "slow-email", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/payment-link/slow-email-hosted", Fixture, "slow-email-hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);
