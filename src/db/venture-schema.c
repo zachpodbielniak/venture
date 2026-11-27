@@ -305,7 +305,23 @@ venture_schema_append_index(
 			{
 				g_autofree gchar *partition_column = venture_entity_property_to_column(partition);
 				g_autofree gchar *quoted_partition = venture_schema_quote_identifier(partition_column);
-				partition_sql = g_strdup_printf("COALESCE(%s, 0), ", quoted_partition);
+				GParamSpec *partition_spec = g_object_class_find_property(G_OBJECT_CLASS(klass), partition);
+				if (partition_spec != NULL && G_IS_PARAM_SPEC_ENUM(partition_spec))
+				{
+					/* Enumerations are stored as their nick. A row from
+					 * before the column existed holds NULL and belongs
+					 * with the default; nicks are identifiers, but quote
+					 * the literal all the same. */
+					const gchar *nick = venture_enum_to_nick(G_PARAM_SPEC_VALUE_TYPE(partition_spec),
+						G_PARAM_SPEC_ENUM(partition_spec)->default_value);
+					g_autofree gchar *literal = NULL;
+					g_auto(GStrv) parts = g_strsplit(nick != NULL ? nick : "", "'", -1);
+					g_autofree gchar *escaped = g_strjoinv("''", parts);
+					literal = g_strdup_printf("'%s'", escaped);
+					partition_sql = g_strdup_printf("COALESCE(%s, %s), ", quoted_partition, literal);
+				}
+				else
+					partition_sql = g_strdup_printf("COALESCE(%s, 0), ", quoted_partition);
 				index_name = g_strdup_printf("uq_%s_organization_%s_%s", context->table, partition_column, column);
 			}
 			else

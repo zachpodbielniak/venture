@@ -191,12 +191,13 @@ link_terms_valid(const gchar *base_url, GDateTime *now, GDateTime *expires)
 		g_date_time_difference(expires, now) <= 30 * G_TIME_SPAN_DAY;
 }
 
-/* Writes one capability for @invoice as it is now. The caller has checked
- * the authority and the terms; the bearer URL exists only in the returned
- * object's transient url property. */
+/* Writes one capability of @origin for @invoice as it is now. The caller
+ * has checked the authority and the terms, and has disabled any enabled link
+ * of the same origin; the bearer URL exists only in the returned object's
+ * transient url property. */
 static VentureStripePaymentLink *
 link_mint(VentureStripeService *self, VentureEntity *invoice, const gchar *base_url,
-	GDateTime *expires, const VentureActor *actor, GError **error)
+	GDateTime *expires, VentureStripePaymentLinkOrigin origin, const VentureActor *actor, GError **error)
 {
 	g_autoptr(VentureStripePaymentLink) link = NULL;
 	g_autofree gchar *nonce = NULL, *token = NULL, *digest = NULL, *url = NULL;
@@ -209,9 +210,40 @@ link_mint(VentureStripeService *self, VentureEntity *invoice, const gchar *base_
 	url = g_strdup_printf("%.*s/pay/%s", (gint)(strlen(base_url) - (g_str_has_suffix(base_url, "/") ? 1 : 0)), base_url, token);
 	g_object_set(link, "connection-id", self->connection_id, "invoice-id", venture_entity_get_id(invoice),
 		"invoice-version", venture_entity_get_version(invoice), "token-hash", digest,
-		"expires-at", expires, "enabled", TRUE, "url", url, NULL);
+		"expires-at", expires, "enabled", TRUE, "origin", origin, "url", url, NULL);
 	if (!venture_stripe_save_owned(self->database, VENTURE_ENTITY(link), actor, error)) return NULL;
 	return g_steal_pointer(&link);
+}
+
+/* Disables every enabled emailed button of @invoice, so the one about to be
+ * minted is the only one. Local only: Send runs in a transaction and may not
+ * call Stripe. A Checkout session the old button already opened stays as it
+ * is; the new button's click finds it pending and reuses it, and its
+ * payment is recorded either way. Shared links are not touched. */
+static gboolean
+link_retire_email(VentureStripeService *self, VentureEntity *invoice,
+	const VentureActor *actor, GError **error)
+{
+	g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_STRIPE_PAYMENT_LINK);
+	g_autoptr(GPtrArray) previous = NULL;
+	guint i;
+	venture_query_set_limit(query, 0);
+	if (!venture_query_add_filter_int(query, "organization-id", VENTURE_FILTER_OP_EQ, self->organization_id, error) ||
+		!venture_query_add_filter_int(query, "invoice-id", VENTURE_FILTER_OP_EQ, venture_entity_get_id(invoice), error))
+		return FALSE;
+	previous = venture_database_find(self->database, query, error);
+	if (!previous) return FALSE;
+	for (i = 0; i < previous->len; i++)
+	{
+		VentureEntity *old = g_ptr_array_index(previous, i);
+		gint origin;
+		gboolean enabled;
+		g_object_get(old, "origin", &origin, "enabled", &enabled, NULL);
+		if (!enabled || origin != VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL) continue;
+		g_object_set(old, "enabled", FALSE, NULL);
+		if (!venture_stripe_save_owned(self->database, old, actor, error)) return FALSE;
+	}
+	return TRUE;
 }
 
 gchar *
@@ -224,6 +256,7 @@ venture_stripe_service_invoice_pay_url(VentureStripeService *self, VentureEntity
 	g_autoptr(GDateTime) expires = g_date_time_add_days(now, VENTURE_STRIPE_INVOICE_PAY_DAYS);
 	g_autoptr(GError) reason = NULL;
 	g_autofree gchar *url = NULL;
+	gboolean own_transaction;
 	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), NULL);
 	g_return_val_if_fail(VENTURE_IS_ENTITY(invoice), NULL);
 	/* No button is better than a button that fails: an invoice Checkout
@@ -243,8 +276,18 @@ venture_stripe_service_invoice_pay_url(VentureStripeService *self, VentureEntity
 	 * and does not rely on its callers having done so. */
 	if (!venture_access_policy_check_write(venture_database_get_access_policy(self->database), current, "write", error))
 		return NULL;
-	link = link_mint(self, current, base_url, expires, actor, error);
-	if (!link) return NULL;
+	/* A second send replaces the emailed button rather than failing on
+	 * the one-per-origin index. Retiring and minting are one change: in
+	 * Send's transaction, or in one of our own when called outside one. */
+	own_transaction = !venture_database_has_transaction(self->database);
+	if (own_transaction && !venture_database_begin(self->database, error)) return NULL;
+	if (!link_retire_email(self, current, actor, error) ||
+		!(link = link_mint(self, current, base_url, expires, VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL, actor, error)))
+	{
+		if (own_transaction) venture_database_rollback(self->database);
+		return NULL;
+	}
+	if (own_transaction && !venture_database_commit(self->database, error)) return NULL;
 	g_object_get(link, "url", &url, NULL);
 	return g_strconcat(url, "/checkout", NULL);
 }
@@ -277,7 +320,14 @@ venture_stripe_service_create_payment_link(VentureStripeService *self,
 		VentureEntity *old = g_ptr_array_index(previous, i);
 		gint64 binding, checkout_id;
 		gboolean enabled, pending = FALSE;
-		g_object_get(old, "connection-id", &binding, "checkout-id", &checkout_id, "enabled", &enabled, NULL);
+		gint origin;
+		g_object_get(old, "connection-id", &binding, "checkout-id", &checkout_id, "enabled", &enabled,
+			"origin", &origin, NULL);
+		/* The emailed button is the customer's, not the operator's to
+		 * replace here: a shared link replaces only a shared link. A
+		 * Checkout the button opened is the invoice's one active attempt,
+		 * which the new link's click reuses. */
+		if (origin == VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL) continue;
 		if (checkout_id)
 		{
 			g_autoptr(VentureEntity) attempt = venture_database_get(self->database, VENTURE_TYPE_STRIPE_CHECKOUT, checkout_id, error);
@@ -291,7 +341,7 @@ venture_stripe_service_create_payment_link(VentureStripeService *self,
 		{ refuse(error, "Revoke the historical account's payment link before replacement"); return NULL; }
 		if (!venture_stripe_service_revoke_payment_link(self, venture_entity_get_id(old), actor, error)) return NULL;
 	}
-	return link_mint(self, invoice, base_url, expires, actor, error);
+	return link_mint(self, invoice, base_url, expires, VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_SHARED, actor, error);
 }
 
 VentureStripeCheckout *

@@ -137,6 +137,23 @@ static const VentureFieldDecl exception_fields[] = {
 };
 VENTURE_DEFINE_ENTITY(VentureProcessorException, venture_processor_exception, exception_fields)
 
+GType
+venture_stripe_payment_link_origin_get_type(void)
+{
+	static gsize type_id = 0;
+	if (g_once_init_enter(&type_id))
+	{
+		static const GEnumValue values[] = {
+			{ VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_SHARED, "VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_SHARED", "shared" },
+			{ VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL, "VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL", "email" },
+			{ 0, NULL, NULL }
+		};
+		GType id = g_enum_register_static("VentureStripePaymentLinkOrigin", values);
+		g_once_init_leave(&type_id, id);
+	}
+	return type_id;
+}
+
 static const VentureFieldDecl payment_link_fields[] = {
 	VENTURE_FIELD_REF("connection-id", "Integration connection", "Immutable account and environment", "integration_connection", VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD_REF("invoice-id", "Invoice", NULL, "invoice", VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_UNIQUE_ORGANIZATION),
@@ -144,11 +161,15 @@ static const VentureFieldDecl payment_link_fields[] = {
 	VENTURE_FIELD("token-hash", "Capability digest", "SHA256; bearer token is never persisted", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_SENSITIVE | VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("expires-at", "Expiry", NULL, VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL),
 	VENTURE_FIELD("enabled", "Enabled", "Revocation keeps payment evidence and history", VENTURE_FIELD_KIND_BOOLEAN, VENTURE_COLUMN_FLAG_NONE),
+	VENTURE_FIELD_ENUM("origin", "Origin", "shared (Create payment link) or email (the invoice email's Pay now button); service owned",
+		venture_stripe_payment_link_origin_get_type, VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD_REF("checkout-id", "Checkout", NULL, "stripe_checkout", VENTURE_COLUMN_FLAG_NONE),
 	VENTURE_FIELD("url", "Copy payment link", "Shown only by the creating action; never persisted", VENTURE_FIELD_KIND_STRING, VENTURE_COLUMN_FLAG_TRANSIENT)
 };
+/* One enabled link per invoice and origin: the emailed button and a shared
+ * link live side by side, and each replaces only its own kind. */
 VENTURE_DEFINE_ENTITY_WITH_CODE(VentureStripePaymentLink, venture_stripe_payment_link, payment_link_fields,
-	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "invoice-id", NULL, "enabled");)
+	venture_entity_class_set_field_unique_scope(VENTURE_ENTITY_CLASS(klass), "invoice-id", "origin", "enabled");)
 
 static const VentureFieldDecl authorization_fields[] = {
 	VENTURE_FIELD("next-check-at", "Next collection check", "Persistent bounded scheduling clock", VENTURE_FIELD_KIND_DATETIME, VENTURE_COLUMN_FLAG_NOT_NULL | VENTURE_COLUMN_FLAG_INDEXED),

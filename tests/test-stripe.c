@@ -1228,6 +1228,12 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/edited-invoice", Fixture, NULL, set_up, test_pay_now_edited_invoice, tear_down);
 	g_test_add("/stripe/pay-now/expiry", Fixture, NULL, set_up, test_pay_now_expiry, tear_down);
 	g_test_add("/stripe/pay-now/ach-off", Fixture, NULL, set_up, test_pay_now_ach_off, tear_down);
+	g_test_add("/stripe/pay-now/shared-then-send", Fixture, NULL, set_up, test_pay_now_shared_then_send, tear_down);
+	g_test_add("/stripe/pay-now/send-then-share", Fixture, NULL, set_up, test_pay_now_send_then_share, tear_down);
+	g_test_add("/stripe/pay-now/resend", Fixture, NULL, set_up, test_pay_now_resend, tear_down);
+	g_test_add("/stripe/pay-now/origin-migration", Fixture, NULL, set_up, test_pay_now_origin_migration, tear_down);
+	g_test_add("/stripe/pay-now/expired-session", Fixture, NULL, set_up, test_pay_now_expired_session, tear_down);
+	g_test_add("/stripe/pay-now/production-click", Fixture, NULL, set_up, test_pay_now_production_click, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);

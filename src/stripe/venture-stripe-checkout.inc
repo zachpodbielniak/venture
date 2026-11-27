@@ -111,6 +111,24 @@ stripe_checkout_create(VentureStripeService *self, gint64 invoice_id, GDateTime 
 			refuse(error, "A pending Checkout belongs to an earlier Stripe account; reconcile it before creating another");
 			goto fail;
 		}
+		/* An open session past its deadline cannot be paid at Stripe any
+		 * more, so it is not reused: it is expired here, freeing the one
+		 * active attempt the invoice may have, and a new session opens.
+		 * Its own checkout.session.expired event, arriving later, then
+		 * finds it expired and changes nothing; a completion for it, if
+		 * one ever came, still settles it. One near its deadline but not
+		 * past it is still reused, since the customer can still pay it. */
+		if (!g_strcmp0(state, "open"))
+		{
+			g_autoptr(GDateTime) deadline_at = NULL;
+			g_object_get(prior, "expires-at", &deadline_at, NULL);
+			if (deadline_at && g_date_time_compare(now, deadline_at) >= 0)
+			{
+				g_object_set(prior, "status", "expired", "active", FALSE, NULL);
+				if (!venture_stripe_save_owned(self->database, prior, actor, error)) goto fail;
+				continue;
+			}
+		}
 		checkout = g_object_ref(VENTURE_STRIPE_CHECKOUT(prior));
 		if (g_strcmp0(state, "initiated"))
 		{

@@ -122,13 +122,19 @@ const gchar *venture_entity_class_get_unique_partition(VentureEntityClass *klass
  * venture_entity_class_set_field_unique_scope:
  * @klass: the entity class
  * @property: field carrying UNIQUE_ORGANIZATION
- * @partition: (nullable): persistent integer partition, or organization alone
+ * @partition: (nullable): persistent integer or enumeration partition, or organization alone
  * @condition: (nullable): persistent boolean enabling uniqueness, or always
  *
  * Overrides the class partition for one identifier. Declare once after fields
  * are installed. A condition permits retained inactive history without
  * weakening other unique identifiers on the same entity. The database index
  * enforces this scope across writers; save validators still authorize changes.
+ *
+ * An integer partition treats NULL and zero as one value. An enumeration
+ * partition compares nicks and reads NULL as the property's default, so rows
+ * written before the column was added fall in the default's partition.
+ * Changing the scope of an existing field renames its index; the old index
+ * is not dropped by reconciliation and needs a migration that drops it.
  */
 void venture_entity_class_set_field_unique_scope(VentureEntityClass *klass,
 	const gchar *property, const gchar *partition, const gchar *condition);

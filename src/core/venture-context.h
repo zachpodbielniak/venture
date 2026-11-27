@@ -549,6 +549,25 @@ VentureStripeService *venture_context_get_stripe_service(VentureContext *self);
  * Attaches an explicit test provider. Production resolves an organization binding per operation.
  */
 void venture_context_set_stripe_service(VentureContext *self, VentureStripeService *service);
+#ifndef __GI_SCANNER__
+/**
+ * venture_context_set_stripe_transport: (skip)
+ * @self: context
+ * @transport: (nullable): offline transport, or %NULL for the network
+ *
+ * For tests only. The paths that build their own provider from the
+ * organization's connection (the Pay now button in Send, and its click)
+ * still do so, but send its Stripe calls to @transport. Production never
+ * sets it. C only: StripeTransport has no introspection metadata.
+ */
+void venture_context_set_stripe_transport(VentureContext *self, StripeTransport *transport);
+/**
+ * venture_context_get_stripe_transport: (skip)
+ * @self: context
+ * Returns: (transfer none) (nullable): the test transport, or %NULL for the network
+ */
+StripeTransport *venture_context_get_stripe_transport(VentureContext *self);
+#endif
 /**
  * venture_context_start_stripe:
  * @self: context

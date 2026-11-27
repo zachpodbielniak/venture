@@ -200,7 +200,8 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 		if (!service)
 		{
 			configured = venture_stripe_service_for_connection(database,
-				venture_entity_get_organization_id(VENTURE_ENTITY(link)), connection_id, FALSE, NULL, &error);
+				venture_entity_get_organization_id(VENTURE_ENTITY(link)), connection_id, FALSE,
+				venture_context_get_stripe_transport(self->context), &error);
 			service = configured;
 		}
 		if (!service) goto unavailable;

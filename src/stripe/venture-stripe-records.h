@@ -8,6 +8,27 @@ VENTURE_DECLARE_ENTITY(VentureStripePrepayment, venture_stripe_prepayment, STRIP
 VENTURE_DECLARE_ENTITY(VentureStripeAuthorization, venture_stripe_authorization, STRIPE_AUTHORIZATION)
 #define VENTURE_TYPE_STRIPE_PAYMENT_LINK (venture_stripe_payment_link_get_type())
 VENTURE_DECLARE_ENTITY(VentureStripePaymentLink, venture_stripe_payment_link, STRIPE_PAYMENT_LINK)
+/**
+ * VentureStripePaymentLinkOrigin:
+ * @VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_SHARED: made by Create payment link, to
+ *   copy and share; every link from before origins existed is one
+ * @VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL: the Pay now button in the
+ *   invoice email, minted by Send
+ *
+ * Who made a payment link. An invoice has at most one enabled link of each
+ * origin, so sharing a link never disables the emailed button and sending
+ * never disables a shared link.
+ */
+typedef enum {
+	VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_SHARED,
+	VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL
+} VentureStripePaymentLinkOrigin;
+/**
+ * venture_stripe_payment_link_origin_get_type:
+ *
+ * Returns: the payment link origin enumeration type
+ */
+GType venture_stripe_payment_link_origin_get_type(void) G_GNUC_CONST;
 #define VENTURE_TYPE_STRIPE_EVENT (venture_stripe_event_get_type())
 #define VENTURE_TYPE_STRIPE_CHECKOUT (venture_stripe_checkout_get_type())
 #define VENTURE_TYPE_STRIPE_CUSTOMER_LINK (venture_stripe_customer_link_get_type())

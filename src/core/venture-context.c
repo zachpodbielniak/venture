@@ -31,6 +31,7 @@ struct _VentureContext
 	VentureWorkService	*work;
 	VentureKbService	*kb;
 	VentureStripeService *stripe;
+	StripeTransport *stripe_transport;	/* tests only; NULL is the network */
 	VentureBankFeedService *bankfeed;
 	VentureCommerceService *commerce;
 	VentureModuleRegistry	*modules;
@@ -76,6 +77,7 @@ venture_context_finalize(GObject *object)
 	g_clear_object(&self->work);
 	g_clear_object(&self->kb);
 	g_clear_object(&self->stripe);
+	g_clear_object(&self->stripe_transport);
 	g_clear_object(&self->bankfeed);
 	g_clear_object(&self->commerce);
 	g_clear_object(&self->modules);
@@ -995,6 +997,23 @@ void
 venture_context_set_stripe_service(VentureContext *self, VentureStripeService *service)
 {
 	g_set_object(&self->stripe, service);
+}
+
+/* Unlike an injected service, the production paths still build their own
+ * provider from the organization's sealed connection; only its HTTP calls
+ * go to @transport. */
+void
+venture_context_set_stripe_transport(VentureContext *self, StripeTransport *transport)
+{
+	g_return_if_fail(VENTURE_IS_CONTEXT(self));
+	g_set_object(&self->stripe_transport, transport);
+}
+
+StripeTransport *
+venture_context_get_stripe_transport(VentureContext *self)
+{
+	g_return_val_if_fail(VENTURE_IS_CONTEXT(self), NULL);
+	return self->stripe_transport;
 }
 
 gboolean

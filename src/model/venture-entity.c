@@ -3039,8 +3039,12 @@ venture_entity_class_set_field_unique_scope(VentureEntityClass *klass,
 	g_return_if_fail(g_param_spec_get_qdata(pspec, marker) == NULL);
 	if (partition != NULL)
 	{
+		/* An integer partitions by its value with NULL and zero together;
+		 * an enumeration by its nick with NULL read as its default, so a
+		 * row from before the column existed counts as the default. */
 		target = g_object_class_find_property(G_OBJECT_CLASS(klass), partition);
-		g_return_if_fail(target != NULL && G_PARAM_SPEC_VALUE_TYPE(target) == G_TYPE_INT64);
+		g_return_if_fail(target != NULL && (G_PARAM_SPEC_VALUE_TYPE(target) == G_TYPE_INT64 ||
+			G_IS_PARAM_SPEC_ENUM(target)));
 		g_return_if_fail((venture_entity_class_get_column_flags(klass, partition) & VENTURE_COLUMN_FLAG_TRANSIENT) == 0);
 	}
 	if (condition != NULL)

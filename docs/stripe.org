@@ -216,8 +216,16 @@ or changed-invoice capabilities return the same unavailable page. A live
 capability whose invoice is paid or voided says so instead.
 
 Continuing creates or reuses one Checkout whose provider deadline cannot outlive
-the link. A bank payment already processing remains pending and creates no new
-collection. Existing sessions with unknown or longer lifetime cannot be borrowed
+the link. An open session whose deadline has already passed is not reused: it
+can no longer be paid at Stripe, so the click marks it =expired= locally, which
+frees the invoice's one active attempt, and opens a new session. Its own
+=checkout.session.expired= event, arriving later, finds it expired and changes
+nothing. A completion for it, should one arrive, is settled like any other,
+unless another attempt can still collect the invoice; then it is kept as a
+blocked event for retry (see "Contradictory late success" above) and recorded
+once that attempt has ended. A session near its deadline but not past it is
+still reused, since the customer can still pay it. A bank payment already
+processing remains pending and creates no new collection. Existing sessions with unknown or longer lifetime cannot be borrowed
 by a shorter-lived link. The link records the reservation before external I/O,
 so a lost response cannot detach the pending debit from its revocation history.
 
@@ -226,9 +234,39 @@ of an open provider session. A transport failure retains the blocked attempt and
 can be retried; local revocation does not claim provider expiration. Processing
 bank payments cannot be cancelled here and their signed callbacks still settle
 against the historical account. Replacement first revokes previous applicable
-links. An uncertain attempt or a historical account still able to collect must
-be reconciled before replacement. Revocation cannot rewrite or delete payment
-evidence.
+shared links; it never touches the Pay now button of the invoice email (see
+"Link origins" below). An uncertain attempt or a historical account still able
+to collect must be reconciled before replacement. Revocation cannot rewrite or
+delete payment evidence.
+
+** Link origins
+
+Every link has an =origin=: =shared=, made by *Create payment link*, or
+=email=, the Pay now button that Send mints. An invoice has at most one
+enabled link of each origin, enforced by a database unique index on
+organization, origin and invoice over enabled links. The two kinds live side
+by side and each replaces only its own:
+
+- *Create payment link* revokes the invoice's earlier enabled shared links
+  (with the provider expiry above), never the emailed button.
+- Minting the button disables the invoice's earlier enabled emailed button,
+  locally and in the same transaction, then mints the new one. It never
+  touches a shared link, and makes no Stripe call: a Checkout session the old
+  button already opened is left as it is, and the new button's click reuses
+  it while it is open.
+
+Both links of an invoice, once clicked, lead to the invoice's one active
+Checkout attempt. A link from before origins existed is a shared link.
+
+*Upgrading.* Migration =001081_stripe_payment_link_origin= drops the old
+one-enabled-link-per-invoice index
+=uq_stripe_payment_links_organization_invoice_id_when_enabled= and marks every
+existing link =shared=. It has to be a migration: reconciliation adds the
+=origin= column and the new index from the field table, but it drops only the
+plain =uq_<table>_organization_<column>= indexes that predate partitions and
+conditions, so the old conditional index would survive it and still refuse a
+Send while a shared link is enabled. A NULL origin also reads as =shared=, in
+the record and in the index, which compares =COALESCE(origin, 'shared')=.
 
 * Pay now
 
@@ -239,12 +277,15 @@ digest, account and invoice-revision binding as above, minted in the send
 transaction after the invoice is issued. The token is 256 random bits, kept
 only as its SHA-256 digest, and valid for thirty days. Sending the invoice
 is the authority to offer it, so no finance role is asked, but the sender
-still needs write access to the invoice. Send is idempotent per invoice, so
-there is no earlier email. An invoice has one enabled link at a time:
-*Create payment link* (and *Revoke payment link*) replaces the link, so the
-button in the email stops working once a link is shared afterwards. Sending
-makes no Stripe call. An invoice Checkout cannot take,
-no account or no public origin sends the email without a button.
+still needs write access to the invoice. The button is an =email= link and a
+shared link is a =shared= one (see "Link origins"): sending works while a
+shared link is enabled, and sharing a link afterwards leaves the button
+working. Send is idempotent per invoice: a second Send returns the message
+already queued and mints nothing, so an invoice edited after its email has no
+way through Send to a working button; *Create payment link* is the way to give
+the customer one. =venture_stripe_service_invoice_pay_url()= called again
+replaces the emailed button. Sending makes no Stripe call. An invoice Checkout
+cannot take, no account or no public origin sends the email without a button.
 
 The button is =GET /pay/<capability>/checkout=. It goes straight to
 Checkout for the outstanding balance, cards always and ACH debit where the
@@ -262,6 +303,12 @@ email, including by a partial payment, is unavailable, as above.
 
 The bearer link is in the message's private bodies only. The stored public
 body, the API and previews never show it.
+
+Tests reach the production path without a real Stripe:
+=venture_context_set_stripe_transport()= (C only, tests only) makes the paths
+that build their own provider from the organization's sealed connection (the
+button's minting in Send, and its click) send their Stripe HTTP to the given
+transport. Production never sets it, and then they use the network.
 
 * Returns, disputes and settlement boundaries
 

@@ -206,7 +206,8 @@ static gchar *invoice_pay_url(VentureContext *context, VentureEntity *invoice, c
 		url = venture_stripe_service_invoice_pay_url(stripe, invoice, base, actor, error);
 		if (url || (error && *error)) return url;
 	}
-	own = venture_stripe_service_for_organization(db, venture_entity_get_organization_id(invoice), NULL, NULL);
+	own = venture_stripe_service_for_organization(db, venture_entity_get_organization_id(invoice),
+		venture_context_get_stripe_transport(context), NULL);
 	return own ? venture_stripe_service_invoice_pay_url(own, invoice, base, actor, error) : NULL;
 }
 /* A big button the customer cannot miss. Inline styles, because mail
