@@ -79,11 +79,11 @@ venture_parallel_is_installed(void);
 
 /**
  * venture_parallel_submit:
- * @func: (scope async): the job's body, run on a worker under the gate
- * @outside: (scope async) (nullable): run next on the same worker, after
+ * @func: (scope async) (closure user_data): the job's body, run on a worker under the gate
+ * @outside: (scope async) (nullable) (closure user_data): run next on the same worker, after
  *   the gate is given back
- * @done: (scope async): run afterwards on the owner's main context
- * @user_data: (closure): data for all three
+ * @done: (scope async) (closure user_data): run afterwards on the owner's main context
+ * @user_data: data for all three
  *
  * Queues a read job. @func must not write, must not touch anything only
  * the owner's thread may (see AGENTS.md, the thread list), and must

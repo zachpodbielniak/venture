@@ -99,7 +99,7 @@ void venture_access_policy_bind_thread(VentureAccessPolicy *self);
 void venture_access_policy_unbind_thread(VentureAccessPolicy *self);
 
 /**
- * venture_access_policy_snapshot:
+ * venture_access_policy_snapshot: (skip)
  * @self: policy
  *
  * Returns: (transfer full): a copy of the calling thread's reader

@@ -257,7 +257,7 @@ venture_jsonl_is_decimal(
 typedef struct _VentureJsonlReader VentureJsonlReader;
 
 /**
- * venture_jsonl_reader_new:
+ * venture_jsonl_reader_new: (skip)
  * @max_line: the longest line accepted, in bytes; 0 for no limit beyond
  *   whatever the caller caps the whole input at
  *

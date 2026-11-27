@@ -64,22 +64,6 @@ invalid:
 	return FALSE;
 }
 
-/**
- * venture_forms_personal_link:
- * @database: database containing the form and contact
- * @form: published form in the contact's organization
- * @contact: existing non-deleted contact
- * @origin: public HTTPS origin (HTTP is permitted only on loopback)
- * @expires: expiry, after @now and at most 30 days later
- * @now: generation time
- * @error: (out) (optional): invalid scope, address or expiry
- *
- * Creates a bearer capability for this form only. The caller must have
- * permission to read the contact and distribute their mapped form values.
- * Keep the returned URL out of logs, shared audit records and AI context.
- *
- * Returns: (transfer full) (nullable): personal public URL
- */
 gchar *
 venture_forms_personal_link(VentureDatabase *database, VentureEntity *form,
 	VentureEntity *contact, const gchar *origin, GDateTime *expires,

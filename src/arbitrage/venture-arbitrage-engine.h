@@ -190,10 +190,10 @@ venture_fee_model_registry_new(void);
  * @self: the registry
  * @name: the model's name, as a venue's `fee-model` names it
  * @description: one sentence for the pages and the docs
- * @compute: (scope notified): prices a trade
- * @validate: (nullable) (scope notified): judges parameters; %NULL
+ * @compute: (scope notified) (closure user_data) (destroy destroy): prices a trade
+ * @validate: (nullable) (scope notified) (closure user_data) (destroy destroy): judges parameters; %NULL
  *   accepts only an empty set
- * @user_data: (closure): handed to both
+ * @user_data: handed to both
  * @destroy: (nullable): frees @user_data with the registry; not called
  *   when the registration is refused
  * @error: (out) (optional): return location for a #GError
@@ -418,10 +418,10 @@ venture_arbitrage_strategy_registry_new(void);
  * @options: (nullable) (array zero-terminated=1): option names this
  *   strategy reads beyond the common ones; each must be lower case and
  *   underscored, and a common name is refused
- * @scan: (scope notified): finds opportunities
- * @plan: (nullable) (scope notified): turns one into a record request;
+ * @scan: (scope notified) (closure user_data) (destroy destroy): finds opportunities
+ * @plan: (nullable) (scope notified) (closure user_data) (destroy destroy): turns one into a record request;
  *   %NULL uses venture_arbitrage_plan_legs()
- * @user_data: (closure): handed to both
+ * @user_data: handed to both
  * @destroy: (nullable): frees @user_data with the registry
  * @error: (out) (optional): return location for a #GError
  *
@@ -932,7 +932,7 @@ venture_arbitrage_scan_open_store(
 /**
  * venture_arbitrage_add_trends:
  * @context: the wiring
- * @rows: (element-type JsonObject): a scan's rows
+ * @rows: a scan's rows, a JSON array of objects
  *
  * Gives each row with a single buy venue a `trend`: the buy venue's
  * lowest price each day over the last 14 days, in minor units, null for
@@ -1068,7 +1068,7 @@ venture_arbitrage_stage_opportunity(
 
 /**
  * VentureExportFunc:
- * @opportunities: (element-type JsonObject): the rows a scan answered
+ * @opportunities: the rows a scan answered, a JSON array of objects
  * @options: (nullable): the question that found them
  * @user_data: the data given at registration
  * @error: (out) (optional): return location for a #GError
@@ -1101,8 +1101,8 @@ venture_export_format_registry_new(void);
  * @label: a few words for a link
  * @content_type: the MIME type served, e.g. "text/csv; charset=utf-8"
  * @extension: the file name's extension, without the dot
- * @func: (scope notified): writes the file
- * @user_data: (closure): handed to @func
+ * @func: (scope notified) (closure user_data) (destroy destroy): writes the file
+ * @user_data: handed to @func
  * @destroy: (nullable): frees @user_data with the registry
  * @error: (out) (optional): return location for a #GError
  *
@@ -1201,7 +1201,7 @@ venture_export_format_registry_get_extension(
  * venture_export_format_registry_export:
  * @self: the registry
  * @name: a format
- * @opportunities: (element-type JsonObject): the rows
+ * @opportunities: the rows, a JSON array of objects
  * @options: (nullable): the question
  * @error: (out) (optional): return location for a #GError
  *

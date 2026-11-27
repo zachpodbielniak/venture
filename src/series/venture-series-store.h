@@ -1377,7 +1377,7 @@ guint64
 venture_series_listing_id_from_string(const gchar *id);
 
 /**
- * venture_series_store_begin_snapshot:
+ * venture_series_store_begin_snapshot: (skip)
  * @self: the writer handle
  * @venue_key: the venue the snapshot is of
  * @currency: (nullable): the currency of its prices; %NULL for the venue's
@@ -1709,7 +1709,7 @@ typedef struct
 typedef struct _VentureSeriesUpkeep VentureSeriesUpkeep;
 
 /**
- * venture_series_upkeep_new:
+ * venture_series_upkeep_new: (skip)
  * @now: the time retention counts back from
  * @hourly_days: as venture_series_store_purge()
  * @daily_days: as venture_series_store_purge()
@@ -2086,7 +2086,7 @@ venture_series_history_free(VentureSeriesHistory *history);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VentureSeriesHistory, venture_series_history_free)
 
 /**
- * venture_series_store_history:
+ * venture_series_store_history: (skip)
  * @self: a #VentureSeriesStore
  * @venue_key: the venue
  * @instrument_key: the instrument
@@ -2117,7 +2117,7 @@ venture_series_store_history(
 );
 
 /**
- * venture_series_store_group_history:
+ * venture_series_store_group_history: (skip)
  * @self: a #VentureSeriesStore
  * @group_key: (nullable): the venues of this group ("" for those with
  *   none); %NULL for every venue

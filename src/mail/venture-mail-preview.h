@@ -162,7 +162,7 @@ VentureHttpLinkChecker *venture_http_link_checker_new(void);
 void venture_mail_visible_bodies(VentureMailMessage *message, gchar **text, gchar **html);
 
 /**
- * venture_mail_preview_render:
+ * venture_mail_preview_render: (skip)
  * @message: an unsaved message, or a stored outbox row
  * @kind: (nullable): kind id, or %NULL for "message"
  * @bulk: whether an unsubscribe link and header are legally required
@@ -239,7 +239,7 @@ const VentureMailPreviewKind *venture_mail_preview_lookup(const gchar *id);
 GPtrArray *venture_mail_preview_kinds(void);
 
 /**
- * venture_mail_preview_build:
+ * venture_mail_preview_build: (skip)
  * @context: the application context
  * @kind: kind id
  * @organization_id: exact organization
@@ -257,7 +257,7 @@ VentureMailPreview *venture_mail_preview_build(VentureContext *context, const gc
 	gint64 organization_id, gint64 source_id, GDateTime *now, VentureMailLinkChecker *checker, GError **error);
 
 /**
- * venture_mail_preview_message:
+ * venture_mail_preview_message: (skip)
  * @context: the application context
  * @organization_id: exact organization
  * @message_id: a stored mail_message

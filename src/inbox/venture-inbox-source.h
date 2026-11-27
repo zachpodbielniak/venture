@@ -35,7 +35,7 @@ typedef struct {
 } VentureInboxItem;
 
 /**
- * venture_inbox_item_new:
+ * venture_inbox_item_new: (skip)
  * @source: the channel
  * @record: the record; a reference is taken
  * @at: when; a reference is taken

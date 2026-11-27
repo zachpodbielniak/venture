@@ -2825,12 +2825,6 @@ static const struct
 	{ "link", VENTURE_ICON("<path d=\"M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1\"/><path d=\"M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1\"/>") },
 };
 
-/**
- * venture_web_server_nav_icon_names:
- *
- * Returns: (transfer full) (array zero-terminated=1): the icon names
- *   venture_web_server_add_nav_link() accepts
- */
 gchar **
 venture_web_server_nav_icon_names(void)
 {

@@ -137,7 +137,7 @@ void venture_planner_roadmap_free(VenturePlannerRoadmap *roadmap);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VenturePlannerRoadmap, venture_planner_roadmap_free)
 
 /**
- * venture_planner_roadmap:
+ * venture_planner_roadmap: (skip)
  * @context: the context
  * @query: what is asked
  * @error: (out) (optional): the error

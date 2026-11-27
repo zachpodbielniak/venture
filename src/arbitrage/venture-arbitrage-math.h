@@ -493,7 +493,7 @@ venture_arbitrage_flip_input_init(VentureArbitrageFlipInput *input);
  * @lock_days: units/(sold_per_day x share) + transit_days, or NAN when
  *   sold per day is unknown
  * @roi_per_day: @roi / @lock_days, or NAN
- * @annualized: (1 + @roi)^(365/@lock_days) - 1, or NAN
+ * @annualized: computed as (1 + @roi)^(365/@lock_days) - 1, or NAN
  * @fill_probability: the probability used for @ev, or NAN
  * @ev: P(fill) x net - (1 - P(fill)) x unwind_loss, or %NULL when there
  *   is no probability

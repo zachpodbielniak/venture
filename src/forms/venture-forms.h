@@ -636,9 +636,9 @@ typedef gboolean (*VentureFormsUploadScanner)(GBytes *bytes, const gchar *mime_t
 /**
  * venture_forms_set_upload_scanner:
  * @database: storage owning this registration
- * @callback: (scope notified) (nullable): optional file scanner
- * @user_data: (closure callback): registration data
- * @destroy: (destroy user_data) (nullable): registration cleanup
+ * @callback: (scope notified) (nullable) (closure user_data) (destroy destroy): optional file scanner
+ * @user_data: registration data
+ * @destroy: (nullable): registration cleanup
  *
  * Replaces the optional scanner. Size and content-type checks always run,
  * including when no scanner is registered. The database owns the registration.

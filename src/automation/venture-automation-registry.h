@@ -277,8 +277,14 @@ venture_automation_argument(
 	gsize		 index
 );
 
+/*
+ * (skip) keeps this out of the GIR. (type none) is only so g-ir-scanner
+ * does not treat the _new suffix as a VentureAutomation constructor: that
+ * warning is emitted before (skip) is consulted, and the stand-in type is
+ * not written out. The C return is a GVariant.
+ */
 /**
- * venture_automation_result_new:
+ * venture_automation_result_new: (skip)
  * @count: the figure a rule branches on
  * @summary: (nullable): one line a rule can put in a message
  * @detail: (nullable): the longer text, such as a rendered report
@@ -287,7 +293,7 @@ venture_automation_argument(
  * downstream reaches `{pipe->count}`, `{pipe->summary}` and
  * `{pipe->detail}` whichever handler produced it.
  *
- * Returns: (transfer floating): an `a{sv}` with `count` (int64), `summary`
+ * Returns: (skip) (type none): an `a{sv}` with `count` (int64), `summary`
  *   and `detail` (strings, empty when %NULL)
  */
 GVariant *

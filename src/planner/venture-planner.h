@@ -72,7 +72,7 @@ void venture_planner_agenda_free(VenturePlannerAgenda *agenda);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(VenturePlannerAgenda, venture_planner_agenda_free)
 
 /**
- * venture_planner_agenda:
+ * venture_planner_agenda: (skip)
  * @database: the database
  * @event: an event
  * @error: (out) (optional): the error

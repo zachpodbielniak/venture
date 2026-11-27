@@ -378,8 +378,8 @@ typedef gboolean (*VenturePluginRuntimeLoadFunc) (
  * @name: the runtime's name, lower case
  * @extensions: (array zero-terminated=1) (nullable): the bare-file
  *   suffixes it loads, each starting with "."
- * @load: what loading does
- * @user_data: (closure): handed to @load
+ * @load: (scope notified) (closure user_data) (destroy destroy): what loading does
+ * @user_data: handed to @load
  * @destroy: (nullable): frees @user_data with the runtime
  *
  * A runtime without the GObject boilerplate, for a crispy script or a
@@ -528,8 +528,8 @@ venture_plugin_provides_registry_new(void);
  * @self: a registry
  * @kind: the name a `provides` entry uses, lower case
  * @description: (nullable): a line for the documentation and the list
- * @func: what accepting an entry does
- * @user_data: (closure): handed to @func
+ * @func: (scope notified) (closure user_data) (destroy destroy): what accepting an entry does
+ * @user_data: handed to @func
  * @destroy: (nullable): frees @user_data with the registry
  * @error: (out) (optional): return location for a #GError
  *
@@ -554,10 +554,10 @@ venture_plugin_provides_registry_add(
  * @self: a registry
  * @kind: the name a `provides` entry uses, lower case
  * @description: (nullable): a line for the documentation and the list
- * @validate: (nullable): judges an entry without registering it
- * @func: what accepting an entry does
- * @remove: (nullable): takes back what @func registered
- * @user_data: (closure): handed to @validate, @func and @remove
+ * @validate: (nullable) (scope notified) (closure user_data) (destroy destroy): judges an entry without registering it
+ * @func: (scope notified) (closure user_data) (destroy destroy): what accepting an entry does
+ * @remove: (nullable) (scope notified) (closure user_data) (destroy destroy): takes back what @func registered
+ * @user_data: handed to @validate, @func and @remove
  * @destroy: (nullable): frees @user_data with the registry
  * @error: (out) (optional): return location for a #GError
  *
