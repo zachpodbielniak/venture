@@ -233,6 +233,44 @@ venture_portal_subscription_web(HtmxRequest *request, GHashTable *params, gpoint
 	htmx_response_add_header(response, "Location", location);
 	return response;
 }
+/*
+ * POST /portal/:token -- the pay button: a Checkout for one of the
+ * customer's invoices. Run from a fiber (venture_web_answer_later()), so
+ * the Stripe service's hold on the paying party covers it: a Pay now click
+ * for the same invoice, or a paid form's retry, waits for this one or this
+ * one for it, and they answer the same session. The service checks the
+ * token and the invoice again here, so access revoked while the request
+ * waited is refused.
+ */
+static HtmxResponse *
+venture_portal_web_pay(HtmxRequest *request, GHashTable *params, gpointer user_data)
+{
+	VentureWebServer *self = user_data;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureStripeCheckout) checkout = NULL;
+	g_autofree gchar *url = NULL;
+	const gchar *token = g_hash_table_lookup(params, "token");
+	const gchar *invoice = htmx_request_get_form_value(request, "invoice_id");
+	HtmxResponse *response;
+	VentureActor actor;
+	actor.kind = VENTURE_ACTOR_KIND_USER;
+	actor.name = "customer portal";
+	actor.prompt = NULL;
+	actor.request_id = NULL;
+	actor.approved_by = NULL;
+	checkout = venture_portal_service_checkout(
+		venture_portal_service_get(venture_context_get_database(self->context)),
+		venture_context_get_stripe_service(self->context), token,
+		invoice ? g_ascii_strtoll(invoice, NULL, 10) : 0, &actor, &error);
+	if (checkout == NULL)
+		return venture_web_error_response(error);
+	g_object_get(checkout, "url", &url, NULL);
+	response = htmx_response_new();
+	htmx_response_set_status(response, 303);
+	htmx_response_add_header(response, "Location", url);
+	return response;
+}
+
 static HtmxResponse *
 venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 {
@@ -250,30 +288,10 @@ venture_portal_web(HtmxRequest *request, GHashTable *params, gpointer user_data)
 		htmx_response_set_status(response, 404);
 		return response;
 	}
+	/* A token that names no access is refused above, in this dispatch;
+	 * only a live one starts the work that may wait on Stripe. */
 	if (htmx_request_get_method(request) == HTMX_METHOD_POST)
-	{
-		const gchar *invoice = htmx_request_get_form_value(request, "invoice_id");
-		g_autoptr(VentureStripeCheckout) checkout = NULL;
-		g_autofree gchar *url = NULL;
-		HtmxResponse *response;
-		VentureActor actor;
-		actor.kind = VENTURE_ACTOR_KIND_USER;
-		actor.name = "customer portal";
-		actor.prompt = NULL;
-		actor.request_id = NULL;
-		actor.approved_by = NULL;
-		checkout = venture_portal_service_checkout(
-			venture_portal_service_get(venture_context_get_database(self->context)),
-			venture_context_get_stripe_service(self->context), token,
-			invoice ? g_ascii_strtoll(invoice, NULL, 10) : 0, &actor, &error);
-		if (checkout == NULL)
-			return venture_web_error_response(error);
-		g_object_get(checkout, "url", &url, NULL);
-		response = htmx_response_new();
-		htmx_response_set_status(response, 303);
-		htmx_response_add_header(response, "Location", url);
-		return response;
-	}
+		return venture_web_answer_later(self, request, params, venture_portal_web_pay);
 	invoices = venture_portal_service_invoices(venture_portal_service_get(venture_context_get_database(self->context)),
 		VENTURE_CUSTOMER_PORTAL_ACCESS(access), &error);
 	if (invoices == NULL)

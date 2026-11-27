@@ -36904,7 +36904,7 @@ venture_web_server_new(
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/ui/:version/:name", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_ui_asset, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/forms.js", VENTURE_DATA_CLASS_REFERENCE, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_script, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
-	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public, self);
+	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_public_later, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/resume/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_resume, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_POST, "/pub/form/:token/resume/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_resume, self);
 	venture_web_server_add_classified_route(self, HTMX_METHOD_GET, "/pub/form/:token/confirm/:capability", VENTURE_DATA_CLASS_TENANT, VENTURE_HOSTED_ROUTE_NONE, venture_web_forms_confirm_signup, self);

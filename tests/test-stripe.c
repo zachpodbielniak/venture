@@ -1349,6 +1349,7 @@ test_payout_dispute_chargeback(Fixture *f, gconstpointer data)
 #include "test-stripe-ach.inc"
 #include "test-stripe-links.inc"
 #include "test-stripe-pay-now.inc"
+#include "test-stripe-race.inc"
 #include "test-stripe-automatic.inc"
 #include "test-hosted-stripe.inc"
 #include "test-stripe-connect.inc"
@@ -1404,6 +1405,10 @@ main(int argc, char **argv)
 	g_test_add("/stripe/payment-link/slow-email-hosted", Fixture, "slow-email-hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/race-invoice", Fixture, "race-invoice", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/race-customer", Fixture, "race-customer", set_up, test_payment_link, tear_down);
+	g_test_add("/stripe/race/paynow-portal", Fixture, "paynow-portal", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/paynow-form", Fixture, "paynow-form", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/portal-form", Fixture, "portal-form", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/form-form", Fixture, "form-form", set_up, test_checkout_race, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);
