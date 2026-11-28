@@ -32,10 +32,14 @@ typedef struct
 	gint64 started;
 } Fixture;
 
-/* Every case, setup and teardown included, must finish inside this. A case
- * once paid two full schema migrations and took 2.5 s; 270 such binaries
- * ran the whole suite past its 40-minute limit. */
-#define FEDERATION_CASE_BUDGET_US (G_USEC_PER_SEC)
+/* Every case, setup and teardown included, must finish inside this. Two
+ * cases once waited out the 5 s reconnect interval, which this catches.
+ * It is wall time, so it leaves room for a busy machine: cases take 0.15 to
+ * 0.7 s alone and up to 1.4 s under make -j. A tighter bound failed there,
+ * and CPU time is no steadier, because the cases spin the main loop while
+ * they wait. The cost of migrating once per case is kept out by
+ * migrated_template() instead. */
+#define FEDERATION_CASE_BUDGET_US (G_USEC_PER_SEC * 9 / 2)
 /* Reconnect rounds in a test; the configured interval is never under 5 s. */
 #define FEDERATION_TEST_SYNC_MS 20
 
