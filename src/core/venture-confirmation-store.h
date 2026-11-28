@@ -179,6 +179,13 @@ venture_confirmation_store_new(
  * retry when a call answers "awaiting approval" rather than "ok", and three
  * cards for one change means approving all three makes three records.
  *
+ * A creation is identical only when its serialized diff is identical, bar the
+ * uuid and timestamps the new object generated for itself:
+ * it has no record id, so two different creations of one type from one
+ * origin are two changes. An update or delete of the same record from the
+ * same origin is one change, and the newest attempt replaces the waiting
+ * one. When an existing card is returned its JSON carries `restaged: true`.
+ *
  * Returns: (transfer none) (nullable): the confirmation, or %NULL if the
  *   queue is full
  */

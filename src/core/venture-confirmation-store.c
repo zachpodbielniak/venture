@@ -51,6 +51,13 @@ struct _VentureConfirmation
 	GHashTable *parameters;
 
 	/*
+	 * Set when a later attempt at the same change was folded into this
+	 * card instead of getting one of its own. It is how a caller learns
+	 * that the id it was handed is one that already existed.
+	 */
+	gboolean restaged;
+
+	/*
 	 * The repository the store that made this belongs to, so the JSON can
 	 * say whose token asked. Weak: the database owns the store and the
 	 * store owns this, and a strong reference back would be a cycle.
@@ -194,6 +201,13 @@ venture_confirmation_to_json_with_names(
 	{
 		json_builder_set_member_name(builder, "action_name");
 		json_builder_add_string_value(builder, self->record_action);
+	}
+
+	/* Present only when true: a fresh card has nothing to say here. */
+	if (self->restaged)
+	{
+		json_builder_set_member_name(builder, "restaged");
+		json_builder_add_boolean_value(builder, TRUE);
 	}
 
 	json_builder_set_member_name(builder, "state");
@@ -410,6 +424,48 @@ venture_confirmation_store_sweep(VentureConfirmationStore *self)
 }
 
 /*
+ * Serializes a create's diff for comparison with another.
+ *
+ * A create's diff is the whole new record, and a new record carries values
+ * the object generated for itself: a uuid and the created and updated
+ * timestamps. Two attempts at the same create always differ in those, so
+ * compared whole the "identical retry" could never be identical. They are
+ * dropped from a copy; every field the caller supplied stays in.
+ *
+ * Returns: (transfer full) (nullable): the diff as compact JSON
+ */
+static gchar *
+venture_confirmation_diff_fingerprint(JsonNode *diff)
+{
+	g_autoptr(JsonNode) copy = NULL;
+	g_autofree gchar *text = NULL;
+	JsonObject *object;
+
+	if (NULL == diff)
+		return NULL;
+
+	/* json-glib has no deep copy, and removing members from the shared
+	 * tree would edit the diff the approver sees; a round trip through
+	 * text makes a tree of its own. */
+	text = venture_json_to_string(diff, FALSE);
+	copy = json_from_string(text, NULL);
+
+	if (NULL == copy)
+		return g_steal_pointer(&text);
+
+	object = JSON_NODE_HOLDS_OBJECT(copy) ? json_node_get_object(copy) : NULL;
+
+	if (NULL != object)
+	{
+		json_object_remove_member(object, "uuid");
+		json_object_remove_member(object, "created_at");
+		json_object_remove_member(object, "updated_at");
+	}
+
+	return venture_json_to_string(copy, FALSE);
+}
+
+/*
  * Builds the one-line description a person is shown.
  *
  * Written here rather than at each staging site so that a change proposed by
@@ -543,6 +599,23 @@ venture_confirmation_store_stage(
 	 * work out whether approving all three makes three records. It would.
 	 * Returning the waiting confirmation makes the retry a no-op and
 	 * keeps the count of cards equal to the count of changes.
+	 *
+	 * What "the same change" means depends on the action:
+	 *
+	 *  - UPDATE and DELETE: the summary names the record, so the same
+	 *    action, summary and origin is the same record asked for again.
+	 *    The newest attempt replaces the waiting one and keeps its card.
+	 *  - CREATE: there is no record yet, so the summary cannot tell two
+	 *    different creates apart -- a ticket comment is "Ticket comment
+	 *    #0" whatever it says, and two comments from one token would
+	 *    collapse into one card and silently lose the first. A create is
+	 *    the same change only when its diff is identical as
+	 *    serialized JSON, ignoring the uuid and timestamps the new object
+	 *    generated for itself. Anything else is a new change with its own card;
+	 *    an identical retry returns the existing one and has nothing to
+	 *    replace.
+	 *
+	 * A reused card is marked restaged so the caller can tell.
 	 */
 	g_hash_table_iter_init(&iter, self->pending);
 
@@ -559,11 +632,29 @@ venture_confirmation_store_stage(
 		    (0 != g_strcmp0(existing->origin, origin ? origin->name : NULL)))
 			continue;
 
+		/* A create is the same change only if its diff is identical. */
+		if (VENTURE_AUDIT_ACTION_CREATE == action)
+		{
+			g_autofree gchar *waiting_text = NULL;
+			g_autofree gchar *new_text = NULL;
+
+			waiting_text = venture_confirmation_diff_fingerprint(existing->diff);
+			new_text = venture_confirmation_diff_fingerprint(diff);
+
+			if (0 != g_strcmp0(waiting_text, new_text))
+				continue;
+
+			/* Identical, so nothing to replace. */
+			existing->restaged = TRUE;
+			return existing;
+		}
+
 		/*
-		 * Same change from the same asker. Replace the staged object
-		 * so the newest attempt wins -- a retry usually carries more
-		 * of the fields, not fewer -- but keep the one card.
+		 * Same update or delete from the same asker. Replace the staged
+		 * object so the newest attempt wins -- a retry usually carries
+		 * more of the fields, not fewer -- but keep the one card.
 		 */
+		existing->restaged = TRUE;
 		g_set_object(&existing->staged, staged);
 		g_set_object(&existing->original, original);
 		g_free(existing->via);

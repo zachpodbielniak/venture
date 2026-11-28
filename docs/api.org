@@ -357,6 +357,14 @@ curl -X POST -H "Authorization: Bearer $VENTURE_TOKEN" \
 }
 #+end_src
 
+Staging the same change again returns the card that is already waiting
+rather than a second one, and that card says so with ="restaged": true= in
+=confirmation= (the member is absent on a card nobody has re-staged). What
+counts as the same change: an update or delete of the same record from the
+same origin, where the newest attempt replaces the waiting one; and a create
+only when its diff is identical. A create has no id yet, so two creates that
+differ in any field are two changes with two cards and two ids.
+
 This is what an outside agent uses. Give it a token, tell it to stage, and
 what it proposes lands in the same queue the in-process assistant's writes do
 — answerable from the AI panel, from =GET /api/v1/confirmations=, or from a

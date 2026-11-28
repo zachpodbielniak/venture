@@ -1134,6 +1134,198 @@ test_staging_restaging_keeps_one_card(
 	                 ==, 1);
 }
 
+/*
+ * Stages an expense create with the given description and amount. The
+ * description is what the summary shows, so two calls sharing it share a
+ * summary and differ only in the diff.
+ */
+static VentureConfirmation *
+stage_expense_create(
+	Fixture		*fixture,
+	const gchar	*description,
+	const gchar	*amount
+){
+	g_autoptr(VentureExpense) expense = NULL;
+	g_autoptr(VentureMoney) money = NULL;
+	VentureActor origin;
+
+	fixture_agent_actor(&origin);
+	expense = venture_expense_new();
+	money = venture_money_from_string(amount, "USD", NULL);
+	g_object_set(expense, "description", description, "amount", money, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(expense),
+	                                   fixture->organization_id);
+
+	return venture_confirmation_store_stage(fixture->store,
+		VENTURE_AUDIT_ACTION_CREATE, VENTURE_ENTITY(expense), NULL, &origin,
+		"rest-api", NULL);
+}
+
+/*
+ * What breaks if this regresses: two different creates of one type from one
+ * token share a summary, so the second replaced the first on one card; the
+ * first was lost and both callers were told "staged" (VENTURE #49).
+ *
+ * "Concurrent" requests are two calls close together; the store lives on the
+ * main loop and is single-threaded, so back-to-back calls take exactly the
+ * same path and no threads are needed. The type is expense, with the same
+ * description so the summaries are identical and only the diffs differ.
+ */
+static void
+test_staging_distinct_creates_get_distinct_cards(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) records = NULL;
+	g_autoptr(GError) error = NULL;
+	VentureConfirmation *first;
+	VentureConfirmation *second;
+	gboolean saw_12;
+	gboolean saw_15;
+	guint i;
+
+	(void)user_data;
+
+	first = stage_expense_create(fixture, "Coffee grinder", "12.00");
+	second = stage_expense_create(fixture, "Coffee grinder", "15.00");
+	g_assert_nonnull(first);
+	g_assert_nonnull(second);
+
+	g_assert_cmpstr(venture_confirmation_get_id(first), !=,
+	                venture_confirmation_get_id(second));
+	g_assert_cmpuint(confirmations_waiting(fixture->store), ==, 2);
+
+	/* Neither card is a reused one, and neither says so. */
+	{
+		g_autoptr(JsonNode) card = venture_confirmation_to_json(second);
+
+		g_assert_false(json_object_has_member(json_node_get_object(card),
+		                                      "restaged"));
+	}
+
+	g_assert_true(venture_confirmation_store_approve(fixture->store,
+		venture_confirmation_get_id(first), "zach", &error));
+	g_assert_no_error(error);
+	g_assert_true(venture_confirmation_store_approve(fixture->store,
+		venture_confirmation_get_id(second), "zach", &error));
+	g_assert_no_error(error);
+
+	/* Both records exist, each with its own value. */
+	query = venture_query_new(VENTURE_TYPE_EXPENSE);
+	records = venture_database_find(fixture->database, query, NULL);
+	g_assert_nonnull(records);
+	g_assert_cmpuint(records->len, ==, 2);
+
+	saw_12 = FALSE;
+	saw_15 = FALSE;
+
+	for (i = 0; i < records->len; i++)
+	{
+		g_autoptr(VentureMoney) money = NULL;
+		g_autofree gchar *text = NULL;
+
+		g_object_get(g_ptr_array_index(records, i), "amount", &money, NULL);
+		text = venture_money_to_string(money);
+
+		if (NULL != strstr(text, "12.00"))
+			saw_12 = TRUE;
+		if (NULL != strstr(text, "15.00"))
+			saw_15 = TRUE;
+	}
+
+	g_assert_true(saw_12);
+	g_assert_true(saw_15);
+}
+
+/*
+ * What breaks if this regresses: an identical retry is no longer a no-op,
+ * or the caller cannot tell its retry from a first attempt.
+ */
+static void
+test_staging_identical_retry_says_restaged(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(JsonNode) card = NULL;
+	VentureConfirmation *first;
+	VentureConfirmation *second;
+
+	(void)user_data;
+
+	first = stage_expense_create(fixture, "Coffee grinder", "12.00");
+	second = stage_expense_create(fixture, "Coffee grinder", "12.00");
+
+	g_assert_true(first == second);
+	g_assert_cmpuint(confirmations_waiting(fixture->store), ==, 1);
+
+	card = venture_confirmation_to_json(second);
+	g_assert_true(json_object_get_boolean_member_with_default(
+		json_node_get_object(card), "restaged", FALSE));
+}
+
+/*
+ * What breaks if this regresses: an update is the same change as the last
+ * update to that record, and the newest attempt must win on the one card.
+ */
+static void
+test_staging_update_retry_keeps_one_card(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	g_autoptr(VentureExpense) expense = NULL;
+	g_autoptr(JsonNode) card = NULL;
+	g_autofree gchar *text = NULL;
+	VentureConfirmation *first;
+	VentureConfirmation *second;
+	VentureActor origin;
+	gint64 id;
+	guint i;
+
+	(void)user_data;
+
+	expense = fixture_create_expense(fixture, "Cover art", "10.00");
+	id = venture_entity_get_id(VENTURE_ENTITY(expense));
+	fixture_agent_actor(&origin);
+	first = NULL;
+	second = NULL;
+
+	for (i = 0; i < 2; i++)
+	{
+		g_autoptr(VentureEntity) edited = NULL;
+		g_autoptr(VentureEntity) original = NULL;
+		g_autoptr(VentureMoney) money = NULL;
+		VentureConfirmation *staged;
+
+		edited = venture_database_get(fixture->database,
+		                              VENTURE_TYPE_EXPENSE, id, NULL);
+		original = venture_database_get(fixture->database,
+		                                VENTURE_TYPE_EXPENSE, id, NULL);
+		money = venture_money_from_string((0 == i) ? "20.00" : "30.00",
+		                                  "USD", NULL);
+		g_object_set(edited, "amount", money, NULL);
+
+		staged = venture_confirmation_store_stage(fixture->store,
+			VENTURE_AUDIT_ACTION_UPDATE, edited, original, &origin,
+			"rest-api", NULL);
+		g_assert_nonnull(staged);
+
+		if (0 == i)
+			first = staged;
+		else
+			second = staged;
+	}
+
+	g_assert_true(first == second);
+	g_assert_cmpuint(confirmations_waiting(fixture->store), ==, 1);
+
+	/* The newest attempt won: the card shows 30.00, not 20.00. */
+	card = venture_confirmation_to_json(second);
+	text = venture_json_to_string(card, FALSE);
+	g_assert_nonnull(strstr(text, "3000"));
+	g_assert_null(strstr(text, "2000"));
+}
+
 /* --- Reading the parameter ------------------------------------------------ */
 
 /*
@@ -1254,6 +1446,15 @@ main(
 	           fixture_tear_down);
 	g_test_add("/staging/restaging-keeps-one-card", Fixture, NULL,
 	           fixture_set_up, test_staging_restaging_keeps_one_card,
+	           fixture_tear_down);
+	g_test_add("/staging/distinct-creates-get-distinct-cards", Fixture, NULL,
+	           fixture_set_up, test_staging_distinct_creates_get_distinct_cards,
+	           fixture_tear_down);
+	g_test_add("/staging/identical-retry-says-restaged", Fixture, NULL,
+	           fixture_set_up, test_staging_identical_retry_says_restaged,
+	           fixture_tear_down);
+	g_test_add("/staging/update-retry-keeps-one-card", Fixture, NULL,
+	           fixture_set_up, test_staging_update_retry_keeps_one_card,
 	           fixture_tear_down);
 	g_test_add("/staging/refuses-an-empty-change", Fixture, NULL,
 	           fixture_set_up, test_staging_refuses_an_empty_change,
