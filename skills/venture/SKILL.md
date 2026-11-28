@@ -85,8 +85,17 @@ venturectl describe TYPE               # every field you may type, enums, refere
 curl -s -H "Authorization: Bearer $VENTURE_TOKEN" "$VENTURE_SERVER/api/v1/schema/TYPE" | jq .actions
 ```
 
-If `health` fails, stop and fix that: every other command fails the same
-way and less clearly. A token is minted at `/account/tokens` or `POST
+If `health` fails, every other command fails the same way and less
+clearly, so do not go on calling VENTURE until it answers. Then sort the
+failure. If it is yours to fix -- the wrong `VENTURE_SERVER`, a token
+refused with 401 -- fix that. If VENTURE itself is not answering (no
+connection, a timeout, a 5xx), it is not yours to fix, and stopping the
+whole task waits on it with no record of what waits. Mark the part that
+needs VENTURE as blocked and go on with the other parts: under clawtilla,
+`clawtilla_task_progress` with `waiting_on: "external:venture"` and the
+error line as the note. The task shows as blocked on VENTURE, and is
+released when VENTURE is back (`clawtilla task unblock --on
+external:venture`). A token is minted at `/account/tokens` or `POST
 /api/v1/tokens` with a browser session ([api.md](references/api.md)).
 Below global `owner`/`admin` it expires within 90 days and the page lists
 only that user's tokens. A bearer token cannot mint another unless it is
