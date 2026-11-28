@@ -212,6 +212,33 @@ venture_web_lql_find(gpointer data)
 			find->problem = placed;
 			find->rechecked = TRUE;
 		}
+		else if (0 != g_strcmp0(find->text, find->recheck))
+		{
+			/* A run-time problem, placed in @text: found again in the
+			 * bar's text, where @text stands whole (stripped, as the
+			 * bar joins it); nowhere if it does not, and then no place. */
+			g_autofree gchar *stripped = g_strstrip(g_strdup(find->text));
+			const gchar *lead = find->text;
+			const gchar *where;
+
+			while (g_ascii_isspace(*lead))
+				lead++;
+
+			where = strstr(find->recheck, stripped);
+
+			if ((NULL != where) && (find->problem->offset >= (guint)(lead - find->text)))
+			{
+				find->problem->offset += (guint)(where - find->recheck) -
+				                         (guint)(lead - find->text);
+				find->rechecked = TRUE;
+			}
+			else
+			{
+				find->problem->positioned = FALSE;
+				find->problem->offset = 0;
+				find->problem->length = 0;
+			}
+		}
 	}
 }
 
