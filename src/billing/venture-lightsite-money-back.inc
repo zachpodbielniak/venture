@@ -119,6 +119,7 @@ fail:
 JsonNode *
 venture_lightsite_billing_money_back(VentureContext *context, gint64 billing, gint64 business, GError **error)
 {
+	g_autoptr(VentureFiberHold) hold = NULL;
 	g_autoptr(GError) discarded = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -128,6 +129,15 @@ venture_lightsite_billing_money_back(VentureContext *context, gint64 billing, gi
 	JsonArray *refunds;
 	guint i;
 	if (!error) error = &discarded;
+	/* Under the business's hold (lightsite_hold()) from before the done
+	 * receipt is read until it is written. Without it a second request,
+	 * while the first is asking Stripe for a refund, reads no receipt,
+	 * finds the first one's plan, and sends the same refund idempotency
+	 * key while the first is still in flight: Stripe refuses it with 409
+	 * (STRIPE_ERROR_CONFLICT), a 500 to the owner. Held, the second waits,
+	 * then finds the receipt and answers it, as a replay does. Declared
+	 * first, so it is let go last, after the commit. */
+	hold = lightsite_hold(db, billing, business);
 	if (!prepare(db, billing, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
 	if (!business_valid(db, billing, business, error)) return NULL;

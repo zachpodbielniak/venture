@@ -486,29 +486,46 @@ hosted_enrolled(Fixture *f, GObject *transport, VentureStripeService **provider,
 
 /* --- Two requests for one business at once ----------------------------------- */
 
-typedef struct { SlowCall *call; FakeTransport *fake; } RaceWait;
+typedef struct { SlowCall *call; FakeTransport *fake; const gchar *hold_key; } RaceWait;
 
 static gboolean
 race_settled(gpointer data)
 {
 	RaceWait *wait = data;
-	return g_atomic_int_get(&wait->call->done) || fake_held(wait->fake) >= 2;
+	return g_atomic_int_get(&wait->call->done) || fake_held(wait->fake) >= 2 ||
+		(wait->hold_key && venture_fiber_hold_waiting(wait->hold_key) >= 1);
+}
+
+/* The hold one business's provider operations run under
+ * (LIGHTSITE_HOLD_FORMAT in src/billing/venture-lightsite-billing.c). */
+static gchar *
+lightsite_hold_key(Fixture *f, gint64 business)
+{
+	return g_strdup_printf("venture-lightsite-business:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
+		f->organization_id, business);
 }
 
 /*
  * POSTs @first for @business, and once its first Stripe call is held --
  * suspended in its fiber, mid-operation -- POSTs @second for the same
  * business. The second runs to its own first Stripe call or to its answer
- * while the first is still suspended. Then Stripe answers both. Before
- * fibers the second could never have started until the first was done.
+ * while the first is still suspended, or, given @hold_key, until it is
+ * queued behind the first for that fiber hold. Then Stripe answers both.
+ * Before fibers the second could never have started until the first was
+ * done.
+ *
+ * Returns: whether the second was waiting on @hold_key, unanswered, when
+ *   Stripe was let answer
  */
-static void
+static gboolean
 hosted_race(Fixture *f, FakeTransport *fake, gint64 business, const gchar *secret,
-	const gchar *first_path, const gchar *second_path, SlowCall *first, SlowCall *second)
+	const gchar *first_path, const gchar *second_path, SlowCall *first, SlowCall *second,
+	const gchar *hold_key)
 {
 	g_autoptr(VentureWebServer) server = NULL;
 	g_autofree gchar *state_dir = NULL, *body = NULL, *auth = NULL;
-	RaceWait wait = { second, fake };
+	RaceWait wait = { second, fake, hold_key };
+	gboolean queued;
 	g_object_set(f->config, "lightsite-billing-organization-id", f->organization_id, NULL);
 	server = start_server(f, &state_dir);
 	body = g_strdup_printf("{\"organization_id\":%" G_GINT64_FORMAT "}", business);
@@ -522,14 +539,63 @@ hosted_race(Fixture *f, FakeTransport *fake, gint64 business, const gchar *secre
 	fake_wait_held(fake, 1);
 	slow_call_start(second, server, second_path);
 	run_until(race_settled, &wait);
+	queued = hold_key && !g_atomic_int_get(&second->done) && venture_fiber_hold_waiting(hold_key) >= 1;
 	fake_release_all(fake);
 	slow_call_finish(first);
 	slow_call_finish(second);
-	g_test_message("%s and %s at once: %u and %u", first_path, second_path, first->status, second->status);
+	g_test_message("%s and %s at once: %u and %u%s", first_path, second_path, first->status, second->status,
+		queued ? " (the second waited for the first's hold)" : "");
 	first->body = second->body = NULL;
 	first->auth = second->auth = NULL;
 	venture_web_server_stop(server);
 	venture_test_remove_tree(state_dir);
+	return queued;
+}
+
+/*
+ * Money back asked for twice at once (VENTURE #70). With @refund_held the
+ * first is held at Stripe while it creates the refund, its idempotency key
+ * in flight, before the second is sent: the one moment the race needs.
+ * Without the business's money-back hold the second read no done receipt,
+ * found the first one's plan, sent the same key, and Stripe's 409 reached
+ * the owner as a 500. Now it waits for the first and answers what the
+ * first wrote: the same body, no key refused, one refund at Stripe and one
+ * booked here.
+ */
+static void
+hosted_money_back_race(Fixture *f, FakeTransport *fake, gint64 business, const gchar *secret, gboolean refund_held)
+{
+	g_autoptr(JsonParser) one_parser = json_parser_new(), two_parser = json_parser_new();
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *key = lightsite_hold_key(f, business);
+	SlowCall one = { 0 }, two = { 0 };
+	gboolean queued;
+	gint refused = g_atomic_int_get(&fake->keys_refused);
+	fake->refund_amount = 1000;
+	if (refund_held) {
+		fake->hold_method = "POST";
+		fake->hold_url = "/refunds";
+	}
+	queued = hosted_race(f, fake, business, secret,
+		"/api/v1/lightsite/billing/money-back", "/api/v1/lightsite/billing/money-back", &one, &two, key);
+	fake->hold_method = fake->hold_url = NULL;
+	g_assert_cmpuint(one.status, ==, 200);
+	g_assert_cmpuint(two.status, ==, 200);
+	if (refund_held) g_assert_true(queued);
+	g_assert_cmpint(g_atomic_int_get(&fake->keys_refused), ==, refused);
+	g_assert_true(json_parser_load_from_data(one_parser, one.reply, -1, &error)); g_assert_no_error(error);
+	g_assert_true(json_parser_load_from_data(two_parser, two.reply, -1, &error)); g_assert_no_error(error);
+	g_assert_true(json_node_equal(json_parser_get_root(one_parser), json_parser_get_root(two_parser)));
+	g_assert_cmpstr(json_object_get_string_member(json_node_get_object(json_parser_get_root(two_parser)), "state"), ==, "refunded");
+	g_assert_cmpuint(fake->refund_creates, ==, 1);
+	g_assert_cmpuint(venture_fiber_hold_waiting(key), ==, 0);
+	{
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(GPtrArray) refunds = rows(f, "refund");
+		g_assert_cmpuint(refunds->len, ==, 1);
+	}
+	slow_call_clear(&one);
+	slow_call_clear(&two);
 }
 
 static void
@@ -635,7 +701,7 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		SlowCall publish = { 0 }, first = { 0 };
 		g_autoptr(JsonParser) parser = json_parser_new();
 		hosted_race(f, (FakeTransport *)transport, business, secret,
-			"/api/v1/lightsite/billing/publish", "/api/v1/lightsite/billing/first-charge", &publish, &first);
+			"/api/v1/lightsite/billing/publish", "/api/v1/lightsite/billing/first-charge", &publish, &first, NULL);
 		g_assert_cmpuint(publish.status, ==, 200);
 		g_assert_cmpuint(first.status, <, 500);
 		g_assert_true(json_parser_load_from_data(parser, publish.reply, -1, &error)); g_assert_no_error(error);
@@ -682,22 +748,9 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		money_back_after_payment(f, (FakeTransport *)transport, business, data);
 		return;
 	}
-	if (data && !g_strcmp0(data, "concurrent")) {
+	if (data && (!g_strcmp0(data, "concurrent") || !g_strcmp0(data, "refund-held"))) {
 		/* Money back asked for twice at once: one refund at Stripe, booked once. */
-		SlowCall one = { 0 }, two = { 0 };
-		((FakeTransport *)transport)->refund_amount = 1000;
-		hosted_race(f, (FakeTransport *)transport, business, secret,
-			"/api/v1/lightsite/billing/money-back", "/api/v1/lightsite/billing/money-back", &one, &two);
-		g_assert_cmpuint(one.status, ==, 200);
-		g_assert_cmpuint(two.status, <, 500);
-		g_assert_cmpuint(((FakeTransport *)transport)->refund_creates, ==, 1);
-		{
-			g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
-			g_autoptr(GPtrArray) refunds = rows(f, "refund");
-			g_assert_cmpuint(refunds->len, ==, 1);
-		}
-		slow_call_clear(&one);
-		slow_call_clear(&two);
+		hosted_money_back_race(f, (FakeTransport *)transport, business, secret, !g_strcmp0(data, "refund-held"));
 		return;
 	}
 

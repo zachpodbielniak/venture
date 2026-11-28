@@ -326,6 +326,12 @@ the subscription's invoices.
 - When every refund is made, a =money-back-done= receipt (=state: refunded=)
   records the refund ids. A retry returns it verbatim. A failure part way
   leaves =refunding=; the next request finishes the same refunds.
+- Two requests for one business at once are answered one after the
+  other: the second waits for the first, then returns its =money-back-done=
+  receipt, the same body the first answered. Without that the second sent
+  the first one's refund key while it was still in flight, and Stripe's
+  =409= reached the owner as a =500= (VENTURE #70; see "One Checkout per
+  party" in =architecture.org=).
 - A payment that did not come through the card provider is listed with
   =by_hand: true= for staff to return; it is not refunded automatically.
 - Before go-live nothing was charged, and after thirty days the promise has
@@ -335,7 +341,9 @@ the subscription's invoices.
 
 =test-stripe /stripe/hosted-money-back=, =/stripe/hosted-money-back-lost= and
 =/stripe/hosted-money-back-late= cover a settled monthly payment, a lost
-refund answer, and day thirty-one. All provider calls use fixtures.
+refund answer, and day thirty-one; =/stripe/hosted-money-back-refund-held=
+and =/stripe/hosted-concurrent= send two at once. All provider calls use
+fixtures.
 
 * Cancel an enrollment
 

@@ -383,6 +383,9 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	 * while a call was held. Calls may arrive on several threads at once;
 	 * the rest of a call runs alone. */
 	GMutex hold_lock; GCond hold_cond; gboolean holding, hold_times_out; gint hold_limit, held; guint released;
+	/* When set, only calls of this method whose address contains hold_url
+	 * take a ticket; the rest pass, held or not. */
+	const gchar *hold_method, *hold_url;
 	/* Each customer after the first its own id, for two businesses at once. */
 	gboolean distinct_customers;
 	/* Requests refused because their idempotency key was still in flight,
@@ -466,7 +469,9 @@ fake_send_held(FakeTransport *self, const StripeHttpRequest *request,
 	gboolean was_held = FALSE;
 	(void)cancellable;
 	g_mutex_lock(&self->hold_lock);
-	if (self->holding && self->held < self->hold_limit) {
+	if (self->holding && self->held < self->hold_limit &&
+		(!self->hold_method || !g_strcmp0(request->method, self->hold_method)) &&
+		(!self->hold_url || strstr(request->url, self->hold_url))) {
 		gint ticket = self->held++;
 		was_held = TRUE;
 		/* The test may be waiting in the main loop for this ticket. */
@@ -1619,6 +1624,7 @@ main(int argc, char **argv)
 	g_test_add("/stripe/hosted-slow-provider-fails", Fixture, "fails", set_up, test_hosted_slow_provider, tear_down);
 	g_test_add("/stripe/hosted-slow-provider-order", Fixture, NULL, set_up, test_hosted_slow_provider_order, tear_down);
 	g_test_add("/stripe/hosted-concurrent", Fixture, "concurrent", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-money-back-refund-held", Fixture, "refund-held", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/fiber/retry-after", Fixture, NULL, set_up, test_fiber_retry_after, tear_down);
 	g_test_add("/stripe/fiber/retry-budget", Fixture, NULL, set_up, test_fiber_retry_budget, tear_down);
 	g_test_add("/stripe/fiber/deadline", Fixture, NULL, set_up, test_fiber_deadline, tear_down);

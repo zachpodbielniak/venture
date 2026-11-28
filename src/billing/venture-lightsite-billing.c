@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "venture.h"
 #include <string.h>
+#include "core/venture-fiber-private.h"
 
 /*
  * Lightsite billing: the operator billing each Lightsite customer business from
@@ -1057,6 +1058,38 @@ venture_lightsite_billing_subscribe(VentureDatabase *database, gint64 billing_or
 		g_propagate_error(error, g_steal_pointer(&local));
 	}
 	return result;
+}
+
+/*
+ * The fiber hold a business's provider operations run under: billing
+ * organization, then business. Tests wait on venture_fiber_hold_waiting()
+ * with the same key.
+ */
+#define LIGHTSITE_HOLD_FORMAT "venture-lightsite-business:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT
+
+/*
+ * One provider operation per business at a time. The routes that ask
+ * Stripe are answered from a fiber (VENTURE_WEB_LATER_ROUTE in
+ * venture-lightsite-billing-web.inc), and a fiber yields while Stripe is
+ * asked. Each reads what is already done, asks Stripe under an idempotency
+ * key made from what it read, then records the answer; two at once for one
+ * business would both read "not done" and send the same key while the
+ * first is still in flight, which Stripe refuses with 409. Held, the second
+ * waits for the first and then reads what the first recorded.
+ *
+ * Taken before anything is read and let go after the last commit.
+ * %NULL with a transaction open (a fiber must not yield inside one), and
+ * on a plain stack that finds a fiber holding it (a plain stack never
+ * waits): the caller then goes on unguarded, as it always has. Re-entrant
+ * for the stack that holds it.
+ */
+static VentureFiberHold *
+lightsite_hold(VentureDatabase *database, gint64 billing, gint64 business)
+{
+	g_autofree gchar *key = NULL;
+	if (venture_database_has_transaction(database)) return NULL;
+	key = g_strdup_printf(LIGHTSITE_HOLD_FORMAT, billing, business);
+	return venture_fiber_hold(key, database);
 }
 
 #include "venture-lightsite-enrollment.inc"
