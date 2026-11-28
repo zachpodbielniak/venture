@@ -253,7 +253,9 @@ by side and each replaces only its own:
   locally and in the same transaction, then mints the new one. It never
   touches a shared link, and makes no Stripe call: a Checkout session the old
   button already opened is left as it is, and the new button's click reuses
-  it while it is open.
+  it while it is open and for the balance now. Once the balance has moved,
+  the click retires it instead (see "A pending session at an older amount"
+  under "Pay now").
 
 Both links of an invoice, once clicked, lead to the invoice's one active
 Checkout attempt. A link from before origins existed is a shared link.
@@ -299,9 +301,87 @@ The button is =GET /pay/<capability>/checkout=. It goes straight to
 Checkout for the outstanding balance, cards always and ACH debit where the
 business has it on, by the same path as the =POST= above. It is a plain
 link so that a mail client, which sends no =Origin=, is not refused on
-the public customer-link address. Opening it again reuses the open session.
-=GET /pay/<capability>= is the customer's invoice page with the same
-button. Only a signed completion records the payment and sends the receipt.
+the public customer-link address. Opening it again reuses the open session
+while that session is for the balance now. =GET /pay/<capability>= is the
+customer's invoice page with the same button. A signed completion records
+the payment and sends the receipt; the one other way a payment is recorded
+here is a stale session found already paid (below).
+
+** A pending session at an older amount
+
+The invoice has one active Checkout attempt (the unique index above), and a
+click reuses it. The attempt's =expected= is the open balance it was opened
+at, as =eligible()= read it then, with its currency. Every click reads the
+balance again by the same =eligible()= and compares. An =open= session
+whose =expected= differs is not reused: a customer sent there after a late
+fee would pay 100.00 against 105.00, and after a credit more than is owed
+(VENTURE #39). This is the normal path since *Send again (invoice
+changed)*: the old button's session is still open when the new button is
+clicked. It applies to every way an invoice Checkout opens (Pay now, a
+shared link, the customer portal, a paid form and the API action), since
+they share one path.
+
+The invoice version is not compared. The attempt does not store it, and it
+does not need to: a version change that leaves the balance as it was (a
+changed note) leaves the session charging the right amount, so it is still
+reused. No migration was added; =expected= has been stored since the attempt
+existed.
+
+When the amounts differ, the click, holding the paying party
+(=stripe_invoice_hold()=), does this outside any transaction:
+
+1. Asks Stripe to expire the session (=POST /v1/checkout/sessions/:id/expire=)
+   through =venture_stripe_execute()=, the transport, retries and deadline
+   every Stripe call takes, under the attempt's =venture-expire-<uuid>= key,
+   the same key *Revoke payment link* uses.
+2. If Stripe refuses, reads the session (=GET /v1/checkout/sessions/:id=) to
+   learn why, rather than parsing the refusal. The session must name this
+   attempt as its =client_reference_id=.
+   - =expired= there (a lost answer, or expired elsewhere): treated as
+     expired.
+   - =complete=, paid, with a =pi_= payment intent, this environment's
+     =livemode=, and exactly the reserved amount and currency: the payment
+     is recorded now through the same =stripe_settle_checkout()= the signed
+     completion uses. The balance has moved, which is why this path exists,
+     so the change is accepted only when the payment is no more than the
+     balance now (an ordinary part payment). The click opens nothing and
+     answers "Your payment for this invoice was received." The signed
+     completion arriving later finds the payment and records nothing more.
+   - =complete= but over the balance now, an unpaid bank debit, or anything
+     not verified as above: the attempt is marked =processing=. Nothing new
+     opens, and the signed completion settles it or raises the usual
+     settlement exception, where the operator decides about any excess
+     (=accept_balance_change=).
+   - Anything else (still open, or the read fails): the click is refused with
+     409 and the page "A payment page for this invoice could not be opened
+     just now. Nothing was charged. Try again in a few minutes." The stale
+     session is not reused and no other is opened, so it is still the
+     invoice's one active attempt. A later click tries again.
+3. In a transaction of its own, reads the attempt again and, only if it is
+   still =open=, marks it =expired= (inactive), records its payment, or marks
+   it =processing=. So a signed event that settled it meanwhile wins.
+4. Writes an =audit_entry= against the attempt, source
+   =stripe.checkout.stale=, whose diff holds =reason=, =session_id=,
+   =old_amount= (the reserved amount), =new_amount= (the balance now) and
+   =outcome= (=expired=, =complete= or =complete_unsettled=).
+5. After an expiry, reads everything again from the start and opens a
+   session at the balance now. A balance that changes under three tries in
+   a row is refused with 409.
+
+*Two clicks at once* still make one new session. The paying party's hold
+(=stripe_invoice_hold()=, #34) is taken before anything is read and kept for
+the whole of it: reading the stale session, expiring it at Stripe, marking it
+and opening the new one. A second click on a fiber waits for the first and
+then finds the new session at the current amount and reuses it. Where no hold
+is taken (a transaction already open, or a plain stack while a fiber holds
+it), the attempt is only marked after it is read again inside a transaction,
+and only if it is still open. The new reservation is also refused by the
+one-active index if another request made one first. Neither path can leave
+two active rows.
+
+Only =open= sessions are compared. =initiated= already refuses a changed
+balance for reconciliation, and =processing= has a payment in flight, so both
+are left as they were.
 
 A paid invoice answers "This invoice is paid" and a voided one "This
 invoice was voided", on both addresses, and neither reaches Stripe. Only

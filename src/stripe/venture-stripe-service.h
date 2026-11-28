@@ -236,7 +236,14 @@ gboolean venture_stripe_service_can_checkout(VentureStripeService *self, gint64 
  * @self: provider
  * @invoice_id: invoice to pay
  * @actor: (nullable): requesting actor
- * @error: (out) (optional): refusal
+ * @error: (out) (optional): refusal; %VENTURE_ERROR_CONFLICT when an open
+ *   session at an amount the invoice no longer has could not be expired
+ *
+ * Creates or reuses the invoice's one active Checkout. An open session is
+ * reused only while it is for the open balance now; otherwise it is expired
+ * at Stripe and a new one opened, or, found already paid, its payment is
+ * recorded and that attempt returned with status complete (or processing).
+ *
  * Returns: (transfer full) (nullable): stored Checkout record, including its URL
  */
 VentureStripeCheckout *venture_stripe_service_checkout(VentureStripeService *self, gint64 invoice_id, const VentureActor *actor, GError **error);
@@ -401,6 +408,9 @@ gchar *venture_stripe_service_payment_link_replaced(VentureDatabase *database,
  *
  * Creates or reuses one durable Checkout; the provider deadline cannot outlive
  * this link. Processing bank payments remain pending without a new collection.
+ * An open session at an amount the invoice no longer has is retired as
+ * venture_stripe_service_checkout() does; @error is then
+ * %VENTURE_ERROR_CONFLICT when it could not be.
  * Returns: (transfer full) (nullable): provider Checkout metadata
  */
 VentureStripeCheckout *venture_stripe_service_pay_link(VentureStripeService *self,

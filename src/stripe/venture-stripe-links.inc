@@ -183,9 +183,7 @@ venture_stripe_service_revoke_payment_link(VentureStripeService *self,
 {
 	g_autoptr(VentureEntity) link = NULL;
 	g_autoptr(VentureEntity) checkout = NULL;
-	g_autoptr(StripeRequest) request = NULL;
-	g_autoptr(StripeResource) response = NULL;
-	g_autofree gchar *state = NULL, *session = NULL;
+	g_autofree gchar *state = NULL;
 	gint64 checkout_id;
 	if (!stripe_finance(self, error) || !stripe_refresh(self, TRUE, error)) return FALSE;
 	if (venture_database_has_transaction(self->database))
@@ -198,19 +196,11 @@ venture_stripe_service_revoke_payment_link(VentureStripeService *self,
 	if (!checkout_id) return TRUE;
 	checkout = owned_get(self, VENTURE_TYPE_STRIPE_CHECKOUT, checkout_id, error);
 	if (!checkout) return FALSE;
-	g_object_get(checkout, "status", &state, "session-id", &session, NULL);
+	g_object_get(checkout, "status", &state, NULL);
 	if (!g_strcmp0(state, "initiated"))
 		return refuse(error, "Link revoked; uncertain provider creation must be reconciled before replacement");
 	if (g_strcmp0(state, "open")) return TRUE;
-	request = stripe_request_new(STRIPE_CHECKOUT_EXPIRE);
-	request->id = g_strdup(session);
-	g_free(request->idempotency_key);
-	request->idempotency_key = g_strdup_printf("venture-expire-%s", venture_entity_get_uuid(checkout));
-	response = venture_stripe_execute(self->client, request, NULL, error);
-	if (!response) return FALSE;
-	if (g_strcmp0(stripe_resource_get_string(response, "id"), session) ||
-		g_strcmp0(stripe_resource_get_string(response, "status"), "expired"))
-		return refuse(error, "Stripe did not confirm expiration; retain the pending attempt");
+	if (!stripe_checkout_expire_remote(self, checkout, error)) return FALSE;
 	g_clear_object(&checkout);
 	checkout = owned_get(self, VENTURE_TYPE_STRIPE_CHECKOUT, checkout_id, error);
 	if (!checkout) return FALSE;
@@ -266,8 +256,10 @@ link_mint(VentureStripeService *self, VentureEntity *invoice, const gchar *base_
 /* Disables every enabled emailed button of @invoice, so the one about to be
  * minted is the only one. Local only: Send runs in a transaction and may not
  * call Stripe. A Checkout session the old button already opened stays as it
- * is; the new button's click finds it pending and reuses it, and its
- * payment is recorded either way. Shared links are not touched. */
+ * is; the new button's click finds it pending and reuses it while it is for
+ * the balance now, and otherwise expires it at Stripe and opens one that is
+ * (stripe_checkout_retire_stale(), VENTURE #39). Its payment is recorded
+ * either way. Shared links are not touched. */
 static gboolean
 link_retire_email(VentureStripeService *self, VentureEntity *invoice,
 	const VentureActor *actor, GError **error)
@@ -374,7 +366,8 @@ venture_stripe_service_create_payment_link(VentureStripeService *self,
 		/* The emailed button is the customer's, not the operator's to
 		 * replace here: a shared link replaces only a shared link. A
 		 * Checkout the button opened is the invoice's one active attempt,
-		 * which the new link's click reuses. */
+		 * which the new link's click reuses while its amount is the
+		 * balance now, and retires and replaces once it is not. */
 		if (origin == VENTURE_STRIPE_PAYMENT_LINK_ORIGIN_EMAIL) continue;
 		if (checkout_id)
 		{

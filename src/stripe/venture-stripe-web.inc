@@ -228,6 +228,18 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 		}
 		if (!service) goto unavailable;
 		checkout = venture_stripe_service_pay_link(service, token, NULL, &error);
+		/* The invoice changed while an earlier payment page was open and
+		 * that page could not be closed (VENTURE #39): refused, never sent
+		 * to the old page, and said so rather than the bare 404. */
+		if (!checkout && g_error_matches(error, VENTURE_ERROR, VENTURE_ERROR_CONFLICT))
+		{
+			g_debug("Pay now refused for invoice %" G_GINT64_FORMAT ": %s", invoice_id, error->message);
+			g_string_append(html, "<p>A payment page for this invoice could not be opened just now. "
+				"Nothing was charged. Try again in a few minutes.</p></body></html>");
+			response = htmx_response_new_with_content(html->str);
+			htmx_response_set_status(response, 409);
+			goto headers;
+		}
 		if (!checkout) goto unavailable;
 		g_object_get(checkout, "url", &url, "status", &state, NULL);
 		if (!g_strcmp0(state, "open") && venture_web_url_is_web(url))
@@ -237,7 +249,11 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 			htmx_response_add_header(response, "Location", url);
 			goto headers;
 		}
-		g_string_append(html, "<p>Payment is pending verification. Do not start another payment.</p>");
+		/* An earlier payment page was found already paid and recorded. */
+		if (!g_strcmp0(state, "complete"))
+			g_string_append(html, "<p>Your payment for this invoice was received. Thank you. Do not start another payment.</p>");
+		else
+			g_string_append(html, "<p>Payment is pending verification. Do not start another payment.</p>");
 	}
 	else
 	{

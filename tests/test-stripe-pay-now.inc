@@ -1071,3 +1071,299 @@ test_pay_now_production_click(Fixture *f, gconstpointer data)
 	venture_test_remove_tree(state_directory);
 	pay_now_clear(&p);
 }
+
+/* --- A pending session at an older amount (VENTURE #39) --------------------- */
+
+/* VENTURE #39 up to the customer's second click: the emailed button opens
+ * Checkout at 100.00 and the customer leaves it open; a 5.00 late fee is
+ * added when @fee, and the invoice is edited either way, so its version
+ * moves; Send again (invoice changed) mails a new button. Returns the new
+ * button's path; the server is left running. */
+static gchar *
+pay_now_stale_setup(Fixture *f, PayNow *p, VentureWebServer **server_out, gchar **state_directory, gboolean fee)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureMailMessage) again = NULL;
+	g_autofree gchar *old_checkout = NULL, *resend = NULL, *token = NULL;
+	FakeTransport *fake;
+	gint64 id;
+	pay_now_send(f, p, TRUE, FALSE);
+	g_assert_nonnull(p->token);
+	fake = (FakeTransport *)p->transport;
+	id = venture_entity_get_id(p->invoice);
+	*server_out = pay_now_server(f, state_directory, FALSE);
+	old_checkout = g_strdup_printf("/pay/%s/checkout", p->token);
+	g_assert_cmpuint(http_request(*server_out, "GET", old_checkout, NULL, NULL, NULL), ==, 303);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
+	g_assert_cmpint(fake->checkout_unit_amount, ==, 10000);
+	pay_now_assert_checkout(f, "cs_offline", "open", TRUE);
+	if (fee)
+	{
+		g_autoptr(VentureMoney) extra = venture_money_new(500, "USD", 2);
+		g_autoptr(GDateTime) fee_at = venture_time_now();
+		g_autoptr(VentureEntity) added = venture_settlement_service_add_late_fee(
+			venture_settlement_service_get(f->database), id, extra, fee_at, NULL, &error);
+		g_assert_no_error(error);
+		g_assert_nonnull(added);
+	}
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	g_object_set(invoice, "notes", "Revised terms", NULL);
+	save(f, invoice);
+	g_clear_object(&invoice);
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, id, &error);
+	g_assert_no_error(error);
+	resend = g_strdup_printf("/api/v1/invoices/%" G_GINT64_FORMAT "/resend", id);
+	g_assert_cmpuint(http_request(*server_out, "POST", resend, NULL, NULL, NULL), ==, 202);
+	again = pay_now_version_message(f, invoice);
+	g_assert_nonnull(again);
+	token = pay_now_message_token(again);
+	g_assert_nonnull(token);
+	g_assert_cmpstr(token, !=, p->token);
+	/* Sending made no Stripe call: the old session is still open there. */
+	g_assert_cmpuint(fake->expires, ==, 0);
+	return g_strdup_printf("/pay/%s/checkout", token);
+}
+
+/* Active attempts of every invoice: the one-active rule says at most one. */
+static guint
+pay_now_active(Fixture *f)
+{
+	g_autoptr(GPtrArray) attempts = rows(f, "stripe_checkout");
+	guint i, active = 0;
+	for (i = 0; i < attempts->len; i++)
+	{
+		gboolean live = FALSE;
+		g_object_get(g_ptr_array_index(attempts, i), "active", &live, NULL);
+		if (live) active++;
+	}
+	return active;
+}
+
+/* The audit entries that say a stale session was retired, and the last
+ * one's diff in *@diff_out. */
+static guint
+pay_now_stale_audits(Fixture *f, gchar **diff_out)
+{
+	g_autoptr(GPtrArray) entries = rows(f, "audit_entry");
+	guint i, found = 0;
+	if (diff_out) *diff_out = NULL;
+	for (i = 0; i < entries->len; i++)
+	{
+		g_autofree gchar *source = NULL, *diff = NULL, *target = NULL;
+		g_object_get(g_ptr_array_index(entries, i), "source", &source, "diff", &diff, "target-type", &target, NULL);
+		if (g_strcmp0(source, "stripe.checkout.stale")) continue;
+		g_assert_cmpstr(target, ==, "stripe_checkout");
+		found++;
+		if (diff_out) { g_free(*diff_out); *diff_out = g_steal_pointer(&diff); }
+	}
+	return found;
+}
+
+/* The click finds the session opened at 100.00 while 105.00 is owed: it
+ * expires it at Stripe, marks it expired, says why in the audit log and
+ * opens one at 105.00. The next click reuses that one. */
+static void
+test_pay_now_stale_session(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_directory = NULL, *checkout = NULL, *diff = NULL;
+	FakeTransport *fake;
+	(void)data;
+	checkout = pay_now_stale_setup(f, &p, &server, &state_directory, TRUE);
+	fake = (FakeTransport *)p.transport;
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, NULL), ==, 303);
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpstr(fake->expired_session, ==, "cs_offline");
+	g_assert_cmpuint(fake->checkouts, ==, 2);
+	g_assert_cmpint(fake->checkout_unit_amount, ==, 10500);
+	pay_now_assert_checkout(f, "cs_offline", "expired", FALSE);
+	pay_now_assert_checkout(f, "cs_second", "open", TRUE);
+	g_assert_cmpuint(pay_now_active(f), ==, 1);
+	g_assert_cmpuint(pay_now_stale_audits(f, &diff), ==, 1);
+	g_test_message("stale audit: %s", diff);
+	g_assert_nonnull(strstr(diff, "\"outcome\":\"expired\""));
+	g_assert_nonnull(strstr(diff, "\"session_id\":\"cs_offline\""));
+	g_assert_nonnull(strstr(diff, "\"old_amount\":\"100.00"));
+	g_assert_nonnull(strstr(diff, "\"new_amount\":\"105.00"));
+	/* The new session is for the balance now, so it is reused. */
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, NULL), ==, 303);
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 2);
+	g_assert_cmpuint(pay_now_stale_audits(f, NULL), ==, 1);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+}
+
+/* An edit that leaves the balance as it was moves the invoice version but
+ * not what the open session charges, so the new button reuses it and
+ * Stripe is not asked to expire anything. */
+static void
+test_pay_now_stale_unchanged(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_directory = NULL, *checkout = NULL;
+	FakeTransport *fake;
+	(void)data;
+	checkout = pay_now_stale_setup(f, &p, &server, &state_directory, FALSE);
+	fake = (FakeTransport *)p.transport;
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, NULL), ==, 303);
+	g_assert_cmpuint(fake->expires, ==, 0);
+	g_assert_cmpuint(fake->session_reads, ==, 0);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
+	pay_now_assert_checkout(f, "cs_offline", "open", TRUE);
+	g_assert_cmpuint(pay_now_active(f), ==, 1);
+	g_assert_cmpuint(pay_now_stale_audits(f, NULL), ==, 0);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+}
+
+/* The customer paid the 100.00 session before Stripe's completion event
+ * arrived. Stripe refuses to expire it; the click reads it, finds it paid,
+ * records that payment and opens nothing. The signed completion arriving
+ * later records nothing more, and the paid session is never expired again. */
+static void
+test_pay_now_stale_paid(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(GPtrArray) payments = NULL;
+	g_autofree gchar *state_directory = NULL, *checkout = NULL, *body = NULL, *diff = NULL;
+	FakeTransport *fake;
+	gint status;
+	(void)data;
+	checkout = pay_now_stale_setup(f, &p, &server, &state_directory, TRUE);
+	fake = (FakeTransport *)p.transport;
+	fake->expire_mode = FAKE_EXPIRE_COMPLETE;
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "Your payment for this invoice was received"));
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpuint(fake->session_reads, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
+	pay_now_assert_checkout(f, "cs_offline", "complete", FALSE);
+	g_assert_cmpuint(pay_now_active(f), ==, 0);
+	payments = rows(f, "payment");
+	g_assert_cmpuint(payments->len, ==, 1);
+	{
+		g_autoptr(VentureMoney) amount = NULL;
+		g_autofree gchar *reference = NULL;
+		g_object_get(g_ptr_array_index(payments, 0), "amount", &amount, "reference", &reference, NULL);
+		g_assert_cmpint(venture_money_get_amount(amount), ==, 10000);
+		g_assert_cmpstr(reference, ==, "pi_stale_paid");
+	}
+	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, venture_entity_get_id(p.invoice), &error);
+	g_assert_no_error(error);
+	g_object_get(invoice, "status", &status, NULL);
+	g_assert_cmpint(status, ==, VENTURE_INVOICE_STATUS_PARTIALLY_PAID);
+	g_assert_cmpuint(pay_now_stale_audits(f, &diff), ==, 1);
+	g_assert_nonnull(strstr(diff, "\"outcome\":\"complete\""));
+	/* Stripe's signed completion for it arrives late: recorded once. */
+	pay_now_webhook(&p, "{\"id\":\"evt_stale_paid\",\"livemode\":false,\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":10000,\"currency\":\"usd\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_stale_paid\"}}}", TRUE);
+	g_clear_pointer(&payments, g_ptr_array_unref);
+	payments = rows(f, "payment");
+	g_assert_cmpuint(payments->len, ==, 1);
+	pay_now_assert_checkout(f, "cs_offline", "complete", FALSE);
+	/* The part payment changed the invoice, so this button is now the
+	 * unavailable answer (see "Pay now" in docs/stripe.org), and the paid
+	 * session is not expired again. */
+	fake->expire_mode = 0;
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, NULL), ==, 404);
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
+	g_assert_cmpuint(pay_now_active(f), ==, 0);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+}
+
+/* Stripe refuses to expire the stale session for some other reason and
+ * still has it open. The click is refused with a page saying so; it is not
+ * sent to the stale session, and no second session or active row is made.
+ * Once Stripe expires it, the next click opens the right one. */
+static void
+test_pay_now_stale_expire_fails(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_directory = NULL, *checkout = NULL, *body = NULL;
+	FakeTransport *fake;
+	(void)data;
+	checkout = pay_now_stale_setup(f, &p, &server, &state_directory, TRUE);
+	fake = (FakeTransport *)p.transport;
+	fake->expire_mode = FAKE_EXPIRE_FAIL;
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, &body), ==, 409);
+	g_assert_nonnull(strstr(body, "A payment page for this invoice could not be opened just now"));
+	g_assert_null(strstr(body, "checkout.stripe.com"));
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpuint(fake->session_reads, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
+	pay_now_assert_checkout(f, "cs_offline", "open", TRUE);
+	g_assert_cmpuint(pay_now_active(f), ==, 1);
+	g_assert_cmpuint(pay_now_stale_audits(f, NULL), ==, 0);
+	fake->expire_mode = 0;
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, NULL), ==, 303);
+	g_assert_cmpuint(fake->expires, ==, 2);
+	g_assert_cmpuint(fake->checkouts, ==, 2);
+	g_assert_cmpint(fake->checkout_unit_amount, ==, 10500);
+	pay_now_assert_checkout(f, "cs_offline", "expired", FALSE);
+	pay_now_assert_checkout(f, "cs_second", "open", TRUE);
+	g_assert_cmpuint(pay_now_active(f), ==, 1);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+}
+
+/* Two clicks of the new button at once, after the edit. The first is held
+ * on Stripe expiring the stale session; the second is sent meanwhile and
+ * the first let go only once the second is queued behind the paying
+ * party's hold (or has answered without it). Exactly one new session: the
+ * second reuses the first one's. Without the hold the second would read
+ * the stale session as still open and send the same expire while the
+ * first is in flight, which Stripe (and the fake) refuses. */
+static void
+test_pay_now_stale_concurrent(Fixture *f, gconstpointer data)
+{
+	PayNow p;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autofree gchar *state_directory = NULL, *checkout = NULL, *key = NULL;
+	SlowCall first = { 0 }, second = { 0 };
+	FakeTransport *fake;
+	(void)data;
+	checkout = pay_now_stale_setup(f, &p, &server, &state_directory, TRUE);
+	fake = (FakeTransport *)p.transport;
+	key = party_key(f, venture_entity_get_id(p.invoice));
+	fake_hold(fake, 1);
+	slow_call_start(&first, server, checkout);
+	fake_wait_held(fake, 1);
+	hold_race_start(&second, server, checkout, key);
+	fake_release_all(fake);
+	slow_call_finish(&first);
+	slow_call_finish(&second);
+	g_test_message("first %u %s; second %u %s; expires %u, checkouts %u, keys refused %d",
+		first.status, first.location, second.status, second.location,
+		fake->expires, fake->checkouts, g_atomic_int_get(&fake->keys_refused));
+	g_assert_cmpint(g_atomic_int_get(&fake->keys_refused), ==, 0);
+	g_assert_cmpuint(first.status, ==, 303);
+	g_assert_cmpuint(second.status, ==, 303);
+	g_assert_cmpstr(first.location, ==, "https://checkout.stripe.com/second");
+	g_assert_cmpstr(second.location, ==, first.location);
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 2);
+	pay_now_assert_checkout(f, "cs_offline", "expired", FALSE);
+	pay_now_assert_checkout(f, "cs_second", "open", TRUE);
+	g_assert_cmpuint(pay_now_active(f), ==, 1);
+	g_assert_cmpuint(pay_now_stale_audits(f, NULL), ==, 1);
+	slow_call_clear(&first);
+	slow_call_clear(&second);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_directory);
+	pay_now_clear(&p);
+}

@@ -390,7 +390,18 @@ typedef struct { GObject parent; guint calls; guint customers; guint checkouts; 
 	 * account's, so a test's leftovers never reach the next one's. */
 	gint keys_refused; GMutex keys_lock; GHashTable *keys_in_flight;
 	/* Minor units of the last Checkout this transport was asked to open. */
-	gint64 checkout_unit_amount; } FakeTransport;
+	gint64 checkout_unit_amount;
+	/* Hosted Checkout sessions as Stripe keeps them (VENTURE #39): the
+	 * first is cs_offline (slot 0), every later one cs_second (slot 1),
+	 * each with the client reference and amount it was opened with, and
+	 * whether it was expired. expire_mode answers an expire: 0 expires it;
+	 * FAKE_EXPIRE_COMPLETE refuses because the customer has paid it, and a
+	 * read of it then says complete and paid; FAKE_EXPIRE_FAIL refuses for
+	 * another reason, and a read says it is still open. */
+	gchar *session_reference[2]; gint64 session_amount[2]; gboolean session_expired[2];
+	gint expire_mode; guint expires, session_reads; gchar *expired_session; } FakeTransport;
+#define FAKE_EXPIRE_COMPLETE (1)
+#define FAKE_EXPIRE_FAIL (2)
 typedef struct { GObjectClass parent; } FakeTransportClass;
 GType fake_transport_get_type(void);
 static void fake_iface(StripeTransportInterface *iface);
@@ -494,7 +505,44 @@ fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **
 		return stripe_response_new(200, self->price_json ? self->price_json : body, NULL, NULL);
 	}
 	if (g_str_has_suffix(request->url, "/expire"))
-		return stripe_response_new(200, "{\"id\":\"cs_offline\",\"status\":\"expired\"}", NULL, NULL);
+	{
+		/* Answered for the session the address names. A setup or a
+		 * session this transport never opened expires as before. */
+		const gchar *mark = strstr(request->url, "/checkout/sessions/");
+		g_autofree gchar *session = mark ? g_strndup(mark + strlen("/checkout/sessions/"),
+			strlen(mark + strlen("/checkout/sessions/")) - strlen("/expire")) : g_strdup("cs_offline");
+		gint slot = !g_strcmp0(session, "cs_offline") ? 0 : !g_strcmp0(session, "cs_second") ? 1 : -1;
+		g_autofree gchar *body = NULL;
+		g_assert_cmpstr(request->method, ==, "POST");
+		self->expires++;
+		g_free(self->expired_session); self->expired_session = g_strdup(session);
+		if (slot >= 0 && self->expire_mode == FAKE_EXPIRE_COMPLETE)
+			return stripe_response_new(400, "{\"error\":{\"type\":\"invalid_request_error\",\"message\":"
+				"\"Only Checkout Sessions with a status in [\\\"open\\\"] can be expired.\"}}", NULL, NULL);
+		if (slot >= 0 && self->expire_mode == FAKE_EXPIRE_FAIL)
+			return stripe_response_new(400, "{\"error\":{\"type\":\"invalid_request_error\",\"message\":"
+				"\"This session cannot be expired right now.\"}}", NULL, NULL);
+		if (slot >= 0) self->session_expired[slot] = TRUE;
+		body = g_strdup_printf("{\"id\":\"%s\",\"status\":\"expired\"}", session);
+		return stripe_response_new(200, body, NULL, NULL);
+	}
+	/* A read of a hosted payment session, as Stripe keeps it. */
+	if (!g_strcmp0(request->method, "GET") &&
+		(g_str_has_suffix(request->url, "/checkout/sessions/cs_offline") ||
+		 g_str_has_suffix(request->url, "/checkout/sessions/cs_second")))
+	{
+		gint slot = g_str_has_suffix(request->url, "/cs_offline") ? 0 : 1;
+		const gchar *status = self->session_expired[slot] ? "expired" :
+			self->expire_mode == FAKE_EXPIRE_COMPLETE ? "complete" : "open";
+		g_autofree gchar *body = g_strdup_printf("{\"id\":\"%s\",\"object\":\"checkout.session\",\"status\":\"%s\","
+			"\"payment_status\":\"%s\",\"amount_total\":%" G_GINT64_FORMAT ",\"currency\":\"usd\","
+			"\"client_reference_id\":\"%s\",\"livemode\":false%s}",
+			slot ? "cs_second" : "cs_offline", status, !g_strcmp0(status, "complete") ? "paid" : "unpaid",
+			self->session_amount[slot], self->session_reference[slot] ? self->session_reference[slot] : "",
+			!g_strcmp0(status, "complete") ? ",\"payment_intent\":\"pi_stale_paid\"" : "");
+		self->session_reads++;
+		return stripe_response_new(200, body, NULL, NULL);
+	}
 	/* One refund per payment intent, kept so a lost answer can be listed. */
 	if (strstr(request->url, "/refunds"))
 	{
@@ -613,8 +661,13 @@ fake_send_alone(FakeTransport *self, const StripeHttpRequest *request, GError **
 		self->deadline = g_strdup(g_hash_table_lookup(form, "expires_at"));
 		{
 			const gchar *unit = g_hash_table_lookup(form, "line_items[0][price_data][unit_amount]");
+			gint slot = self->checkouts > 1 ? 1 : 0;
 			if (unit)
 				self->checkout_unit_amount = g_ascii_strtoll(unit, NULL, 10);
+			g_free(self->session_reference[slot]);
+			self->session_reference[slot] = g_strdup(g_hash_table_lookup(form, "client_reference_id"));
+			self->session_amount[slot] = unit ? g_ascii_strtoll(unit, NULL, 10) : 0;
+			self->session_expired[slot] = FALSE;
 		}
 		if (self->early_service)
 		{
@@ -653,6 +706,9 @@ static void fake_finalize(GObject *object)
 	g_free(((FakeTransport *)object)->last_invoice_id);
 	g_free(((FakeTransport *)object)->refund_key);
 	g_free(((FakeTransport *)object)->refund_intent);
+	g_free(((FakeTransport *)object)->session_reference[0]);
+	g_free(((FakeTransport *)object)->session_reference[1]);
+	g_free(((FakeTransport *)object)->expired_session);
 	{
 		FakeTransport *connect = (FakeTransport *)object;
 		g_free(connect->create_body); g_free(connect->create_key); g_free(connect->create_version);
@@ -1440,6 +1496,11 @@ main(int argc, char **argv)
 	g_test_add("/stripe/pay-now/origin-migration", Fixture, NULL, set_up, test_pay_now_origin_migration, tear_down);
 	g_test_add("/stripe/pay-now/expired-session", Fixture, NULL, set_up, test_pay_now_expired_session, tear_down);
 	g_test_add("/stripe/pay-now/production-click", Fixture, NULL, set_up, test_pay_now_production_click, tear_down);
+	g_test_add("/stripe/pay-now/stale-session", Fixture, NULL, set_up, test_pay_now_stale_session, tear_down);
+	g_test_add("/stripe/pay-now/stale-unchanged", Fixture, NULL, set_up, test_pay_now_stale_unchanged, tear_down);
+	g_test_add("/stripe/pay-now/stale-paid", Fixture, NULL, set_up, test_pay_now_stale_paid, tear_down);
+	g_test_add("/stripe/pay-now/stale-expire-fails", Fixture, NULL, set_up, test_pay_now_stale_expire_fails, tear_down);
+	g_test_add("/stripe/pay-now/stale-concurrent", Fixture, NULL, set_up, test_pay_now_stale_concurrent, tear_down);
 	g_test_add("/stripe/payment-link/slow", Fixture, "slow", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/slow-hosted", Fixture, "slow-hosted", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/slow-email", Fixture, "slow-email", set_up, test_payment_link, tear_down);
