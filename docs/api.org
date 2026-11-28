@@ -643,6 +643,24 @@ A field name that is not a real property of the record type is refused, with
 the available fields listed. No caller-supplied string ever reaches the SQL as
 text.
 
+** Columns that are NULL but read as a value
+
+A filter compares the value a record reads back as, which is what its =GET= shows, not the column as stored (VENTURE #50). The two differ only for a column that holds SQL NULL on a field whose record does not read NULL there -- typically a column a later migration added, which is NULL in every row older than it: an unset enum reads its zero member (=ticket.priority= reads ="low"=), an integer or a reference 0, a boolean =false=.
+
+| On a field whose NULL reads as =D=                 | A row whose column is NULL                   |
+|----------------------------------------------------+----------------------------------------------|
+| =f=D=, =f__in=D,...=, =f__ne=X=, =f__not_in=X,...= | is kept                                      |
+| =f=X=, =f__in=X,...=, =f__ne=D=, =f__not_in=D,...= | is left out                                  |
+| =f__lt=, =__lte=, =__gt=, =__gte=, =__between= on a number or boolean | kept when =D= passes          |
+| =f__is_null=                                       | is left out: no row of such a field is NULL  |
+| =f__not_null=                                      | is kept                                      |
+
+So =GET /api/v1/ticket?priority=low= lists a ticket whose priority column is NULL, =?priority=high= does not, and =?priority__is_null=1= lists nothing. This holds alike on the list API, the record list pages =/e/<type>= and their CSV export (=/e/<type>/export=), and the ticket board and list (=/tickets=), and it is the rule the =q= filter (below) and the LQL bar follow, so a URL filter and the bar's filter for the same question select the same rows. What a NULL reads as is taken from one source: a freshly constructed record of the type, the same across two of them ([[file:lql.org::*Columns that are NULL but read as a value][LQL's rule]]). Plugin types and columns added later are covered without anything to declare.
+
+Where the database cannot answer a filter as read, that one filter compares the stored column, as it did before, and the request is not refused: a field whose NULL value is not fixed (a time; two fresh records that disagree), =like= and =ilike=, an ordering of text (=__lt= on an enum), and an empty value on a text field that reads a value. On those a NULL row is left out, though the bar's filter may keep it. The identity spine (=id=, =uuid=, =organization_id=, =created_at=, =updated_at=, =deleted_at=, =version=) always compares as stored: every save writes it, so it holds no legacy NULL. An empty value on a text field keeps meaning "null or blank" (=?assignee== is nobody's), since a text field reads NULL there.
+
+Rows VENTURE writes hold no such NULL, so this changes nothing for them; it only stops an older row disappearing from a filter its own record says it passes. A backfill migration is not the fix: it could not reach a plugin's types, nor a column added after it ran.
+
 ** =q=: an LQL filter
 
 =q= is an [[file:lql.org][LQL]] filter over the record type, what follows =fetch TYPE | filter=:

@@ -717,8 +717,10 @@ legacy_check(
  * NULL column reads as is taken from anywhere but what loading a row
  * leaves.
  *
- * The list API's ?priority=low is deliberately unchanged: it compares the
- * stored column, so it still leaves the NULL row out.
+ * venture_query_apply_query_string() itself is deliberately unchanged: it
+ * compares the stored column, so it still leaves the NULL row out. The
+ * list API's ?priority=low uses venture_query_apply_query_string_as_read()
+ * since VENTURE #50 (tests/test-url-filter-read.c).
  */
 static void
 test_legacy_null_columns(
@@ -867,8 +869,9 @@ test_legacy_null_columns(
 		                 1 + ((0 == g_strcmp0(book, "EUR")) ? 1 : 0));
 	}
 
-	/* The list API's ?priority=low still compares the stored column
-	 * (docs/lql.org): four rows, not the five the records read. */
+	/* venture_query_apply_query_string() still compares the stored
+	 * column, for the internal queries that use it: four rows, not the
+	 * five the records read. */
 	{
 		g_autoptr(VentureQuery) query = venture_query_new(VENTURE_TYPE_TICKET);
 		g_autoptr(GHashTable) params = g_hash_table_new(g_str_hash, g_str_equal);

@@ -188,8 +188,11 @@ venture_query_add_money_currency(
  * empty-text match). The caller should then evaluate the condition
  * itself.
  *
- * The ?field= list filters (venture_query_apply_query_string()) do not
- * use this; they compare stored columns.
+ * The ?field= filters of the record lists, their CSV export, the ticket
+ * views and the list API compare the same way, through
+ * venture_query_apply_query_string_as_read(); internal queries built with
+ * venture_query_add_filter() or venture_query_apply_query_string() still
+ * compare stored columns.
  *
  * Returns: %TRUE if the filter was accepted
  */
@@ -443,6 +446,36 @@ venture_query_apply_json(
  */
 gboolean
 venture_query_apply_query_string(
+	VentureQuery	 *self,
+	GHashTable	 *params,
+	GError		**error
+);
+
+/**
+ * venture_query_apply_query_string_as_read:
+ * @self: a #VentureQuery
+ * @params: (element-type utf8 utf8): decoded URL query parameters
+ * @error: (out) (optional): return location for a #GError
+ *
+ * As venture_query_apply_query_string(), with every filter comparing the
+ * value a record reads back as (venture_query_add_filter_as_read()): a
+ * column that is NULL -- typically one a later migration added under
+ * older rows -- on a field that reads a fixed value there matches what it
+ * reads. `?priority=low` keeps a ticket whose priority column is NULL,
+ * since it reads "low"; `?priority=high` and `?priority__is_null=true`
+ * leave it out. This is what the user-facing list filters use, so they
+ * agree with the record's own GET and with the LQL filter bar.
+ *
+ * Where the database cannot answer a filter as read (the NULL value is
+ * not fixed, or the operator is like, ilike, an ordering of text or an
+ * empty-text match on such a field), that one filter compares the stored
+ * column, as venture_query_apply_query_string() would, rather than being
+ * refused.
+ *
+ * Returns: %TRUE if every parameter was accepted
+ */
+gboolean
+venture_query_apply_query_string_as_read(
 	VentureQuery	 *self,
 	GHashTable	 *params,
 	GError		**error

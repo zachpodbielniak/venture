@@ -806,22 +806,37 @@ venture_query_read_default(
 	return TRUE;
 }
 
-gboolean
-venture_query_add_filter_as_read(
+/*
+ * venture_query_add_filter_as_read() and, with @or_stored, the ?field=
+ * list filters' variant of it (venture_query_apply_query_string_as_read()).
+ *
+ * The two differ only where the database cannot answer the question as
+ * read -- no fixed value for a NULL column, or an operator whose outcome
+ * for that value is not decidable here (LIKE, an ordering of text, an
+ * empty-text match). Without @or_stored that is a refusal, and nothing is
+ * added: LQL then evaluates the condition itself. A URL filter has no one
+ * to hand it to, and refusing would turn a link that has always worked
+ * into an error, so with @or_stored the filter stays the stored-column
+ * comparison venture_query_add_filter() writes -- what it always was.
+ *
+ * A field or operand count venture_query_add_filter() refuses is an error
+ * either way.
+ */
+static gboolean
+venture_query_add_filter_as_read_real(
 	VentureQuery	 *self,
 	const gchar	 *field,
 	VentureFilterOp	  op,
 	GPtrArray	 *values,
+	gboolean	  or_stored,
 	GError		**error
 ){
 	g_autoptr(VentureEntityClass) klass = NULL;
 	g_autofree gchar *property_name = NULL;
 	g_autofree gchar *read_default = NULL;
+	g_autoptr(GError) undecidable = NULL;
 	VentureQueryFilterEntry *entry;
 	GParamSpec *pspec;
-
-	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
-	g_return_val_if_fail(NULL != field, FALSE);
 
 	/* The field and the operand count are checked by the ordinary path;
 	 * a field it accepted is a property of the type. */
@@ -848,15 +863,16 @@ venture_query_add_filter_as_read(
 	if ((NULL != pspec) && (VENTURE_TYPE_ENTITY == pspec->owner_type))
 		return TRUE;
 
-	if ((NULL == pspec) ||
-	    !venture_query_read_default(self->entity_type, pspec, &read_default, error))
+	if (NULL == pspec)
 	{
-		if (NULL == pspec)
-			g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
-			            "No field \"%s\"", field);
+		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		            "No field \"%s\"", field);
 		g_ptr_array_remove_index(self->filters, self->filters->len - 1);
 		return FALSE;
 	}
+
+	if (!venture_query_read_default(self->entity_type, pspec, &read_default, &undecidable))
+		goto not_as_read;
 
 	/* A NULL column that reads NULL: the stored filter means the same. */
 	if (NULL == read_default)
@@ -866,16 +882,43 @@ venture_query_add_filter_as_read(
 
 	if (!venture_query_default_passes(entry, &entry->default_passes))
 	{
-		g_set_error(error, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
+		g_set_error(&undecidable, VENTURE_ERROR, VENTURE_ERROR_INVALID_ARGUMENT,
 		            "The \"%s\" comparison on %s cannot be answered by the database "
 		            "for rows where it is NULL, which read as %s",
 		            venture_enum_to_nick(VENTURE_TYPE_FILTER_OP, (gint)op),
 		            field, entry->read_default);
-		g_ptr_array_remove_index(self->filters, self->filters->len - 1);
-		return FALSE;
+		goto not_as_read;
 	}
 
 	return TRUE;
+
+not_as_read:
+	/* The URL filters keep the stored comparison (see above). */
+	if (or_stored)
+	{
+		g_clear_pointer(&entry->read_default, g_free);
+		entry->as_read = FALSE;
+		entry->default_passes = FALSE;
+		return TRUE;
+	}
+
+	g_propagate_error(error, g_steal_pointer(&undecidable));
+	g_ptr_array_remove_index(self->filters, self->filters->len - 1);
+	return FALSE;
+}
+
+gboolean
+venture_query_add_filter_as_read(
+	VentureQuery	 *self,
+	const gchar	 *field,
+	VentureFilterOp	  op,
+	GPtrArray	 *values,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+	g_return_val_if_fail(NULL != field, FALSE);
+
+	return venture_query_add_filter_as_read_real(self, field, op, values, FALSE, error);
 }
 
 gboolean
@@ -1274,17 +1317,22 @@ venture_query_apply_json(
 	return TRUE;
 }
 
-gboolean
-venture_query_apply_query_string(
+/*
+ * venture_query_apply_query_string() and, with @as_read,
+ * venture_query_apply_query_string_as_read(): one parser, so the two can
+ * only differ in how a filter compares, never in which parameters are
+ * filters or how their operands are split.
+ */
+static gboolean
+venture_query_apply_query_string_real(
 	VentureQuery	 *self,
 	GHashTable	 *params,
+	gboolean	  as_read,
 	GError		**error
 ){
 	GHashTableIter iter;
 	gpointer key;
 	gpointer value;
-
-	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
 
 	if (NULL == params)
 		return TRUE;
@@ -1436,11 +1484,39 @@ venture_query_apply_query_string(
 			g_ptr_array_add(values, g_strdup(text));
 		}
 
-		if (!venture_query_add_filter(self, field, op, values, error))
+		if (as_read)
+		{
+			if (!venture_query_add_filter_as_read_real(self, field, op, values,
+			                                           TRUE, error))
+				return FALSE;
+		}
+		else if (!venture_query_add_filter(self, field, op, values, error))
 			return FALSE;
 	}
 
 	return TRUE;
+}
+
+gboolean
+venture_query_apply_query_string(
+	VentureQuery	 *self,
+	GHashTable	 *params,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+
+	return venture_query_apply_query_string_real(self, params, FALSE, error);
+}
+
+gboolean
+venture_query_apply_query_string_as_read(
+	VentureQuery	 *self,
+	GHashTable	 *params,
+	GError		**error
+){
+	g_return_val_if_fail(VENTURE_IS_QUERY(self), FALSE);
+
+	return venture_query_apply_query_string_real(self, params, TRUE, error);
 }
 
 /* --- Compilation --------------------------------------------------------- */

@@ -3969,7 +3969,9 @@ venture_web_build_query_full(
 	url_params = venture_web_list_url_filters(request, entity_type);
 	lql = htmx_request_get_query_param(request, "q");
 
-	if (!venture_query_apply_query_string(query, url_params, error))
+	/* As read, so a NULL legacy column that reads as a value matches
+	 * that value here, in the record's GET and in the LQL bar alike. */
+	if (!venture_query_apply_query_string_as_read(query, url_params, error))
 		return NULL;
 
 	if (with_lql && !venture_web_lql_blank(lql) &&
@@ -14980,7 +14982,8 @@ venture_web_ticket_url_filters(HtmxRequest *request)
  * (venture_web_ticket_url_filters()), so that the board and the list
  * always agree about what they are showing.
  *
- * Every filter arrives by the one route, venture_query_apply_query_string():
+ * Every filter arrives by the one route,
+ * venture_query_apply_query_string_as_read():
  * having some of the board's filters read by hand and others generically
  * is how one of them ends up quietly not applying.
  */
@@ -14997,7 +15000,8 @@ venture_web_ticket_query(
 	venture_query_set_limit(query, 0);
 	venture_web_scope_to_active_organization(self, request, query);
 
-	if (!venture_query_apply_query_string(query, filters, error))
+	/* As read, as the record lists are (venture_web_build_query_full()). */
+	if (!venture_query_apply_query_string_as_read(query, filters, error))
 		return NULL;
 
 	return g_steal_pointer(&query);
