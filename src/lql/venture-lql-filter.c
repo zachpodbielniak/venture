@@ -326,8 +326,13 @@ venture_lql_filter_place_run_error(
 	    !g_ascii_isdigit(problem->message[0]))
 		return;
 
-	/* The message without its "LINE:COLUMN: ". */
-	message = strchr(strchr(problem->message, ':') + 1, ':');
+	/* The message without its "LINE:COLUMN: ". The refusal's wording is
+	 * VENTURE's, so a leading digit does not promise a colon: no colon,
+	 * no prefix to drop. */
+	message = strchr(problem->message, ':');
+
+	if (NULL != message)
+		message = strchr(message + 1, ':');
 
 	if (NULL != message)
 	{
