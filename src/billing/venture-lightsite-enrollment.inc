@@ -499,6 +499,7 @@ static JsonNode *
 first_charge(VentureContext *context, gint64 billing, gint64 business,
 	gboolean published, GDateTime *published_at, GError **error)
 {
+	g_autoptr(VentureFiberHold) hold = NULL;
 	g_autoptr(GError) discarded = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -514,6 +515,15 @@ first_charge(VentureContext *context, gint64 billing, gint64 business,
 	gint64 subscription, invoice = 0;
 	VentureActor actor = { VENTURE_ACTOR_KIND_IMPORT, "Hosted first charge", NULL, NULL, NULL };
 	if (!error) error = &discarded;
+	/* Under the business's hold (lightsite_hold()) until the collection
+	 * has been asked for. Publication and the first charge for one
+	 * business at once otherwise both reached the invoice's collection,
+	 * and the second sent each step's idempotency key while the first
+	 * still had it in flight: Stripe refused it with 409, which the
+	 * second hid as collection_pending, and its failed step was recorded
+	 * as an uncertain creation. Held, the second waits, then finds the
+	 * first one's receipt and its collection already asked for. */
+	hold = lightsite_hold(db, billing, business);
 	if (!prepare(db, billing, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
 	if (!business_valid(db, billing, business, error)) return NULL;

@@ -700,13 +700,30 @@ test_hosted_saved_card(Fixture *f, gconstpointer data)
 		 * one invoice, one collection, one charge at Stripe. */
 		SlowCall publish = { 0 }, first = { 0 };
 		g_autoptr(JsonParser) parser = json_parser_new();
+		g_autofree gchar *key = lightsite_hold_key(f, business);
+		gint refused = g_atomic_int_get(&((FakeTransport *)transport)->keys_refused);
 		hosted_race(f, (FakeTransport *)transport, business, secret,
-			"/api/v1/lightsite/billing/publish", "/api/v1/lightsite/billing/first-charge", &publish, &first, NULL);
+			"/api/v1/lightsite/billing/publish", "/api/v1/lightsite/billing/first-charge", &publish, &first, key);
+		g_test_message("Idempotency keys refused while in flight: %d",
+			g_atomic_int_get(&((FakeTransport *)transport)->keys_refused) - refused);
 		g_assert_cmpuint(publish.status, ==, 200);
-		g_assert_cmpuint(first.status, <, 500);
+		g_assert_cmpuint(first.status, ==, 200);
+		/* The second waited for the first: it sent no key the first
+		 * still had in flight. */
+		g_assert_cmpint(g_atomic_int_get(&((FakeTransport *)transport)->keys_refused), ==, refused);
 		g_assert_true(json_parser_load_from_data(parser, publish.reply, -1, &error)); g_assert_no_error(error);
 		charged = json_node_copy(json_parser_get_root(parser));
 		g_assert_cmpuint(((FakeTransport *)transport)->payment_calls, ==, 1);
+		{
+			g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+			g_autoptr(GPtrArray) exceptions = rows(f, "processor_exception");
+			guint i;
+			for (i = 0; i < exceptions->len; i++) {
+				gboolean resolved = FALSE;
+				g_object_get(g_ptr_array_index(exceptions, i), "resolved", &resolved, NULL);
+				g_assert_true(resolved);
+			}
+		}
 		slow_call_clear(&publish);
 		slow_call_clear(&first);
 	}
