@@ -634,6 +634,8 @@ refused for every caller: make another business the default first.
 
 Operators: =eq ne lt lte gt gte like ilike in not_in is_null not_null between=.
 
+=search= matches its text literally, anywhere in the record's searchable fields: =%=, =_= and =\= are ordinary characters there, so =?search=50%= finds "50%" and not every record with a 50 in it. Write a pattern yourself with =like= or =ilike=, where =%= and =_= keep their wildcard meaning.
+
 Periods accept the same vocabulary everywhere in VENTURE: =today=,
 =yesterday=, =this_week=, =this_month=, =last_month=, =this_quarter=, =ytd=,
 =mtd=, =qtd=, =fy=, =fy_2026=, =last_30_days=, =2026=, =2026-03=, =2026-Q2=,
