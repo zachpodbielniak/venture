@@ -569,9 +569,9 @@ Each retry is still announced as stripe-glib announced its own: =stripe.request.
 | A fiber route with a transaction open | On its own stack, blocking, as before |
 | Every other caller | On its own stack, blocking, exactly as before; no nested main loop runs |
 
-The fiber routes: Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (=POST /api/v1/invoices/:id/checkout= and the form); =POST /pay/:token= and the Pay now button =GET /pay/:token/checkout= (the page and the invoice email); the Stripe settings operations (configure, statement name, key test); Connect status and start.
+The fiber routes: Lightsite setup, change-card, publish, first-charge and money-back; invoice checkout (=POST /api/v1/invoices/:id/checkout= and the form); =POST /pay/:token= and the Pay now button =GET /pay/:token/checkout= (the page and the invoice email); the customer portal's pay button; every public form post; the Stripe record actions (=POST /api/v1/:type/:id/actions/:action= for =payment_link=, =revoke=, =retry=, =authorize_payment=, =verify=, =revoke_authorization=, =collect=, =cancel_collection=, =retry_collection=, =reconcile_collection= and =collect_due=); the Stripe settings operations (configure, statement name, key test); Connect status and start.
 
-Still synchronous, holding the server for as long as Stripe takes: the record actions (=POST /api/v1/:type/:id/actions/:action=, including =checkout= and =refund=), the customer portal's pay button, paid forms, the Stripe webhook routes, and the timers (collection, reconciliation, prepaid installments).
+Still synchronous, holding the server for as long as Stripe takes: a Stripe record action sent under a support capability, the Stripe webhook routes, and the timers (collection, reconciliation, prepaid installments). See [[file:architecture.org][One Checkout per party]] for how these order against the fiber routes.
 
 Paid-form intake logs one redacted =provider deadline exhausted= cause and retains the invoice/Checkout attempt for retry or reconciliation. No provider request runs inside the form transaction.
 

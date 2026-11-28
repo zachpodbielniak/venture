@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include <venture.h>
+#include "stripe/venture-stripe-service-private.h"
 
 static void
 stripe_context_free(gpointer data)
@@ -50,6 +51,7 @@ stripe_action_invoke(VentureAction *action, VentureEntity *entity, GHashTable *p
 	GWeakRef *reference = g_object_get_data(G_OBJECT(database), "venture-stripe-action-context");
 	g_autoptr(VentureContext) context = reference ? g_weak_ref_get(reference) : NULL;
 	g_autoptr(VentureStripeService) configured = NULL;
+	g_autoptr(VentureFiberHold) hold = NULL;
 	VentureStripeService *service = context ? venture_context_get_stripe_service(context) : NULL;
 	g_autofree gchar *name = NULL;
 	gint64 organization = venture_entity_get_organization_id(entity), binding = 0;
@@ -63,6 +65,15 @@ stripe_action_invoke(VentureAction *action, VentureEntity *entity, GHashTable *p
 		service = configured;
 	}
 	if (!service) return NULL;
+	/* The record action route answers every one of these from a fiber
+	 * (waits-on-provider below), so it can start while another fiber pays
+	 * the same party and is waiting on Stripe -- a Pay now click, the
+	 * portal, a paid form, or this same action clicked twice. Each would
+	 * reuse an idempotency key the other still has in flight, which Stripe
+	 * refuses: the customer's, the Setup's, a collection's. Held for the
+	 * whole action, so the second waits for the first and then finds its
+	 * work done. The services below take the same hold again and count. */
+	hold = venture_stripe_service_hold_record(service, entity);
 	if (!g_strcmp0(name, "payment_link"))
 	{
 		g_autofree gchar *base = NULL;
@@ -186,7 +197,8 @@ venture_stripe_actions_register(VentureDatabase *database)
 		if (i == 10) g_ptr_array_add(parameters, venture_field_spec_new("limit", "Maximum permissions (default 10)", VENTURE_FIELD_KIND_INTEGER));
 		action = g_object_new(VENTURE_TYPE_ACTION, "data-class", VENTURE_DATA_CLASS_TENANT, "type-name", types[i], "name", names[i],
 			"label", labels[i], "description", descriptions[i], "parameters", parameters,
-			"stageable", FALSE, "service-transaction", TRUE, "type-level", i == 10, "roles", VENTURE_USER_ROLE_EDITOR, NULL);
+			"stageable", FALSE, "service-transaction", TRUE, "type-level", i == 10, "roles", VENTURE_USER_ROLE_EDITOR,
+			"waits-on-provider", TRUE, NULL);
 		if (!venture_action_registry_register(venture_database_get_action_registry(database), action,
 			stripe_action_allowed, stripe_action_invoke, database, NULL, &error))
 			g_error("Stripe action registration: %s", error->message);

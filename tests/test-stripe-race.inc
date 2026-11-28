@@ -233,3 +233,275 @@ test_checkout_race(Fixture *f, gconstpointer data)
 	venture_web_server_stop(server);
 	venture_test_remove_tree(state_dir);
 }
+
+/* --- The record action route (ticket #40) ---------------------------------- */
+
+/*
+ * POST /api/v1/:type/:id/actions/:action answers a Stripe action from a
+ * fiber, under the same party hold as Pay now. authorize_payment is the
+ * action that meets a Pay now click: both create the company's Stripe
+ * customer, under one idempotency key ("venture-customer-..."). On a plain
+ * stack it went on beside a Pay now click held creating that customer and
+ * sent the key the click still had in flight.
+ *
+ * paynow-action: a Pay now click held creating the customer; the action.
+ * action-paynow: the action held creating the customer; Pay now.
+ * action-action: the action clicked twice, the first held on its Setup
+ *                (the customer already made): two fibers that could not
+ *                race as plain stacks, and would reuse the Setup's key
+ *                without the action's own hold.
+ */
+
+/* Which stack each action ran on, from the registry's "performed". */
+typedef struct
+{
+	guint	on_fiber;
+	guint	on_plain;
+} ActionStacks;
+
+static void
+action_stacks_performed(VentureActionRegistry *registry, VentureAction *action,
+	VentureEntity *result, gpointer data)
+{
+	ActionStacks *stacks = data;
+	(void)registry; (void)action; (void)result;
+	if (NULL != venture_fiber_current())
+		stacks->on_fiber++;
+	else
+		stacks->on_plain++;
+}
+
+/* A Stripe connection on API 2024-06-20, as automatic collection needs, and
+ * a started subscription of the fixture's customer; its id. */
+static gint64
+race_subscription(Fixture *f, FakeTransport *fake, VentureStripeService **service)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(JsonNode) settings = binding_settings("whsec_original");
+	g_autoptr(GBytes) secret = g_bytes_new_static("01234567890123456789012345678901", 32);
+	g_autoptr(VentureIntegrationConnection) connection = NULL;
+	g_autoptr(VentureEntity) plan = record_new(f, "plan");
+	g_autoptr(VentureEntity) price = record_new(f, "plan_price");
+	g_autoptr(VentureEntity) start = record_new(f, "billing_request");
+	gint64 subscription_id = 0;
+
+	json_object_set_string_member(json_node_get_object(settings), "api_version", "2024-06-20");
+	g_assert_true(venture_integration_service_set_key(venture_integration_service_get(f->database), secret, &error));
+	connection = venture_stripe_settings_configure(f->database, f->organization_id, settings, 0, 0, STRIPE_TRANSPORT(fake), NULL, &error);
+	g_assert_no_error(error);
+	*service = venture_stripe_service_for_organization(f->database, f->organization_id, STRIPE_TRANSPORT(fake), &error);
+	g_assert_no_error(error);
+	venture_context_set_stripe_service(f->context, *service);
+	g_object_set(plan, "name", "Managed plan", "active", TRUE, NULL); save(f, plan);
+	g_object_set(price, "plan-id", venture_entity_get_id(plan), "currency", "USD", "active", TRUE,
+		"product-id", f->product_id, NULL);
+	money_field(price, "amount", "50 USD"); save(f, price);
+	g_object_set(start, "action", "start", "company-id", f->customer_id,
+		"plan-price-id", venture_entity_get_id(price), "seats", (gint64)1, NULL);
+	money_field(start, "at", "2026-09-01");
+	save(f, start);
+	g_object_get(start, "subscription-id", &subscription_id, NULL);
+	g_assert_cmpint(subscription_id, >, 0);
+	return subscription_id;
+}
+
+static void
+test_action_race(Fixture *f, gconstpointer data)
+{
+	const gchar *mode = data;
+	gboolean action_first = g_str_has_prefix(mode, "action-");
+	gboolean twice = !g_strcmp0(mode, "action-action");
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	FakeTransport *fake = (FakeTransport *)transport;
+	g_autoptr(VentureStripeService) service = NULL;
+	g_autoptr(VentureEntity) invoice = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(GDateTime) now = venture_time_now();
+	g_autoptr(GDateTime) expires = g_date_time_add_hours(now, 2);
+	g_autoptr(GPtrArray) customers = NULL, authorizations = NULL;
+	g_autofree gchar *state_dir = NULL, *pay_path = NULL, *action_path = NULL, *key = NULL;
+	g_autofree gchar *linked = NULL, *authorized = NULL;
+	SlowCall first = { 0 }, second = { 0 };
+	SlowCall *action, *paynow;
+	ActionStacks stacks = { 0, 0 };
+	VentureActionRegistry *registry = venture_database_get_action_registry(f->database);
+	gulong performed;
+	gint64 subscription_id;
+	guint customers_before, checkouts_before;
+
+	subscription_id = race_subscription(f, fake, &service);
+	invoice = invoice_new(f, "RACE-A", "2026-01-01", "100 USD");
+	action_path = g_strdup_printf("/api/v1/customer_subscription/%" G_GINT64_FORMAT "/actions/authorize_payment", subscription_id);
+	if (twice)
+	{
+		/* The customer is made already, so the first click's first call
+		 * to Stripe -- the one held -- is its Setup. */
+		g_autoptr(VentureStripeCheckout) made = venture_stripe_service_checkout(service, venture_entity_get_id(invoice), NULL, &error);
+		g_assert_no_error(error); g_assert_nonnull(made);
+	}
+	else
+	{
+		g_autoptr(VentureStripePaymentLink) link = venture_stripe_service_create_payment_link(service,
+			venture_entity_get_id(invoice), "https://venture.example", expires, NULL, &error);
+		g_autofree gchar *url = NULL;
+		g_assert_no_error(error); g_assert_nonnull(link);
+		g_object_get(link, "url", &url, NULL);
+		pay_path = g_strdup_printf("/pay/%s/checkout", url + strlen("https://venture.example/pay/"));
+	}
+
+	/* Who clicks first, and what each one sends. */
+	action = action_first ? &first : &second;
+	paynow = twice ? NULL : (action_first ? &second : &first);
+	action->method = "POST"; action->content_type = "application/x-www-form-urlencoded"; action->body = "limit=100+USD";
+	if (twice)
+	{
+		second.method = "POST"; second.content_type = "application/x-www-form-urlencoded"; second.body = "limit=100+USD";
+	}
+	else
+		paynow->method = "GET";
+
+	performed = g_signal_connect(registry, "performed", G_CALLBACK(action_stacks_performed), &stacks);
+	server = start_server(f, &state_dir);
+	customers_before = fake->customers;
+	checkouts_before = fake->checkouts;
+	key = party_key(f, venture_entity_get_id(invoice));
+	fake_hold(fake, 1);
+	slow_call_start(&first, server, (action_first ? action_path : pay_path));
+	fake_wait_held(fake, 1);
+	hold_race_start(&second, server, (twice || !action_first) ? action_path : pay_path, key);
+	fake_release_all(fake);
+	slow_call_finish(&first);
+	slow_call_finish(&second);
+	g_signal_handler_disconnect(registry, performed);
+	g_test_message("%s: first %u %s; second %u %s; customers +%u, checkouts +%u, keys refused %d; actions on a fiber %u, on a plain stack %u",
+		mode, first.status, first.location ? first.location : "-", second.status, second.location ? second.location : "-",
+		fake->customers - customers_before, fake->checkouts - checkouts_before, g_atomic_int_get(&fake->keys_refused),
+		stacks.on_fiber, stacks.on_plain);
+
+	/* Nobody sent a key still in flight, and every click was answered. */
+	g_assert_cmpint(g_atomic_int_get(&fake->keys_refused), ==, 0);
+	g_assert_cmpuint(action->status, ==, 200);
+	g_assert_nonnull(action->reply);
+	g_assert_nonnull(strstr(action->reply, "https://checkout.stripe.com/setup"));
+	if (twice)
+	{
+		/* The second click answered the first one's Setup session. */
+		g_assert_cmpuint(first.status, ==, 200);
+		g_assert_nonnull(strstr(first.reply, "https://checkout.stripe.com/setup\""));
+		g_assert_nonnull(strstr(second.reply, "https://checkout.stripe.com/setup\""));
+		g_assert_cmpuint(fake->checkouts - checkouts_before, ==, 0);
+		g_assert_cmpuint(stacks.on_fiber, ==, 2);
+	}
+	else
+	{
+		g_assert_cmpuint(paynow->status, ==, 303);
+		g_assert_nonnull(paynow->location);
+		g_assert_true(g_str_has_prefix(paynow->location, "https://checkout.stripe.com/"));
+		g_assert_cmpuint(fake->checkouts - checkouts_before, ==, 1);
+		g_assert_cmpuint(stacks.on_fiber, ==, 1);
+	}
+	g_assert_cmpuint(stacks.on_plain, ==, 0);
+	/* One Stripe customer, made once, and both used it. */
+	g_assert_cmpuint(fake->customers - customers_before, ==, twice ? 0 : 1);
+	customers = rows(f, "stripe_customer_link");
+	g_assert_cmpuint(customers->len, ==, 1);
+	authorizations = rows(f, "stripe_authorization");
+	g_assert_cmpuint(authorizations->len, ==, 1);
+	g_object_get(g_ptr_array_index(customers, 0), "stripe-customer-id", &linked, NULL);
+	g_object_get(g_ptr_array_index(authorizations, 0), "customer-id", &authorized, NULL);
+	g_assert_cmpstr(authorized, ==, linked);
+	slow_call_clear(&first); slow_call_clear(&second);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
+}
+
+/*
+ * Every other action answers on the dispatch's own stack, exactly as it
+ * did: the same status and body, the form post's redirect, an unknown
+ * action's 404 -- and a Stripe action's refusal from its fiber is the
+ * refusal the registry gives.
+ */
+static void
+test_action_route_plain(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GError) refused = NULL;
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	FakeTransport *fake = (FakeTransport *)transport;
+	g_autoptr(VentureStripeService) service = NULL;
+	g_autoptr(VentureWebServer) server = NULL;
+	g_autoptr(VentureEntity) company = NULL, again = NULL;
+	g_autoptr(JsonNode) answered = NULL, expected = NULL;
+	g_autoptr(GHashTable) nothing = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)json_node_unref);
+	g_autofree gchar *state_dir = NULL, *body = NULL, *tag_path = NULL, *unknown_path = NULL;
+	g_autofree gchar *stripe_path = NULL, *stripe_body = NULL, *location = NULL;
+	VentureActionRegistry *registry = venture_database_get_action_registry(f->database);
+	ActionStacks stacks = { 0, 0 };
+	SlowCall form = { 0 };
+	gulong performed;
+	gint64 subscription_id;
+	guint status, calls_before;
+	(void)data;
+
+	subscription_id = race_subscription(f, fake, &service);
+	tag_path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT "/actions/add_tag", f->customer_id);
+	unknown_path = g_strdup_printf("/api/v1/company/%" G_GINT64_FORMAT "/actions/no_such_action", f->customer_id);
+	stripe_path = g_strdup_printf("/api/v1/customer_subscription/%" G_GINT64_FORMAT "/actions/authorize_payment", subscription_id);
+	performed = g_signal_connect(registry, "performed", G_CALLBACK(action_stacks_performed), &stacks);
+	server = start_server(f, &state_dir);
+
+	/* JSON: 200 and the record as it now is, from this stack. */
+	status = http_request(server, "POST", tag_path, "application/json", "{\"tag\":\"Priority\"}", &body);
+	g_test_message("POST %s (JSON) -> %u", tag_path, status);
+	g_assert_cmpuint(status, ==, 200);
+	company = venture_database_get(f->database, VENTURE_TYPE_COMPANY, f->customer_id, &error);
+	g_assert_no_error(error); g_assert_nonnull(company);
+	answered = venture_json_parse(body, &error);
+	g_assert_no_error(error); g_assert_nonnull(answered);
+	expected = venture_serializable_to_json(VENTURE_SERIALIZABLE(company), FALSE);
+	g_assert_true(json_node_equal(answered, expected));
+	g_assert_cmpuint(stacks.on_plain, ==, 1);
+	g_assert_cmpuint(stacks.on_fiber, ==, 0);
+
+	/* A form post: 303 to the record. */
+	form.method = "POST"; form.content_type = "application/x-www-form-urlencoded"; form.body = "tag=Renewal";
+	slow_call_start(&form, server, tag_path);
+	slow_call_finish(&form);
+	location = g_strdup_printf("/e/company/%" G_GINT64_FORMAT, f->customer_id);
+	g_test_message("POST %s (form) -> %u %s", tag_path, form.status, form.location ? form.location : "-");
+	g_assert_cmpuint(form.status, ==, 303);
+	g_assert_cmpstr(form.location, ==, location);
+	again = venture_database_get(f->database, VENTURE_TYPE_COMPANY, f->customer_id, &error);
+	g_assert_no_error(error);
+	{
+		g_autofree gchar *tags = NULL;
+		g_object_get(again, "tags", &tags, NULL);
+		g_assert_nonnull(strstr(tags, "Priority")); g_assert_nonnull(strstr(tags, "Renewal"));
+	}
+	g_assert_cmpuint(stacks.on_plain, ==, 2);
+	g_assert_cmpuint(stacks.on_fiber, ==, 0);
+
+	/* An unknown action is refused before any fiber is made. */
+	g_clear_pointer(&body, g_free);
+	status = http_request(server, "POST", unknown_path, "application/json", "{}", &body);
+	g_assert_cmpuint(status, ==, 404);
+
+	/* A Stripe action refused from its fiber says what the registry says:
+	 * the limit is required, and Stripe is never asked. */
+	g_assert_null(venture_action_registry_perform(registry, "customer_subscription", subscription_id, "authorize_payment",
+		nothing, NULL, VENTURE_USER_ROLE_OWNER, &refused));
+	g_assert_nonnull(refused);
+	g_clear_pointer(&body, g_free);
+	calls_before = fake->calls;
+	status = http_request(server, "POST", stripe_path, "application/json", "{}", &body);
+	stripe_body = g_strdup(body);
+	g_test_message("POST %s without a limit -> %u %s (the registry: %s)", stripe_path, status, stripe_body, refused->message);
+	g_assert_cmpuint(status, >=, 400); g_assert_cmpuint(status, <, 500);
+	g_assert_nonnull(strstr(stripe_body, refused->message));
+	g_assert_cmpuint(fake->calls, ==, calls_before);
+	g_signal_handler_disconnect(registry, performed);
+	slow_call_clear(&form);
+	venture_web_server_stop(server);
+	venture_test_remove_tree(state_dir);
+}

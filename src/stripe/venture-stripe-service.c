@@ -5,6 +5,7 @@
 #include <math.h>
 #include <string.h>
 #include "core/venture-fiber-private.h"
+#include "stripe/venture-stripe-service-private.h"
 
 struct _VentureStripeService
 {

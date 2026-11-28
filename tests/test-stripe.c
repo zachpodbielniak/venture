@@ -1450,6 +1450,10 @@ main(int argc, char **argv)
 	g_test_add("/stripe/race/paynow-form", Fixture, "paynow-form", set_up, test_checkout_race, tear_down);
 	g_test_add("/stripe/race/portal-form", Fixture, "portal-form", set_up, test_checkout_race, tear_down);
 	g_test_add("/stripe/race/form-form", Fixture, "form-form", set_up, test_checkout_race, tear_down);
+	g_test_add("/stripe/race/paynow-action", Fixture, "paynow-action", set_up, test_action_race, tear_down);
+	g_test_add("/stripe/race/action-paynow", Fixture, "action-paynow", set_up, test_action_race, tear_down);
+	g_test_add("/stripe/race/action-action", Fixture, "action-action", set_up, test_action_race, tear_down);
+	g_test_add("/stripe/race/action-plain", Fixture, NULL, set_up, test_action_route_plain, tear_down);
 	g_test_add("/stripe/payment-link/processing", Fixture, "processing", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/payment-link/form", Fixture, "form", set_up, test_payment_link, tear_down);
 	g_test_add("/stripe/ach/early-callback", Fixture, NULL, set_up, test_ach_early, tear_down);

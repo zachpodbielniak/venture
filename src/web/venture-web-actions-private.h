@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Included by the route owner so generic actions use its authentication and
  * error policy, while keeping generated action rendering in one place. */
+#include "web/venture-web-later-private.h"
+
 static gboolean venture_web_url_is_web(const gchar *url);
 
 static void
@@ -131,8 +133,10 @@ venture_web_action_transient_result(VentureEntity *result, JsonObject *json, GSt
 	}
 }
 
+/* The route itself; venture_web_api_action() below decides on which stack
+ * it runs. */
 static HtmxResponse *
-venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
+venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer data)
 {
 	VentureWebServer *self = data;
 	VentureDatabase *db = venture_context_get_database(self->context);
@@ -289,4 +293,54 @@ venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
 		htmx_response_add_header(reply, "Cache-Control", "no-store");
 		return reply;
 	}
+}
+
+/*
+ * Whether the action @path names is answered from a fiber of the main loop
+ * (venture_web_answer_later()) rather than on this dispatch's stack: one
+ * declared waits-on-provider, which every Stripe action is. Its wait then
+ * yields, so the loop goes on serving everybody, and the Stripe service's
+ * party hold orders it against a Pay now click, the portal or a paid form
+ * paying the same customer -- a plain stack never waits for that hold, and
+ * so sent the idempotency key the fiber still had in flight (ticket #40).
+ *
+ * Every other action stays where it was: its answer, transaction and
+ * timing are exactly as before, and nothing of it ever yields.
+ *
+ * The journal alias names no type and posts locally. An unknown action is
+ * refused on this stack, as before. A request under a support capability
+ * stays here too: its verified support scope is the pipeline's, for this
+ * dispatch only, while a fiber runs under a plain tenant request scope
+ * (see venture-web-later.inc) -- answering it later would run the
+ * operator's action outside the grant that admitted it.
+ */
+static gboolean
+venture_web_api_action_waits(VentureWebServer *self, GHashTable *path)
+{
+	VentureDatabase *db = venture_context_get_database(self->context);
+	const gchar *type_name = g_hash_table_lookup(path, "type");
+	const gchar *name = g_hash_table_lookup(path, "action");
+	VentureAction *action;
+	gboolean waits = FALSE;
+
+	if (NULL == type_name || NULL == name)
+		return FALSE;
+	action = venture_action_registry_lookup(venture_database_get_action_registry(db), type_name, name);
+	if (NULL == action)
+		return FALSE;
+	g_object_get(action, "waits-on-provider", &waits, NULL);
+	if (!waits)
+		return FALSE;
+	return venture_tenant_service_get_support_organization(venture_tenant_service_get(db)) <= 0;
+}
+
+/* POST /api/v1/:type/:id/actions/:action and the journal alias. */
+static HtmxResponse *
+venture_web_api_action(HtmxRequest *request, GHashTable *path, gpointer data)
+{
+	VentureWebServer *self = data;
+
+	if (venture_web_api_action_waits(self, path))
+		return venture_web_answer_later(self, request, path, venture_web_api_action_perform);
+	return venture_web_api_action_perform(request, path, data);
 }

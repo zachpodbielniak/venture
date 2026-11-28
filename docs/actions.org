@@ -123,3 +123,11 @@ the stamp, because stamping bumped the version.
 * Services that own their transaction
 
 An action may declare =service-transaction=true= only when its service provides atomicity itself, including any whole-operation accounting consent before its first write. The registry retains parameter, role, access and veto checks but delegates the transaction and posting decision to that service. This distinguishes a draft invoice batch from the same batch with =post=true= without creating a second business-policy implementation in the registry. Recurring/batch, setup and cutover actions use this contract; saved batch application includes its result evidence in the service transaction. Existing declarations default to the registry-owned transaction.
+
+* Actions that wait on a provider
+
+An action declares =waits-on-provider=true= when its service may wait on an outside provider that VENTURE's transport can yield to -- today only Stripe, and every Stripe action declares it. =POST /api/v1/:type/:id/actions/:action= then answers it from a fiber of the main loop (see [[file:architecture.org][Waiting on Stripe]]): the request is read and refused for an unknown action on the dispatch's stack as before, the action runs a moment later on a stack of its own under the reader and tenant scope the pipeline gave it, and while Stripe has not answered the server goes on serving everybody. What the caller sees -- status, body, the form post's redirect or result page -- is unchanged.
+
+Two things follow for the service. Requests no longer arrive one at a time: a second request for the same customer can start while the first is waiting, so the Stripe actions take the Stripe service's party hold for their record's payer (=venture_stripe_service_hold_record()=) around the whole action, as a Checkout does. And the service must follow the fiber rules: never wait on the provider with a transaction open, inside a signal emission, holding a mutex or while iterating a live statement or table.
+
+Every other action keeps =waits-on-provider=false= and runs on the dispatch's stack, its transaction and timing exactly as they were. A request under a support capability also stays there, Stripe or not: its verified support scope belongs to the dispatch, and a fiber runs under a plain tenant request scope. The journal alias =POST /api/v1/journals/post= never waits.

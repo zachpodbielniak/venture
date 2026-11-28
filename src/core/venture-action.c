@@ -13,6 +13,7 @@ struct _VentureAction
 	gboolean stageable;
 	gboolean type_level;
 	gboolean service_transaction;
+	gboolean waits_on_provider;
 	VentureUserRole roles;
 	VentureActionAllowed allowed;
 	VentureActionInvoke invoke;
@@ -21,7 +22,8 @@ struct _VentureAction
 };
 G_DEFINE_FINAL_TYPE(VentureAction, venture_action, G_TYPE_OBJECT)
 enum { PROP_ZERO, PROP_DATA_CLASS, PROP_TYPE_NAME, PROP_NAME, PROP_LABEL, PROP_DESCRIPTION,
-	PROP_PARAMETERS, PROP_STAGEABLE, PROP_ROLES, PROP_TYPE_LEVEL, PROP_SUBJECT_PARAMETER, PROP_SERVICE_TRANSACTION };
+	PROP_PARAMETERS, PROP_STAGEABLE, PROP_ROLES, PROP_TYPE_LEVEL, PROP_SUBJECT_PARAMETER, PROP_SERVICE_TRANSACTION,
+	PROP_WAITS_ON_PROVIDER };
 
 static void
 action_set_property(GObject *object, guint id, const GValue *value, GParamSpec *spec)
@@ -41,6 +43,7 @@ action_set_property(GObject *object, guint id, const GValue *value, GParamSpec *
 	case PROP_ROLES: self->roles = g_value_get_enum(value); break;
 	case PROP_TYPE_LEVEL: self->type_level = g_value_get_boolean(value); break;
 	case PROP_SERVICE_TRANSACTION: self->service_transaction = g_value_get_boolean(value); break;
+	case PROP_WAITS_ON_PROVIDER: self->waits_on_provider = g_value_get_boolean(value); break;
 	case PROP_PARAMETERS:
 		parameters = g_value_get_boxed(value);
 		for (i = 0; parameters && i < parameters->len; i++)
@@ -65,6 +68,7 @@ action_get_property(GObject *object, guint id, GValue *value, GParamSpec *spec)
 	case PROP_ROLES: g_value_set_enum(value, self->roles); break;
 	case PROP_TYPE_LEVEL: g_value_set_boolean(value, self->type_level); break;
 	case PROP_SERVICE_TRANSACTION: g_value_set_boolean(value, self->service_transaction); break;
+	case PROP_WAITS_ON_PROVIDER: g_value_set_boolean(value, self->waits_on_provider); break;
 	case PROP_PARAMETERS:
 		{
 			GPtrArray *copy = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
@@ -107,6 +111,11 @@ venture_action_class_init(VentureActionClass *klass)
 	g_object_class_install_property(object, PROP_PARAMETERS, g_param_spec_boxed("parameters", "Parameters", "VentureFieldSpec declarations", G_TYPE_PTR_ARRAY, flags));
 	g_object_class_install_property(object, PROP_TYPE_LEVEL, g_param_spec_boolean("type-level", "Type level", "Creates a new record; use ID zero", FALSE, flags));
 	g_object_class_install_property(object, PROP_SERVICE_TRANSACTION, g_param_spec_boolean("service-transaction", "Service transaction", "The service owns atomicity and any posting approval before its first write", FALSE, flags));
+	/* The record action route answers such an action from a fiber of the
+	 * main loop (web/venture-web-later.inc), so the wait yields to every
+	 * other request and the Stripe service's party hold orders it against
+	 * the other fibers paying the same customer. */
+	g_object_class_install_property(object, PROP_WAITS_ON_PROVIDER, g_param_spec_boolean("waits-on-provider", "Waits on a provider", "May wait on an outside provider such as Stripe; the record action route answers it from a fiber", FALSE, flags));
 	g_object_class_install_property(object, PROP_STAGEABLE, g_param_spec_boolean("stageable", "Stageable", "Can await approval", FALSE, flags));
 	g_object_class_install_property(object, PROP_ROLES, g_param_spec_enum("roles", "Roles", "Minimum authenticated role", VENTURE_TYPE_USER_ROLE, VENTURE_USER_ROLE_EDITOR, flags));
 }

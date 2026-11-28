@@ -38,6 +38,35 @@ stripe_invoice_hold(VentureStripeService *self, gint64 invoice_id)
 	return stripe_party_hold(self, company_id, contact_id);
 }
 
+/*
+ * The same, for a record a Stripe record action names (see
+ * venture-stripe-service-private.h). An invoice, and the Checkout and
+ * payment link records that belong to one, are held by the invoice's
+ * party, as a Pay now click is; a subscription and its authorization by
+ * their company, as creating that company's Stripe customer is.
+ */
+VentureFiberHold *
+venture_stripe_service_hold_record(VentureStripeService *self, VentureEntity *record)
+{
+	gint64 invoice_id = 0, company_id = 0;
+
+	g_return_val_if_fail(VENTURE_IS_STRIPE_SERVICE(self), NULL);
+	g_return_val_if_fail(VENTURE_IS_ENTITY(record), NULL);
+	if (VENTURE_IS_INVOICE(record))
+		return stripe_invoice_hold(self, venture_entity_get_id(record));
+	if (VENTURE_IS_STRIPE_CHECKOUT(record) || VENTURE_IS_STRIPE_PAYMENT_LINK(record))
+	{
+		g_object_get(record, "invoice-id", &invoice_id, NULL);
+		return invoice_id > 0 ? stripe_invoice_hold(self, invoice_id) : NULL;
+	}
+	if (VENTURE_IS_CUSTOMER_SUBSCRIPTION(record) || VENTURE_IS_STRIPE_AUTHORIZATION(record))
+	{
+		g_object_get(record, "company-id", &company_id, NULL);
+		return stripe_party_hold(self, company_id, 0);
+	}
+	return NULL;
+}
+
 static gchar *
 stripe_customer(VentureStripeService *self, gint64 company_id, gint64 contact_id,
 	const VentureActor *actor, GError **error)

@@ -109,6 +109,7 @@ venture_stripe_service_collect_due(VentureStripeService *self, GDateTime *now,
 		g_autoptr(VentureEntity) current = NULL;
 		g_autoptr(GDateTime) due = NULL, next = g_date_time_add_seconds(now, 60);
 		g_autoptr(GError) item_error = NULL;
+		g_autoptr(VentureFiberHold) hold = NULL;
 		gboolean ok;
 		if (!venture_database_begin_serializable(self->database, error)) return -1;
 		current = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION,
@@ -126,7 +127,14 @@ venture_stripe_service_collect_due(VentureStripeService *self, GDateTime *now,
 		{
 			venture_database_rollback(self->database); return -1;
 		}
+		/* Held by the customer, as a collect, retry or Setup of theirs from
+		 * the record action route is (venture_stripe_service_hold_record()):
+		 * this sweep is one of those actions too, answered from a fiber, and
+		 * the two would otherwise send one collection's idempotency key at
+		 * once. Taken with no transaction open, and let go after each. */
+		hold = stripe_party_hold(self, stripe_number(current, "company-id"), 0);
 		ok = stripe_collect_authorization(self, current, now, actor, &item_error);
+		g_clear_pointer(&hold, venture_fiber_release);
 		g_clear_object(&current);
 		current = owned_get(self, VENTURE_TYPE_STRIPE_AUTHORIZATION, venture_entity_get_id(g_ptr_array_index(rows, i)), error);
 		if (!current) return -1;
