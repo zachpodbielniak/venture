@@ -1321,6 +1321,126 @@ test_max_bytes(
 	}
 }
 
+/*
+ * The message of the problem @html draws in the bar, as plain text still
+ * escaped, in a new string; NULL when the page draws none.
+ */
+static gchar *
+problem_message(const gchar *html)
+{
+	static const gchar open[] = "<p class=\"lql-problem-message\"><strong>Cannot filter:</strong> ";
+	const gchar *start;
+	const gchar *end;
+
+	start = strstr(html, open);
+
+	if (NULL == start)
+		return NULL;
+
+	start += strlen(open);
+	end = strstr(start, "</p>");
+	g_assert_nonnull(end);
+
+	return g_strndup(start, (gsize)(end - start));
+}
+
+/*
+ * A bar's text with something wrong only at run time is placed in what
+ * was typed or nowhere (VENTURE #52): never at the line and column of
+ * the query VENTURE builds around it, which the person did not write.
+ */
+static void
+test_run_error_placement(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	g_autofree gchar *q = escaped(FILTER_OVER_BUDGET);
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *html = NULL;
+	g_autofree gchar *message = NULL;
+	g_autoptr(JsonNode) refused = NULL;
+	const gchar *api_message;
+
+	(void)data;
+
+	/*
+	 * Over budget while the filter is evaluated: LQL says "2:17:", a
+	 * place in `fetch ticket | filter ...`. The bar marks concat(), where
+	 * it is in the text, and shows the message without that prefix.
+	 */
+	g_object_set(f->config, "query-max-bytes", (gint64)1048576, NULL);
+
+	path = g_strconcat("/e/ticket?q=", q, NULL);
+	html = page(f, path, 400);
+	message = problem_message(html);
+	g_test_message("over budget -> %s", message);
+	g_assert_nonnull(message);
+	g_assert_nonnull(strstr(html,
+		"<mark class=\"lql-mark\"><span class=\"lql-function\">concat</span></mark>"));
+	g_assert_nonnull(strstr(html, "<span class=\"lql-caret-line\">       ^^^^^^</span>"));
+	g_assert_nonnull(strstr(html, "At column 8."));
+	g_assert_true(g_str_has_prefix(message, "concat(): "));
+	g_assert_nonnull(strstr(message, "query.max_bytes (1048576)"));
+	g_assert_null(strstr(html, "2:17"));
+	g_assert_false(g_ascii_isdigit(message[0]));
+
+	/* The list API: the column in what was typed, the same message. */
+	g_free(path);
+	path = g_strconcat("/api/v1/ticket?q=", q, NULL);
+	refused = api(f, f->ada_secret, path, 422);
+	api_message = json_object_get_string_member(json_node_get_object(refused), "message");
+	g_test_message("over budget (api) -> %s", api_message);
+	g_assert_true(g_str_has_prefix(api_message, "q, column 8: concat(): "));
+	g_assert_null(strstr(api_message, "2:17"));
+
+	/*
+	 * On the board the bar also holds the URL's filters ahead of q, so
+	 * the place is found again in that longer text.
+	 */
+	g_free(path);
+	g_free(html);
+	g_free(message);
+	path = g_strconcat("/tickets?view=board&status=todo&q=", q, NULL);
+	html = page(f, path, 400);
+	message = problem_message(html);
+	g_test_message("over budget (board) -> %s", message);
+	g_assert_nonnull(message);
+	g_assert_nonnull(strstr(html,
+		"<mark class=\"lql-mark\"><span class=\"lql-function\">concat</span></mark>"));
+	g_assert_true(g_str_has_prefix(message, "concat(): "));
+	g_assert_null(strstr(html, "2:17"));
+
+	/*
+	 * Over the row bound while it is read: the fetch is VENTURE's, not
+	 * the text's. No place in the text: the message alone, nothing marked,
+	 * and no line and column.
+	 */
+	g_object_set(f->config, "query-max-rows", (gint64)3, NULL);
+	g_free(message);
+	g_free(html);
+	g_free(path);
+	g_clear_pointer(&refused, json_node_unref);
+	g_free(q);
+	q = escaped("length(title) > 0");
+	path = g_strconcat("/e/ticket?q=", q, NULL);
+	html = page(f, path, 400);
+	message = problem_message(html);
+	g_test_message("over rows -> %s", message);
+	g_assert_nonnull(message);
+	g_assert_nonnull(strstr(message, "query.max_rows"));
+	g_assert_false(g_ascii_isdigit(message[0]));
+	g_assert_null(strstr(html, "<mark class=\"lql-mark\">"));
+	g_assert_null(strstr(html, "lql-caret-line"));
+
+	g_free(path);
+	path = g_strconcat("/api/v1/ticket?q=", q, NULL);
+	refused = api(f, f->ada_secret, path, 422);
+	api_message = json_object_get_string_member(json_node_get_object(refused), "message");
+	g_test_message("over rows (api) -> %s", api_message);
+	g_assert_true(g_str_has_prefix(api_message, "q: "));
+	g_assert_nonnull(strstr(api_message, "query.max_rows"));
+}
+
 /* How long nap() sleeps, on whichever thread evaluates the filter. */
 #define NAP_MICROSECONDS (100000)
 
@@ -1446,6 +1566,7 @@ main(
 	ADD("/lql-bar/assist/complete-and-place", test_assist);
 	ADD("/lql-bar/filter/highlight-and-check", test_highlight_and_check);
 	ADD("/lql-bar/bounds/max-bytes", test_max_bytes);
+	ADD("/lql-bar/bounds/run-error-placement", test_run_error_placement);
 	ADD("/lql-bar/runs/main-loop-stays-responsive", test_main_loop_responsive);
 
 #undef ADD

@@ -289,6 +289,114 @@ venture_lql_filter_check(
 
 /* --- Running ---------------------------------------------------------------- */
 
+/*
+ * Places a run-time error of @lql_error, which names a "LINE:COLUMN: " of
+ * @run (the query that was run, of which the text starts at @prefix and
+ * is @length bytes), on @problem. LQL gives no structured offset, only
+ * that prefix (lql_error_get_position()), so the line and column are
+ * turned into a byte offset in @run. When it falls inside the typed text
+ * @problem is positioned there; when it falls in VENTURE's own wrapper it
+ * stays unpositioned. Either way the prefix is dropped from the message:
+ * a line and column of a query the person never wrote is never shown.
+ */
+static void
+venture_lql_filter_place_run_error(
+	LqlEnvironment		*environment,
+	const GError		*lql_error,
+	const gchar		*run,
+	guint			 prefix,
+	guint			 length,
+	VentureLqlProblem	*problem
+){
+	g_autoptr(GPtrArray) spans = NULL;
+	g_autofree gchar *stripped = NULL;
+	const gchar *line_start;
+	const gchar *line_end;
+	const gchar *at;
+	const gchar *message;
+	guint line;
+	guint column;
+	guint offset;
+	guint end;
+	guint i;
+
+	/* A problem VENTURE worded itself (the time limit) has no prefix
+	 * left to read, and is of the query as a whole. */
+	if (!lql_error_get_position(lql_error, &line, &column) ||
+	    !g_ascii_isdigit(problem->message[0]))
+		return;
+
+	/* The message without its "LINE:COLUMN: ". */
+	message = strchr(strchr(problem->message, ':') + 1, ':');
+
+	if (NULL != message)
+	{
+		message++;
+
+		while (' ' == *message)
+			message++;
+
+		/* Copied before the old one goes: @message points into it. */
+		stripped = g_strdup(message);
+		g_free(problem->message);
+		problem->message = g_steal_pointer(&stripped);
+	}
+
+	/* The line, then the column's character on it (columns count
+	 * characters, not bytes). */
+	line_start = run;
+
+	for (i = 1; (i < line) && (NULL != line_start); i++)
+	{
+		line_start = strchr(line_start, '\n');
+
+		if (NULL != line_start)
+			line_start++;
+	}
+
+	if (NULL == line_start)
+		return;
+
+	line_end = strchr(line_start, '\n');
+
+	if (NULL == line_end)
+		line_end = line_start + strlen(line_start);
+
+	at = line_start;
+
+	for (i = 1; (i < column) && (at < line_end); i++)
+		at = g_utf8_next_char(at);
+
+	if (at > line_end)
+		at = line_end;
+
+	offset = (guint)(at - run);
+
+	/* In the wrapper (the fetch, a stage word, what follows the text):
+	 * no place in what was typed. */
+	if ((offset < prefix) || (offset >= (prefix + length)))
+		return;
+
+	/* The token there, so the bar marks it rather than a point. */
+	end = offset + 1;
+	spans = lql_highlight(environment, run);
+
+	for (i = 0; i < spans->len; i++)
+	{
+		LqlHighlightSpan *span = g_ptr_array_index(spans, i);
+
+		if ((span->offset <= offset) && (offset < (span->offset + span->length)))
+		{
+			end = span->offset + span->length;
+			break;
+		}
+	}
+
+	problem->positioned = TRUE;
+	problem->offset = offset - prefix;
+	problem->length = MIN(end, prefix + length) - offset;
+}
+
 GArray *
 venture_lql_filter_find_ids(
 	LqlEnvironment		 *environment,
@@ -333,6 +441,12 @@ venture_lql_filter_find_ids(
 			problem = g_new0(VentureLqlProblem, 1);
 			problem->message = g_strdup(refusal->message);
 			problem->code = (VentureError)refusal->code;
+
+			/* A run-time error names a line and column of the query
+			 * built above, which is no place in what was typed: put in
+			 * the text if it falls there, message alone if not. */
+			venture_lql_filter_place_run_error(environment, error, run, prefix,
+			                                   (guint)strlen(text), problem);
 		}
 		else if (lql_table_get_n_rows(table) > VENTURE_LQL_FILTER_MAX_IDS)
 		{
