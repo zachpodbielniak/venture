@@ -29,6 +29,7 @@
 #include <libsoup/soup.h>
 #include <string.h>
 #include "lql/venture-lql.h"
+#include "web/venture-web-picker-private.h"
 #include "venture-test-util.h"
 
 #define TEST_PASSWORD "lists-long-password"
@@ -39,6 +40,8 @@
 #define SCALE_FRESH_EVERY (250)	/* 200 of them created now */
 #define SCALE_MAX_ROWS (5000)
 #define SCALE_TIMEOUT_MS (10000)
+#define SCALE_PAGE_WARM_MS (1000)	/* a page with pickers, drawn again */
+#define SCALE_WARM_LOADS (3)
 
 /* --- The fixture ----------------------------------------------------------- */
 
@@ -1330,6 +1333,136 @@ test_scale_pushdown(
 	}
 }
 
+/* How often @needle occurs in @haystack between @start and @end. */
+static guint
+count_between(
+	const gchar	*start,
+	const gchar	*end,
+	const gchar	*needle
+){
+	const gchar *at;
+	guint count = 0;
+
+	for (at = strstr(start, needle); (NULL != at) && (at < end); at = strstr(at + 1, needle))
+		count++;
+
+	return count;
+}
+
+/*
+ * Fifty thousand companies behind every company picker (VENTURE #51): the
+ * company list's Filters panel, the contact list's, and the contact and
+ * deal forms. Each page is drawn once cold, inside the time limit, then
+ * SCALE_WARM_LOADS times more, each inside SCALE_PAGE_WARM_MS; none holds
+ * more than VENTURE_WEB_REFERENCE_PICKER_MAX options in all, and no
+ * company appears as an option, because the picker is the lookup.
+ *
+ * Breaks if a picker lists the table again: fifty thousand options are
+ * megabytes, and took 2.4-3.6 s warm and 6-11 s cold on /e/company alone.
+ */
+static void
+test_scale_pickers(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	static const struct
+	{
+		const gchar	*path;
+		const gchar	*field;		/* the company reference */
+		gboolean	 list;		/* a list: count its Filters panel */
+	} pages[] = {
+		{ "/e/company", "parent-id", TRUE },
+		{ "/e/contact", "company-id", TRUE },
+		{ "/e/contact/new", "company-id", FALSE },
+		{ "/e/deal/new", "company-id", FALSE }
+	};
+	guint i;
+
+	(void)data;
+
+	for (i = 0; i < G_N_ELEMENTS(pages); i++)
+	{
+		g_autofree gchar *body = NULL;
+		g_autofree gchar *box = NULL;
+		const gchar *start;
+		const gchar *end;
+		gint64 began;
+		gint64 cold;
+		gint64 slowest = 0;
+		guint load;
+
+		began = g_get_monotonic_time();
+		body = page(f, pages[i].path, 200);
+		cold = elapsed_ms(began);
+		g_test_message("%s: %" G_GINT64_FORMAT " ms cold, %" G_GSIZE_FORMAT " bytes",
+		               pages[i].path, cold, strlen(body));
+
+		/* What the page holds first, how long it took after: a page
+		 * that lists the table fails here, however fast the machine. */
+
+		/* A list: its Filters panel. A form: the whole page. */
+		if (pages[i].list)
+		{
+			start = strstr(body, "<form id=\"list-filters\"");
+			g_assert_nonnull(start);
+			g_assert_nonnull(strstr(start, "<summary>Filters</summary>"));
+			end = strstr(start, "</form>");
+			g_assert_nonnull(end);
+		}
+		else
+		{
+			start = body;
+			end = body + strlen(body);
+		}
+
+		g_assert_cmpuint(count_between(start, end, "<option"), <=,
+		                 VENTURE_WEB_REFERENCE_PICKER_MAX);
+		g_assert_null(strstr(body, ">Scale 1</option>"));
+
+		/* And the company is chosen through the lookup. */
+		box = g_strdup_printf("name=\"%s" VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX "\"", pages[i].field);
+		g_assert_nonnull(strstr(start, box));
+
+		g_assert_cmpint(cold, <, SCALE_TIMEOUT_MS);
+
+		for (load = 0; load < SCALE_WARM_LOADS; load++)
+		{
+			g_autofree gchar *again = NULL;
+			gint64 took;
+
+			began = g_get_monotonic_time();
+			again = page(f, pages[i].path, 200);
+			took = elapsed_ms(began);
+			slowest = MAX(slowest, took);
+		}
+
+		g_test_message("%s: %" G_GINT64_FORMAT " ms slowest of %d warm",
+		               pages[i].path, slowest, SCALE_WARM_LOADS);
+		g_assert_cmpint(slowest, <, SCALE_PAGE_WARM_MS);
+	}
+
+	/* The lookup behind them answers from fifty thousand quickly. */
+	{
+		g_autofree gchar *body = NULL;
+		g_autoptr(JsonNode) answer = NULL;
+		JsonObject *object;
+		gint64 began;
+
+		began = g_get_monotonic_time();
+		body = page(f, "/ui/records/search?type=company&q=Scale+12", 200);
+		g_test_message("/ui/records/search q=Scale 12: %" G_GINT64_FORMAT " ms",
+		               elapsed_ms(began));
+		g_assert_cmpint(elapsed_ms(began), <, SCALE_PAGE_WARM_MS);
+		answer = venture_json_parse(body, NULL);
+		object = json_node_get_object(answer);
+		g_assert_cmpuint(json_array_get_length(json_object_get_array_member(object, "items")),
+		                 ==, VENTURE_WEB_RECORD_SEARCH_MAX);
+		g_assert_true(json_object_get_boolean_member(object, "more"));
+		g_assert_cmpstr(json_object_get_string_member(json_array_get_object_element(
+			json_object_get_array_member(object, "items"), 0), "label"), ==, "Scale 12");
+	}
+}
+
 int
 main(
 	int	  argc,
@@ -1353,6 +1486,8 @@ main(
 	ADD("/lql-lists/saved-views/any-type", test_saved_views);
 	g_test_add("/lql-lists/scale/50k-pushdown", Fixture, &at_scale, fixture_setup,
 	           test_scale_pushdown, fixture_teardown);
+	g_test_add("/lql-lists/scale/reference-pickers", Fixture, &at_scale, fixture_setup,
+	           test_scale_pickers, fixture_teardown);
 
 #undef ADD
 

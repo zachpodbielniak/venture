@@ -157,6 +157,7 @@ venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer 
 	GType type;
 	gboolean stage, form;
 	gboolean journal_alias = NULL == type_name;
+	guint lookup_index;
 	gint64 id;
 	gchar *end = NULL;
 	if (!venture_auth_require(self->auth, principal, VENTURE_USER_ROLE_VIEWER, &error)) return venture_web_error_response(error);
@@ -198,12 +199,20 @@ venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer 
 		{
 			guint i;
 			VentureFieldSpec *spec = NULL;
+			/* A bounded picker's box: resolved below, never a parameter. */
+			if (g_str_has_suffix(key, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX)) continue;
 			for (i = 0; i < specs->len; i++)
 			{
 				VentureFieldSpec *candidate = g_ptr_array_index(specs, i);
 				if (0 == g_strcmp0(key, candidate->name)) { spec = candidate; break; }
 			}
 			if (spec && !spec->required && venture_string_is_empty(value)) continue;
+			/* Its lookup box was posted too: the box decides, below. */
+			if (spec && VENTURE_FIELD_KIND_REFERENCE == spec->kind)
+			{
+				g_autofree gchar *lookup_key = g_strconcat(key, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX, NULL);
+				if (NULL != htmx_request_get_form_value(request, lookup_key)) continue;
+			}
 			if (spec && (VENTURE_FIELD_KIND_INTEGER == spec->kind || VENTURE_FIELD_KIND_REFERENCE == spec->kind ||
 				VENTURE_FIELD_KIND_BOOLEAN == spec->kind || VENTURE_FIELD_KIND_DOUBLE == spec->kind || VENTURE_FIELD_KIND_JSON == spec->kind))
 			{
@@ -212,6 +221,24 @@ venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer 
 				json_object_set_member(object, key, parsed);
 			}
 			else json_object_set_string_member(object, key, value);
+		}
+		/* A reference past the picker's bound posts a name or a #id in
+		 * <name>__lookup beside its hidden id; the box decides
+		 * (venture-web-reference-lookup.inc), within what the caller may
+		 * read. Blank clears it, as an emptied select does. */
+		for (lookup_index = 0; lookup_index < specs->len; lookup_index++)
+		{
+			VentureFieldSpec *spec = g_ptr_array_index(specs, lookup_index);
+			g_autofree gchar *lookup_name = NULL;
+			const gchar *lookup;
+			gint64 picked = 0;
+			if (VENTURE_FIELD_KIND_REFERENCE != spec->kind) continue;
+			lookup_name = g_strconcat(spec->name, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX, NULL);
+			lookup = htmx_request_get_form_value(request, lookup_name);
+			if (NULL == lookup) continue;
+			if (!venture_web_reference_resolve_spec(self, spec, 0, lookup, &picked, &error))
+				return venture_web_error_response(error);
+			if (picked > 0) json_object_set_int_member(object, spec->name, picked);
 		}
 	}
 	else body = htmx_request_get_json(request, &error);

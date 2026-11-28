@@ -32,7 +32,9 @@ definition. A value follows the built-in reference rule exactly:
 - a =category= target is also held to its tree's =applies_to=.
 
 The record form draws a reference as the ordinary picker (every live record
-of the target type in the organization) and a double as a decimal input.
+of the target type in the organization, or past two hundred of them the
+lookup, whose typed name or #id is resolved to the attribute's id on save;
+see [[file:interface.org::*Past two hundred: the lookup][Past two hundred: the lookup]]) and a double as a decimal input.
 A reference cannot be seeded from the query string the way a built-in
 reference is (=?company_id=4=): it has no property, only the attribute the
 form posts.

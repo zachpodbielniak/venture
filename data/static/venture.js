@@ -2328,14 +2328,25 @@
 	}
 
 	function buildRecordPicker(host) {
-		var hidden = host.querySelector("input[type=number]");
+		var hidden = host.querySelector("input[type=number], input[type=hidden]");
 		var form = host.closest("form");
 		var typeName = host.getAttribute("data-type-field");
 		var fixedType = host.getAttribute("data-type");
+		var organization = host.getAttribute("data-organization");
 		var typeSelect = form && typeName
 			? form.querySelector("[name=\"" + typeName + "\"]")
 			: null;
-		var search = document.createElement("input");
+		/*
+		 * A reference picker past its bound (data-record-lookup) brings
+		 * its own box: the one a person types a name or a #id into with
+		 * scripting off, which the server resolves when it is posted.
+		 * Here it becomes the search; once a match is picked it stops
+		 * posting, so the hidden id is the whole answer and a filter's
+		 * URL reads ?company_id=12 as it always did.
+		 */
+		var lookup = host.querySelector("input[data-record-lookup]");
+		var lookupName = lookup ? lookup.getAttribute("name") : null;
+		var search = lookup || document.createElement("input");
 		var results = document.createElement("div");
 		var chosen = document.createElement("span");
 		var timer = null;
@@ -2344,10 +2355,13 @@
 			return;
 		}
 
-		search.type = "search";
-		search.className = "record-search";
-		search.placeholder = "Search\u2026";
-		search.setAttribute("aria-label", "Search for a record to link");
+		if (!lookup) {
+			search.type = "search";
+			search.placeholder = "Search\u2026";
+			search.setAttribute("aria-label", "Search for a record to link");
+		}
+
+		search.classList.add("record-search");
 		results.className = "record-results";
 		results.hidden = true;
 		chosen.className = "record-chosen";
@@ -2361,26 +2375,50 @@
 		 */
 		hidden.classList.add("record-id");
 		host.classList.add("searchable");
-		host.appendChild(search);
-		host.appendChild(chosen);
+
+		if (!lookup) {
+			host.appendChild(search);
+			host.appendChild(chosen);
+		}
+
 		host.appendChild(results);
+
+		/* Drawn with a record chosen: its box says "#12 ...", and need
+		 * not post until somebody types into it. */
+		if (lookup && hidden.value
+		    && lookup.value.indexOf("#" + hidden.value) === 0) {
+			lookup.removeAttribute("name");
+		}
 
 		function clearChoice() {
 			hidden.value = "";
 			chosen.hidden = true;
 			chosen.textContent = "";
+
+			/* Typed, not picked: the server resolves what was typed. */
+			if (lookup && lookupName) {
+				lookup.setAttribute("name", lookupName);
+			}
 		}
 
 		function pick(item) {
 			hidden.value = String(item.id);
-			chosen.textContent = "#" + item.id + " " + item.label;
-			chosen.hidden = false;
-			search.value = "";
+
+			if (lookup) {
+				lookup.value = "#" + item.id + " " + item.label;
+				lookup.removeAttribute("name");
+			} else {
+				chosen.textContent = "#" + item.id + " " + item.label;
+				chosen.hidden = false;
+				search.value = "";
+			}
+
 			results.hidden = true;
 			results.innerHTML = "";
+			hidden.dispatchEvent(new Event("change", { bubbles: true }));
 		}
 
-		function render(items) {
+		function render(items, more) {
 			results.innerHTML = "";
 
 			if (items.length === 0) {
@@ -2410,6 +2448,15 @@
 				results.appendChild(row);
 			});
 
+			/* The search answers a few at a time: say there are more. */
+			if (more) {
+				var rest = document.createElement("div");
+
+				rest.className = "record-result muted";
+				rest.textContent = "More match \u2014 keep typing";
+				results.appendChild(rest);
+			}
+
 			placeFloating(results, search);
 			results.hidden = false;
 		}
@@ -2423,12 +2470,13 @@
 			}
 
 			window.fetch("/ui/records/search?type="
-				+ encodeURIComponent(type) + "&q=" + encodeURIComponent(text), {
+				+ encodeURIComponent(type) + "&q=" + encodeURIComponent(text)
+				+ (organization ? "&organization_id=" + encodeURIComponent(organization) : ""), {
 				credentials: "same-origin"
 			}).then(function (response) {
 				return response.ok ? response.json() : { items: [] };
 			}).then(function (body) {
-				render(body.items || []);
+				render(body.items || [], !!body.more);
 			}).catch(function () {
 				results.hidden = true;
 			});

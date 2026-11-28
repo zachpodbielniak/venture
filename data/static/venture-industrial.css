@@ -2302,6 +2302,11 @@ body.ai-resizing { user-select: none; cursor: ew-resize; }
 
 .record-search { width: 18em; max-width: 100%; }
 
+/* A reference picker past its bound: one box, typed into with or
+ * without the script, as wide as the select it stands in for. */
+.record-pick.reference-lookup { display: flex; }
+.reference-lookup input[data-record-lookup] { flex: 1; width: auto; min-width: 0; }
+
 .record-chosen {
 	font-family: var(--font-mono);
 	font-size: 11px;

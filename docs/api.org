@@ -661,6 +661,17 @@ Where the database cannot answer a filter as read, that one filter compares the 
 
 Rows VENTURE writes hold no such NULL, so this changes nothing for them; it only stops an older row disappearing from a filter its own record says it passes. A backfill migration is not the fix: it could not reach a plugin's types, nor a column added after it ran.
 
+** =FIELD__lookup=: a reference by name
+
+A reference field can be filtered by what its record is called instead of its id, which is what a list's Filters panel sends when its company picker is a lookup and scripting is off (see [[file:interface.org::*Pickers][Pickers]]):
+
+#+begin_src sh
+GET /api/v1/contact?company_id__lookup=Acme%20Anvils
+GET /api/v1/contact?company_id__lookup=%2312          # "#12": company 12
+#+end_src
+
+The text is resolved to one record of the field's type, read as the caller through the same access policy and business scope as the list, and the list is then filtered by its id exactly as =?company_id=12= would be: "#12", "12" or "#12 Acme Anvils" is that id; anything else is the one record called exactly that (case aside), else the one record the type's search finds. When the lookup is present it replaces whatever =company_id= said; when it is blank it drops that filter. No match, or more than one, is a 422 =validation= naming the field and, for more than one, the candidates by id: ="company_id: \"Twin Peaks\" matches more than one company (#3 Twin Peaks, #4 Twin Peaks); type the #id of the one you mean"=. A lookup on a field that is not a reference is a 400 =invalid_argument=. =?company_id=<id>= is unchanged, and remains the way for a client that already knows the id.
+
 ** =q=: an LQL filter
 
 =q= is an [[file:lql.org][LQL]] filter over the record type, what follows =fetch TYPE | filter=:

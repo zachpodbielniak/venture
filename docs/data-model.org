@@ -530,9 +530,12 @@ GObject returns properties in its own order rather than the declared one —
 without it a list's first columns are whichever fields sort early, which in
 practice meant seven empty ones.
 
-A reference picker lists every candidate rather than a page of them: a picker
-that silently omits the record you are looking for is worse than a long list,
-and these tables are small by nature.
+A reference picker lists every candidate rather than a page of them while
+there are at most two hundred: a picker that silently omits the record you
+are looking for is worse than a long list. Past two hundred it is a lookup --
+a box that searches them all, typed into by name or #id with scripting off
+-- because a page carrying fifty thousand companies takes seconds to draw.
+See [[file:interface.org::*Past two hundred: the lookup][Past two hundred: the lookup]].
 
 Sensitive fields — a tax identifier, a password hash — are never rendered
 into a form. That is what the flag means, and a form is exactly where a

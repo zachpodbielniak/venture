@@ -206,6 +206,11 @@ pickers, owners, date bounds and money signs. Date bounds read “from”
 (inclusive) and “before” (exclusive). Money offers positive, zero and
 negative rather than comparing decimal amounts across currencies.
 
+A company or user picker with more than two hundred candidates is a lookup
+rather than a list: type a name or a #id, with or without scripting, and the
+filter is still =?company_id=<id>= once a match is picked (see
+[[file:interface.org::*Past two hundred: the lookup][Past two hundred: the lookup]]).
+
 Apply filters works without scripting. Search, sorting, pagination and CSV
 export retain the active filters; changing filters starts at the first page.
 Blank controls mean any value in this form only; ordinary API empty-value

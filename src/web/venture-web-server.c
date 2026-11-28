@@ -3813,6 +3813,9 @@ venture_web_page(
 /* Filter bars: ?q= on lists, the query bar, GET /lql/assist. */
 #include "venture-web-lql.inc"
 
+/* Reference pickers past a <select>: the lookup and its resolution. */
+#include "venture-web-reference-lookup.inc"
+
 /* ==========================================================================
  * Generic REST handlers
  * ========================================================================== */
@@ -3921,6 +3924,12 @@ venture_web_list_url_filters(
 		    (chart && (0 == g_strcmp0(key, "view"))))
 			continue;
 
+		/* A picker's lookup box (company_id__lookup) is not a filter of
+		 * its own: venture_web_list_resolve_lookups() turns it into the
+		 * field's id. */
+		if (g_str_has_suffix(key, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX))
+			continue;
+
 		if (form)
 		{
 			g_autofree gchar *property = NULL;
@@ -3968,6 +3977,9 @@ venture_web_build_query_full(
 	query = venture_query_new(entity_type);
 	url_params = venture_web_list_url_filters(request, entity_type);
 	lql = htmx_request_get_query_param(request, "q");
+
+	if (!venture_web_list_resolve_lookups(self, request, entity_type, url_params, error))
+		return NULL;
 
 	/* As read, so a NULL legacy column that reads as a value matches
 	 * that value here, in the record's GET and in the LQL bar alike. */
@@ -7314,11 +7326,11 @@ venture_web_ui_search(
  */
 /*
  * The record view: how a record, its list and its form read to a person.
- * Defined in venture-web-record-view.inc, beside the detail renderer it
- * builds on; declared here because the list and the form come first.
+ * venture_web_type_label() is defined in venture-web-record-view.inc,
+ * beside the detail renderer it builds on, and declared with the
+ * reference lookup (venture-web-reference-lookup.inc), because the list
+ * and the form come first.
  */
-static gchar *venture_web_type_label(GType type, gboolean plural);
-
 static gchar *
 venture_web_view_type_label(VentureWebServer *self, HtmxRequest *request, GType type, gboolean plural)
 {
@@ -8350,11 +8362,29 @@ venture_web_append_list_filters(VentureWebServer *self, HtmxRequest *request,
 		{
 			const gchar *target = venture_field_spec_get_reference_type(spec);
 			g_autoptr(VentureFieldSpec) copy = NULL;
+			g_autofree gchar *lookup_name = NULL;
+			g_autofree gchar *resolved = NULL;
+			const gchar *lookup;
 
 			if (0 != g_strcmp0(target, "user") && 0 != g_strcmp0(target, "company"))
 				continue;
 			copy = venture_field_spec_copy(spec);
 			copy->required = FALSE;
+
+			/* Filtered by a lookup typed with scripting off: the box shows
+			 * what it resolved to, as the list was filtered by it. One it
+			 * could not resolve answered 400 before this was drawn. */
+			lookup_name = g_strconcat(name, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX, NULL);
+			lookup = htmx_request_get_query_param(request, lookup_name);
+			if (NULL != lookup)
+			{
+				gint64 id = 0;
+
+				current = NULL;
+				if (venture_web_reference_resolve_spec(self, spec,
+					venture_web_active_organization(self, request), lookup, &id, NULL) && (id > 0))
+					current = resolved = g_strdup_printf("%" G_GINT64_FORMAT, id);
+			}
 			if (!venture_string_is_empty(current))
 				venture_entity_set_field_from_string(sample, name, current, NULL);
 			venture_web_append_form_field_scoped(self, html, copy, sample,
@@ -8560,6 +8590,11 @@ venture_web_ui_list(
 			return venture_web_error_response(error);
 
 		filters = venture_web_list_url_filters(request, entity_type);
+
+		/* Resolved once already, by the query above; this cannot differ. */
+		if (!venture_web_list_resolve_lookups(self, request, entity_type, filters, &error))
+			return venture_web_error_response(error);
+
 		url_filter = venture_web_list_chart_url_filter(entity_type, filters, &problem);
 		action = g_strdup_printf("/e/%s", type_name);
 		chart_html = g_string_new(NULL);
@@ -10586,6 +10621,7 @@ venture_web_append_form_field_scoped(
 			g_autoptr(VentureQuery) query = NULL;
 			g_autoptr(GPtrArray) options = NULL;
 			GType target;
+			gboolean bounded = FALSE;
 
 			const gchar *parent = NULL;
 
@@ -10601,15 +10637,6 @@ venture_web_append_form_field_scoped(
 				parent = venture_entity_class_get_shared_parent(
 					VENTURE_ENTITY_GET_CLASS(record), name);
 
-			/* data-picker-search: a record is found by typing, however
-			 * few there are today. */
-			if (NULL != parent)
-				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\" data-picker-search>",
-					name, parent);
-			else
-				g_string_append_printf(content, "<select name=\"%s\" data-picker-search>", name);
-			g_string_append(content, "<option value=\"\">—</option>");
-
 			if ((venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_PRIVATE_PARTICIPANT) ||
 				(target == VENTURE_TYPE_USER && (venture_field_spec_get_flags(spec) & VENTURE_COLUMN_FLAG_OPTIONAL_PERSONAL_OWNER)))
 				options = venture_web_household_members(self, organization > 0 ? organization :
@@ -10621,19 +10648,50 @@ venture_web_append_form_field_scoped(
 					options = venture_web_member_users(self, organization);
 				else
 				{
+					/*
+					 * One row past the most a <select> lists: whether
+					 * there are more is all this asks, never how many,
+					 * so a table of fifty thousand costs what one of
+					 * two hundred does.
+					 */
 					query = venture_query_new(target);
-					venture_query_set_limit(query, 0);
+					venture_query_set_limit(query, VENTURE_WEB_REFERENCE_PICKER_MAX + 1);
 					if (organization > 0) venture_query_set_organization(query, organization);
 
 					options = venture_database_find(
 						venture_context_get_database(self->context), query, NULL);
+					bounded = (NULL != options) &&
+						(options->len > VENTURE_WEB_REFERENCE_PICKER_MAX);
 				}
 			}
 
 			/*
-			 * Every candidate, not a paged slice: a picker that silently
-			 * omits the record you are looking for is worse than a long
-			 * list, and these tables are small by nature.
+			 * Past the bound, a lookup rather than a list: a page that
+			 * carries every company is megabytes and seconds, and a
+			 * select that silently stopped at two hundred would omit the
+			 * record you are looking for. The lookup searches them all
+			 * (venture-web-reference-lookup.inc).
+			 */
+			if (bounded)
+			{
+				venture_web_append_reference_lookup(self, content, name, record, target,
+				                                    organization, current, required);
+				break;
+			}
+
+			/* data-picker-search: a record is found by typing, however
+			 * few there are today. */
+			if (NULL != parent)
+				g_string_append_printf(content, "<select name=\"%s\" data-same-parent=\"%s\" data-picker-search>",
+					name, parent);
+			else
+				g_string_append_printf(content, "<select name=\"%s\" data-picker-search>", name);
+			g_string_append(content, "<option value=\"\">—</option>");
+
+			/*
+			 * Every candidate, not a paged slice: under the bound the
+			 * whole list is here, so a picker never silently omits the
+			 * record you are looking for.
 			 */
 			if (NULL != options)
 			{
@@ -11232,6 +11290,41 @@ venture_web_apply_form(
 		if (0 != (flags & VENTURE_COLUMN_FLAG_SENSITIVE))
 			continue;
 
+		/* A bounded picker's box (venture-web-reference-lookup.inc): a
+		 * name or a #id, typed with scripting off or picked with it on.
+		 * When it is posted it decides; the hidden id beside it is only
+		 * what it said when the page was drawn. */
+		if (VENTURE_FIELD_KIND_REFERENCE == venture_field_spec_get_kind(spec))
+		{
+			g_autofree gchar *lookup_name = NULL;
+			const gchar *lookup;
+			gint64 id = 0;
+
+			lookup_name = g_strconcat(name, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX, NULL);
+			lookup = htmx_request_get_form_value(request, lookup_name);
+
+			if (NULL != lookup)
+			{
+				g_autofree gchar *digits = NULL;
+
+				if (!venture_web_reference_resolve_spec(self, spec, 0, lookup, &id, error))
+					return FALSE;
+
+				if (0 == id)
+				{
+					g_object_set(record, name, (gint64)0, NULL);
+					continue;
+				}
+
+				digits = g_strdup_printf("%" G_GINT64_FORMAT, id);
+
+				if (!venture_entity_set_field_from_string(record, name, digits, error))
+					return FALSE;
+
+				continue;
+			}
+		}
+
 		submitted = htmx_request_get_form_value(request, name);
 
 		/* Absent means the form did not carry the field at all, which is
@@ -11298,6 +11391,20 @@ venture_web_apply_form(
 			VentureFieldSpec *spec = g_ptr_array_index(extra, custom);
 			const gchar *submitted = htmx_request_get_form_value(request,
 				venture_field_spec_get_name(spec));
+			g_autofree gchar *lookup_name = g_strconcat(venture_field_spec_get_name(spec),
+				VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX, NULL);
+			const gchar *lookup = htmx_request_get_form_value(request, lookup_name);
+			g_autofree gchar *resolved = NULL;
+
+			/* A custom reference past the select's bound is a lookup too. */
+			if ((VENTURE_FIELD_KIND_REFERENCE == venture_field_spec_get_kind(spec)) && (NULL != lookup))
+			{
+				gint64 id = 0;
+
+				if (!venture_web_reference_resolve_spec(self, spec, 0, lookup, &id, error))
+					return FALSE;
+				submitted = resolved = (id > 0) ? g_strdup_printf("%" G_GINT64_FORMAT, id) : g_strdup("");
+			}
 			if (submitted != NULL)
 				venture_entity_set_attribute(record, venture_field_spec_get_name(spec), submitted);
 		}
@@ -20804,14 +20911,56 @@ venture_web_ui_assistant(
 }
 
 /*
- * GET /ui/records/search - records of one type, by name.
+ * GET /ui/records/search?type=TYPE&q=TEXT[&organization_id=N] - records
+ * of one type, by name.
  *
- * What the link picker searches. Deliberately not the generic list API:
- * that returns whole records, and this is a menu that needs an id and
+ * What the link picker and every bounded reference picker search
+ * (venture-web-reference-lookup.inc). Deliberately not the generic list
+ * API: that returns whole records, and this is a menu that needs an id and
  * something to read. The same per-type permission the list page applies
  * is applied here, so a search cannot be used to enumerate a type the
- * caller may not open.
+ * caller may not open; a type whose module is off is not in the registry
+ * at all; and every read is under the request's access scope, so a
+ * record the caller may not read -- another workspace's, in hosted mode
+ * -- is never among the matches. organization_id narrows to one
+ * organization, as the picker's own list was narrowed; it cannot widen.
+ *
+ * "12" or "#12" is that record. Otherwise the names that start with the
+ * text come first, then the rest of what the type's search matches, at
+ * most VENTURE_WEB_RECORD_SEARCH_MAX of them; "more" says whether there
+ * were others, so the menu can say to keep typing.
  */
+
+/* Adds @rows to @items, each once, until @items holds @cap. */
+static void
+venture_web_records_search_take(
+	GPtrArray	*items,
+	GHashTable	*seen,
+	GPtrArray	*rows,
+	guint		 cap,
+	gboolean	*more
+){
+	guint i;
+
+	for (i = 0; i < rows->len; i++)
+	{
+		VentureEntity *row = g_ptr_array_index(rows, i);
+		gint64 id = venture_entity_get_id(row);
+
+		if (g_hash_table_contains(seen, &id))
+			continue;
+
+		if (items->len >= cap)
+		{
+			*more = TRUE;
+			return;
+		}
+
+		g_hash_table_add(seen, g_memdup2(&id, sizeof id));
+		g_ptr_array_add(items, g_object_ref(row));
+	}
+}
+
 static HtmxResponse *
 venture_web_ui_records_search(
 	HtmxRequest	*request,
@@ -20819,18 +20968,25 @@ venture_web_ui_records_search(
 	gpointer	 user_data
 ){
 	VentureWebServer *self;
+	VentureDatabase *database;
 	g_autoptr(VentureAuthPrincipal) principal = NULL;
-	g_autoptr(VentureQuery) query = NULL;
-	g_autoptr(GPtrArray) found = NULL;
+	g_autoptr(GPtrArray) items = NULL;
+	g_autoptr(GHashTable) seen = NULL;
 	g_autoptr(JsonBuilder) builder = NULL;
 	g_autoptr(JsonNode) node = NULL;
 	g_autoptr(GError) error = NULL;
+	g_autofree gchar *text = NULL;
 	const gchar *type_name;
-	const gchar *text;
+	const gchar *organization_text;
+	gint64 organization;
+	gint64 id;
+	gboolean more;
 	GType type;
+	guint pass;
 	guint i;
 
 	self = user_data;
+	database = venture_context_get_database(self->context);
 
 	principal = venture_auth_authenticate(self->auth, request);
 
@@ -20839,7 +20995,11 @@ venture_web_ui_records_search(
 		return venture_web_error_response(error);
 
 	type_name = htmx_request_get_query_param(request, "type");
-	text = htmx_request_get_query_param(request, "q");
+	text = g_strstrip(g_strdup(venture_string_is_empty(htmx_request_get_query_param(request, "q"))
+		? "" : htmx_request_get_query_param(request, "q")));
+	organization_text = htmx_request_get_query_param(request, "organization_id");
+	organization = venture_string_is_empty(organization_text)
+		? 0 : g_ascii_strtoll(organization_text, NULL, 10);
 
 	type = venture_entity_registry_lookup(
 		venture_context_get_entity_registry(self->context), type_name);
@@ -20856,52 +21016,77 @@ venture_web_ui_records_search(
 	                                  VENTURE_USER_ROLE_VIEWER, &error))
 		return venture_web_error_response(error);
 
-	query = venture_query_new(type);
+	items = g_ptr_array_new_with_free_func(g_object_unref);
+	seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL);
+	more = FALSE;
 
-	/* All digits is an id: somebody who knows the number should not have
-	 * to find the record by its name to use it. */
-	if (!venture_string_is_empty(text))
+	/*
+	 * Up to three reads, each at most one row past the cap: the record a
+	 * number names; the names that start with the text (a fifty-thousand
+	 * row table's "Acme" is "Acme ..." before it is "... Acme ..."); and
+	 * whatever else the type's search matches. Blank text is the first
+	 * page of the type, so the menu has something to show on focus.
+	 */
+	for (pass = 0; pass < 3; pass++)
 	{
-		gboolean numeric;
-		gsize c;
+		g_autoptr(VentureQuery) query = venture_query_new(type);
+		g_autoptr(GPtrArray) rows = NULL;
 
-		numeric = TRUE;
-
-		for (c = 0; '\0' != text[c]; c++)
+		if (0 == pass)
 		{
-			if (!g_ascii_isdigit(text[c]))
-			{
-				numeric = FALSE;
-				break;
-			}
+			if (!venture_web_reference_parse_id(text, &id))
+				continue;
+			venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ, id, NULL);
 		}
+		else if (1 == pass)
+		{
+			g_autofree gchar *prefix = NULL;
 
-		if (numeric)
-			venture_query_add_filter_int(query, "id", VENTURE_FILTER_OP_EQ,
-			                             g_ascii_strtoll(text, NULL, 10),
-			                             NULL);
-		else
+			/* A LIKE wildcard in the text is matched by the search alone. */
+			if (('\0' == text[0]) || (NULL != strpbrk(text, "%_")) ||
+			    !venture_web_reference_has_name(type))
+				continue;
+			prefix = g_strconcat(text, "%", NULL);
+			if (!venture_query_add_filter_string(query, "name", VENTURE_FILTER_OP_ILIKE,
+			                                     prefix, NULL))
+				continue;
+			venture_query_add_order(query, "name", VENTURE_SORT_ASCENDING, NULL);
+		}
+		else if ('\0' != text[0])
 			venture_query_set_search(query, text);
+
+		if (organization > 0)
+			venture_query_set_organization(query, organization);
+
+		/* Past the cap by one, and by every row already taken, which a
+		 * later read may well find again: "more" is then exact. */
+		venture_query_set_limit(query, VENTURE_WEB_RECORD_SEARCH_MAX + 1 + items->len);
+		rows = venture_database_find(database, query, &error);
+
+		if (NULL == rows)
+			return venture_web_error_response(error);
+
+		venture_web_records_search_take(items, seen, rows, VENTURE_WEB_RECORD_SEARCH_MAX, &more);
+
+		/* A number that names a record is that record, and nothing else. */
+		if ((0 == pass) && (rows->len > 0))
+			break;
+
+		if (more)
+			break;
 	}
-
-	venture_query_set_limit(query, 12);
-	found = venture_database_find(venture_context_get_database(self->context),
-	                              query, &error);
-
-	if (NULL == found)
-		return venture_web_error_response(error);
 
 	builder = json_builder_new();
 	json_builder_begin_object(builder);
 	json_builder_set_member_name(builder, "items");
 	json_builder_begin_array(builder);
 
-	for (i = 0; i < found->len; i++)
+	for (i = 0; i < items->len; i++)
 	{
 		VentureEntity *record;
 		g_autofree gchar *label = NULL;
 
-		record = g_ptr_array_index(found, i);
+		record = g_ptr_array_index(items, i);
 		label = venture_entity_get_display_name(record);
 
 		json_builder_begin_object(builder);
@@ -20914,6 +21099,8 @@ venture_web_ui_records_search(
 	}
 
 	json_builder_end_array(builder);
+	json_builder_set_member_name(builder, "more");
+	json_builder_add_boolean_value(builder, more);
 	json_builder_end_object(builder);
 	node = json_builder_get_root(builder);
 
