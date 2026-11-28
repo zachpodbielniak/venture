@@ -755,12 +755,20 @@ venture_web_append_record_content(
 		g_string_append(html, "<section class=\"card record-content\">"
 		                      "<div class=\"card-head\"><h2>");
 		venture_html_escape_append(html, venture_field_spec_get_label(spec));
-		g_string_append(html, "</h2></div><div class=\"card-body prose\">");
-		venture_html_escape_append(html, g_value_get_string(&value));
+		if (venture_web_field_is_markdown(record, spec))
+		{
+			g_string_append(html, "</h2></div><div class=\"card-body prose markdown\">");
+			venture_web_append_user_markdown(self, html, record,
+			                                 g_value_get_string(&value));
+		}
+		else
+		{
+			g_string_append(html, "</h2></div><div class=\"card-body prose\">");
+			venture_html_escape_append(html, g_value_get_string(&value));
+		}
+
 		g_string_append(html, "</div></section>");
 	}
-
-	(void)self;
 }
 
 /*

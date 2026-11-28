@@ -1128,7 +1128,8 @@ venture_notify_comment(
 	}
 
 	label = venture_entity_get_display_name(ticket);
-	excerpt = venture_truncate(body, 140);
+	/* A preview is words: no markdown syntax, never tags. */
+	excerpt = venture_markdown_to_text(body, 140);
 	mentions = venture_notify_extract_mentions(body);
 	mentioned = g_array_new(FALSE, FALSE, sizeof(gint64));
 

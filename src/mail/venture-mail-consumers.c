@@ -16,7 +16,7 @@ venture_mail_support_save_comment(VentureDatabase *database, VentureEntity *comm
 	g_autoptr(VentureMailMessage) queued = NULL;
 	g_autofree gchar *recipient = NULL, *address = NULL, *title = NULL;
 	g_autofree gchar *body = NULL, *subject = NULL, *message_id = NULL;
-	g_autofree gchar *angle = NULL, *key = NULL;
+	g_autofree gchar *angle = NULL, *key = NULL, *html_body = NULL;
 	gint64 ticket_id = 0, account_id = 0;
 	gboolean internal = FALSE;
 	gint kind = 0;
@@ -60,11 +60,19 @@ venture_mail_support_save_comment(VentureDatabase *database, VentureEntity *comm
 	subject = g_strdup_printf("Re: [#%" G_GINT64_FORMAT "] %.800s",
 	                          ticket_id, title ? title : "Support request");
 	key = g_strdup_printf("support-comment:%s", venture_entity_get_uuid(comment));
+	/*
+	 * The reply is markdown. The HTML part is the same renderer a comment
+	 * goes through, with no mention or #type/id resolver: a customer's mail
+	 * must not name a colleague or leak a record's title. The plain part is
+	 * the source as written, which reads as plain text and keeps its lines
+	 * (venture_markdown_to_text() folds a body onto one line).
+	 */
+	html_body = venture_markdown_to_html(body, NULL);
 	message = venture_mail_message_new();
 	g_object_set(message,
 	             "organization-id", venture_entity_get_organization_id(ticket),
 	             "to", recipient, "reply-to", address, "sender-address", address,
-	             "subject", subject, "text-body", body ? body : "",
+	             "subject", subject, "text-body", body ? body : "", "html-body", html_body,
 	             "in-reply-to", angle, "reply-references", angle,
 	             "related-type", "ticket_comment", "idempotency-key", key, NULL);
 	if (!venture_database_begin(database, error)) return FALSE;

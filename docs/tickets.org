@@ -117,6 +117,10 @@ venturectl create ticket title="Paint the porch" due_at=2026-11-02T14:00:00Z unt
 
 The calendar still places a ticket at =due_at= ([[file:planner.org][The planner]]).
 
+* Markdown in comments and descriptions
+
+A =ticket_comment= body and a ticket's =description= are markdown. The ticket page draws them with =venture_comment_render()=, the renderer a =comment= goes through, so they are exactly as safe as one: raw HTML is escaped, never passed through; a link is written only for an =http(s)= address, a path on this site or an =#anchor= (=javascript:= is text), and an off-site link carries =rel="noopener noreferrer nofollow"=; there are no images; a fenced block is =<pre><code>=. An =@username= is a chip only for somebody who may read the ticket, and notifies as before. The stored body is the raw text everywhere else: =GET /api/v1/ticket_comment= returns it unrendered, and search and the AI read it as written. A preview (a notification line) is =venture_markdown_to_text()=, words with no syntax and no tags. A reply mailed to a customer carries the rendered HTML as its HTML part and the source as its plain part, with no mention or =#type/id= resolution.
+
 * A reference from another system
 
 A ticket that mirrors work kept somewhere else -- an agent fleet's task, another tracker's issue -- carries that system's id for it in =external_ref= (since 0.10.0), and so may a =ticket_comment=, for a comment the other system wrote. It is an ordinary string field, written by any writer and filtered like any other:

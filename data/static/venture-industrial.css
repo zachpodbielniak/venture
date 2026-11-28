@@ -6543,3 +6543,8 @@ body.navigation-pending, body.navigation-pending a { cursor: progress; }
 .lql-caret { margin: 0; padding: 6px 8px; overflow-x: auto; border-radius: var(--radius-sm); background: var(--surface); font-size: 13px; white-space: pre; }
 .lql-caret-line { color: var(--negative); font-weight: 700; }
 .lql-suggest { margin: 6px 0 0; }
+
+/* Rendered markdown supplies its own block breaks; keeping the source's
+ * newlines on top of them would double every gap. */
+.timeline-text.markdown, .prose.markdown { white-space: normal; }
+.comment-hint { margin: var(--space-1) 0 0; font-size: 12px; }

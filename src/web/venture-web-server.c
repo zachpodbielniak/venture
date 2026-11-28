@@ -12370,6 +12370,51 @@ venture_web_format_double(gdouble number)
 	return g_strdup(g_ascii_formatd(buffer, sizeof(buffer), "%.15g", number));
 }
 
+/**
+ * venture_web_append_user_markdown:
+ * @self: the server
+ * @out: the page being built
+ * @subject: the record the text is about; mentions and #type/id
+ *   references resolve against who may read it
+ * @text: (nullable): what somebody wrote, as markdown
+ *
+ * The one way a ticket comment, a ticket description or any other text a
+ * person typed becomes HTML on a page. It is venture_comment_render(), the
+ * renderer a `comment` goes through, so the two are exactly as safe as each
+ * other: raw HTML is escaped, links are http(s) or on this site, and a
+ * mention is a chip only for somebody who may read @subject.
+ */
+static void
+venture_web_append_user_markdown(
+	VentureWebServer	*self,
+	GString			*out,
+	VentureEntity		*subject,
+	const gchar		*text
+){
+	g_autofree gchar *html = NULL;
+
+	if (venture_string_is_empty(text))
+		return;
+
+	html = venture_comment_render(self->context, subject, text, NULL);
+
+	if (NULL != html)
+		g_string_append(out, html);
+}
+
+/*
+ * Whether @spec is a ticket's description: the one field of a record that
+ * is not a comment but is written like one, and so is markdown too.
+ */
+static gboolean
+venture_web_field_is_markdown(
+	VentureEntity		*record,
+	VentureFieldSpec	*spec
+){
+	return (VENTURE_TYPE_TICKET == G_OBJECT_TYPE(record)) &&
+	       (0 == g_strcmp0(venture_field_spec_get_name(spec), "description"));
+}
+
 /*
  * Renders one field's value for reading rather than editing.
  */
@@ -12528,7 +12573,16 @@ venture_web_append_detail_value(
 				venture_web_append_user_picture(content, viewer, text, text);
 			}
 
-			venture_html_escape_append(content, text);
+			if (venture_web_field_is_markdown(record, spec))
+			{
+				g_string_append(content, "<div class=\"markdown\">");
+				venture_web_append_user_markdown(self, content, record, text);
+				g_string_append(content, "</div>");
+			}
+			else
+			{
+				venture_html_escape_append(content, text);
+			}
 		}
 	}
 	else
@@ -14776,7 +14830,9 @@ venture_web_ui_detail(
 			"<input type=\"checkbox\" name=\"internal\" value=\"1\"> "
 			"Internal note (not shown to whoever raised it)</label>"
 			"<button class=\"btn btn-primary\" type=\"submit\">"
-			"Comment</button></div></form></div></div>");
+			"Comment</button></div>"
+			"<p class=\"muted comment-hint\">Markdown supported.</p>"
+			"</form></div></div>");
 	}
 
 	venture_customer_health_append_block(self->context, content, record);
@@ -33794,8 +33850,23 @@ venture_web_append_activity(
 
 			if (!venture_string_is_empty(body))
 			{
-				g_string_append(content, "<div class=\"timeline-text\">");
-				venture_html_escape_append(content, body);
+				/* A ticket's own comment is markdown; the API keeps the raw
+				 * body. A worklog note, a call and a discussion excerpt
+				 * (already stripped of its syntax) stay plain text. */
+				if ((0 == g_strcmp0(kind, "comment")) &&
+				    json_object_has_member(event, "internal"))
+				{
+					g_string_append(content,
+						"<div class=\"timeline-text markdown\">");
+					venture_web_append_user_markdown(self, content, record,
+					                                 body);
+				}
+				else
+				{
+					g_string_append(content, "<div class=\"timeline-text\">");
+					venture_html_escape_append(content, body);
+				}
+
 				g_string_append(content, "</div>");
 			}
 		}
