@@ -104,8 +104,10 @@ venture_web_reference_has_name(GType type)
 /*
  * The records of @target whose name is @folded (casefolded), case aside,
  * read through the name column; nothing for a type without one, or for a
- * name with a LIKE wildcard in it, which the column cannot be asked for
- * exactly.
+ * name with a LIKE wildcard or a backslash in it, which the column cannot
+ * be asked for exactly: the pattern is not escaped, and backslash is
+ * PostgreSQL's default LIKE escape character (SQLite's LIKE has none), so
+ * "Acme\%" would match "Acme%" there and "Acme\%" here.
  */
 static GPtrArray *
 venture_web_reference_named(
@@ -123,7 +125,7 @@ venture_web_reference_named(
 
 	named = g_ptr_array_new_with_free_func(g_object_unref);
 
-	if (!venture_web_reference_has_name(target) || (NULL != strpbrk(wanted, "%_")))
+	if (!venture_web_reference_has_name(target) || (NULL != strpbrk(wanted, "%_\\")))
 		return named;
 
 	query = venture_query_new(target);

@@ -21042,8 +21042,10 @@ venture_web_ui_records_search(
 		{
 			g_autofree gchar *prefix = NULL;
 
-			/* A LIKE wildcard in the text is matched by the search alone. */
-			if (('\0' == text[0]) || (NULL != strpbrk(text, "%_")) ||
+			/* A LIKE wildcard in the text, or a backslash -- PostgreSQL's
+			 * default LIKE escape, a literal to SQLite -- is matched by the
+			 * search alone, so the prefix means the same on both. */
+			if (('\0' == text[0]) || (NULL != strpbrk(text, "%_\\")) ||
 			    !venture_web_reference_has_name(type))
 				continue;
 			prefix = g_strconcat(text, "%", NULL);

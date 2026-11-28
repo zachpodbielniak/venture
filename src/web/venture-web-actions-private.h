@@ -191,6 +191,8 @@ venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer 
 		JsonObject *object = json_object_new();
 		GHashTableIter iter;
 		gpointer key, value;
+		gboolean scope_known = FALSE;
+		gint64 scope = 0;
 		body = json_node_new(JSON_NODE_OBJECT);
 		json_node_take_object(body, object);
 		g_object_get(action, "parameters", &specs, NULL);
@@ -225,7 +227,14 @@ venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer 
 		/* A reference past the picker's bound posts a name or a #id in
 		 * <name>__lookup beside its hidden id; the box decides
 		 * (venture-web-reference-lookup.inc), within what the caller may
-		 * read. Blank clears it, as an emptied select does. */
+		 * read. Blank clears it, as an emptied select does.
+		 *
+		 * It decides within the organization the picker was drawn for
+		 * (venture_web_append_record_actions): the record's own, or for
+		 * a type-level action the request's active one. Resolving across
+		 * every organization the caller may read would let a name, or a
+		 * #id, from another workspace be linked onto this record. The
+		 * record is read once, and only when a box was posted. */
 		for (lookup_index = 0; lookup_index < specs->len; lookup_index++)
 		{
 			VentureFieldSpec *spec = g_ptr_array_index(specs, lookup_index);
@@ -236,7 +245,22 @@ venture_web_api_action_perform(HtmxRequest *request, GHashTable *path, gpointer 
 			lookup_name = g_strconcat(spec->name, VENTURE_WEB_REFERENCE_LOOKUP_SUFFIX, NULL);
 			lookup = htmx_request_get_form_value(request, lookup_name);
 			if (NULL == lookup) continue;
-			if (!venture_web_reference_resolve_spec(self, spec, 0, lookup, &picked, &error))
+			if (!scope_known)
+			{
+				if (id > 0)
+				{
+					g_autoptr(VentureEntity) owner = venture_database_get(db, type, id, &error);
+					/* A missing record is not found, as the action
+					 * registry would answer it. */
+					if (NULL == owner && NULL == error)
+						g_set_error(&error, VENTURE_ERROR, VENTURE_ERROR_NOT_FOUND, "No %s %" G_GINT64_FORMAT, type_name, id);
+					if (NULL == owner) return venture_web_error_response(error);
+					scope = venture_entity_get_organization_id(owner);
+				}
+				else scope = venture_web_active_organization(self, request);
+				scope_known = TRUE;
+			}
+			if (!venture_web_reference_resolve_spec(self, spec, scope, lookup, &picked, &error))
 				return venture_web_error_response(error);
 			if (picked > 0) json_object_set_int_member(object, spec->name, picked);
 		}

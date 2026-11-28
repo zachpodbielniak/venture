@@ -26,7 +26,9 @@
  *     answering 400 for a name it cannot resolve, while ?company_id=<id>
  *     filters exactly as it did;
  *   - a record action's form resolves its reference parameters the same
- *     way before the action runs.
+ *     way before the action runs, within the organization of the record
+ *     it acts on: a name shared with another workspace's record means
+ *     this one's, and another workspace's #id is no such record.
  *
  * Hosted workspaces are test-reference-lookup-hosted.c; fifty thousand
  * rows are test-lql-lists.c's /lql-lists/scale/reference-pickers.
@@ -57,6 +59,7 @@ typedef struct
 	gint64			 hidden;
 	gchar			*ada;
 	gchar			*ana;
+	gint64			 picked;
 } Fixture;
 
 /* Read workers or not: a list page may be answered on one. */
@@ -713,6 +716,15 @@ test_lookup_route(
 	text = labels(answer);
 	g_assert_cmpstr(text, ==, "");
 
+	/* A backslash is no LIKE escape to the prefix read (PostgreSQL's
+	 * default one): the text goes to the search, which still finds it. */
+	fixture_company(f, f->org, "Back\\slash Co");
+	g_clear_pointer(&answer, json_object_unref);
+	g_clear_pointer(&text, g_free);
+	answer = search(f, f->ada, "type=company&q=Back%5C", 200);
+	text = labels(answer);
+	g_assert_cmpstr(text, ==, "Back\\slash Co");
+
 	/* A type whose module is off is no type at all. */
 	g_clear_pointer(&answer, json_object_unref);
 	answer = search(f, f->ada, "type=expense_claim&q=a", 404);
@@ -898,10 +910,11 @@ test_no_js_list(
 
 /*
  * A record action's form posts its reference parameters the same way, to
- * /api/v1/TYPE/ID/actions/NAME: the box is resolved before the action is
- * looked at, and refused by name, rather than reaching the action as a
- * parameter it never declared. Adopting a legacy commerce invoice takes an
- * invoice reference.
+ * /api/v1/TYPE/ID/actions/NAME. The box is resolved within the record's
+ * organization, so a record that does not exist is not found before any
+ * name is looked up: there is no organization to look it up in. Adopting
+ * a legacy commerce invoice takes an invoice reference; there is no
+ * integration connection 1.
  */
 static void
 test_no_js_action(
@@ -913,13 +926,120 @@ test_no_js_action(
 	(void)data;
 
 	g_assert_cmpuint(post(f, f->ada, "/api/v1/integration_connection/1/actions/adopt_commerce_invoice",
-		"invoice_id__lookup=Nowhere&reason=Adopt", &body), ==, 422);
-	g_assert_nonnull(strstr(body, "invoice_id: no invoice matches"));
+		"invoice_id__lookup=Nowhere&reason=Adopt", &body), ==, 404);
+	g_assert_nonnull(strstr(body, "No integration_connection 1"));
+}
 
+/*
+ * A test action on a contact that takes a company: it records what it was
+ * handed in the fixture, so the test sees what the box resolved to.
+ */
+static gboolean
+pick_allowed(
+	VentureAction		 *action,
+	VentureEntity		 *entity,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	(void)action;
+	(void)entity;
+	(void)actor;
+	(void)error;
+
+	return TRUE;
+}
+
+static VentureEntity *
+pick_invoke(
+	VentureAction		 *action,
+	VentureEntity		 *entity,
+	GHashTable		 *params,
+	const VentureActor	 *actor,
+	GError			**error
+){
+	Fixture *f = venture_action_get_data(action);
+
+	(void)actor;
+	(void)error;
+
+	f->picked = json_node_get_int(g_hash_table_lookup(params, "company_id"));
+
+	return g_object_ref(entity);
+}
+
+/*
+ * The action form on a record resolves its box in that record's
+ * organization, the one its picker was drawn for. ada reads both
+ * businesses, each with a "Shared Supply" company; on a contact in the
+ * first, the name means the first's company, and the second's #id is no
+ * such company here; a name nobody has is refused. Breaks if the box is
+ * resolved across every organization the caller may read: the name is
+ * then ambiguous, and the #id links the other business's company onto
+ * this contact.
+ */
+static void
+test_no_js_action_organization(
+	Fixture		*f,
+	gconstpointer	 data
+){
+	g_autoptr(GPtrArray) parameters = NULL;
+	g_autoptr(VentureAction) action = NULL;
+	g_autoptr(VentureEntity) contact = NULL;
+	g_autofree gchar *path = NULL;
+	g_autofree gchar *form = NULL;
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *refusal = NULL;
+	VentureFieldSpec *field;
+	gint64 mine;
+	gint64 theirs;
+
+	(void)data;
+
+	parameters = g_ptr_array_new_with_free_func((GDestroyNotify)venture_field_spec_free);
+	field = venture_field_spec_new("company_id", "Supplier", VENTURE_FIELD_KIND_REFERENCE);
+	field->reference_type = g_strdup("company");
+	field->required = TRUE;
+	g_ptr_array_add(parameters, field);
+	action = g_object_new(VENTURE_TYPE_ACTION, "type-name", "contact", "name", "pick_supplier",
+		"label", "Pick supplier", "description", "Record a supplier for this contact",
+		"parameters", parameters, NULL);
+	g_assert_true(venture_action_registry_register(venture_database_get_action_registry(f->db),
+		action, pick_allowed, pick_invoke, f, NULL, NULL));
+
+	mine = fixture_company(f, f->org, "Shared Supply");
+	theirs = fixture_company(f, f->other_org, "Shared Supply");
+	contact = g_object_new(VENTURE_TYPE_CONTACT, "organization-id", f->org, "name", "Cora Contact", NULL);
+	persist(f, contact);
+	path = g_strdup_printf("/api/v1/contact/%" G_GINT64_FORMAT "/actions/pick_supplier",
+	                       venture_entity_get_id(contact));
+
+	/* A name nobody has is a field error naming the parameter. */
+	f->picked = 0;
+	g_assert_cmpuint(post(f, f->ada, path, "company_id=&company_id__lookup=Nowhere", &body), ==, 422);
+	g_assert_nonnull(strstr(body, "company_id: no company matches"));
+	g_assert_cmpint(f->picked, ==, 0);
+
+	/* By name: this business's company, not a choice between two. */
 	g_clear_pointer(&body, g_free);
-	g_assert_cmpuint(post(f, f->ada, "/api/v1/integration_connection/1/actions/adopt_commerce_invoice",
-		"invoice_id=&invoice_id__lookup=%23999999&reason=Adopt", &body), ==, 422);
-	g_assert_nonnull(strstr(body, "invoice_id: there is no invoice #999999"));
+	f->picked = 0;
+	g_assert_cmpuint(post(f, f->ada, path, "company_id=&company_id__lookup=Shared+Supply", &body), ==, 303);
+	g_assert_cmpint(f->picked, ==, mine);
+
+	/* By the other business's #id: refused, and the action never runs. */
+	f->picked = 0;
+	g_clear_pointer(&body, g_free);
+	form = g_strdup_printf("company_id=&company_id__lookup=%%23%" G_GINT64_FORMAT, theirs);
+	g_assert_cmpuint(post(f, f->ada, path, form, &body), ==, 422);
+	refusal = g_strdup_printf("company_id: there is no company #%" G_GINT64_FORMAT, theirs);
+	g_assert_nonnull(strstr(body, refusal));
+	g_assert_cmpint(f->picked, ==, 0);
+
+	/* This business's #id still resolves. */
+	g_clear_pointer(&body, g_free);
+	g_clear_pointer(&form, g_free);
+	form = g_strdup_printf("company_id=&company_id__lookup=%%23%" G_GINT64_FORMAT, mine);
+	g_assert_cmpuint(post(f, f->ada, path, form, &body), ==, 303);
+	g_assert_cmpint(f->picked, ==, mine);
 }
 
 int
@@ -941,6 +1061,8 @@ main(
 	ADD("/reference-picker/no-js/list-filters", test_no_js_list);
 	g_test_add("/reference-picker/no-js/action-form", Fixture, &plain, fixture_setup,
 	           test_no_js_action, fixture_teardown);
+	g_test_add("/reference-picker/no-js/action-form/organization", Fixture, &plain, fixture_setup,
+	           test_no_js_action_organization, fixture_teardown);
 
 #undef ADD
 
