@@ -1900,6 +1900,36 @@ venture_query_append_filter(
 	g_string_append_printf(sql, " OR %s IS NULL)", quoted);
 }
 
+/**
+ * venture_query_escape_like:
+ * @text: the text a person typed into a search box
+ *
+ * Escapes @text for use inside a LIKE or ILIKE pattern that carries an
+ * explicit ESCAPE '\' clause: a backslash, a percent sign and an underscore
+ * each get a backslash in front, so they match themselves rather than
+ * acting as the escape character or a wildcard. The backslash is escaped
+ * first so the ones added for % and _ are not escaped again.
+ *
+ * Returns: (transfer full): the escaped text, free with g_free()
+ */
+static gchar *
+venture_query_escape_like(const gchar *text)
+{
+	GString *escaped;
+	const gchar *cursor;
+
+	escaped = g_string_sized_new(strlen(text) + 8);
+
+	for (cursor = text; '\0' != *cursor; cursor++)
+	{
+		if (('\\' == *cursor) || ('%' == *cursor) || ('_' == *cursor))
+			g_string_append_c(escaped, '\\');
+		g_string_append_c(escaped, *cursor);
+	}
+
+	return g_string_free(escaped, FALSE);
+}
+
 /*
  * A search that reads as a phone number -- digits and the separators
  * people type between them, seven digits or more -- returns those digits;
@@ -1976,6 +2006,7 @@ venture_query_append_search(
 ){
 	g_autoptr(VentureEntityClass) klass = NULL;
 	g_autofree GParamSpec **properties = NULL;
+	g_autofree gchar *escaped = NULL;
 	g_autofree gchar *pattern = NULL;
 	g_autofree gchar *digits = NULL;
 	guint n_properties;
@@ -1988,7 +2019,9 @@ venture_query_append_search(
 	klass = g_type_class_ref(self->entity_type);
 	properties = venture_entity_class_list_persistent_properties(klass,
 	                                                             &n_properties);
-	pattern = g_strdup_printf("%%%s%%", self->search);
+	/* The typed text, with LIKE's own characters made literal. */
+	escaped = venture_query_escape_like(self->search);
+	pattern = g_strdup_printf("%%%s%%", escaped);
 	digits = venture_query_search_digits(self->search);
 	n_searchable = 0;
 
@@ -2018,7 +2051,7 @@ venture_query_append_search(
 			g_string_append_printf(sql, "%s IN (SELECT \"id\" FROM %s WHERE \"name\" %s ",
 				quoted, table, (ORM_DIALECT_POSTGRES == dialect) ? "ILIKE" : "LIKE");
 			venture_query_append_placeholder(sql, dialect, index);
-			g_string_append_c(sql, ')');
+			g_string_append(sql, " ESCAPE '\\')");
 			*params = g_list_append(*params, orm_value_new_string(pattern));
 			n_searchable++;
 			continue;
@@ -2046,6 +2079,7 @@ venture_query_append_search(
 			g_string_append_printf(sql, "%s LIKE ", quoted);
 
 		venture_query_append_placeholder(sql, dialect, index);
+		g_string_append(sql, " ESCAPE '\\'");
 		*params = g_list_append(*params, orm_value_new_string(pattern));
 
 		if (NULL != digits)
@@ -2055,6 +2089,7 @@ venture_query_append_search(
 			g_string_append_printf(sql, " OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE("
 				"%s, ' ', ''), '-', ''), '.', ''), '(', ''), ')', ''), '+', '') LIKE ", quoted);
 			venture_query_append_placeholder(sql, dialect, index);
+			g_string_append(sql, " ESCAPE '\\'");
 			*params = g_list_append(*params, orm_value_new_string(digit_pattern));
 		}
 

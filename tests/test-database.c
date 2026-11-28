@@ -990,6 +990,98 @@ test_database_query_search(
 	g_assert_cmpuint(results->len, ==, 1);
 }
 
+/*
+ * Saves a contact called @name, with no other searchable text, so a search
+ * can only match through the name.
+ */
+static void
+create_search_contact(
+	Fixture		*fixture,
+	const gchar	*name
+){
+	g_autoptr(VentureContact) contact = NULL;
+	g_autoptr(GError) error = NULL;
+
+	contact = venture_contact_new();
+	g_object_set(contact, "name", name, NULL);
+	venture_entity_set_organization_id(VENTURE_ENTITY(contact),
+	                                   fixture->organization_id);
+	g_assert_true(venture_database_save(fixture->database,
+	                                    VENTURE_ENTITY(contact), NULL, &error));
+	g_assert_no_error(error);
+}
+
+/*
+ * Runs a search over the seeded contacts and checks it finds exactly the
+ * one named @expected.
+ */
+static void
+assert_search_finds_only(
+	Fixture		*fixture,
+	const gchar	*text,
+	const gchar	*expected
+){
+	g_autoptr(VentureQuery) query = NULL;
+	g_autoptr(GPtrArray) results = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autofree gchar *name = NULL;
+
+	query = venture_query_new(VENTURE_TYPE_CONTACT);
+	venture_query_set_search(query, text);
+
+	results = venture_database_find(fixture->database, query, &error);
+	g_assert_no_error(error);
+	g_assert_nonnull(results);
+	g_assert_cmpuint(results->len, ==, 1);
+
+	g_object_get(g_ptr_array_index(results, 0), "name", &name, NULL);
+	g_assert_cmpstr(name, ==, expected);
+}
+
+static void
+seed_search_contacts(Fixture *fixture)
+{
+	create_search_contact(fixture, "50% off");
+	create_search_contact(fixture, "500 units");
+	create_search_contact(fixture, "a_b");
+	create_search_contact(fixture, "axb");
+	create_search_contact(fixture, "back\\slash");
+	create_search_contact(fixture, "back");
+}
+
+/* A percent sign is the character, not "anything": "50%" is not "500 units". */
+static void
+test_database_query_search_escapes_percent(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	seed_search_contacts(fixture);
+	assert_search_finds_only(fixture, "50%", "50% off");
+}
+
+/* An underscore is the character, not "any one": "a_b" is not "axb". */
+static void
+test_database_query_search_escapes_underscore(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	seed_search_contacts(fixture);
+	assert_search_finds_only(fixture, "a_b", "a_b");
+}
+
+/*
+ * A trailing backslash does not escape the closing wildcard (PostgreSQL's
+ * default escape): "back\" finds "back\slash", and not "back".
+ */
+static void
+test_database_query_search_escapes_backslash(
+	Fixture		*fixture,
+	gconstpointer	 user_data
+){
+	seed_search_contacts(fixture);
+	assert_search_finds_only(fixture, "back\\", "back\\slash");
+}
+
 static void
 test_database_query_paging_is_stable(
 	Fixture		*fixture,
@@ -2224,6 +2316,9 @@ main(
 	    test_database_query_value_is_never_interpolated);
 	ADD("/database/query-in-operator", test_database_query_in_operator);
 	ADD("/database/query-search", test_database_query_search);
+	ADD("/database/query-search-escapes-percent", test_database_query_search_escapes_percent);
+	ADD("/database/query-search-escapes-underscore", test_database_query_search_escapes_underscore);
+	ADD("/database/query-search-escapes-backslash", test_database_query_search_escapes_backslash);
 	ADD("/database/query-paging-is-stable", test_database_query_paging_is_stable);
 	ADD("/database/query-organization-scope",
 	    test_database_query_organization_scope);
