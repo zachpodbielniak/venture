@@ -112,7 +112,7 @@ The renderer is =venture_markdown_to_html()= (=src/util/venture-markdown.c=), an
 | =#invoice/12=                    | a link named after the record, for a reader who may open it |
 | a line break                     | a line break: a comment box is typed in lines             |
 
-A reference to a record is resolved for each reader under their own access, so the same comment shows a link to one person and the text =#invoice/12= to another. Nesting is bounded (=VENTURE_MARKDOWN_MAX_DEPTH=) and the parser's work is linear in the input, because the input is a stranger's and the server is single-threaded.
+A reference to a record is resolved for each reader under their own access, so the same comment shows a link to one person and the text =#invoice/12= to another. Nesting is bounded (=VENTURE_MARKDOWN_MAX_DEPTH=) and the parser's work is linear in the input, because the input is a stranger's and the server is single-threaded. An unclosed link stops at 1024 bytes of bracket text and 2048 bytes of target; past either bound the opening bracket is plain text.
 
 =venture_markdown_to_text()= gives the words without the syntax, on one line, for an inbox line, the activity and a webhook excerpt.
 

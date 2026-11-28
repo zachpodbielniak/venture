@@ -1085,6 +1085,7 @@ venture_notify_comment(
 ){
 	g_autoptr(VentureEntity) ticket = NULL;
 	g_autofree gchar *body = NULL;
+	g_autofree gchar *excerpt_source = NULL;
 	g_autofree gchar *author = NULL;
 	g_autofree gchar *label = NULL;
 	g_autofree gchar *excerpt = NULL;
@@ -1128,8 +1129,12 @@ venture_notify_comment(
 	}
 
 	label = venture_entity_get_display_name(ticket);
-	/* A preview is words: no markdown syntax, never tags. */
-	excerpt = venture_markdown_to_text(body, 140);
+	/* A preview is words: no markdown syntax, never tags. The body
+	 * has no length cap -- a mailed comment is the whole text/plain
+	 * part -- so the excerpt is rendered from a prefix, not from
+	 * every byte, before it is cut to a line. */
+	excerpt_source = (NULL == body) ? NULL : g_utf8_substring(body, 0, 2000);
+	excerpt = venture_markdown_to_text(excerpt_source, 140);
 	mentions = venture_notify_extract_mentions(body);
 	mentioned = g_array_new(FALSE, FALSE, sizeof(gint64));
 

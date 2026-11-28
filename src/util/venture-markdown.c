@@ -15,7 +15,9 @@
  * literal in this file, every attribute value is escaped, and a link's
  * target is checked before it is written at all. The parser can be wrong
  * about what somebody meant -- emphasis that does not close the way they
- * hoped -- but being wrong only ever produces escaped text.
+ * hoped -- but being wrong only ever produces escaped text. Link text
+ * is scanned for at most 1024 bytes and a link target for at most
+ * 2048; past either bound the '[' is plain text.
  */
 
 #include "venture.h"
@@ -25,6 +27,13 @@
 /* Above this a body is refused at the save; the renderer still bounds its
  * own work rather than trusting the caller to have checked. */
 #define MD_MAX_INPUT (256 * 1024)
+
+/* How far an unclosed link may be read. Past either bound the '[' is
+ * plain text. The two bounds are separate: a short "[a](" still has to
+ * stop its target scan, or a body made of those is quadratic too. A title
+ * uses the target bound; it is dropped, never written. */
+#define MD_MAX_LINK_TEXT (1024)
+#define MD_MAX_LINK_TARGET (2048)
 
 /* The delimiters whose closers are searched for, as indices into the
  * per-call cache of searches already known to fail. */
@@ -773,6 +782,11 @@ md_url_is_allowed(const gchar *url)
  * "[text](target)" or "[text](target "title")" at @s[i]. The bracket may
  * nest; the target may hold one level of balanced parentheses, which is
  * how Wikipedia addresses are written.
+ *
+ * Both scans are bounded. An unclosed bracket, or a "[a](" whose target
+ * never ends, used to read through to the end of the body from every '[',
+ * which is quadratic. Past either bound this is not a link: the caller
+ * writes the '[' as text and moves on one byte.
  */
 static gboolean
 md_parse_link(
@@ -785,14 +799,22 @@ md_parse_link(
 	gsize		*after
 ){
 	gsize j;
+	gsize title_at = 0;
 	guint depth = 0;
 	guint parens = 0;
 
 	for (j = i + 1; j < len; j++)
 	{
+		if ((j - (i + 1)) > MD_MAX_LINK_TEXT)
+			return FALSE;
+
 		if (('\\' == s[j]) && (j + 1 < len))
 		{
 			j++;
+
+			if ((j - (i + 1)) > MD_MAX_LINK_TEXT)
+				return FALSE;
+
 			continue;
 		}
 
@@ -802,11 +824,12 @@ md_parse_link(
 		{
 			if (0 == depth)
 				break;
+
 			depth--;
 		}
 	}
 
-	if ((j >= len) || (j + 1 >= len) || ('(' != s[j + 1]))
+	if ((j >= len) || (']' != s[j]) || (j + 1 >= len) || ('(' != s[j + 1]))
 		return FALSE;
 
 	*text_end = j;
@@ -817,37 +840,51 @@ md_parse_link(
 
 	*url_start = j;
 
+	/* A ')' closes the target only when parentheses inside it are
+	 * balanced. The scan stops at MD_MAX_LINK_TARGET instead of the
+	 * end of the body: "[a](" repeated is otherwise quadratic too. */
 	while ((j < len) && !g_ascii_isspace(s[j]))
 	{
+		if ((')' == s[j]) && (0 == parens))
+			break;
+
+		if ((j - *url_start) >= MD_MAX_LINK_TARGET)
+			return FALSE;
+
 		if ('(' == s[j])
 			parens++;
 		else if (')' == s[j])
-		{
-			if (0 == parens)
-				break;
 			parens--;
-		}
 
 		j++;
 	}
 
 	*url_end = j;
 
-	if ((*url_end == *url_start) || (*url_end - *url_start > 2048))
+	if ((*url_end == *url_start) ||
+	    (*url_end - *url_start > MD_MAX_LINK_TARGET))
 		return FALSE;
 
 	while ((j < len) && (' ' == s[j]))
 		j++;
 
-	/* An optional title, which is read and dropped. */
+	/* An optional title, which is read and dropped. The next quote ends
+	 * it, so a later opener does not make this scan share a tail; the
+	 * bound still stops one unclosed title from walking the comment. */
 	if ((j < len) && (('"' == s[j]) || ('\'' == s[j])))
 	{
 		gchar quote = s[j];
 
 		j++;
+		title_at = j;
 
 		while ((j < len) && (quote != s[j]))
+		{
+			if ((j - title_at) >= MD_MAX_LINK_TARGET)
+				return FALSE;
+
 			j++;
+		}
 
 		if (j >= len)
 			return FALSE;

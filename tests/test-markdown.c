@@ -376,6 +376,269 @@ test_bounded(void)
 	g_assert_cmpfloat(g_timer_elapsed(timer, NULL), <, 5.0);
 }
 
+/*
+ * An unclosed link must not search to the end of the body from every
+ * opener. These are the scans in venture-markdown.c that walk forward
+ * from a character: the two that were quadratic (a wall of '[', and
+ * "[a]("), the title scan, and the ones that stay linear (emphasis,
+ * code, a bare address, a mention, a #type/id, a pipe row, a fence).
+ * Each body is the renderer's own input cap. Under two seconds, and the
+ * text comes back escaped rather than as a link, except the bare address
+ * which is a link on purpose.
+ */
+static gchar *
+repeat_to(
+	const gchar	*unit,
+	gsize		 total
+){
+	gsize unit_len;
+	gsize filled;
+	gchar *text;
+
+	unit_len = strlen(unit);
+	text = g_malloc(total + 1);
+	filled = 0;
+
+	while (filled + unit_len <= total)
+	{
+		memcpy(text + filled, unit, unit_len);
+		filled += unit_len;
+	}
+
+	if (filled < total)
+		memcpy(text + filled, unit, total - filled);
+
+	text[total] = '\0';
+
+	return text;
+}
+
+static gchar *
+render_within(
+	const gchar	*name,
+	const gchar	*text,
+	const VentureMarkdownOptions *options,
+	gdouble		 limit
+){
+	g_autoptr(GTimer) timer = g_timer_new();
+	gchar *html;
+	gdouble elapsed;
+
+	html = venture_markdown_to_html(text, options);
+	elapsed = g_timer_elapsed(timer, NULL);
+
+	if (elapsed >= limit)
+		g_error("%s rendered in %.3fs (limit %.1fs)", name, elapsed, limit);
+
+	assert_only_own_tags(html);
+
+	return html;
+}
+
+static gchar *
+mention_never(
+	const gchar	*username,
+	gpointer	 user_data
+){
+	(void)username;
+	(void)user_data;
+
+	return NULL;
+}
+
+static gchar *
+reference_never(
+	const gchar	*type_name,
+	gint64		 id,
+	gpointer	 user_data
+){
+	(void)type_name;
+	(void)id;
+	(void)user_data;
+
+	return NULL;
+}
+
+static void
+assert_plain_wall(
+	const gchar	*name,
+	const gchar	*unit
+){
+	g_autofree gchar *text = NULL;
+	g_autofree gchar *shown = NULL;
+	g_autofree gchar *html = NULL;
+	gsize total = 256 * 1024;
+
+	text = repeat_to(unit, total);
+	/* A paragraph drops leading and trailing space. The wall is still
+	 * the whole 256 KiB that was rendered; the comparison is the text
+	 * the paragraph keeps. */
+	shown = g_strstrip(g_strdup(text));
+	html = render_within(name, text, NULL, 2.0);
+	g_assert_true(strlen(html) == (strlen(shown) + strlen("<p></p>")));
+	g_assert_cmpint(memcmp(html + 3, shown, strlen(shown)), ==, 0);
+	g_assert_true(g_str_has_suffix(html, "</p>"));
+	g_assert_null(strstr(html, "<a "));
+}
+
+static void
+test_link_scans_are_bounded(void)
+{
+	VentureMarkdownOptions options;
+	g_autofree gchar *fence = NULL;
+	g_autofree gchar *code = NULL;
+	g_autofree gchar *titles = NULL;
+	g_autofree gchar *html = NULL;
+	g_autofree gchar *address = NULL;
+	g_autofree gchar *mention = NULL;
+	g_autofree gchar *reference = NULL;
+	gsize total = 256 * 1024;
+
+	assert_plain_wall("brackets", "[");
+	assert_plain_wall("link-open", "[a](");
+	assert_plain_wall("emphasis", "*a ");
+	assert_plain_wall("strike", "~~a ");
+	assert_plain_wall("pipes", "|");
+
+	code = repeat_to("`x", total);
+	html = render_within("code", code, NULL, 2.0);
+	g_assert_nonnull(strstr(html, "<code>x</code>"));
+	g_assert_null(strstr(html, "<a "));
+
+	/* The title never closes onto a ')'. The '[' stays text. The address
+	 * in the middle is still a bare autolink, which is the ordinary rule,
+	 * and the quote is escaped. */
+	titles = repeat_to("[a](https://example.com/ \"x", total);
+	g_free(html);
+	html = render_within("link-title", titles, NULL, 2.0);
+	g_assert_true(g_str_has_prefix(html, "<p>[a]("));
+	g_assert_nonnull(strstr(html, "&quot;"));
+	g_assert_null(strstr(html, ">[a](https://example.com/"));
+
+	address = repeat_to("http://x", total);
+	g_free(html);
+	html = render_within("autolink", address, NULL, 2.0);
+	g_assert_true(g_str_has_prefix(html,
+		"<p><a href=\"http://x"));
+	g_assert_nonnull(strstr(html, "</a></p>"));
+
+	options.mention = mention_never;
+	options.reference = reference_never;
+	options.user_data = NULL;
+
+	mention = repeat_to("@a ", total);
+	g_free(html);
+	html = render_within("mention", mention, &options, 2.0);
+	{
+		g_autofree gchar *shown = g_strstrip(g_strdup(mention));
+
+		g_assert_true(strlen(html) == (strlen(shown) + strlen("<p></p>")));
+		g_assert_cmpint(memcmp(html + 3, shown, strlen(shown)), ==, 0);
+	}
+	g_assert_null(strstr(html, "class=\"mention\""));
+
+	reference = repeat_to("#a/12 ", total);
+	g_free(html);
+	html = render_within("reference", reference, &options, 2.0);
+	{
+		g_autofree gchar *shown = g_strstrip(g_strdup(reference));
+
+		g_assert_true(strlen(html) == (strlen(shown) + strlen("<p></p>")));
+		g_assert_cmpint(memcmp(html + 3, shown, strlen(shown)), ==, 0);
+	}
+	g_assert_null(strstr(html, "<a "));
+
+	g_free(html);
+	html = NULL;
+	fence = repeat_to("`", total);
+	/* A line of backticks is a fence, one pass over the line, not a
+	 * search per backtick. */
+	html = render_within("fence", fence, NULL, 2.0);
+	g_assert_cmpstr(html, ==, "<pre><code></code></pre>");
+}
+
+/*
+ * The bounds are inclusive. Text of 1024 bytes is still a link; one more
+ * byte is the bracket, typed back out. A target of 2048 bytes is still a
+ * link; one more byte is not, so the word "go" is not the link text. A
+ * title is read and dropped, and the link remains.
+ */
+static void
+test_link_near_bound(void)
+{
+	g_autoptr(GString) text_ok = NULL;
+	g_autoptr(GString) text_over = NULL;
+	g_autoptr(GString) url_ok = NULL;
+	g_autoptr(GString) url_over = NULL;
+	g_autofree gchar *href = NULL;
+	guint i;
+
+	text_ok = g_string_new("[");
+
+	for (i = 0; i < 1024; i++)
+		g_string_append_c(text_ok, 'a');
+
+	g_string_append(text_ok, "](https://example.com/a)");
+
+	{
+		g_autofree gchar *html = render(text_ok->str);
+
+		g_assert_true(g_str_has_prefix(html,
+			"<p><a href=\"https://example.com/a\""));
+		g_assert_true(g_str_has_suffix(html, "</a></p>"));
+	}
+
+	text_over = g_string_new("[");
+
+	for (i = 0; i < 1025; i++)
+		g_string_append_c(text_over, 'a');
+
+	g_string_append(text_over, "](https://example.com/a)");
+
+	{
+		g_autofree gchar *html = render(text_over->str);
+
+		g_assert_true(g_str_has_prefix(html, "<p>["));
+		g_assert_null(strstr(html, "</a></p>"));
+	}
+
+	url_ok = g_string_new("https://example.com/");
+
+	while (url_ok->len < 2048)
+		g_string_append_c(url_ok, 'a');
+
+	{
+		g_autoptr(GString) link = g_string_new("[go](");
+		g_autofree gchar *html = NULL;
+
+		g_string_append(link, url_ok->str);
+		g_string_append(link, ")");
+		html = render(link->str);
+		href = g_strdup_printf("<a href=\"%s\"", url_ok->str);
+		g_assert_nonnull(strstr(html, href));
+		g_assert_nonnull(strstr(html, ">go</a>"));
+	}
+
+	url_over = g_string_new(url_ok->str);
+	g_string_append_c(url_over, 'b');
+
+	{
+		g_autoptr(GString) link = g_string_new("[go](");
+		g_autofree gchar *html = NULL;
+
+		g_string_append(link, url_over->str);
+		g_string_append(link, ")");
+		html = render(link->str);
+		g_assert_null(strstr(html, ">go</a>"));
+		g_assert_true(g_str_has_prefix(html, "<p>[go]("));
+	}
+
+	assert_render("[docs](https://example.com/a \"The title\")",
+		"<p><a href=\"https://example.com/a\" "
+		"rel=\"noopener noreferrer nofollow\">docs</a></p>");
+}
+
+
 int
 main(int argc, char **argv)
 {
@@ -389,6 +652,8 @@ main(int argc, char **argv)
 	g_test_add_func("/markdown/mentions-and-references", test_mentions_and_references);
 	g_test_add_func("/markdown/text", test_text);
 	g_test_add_func("/markdown/bounded", test_bounded);
+	g_test_add_func("/markdown/link-scans-are-bounded", test_link_scans_are_bounded);
+	g_test_add_func("/markdown/link-near-bound", test_link_near_bound);
 
 	return g_test_run();
 }

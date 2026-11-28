@@ -94,7 +94,9 @@ typedef struct
  *
  * Renders markdown as HTML that is safe to put inside an element of a
  * page. Invalid UTF-8 is repaired first, and control characters other than
- * a newline or a tab are dropped.
+ * a newline or a tab are dropped. Link text is scanned for at most
+ * 1024 bytes and a link target for at most 2048; past either bound
+ * the '[' is ordinary text.
  *
  * Returns: (transfer full): the HTML; empty for empty input
  */
