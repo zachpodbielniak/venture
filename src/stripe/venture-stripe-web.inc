@@ -249,7 +249,8 @@ venture_web_stripe_payment_link(HtmxRequest *request, GHashTable *params, gpoint
 			htmx_response_add_header(response, "Location", url);
 			goto headers;
 		}
-		/* An earlier payment page was found already paid and recorded. */
+		/* An earlier payment page its signed completion settled while this
+		 * click was retiring it. */
 		if (!g_strcmp0(state, "complete"))
 			g_string_append(html, "<p>Your payment for this invoice was received. Thank you. Do not start another payment.</p>");
 		else

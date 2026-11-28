@@ -303,9 +303,8 @@ business has it on, by the same path as the =POST= above. It is a plain
 link so that a mail client, which sends no =Origin=, is not refused on
 the public customer-link address. Opening it again reuses the open session
 while that session is for the balance now. =GET /pay/<capability>= is the
-customer's invoice page with the same button. A signed completion records
-the payment and sends the receipt; the one other way a payment is recorded
-here is a stale session found already paid (below).
+customer's invoice page with the same button. Only a signed completion
+records the payment and sends the receipt.
 
 ** A pending session at an older amount
 
@@ -339,31 +338,29 @@ When the amounts differ, the click, holding the paying party
    attempt as its =client_reference_id=.
    - =expired= there (a lost answer, or expired elsewhere): treated as
      expired.
-   - =complete=, paid, with a =pi_= payment intent, this environment's
-     =livemode=, and exactly the reserved amount and currency: the payment
-     is recorded now through the same =stripe_settle_checkout()= the signed
-     completion uses. The balance has moved, which is why this path exists,
-     so the change is accepted only when the payment is no more than the
-     balance now (an ordinary part payment). The click opens nothing and
-     answers "Your payment for this invoice was received." The signed
-     completion arriving later finds the payment and records nothing more.
-   - =complete= but over the balance now, an unpaid bank debit, or anything
-     not verified as above: the attempt is marked =processing=. Nothing new
-     opens, and the signed completion settles it or raises the usual
-     settlement exception, where the operator decides about any excess
-     (=accept_balance_change=).
+   - =complete= there, whatever was paid: a payment Stripe completed
+     meanwhile is left to the signed completion, which settles or raises it
+     as for any balance change. The click records nothing. It marks the
+     attempt =processing=, opens nothing, does not ask Stripe to expire it
+     again, and answers "Payment is pending verification. Do not start
+     another payment." The signed completion then refuses to allocate an
+     amount that no longer matches the balance: the event is kept with
+     result =exception= and a =settlement_blocked= processor exception, and
+     the finance operator replays it with =accept_balance_change= (see
+     "Durable attempts and payment evidence" above). So one Stripe event has one
+     outcome whether the customer's next click or the webhook comes first.
    - Anything else (still open, or the read fails): the click is refused with
      409 and the page "A payment page for this invoice could not be opened
      just now. Nothing was charged. Try again in a few minutes." The stale
      session is not reused and no other is opened, so it is still the
      invoice's one active attempt. A later click tries again.
 3. In a transaction of its own, reads the attempt again and, only if it is
-   still =open=, marks it =expired= (inactive), records its payment, or marks
-   it =processing=. So a signed event that settled it meanwhile wins.
+   still =open=, marks it =expired= (inactive) or =processing=. So a signed
+   event that settled it meanwhile wins.
 4. Writes an =audit_entry= against the attempt, source
    =stripe.checkout.stale=, whose diff holds =reason=, =session_id=,
    =old_amount= (the reserved amount), =new_amount= (the balance now) and
-   =outcome= (=expired=, =complete= or =complete_unsettled=).
+   =outcome= (=expired=, or =complete_unsettled= for one found complete).
 5. After an expiry, reads everything again from the start and opens a
    session at the balance now. A balance that changes under three tries in
    a row is refused with 409.

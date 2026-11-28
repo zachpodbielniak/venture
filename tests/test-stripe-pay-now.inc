@@ -1223,59 +1223,151 @@ test_pay_now_stale_unchanged(Fixture *f, gconstpointer data)
 	pay_now_clear(&p);
 }
 
+/* The stored event for @provider_id, and its processor exceptions. */
+static VentureEntity *
+pay_now_event(Fixture *f, const gchar *provider_id, guint *exceptions_out, gboolean *resolved_out,
+	gchar **kind_out, gint64 *checkout_out)
+{
+	g_autoptr(GPtrArray) events = rows(f, "stripe_event");
+	g_autoptr(GPtrArray) exceptions = NULL;
+	VentureEntity *found = NULL;
+	guint i;
+	*exceptions_out = 0;
+	*resolved_out = FALSE;
+	*kind_out = NULL;
+	*checkout_out = 0;
+	for (i = 0; i < events->len && !found; i++)
+	{
+		g_autofree gchar *id = NULL;
+		g_object_get(g_ptr_array_index(events, i), "event-id", &id, NULL);
+		if (!g_strcmp0(id, provider_id)) found = g_object_ref(g_ptr_array_index(events, i));
+	}
+	if (!found) return NULL;
+	exceptions = rows(f, "processor_exception");
+	for (i = 0; i < exceptions->len; i++)
+	{
+		gint64 event_id = 0;
+		g_object_get(g_ptr_array_index(exceptions, i), "event-id", &event_id, NULL);
+		if (event_id != venture_entity_get_id(found)) continue;
+		(*exceptions_out)++;
+		g_free(*kind_out);
+		g_object_get(g_ptr_array_index(exceptions, i), "resolved", resolved_out, "kind", kind_out,
+			"checkout-id", checkout_out, NULL);
+	}
+	return found;
+}
+
+static guint
+pay_now_payments(Fixture *f)
+{
+	g_autoptr(GPtrArray) payments = rows(f, "payment");
+	return payments->len;
+}
+
+static gint
+pay_now_invoice_status(Fixture *f, PayNow *p)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(VentureEntity) invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE,
+		venture_entity_get_id(p->invoice), &error);
+	gint status;
+	g_assert_no_error(error);
+	g_object_get(invoice, "status", &status, NULL);
+	return status;
+}
+
 /* The customer paid the 100.00 session before Stripe's completion event
- * arrived. Stripe refuses to expire it; the click reads it, finds it paid,
- * records that payment and opens nothing. The signed completion arriving
- * later records nothing more, and the paid session is never expired again. */
+ * arrived, and the invoice now owes 105.00. Stripe refuses to expire it;
+ * the click reads it back, finds it complete and only marks it processing:
+ * nothing is recorded, nothing new opens and Stripe is not asked again.
+ * The payment is the signed completion's, which does what it does for any
+ * balance change while a payment was pending: it refuses to allocate and
+ * raises a settlement_blocked exception for the operator, the same however
+ * often it is delivered, and the operator's replay with
+ * accept_balance_change records it once. */
 static void
 test_pay_now_stale_paid(Fixture *f, gconstpointer data)
 {
 	PayNow p;
 	g_autoptr(GError) error = NULL;
 	g_autoptr(VentureWebServer) server = NULL;
-	g_autoptr(VentureEntity) invoice = NULL;
-	g_autoptr(GPtrArray) payments = NULL;
+	g_autoptr(VentureEntity) event = NULL, attempt = NULL;
 	g_autofree gchar *state_directory = NULL, *checkout = NULL, *body = NULL, *diff = NULL;
+	g_autofree gchar *kind = NULL, *result = NULL;
+	const gchar *paid = "{\"id\":\"evt_stale_paid\",\"livemode\":false,\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":10000,\"currency\":\"usd\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_stale_paid\"}}}";
 	FakeTransport *fake;
-	gint status;
+	gboolean resolved;
+	gint64 exception_checkout;
+	guint exceptions, delivery;
 	(void)data;
 	checkout = pay_now_stale_setup(f, &p, &server, &state_directory, TRUE);
 	fake = (FakeTransport *)p.transport;
 	fake->expire_mode = FAKE_EXPIRE_COMPLETE;
 	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, &body), ==, 200);
-	g_assert_nonnull(strstr(body, "Your payment for this invoice was received"));
+	g_assert_nonnull(strstr(body, "Payment is pending verification. Do not start another payment."));
 	g_assert_cmpuint(fake->expires, ==, 1);
 	g_assert_cmpuint(fake->session_reads, ==, 1);
 	g_assert_cmpuint(fake->checkouts, ==, 1);
-	pay_now_assert_checkout(f, "cs_offline", "complete", FALSE);
-	g_assert_cmpuint(pay_now_active(f), ==, 0);
-	payments = rows(f, "payment");
-	g_assert_cmpuint(payments->len, ==, 1);
+	pay_now_assert_checkout(f, "cs_offline", "processing", TRUE);
+	g_assert_cmpuint(pay_now_active(f), ==, 1);
+	g_assert_cmpuint(pay_now_payments(f), ==, 0);
+	g_assert_cmpint(pay_now_invoice_status(f, &p), ==, VENTURE_INVOICE_STATUS_SENT);
+	g_assert_cmpuint(pay_now_stale_audits(f, &diff), ==, 1);
+	g_assert_nonnull(strstr(diff, "\"outcome\":\"complete_unsettled\""));
+	g_assert_nonnull(strstr(diff, "\"old_amount\":\"100.00"));
+	g_assert_nonnull(strstr(diff, "\"new_amount\":\"105.00"));
+	/* Clicked again: the same answer, and still no Stripe call. */
+	g_clear_pointer(&body, g_free);
+	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, &body), ==, 200);
+	g_assert_nonnull(strstr(body, "Payment is pending verification"));
+	g_assert_cmpuint(fake->expires, ==, 1);
+	g_assert_cmpuint(fake->session_reads, ==, 1);
+	g_assert_cmpuint(fake->checkouts, ==, 1);
+	g_assert_cmpuint(pay_now_stale_audits(f, NULL), ==, 1);
+	/* Stripe's signed completion, delivered twice: the existing rule for a
+	 * balance change while pending, each time, and nothing recorded. */
+	attempt = pay_now_checkout(f, "cs_offline");
+	for (delivery = 0; delivery < 2; delivery++)
 	{
+		pay_now_webhook(&p, paid, FALSE);
+		g_clear_object(&event);
+		g_clear_pointer(&kind, g_free);
+		g_clear_pointer(&result, g_free);
+		event = pay_now_event(f, "evt_stale_paid", &exceptions, &resolved, &kind, &exception_checkout);
+		g_assert_nonnull(event);
+		g_object_get(event, "result", &result, NULL);
+		g_assert_cmpstr(result, ==, "exception");
+		g_assert_cmpuint(exceptions, ==, 1);
+		g_assert_cmpstr(kind, ==, "settlement_blocked");
+		g_assert_false(resolved);
+		g_assert_cmpint(exception_checkout, ==, venture_entity_get_id(attempt));
+		g_assert_cmpuint(pay_now_payments(f), ==, 0);
+		pay_now_assert_checkout(f, "cs_offline", "processing", TRUE);
+		g_assert_cmpint(pay_now_invoice_status(f, &p), ==, VENTURE_INVOICE_STATUS_SENT);
+	}
+	/* The operator accepts the changed balance: recorded, once. */
+	g_assert_true(venture_stripe_service_retry_event(p.service, venture_entity_get_id(event), TRUE, NULL, &error));
+	g_assert_no_error(error);
+	g_assert_cmpuint(pay_now_payments(f), ==, 1);
+	{
+		g_autoptr(GPtrArray) payments = rows(f, "payment");
 		g_autoptr(VentureMoney) amount = NULL;
 		g_autofree gchar *reference = NULL;
 		g_object_get(g_ptr_array_index(payments, 0), "amount", &amount, "reference", &reference, NULL);
 		g_assert_cmpint(venture_money_get_amount(amount), ==, 10000);
 		g_assert_cmpstr(reference, ==, "pi_stale_paid");
 	}
-	invoice = venture_database_get(f->database, VENTURE_TYPE_INVOICE, venture_entity_get_id(p.invoice), &error);
-	g_assert_no_error(error);
-	g_object_get(invoice, "status", &status, NULL);
-	g_assert_cmpint(status, ==, VENTURE_INVOICE_STATUS_PARTIALLY_PAID);
-	g_assert_cmpuint(pay_now_stale_audits(f, &diff), ==, 1);
-	g_assert_nonnull(strstr(diff, "\"outcome\":\"complete\""));
-	/* Stripe's signed completion for it arrives late: recorded once. */
-	pay_now_webhook(&p, "{\"id\":\"evt_stale_paid\",\"livemode\":false,\"type\":\"checkout.session.completed\",\"data\":{\"object\":{\"id\":\"cs_offline\",\"amount_total\":10000,\"currency\":\"usd\",\"payment_status\":\"paid\",\"payment_intent\":\"pi_stale_paid\"}}}", TRUE);
-	g_clear_pointer(&payments, g_ptr_array_unref);
-	payments = rows(f, "payment");
-	g_assert_cmpuint(payments->len, ==, 1);
 	pay_now_assert_checkout(f, "cs_offline", "complete", FALSE);
-	/* The part payment changed the invoice, so this button is now the
-	 * unavailable answer (see "Pay now" in docs/stripe.org), and the paid
-	 * session is not expired again. */
-	fake->expire_mode = 0;
-	g_clear_pointer(&body, g_free);
-	g_assert_cmpuint(http_request(server, "GET", checkout, NULL, NULL, NULL), ==, 404);
+	g_assert_cmpint(pay_now_invoice_status(f, &p), ==, VENTURE_INVOICE_STATUS_PARTIALLY_PAID);
+	g_clear_object(&event);
+	g_clear_pointer(&kind, g_free);
+	event = pay_now_event(f, "evt_stale_paid", &exceptions, &resolved, &kind, &exception_checkout);
+	g_assert_cmpuint(exceptions, ==, 1);
+	g_assert_true(resolved);
+	/* A late redelivery records nothing more. */
+	pay_now_webhook(&p, paid, TRUE);
+	g_assert_cmpuint(pay_now_payments(f), ==, 1);
+	/* Nothing ever asked Stripe to expire it again or opened another. */
 	g_assert_cmpuint(fake->expires, ==, 1);
 	g_assert_cmpuint(fake->checkouts, ==, 1);
 	g_assert_cmpuint(pay_now_active(f), ==, 0);

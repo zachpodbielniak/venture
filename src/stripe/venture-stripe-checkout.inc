@@ -41,12 +41,6 @@ stripe_checkout_exception(VentureStripeService *self, VentureEntity *checkout,
 	return venture_stripe_save_owned(self->database, VENTURE_ENTITY(exception), NULL, error);
 }
 
-/* Defined with the signed completion path (venture-stripe-settlement.inc),
- * which a stale session found already paid records its payment through. */
-static gboolean stripe_settle_checkout(VentureStripeService *self, VentureEntity *checkout,
-	const VentureMoney *expected, const gchar *intent, GDateTime *settled_at,
-	gboolean accept_balance_change, const VentureActor *actor, GError **error);
-
 /* How many times one request retires a stale session and looks again
  * before it gives up: the balance moving under every attempt is a refusal,
  * not a loop. */
@@ -80,7 +74,8 @@ stripe_checkout_expire_remote(VentureStripeService *self, VentureEntity *checkou
 
 /* Writes why a stale session was retired to the audit log, against the
  * attempt itself: the amount it was opened at, the balance it no longer
- * matches and what became of it (expired, or found paid). The service's
+ * matches and what became of it (expired, or found completed and left to
+ * the signed completion). The service's
  * own record, so it is saved outside the caller's access scope, as
  * audit_event() saves what Stripe said. */
 static gboolean
@@ -112,21 +107,19 @@ stripe_checkout_stale_audit(VentureStripeService *self, VentureEntity *checkout,
  * @checkout_id is the invoice's one active attempt, an open session opened
  * at an amount the invoice no longer has (@balance is what eligible() reads
  * now). Retires it so the caller can open one at @balance, or finds the
- * customer already paid it.
+ * customer completed it meanwhile.
  *
  * Stripe is asked to expire it first. If that fails, why is read from
  * Stripe's own record of the session, not from the refusal's wording:
  *
  *  - expired there (a lost answer, or expired by somebody else): retired.
- *  - complete and paid at the amount it was opened at: its payment is
- *    recorded here through the completion path's own stripe_settle_checkout().
- *    The balance has moved, which is the point, so it is accepted as moved
- *    when the payment is no more than the balance now (an ordinary part
- *    payment). A payment over the balance now would leave a credit, which
- *    is the operator's decision on the signed completion's settlement
- *    exception, so that one, an unpaid bank debit and anything this cannot
- *    verify are marked processing instead: still the one attempt, and the
- *    signed completion settles it or raises the exception.
+ *  - complete there: marked processing, whatever was paid. Nothing is
+ *    recorded here. The signed completion settles it or raises the
+ *    settlement exception exactly as for any balance change while a
+ *    payment was pending, so one Stripe event has one outcome however the
+ *    customer's next click and the webhook are ordered, and a changed
+ *    balance always reaches the operator. Processing is still the one
+ *    active attempt, so nothing else opens meanwhile.
  *  - anything else, or a session that cannot be read: refused with
  *    %VENTURE_ERROR_CONFLICT. The stale session is not reused and no other
  *    is opened, so the attempt stays the invoice's only one.
@@ -134,8 +127,9 @@ stripe_checkout_stale_audit(VentureStripeService *self, VentureEntity *checkout,
  * Stripe is called with no transaction open; the local change is made in
  * one of its own after reading the attempt again, and only to one still
  * open, so a signed event that settled it meanwhile wins. On %TRUE with
- * *@kept_out set the attempt stands (paid or processing) and the caller
- * opens nothing; with it %NULL the caller looks again.
+ * *@kept_out set the attempt stands (processing, or settled meanwhile by a
+ * signed event) and the caller opens nothing; with it %NULL the caller
+ * looks again.
  */
 static gboolean
 stripe_checkout_retire_stale(VentureStripeService *self, gint64 checkout_id,
@@ -146,10 +140,8 @@ stripe_checkout_retire_stale(VentureStripeService *self, gint64 checkout_id,
 	g_autoptr(VentureMoney) reserved = NULL;
 	g_autoptr(GError) expire_error = NULL;
 	g_autoptr(StripeResource) remote = NULL;
-	g_autoptr(GDateTime) now = venture_time_now();
-	g_autofree gchar *state = NULL, *session = NULL, *intent = NULL;
+	g_autofree gchar *state = NULL, *session = NULL;
 	const gchar *outcome = "expired";
-	gboolean settle = FALSE;
 
 	*kept_out = NULL;
 	stale = venture_database_get(self->database, VENTURE_TYPE_STRIPE_CHECKOUT, checkout_id, error);
@@ -175,32 +167,8 @@ stripe_checkout_retire_stale(VentureStripeService *self, gint64 checkout_id,
 				"it is not reused and no other is opened", expire_error->message);
 			return FALSE;
 		}
-		if (!g_strcmp0(status, "complete"))
-		{
-			g_autoptr(JsonObject) object = stripe_resource_get_json(remote);
-			JsonNode *total = object ? json_object_get_member(object, "amount_total") : NULL;
-			JsonNode *live = object ? json_object_get_member(object, "livemode") : NULL;
-			const gchar *currency = stripe_resource_get_string(remote, "currency");
-			const gchar *paid_with = stripe_resource_get_string(remote, "payment_intent");
-			gint64 opened_units = 0;
-			outcome = "complete";
-			/* Recorded here only on the evidence the signed completion
-			 * needs: paid, a payment intent, this environment, and exactly
-			 * the amount and currency the attempt reserved. */
-			if (reserved && to_stripe_amount(reserved, &opened_units, NULL) &&
-				total && JSON_NODE_HOLDS_VALUE(total) && json_node_get_value_type(total) == G_TYPE_INT64 &&
-				json_node_get_int(total) == opened_units &&
-				currency && !g_ascii_strcasecmp(currency, venture_money_get_currency(reserved)) &&
-				live && JSON_NODE_HOLDS_VALUE(live) && json_node_get_value_type(live) == G_TYPE_BOOLEAN &&
-				json_node_get_boolean(live) == !g_strcmp0(self->environment, "live") &&
-				!g_strcmp0(stripe_resource_get_string(remote, "payment_status"), "paid") &&
-				paid_with && g_str_has_prefix(paid_with, "pi_"))
-			{
-				g_autoptr(VentureMoney) left = venture_money_subtract(balance, reserved, NULL);
-				settle = left && venture_money_get_amount(left) >= 0;
-				intent = g_strdup(paid_with);
-			}
-		}
+		/* Paid or not, at whatever amount: the signed completion decides. */
+		if (!g_strcmp0(status, "complete")) outcome = "complete_unsettled";
 	}
 
 	if (!venture_database_begin_serializable(self->database, error)) return FALSE;
@@ -215,13 +183,8 @@ stripe_checkout_retire_stale(VentureStripeService *self, gint64 checkout_id,
 			g_object_set(current, "status", "expired", "active", FALSE, NULL);
 			if (!venture_stripe_save_owned(self->database, current, actor, error)) goto fail;
 		}
-		else if (settle)
-		{
-			if (!stripe_settle_checkout(self, current, reserved, intent, now, TRUE, actor, error)) goto fail;
-		}
 		else
 		{
-			outcome = "complete_unsettled";
 			g_object_set(current, "status", "processing", NULL);
 			if (!venture_stripe_save_owned(self->database, current, actor, error)) goto fail;
 		}
@@ -230,7 +193,8 @@ stripe_checkout_retire_stale(VentureStripeService *self, gint64 checkout_id,
 	if (!venture_database_commit(self->database, error)) goto fail;
 	g_clear_pointer(&state, g_free);
 	g_object_get(current, "status", &state, NULL);
-	/* Paid or being paid: that attempt stands and nothing else opens. */
+	/* Being paid, or settled meanwhile: that attempt stands and nothing
+	 * else opens. */
 	if (!g_strcmp0(state, "complete") || !g_strcmp0(state, "processing"))
 		*kept_out = g_object_ref(VENTURE_STRIPE_CHECKOUT(current));
 	return TRUE;

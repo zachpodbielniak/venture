@@ -241,8 +241,9 @@ gboolean venture_stripe_service_can_checkout(VentureStripeService *self, gint64 
  *
  * Creates or reuses the invoice's one active Checkout. An open session is
  * reused only while it is for the open balance now; otherwise it is expired
- * at Stripe and a new one opened, or, found already paid, its payment is
- * recorded and that attempt returned with status complete (or processing).
+ * at Stripe and a new one opened, or, found completed at Stripe meanwhile,
+ * that attempt is returned as processing and its signed completion settles
+ * it or raises it for reconciliation.
  *
  * Returns: (transfer full) (nullable): stored Checkout record, including its URL
  */
