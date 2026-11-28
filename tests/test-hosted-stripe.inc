@@ -598,6 +598,82 @@ hosted_money_back_race(Fixture *f, FakeTransport *fake, gint64 business, const g
 	slow_call_clear(&two);
 }
 
+/*
+ * Two card pages for one business at once: Setup ("setup") or a card
+ * change ("change-card"), the first held at Stripe while it creates the
+ * hosted page, its idempotency key (venture-authorization-<uuid>) in
+ * flight, before the second is sent. Without the business's hold the
+ * second reused the first one's reservation, sent the same key, and
+ * Stripe's 409 reached the owner as a 500. Now it waits for the first and
+ * answers the same page: the same body, no key refused, one reservation.
+ */
+static void
+test_hosted_card_race(Fixture *f, gconstpointer data)
+{
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GObject) transport = g_object_new(fake_transport_get_type(), NULL);
+	g_autoptr(VentureStripeService) provider = NULL;
+	g_autoptr(VentureAccessScope) scope = NULL;
+	g_autoptr(JsonNode) enrolled = NULL;
+	g_autoptr(JsonParser) one_parser = json_parser_new(), two_parser = json_parser_new();
+	g_autofree gchar *secret = NULL, *key = NULL, *path = NULL;
+	FakeTransport *fake = (FakeTransport *)transport;
+	gboolean change = !g_strcmp0(data, "change-card");
+	SlowCall one = { 0 }, two = { 0 };
+	gboolean queued;
+	gint refused;
+	JsonObject *answer;
+	gint64 business = hosted_enrolled(f, transport, &provider, &secret, &scope, &enrolled);
+	key = lightsite_hold_key(f, business);
+	if (change) {
+		/* A saved card first, as test_hosted_saved_card() saves one. */
+		g_autoptr(JsonNode) setup = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
+		g_autoptr(JsonNode) ready = NULL;
+		g_assert_no_error(error); g_assert_nonnull(setup);
+		{
+			g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+			g_autoptr(GPtrArray) authorizations = rows(f, "stripe_authorization");
+			g_assert_cmpuint(authorizations->len, ==, 1);
+			g_assert_true(venture_stripe_service_verify_authorization(provider,
+				venture_entity_get_id(g_ptr_array_index(authorizations, 0)), NULL, &error));
+			g_assert_no_error(error);
+		}
+		ready = venture_lightsite_billing_setup(f->context, f->organization_id, business, &error);
+		g_assert_no_error(error);
+		g_assert_cmpstr(json_object_get_string_member(json_node_get_object(ready), "state"), ==, "card_ready");
+	}
+	/* The page the first opens stays open, so the second, once it has
+	 * waited, asks for the same page rather than finding a saved card. */
+	fake->setup_open = TRUE;
+	fake->hold_method = "POST";
+	fake->hold_url = "/checkout/sessions";
+	refused = g_atomic_int_get(&fake->keys_refused);
+	path = g_strdup_printf("/api/v1/lightsite/billing/%s", change ? "change-card" : "setup");
+	queued = hosted_race(f, fake, business, secret, path, path, &one, &two, key);
+	fake->hold_method = fake->hold_url = NULL;
+	g_test_message("Idempotency keys refused while in flight: %d", g_atomic_int_get(&fake->keys_refused) - refused);
+	g_assert_cmpuint(one.status, ==, 200);
+	g_assert_cmpuint(two.status, ==, 200);
+	g_assert_true(queued);
+	g_assert_cmpint(g_atomic_int_get(&fake->keys_refused), ==, refused);
+	g_assert_true(json_parser_load_from_data(one_parser, one.reply, -1, &error)); g_assert_no_error(error);
+	g_assert_true(json_parser_load_from_data(two_parser, two.reply, -1, &error)); g_assert_no_error(error);
+	g_assert_true(json_node_equal(json_parser_get_root(one_parser), json_parser_get_root(two_parser)));
+	answer = json_node_get_object(json_parser_get_root(two_parser));
+	g_assert_cmpstr(json_object_get_string_member(answer, "state"), ==, "awaiting_card");
+	g_assert_true(g_str_has_prefix(json_object_get_string_member(answer, "url"), "https://checkout.stripe.com/"));
+	g_assert_cmpuint(venture_fiber_hold_waiting(key), ==, 0);
+	{
+		/* One reservation for the page: the saved card's and the change's,
+		 * or the Setup's alone. */
+		g_autoptr(VentureAccessScope) internal = venture_access_policy_enter(venture_database_get_access_policy(f->database), NULL);
+		g_autoptr(GPtrArray) authorizations = rows(f, "stripe_authorization");
+		g_assert_cmpuint(authorizations->len, ==, change ? 2 : 1);
+	}
+	slow_call_clear(&one);
+	slow_call_clear(&two);
+}
+
 static void
 test_hosted_saved_card(Fixture *f, gconstpointer data)
 {

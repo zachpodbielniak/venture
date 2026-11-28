@@ -1625,6 +1625,8 @@ main(int argc, char **argv)
 	g_test_add("/stripe/hosted-slow-provider-order", Fixture, NULL, set_up, test_hosted_slow_provider_order, tear_down);
 	g_test_add("/stripe/hosted-concurrent", Fixture, "concurrent", set_up, test_hosted_saved_card, tear_down);
 	g_test_add("/stripe/hosted-money-back-refund-held", Fixture, "refund-held", set_up, test_hosted_saved_card, tear_down);
+	g_test_add("/stripe/hosted-setup-race", Fixture, "setup", set_up, test_hosted_card_race, tear_down);
+	g_test_add("/stripe/hosted-change-card-race", Fixture, "change-card", set_up, test_hosted_card_race, tear_down);
 	g_test_add("/stripe/fiber/retry-after", Fixture, NULL, set_up, test_fiber_retry_after, tear_down);
 	g_test_add("/stripe/fiber/retry-budget", Fixture, NULL, set_up, test_fiber_retry_budget, tear_down);
 	g_test_add("/stripe/fiber/deadline", Fixture, NULL, set_up, test_fiber_deadline, tear_down);

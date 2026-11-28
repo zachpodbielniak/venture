@@ -352,6 +352,7 @@ enrollment_confirm_change(VentureContext *context, VentureDatabase *db, gint64 b
 JsonNode *
 venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 business, GError **error)
 {
+	g_autoptr(VentureFiberHold) hold = NULL;
 	g_autoptr(GError) discarded = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -366,6 +367,14 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 	gint64 subscription;
 	VentureActor actor = { VENTURE_ACTOR_KIND_IMPORT, "Hosted payment setup", NULL, NULL, NULL };
 	if (!error) error = &discarded;
+	/* Under the business's hold (lightsite_hold()) until the page is
+	 * known. Two at once otherwise both reused one reservation, and the
+	 * second sent its key (venture-authorization-<uuid>) while the first
+	 * still had it in flight: Stripe's 409, a 500 to the owner. Or both
+	 * verified one pending Setup, and the second lost the save and was
+	 * refused as a changed authorization. Held, the second waits, then
+	 * reads what the first recorded and answers the same page. */
+	hold = lightsite_hold(db, billing, business);
 	if (!prepare(db, billing, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
 	if (!business_valid(db, billing, business, error)) return NULL;
@@ -439,6 +448,7 @@ venture_lightsite_billing_setup(VentureContext *context, gint64 billing, gint64 
 JsonNode *
 venture_lightsite_billing_change_card(VentureContext *context, gint64 billing, gint64 business, GError **error)
 {
+	g_autoptr(VentureFiberHold) hold = NULL;
 	g_autoptr(GError) discarded = NULL;
 	VentureDatabase *db = venture_context_get_database(context);
 	g_autoptr(VentureAccessScope) internal = NULL;
@@ -451,6 +461,9 @@ venture_lightsite_billing_change_card(VentureContext *context, gint64 billing, g
 	JsonNode *result;
 	VentureActor actor = { VENTURE_ACTOR_KIND_IMPORT, "Hosted card change", NULL, NULL, NULL };
 	if (!error) error = &discarded;
+	/* Under the business's hold, as setup is: the second change reuses the
+	 * first one's open change and would send its key while in flight. */
+	hold = lightsite_hold(db, billing, business);
 	if (!prepare(db, billing, NULL, error)) return NULL;
 	internal = venture_access_policy_enter(venture_database_get_access_policy(db), NULL);
 	if (!business_valid(db, billing, business, error)) return NULL;
