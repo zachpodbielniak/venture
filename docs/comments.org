@@ -114,7 +114,7 @@ The renderer is =venture_markdown_to_html()= (=src/util/venture-markdown.c=), an
 
 A reference to a record is resolved for each reader under their own access, so the same comment shows a link to one person and the text =#invoice/12= to another. Nesting is bounded (=VENTURE_MARKDOWN_MAX_DEPTH=) and the parser's work is linear in the input, because the input is a stranger's and the server is single-threaded. An unclosed link stops at 1024 bytes of bracket text and 2048 bytes of target; past either bound the opening bracket is plain text.
 
-=venture_markdown_to_text()= gives the words without the syntax, on one line, for an inbox line, the activity and a webhook excerpt.
+=venture_markdown_to_text()= gives the words without the syntax, on one line, for an inbox line, the activity and a webhook excerpt. A notification excerpt is rendered from at most 8192 bytes of the comment, stepped back off a UTF-8 continuation byte, never from a character index past the end of a shorter body.
 
 The assistant panel's renderer is a separate, older function in the web server with a narrower subset and its own pinned output; it was left alone rather than folded into this one.
 

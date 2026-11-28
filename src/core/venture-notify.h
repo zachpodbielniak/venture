@@ -249,6 +249,37 @@ venture_notify_mark_read(
 );
 
 /**
+ * VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES:
+ *
+ * How many bytes of a comment a notification excerpt is rendered from.
+ * A shorter body is rendered whole, with no copy.
+ */
+#define VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES (8192)
+
+/**
+ * venture_notify_excerpt_source:
+ * @body: (nullable): the comment body
+ * @owned: (out) (transfer full): a new prefix the caller frees, or %NULL
+ *   when @body itself is what to render
+ *
+ * The bytes a notification excerpt is rendered from. A body no longer
+ * than #VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES is returned as itself and
+ * nothing is allocated. A longer body is cut at that many bytes, then
+ * stepped back while the byte on the cut is a UTF-8 continuation byte,
+ * so a character is not split. The walk reads no byte past the
+ * terminating NUL and does not step by a lead byte's width, so a
+ * truncated sequence cannot move the cut past the end.
+ *
+ * Returns: (nullable) (transfer none): the text to render, or %NULL
+ *   when @body is %NULL
+ */
+const gchar *
+venture_notify_excerpt_source(
+	const gchar	 *body,
+	gchar		**owned
+);
+
+/**
  * venture_notify_extract_mentions:
  * @text: (nullable): a comment
  *

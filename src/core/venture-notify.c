@@ -1071,6 +1071,45 @@ venture_notify_conversation(
 }
 
 /*
+ * Bytes the inbox excerpt is rendered from. Short bodies are the body
+ * itself. A longer one is cut on a byte index, then walked back over
+ * continuation bytes only: a lead byte's skip would trust the byte and
+ * can step over the NUL.
+ */
+const gchar *
+venture_notify_excerpt_source(
+	const gchar	 *body,
+	gchar		**owned
+){
+	gsize len;
+	gsize n;
+
+	g_return_val_if_fail(NULL != owned, NULL);
+
+	*owned = NULL;
+
+	if (NULL == body)
+		return NULL;
+
+	len = strlen(body);
+
+	if (len <= (gsize)VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES)
+		return body;
+
+	n = (gsize)VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES;
+
+	/* body[n] is inside the string: len is greater than the bound.
+	 * A continuation here means the cut landed inside a character, so
+	 * the lead byte ahead of it is dropped too. */
+	while ((n > 0) && ((0x80 == (((guchar)body[n]) & 0xC0))))
+		n--;
+
+	*owned = g_strndup(body, n);
+
+	return *owned;
+}
+
+/*
  * A ticket's comment. Its target for the inbox is the ticket, which is the
  * page anybody would open; who may read a ticket's thread is the desk's
  * business (internal notes, the portal), so no reading check is added
@@ -1085,10 +1124,11 @@ venture_notify_comment(
 ){
 	g_autoptr(VentureEntity) ticket = NULL;
 	g_autofree gchar *body = NULL;
-	g_autofree gchar *excerpt_source = NULL;
+	g_autofree gchar *excerpt_owned = NULL;
 	g_autofree gchar *author = NULL;
 	g_autofree gchar *label = NULL;
 	g_autofree gchar *excerpt = NULL;
+	const gchar *excerpt_source = NULL;
 	g_auto(GStrv) mentions = NULL;
 	g_autoptr(GArray) mentioned = NULL;
 	VentureNotifyConversation conversation;
@@ -1131,9 +1171,9 @@ venture_notify_comment(
 	label = venture_entity_get_display_name(ticket);
 	/* A preview is words: no markdown syntax, never tags. The body
 	 * has no length cap -- a mailed comment is the whole text/plain
-	 * part -- so the excerpt is rendered from a prefix, not from
-	 * every byte, before it is cut to a line. */
-	excerpt_source = (NULL == body) ? NULL : g_utf8_substring(body, 0, 2000);
+	 * part -- so the excerpt is rendered from a byte prefix, not from
+	 * a character offset that would read past a short string. */
+	excerpt_source = venture_notify_excerpt_source(body, &excerpt_owned);
 	excerpt = venture_markdown_to_text(excerpt_source, 140);
 	mentions = venture_notify_extract_mentions(body);
 	mentioned = g_array_new(FALSE, FALSE, sizeof(gint64));

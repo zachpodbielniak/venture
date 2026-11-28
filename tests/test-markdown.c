@@ -14,6 +14,8 @@
 #include <venture.h>
 
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 static gchar *
 render(const gchar *text)
@@ -638,6 +640,117 @@ test_link_near_bound(void)
 		"rel=\"noopener noreferrer nofollow\">docs</a></p>");
 }
 
+/*
+ * The NUL is the last byte of a mapped page and the next page cannot be
+ * read. A character offset of 2000 used to walk off that NUL. The prefix
+ * helper may look only as far as strlen does.
+ */
+static void
+excerpt_on_guard(const gchar *bytes, gsize n)
+{
+	long page;
+	gchar *map;
+	gchar *body;
+	gchar *owned;
+	const gchar *source;
+
+	page = sysconf(_SC_PAGESIZE);
+	g_assert_cmpint(page, >, (glong)(n + 1));
+	map = mmap(NULL, (size_t)page * 2, PROT_READ | PROT_WRITE,
+	           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	g_assert_true(MAP_FAILED != map);
+	g_assert_cmpint(mprotect(map + page, (size_t)page, PROT_NONE), ==, 0);
+
+	body = map + page - (gssize)(n + 1);
+	memcpy(body, bytes, n);
+	body[n] = '\0';
+	owned = (gchar *)0x1;
+	source = venture_notify_excerpt_source(body, &owned);
+	g_assert_null(owned);
+	g_assert_true(source == body);
+	g_assert_cmpuint(strlen(source), ==, n);
+	g_assert_cmpint(memcmp(source, bytes, n), ==, 0);
+
+	g_assert_cmpint(mprotect(map + page, (size_t)page, PROT_READ | PROT_WRITE), ==, 0);
+	g_assert_cmpint(munmap(map, (size_t)page * 2), ==, 0);
+}
+
+static void
+test_excerpt_guard_page(void)
+{
+	static const gchar eacute[] = { '\xc3', '\xa9' };
+
+	excerpt_on_guard("hi", 2);
+	excerpt_on_guard(eacute, 2);
+}
+
+/*
+ * A quarter-megabyte body is still an inbox line: the renderer sees at
+ * most VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES, then the usual 140 characters.
+ * venture_truncate keeps those 140 and appends one ellipsis, so the
+ * string is 141 characters.
+ */
+static void
+test_excerpt_long_body(void)
+{
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *owned = NULL;
+	g_autofree gchar *excerpt = NULL;
+	g_autofree gchar *wanted = NULL;
+	const gchar *source;
+	g_autoptr(GTimer) timer = NULL;
+	guint i;
+
+	body = g_new(gchar, (256 * 1024) + 1);
+	memset(body, '[', 256 * 1024);
+	body[256 * 1024] = '\0';
+
+	timer = g_timer_new();
+	source = venture_notify_excerpt_source(body, &owned);
+	excerpt = venture_markdown_to_text(source, 140);
+	g_assert_cmpfloat(g_timer_elapsed(timer, NULL), <, 2.0);
+	g_assert_nonnull(owned);
+	g_assert_true(source == owned);
+	g_assert_cmpuint(strlen(source), <=, (gsize)VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES);
+	g_assert_cmpint(g_utf8_strlen(excerpt, -1), <=, 141);
+
+	wanted = g_new(gchar, 140 + 4);
+	for (i = 0; i < 140; i++)
+		wanted[i] = '[';
+	memcpy(wanted + 140, "\xe2\x80\xa6", 3);
+	wanted[143] = '\0';
+	g_assert_cmpstr(excerpt, ==, wanted);
+}
+
+/*
+ * The bound falls on the third byte of a 4-byte character. The prefix
+ * steps back to the lead byte and drops the whole character, so what
+ * remains is valid UTF-8 and does not end on a partial sequence.
+ */
+static void
+test_excerpt_cut_is_utf8(void)
+{
+	static const gchar mark[] = "\xf0\x9f\x93\x84";
+	g_autofree gchar *body = NULL;
+	g_autofree gchar *owned = NULL;
+	const gchar *source;
+	gsize n;
+
+	n = (gsize)VENTURE_NOTIFY_EXCERPT_SOURCE_BYTES;
+	body = g_new(gchar, n + 8);
+	memset(body, 'a', n - 2);
+	memcpy(body + (n - 2), mark, 4);
+	memset(body + (n - 2) + 4, 'b', 4);
+	body[(n - 2) + 4 + 4] = '\0';
+
+	source = venture_notify_excerpt_source(body, &owned);
+	g_assert_true(source == owned);
+	g_assert_true(g_utf8_validate(source, -1, NULL));
+	g_assert_cmpuint(strlen(source), ==, n - 2);
+	g_assert_cmpint(memcmp(source, body, n - 2), ==, 0);
+	g_assert_null(memchr(source, '\xf0', strlen(source)));
+}
+
 
 int
 main(int argc, char **argv)
@@ -654,6 +767,9 @@ main(int argc, char **argv)
 	g_test_add_func("/markdown/bounded", test_bounded);
 	g_test_add_func("/markdown/link-scans-are-bounded", test_link_scans_are_bounded);
 	g_test_add_func("/markdown/link-near-bound", test_link_near_bound);
+	g_test_add_func("/markdown/excerpt-guard-page", test_excerpt_guard_page);
+	g_test_add_func("/markdown/excerpt-long-body", test_excerpt_long_body);
+	g_test_add_func("/markdown/excerpt-cut-is-utf8", test_excerpt_cut_is_utf8);
 
 	return g_test_run();
 }
